@@ -17,6 +17,7 @@
 import { prisma } from "@/lib/prisma";
 import { localId } from "@/lib/rbac";
 import { classifySilo } from "@/lib/siloClass";
+import { isDeficitId, WRITTEN_OFF_LABEL } from "@/lib/backfill";
 
 const db = prisma as any;
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
@@ -81,6 +82,8 @@ interface Draw { uid: string; cycleId: string; cycleAirtableId: string; batch: s
 // A draw = one (cycle, slot) that the EXISTING links say consumed from this silo.
 function collectDraws(siloNo: string, bags: any[], cycles: any[]): Draw[] {
   const bagSet = new Set(bags.map((b) => b.airtableId));
+  // Draws settled by a WRITTEN-OFF deficit are forgiven — never re-fed from real stock.
+  const writtenOff = new Set(bags.filter((b: any) => isDeficitId(b.airtableId) && String(b.invNoBagNo ?? "").startsWith(WRITTEN_OFF_LABEL)).map((b: any) => b.airtableId));
   const draws: Draw[] = [];
   for (const r of cycles) {
     // FIFO recency: Airtable createTime, else the entered start time, else the
@@ -91,12 +94,12 @@ function collectDraws(siloNo: string, bags: any[], cycles: any[]): Draw[] {
     for (let m = 1; m <= 4; m++) for (let g = 1; g <= 5; g++) {
       const lf = `m${m}G${g}Ids`; const ids = (r[lf] ?? []) as string[];
       const w = num(r[`m${m}W${g}`]); const snHit = (r[`m${m}G${g}Sn`] ?? "").toString().trim() === siloNo;
-      if (w > 0 && (ids.some((x) => bagSet.has(x)) || snHit)) draws.push({ uid: `${r.id}:${lf}`, cycleId: r.id, cycleAirtableId: r.airtableId, batch: r.batch ?? null, cycleNo: num(r.cycle), linkField: lf, weight: w, time: t });
+      if (w > 0 && !ids.some((x) => writtenOff.has(x)) && (ids.some((x) => bagSet.has(x)) || snHit)) draws.push({ uid: `${r.id}:${lf}`, cycleId: r.id, cycleAirtableId: r.airtableId, batch: r.batch ?? null, cycleNo: num(r.cycle), linkField: lf, weight: w, time: t });
     }
     const ftot = num(r.m1FW) + num(r.m2FW) + num(r.m3FW) + num(r.m4FW);
     const fids = (r.fillerSiloIdIds ?? []) as string[];
     const fHit = (r.fillerSiloBuffer ?? "").toString().trim() === siloNo;
-    if (ftot > 0 && (fids.some((x) => bagSet.has(x)) || fHit)) draws.push({ uid: `${r.id}:fillerSiloIdIds`, cycleId: r.id, cycleAirtableId: r.airtableId, batch: r.batch ?? null, cycleNo: num(r.cycle), linkField: "fillerSiloIdIds", weight: ftot, time: t });
+    if (ftot > 0 && !fids.some((x) => writtenOff.has(x)) && (fids.some((x) => bagSet.has(x)) || fHit)) draws.push({ uid: `${r.id}:fillerSiloIdIds`, cycleId: r.id, cycleAirtableId: r.airtableId, batch: r.batch ?? null, cycleNo: num(r.cycle), linkField: "fillerSiloIdIds", weight: ftot, time: t });
   }
   draws.sort((a, b) => (a.time !== b.time ? a.time - b.time : a.cycleNo - b.cycleNo));
   return draws;

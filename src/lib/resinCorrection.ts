@@ -5,6 +5,7 @@
 // We anchor on the existing links, fix one prep, and apply only the delta.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
+import { isDeficitId, WRITTEN_OFF_LABEL } from "@/lib/backfill";
 
 const db = prisma as any;
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
@@ -54,12 +55,14 @@ async function loadCycles(tankNo: string, preps: any[]): Promise<any[]> {
 }
 
 async function loadPreps(tankNo: string): Promise<any[]> {
-  return db.dailyResinTank.findMany({ where: { dailyTankNo: tankNo }, orderBy: [{ dailyResinId: "asc" }, { date: "asc" }], select: { id: true, airtableId: true, dailyResinId: true, date: true, quantity: true, remainingWeight: true, dailyTankNo: true, supplierFromOutsideTankNo: true, incharge: true } });
+  return db.dailyResinTank.findMany({ where: { dailyTankNo: tankNo }, orderBy: [{ dailyResinId: "asc" }, { date: "asc" }], select: { id: true, airtableId: true, dailyResinId: true, date: true, quantity: true, remainingWeight: true, dailyTankNo: true, supplierFromOutsideTankNo: true, remarks: true, incharge: true } });
 }
 
 interface Draw { uid: string; cycleId: string; cycleAirtableId: string; batch: string | null; cycleNo: number; linkField: string; weight: number; time: number; }
 function collectDraws(tankNo: string, preps: any[], cycles: any[]): Draw[] {
   const prepSet = new Set(preps.map((p) => p.airtableId));
+  // Draws settled by a WRITTEN-OFF deficit are forgiven — never re-fed from real stock.
+  const writtenOff = new Set(preps.filter((p: any) => isDeficitId(p.airtableId) && String(p.remarks ?? "").startsWith(WRITTEN_OFF_LABEL)).map((p: any) => p.airtableId));
   const draws: Draw[] = [];
   for (const r of cycles) {
     const ts = r.createTime ?? r.mixerStartTime ?? r.importedAt;
@@ -67,7 +70,7 @@ function collectDraws(tankNo: string, preps: any[], cycles: any[]): Draw[] {
     for (let m = 1; m <= 4; m++) {
       const lf = `m${m}RIdIds`; const ids = (r[lf] ?? []) as string[];
       const w = num(r[`m${m}RW`]); const hit = (r[`m${m}RDtn`] ?? "").toString().trim() === tankNo;
-      if (w > 0 && (ids.some((x) => prepSet.has(x)) || hit)) draws.push({ uid: `${r.id}:${lf}`, cycleId: r.id, cycleAirtableId: r.airtableId, batch: r.batch ?? null, cycleNo: num(r.cycle), linkField: lf, weight: w, time: t });
+      if (w > 0 && !ids.some((x) => writtenOff.has(x)) && (ids.some((x) => prepSet.has(x)) || hit)) draws.push({ uid: `${r.id}:${lf}`, cycleId: r.id, cycleAirtableId: r.airtableId, batch: r.batch ?? null, cycleNo: num(r.cycle), linkField: lf, weight: w, time: t });
     }
   }
   draws.sort((a, b) => (a.time !== b.time ? a.time - b.time : a.cycleNo - b.cycleNo));
