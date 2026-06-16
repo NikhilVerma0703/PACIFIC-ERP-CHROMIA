@@ -171,7 +171,7 @@ export default async function TableGrid({ params, searchParams }: { params: Prom
                     <tr key={i} className="border-t border-gray-100">
                       {mainCols.map((c) => <td key={c.prismaField} className="whitespace-nowrap py-2 pr-4">{cell(row[c.prismaField])}</td>)}
                       {isSilo && <td className="whitespace-nowrap py-2 pr-4">{usedIn(row)}</td>}
-                      <td className="py-2 text-right"><Link href={`/tables/${model}/${row.id}`} className="text-brand hover:underline">{writable || (isOperator && myId && (row as { enteredById?: string | null }).enteredById === myId) ? "Edit →" : "View →"}</Link></td>
+                      <td className="py-2 text-right"><Link href={`/tables/${model}/${row.id}`} className="text-brand hover:underline">{writable || (isOperator && (model === "PolishQc" || (myId && (row as { enteredById?: string | null }).enteredById === myId))) ? "Edit →" : "View →"}</Link></td>
                     </tr>
                   ))}
                 </tbody>

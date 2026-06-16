@@ -6,6 +6,7 @@ import { hhmmToSeconds } from "@/lib/time";
 import { THICKNESS_FIELDS, canonThickness } from "@/lib/thickness";
 import { canRectify, canEnterData, currentUser, currentRole, localId } from "@/lib/rbac";
 import { AUTOFILL_PREFIX } from "@/lib/batchRange";
+import { logAction } from "@/lib/actionLog";
 import { canUseEntryModel, operatorTableModels } from "@/lib/stationAccess";
 import { canWriteModel } from "@/lib/branch";
 import { OPERATOR_FIELDS } from "@/lib/operatorFields";
@@ -133,9 +134,13 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const myStation = ((me as any)?.station as string | null) ?? null;
     if (!isOp || !operatorTableModels(myStation).has(model)) return "Only incharge and above can edit records.";
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const row: any = await delegateOf(model).findUnique({ where: { id }, select: { enteredById: true } }).catch(() => null);
-    if (!row || !row.enteredById || row.enteredById !== me?.id) return "You can only edit entries you created yourself — ask your incharge for other corrections.";
+    // Polish QC is shared — any QC operator may correct any QC row; every other
+    // table stays self-edit-only for operators.
+    if (model !== "PolishQc") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const row: any = await delegateOf(model).findUnique({ where: { id }, select: { enteredById: true } }).catch(() => null);
+      if (!row || !row.enteredById || row.enteredById !== me?.id) return "You can only edit entries you created yourself — ask your incharge for other corrections.";
+    }
   }
   const data = buildData(model, fd);
   stampBatchKey(data);
@@ -152,6 +157,9 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
   }
   catch (e) { return `Save failed: ${friendlyDbError(e)}`; }
   revalidatePath(`/tables/${model}`);
+  if (model === "PolishQc") {
+    await logAction({ kind: "edit", batchKey: (data.batchKey as string | undefined) ?? null, model: "PolishQc", summary: `Edited Polish QC slab ${String(data.slabNumber ?? "")}`.trim(), payload: { id, slabNumber: data.slabNumber ?? null } });
+  }
   return "ok";
 }
 
