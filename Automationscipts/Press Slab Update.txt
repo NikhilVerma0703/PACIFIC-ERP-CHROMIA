@@ -1,0 +1,216 @@
+// --- TABLES ---
+const changeTbl = base.getTable("Change Parameters Press");
+const pressTbl  = base.getTable("Press");
+
+// --- GET ACTUAL FIELDS FROM TABLES ---
+// We get the full field objects here to check types later
+const changeFields = changeTbl.fields.map(f => f.name);
+const pressFieldsRaw = pressTbl.fields; 
+const pressFields = pressFieldsRaw.map(f => f.name);
+
+console.log("Change Parameters Press fields:", changeFields);
+console.log("Press fields:", pressFields);
+
+// --- MATCH FIELDS ---
+const CHANGE_MATCH = changeFields.find(f => f.toLowerCase().includes("effective") && f.toLowerCase().includes("slab")) || "Effective from slab number";
+const PRESS_MATCH  = pressFields.find(f => f.toLowerCase().includes("slab")) || "Slab Number";
+
+console.log("Using CHANGE_MATCH:", CHANGE_MATCH);
+console.log("Using PRESS_MATCH:", PRESS_MATCH);
+
+// --- [UPDATED] DYNAMICALLY BUILD fieldsToCopy ---
+// Instead of a hardcoded list, we find ALL fields that:
+// 1. Exist in BOTH tables
+// 2. Are editable in the Press table (not Formulas, Rollups, etc.)
+// 3. Are not the Slab Number match fields
+
+const readOnlyTypes = [
+  "formula", "rollup", "multipleLookupValues", "count", 
+  "createdTime", "lastModifiedTime", "autoNumber", 
+  "button", "externalSyncSource"
+];
+
+// specific fields you might want to force-exclude even if they match
+const excludedFields = [
+  "Record ID", 
+  "Created By",
+  PRESS_MATCH, // Don't copy the slab number over itself
+];
+
+const fieldsToCopy = pressFieldsRaw
+  .filter(f => {
+    // Keep only if it's NOT a read-only type
+    return !readOnlyTypes.includes(f.type);
+  })
+  .map(f => f.name)
+  .filter(name => {
+    // Keep only if it exists in Source table AND is not manually excluded
+    return changeFields.includes(name) && !excludedFields.includes(name);
+  });
+
+console.log(`✅ Found ${fieldsToCopy.length} matching fields to copy:`, fieldsToCopy);
+
+
+// --- LOAD RECORDS (only needed fields) ---
+const changeQ = await changeTbl.selectRecordsAsync({ fields: [CHANGE_MATCH, ...fieldsToCopy] });
+const pressQ  = await pressTbl.selectRecordsAsync({ fields: [PRESS_MATCH, ...fieldsToCopy] });
+
+console.log("Loaded records: Change Parameters =", changeQ.records.length, " Press =", pressQ.records.length);
+
+// --- BUILD PRESS FIELD MAP (name -> fieldDef) ---
+const pressFieldMap = {};
+for (const f of pressTbl.fields) {
+  if (f && f.name) pressFieldMap[f.name] = f;
+}
+
+// --- HELPERS ---
+const trim = s => (typeof s === "string" ? s.trim() : s);
+
+function findDestChoice(fieldDef, sourceNameRaw) {
+  if (!fieldDef?.options?.choices) return null;
+  const sourceName = trim(sourceNameRaw);
+  if (!sourceName) return null;
+
+  // exact match first
+  let match = fieldDef.options.choices.find(c => trim(c?.name) === sourceName);
+  if (match) return match;
+
+  // fallback: case-insensitive
+  const lc = sourceName.toLowerCase();
+  match = fieldDef.options.choices.find(c => (trim(c?.name) || "").toLowerCase() === lc);
+  return match || null;
+}
+
+function buildSelectUpdate(fieldDef, srcVal) {
+  if (fieldDef.type === "singleSelect") {
+    const srcName = typeof srcVal === "string" ? srcVal : srcVal?.name;
+    const choice = findDestChoice(fieldDef, srcName);
+    if (!choice) {
+      console.log(`⏭️ Skipping singleSelect '${fieldDef.name}': option '${srcName}' not found in Press choices`);
+      return null;
+    }
+    // include all properties as requested
+    return { id: choice.id, name: choice.name, color: choice.color };
+  }
+
+  if (fieldDef.type === "multipleSelects") {
+    if (!Array.isArray(srcVal)) return null;
+    const out = [];
+    for (const v of srcVal) {
+      const srcName = typeof v === "string" ? v : v?.name;
+      const choice = findDestChoice(fieldDef, srcName);
+      if (choice) out.push({ id: choice.id, name: choice.name, color: choice.color });
+      else console.log(`⏭️ Skipping one option in '${fieldDef.name}': '${srcName}' not in Press choices`);
+    }
+    return out.length ? out : null;
+  }
+
+  return null;
+}
+
+// --- FIND BEST CHANGE RECORD FOR A GIVEN SLAB ---
+function findApplicableChange(slabNumber) {
+  let best = null;
+  let bestEff = -Infinity;
+  for (const r of changeQ.records) {
+    const eff = r.getCellValue(CHANGE_MATCH);
+    if (typeof eff === "number" && eff <= slabNumber && eff > bestEff) {
+      best = r;
+      bestEff = eff;
+    }
+  }
+  return best;
+}
+
+// --- DELETE DUPLICATE SLAB NUMBERS (KEEP NEWEST) ---
+console.log("🗑️ Starting duplicate cleanup for Slab Number...");
+
+const slabGroups = {};
+for (const rec of pressQ.records) {
+  const slabNum = rec.getCellValue(PRESS_MATCH);
+  if (typeof slabNum === "number") {
+    if (!slabGroups[slabNum]) slabGroups[slabNum] = [];
+    slabGroups[slabNum].push(rec);
+  }
+}
+
+let duplicatesToDelete = [];
+for (const slabNum in slabGroups) {
+  if (slabGroups[slabNum].length > 1) {
+    // Sort by createdTime descending (newest first), then by name (stable sort)
+    const sorted = slabGroups[slabNum].sort((a, b) => {
+      const timeA = a.createdTime;
+      const timeB = b.createdTime;
+      if (timeA !== timeB) return timeB.localeCompare(timeA);
+      return a.name.localeCompare(b.name);
+    });
+    
+    // Keep newest (first), mark others for deletion
+    for (let i = 1; i < sorted.length; i++) {
+      duplicatesToDelete.push(sorted[i].id);
+    }
+  }
+}
+
+console.log(`🗑️ Found ${duplicatesToDelete.length} duplicate Slab Numbers to delete.`);
+
+if (duplicatesToDelete.length > 0) {
+  // Batch delete in chunks of 50
+  for (let i = 0; i < duplicatesToDelete.length; i += 50) {
+    const batch = duplicatesToDelete.slice(i, i + 50);
+    console.log(`🗑️ Deleting batch of ${batch.length} duplicates...`);
+    await pressTbl.deleteRecordsAsync(batch);
+  }
+  console.log(`✅ Deleted all ${duplicatesToDelete.length} duplicate entries.`);
+}
+
+// --- BUILD & APPLY UPDATES ---
+let updates = [];
+
+for (const pressRec of pressQ.records) {
+  const slabNum = pressRec.getCellValue(PRESS_MATCH);
+  if (typeof slabNum !== "number") continue;
+
+  const chosen = findApplicableChange(slabNum);
+  if (!chosen) continue;
+
+  const fieldPatch = {};
+
+  for (const fname of fieldsToCopy) {
+    const pressFieldDef = pressFieldMap[fname];
+    if (!pressFieldDef) continue; // not in Press table, skip
+
+    // only fill empty cells
+    const currentVal = pressRec.getCellValue(fname);
+    if (currentVal !== null && currentVal !== undefined) continue;
+
+    const srcVal = chosen.getCellValue(fname);
+    if (srcVal === null || srcVal === undefined) continue;
+
+    if (pressFieldDef.type === "singleSelect" || pressFieldDef.type === "multipleSelects") {
+      const sel = buildSelectUpdate(pressFieldDef, srcVal);
+      if (sel !== null) fieldPatch[fname] = sel;
+    } else {
+      // numbers/text/etc. copy as-is
+      fieldPatch[fname] = srcVal;
+    }
+  }
+
+  if (Object.keys(fieldPatch).length > 0) {
+    updates.push({ id: pressRec.id, fields: fieldPatch });
+  }
+
+  if (updates.length >= 50) {
+    console.log("🚀 Applying batch of", updates.length);
+    await pressTbl.updateRecordsAsync(updates);
+    updates = [];
+  }
+}
+
+// apply remaining
+if (updates.length > 0) {
+  console.log("🚀 Applying final batch of", updates.length);
+  await pressTbl.updateRecordsAsync(updates);
+}
+
+console.log("✅ Finished updating Press table.");

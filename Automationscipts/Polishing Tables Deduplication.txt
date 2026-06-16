@@ -1,0 +1,155 @@
+// ----------------- Helpers -----------------
+async function deleteInBatches(table, recordIds) {
+    for (let i = 0; i < recordIds.length; i += 50) {
+        await table.deleteRecordsAsync(recordIds.slice(i, i + 50));
+    }
+}
+
+async function updateInBatches(table, updates) {
+    for (let i = 0; i < updates.length; i += 50) {
+        await table.updateRecordsAsync(updates.slice(i, i + 50));
+    }
+}
+
+function getTime(rec, field) {
+    let val = rec.getCellValue(field);
+    return val ? new Date(val).getTime() : 0;
+}
+
+// ----------------- CONFIG -----------------
+const RECENT_LIMIT = 50;
+
+let qcTable = base.getTable("Polish QC");
+let dispatchTable = base.getTable("Polish Entry");
+
+const writableQcFields = qcTable.fields.filter(f =>
+    !["formula", "rollup", "lookup"].includes(f.type) && f.name !== "Printed?"
+);
+const writableFieldNames = writableQcFields.map(f => f.name);
+
+// ----------------- PHASE 1: skinny fetch (no writable fields on QC) -----------------
+const t0 = Date.now();
+const [dispatchAll, qcAll] = await Promise.all([
+    dispatchTable.selectRecordsAsync({
+        fields: ["Slab Number", "Batch Number", "Created", "Polish QC"],
+        sorts: [{ field: "Created", direction: "desc" }]
+    }),
+    qcTable.selectRecordsAsync({
+        fields: ["Link", "Created Time"], // <-- skinny: no writable fields yet
+        sorts: [{ field: "Created Time", direction: "desc" }]
+    })
+]);
+console.log(`Phase 1 fetch: ${Date.now() - t0} ms — dispatch=${dispatchAll.records.length}, qc=${qcAll.records.length}`);
+
+const recentDispatchIds = new Set(dispatchAll.records.slice(0, RECENT_LIMIT).map(r => r.id));
+const recentQcIds       = new Set(qcAll.records.slice(0, RECENT_LIMIT).map(r => r.id));
+
+// ----------------- STEP 1: dedupe Polish Entry -----------------
+const t1 = Date.now();
+const slabGroups = new Map();
+
+for (let rec of dispatchAll.records) {
+    let slab = rec.getCellValue("Slab Number");
+    let batch = rec.getCellValue("Batch Number");
+    if (!slab || !batch) continue;
+    let key = `${String(slab).trim().toLowerCase()}|${String(batch).trim().toLowerCase()}`;
+    let arr = slabGroups.get(key);
+    if (!arr) { arr = []; slabGroups.set(key, arr); }
+    arr.push(rec);
+}
+
+const deleteDispatchIds = [];
+for (let group of slabGroups.values()) {
+    if (group.length <= 1) continue;
+    if (!group.some(r => recentDispatchIds.has(r.id))) continue;
+    group.sort((a, b) => getTime(b, "Created") - getTime(a, "Created"));
+    let linked = group.find(r => r.getCellValue("Polish QC")?.length > 0);
+    let keep = linked || group[0];
+    for (let r of group) if (r.id !== keep.id) deleteDispatchIds.push(r.id);
+}
+console.log(`Step 1 dedup: ${Date.now() - t1} ms`);
+
+// ----------------- STEP 2: dedupe Polish QC (identify only) -----------------
+const t2 = Date.now();
+const linkGroups = new Map();
+const deleteUnlinkedQcIds = [];
+
+for (let rec of qcAll.records) {
+    let linkValue = rec.getCellValue("Link");
+    if (!linkValue || linkValue.length === 0) {
+        if (recentQcIds.has(rec.id)) deleteUnlinkedQcIds.push(rec.id);
+        continue;
+    }
+    let linkId = linkValue[0]?.id;
+    if (!linkId) continue;
+    let arr = linkGroups.get(linkId);
+    if (!arr) { arr = []; linkGroups.set(linkId, arr); }
+    arr.push(rec);
+}
+
+const groupsToMerge = []; // [{ keepId, olderIds }]
+const deleteDuplicateQcIds = [];
+for (let group of linkGroups.values()) {
+    if (group.length <= 1) continue;
+    if (!group.some(r => recentQcIds.has(r.id))) continue;
+    group.sort((a, b) => getTime(b, "Created Time") - getTime(a, "Created Time"));
+    const keepId = group[0].id;
+    const olderIds = group.slice(1).map(r => r.id);
+    groupsToMerge.push({ keepId, olderIds });
+    for (let id of olderIds) deleteDuplicateQcIds.push(id);
+}
+
+// ----------------- PHASE 2: targeted full-field fetch for merge candidates -----------------
+const recordsNeedingFullFetch = new Set();
+for (let g of groupsToMerge) {
+    recordsNeedingFullFetch.add(g.keepId);
+    for (let id of g.olderIds) recordsNeedingFullFetch.add(id);
+}
+
+const qcUpdates = [];
+if (recordsNeedingFullFetch.size > 0) {
+    const tFull = Date.now();
+    const qcFull = await qcTable.selectRecordsAsync({
+        recordIds: [...recordsNeedingFullFetch],
+        fields: writableFieldNames
+    });
+    console.log(`Phase 2 fetch (${recordsNeedingFullFetch.size} recs): ${Date.now() - tFull} ms`);
+
+    for (let g of groupsToMerge) {
+        const keepRec = qcFull.getRecord(g.keepId);
+        const olderRecs = g.olderIds.map(id => qcFull.getRecord(id));
+        const mergePayload = {};
+        for (let fieldName of writableFieldNames) {
+            if (keepRec.getCellValue(fieldName) !== null) continue;
+            for (let oldRec of olderRecs) {
+                let v = oldRec.getCellValue(fieldName);
+                if (v !== null && v !== undefined) {
+                    mergePayload[fieldName] = v;
+                    break;
+                }
+            }
+        }
+        if (Object.keys(mergePayload).length > 0) {
+            qcUpdates.push({ id: g.keepId, fields: mergePayload });
+        }
+    }
+}
+console.log(`Step 2 dedup: ${Date.now() - t2} ms`);
+
+// ----------------- WRITES (sequential) -----------------
+console.log("QC updates:", qcUpdates.length);
+console.log("Dispatch deletes:", deleteDispatchIds.length);
+console.log("QC duplicate deletes:", deleteDuplicateQcIds.length);
+console.log("QC unlinked deletes:", deleteUnlinkedQcIds.length);
+
+const allQcDeleteIds = [...deleteDuplicateQcIds, ...deleteUnlinkedQcIds];
+
+if (qcUpdates.length === 0 && deleteDispatchIds.length === 0 && allQcDeleteIds.length === 0) {
+    console.log("Nothing to update or delete");
+} else {
+    const t3 = Date.now();
+    if (qcUpdates.length)         await updateInBatches(qcTable, qcUpdates);
+    if (deleteDispatchIds.length) await deleteInBatches(dispatchTable, deleteDispatchIds);
+    if (allQcDeleteIds.length)    await deleteInBatches(qcTable, allQcDeleteIds);
+    console.log(`Writes: ${Date.now() - t3} ms`);
+}

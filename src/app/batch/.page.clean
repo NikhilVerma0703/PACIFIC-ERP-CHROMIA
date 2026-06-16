@@ -1,0 +1,293 @@
+import Link from "next/link";
+import { Shell } from "@/components/Shell";
+import { Card, H2, Kpi, Empty, Badge, fmt } from "@/components/ui";
+import { HBars, gradeColor } from "@/components/charts";
+import { getBatch, searchBatchesByDesign } from "@/lib/erp";
+import { UndoLastButton } from "./UndoLastButton";
+import { getLastUndoable } from "./undo";
+
+export const dynamic = "force-dynamic";
+
+function wastageTone(pct: number | null) {
+  if (pct == null) return "brand" as const;
+  if (pct > 12) return "red" as const;
+  if (pct >= 8) return "amber" as const;
+  return "green" as const;
+}
+
+// Compact, capped list of slab numbers.
+function listNums(ns: number[], cap = 50): string {
+  const head = ns.slice(0, cap).join(", ");
+  return ns.length > cap ? `${head}, +${ns.length - cap} more` : head;
+}
+
+// Audit label -> drill-down station key.
+const STATION_KEY: Record<string, string> = {
+  "Press": "press",
+  "Oven": "oven",
+  "Jot": "jot",
+  "Polish Entry": "polishEntry",
+  "Polish QC": "polishQc",
+};
+
+export default async function BatchPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ b?: string; d?: string }>;
+}) {
+  const { b, d } = await searchParams;
+  const query = b?.trim();
+  const designQuery = d?.trim();
+
+  let data = null;
+  let matches = null;
+  let error: string | null = null;
+  if (query) {
+    try {
+      data = await getBatch(query);
+    } catch {
+      error = "Could not read the database. Run the import first (see README).";
+    }
+  } else if (designQuery) {
+    try {
+      matches = await searchBatchesByDesign(designQuery);
+    } catch {
+      error = "Could not read the database. Run the import first (see README).";
+    }
+  }
+
+  let lastAct = null;
+  if (query) { try { lastAct = await getLastUndoable(query); } catch { /* action_log not migrated yet */ } }
+
+  // Build a drill-down href for the current batch.
+  const slab = (station: string, only?: string) =>
+    `/batch/slabs?b=${encodeURIComponent(query ?? "")}&station=${station}${only ? `&only=${only}` : ""}`;
+
+  return (
+    <Shell>
+      <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center">
+        <form method="GET" className="flex gap-2">
+          <input
+            name="b"
+            defaultValue={query ?? ""}
+            placeholder="Batch (e.g. D1310 or 1310)"
+            className="w-60 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+          />
+          <button className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-dark">
+            Look up
+          </button>
+        </form>
+        <span className="text-xs text-gray-400 sm:px-1">or</span>
+        <form method="GET" className="flex gap-2">
+          <input
+            name="d"
+            defaultValue={designQuery ?? ""}
+            placeholder="Search by design name"
+            className="w-60 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+          />
+          <button className="rounded-md border border-brand px-4 py-2 text-sm font-medium text-brand hover:bg-brand/5">
+            Find
+          </button>
+        </form>
+      </div>
+
+      {error && <Empty>{error}</Empty>}
+      {!error && !query && !designQuery && <Empty>Enter a batch number, or search by design name.</Empty>}
+
+      {!error && matches && (
+        matches.length === 0 ? (
+          <Empty>No batches found with a design matching “{designQuery}”.</Empty>
+        ) : (
+          <Card>
+            <H2>Batches with design “{designQuery}” · {matches.length}</H2>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-gray-500">
+                  <th className="py-2">Batch</th>
+                  <th className="py-2">Design</th>
+                  <th className="py-2">Slabs</th>
+                  <th className="py-2">Last date</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {matches.map((m) => (
+                  <tr key={m.batch} className="border-t border-gray-100">
+                    <td className="py-2 font-medium">{m.batch}</td>
+                    <td className="py-2">
+                      {m.discrepancy ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <Badge tone="red">⚠ mismatch</Badge>
+                          <span className="text-gray-600">{m.designs.join(" · ")}</span>
+                        </span>
+                      ) : (
+                        m.designs[0] ?? "—"
+                      )}
+                    </td>
+                    <td className="py-2">{fmt(m.slabs)}</td>
+                    <td className="py-2 text-gray-500">{m.lastDate ?? "—"}</td>
+                    <td className="py-2 text-right">
+                      <a href={`/batch?b=${encodeURIComponent(m.batch)}`} className="text-brand hover:underline">View →</a>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+        )
+      )}
+
+      {!error && query && data && !data.found && (
+        <Empty>No records found for batch “{data.key}”.</Empty>
+      )}
+
+      {!error && data && data.found && (
+        <div className="space-y-6">
+          {lastAct && <UndoLastButton batch={query} label={lastAct.summary} />}
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-xl font-semibold">Batch {data.key}</h1>
+            {data.design.primary && !data.design.discrepancy && (
+              <Badge tone="brand">Design: {data.design.primary}</Badge>
+            )}
+            {data.design.discrepancy && <Badge tone="red">⚠ Design mismatch</Badge>}
+            {data.slabsProduced.discrepancy && <Badge tone="red">⚠ Slab count mismatch</Badge>}
+            {!data.slabAudit.hasIssues && data.slabAudit.stations.length > 0 && (
+              <Badge tone="green">✓ Slabs reconciled</Badge>
+            )}
+            {data.slabAudit.hasIssues && <Badge tone="red">⚠ Slab discrepancies</Badge>}
+            {data.wastagePct != null && (
+              <Badge tone={wastageTone(data.wastagePct)}>
+                Wastage {data.wastagePct.toFixed(2)}%
+              </Badge>
+            )}
+          </div>
+
+          {data.design.discrepancy && (
+            <Card>
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                <H2>⚠ Multiple design names in this batch</H2>
+                <Link href={`/batch/design?b=${encodeURIComponent(query ?? "")}`} className="rounded-md bg-brand px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-dark">Reconcile design →</Link>
+              </div>
+              <p className="mb-3 text-sm text-gray-600">
+                This batch has more than one design stamped on its records — pick the correct one to apply across the batch.
+              </p>
+              <table className="w-full max-w-lg text-sm">
+                <tbody>
+                  {Object.entries(data.design.bySource).map(([src, designs]) => (
+                    <tr key={src} className="border-t border-gray-100">
+                      <td className="w-32 py-2 font-medium text-gray-600">{src}</td>
+                      <td className="py-2 text-gray-900">{designs.join(", ")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+          )}
+
+          {/* Slab-level audit: duplicates and missing slabs per station (clickable) */}
+          {data.slabAudit.hasIssues && (
+            <Card>
+              <H2>⚠ Slab-level discrepancies</H2>
+              <p className="mb-3 text-sm text-gray-600">
+                Per station — slabs entered more than once, and slabs present elsewhere in the batch but missing here. Click any row or value to see the slabs.
+              </p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-gray-500">
+                      <th className="py-2 pr-4">Station</th>
+                      <th className="py-2 pr-4">Rows</th>
+                      <th className="py-2 pr-4">Distinct</th>
+                      <th className="py-2 pr-4">Entered twice</th>
+                      <th className="py-2">Missing here</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.slabAudit.stations.map((s) => {
+                      const sk = STATION_KEY[s.label];
+                      return (
+                        <tr key={s.label} className="border-t border-gray-100 align-top hover:bg-gray-50">
+                          <td className="py-2 pr-4 font-medium">
+                            {sk ? <Link href={slab(sk)} className="text-brand hover:underline">{s.label} →</Link> : s.label}
+                          </td>
+                          <td className="py-2 pr-4">{fmt(s.total)}</td>
+                          <td className="py-2 pr-4">{fmt(s.distinct)}</td>
+                          <td className="py-2 pr-4">
+                            {s.duplicates.length ? (
+                              <Link href={slab(sk, "dup")} className="text-red-600 hover:underline">
+                                {s.duplicates.map((d) => `${d.slab}×${d.count}`).join(", ")}
+                              </Link>
+                            ) : (
+                              <span className="text-gray-400">—</span>
+                            )}
+                          </td>
+                          <td className="py-2">
+                            {s.missing.length ? (
+                              <Link href={slab(sk, "missing")} className="text-amber-700 hover:underline">
+                                {listNums(s.missing)}
+                              </Link>
+                            ) : (
+                              <span className="text-gray-400">—</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {data.slabAudit.globalMissing.length > 0 && data.slabAudit.range && (
+                <p className="mt-3 text-sm text-red-700">
+                  <span className="font-medium">Missing from every station</span> (gaps in {data.slabAudit.range.min}–{data.slabAudit.range.max}):{" "}
+                  {listNums(data.slabAudit.globalMissing)}
+                </p>
+              )}
+            </Card>
+          )}
+
+          <div className="grid grid-cols-2 items-stretch gap-4 sm:grid-cols-3 lg:grid-cols-6">
+            <Link href={slab("press")} className="block h-full rounded-xl transition hover:ring-2 hover:ring-brand/30">
+              <Kpi
+                label="Slabs produced"
+                value={fmt(data.slabsProduced.value)}
+                sub={`Press ${fmt(data.slabsProduced.press)} · Oven ${fmt(data.slabsProduced.oven)} · Jot ${fmt(data.slabsProduced.jot)}${data.slabsProduced.discrepancy ? " · ⚠ mismatch" : ""}`}
+              />
+            </Link>
+            <Link href={slab("polishEntry")} className="block h-full rounded-xl transition hover:ring-2 hover:ring-brand/30">
+              <Kpi label="Polish entries" value={fmt(data.counts.polishEntry)} sub="view slabs" />
+            </Link>
+            <Link href={slab("polishQc")} className="block h-full rounded-xl transition hover:ring-2 hover:ring-brand/30">
+              <Kpi label="Polish QC" value={fmt(data.counts.polishQc)} sub="view slabs" />
+            </Link>
+            <Link href={slab("press")} className="block h-full rounded-xl transition hover:ring-2 hover:ring-brand/30">
+              <Kpi label="Design" value={data.design.primary ?? "—"} sub={data.design.discrepancy ? `${data.design.designs.length} conflicting` : "single design"} />
+            </Link>
+            <Link href={slab("mixer")} className="block h-full rounded-xl transition hover:ring-2 hover:ring-brand/30">
+              <Kpi label="Mix weight (kg)" value={fmt(data.totalMixWeight)} sub={`${data.counts.mixer} mixer cycles`} />
+            </Link>
+            <Link href={slab("press")} className="block h-full rounded-xl transition hover:ring-2 hover:ring-brand/30">
+              <Kpi label="Slab weight (kg)" value={fmt(data.totalSlabWeight)} sub={`wastage ${fmt(data.wastageKg)} kg`} />
+            </Link>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <Card>
+              <H2>Per-mixer weight (kg)</H2>
+              <HBars
+                data={data.perMixer.map((v, i) => ({ label: `Mixer ${i + 1}`, count: Math.round(v) }))}
+              />
+            </Card>
+            <Card>
+              <H2>QC grade distribution</H2>
+              {data.qcGrades.length ? <HBars data={data.qcGrades} colorFor={gradeColor} /> : <Empty>No QC rows.</Empty>}
+            </Card>
+            <Card>
+              <H2>Thickness mix (QC)</H2>
+              {data.thickness.length ? <HBars data={data.thickness} /> : <Empty>No QC rows.</Empty>}
+            </Card>
+          </div>
+        </div>
+      )}
+    </Shell>
+  );
+}

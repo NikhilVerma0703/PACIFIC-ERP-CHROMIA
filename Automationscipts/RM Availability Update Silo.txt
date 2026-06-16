@@ -1,0 +1,56 @@
+// Tables
+let siloTable = base.getTable("SILO");
+let rmTable = base.getTable("RM");
+let usedBagsTable = base.getTable("Used Bags");
+
+// Step 1: Get input SILO record ID
+let inputConfig = input.config();
+let siloRecordId = inputConfig.siloRecordId;
+
+if (!siloRecordId) {
+    throw new Error("No SILO record ID provided.");
+}
+
+// Step 2: Load the SILO record
+let siloRecord = await siloTable.selectRecordAsync(siloRecordId);
+if (!siloRecord) {
+    throw new Error("SILO record not found.");
+}
+
+// Step 3: Get linked RM records
+let linkedRMs = siloRecord.getCellValue("RM");
+if (!linkedRMs || linkedRMs.length === 0) {
+    console.log("No RM records linked.");
+    return;
+}
+
+// Step 4: Get writable fields from RM (exclude computed fields)
+let writableFields = rmTable.fields.filter(field =>
+    !field.isComputed && field.name !== "Availability"
+);
+
+// Step 5: Process each linked RM record
+for (let rmLink of linkedRMs) {
+    let rmRecord = await rmTable.selectRecordAsync(rmLink.id);
+    if (!rmRecord) continue;
+
+    // Step 5a: Copy all writable fields
+    let fieldsToCopy = {};
+    for (let field of writableFields) {
+        let value = rmRecord.getCellValue(field.name);
+        if (value !== undefined) {
+            fieldsToCopy[field.name] = value;
+        }
+    }
+
+    // Step 5b: Create record in Used Bags
+    let newRecordId = await usedBagsTable.createRecordAsync(fieldsToCopy);
+
+    // Step 5c: Set Availability = "No" in the new Used Bags record
+    await usedBagsTable.updateRecordAsync(newRecordId, {
+        "Availability": { name: "No" }
+    });
+
+    // Step 5d: Delete original from RM
+    await rmTable.deleteRecordAsync(rmRecord.id);
+}

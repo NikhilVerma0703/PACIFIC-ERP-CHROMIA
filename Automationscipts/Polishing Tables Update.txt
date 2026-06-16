@@ -1,0 +1,53 @@
+// ----------------- FAST SYNC SCRIPT -----------------
+let inputConfig = input.config();
+let qcRecordId = inputConfig.qcRecordId;
+
+let qcTable = base.getTable("Polish QC");
+let dispatchTable = base.getTable("Polish Entry");
+
+// Fetch just the QC record
+let qcRecord = await qcTable.selectRecordAsync(qcRecordId);
+if (!qcRecord) throw new Error("Polish QC record not found.");
+
+// Get linked Dispatch record
+let linkedDispatchId = qcRecord.getCellValue("Link")?.[0]?.id;
+if (!linkedDispatchId) throw new Error("No Polish Entry record linked.");
+
+let dispatchRecord = await dispatchTable.selectRecordAsync(linkedDispatchId);
+if (!dispatchRecord) throw new Error("Linked Polish Entry record not found.");
+
+// Build field maps
+let qcFields = qcTable.fields;
+let dispatchFieldMap = Object.fromEntries(dispatchTable.fields.map(f => [f.name, f.type]));
+
+// Prepare update payload
+let updatePayload = {};
+for (let qcField of qcFields) {
+    let fieldName = qcField.name;
+    if (fieldName === "Printed?") continue;
+
+    if (fieldName === "Design") {
+        let designValue = dispatchRecord.getCellValue("Design");
+        if (qcRecord.getCellValue("Design") == null && designValue?.name) {
+            updatePayload["Design"] = designValue.name;
+        }
+        continue;
+    }
+
+    if (["formula", "rollup", "lookup"].includes(qcField.type)) continue;
+    if (qcRecord.getCellValue(fieldName) !== null) continue;
+    if (!dispatchFieldMap[fieldName] || qcField.type !== dispatchFieldMap[fieldName]) continue;
+
+    let value = dispatchRecord.getCellValue(fieldName);
+    if (value !== null && value !== undefined) {
+        updatePayload[fieldName] = value;
+    }
+}
+
+// Update immediately
+if (Object.keys(updatePayload).length > 0) {
+    await qcTable.updateRecordAsync(qcRecordId, updatePayload);
+    output.set("status", "✔ Fields synced fast from Polish Entry.");
+} else {
+    output.set("status", "ℹ Nothing to update.");
+}

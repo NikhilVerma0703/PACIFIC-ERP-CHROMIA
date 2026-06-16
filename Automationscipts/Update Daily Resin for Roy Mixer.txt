@@ -1,0 +1,69 @@
+let recordId = input.config().recordId;
+
+let cycleTable = base.getTable("Roy Mixer Cycle");
+let tankTable = base.getTable("Daily Resin Tank");
+
+// 1. Get new record
+let cycleRecord = await cycleTable.selectRecordAsync(recordId);
+let tankNo = cycleRecord.getCellValue("Daily Tank No.");
+let resinWeight = cycleRecord.getCellValue("R_W");
+
+if (!tankNo || resinWeight == null || resinWeight <= 0) {
+    console.log("Missing or invalid Daily Tank No. or R_W — exiting.");
+    return;
+}
+
+// 2. Fetch all Daily Resin Tank records
+let allTanks = await tankTable.selectRecordsAsync();
+let matchingTanks = allTanks.records
+    .filter(r => r.getCellValue("Daily Tank No.")?.name === tankNo.name)
+    .sort((a, b) => (a.getCellValue("daily_Resin_Id") ?? 0) - (b.getCellValue("daily_Resin_Id") ?? 0));
+
+// 3. Deduct resin weight
+let remainingToDeduct = resinWeight;
+let updates = [];
+let usedResinIds = [];
+
+for (let tank of matchingTanks) {
+    let remaining = tank.getCellValue("Remaining Weight") ?? 0;
+
+    if (remaining <= 0) continue;
+
+    let deductAmount = Math.min(remainingToDeduct, remaining);
+    let newRemaining = remaining - deductAmount;
+
+    updates.push({
+        id: tank.id,
+        fields: {
+            "Remaining Weight": newRemaining
+        }
+    });
+
+    // Track the daily_Resin_Id used
+    let linkedResin = tank.getCellValue("daily_Resin_Id");
+    if (linkedResin && linkedResin.id) {
+        usedResinIds.push(linkedResin.id);
+    }
+
+    remainingToDeduct -= deductAmount;
+    if (remainingToDeduct <= 0) break;
+}
+
+if (remainingToDeduct > 0) {
+    console.warn(`⚠ Not enough resin in tank to deduct full amount. Remaining: ${remainingToDeduct}`);
+}
+
+// 4. Batch update Daily Resin Tank table
+while (updates.length > 0) {
+    await tankTable.updateRecordsAsync(updates.slice(0, 50));
+    updates = updates.slice(50);
+}
+
+// 5. Update Roy Mixer Cycle record with used resin IDs
+if (usedResinIds.length > 0) {
+    await cycleTable.updateRecordAsync(recordId, {
+        "DRT Link": usedResinIds
+    });
+}
+
+console.log("Deduction and linking complete.");
