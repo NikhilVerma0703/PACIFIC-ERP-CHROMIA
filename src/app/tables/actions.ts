@@ -5,6 +5,7 @@ import { delegateOf, tableMeta, coerceField } from "@/lib/tables";
 import { hhmmToSeconds } from "@/lib/time";
 import { THICKNESS_FIELDS, canonThickness } from "@/lib/thickness";
 import { canRectify, canEnterData, currentUser, currentRole, localId } from "@/lib/rbac";
+import { AUTOFILL_PREFIX } from "@/lib/batchRange";
 import { canUseEntryModel, operatorTableModels } from "@/lib/stationAccess";
 import { canWriteModel } from "@/lib/branch";
 import { OPERATOR_FIELDS } from "@/lib/operatorFields";
@@ -176,8 +177,19 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
   try {
     const SLAB_STATIONS = new Set(["Press", "Oven", "Jot", "Distributor", "Kreos"]);
     if (SLAB_STATIONS.has(model) && data.slabNumber != null && data.batchKey) {
-      const dupe = await delegateOf(model).findFirst({ where: { slabNumber: data.slabNumber, batchKey: data.batchKey }, select: { id: true } });
-      if (dupe) return `⚠ Slab ${data.slabNumber} is already entered at this station for batch ${data.batch ?? data.batchNumber ?? data.batchKey} — not saved (duplicate).`;
+      const dupe = await delegateOf(model).findFirst({ where: { slabNumber: data.slabNumber, batchKey: data.batchKey }, select: { id: true, remarks: true } });
+      if (dupe) {
+        // Completing an auto-added placeholder: overwrite it with the real entry
+        // (and clear the flag) instead of blocking as a duplicate.
+        if (String((dupe as { remarks?: string | null }).remarks ?? "").startsWith(AUTOFILL_PREFIX)) {
+          try {
+            await delegateOf(model).update({ where: { id: dupe.id }, data: { ...data, remarks: (data.remarks as string | undefined) ?? null, enteredById: me?.id ?? null } });
+            revalidatePath(`/tables/${model}`); revalidatePath("/batch");
+            return "ok";
+          } catch (e) { return `Save failed: ${friendlyDbError(e)}`; }
+        }
+        return `⚠ Slab ${data.slabNumber} is already entered at this station for batch ${data.batch ?? data.batchNumber ?? data.batchKey} — not saved (duplicate).`;
+      }
     }
     if ((model === "PolishEntry" || model === "PolishQc") && data.slabNumber != null) {
       const dupe = await delegateOf(model).findFirst({ where: { slabNumber: data.slabNumber }, select: { id: true } });

@@ -11,6 +11,12 @@ const db = prisma as any;
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 const r2 = (n: number) => Math.round(n * 100) / 100;
 function parseBatchNumber(b: unknown): number { if (!b) return Infinity; const n = parseInt(String(b).replace(/\D/g, ""), 10); return Number.isFinite(n) ? n : Infinity; }
+
+// "Forgive old draws" cutoff: the timeline + correction recompute ignores grit/
+// filler/resin draws from cycles BEFORE this batch number (treated as settled
+// before the ERP era, so fresh stock is never shown feeding them). Reversible —
+// set to 0 to count every cycle again.
+const FORGIVE_BEFORE_BATCH = 1334;
 function lookup(v: unknown): string | null { if (v == null) return null; if (Array.isArray(v)) { const x = v.find((y) => y != null && y !== ""); return x == null ? null : String(x); } if (typeof v === "object") return null; const s = String(v).trim(); return s || null; }
 
 export interface ResinDraw { batch: string | null; cycle: number | null; linkField: string; kg: number; }
@@ -65,6 +71,7 @@ function collectDraws(tankNo: string, preps: any[], cycles: any[]): Draw[] {
   const writtenOff = new Set(preps.filter((p: any) => isDeficitId(p.airtableId) && String(p.remarks ?? "").startsWith(WRITTEN_OFF_LABEL)).map((p: any) => p.airtableId));
   const draws: Draw[] = [];
   for (const r of cycles) {
+    if (parseBatchNumber(r.batch) < FORGIVE_BEFORE_BATCH) continue; // forgive pre-cutoff draws
     const ts = r.createTime ?? r.mixerStartTime ?? r.importedAt;
     const t = ts ? new Date(ts).getTime() : parseBatchNumber(r.batch) * 1e6 + num(r.cycle);
     for (let m = 1; m <= 4; m++) {

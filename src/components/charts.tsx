@@ -9,6 +9,7 @@ import {
   ResponsiveContainer,
   Cell,
 } from "recharts";
+import { useRouter } from "next/navigation";
 
 const BRAND = "#0f4c5c";
 
@@ -29,10 +30,18 @@ export function DailyBars({ data }: { data: { day: string; count: number }[] }) 
 export function HBars({
   data,
   colorFor,
+  links,
 }: {
   data: { label: string; count: number }[];
   colorFor?: (label: string) => string;
+  links?: Record<string, string>;
 }) {
+  const router = useRouter();
+  const onBar = (d: { label?: string; payload?: { label?: string } }) => {
+    const label = d?.label ?? d?.payload?.label;
+    const u = label ? links?.[label] : undefined;
+    if (u) router.push(u);
+  };
   if (!data.length) return null;
   return (
     <ResponsiveContainer width="100%" height={Math.max(120, data.length * 34)}>
@@ -40,9 +49,9 @@ export function HBars({
         <XAxis type="number" tick={{ fontSize: 11 }} />
         <YAxis type="category" dataKey="label" width={120} tick={{ fontSize: 11 }} />
         <Tooltip />
-        <Bar dataKey="count" radius={[0, 3, 3, 0]}>
+        <Bar dataKey="count" radius={[0, 3, 3, 0]} onClick={onBar}>
           {data.map((d, i) => (
-            <Cell key={i} fill={colorFor ? colorFor(d.label) : BRAND} />
+            <Cell key={i} fill={colorFor ? colorFor(d.label) : BRAND} cursor={links ? "pointer" : undefined} />
           ))}
         </Bar>
       </BarChart>

@@ -3,6 +3,7 @@
 // when the database is empty (before the Phase 2 import is run).
 import { prisma } from "@/lib/prisma";
 import { normalizeBatch } from "@/lib/normalizeBatch";
+import { getRangeEdits, AUTOFILL_PREFIX } from "@/lib/batchRange";
 
 /** Parse a value that may be a JSON-wrapped Airtable formula/rollup result. */
 export function num(v: unknown): number {
@@ -187,6 +188,7 @@ export interface StationAudit {
   distinct: number;                           // distinct slab numbers
   duplicates: { slab: number; count: number }[]; // slab entered more than once
   missing: number[];                          // slabs seen elsewhere but not here
+  autoAdded: number[];                        // placeholder rows auto-created (params missing)
 }
 export interface SlabAudit {
   stations: StationAudit[];
@@ -194,6 +196,8 @@ export interface SlabAudit {
   globalMissing: number[];                     // gaps absent from every station
   notes: string[];                             // structural anomalies (missing stage / both-or-neither distributor+kreos)
   hasIssues: boolean;
+  added: number[];                             // slab numbers manually added to this batch (expected even if absent)
+  confirmed: { by: string | null; at: string } | null; // range confirmed-as-correct
 }
 
 const AUDIT_STATIONS: string[] = ["Press", "Distributor", "Kreos", "Oven", "Jot", "Polish Entry", "Polish QC"];
@@ -201,26 +205,33 @@ const AUDIT_STATIONS: string[] = ["Press", "Distributor", "Kreos", "Oven", "Jot"
 async function slabAuditForKey(key: string): Promise<SlabAudit> {
   const where = { batchKey: key };
   const rowsByStation = await Promise.all([
-    prisma.press.findMany({ where, select: { slabNumber: true } }),
-    prisma.distributor.findMany({ where, select: { slabNumber: true } }),
-    prisma.kreos.findMany({ where, select: { slabNumber: true } }),
-    prisma.oven.findMany({ where, select: { slabNumber: true } }),
-    prisma.jot.findMany({ where, select: { slabNumber: true } }),
-    prisma.polishEntry.findMany({ where, select: { slabNumber: true } }),
-    prisma.polishQc.findMany({ where, select: { slabNumber: true } }),
+    prisma.press.findMany({ where, select: { slabNumber: true, remarks: true } }),
+    prisma.distributor.findMany({ where, select: { slabNumber: true, remarks: true } }),
+    prisma.kreos.findMany({ where, select: { slabNumber: true, remarks: true } }),
+    prisma.oven.findMany({ where, select: { slabNumber: true, remarks: true } }),
+    prisma.jot.findMany({ where, select: { slabNumber: true, remarks: true } }),
+    prisma.polishEntry.findMany({ where, select: { slabNumber: true, remarks: true } }),
+    prisma.polishQc.findMany({ where, select: { slabNumber: true, remarks: true } }),
   ]);
 
   const union = new Set<number>();
+  const autoByStation: Set<number>[] = [];
   const counts = rowsByStation.map((rows) => {
     const m = new Map<number, number>();
+    const auto = new Set<number>();
     for (const r of rows) {
       const n = r.slabNumber;
       if (n == null || !Number.isFinite(n)) continue;
       m.set(n, (m.get(n) ?? 0) + 1);
       union.add(n);
+      if (String((r as { remarks?: string | null }).remarks ?? "").startsWith(AUTOFILL_PREFIX)) auto.add(n);
     }
+    autoByStation.push(auto);
     return m;
   });
+
+  const edits = await getRangeEdits(key);
+  for (const n of edits.added) union.add(n);
 
   // Overall range + true gaps (only meaningful when slab numbers are integers).
   let range: { min: number; max: number } | null = null;
@@ -242,7 +253,8 @@ async function slabAuditForKey(key: string): Promise<SlabAudit> {
       .sort((a, b) => a.slab - b.slab);
     const missing = [...union].filter((n) => !m.has(n)).sort((a, b) => a - b);
     const total = [...m.values()].reduce((a, c) => a + c, 0);
-    return { label, total, distinct: m.size, duplicates, missing };
+    const autoAdded = [...(autoByStation[i] ?? new Set<number>())].filter((n) => !duplicates.some((d) => d.slab === n)).sort((a, b) => a - b);
+    return { label, total, distinct: m.size, duplicates, missing: missing.filter((n) => !(autoByStation[i] ?? new Set<number>()).has(n)), autoAdded };
   }).filter((s): s is StationAudit => s !== null);
 
   // Structural checks against the expected pipeline:
@@ -260,9 +272,9 @@ async function slabAuditForKey(key: string): Promise<SlabAudit> {
   const hasIssues =
     globalMissing.length > 0 ||
     notes.length > 0 ||
-    stations.some((s) => s.duplicates.length > 0 || s.missing.length > 0);
+    stations.some((s) => s.duplicates.length > 0 || s.missing.length > 0 || s.autoAdded.length > 0);
 
-  return { stations, range, globalMissing, notes, hasIssues };
+  return { stations, range, globalMissing, notes, hasIssues, added: edits.added, confirmed: edits.confirmed };
 }
 
 export interface BatchData {
@@ -627,7 +639,7 @@ export async function getMissingSlabs(input: string, station: SlabStation): Prom
   ];
   const sets = await Promise.all(auditStations.map(async (a) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const rows: any[] = await (stationDelegate(a.station) as any).findMany({ where, select: { slabNumber: true } });
+    const rows: any[] = await (stationDelegate(a.station) as any).findMany({ where, select: { slabNumber: true, remarks: true } });
     const set = new Set<number>();
     for (const r of rows) if (typeof r.slabNumber === "number" && Number.isFinite(r.slabNumber)) set.add(r.slabNumber);
     return { ...a, set };

@@ -4,6 +4,8 @@ import { normalizeBatch } from "@/lib/normalizeBatch";
 import { Shell } from "@/components/Shell";
 import { Card, H2, Kpi, Empty, Badge, fmt } from "@/components/ui";
 import { HBars, gradeColor } from "@/components/charts";
+import { WastagePill } from "@/components/WastagePill";
+import { RangeControls } from "@/components/RangeControls";
 import { getBatch, searchBatchesByDesign, getMixerCycles, getSiloBags } from "@/lib/erp";
 import { UndoLastButton } from "./UndoLastButton";
 import { getLastUndoable } from "./undo";
@@ -13,13 +15,6 @@ import { WrongBatchFix } from "@/components/WrongBatchFix";
 import { canRectify } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
-
-function wastageTone(pct: number | null) {
-  if (pct == null) return "brand" as const;
-  if (pct > 12) return "red" as const;
-  if (pct >= 8) return "amber" as const;
-  return "green" as const;
-}
 
 // Compact, capped list of slab numbers.
 function listNums(ns: number[], cap = 50): string {
@@ -176,14 +171,13 @@ export default async function BatchPage({
             {data.slabAudit.hasIssues && <Badge tone="red">⚠ Slab discrepancies</Badge>}
             {unbacked && <Badge tone="red">⚠ Unbacked RM — silo/tank fill pending, auto-links on fill</Badge>}
             {data.wastagePct != null && (
-              <span title="Wastage colour: green < 8% · amber 8–12% · red > 12%" className="inline-flex cursor-help items-center gap-1">
-                <Badge tone={wastageTone(data.wastagePct)}>
-                  Wastage {data.wastagePct.toFixed(2)}%
-                </Badge>
-                <span className="text-[10px] text-gray-400">{"<8% ok · 8–12% high · >12% bad"}</span>
-              </span>
+              <WastagePill pct={data.wastagePct} kg={data.wastageKg} mixWeight={data.totalMixWeight} slabWeight={data.totalSlabWeight} />
             )}
           </div>
+
+          {data.slabAudit.range && (
+            <RangeControls batch={query ?? ""} batchKey={data.key} min={data.slabAudit.range.min} max={data.slabAudit.range.max} missing={data.slabAudit.globalMissing.length} confirmed={data.slabAudit.confirmed} />
+          )}
 
           {data.design.discrepancy && (
             <Card>
@@ -232,7 +226,8 @@ export default async function BatchPage({
                       <th className="py-2 pr-4">Rows</th>
                       <th className="py-2 pr-4">Distinct</th>
                       <th className="py-2 pr-4">Entered twice</th>
-                      <th className="py-2">Missing here</th>
+                      <th className="py-2 pr-4">Missing here</th>
+                      <th className="py-2">Auto-added <span className="font-normal text-gray-400">(params missing)</span></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -254,11 +249,18 @@ export default async function BatchPage({
                               <span className="text-gray-400">—</span>
                             )}
                           </td>
-                          <td className="py-2">
+                          <td className="py-2 pr-4">
                             {s.missing.length ? (
                               <Link href={slab(sk, "missing")} className="text-amber-700 hover:underline">
                                 {listNums(s.missing)}
                               </Link>
+                            ) : (
+                              <span className="text-gray-400">—</span>
+                            )}
+                          </td>
+                          <td className="py-2">
+                            {s.autoAdded.length ? (
+                              sk ? <Link href={slab(sk)} title="Placeholder rows created by range rectify — fill in their parameters" className="text-amber-800 hover:underline">⚙ {listNums(s.autoAdded)}</Link> : <span className="text-amber-800">⚙ {listNums(s.autoAdded)}</span>
                             ) : (
                               <span className="text-gray-400">—</span>
                             )}
@@ -308,15 +310,16 @@ export default async function BatchPage({
               <H2>Per-mixer weight (kg)</H2>
               <HBars
                 data={data.perMixer.map((v, i) => ({ label: `Mixer ${i + 1}`, count: Math.round(v) }))}
+                links={Object.fromEntries(data.perMixer.map((_v, i) => [`Mixer ${i + 1}`, slab("mixer")]))}
               />
             </Card>
             <Card>
               <H2>QC grade distribution</H2>
-              {data.qcGrades.length ? <HBars data={data.qcGrades} colorFor={gradeColor} /> : <Empty>No QC rows.</Empty>}
+              {data.qcGrades.length ? <HBars data={data.qcGrades} colorFor={gradeColor} links={Object.fromEntries(data.qcGrades.map((g) => [g.label, `/tables/PolishQc?b=${encodeURIComponent(data.key)}&q=${encodeURIComponent(g.label)}`]))} /> : <Empty>No QC rows.</Empty>}
             </Card>
             <Card>
               <H2>Thickness mix (QC)</H2>
-              {data.thickness.length ? <HBars data={data.thickness} /> : <Empty>No QC rows.</Empty>}
+              {data.thickness.length ? <HBars data={data.thickness} links={Object.fromEntries(data.thickness.map((t) => [t.label, `/tables/PolishQc?b=${encodeURIComponent(data.key)}&q=${encodeURIComponent(t.label)}`]))} /> : <Empty>No QC rows.</Empty>}
             </Card>
           </div>
 
