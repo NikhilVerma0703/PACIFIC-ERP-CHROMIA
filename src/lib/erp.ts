@@ -133,29 +133,29 @@ export async function getOverview(): Promise<OverviewData> {
     .slice(0, 8)
     .map(([label, count]) => ({ label, count }));
 
-  // Recent batches from Press
-  const grouped = await prisma.press.groupBy({
-    by: ["batchKey"],
-    where: { batchKey: { not: null } },
-    _count: { _all: true },
-    _max: { date: true },
-    orderBy: { _max: { date: "desc" } },
-    take: 10,
-  });
-  const batchKeys = grouped.map((g) => g.batchKey).filter((k): k is string => !!k);
+  // Recent batches from Press. "Last date" = latest PRESS date that is NOT a
+  // future-dated typo (a press row mis-dated e.g. 2028 must not float the batch
+  // to the top); the 2-day grace tolerates IST/UTC skew on today's rows; the
+  // slab count still includes every press row.
+  const grouped: { batch_key: string; slabs: number; last_date: Date | null }[] = await prisma.$queryRaw`
+    SELECT batch_key, COUNT(*)::int AS slabs, MAX(date) FILTER (WHERE date <= now() + interval '2 days') AS last_date
+    FROM press
+    WHERE batch_key IS NOT NULL
+    GROUP BY batch_key
+    ORDER BY MAX(date) FILTER (WHERE date <= now() + interval '2 days') DESC NULLS LAST
+    LIMIT 10`;
+  const batchKeys = grouped.map((g) => g.batch_key);
   const designMap = await designsForBatchKeys(batchKeys);
   const recentBatches = grouped.map((g) => {
-    const d = g.batchKey ? designMap.get(g.batchKey) : undefined;
+    const d = designMap.get(g.batch_key);
     return {
-      batch: g.batchKey ?? "—",
-      slabs: g._count._all,
-      lastDate: g._max.date ? g._max.date.toISOString().slice(0, 10) : null,
+      batch: g.batch_key,
+      slabs: Number(g.slabs),
+      lastDate: g.last_date ? new Date(g.last_date).toISOString().slice(0, 10) : null,
       design: d?.primary ?? null,
       designDiscrepancy: d?.discrepancy ?? false,
     };
   });
-  // Most recent press date first; batches with no recorded date sort last.
-  recentBatches.sort((a, b) => (b.lastDate ?? "").localeCompare(a.lastDate ?? ""));
 
   return {
     polished7d,

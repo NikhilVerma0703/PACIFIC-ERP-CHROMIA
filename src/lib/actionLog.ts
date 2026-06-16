@@ -7,7 +7,7 @@ import { currentUser } from "@/lib/rbac";
 
 const log = () => (prisma as any).actionLog;
 
-export type ActionKind = "create" | "delete" | "designApply";
+export type ActionKind = "create" | "delete" | "designApply" | "rangeConfirm" | "rangeAdd" | "rangeRemove";
 
 export interface LogInput {
   kind: ActionKind;
@@ -44,7 +44,7 @@ export interface UndoableInfo { id: string; summary: string; kind: string; creat
 /** The most recent action that has not yet been undone (optionally for one batch). */
 export async function lastUndoable(batchKey?: string | null): Promise<UndoableInfo | null> {
   const row = await log().findFirst({
-    where: { undone: false, ...(batchKey ? { batchKey } : {}) },
+    where: { undone: false, kind: { notIn: ["rangeConfirm", "rangeAdd", "rangeRemove"] }, ...(batchKey ? { batchKey } : {}) },
     orderBy: { createdAt: "desc" },
   });
   if (!row) return null;
@@ -93,7 +93,7 @@ export interface UndoResult { ok: boolean; message: string }
 /** Reverse the most recent not-yet-undone action (optionally scoped to a batch). */
 export async function undoLastAction(batchKey?: string | null): Promise<UndoResult> {
   const row = await log().findFirst({
-    where: { undone: false, ...(batchKey ? { batchKey } : {}) },
+    where: { undone: false, kind: { notIn: ["rangeConfirm", "rangeAdd", "rangeRemove"] }, ...(batchKey ? { batchKey } : {}) },
     orderBy: { createdAt: "desc" },
   });
   if (!row) return { ok: false, message: "Nothing to undo." };
