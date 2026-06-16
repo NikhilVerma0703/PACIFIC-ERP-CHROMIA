@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useActionState } from "react";
 import { Toast } from "./Toast";
 import { createRow } from "@/app/tables/actions";
-import { getSmartDefaults } from "@/app/entry/slab/actions";
+import { getSmartDefaults, getBatchForSlab } from "@/app/entry/slab/actions";
 import type { FieldMeta } from "@/lib/tables";
 import { OPERATOR_FIELDS } from "@/lib/operatorFields";
 import { isCurated, OTHER_SENTINEL } from "@/lib/categoricalFields";
@@ -95,13 +95,14 @@ function SlabField({ f, locked, def, opts, operatorName, unlocked, onUnlock }: {
   );
 }
 
-export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options = {}, operatorName, batchField = "batch", slabMode = "increment", slabOptions = [] }: { model: string; tableName: string; fields: FieldMeta[]; paramFieldSet: string[]; options?: Record<string, string[]>; operatorName?: string | null; batchField?: string; slabMode?: SlabMode; slabOptions?: number[]; }) {
+export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options = {}, operatorName, batchField = "batch", slabMode = "increment", slabOptions = [], slabFirst = false }: { model: string; tableName: string; fields: FieldMeta[]; paramFieldSet: string[]; options?: Record<string, string[]>; operatorName?: string | null; batchField?: string; slabMode?: SlabMode; slabOptions?: number[]; slabFirst?: boolean; }) {
   const [msg, action, pending] = useActionState(createRow, undefined);
   const [batch, setBatch] = useState("");
   const [defaults, setDefaults] = useState<{ values: Record<string, unknown>; slabAutofill?: number | null; lineThickness?: string | null } | null>(null);
   const [version, setVersion] = useState(0);
   const [unlocked, setUnlocked] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
+  const [batchLocked, setBatchLocked] = useState(false);
   const [savedCount, setSavedCount] = useState(0);
   // After every successful save: toast, then RELOAD the batch defaults so the
   // slab number auto-advances (+1) and parameters re-fill for the next slab.
@@ -128,6 +129,21 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
     setDefaults(r); setUnlocked(new Set()); setVersion((v) => v + 1); setLoading(false);
   }
 
+  // Polish stations: slab number drives the batch (looked up from Press).
+  async function resolveFromSlab(slabVal: string) {
+    if (!slabVal.trim()) return;
+    setLoading(true);
+    const r = await getBatchForSlab(model, slabVal.trim());
+    setLoading(false);
+    if (!r) return;
+    if (r.batch) {
+      setBatch(r.batch); setBatchLocked(true);
+      setDefaults(r.defaults ?? null); setUnlocked(new Set()); setVersion((v) => v + 1);
+    } else {
+      setBatchLocked(false); // not in Press — operator enters the batch
+    }
+  }
+
   function dv(f: string): string {
     const v = defaults?.values?.[f];
     if (v == null) return "";
@@ -137,7 +153,7 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
   const grid = "grid grid-cols-1 gap-x-5 gap-y-4 sm:grid-cols-2 lg:grid-cols-3";
 
   function clearForm() {
-    setBatch(""); setDefaults(null); setUnlocked(new Set()); setVersion((v) => v + 1);
+    setBatch(""); setDefaults(null); setUnlocked(new Set()); setBatchLocked(false); setVersion((v) => v + 1);
   }
 
   return (
@@ -157,13 +173,13 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
           <button type="button" onClick={clearForm} className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 shadow-sm transition hover:bg-gray-50">Clear form</button>
         </div>
         <div className="grid grid-cols-1 gap-x-5 gap-y-4 sm:grid-cols-3">
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-gray-600">Batch</span>
-            <input name={batchField} value={batch} onChange={(e) => setBatch(e.target.value)} onBlur={loadDefaults} required placeholder="e.g. D1310" className={inputCls} />
-            <span className="mt-1 block text-[11px] text-gray-400">{loading ? "Loading batch defaults…" : "Enter batch, then Tab — parameters auto-fill"}</span>
+          <label className={`block ${slabFirst ? "sm:order-2" : ""}`}>
+            <span className="mb-1 flex items-center gap-1.5 text-xs font-medium text-gray-600">Batch{slabFirst && batchLocked && <span className="rounded bg-brand/10 px-1.5 py-0.5 text-[10px] text-brand">from Press</span>}</span>
+            <input name={batchField} value={batch} onChange={(e) => setBatch(e.target.value)} onBlur={batchLocked ? undefined : loadDefaults} readOnly={batchLocked} required placeholder="e.g. D1310" className={inputCls + (batchLocked ? " border-brand/30 bg-brand/[0.04] text-gray-700" : "")} />
+            <span className="mt-1 block text-[11px] text-gray-400">{loading ? "Loading…" : slabFirst ? (batchLocked ? "auto-filled from Press for this slab" : "not in Press — enter the batch") : "Enter batch, then Tab — parameters auto-fill"}</span>
           </label>
           {slabNumberField && (
-            <label className="block" key={`slab-${version}`}>
+            <label className={`block ${slabFirst ? "sm:order-1" : ""}`} key={slabFirst ? "slab" : `slab-${version}`}>
               <span className="mb-1 flex items-center gap-1.5 text-xs font-medium text-gray-600">Slab Number
                 {slabMode === "increment" && <span className="rounded bg-brand/10 px-1.5 py-0.5 text-[10px] text-brand">+1 in batch</span>}
                 {slabMode === "dropdown" && <span className="rounded bg-brand/10 px-1.5 py-0.5 text-[10px] text-brand">awaiting QC</span>}
@@ -171,13 +187,13 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
               </span>
               {slabMode === "dropdown" ? (
                 <>
-                  <input name="slabNumber" type="number" step="any" required list="slab-options" defaultValue="" placeholder="type to search…" className={`${inputCls} font-medium`} />
+                  <input name="slabNumber" type="number" step="any" required list="slab-options" defaultValue="" placeholder="type to search…" onBlur={slabFirst ? (e) => resolveFromSlab(e.target.value) : undefined} className={`${inputCls} font-medium`} />
                   <datalist id="slab-options">{slabOptions.map((n) => <option key={n} value={n} />)}</datalist>
                   <span className="mt-1 block text-[11px] text-gray-400">{slabOptions.length.toLocaleString("en-IN")} polish-entry slab(s) awaiting QC · type to search &amp; pick</span>
                 </>
               ) : slabMode === "manual" ? (
                 <>
-                  <input name="slabNumber" type="number" step="any" required defaultValue="" className={`${inputCls} font-medium`} />
+                  <input name="slabNumber" type="number" step="any" required defaultValue="" onBlur={slabFirst ? (e) => resolveFromSlab(e.target.value) : undefined} className={`${inputCls} font-medium`} />
                   <span className="mt-1 block text-[11px] text-gray-400">manual — enter the slab number</span>
                 </>
               ) : (

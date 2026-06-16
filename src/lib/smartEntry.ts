@@ -104,6 +104,15 @@ export async function smartDefaults(model: string, batch: string): Promise<Smart
   return { values, slabAutofill, lineThickness };
 }
 
+/** The batch a slab was pressed under. Polish stations key off the slab number
+ * and inherit the batch from Press (operator may override only if Press lacks it). */
+export async function batchForSlab(slabNumber: number): Promise<string | null> {
+  try {
+    const r = await delegateOf("Press").findFirst({ where: { slabNumber }, orderBy: { importedAt: "desc" }, select: { batch: true } });
+    return r && r.batch != null ? String(r.batch) : null;
+  } catch { return null; }
+}
+
 /** Polish Entry slab numbers AWAITING QC, in entry order (for the Polish QC
  * dropdown). A slab is "done" once a Polish QC row with the same slab number
  * exists — the shared slab number is our cross-station link (no Airtable-style

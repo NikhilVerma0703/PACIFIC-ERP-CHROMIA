@@ -37,7 +37,7 @@ export default async function SmartEntry({ params }: { params: Promise<{ model: 
       <Link href="/entry" className="mb-1 inline-flex items-center gap-1 text-sm text-brand hover:underline">← Data entry</Link>
       <h1 className="mb-1 text-2xl font-semibold tracking-tight text-gray-900">{meta.tableName} — smart entry</h1>
       <p className="mb-5 max-w-2xl text-sm text-gray-500">Type the batch and press Tab: batch parameters fill in automatically and the slab number advances by one. Dropdowns use existing values; double-click a filled field to edit.</p>
-      <Card><SmartSlabForm model={model} tableName={meta.tableName} fields={formFields} paramFieldSet={pf} options={options} operatorName={operatorName} batchField={meta.fields.some((f) => f.prismaField === "batch") ? "batch" : "batchNumber"} slabMode={slabMode} slabOptions={slabOptions} /></Card>
+      <Card><SmartSlabForm model={model} tableName={meta.tableName} fields={formFields} paramFieldSet={pf} options={options} operatorName={operatorName} batchField={meta.fields.some((f) => f.prismaField === "batch") ? "batch" : "batchNumber"} slabMode={slabMode} slabOptions={slabOptions} slabFirst={model === "PolishEntry" || model === "PolishQc"} /></Card>
     </Shell>
   );
 }
