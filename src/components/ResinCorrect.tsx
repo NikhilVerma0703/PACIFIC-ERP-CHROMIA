@@ -1,11 +1,12 @@
 "use client";
 
-import { Fragment, useState, useTransition } from "react";
+import { Fragment, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { ResinPrep, ResinOp, ResinDiff } from "@/lib/resinCorrection";
 import { previewResin, applyResin } from "@/app/resin/actions";
 
 type Mode = "weight" | "insert" | "delete";
+type SortKey = "increment" | "date" | "label" | "incharge" | "weight" | "consumed" | "remaining" | "draws";
 const MODES: { id: Mode; label: string; hint: string }[] = [
   { id: "weight", label: "Fix quantity", hint: "This prep was a different amount — adjust it and ripple forward." },
   { id: "insert", label: "Insert skipped prep", hint: "A prep was made but never logged — add it at this position." },
@@ -24,6 +25,50 @@ export function ResinCorrect({ tankNo, preps, mayEdit }: { tankNo: string; preps
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [pending, start] = useTransition();
+  const [query, setQuery] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("increment");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
+  function toggleSort(k: SortKey) {
+    if (sortKey === k) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(k); setSortDir("asc"); }
+  }
+
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = !q ? preps : preps.filter((p) => {
+      const hay = [p.increment, p.date, p.label, p.supplier, p.incharge, p.weight, p.consumed, p.remaining,
+        ...p.draws.map((d) => `b${d.batch ?? ""} c${d.cycle ?? ""} ${d.kg}`)]
+        .map((x) => String(x ?? "").toLowerCase()).join(" ");
+      return hay.includes(q);
+    });
+    const val = (p: ResinPrep): string | number => {
+      switch (sortKey) {
+        case "date": return p.date ?? "";
+        case "label": return (p.label ?? "").toLowerCase();
+        case "incharge": return (p.incharge ?? "").toLowerCase();
+        case "weight": return p.weight;
+        case "consumed": return p.consumed;
+        case "remaining": return p.remaining;
+        case "draws": return p.draws.length;
+        default: return p.increment;
+      }
+    };
+    return [...filtered].sort((a, b) => {
+      const av = val(a), bv = val(b);
+      const c = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
+      return sortDir === "asc" ? c : -c;
+    });
+  }, [preps, query, sortKey, sortDir]);
+
+  const arrow = (k: SortKey) => (sortKey === k ? (sortDir === "asc" ? "\u2191" : "\u2193") : "");
+  const th = (k: SortKey, label: string, right = false) => (
+    <th className={`px-3 py-2 ${right ? "text-right" : ""}`}>
+      <button type="button" onClick={() => toggleSort(k)} className={`inline-flex items-center gap-1 uppercase tracking-wide hover:text-gray-600 ${sortKey === k ? "text-gray-600" : ""} ${right ? "flex-row-reverse" : ""}`}>
+        <span>{label}</span><span className="text-[9px] leading-none">{arrow(k)}</span>
+      </button>
+    </th>
+  );
 
   function reset() { setDiff(null); setError(null); setNewWeight(""); setInsWeight(""); }
   function openRow(p: ResinPrep) { if (openId === p.id) { setOpenId(null); reset(); } else { setOpenId(p.id); setMode("weight"); reset(); setNewWeight(String(p.weight)); } }
@@ -47,18 +92,23 @@ export function ResinCorrect({ tankNo, preps, mayEdit }: { tankNo: string; preps
   return (
     <div className="space-y-3">
       {done && <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-2 text-sm text-green-800">✓ {done}</div>}
+      <div className="flex flex-wrap items-center gap-2">
+        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter — prep, incharge, date, quantity, cycle…" className="w-full max-w-xs rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20 sm:w-80" />
+        {query && <button type="button" onClick={() => setQuery("")} className="text-xs text-gray-400 hover:text-gray-600">Clear</button>}
+        <span className="ml-auto text-xs text-gray-400">{rows.length} of {preps.length} prep{preps.length !== 1 ? "s" : ""}</span>
+      </div>
       <div className="overflow-hidden rounded-xl border border-gray-200">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-400">
             <tr>
-              <th className="px-3 py-2">#</th><th className="px-3 py-2">Date</th><th className="px-3 py-2">Prep</th>
-              <th className="px-3 py-2">Incharge</th><th className="px-3 py-2 text-right">Prepared</th>
-              <th className="px-3 py-2 text-right">Used</th><th className="px-3 py-2 text-right">Remaining</th>
-              <th className="px-3 py-2">Fed cycles (FIFO)</th>{mayEdit && <th className="px-3 py-2"></th>}
+              {th("increment", "#")}{th("date", "Date")}{th("label", "Prep")}
+              {th("incharge", "Incharge")}{th("weight", "Prepared", true)}
+              {th("consumed", "Used", true)}{th("remaining", "Remaining", true)}
+              {th("draws", "Fed cycles (FIFO)")}{mayEdit && <th className="px-3 py-2"></th>}
             </tr>
           </thead>
           <tbody>
-            {preps.map((p) => {
+            {rows.map((p) => {
               const isOpen = openId === p.id;
               return (
                 <Fragment key={p.id}>
@@ -108,6 +158,9 @@ export function ResinCorrect({ tankNo, preps, mayEdit }: { tankNo: string; preps
                 </Fragment>
               );
             })}
+            {rows.length === 0 && (
+              <tr><td colSpan={mayEdit ? 9 : 8} className="px-3 py-8 text-center text-sm text-gray-400">No preps match your filter.</td></tr>
+            )}
           </tbody>
         </table>
       </div>

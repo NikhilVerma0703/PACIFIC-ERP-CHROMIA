@@ -1,64 +1,9 @@
 import Link from "next/link";
 import type { RmGroup, ResinLot, DailyTank } from "@/lib/rmStock";
-
-const INV_SHOWN = 3;
-
-const gradeRank = (g: string) => (g === "Premium" ? 0 : g === "Supreme" ? 1 : 2);
-const sizeKey = (s: string) => { const m = s.match(/[\d.]+/); return m ? parseFloat(m[0]) : 9999; };
-
-/** Group by size (sub-heading), ordered fine→coarse; grades Premium → Supreme → rest within. */
-function bySize(groups: RmGroup[]): [string, RmGroup[]][] {
-  const m = new Map<string, RmGroup[]>();
-  for (const g of groups) {
-    const arr = m.get(g.size) ?? [];
-    arr.push(g); m.set(g.size, arr);
-  }
-  for (const arr of m.values()) arr.sort((a, b) => gradeRank(a.grade) - gradeRank(b.grade) || a.grade.localeCompare(b.grade));
-  return [...m.entries()].sort((a, b) => sizeKey(a[0]) - sizeKey(b[0]) || a[0].localeCompare(b[0]));
-}
+import { RmStockTable } from "@/components/RmStockTable";
 
 function fmtKg(n: number): string {
   return n.toLocaleString("en-IN");
-}
-
-function InvLine({ invNo, bags, minBag, maxBag }: { invNo: string; bags: number; minBag: number | null; maxBag: number | null }) {
-  const range = minBag != null && maxBag != null ? (minBag === maxBag ? `#${minBag}` : `#${minBag}–${maxBag}`) : "";
-  return (
-    <div className="flex items-baseline justify-between gap-2 text-[11px] text-gray-500">
-      <span className="truncate">inv <span className="font-medium text-gray-700">{invNo}</span>{range && <span className="ml-1">{range}</span>}</span>
-      <span className="shrink-0">{bags} bag{bags === 1 ? "" : "s"}</span>
-    </div>
-  );
-}
-
-function GroupCard({ g, showType, title }: { g: RmGroup; showType?: boolean; title?: string }) {
-  const extra = g.invoices.length - INV_SHOWN;
-  return (
-    <div className="rounded-xl border border-gray-200 bg-white p-3">
-      <div className="flex items-baseline justify-between gap-2">
-        <div className="text-sm font-semibold text-gray-900">{title ?? `${showType ? `${g.type} · ` : ""}${g.size} · ${g.grade}`}</div>
-        <div className="shrink-0 text-xs text-gray-500">{g.bags} bag{g.bags === 1 ? "" : "s"}</div>
-      </div>
-      <div className="text-xs font-medium text-brand">{fmtKg(g.kg)} kg in store</div>
-      <div className="mt-2 space-y-0.5">
-        {g.invoices.slice(0, INV_SHOWN).map((i) => <InvLine key={i.invNo} {...i} />)}
-        {extra > 0 && <div className="text-[11px] text-gray-400">+{extra} more invoice{extra === 1 ? "" : "s"}</div>}
-      </div>
-    </div>
-  );
-}
-
-function SizeSections({ groups, grid }: { groups: RmGroup[]; grid: string }) {
-  return (
-    <div className="space-y-4">
-      {bySize(groups).map(([size, arr]) => (
-        <div key={size}>
-          <div className="mb-1.5 border-b border-gray-100 pb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Size {size}</div>
-          <div className={grid}>{arr.map((g) => <GroupCard key={`${g.size}|${g.grade}`} g={g} title={g.grade} />)}</div>
-        </div>
-      ))}
-    </div>
-  );
 }
 
 export function RmStockPanel({ grit, filler, other, resin, daily }: { grit: RmGroup[]; filler: RmGroup[]; other: RmGroup[]; resin: ResinLot[]; daily: DailyTank[] }) {
@@ -67,16 +12,16 @@ export function RmStockPanel({ grit, filler, other, resin, daily }: { grit: RmGr
     <div className="space-y-5">
       <div>
         <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Quartz grit</div>
-        {grit.length ? <SizeSections groups={grit} grid={grid} /> : <div className="text-sm text-gray-400">No grit bags in store.</div>}
+        {grit.length ? <RmStockTable groups={grit} /> : <div className="text-sm text-gray-400">No grit bags in store.</div>}
       </div>
       <div>
         <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Filler</div>
-        {filler.length ? <SizeSections groups={filler} grid={grid} /> : <div className="text-sm text-gray-400">No filler bags in store.</div>}
+        {filler.length ? <RmStockTable groups={filler} /> : <div className="text-sm text-gray-400">No filler bags in store.</div>}
       </div>
       {other.length > 0 && (
         <div>
           <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Other grits</div>
-          <div className={grid}>{other.map((g) => <GroupCard key={`${g.type}|${g.size}|${g.grade}`} g={g} showType />)}</div>
+          <RmStockTable groups={other} showType />
         </div>
       )}
       <div>
@@ -84,8 +29,6 @@ export function RmStockPanel({ grit, filler, other, resin, daily }: { grit: RmGr
         {daily.length ? (
           <div className={grid}>
             {daily.map((t) => {
-              // "active" = used/prepped in the last 30 min (FIFO-derived); the old
-              // stored usageStatus is deprecated and no longer drives the colour.
               const inUse = t.active;
               return (
                 <Link key={t.tankNo} href={`/resin/${encodeURIComponent(t.tankNo)}`} className={`block rounded-xl border p-3 transition hover:ring-2 hover:ring-brand/30 ${t.deficit < 0 ? "border-red-300 bg-red-50" : inUse ? "border-green-200 bg-green-50" : "border-gray-200 bg-white"}`}>

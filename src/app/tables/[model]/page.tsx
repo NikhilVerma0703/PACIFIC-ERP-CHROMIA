@@ -29,7 +29,7 @@ function usageIds(row: Record<string, unknown>): string[] {
   return out;
 }
 
-export default async function TableGrid({ params, searchParams }: { params: Promise<{ model: string }>; searchParams: Promise<{ page?: string; b?: string; silo?: string; from?: string; q?: string }>; }) {
+export default async function TableGrid({ params, searchParams }: { params: Promise<{ model: string }>; searchParams: Promise<{ page?: string; b?: string; silo?: string; from?: string; q?: string; sort?: string; dir?: string }>; }) {
   const { model } = await params;
   const sp = await searchParams;
   const meta = tableMeta(model);
@@ -44,6 +44,8 @@ export default async function TableGrid({ params, searchParams }: { params: Prom
   const page = Math.max(1, parseInt(sp.page ?? "1", 10) || 1);
   const batch = sp.b?.trim() || undefined;
   const q = sp.q?.trim() || undefined;
+  const sort = sp.sort?.trim() || undefined;
+  const dir: "asc" | "desc" = sp.dir === "asc" ? "asc" : "desc";
   const isSilo = model === "Silo";
   const STATIONS_T = new Set(["Press", "Oven", "Jot", "Distributor", "Kreos", "PolishEntry", "PolishQc", "MixerCycle"]);
   const colLabel = (f: { prismaField: string; airtableName: string }) =>
@@ -71,7 +73,7 @@ export default async function TableGrid({ params, searchParams }: { params: Prom
 
   let data;
   let error: string | null = null;
-  try { data = await listRows(model, page, 25, batch, q); }
+  try { data = await listRows(model, page, 25, batch, q, sort, dir); }
   catch { error = "Could not read this table."; }
 
   // Resolve which mixer cycle (batch · cycle) each bag was used in.
@@ -94,7 +96,10 @@ export default async function TableGrid({ params, searchParams }: { params: Prom
   };
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
-  const qp = (p: number) => `/tables/${model}?page=${p}${batch ? `&b=${encodeURIComponent(batch)}` : ""}${q ? `&q=${encodeURIComponent(q)}` : ""}${silo ? `&silo=${encodeURIComponent(silo)}` : ""}${from ? `&from=${encodeURIComponent(from)}` : ""}`;
+  const SORTABLE = new Set(["scalar", "number", "int", "bool", "date"]);
+  const base = (p: number) => `/tables/${model}?page=${p}${batch ? `&b=${encodeURIComponent(batch)}` : ""}${q ? `&q=${encodeURIComponent(q)}` : ""}${silo ? `&silo=${encodeURIComponent(silo)}` : ""}${from ? `&from=${encodeURIComponent(from)}` : ""}`;
+  const qp = (p: number) => `${base(p)}${sort ? `&sort=${encodeURIComponent(sort)}&dir=${dir}` : ""}`;
+  const sortHref = (field: string) => `${base(1)}&sort=${encodeURIComponent(field)}&dir=${sort === field && dir === "asc" ? "desc" : "asc"}`;
 
   return (
     <Shell>
@@ -138,6 +143,8 @@ export default async function TableGrid({ params, searchParams }: { params: Prom
         {batch && <input type="hidden" name="b" value={batch} />}
         {silo && <input type="hidden" name="silo" value={silo} />}
         {from && <input type="hidden" name="from" value={from} />}
+        {sort && <input type="hidden" name="sort" value={sort} />}
+        {sort && <input type="hidden" name="dir" value={dir} />}
         <input
           name="q"
           defaultValue={q ?? ""}
@@ -155,7 +162,7 @@ export default async function TableGrid({ params, searchParams }: { params: Prom
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead><tr className="text-left text-gray-500">
-                  {mainCols.map((c) => <th key={c.prismaField} className="whitespace-nowrap py-2 pr-4">{colLabel(c)}</th>)}
+                  {mainCols.map((c) => <th key={c.prismaField} className="whitespace-nowrap py-2 pr-4">{SORTABLE.has(c.kind) ? <Link href={sortHref(c.prismaField)} className="inline-flex items-center gap-1 hover:text-gray-700">{colLabel(c)}{sort === c.prismaField && <span className="text-[9px]">{dir === "asc" ? "\u2191" : "\u2193"}</span>}</Link> : colLabel(c)}</th>)}
                   {isSilo && <th className="whitespace-nowrap py-2 pr-4">Used in (batch · cycle)</th>}
                   <th></th>
                 </tr></thead>
@@ -178,6 +185,8 @@ export default async function TableGrid({ params, searchParams }: { params: Prom
               {q && <input type="hidden" name="q" value={q} />}
               {silo && <input type="hidden" name="silo" value={silo} />}
               {from && <input type="hidden" name="from" value={from} />}
+              {sort && <input type="hidden" name="sort" value={sort} />}
+              {sort && <input type="hidden" name="dir" value={dir} />}
               <span>Page</span>
               <input name="page" type="number" min={1} max={totalPages} defaultValue={page} className="w-20 rounded-md border border-gray-300 px-2 py-1.5 text-center text-sm" />
               <span>of {totalPages}</span>

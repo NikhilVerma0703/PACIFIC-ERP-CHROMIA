@@ -7,12 +7,15 @@ import { prisma } from "@/lib/prisma";
 const db = prisma as any;
 
 export interface RmInvoice { invNo: string; bags: number; minBag: number | null; maxBag: number | null; }
-export interface RmGroup { type: string; size: string; grade: string; bags: number; kg: number; invoices: RmInvoice[]; }
+export interface RmGroup { type: string; size: string; grade: string; supplier: string; bags: number; kg: number; invoices: RmInvoice[]; }
 export interface ResinLot { tankNo: string; supplier: string; invNo: string; remaining: number; quantity: number; active: boolean; }
 export interface DailyTank { tankNo: string; remaining: number; quantity: number; silane: number | null; cobalt: number | null; incharge: string | null; status: string | null; at: Date | null; active: boolean; deficit: number; }
 export interface RmStock { grit: RmGroup[]; filler: RmGroup[]; other: RmGroup[]; resin: ResinLot[]; daily: DailyTank[]; }
 
 const normSize = (s: unknown) => String(s ?? "").replace(/\s+/g, "") || "?";
+// Filler mesh sizes appear as both "400#" and "#400"; move the hash to the end
+// so the two variants group as one size.
+const canonSize = (sz: string) => { const t = sz.replace(/\s+/g, ""); return t.includes("#") ? t.replace(/#/g, "") + "#" : t; };
 const ACTIVE_MS = 30 * 60 * 1000;
 
 /** Daily resin tanks used by a mixer cycle entered in the last 30 min. */
@@ -26,7 +29,7 @@ async function recentlyUsedTanks(cutoff: Date): Promise<Set<string>> {
 }
 
 interface InvAgg { bags: number; min: number | null; max: number | null; latest: number; }
-interface GroupAgg { type: string; size: string; grade: string; bags: number; kg: number; inv: Map<string, InvAgg>; }
+interface GroupAgg { type: string; size: string; grade: string; suppliers: Set<string>; bags: number; kg: number; inv: Map<string, InvAgg>; }
 
 export async function getRmStock(): Promise<RmStock> {
   // Aggregated in Postgres: one row per material x invoice (dozens of rows)
@@ -38,6 +41,7 @@ export async function getRmStock(): Promise<RmStock> {
       SELECT COALESCE(type, '?')                                                AS type,
              COALESCE(NULLIF(regexp_replace(COALESCE(size, ''), '\s+', '', 'g'), ''), '?') AS size,
              COALESCE(grade, '—')                                               AS grade,
+             COALESCE(name_from_supplier_master->>0, '—') AS supplier,
              COALESCE(inv_no, '?')                                              AS inv,
              COUNT(*)::int                                                      AS bags,
              COALESCE(SUM(bag_weight), 0)::float                                AS kg,
@@ -48,14 +52,16 @@ export async function getRmStock(): Promise<RmStock> {
       WHERE cardinality(silo) = 0
         AND (status IS NULL OR status = 'Accepted')
         AND NOT (COALESCE(type, '') = '' AND COALESCE(size, '') = '')
-      GROUP BY 1, 2, 3, 4`;
+      GROUP BY 1, 2, 3, 4, 5`;
   } catch { agg = []; }
 
   const groups = new Map<string, GroupAgg>();
   for (const r of agg) {
-    const k = `${r.type}|${r.size}|${r.grade}`;
+    const size = canonSize(r.size);
+    const k = `${r.type}|${size}|${r.grade}`;
     let g = groups.get(k);
-    if (!g) { g = { type: r.type, size: r.size, grade: r.grade, bags: 0, kg: 0, inv: new Map() }; groups.set(k, g); }
+    if (!g) { g = { type: r.type, size, grade: r.grade, suppliers: new Set<string>(), bags: 0, kg: 0, inv: new Map() }; groups.set(k, g); }
+    if (r.supplier && r.supplier !== "—") g.suppliers.add(r.supplier);
     g.bags += r.bags; g.kg += r.kg ?? 0;
     g.inv.set(r.inv, {
       bags: r.bags,
@@ -66,7 +72,7 @@ export async function getRmStock(): Promise<RmStock> {
   }
 
   const toGroup = (g: GroupAgg): RmGroup => ({
-    type: g.type, size: g.size, grade: g.grade, bags: g.bags, kg: Math.round(g.kg),
+    type: g.type, size: g.size, grade: g.grade, supplier: [...g.suppliers].sort().join(", ") || "—", bags: g.bags, kg: Math.round(g.kg),
     invoices: [...g.inv.entries()].sort((a, b) => b[1].latest - a[1].latest)
       .map(([invNo, i]) => ({ invNo, bags: i.bags, minBag: i.min, maxBag: i.max })),
   });

@@ -153,6 +153,8 @@ export async function getOverview(): Promise<OverviewData> {
       designDiscrepancy: d?.discrepancy ?? false,
     };
   });
+  // Most recent press date first; batches with no recorded date sort last.
+  recentBatches.sort((a, b) => (b.lastDate ?? "").localeCompare(a.lastDate ?? ""));
 
   return {
     polished7d,

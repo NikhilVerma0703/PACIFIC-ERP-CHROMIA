@@ -82,7 +82,7 @@ export function tableMeta(model: string): TableMeta | undefined {
   return load()[model];
 }
 
-export async function listRows(model: string, page: number, pageSize = 25, batch?: string, q?: string) {
+export async function listRows(model: string, page: number, pageSize = 25, batch?: string, q?: string, sort?: string, dir?: string) {
   const d = delegateOf(model);
   if (!d) throw new Error("unknown table");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -100,7 +100,12 @@ export async function listRows(model: string, page: number, pageSize = 25, batch
     }
     if (or.length) where.OR = or;
   }
-  const orderBy = model === "UnassignedRm" ? { createdAt: "desc" as const } : { importedAt: "desc" as const };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let orderBy: any = model === "UnassignedRm" ? { createdAt: "desc" as const } : { importedAt: "desc" as const };
+  if (sort) {
+    const sf = tableMeta(model)?.fields.find((x) => x.prismaField === sort);
+    if (sf && ["scalar", "number", "int", "bool", "date"].includes(sf.kind)) orderBy = { [sort]: dir === "asc" ? "asc" : "desc" };
+  }
   const [rows, total] = await Promise.all([
     d.findMany({ where, skip: (page - 1) * pageSize, take: pageSize, orderBy }),
     d.count({ where }),

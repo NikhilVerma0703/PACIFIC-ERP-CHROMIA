@@ -1,11 +1,12 @@
 "use client";
 
-import { Fragment, useState, useTransition } from "react";
+import { Fragment, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { LedgerBag, RmOption, Op, CorrectionDiff } from "@/lib/siloCorrection";
 import { previewSiloCorrection, applySiloCorrection } from "@/app/silo/actions";
 
 type Mode = "weight" | "swap" | "insert" | "delete";
+type SortKey = "increment" | "date" | "label" | "material" | "weight" | "consumed" | "remaining" | "draws";
 
 const MODES: { id: Mode; label: string; hint: string }[] = [
   { id: "weight", label: "Fix weight", hint: "The bag weighed a different amount — adjust it and ripple forward." },
@@ -29,6 +30,50 @@ export function SiloCorrect({ siloNo, bags, rmOptions, mayEdit }: { siloNo: stri
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [pending, start] = useTransition();
+  const [query, setQuery] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("increment");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
+  function toggleSort(k: SortKey) {
+    if (sortKey === k) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(k); setSortDir("asc"); }
+  }
+
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = !q ? bags : bags.filter((b) => {
+      const hay = [b.increment, b.date, b.label, b.supplier, b.material, b.weight, b.consumed, b.remaining,
+        ...b.draws.map((d) => `b${d.batch ?? ""} c${d.cycle ?? ""} ${d.kg}`)]
+        .map((x) => String(x ?? "").toLowerCase()).join(" ");
+      return hay.includes(q);
+    });
+    const val = (b: LedgerBag): string | number => {
+      switch (sortKey) {
+        case "date": return b.date ?? "";
+        case "label": return (b.label ?? "").toLowerCase();
+        case "material": return (b.material ?? "").toLowerCase();
+        case "weight": return b.weight;
+        case "consumed": return b.consumed;
+        case "remaining": return b.remaining;
+        case "draws": return b.draws.length;
+        default: return b.increment;
+      }
+    };
+    return [...filtered].sort((a, b) => {
+      const av = val(a), bv = val(b);
+      const c = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
+      return sortDir === "asc" ? c : -c;
+    });
+  }, [bags, query, sortKey, sortDir]);
+
+  const arrow = (k: SortKey) => (sortKey === k ? (sortDir === "asc" ? "\u2191" : "\u2193") : "");
+  const th = (k: SortKey, label: string, right = false) => (
+    <th className={`px-3 py-2 ${right ? "text-right" : ""}`}>
+      <button type="button" onClick={() => toggleSort(k)} className={`inline-flex items-center gap-1 uppercase tracking-wide hover:text-gray-600 ${sortKey === k ? "text-gray-600" : ""} ${right ? "flex-row-reverse" : ""}`}>
+        <span>{label}</span><span className="text-[9px] leading-none">{arrow(k)}</span>
+      </button>
+    </th>
+  );
 
   function reset() { setDiff(null); setError(null); setNewWeight(""); setRmId(""); setInsWeight(""); setInsRm(""); }
   function openRow(b: LedgerBag) { if (openId === b.id) { setOpenId(null); reset(); } else { setOpenId(b.id); setMode("weight"); reset(); setNewWeight(String(b.weight)); } }
@@ -55,18 +100,24 @@ export function SiloCorrect({ siloNo, bags, rmOptions, mayEdit }: { siloNo: stri
     <div className="space-y-3">
       {done && <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-2 text-sm text-green-800">✓ {done}</div>}
 
+      <div className="flex flex-wrap items-center gap-2">
+        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter — bag, material, date, weight, cycle…" className="w-full max-w-xs rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20 sm:w-80" />
+        {query && <button type="button" onClick={() => setQuery("")} className="text-xs text-gray-400 hover:text-gray-600">Clear</button>}
+        <span className="ml-auto text-xs text-gray-400">{rows.length} of {bags.length} bag{bags.length !== 1 ? "s" : ""}</span>
+      </div>
+
       <div className="overflow-hidden rounded-xl border border-gray-200">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-400">
             <tr>
-              <th className="px-3 py-2">#</th><th className="px-3 py-2">Date</th><th className="px-3 py-2">Bag</th>
-              <th className="px-3 py-2">Material</th><th className="px-3 py-2 text-right">Dumped</th>
-              <th className="px-3 py-2 text-right">Used</th><th className="px-3 py-2 text-right">Remaining</th>
-              <th className="px-3 py-2">Fed cycles (FIFO)</th>{mayEdit && <th className="px-3 py-2"></th>}
+              {th("increment", "#")}{th("date", "Date")}{th("label", "Bag")}
+              {th("material", "Material")}{th("weight", "Dumped", true)}
+              {th("consumed", "Used", true)}{th("remaining", "Remaining", true)}
+              {th("draws", "Fed cycles (FIFO)")}{mayEdit && <th className="px-3 py-2"></th>}
             </tr>
           </thead>
           <tbody>
-            {bags.map((b) => {
+            {rows.map((b) => {
               const isOpen = openId === b.id;
               return (
                 <Fragment key={b.id}>
@@ -126,6 +177,9 @@ export function SiloCorrect({ siloNo, bags, rmOptions, mayEdit }: { siloNo: stri
                 </Fragment>
               );
             })}
+            {rows.length === 0 && (
+              <tr><td colSpan={mayEdit ? 9 : 8} className="px-3 py-8 text-center text-sm text-gray-400">No bags match your filter.</td></tr>
+            )}
           </tbody>
         </table>
       </div>
