@@ -23,9 +23,12 @@ export default async function EditRecord({ params }: { params: Promise<{ model: 
   if (!row) notFound();
   // an operator's OWN entry is editable (matched by user id stamped at creation)
   const ownRow = isOperator && !!(_me as { id?: string } | null)?.id && (row as { enteredById?: string | null }).enteredById === (_me as { id?: string }).id;
+  // Polish QC is shared: any QC operator may correct any QC row (saveRow enforces
+  // the same station gate and logs the edit).
+  const polishQcShared = isOperator && model === "PolishQc";
 
   // Operators get a strictly read-only view for rows that are NOT theirs.
-  if (isOperator && !ownRow) {
+  if (isOperator && !ownRow && !polishQcShared) {
     const show = (v: unknown): string => {
       if (v == null || v === "") return "—";
       if (v instanceof Date) return v.toISOString().slice(0, 16).replace("T", " ");
@@ -56,7 +59,7 @@ export default async function EditRecord({ params }: { params: Promise<{ model: 
     <Shell>
       <BackButton fallback={`/tables/${model}`} />
       <h1 className="mb-1 text-xl font-semibold">Edit record</h1>
-      {ownRow && <p className="mb-4 text-sm text-gray-500">Your own entry — you can correct it. Other records are view-only for you.</p>}
+      {ownRow ? <p className="mb-4 text-sm text-gray-500">Your own entry — you can correct it. Other records are view-only for you.</p> : polishQcShared ? <p className="mb-4 text-sm text-gray-500">Polish QC — any QC operator can correct this entry; the change is logged.</p> : null}
       <Card><RecordEditor model={model} id={id} fields={meta.fields} values={row} mode="edit" options={options} hideFields={HIDDEN_FORM_FIELDS[model] ?? []} operatorName={operatorName} /></Card>
     </Shell>
   );
