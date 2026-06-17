@@ -13,7 +13,7 @@ interface Cycle {
 interface Silo {
   increment: number | null; siloNo: string | null; sku: string | null;
   weight: number | null; remaining: number | null; date: string | Date | null;
-  assignee: string | null; bag: string | null; supplier: string | null; size: string | null;
+  assignee: string | null; bag: string | null; supplier: string | null; size: string | null; grade: string | null;
 }
 
 const fmt = (n: number) => Math.round(n).toLocaleString("en-IN");
@@ -69,20 +69,20 @@ export function MixerSection({ cycles, silos, mixerListHref }: { cycles: Cycle[]
   const supOf = (silo: string | null) => (silo && siloInfo.get(silo) ? [...siloInfo.get(silo)!.suppliers].join(", ") || "—" : "—");
 
   // Materials & suppliers panel: group silo bags by silo, then by invoice.
-  const bySilo = new Map<string, Map<string, { kg: number; bags: number; supplier: Set<string>; size: Set<string> }>>();
+  const bySilo = new Map<string, Map<string, { kg: number; bags: number; supplier: Set<string>; size: Set<string>; grade: Set<string> }>>();
   for (const b of silos) {
     if (!b.weight || b.weight <= 0) continue;
     const silo = b.siloNo ?? "—";
     const inv = invOf(b.bag);
     if (!bySilo.has(silo)) bySilo.set(silo, new Map());
     const invMap = bySilo.get(silo)!;
-    if (!invMap.has(inv)) invMap.set(inv, { kg: 0, bags: 0, supplier: new Set(), size: new Set() });
+    if (!invMap.has(inv)) invMap.set(inv, { kg: 0, bags: 0, supplier: new Set(), size: new Set(), grade: new Set() });
     const e = invMap.get(inv)!;
-    e.kg += b.weight ?? 0; e.bags += 1; if (b.supplier) e.supplier.add(b.supplier); if (b.size) e.size.add(b.size);
+    e.kg += b.weight ?? 0; e.bags += 1; if (b.supplier) e.supplier.add(b.supplier); if (b.size) e.size.add(b.size); if (b.grade) e.grade.add(b.grade);
   }
-  const siloRows: { silo: string; inv: string; supplier: string; size: string; bags: number; kg: number }[] = [];
+  const siloRows: { silo: string; inv: string; supplier: string; size: string; grade: string; bags: number; kg: number }[] = [];
   for (const [silo, invMap] of bySilo) {
-    for (const [inv, e] of invMap) siloRows.push({ silo, inv, supplier: [...e.supplier].join(", ") || "—", size: [...e.size].join(", ") || "—", bags: e.bags, kg: e.kg });
+    for (const [inv, e] of invMap) siloRows.push({ silo, inv, supplier: [...e.supplier].join(", ") || "—", size: [...e.size].join(", ") || "—", grade: [...e.grade].join(", ") || "—", bags: e.bags, kg: e.kg });
   }
 
   // Per-line size/supplier: resin has no silo; grit/filler look up by their silo.
@@ -201,6 +201,7 @@ export function MixerSection({ cycles, silos, mixerListHref }: { cycles: Cycle[]
                   <th className="py-2 pr-4">Silo</th>
                   <th className="py-2 pr-4">Supplier</th>
                   <th className="py-2 pr-4">Size</th>
+                  <th className="py-2 pr-4">Grade</th>
                   <th className="py-2 pr-4">Invoice</th>
                   <th className="py-2 pr-4">Bags</th>
                   <th className="py-2">Weight (kg)</th>
@@ -212,6 +213,7 @@ export function MixerSection({ cycles, silos, mixerListHref }: { cycles: Cycle[]
                     <td className="py-2 pr-4 font-medium">{r.silo}</td>
                     <td className="py-2 pr-4">{r.supplier}</td>
                     <td className="py-2 pr-4 text-gray-600">{r.size}</td>
+                    <td className="py-2 pr-4 text-gray-600">{r.grade}</td>
                     <td className="py-2 pr-4 text-gray-600">{r.inv}</td>
                     <td className="py-2 pr-4">{r.bags}</td>
                     <td className="py-2">{fmt(r.kg)}</td>
@@ -220,7 +222,7 @@ export function MixerSection({ cycles, silos, mixerListHref }: { cycles: Cycle[]
               </tbody>
               <tfoot>
                 <tr className="border-t border-gray-200 text-gray-700">
-                  <td className="py-2 pr-4 font-medium" colSpan={4}>Resin used (from tanks)</td>
+                  <td className="py-2 pr-4 font-medium" colSpan={5}>Resin used (from tanks)</td>
                   <td className="py-2 pr-4">—</td>
                   <td className="py-2 font-medium">{fmt(totalResin)}</td>
                 </tr>

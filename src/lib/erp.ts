@@ -742,6 +742,7 @@ export interface SiloRow {
   bag: string | null;
   supplier: string | null;   // supplier name(s) of the bag(s) in this silo
   size: string | null;       // grit/filler size(s) of the bag(s) in this silo
+  grade: string | null;      // grade(s) of the bag(s) in this silo
 }
 
 // Coerce a Json scalar/array (e.g. ["A&A Silicates"]) to a deduped, comma-joined string.
@@ -762,7 +763,7 @@ export async function getSiloBags(input: string): Promise<SiloRow[]> {
     select: {
       siloIncrement: true, siloNo: true, sku: true, weight: true,
       remainingWeight: true, date: true, assignee: true, invNoBagNo: true,
-      sizeFromUsedBag: true, nameFromSupplierMasterFromUsedBag: true,
+      sizeFromUsedBag: true, nameFromSupplierMasterFromUsedBag: true, gradeFromUsedBag: true,
     },
     orderBy: { siloIncrement: "asc" },
   });
@@ -777,5 +778,6 @@ export async function getSiloBags(input: string): Promise<SiloRow[]> {
     bag: r.invNoBagNo,
     supplier: jstr(r.nameFromSupplierMasterFromUsedBag),
     size: jstr(r.sizeFromUsedBag),
+    grade: jstr(r.gradeFromUsedBag),
   }));
 }
