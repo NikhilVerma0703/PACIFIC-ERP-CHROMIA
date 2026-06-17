@@ -109,13 +109,13 @@ export async function getOverview(): Promise<OverviewData> {
 
   /* eslint-disable @typescript-eslint/no-explicit-any */
   const [polished7d, polished30d, pressedToday, dayRows, statusRows, thickRows] = await Promise.all([
-    prisma.polishEntry.count({ where: { created: { gte: since7 } } }),
-    prisma.polishEntry.count({ where: { created: { gte: since30 } } }),
+    prisma.polishEntry.count({ where: { OR: [{ created: { gte: since7 } }, { created: null, importedAt: { gte: since7 } }] } }),
+    prisma.polishEntry.count({ where: { OR: [{ created: { gte: since30 } }, { created: null, importedAt: { gte: since30 } }] } }),
     prisma.press.count({ where: { date: { gte: todayStart } } }),
     // counted in the DB — same buckets as before, ~40 rows instead of ~20k
-    (prisma as any).$queryRaw`SELECT to_char(created, 'YYYY-MM-DD') AS k, COUNT(*)::int AS c FROM polish_entry WHERE created >= ${since30} GROUP BY 1` as Promise<{ k: string; c: number }[]>,
-    (prisma as any).$queryRaw`SELECT COALESCE(NULLIF(TRIM(polishing_status), ''), '—') AS k, COUNT(*)::int AS c FROM polish_entry WHERE created >= ${since30} GROUP BY 1` as Promise<{ k: string; c: number }[]>,
-    (prisma as any).$queryRaw`SELECT COALESCE(NULLIF(TRIM(slab_thickness), ''), '—') AS k, COUNT(*)::int AS c FROM polish_entry WHERE created >= ${since30} GROUP BY 1` as Promise<{ k: string; c: number }[]>,
+    (prisma as any).$queryRaw`SELECT to_char(COALESCE(created, imported_at), 'YYYY-MM-DD') AS k, COUNT(*)::int AS c FROM polish_entry WHERE COALESCE(created, imported_at) >= ${since30} GROUP BY 1` as Promise<{ k: string; c: number }[]>,
+    (prisma as any).$queryRaw`SELECT COALESCE(NULLIF(TRIM(polishing_status), ''), '—') AS k, COUNT(*)::int AS c FROM polish_entry WHERE COALESCE(created, imported_at) >= ${since30} GROUP BY 1` as Promise<{ k: string; c: number }[]>,
+    (prisma as any).$queryRaw`SELECT COALESCE(NULLIF(TRIM(slab_thickness), ''), '—') AS k, COUNT(*)::int AS c FROM polish_entry WHERE COALESCE(created, imported_at) >= ${since30} GROUP BY 1` as Promise<{ k: string; c: number }[]>,
   ]);
 
   const dayMap = new Map<string, number>(dayRows.map((r) => [r.k, r.c]));
