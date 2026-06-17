@@ -82,7 +82,7 @@ export function tableMeta(model: string): TableMeta | undefined {
   return load()[model];
 }
 
-export async function listRows(model: string, page: number, pageSize = 25, batch?: string, q?: string, sort?: string, dir?: string) {
+export async function listRows(model: string, page: number, pageSize = 25, batch?: string, q?: string, sort?: string, dir?: string, empty?: string) {
   const d = delegateOf(model);
   if (!d) throw new Error("unknown table");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -99,6 +99,13 @@ export async function listRows(model: string, page: number, pageSize = 25, batch
       else if ((f.kind === "number" || f.kind === "int") && Number.isFinite(asNum)) or.push({ [f.prismaField]: { equals: asNum } });
     }
     if (or.length) where.OR = or;
+  }
+  // Filter rows whose given field is unset (null or empty string) -- powers the
+  // "—" (ungraded / no-value) buckets on the batch charts, which can't be matched
+  // by a text search because "—" is only a display placeholder.
+  if (empty) {
+    const fm = tableMeta(model)?.fields.find((x) => x.prismaField === empty);
+    if (fm) where.OR = [{ [empty]: null }, { [empty]: "" }];
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let orderBy: any = model === "UnassignedRm" ? { createdAt: "desc" as const } : { importedAt: "desc" as const };

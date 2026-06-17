@@ -209,11 +209,15 @@ export default async function BatchPage({
           )}
 
           {/* Slab-level audit: duplicates and missing slabs per station (clickable) */}
-          {data.slabAudit.hasIssues && (
+          {data.slabAudit.stations.length > 0 && (
             <Card>
-              <H2>⚠ Slab-level discrepancies</H2>
+              <H2>{data.slabAudit.hasIssues
+                ? <span className="text-red-600">⚠ Slab-level discrepancies</span>
+                : <span className="text-green-600">✓ Slab-level check — all reconciled</span>}</H2>
               <p className="mb-3 text-sm text-gray-600">
-                Per station — slabs entered more than once, and slabs present elsewhere in the batch but missing here. Click any row or value to see the slabs.
+                {data.slabAudit.hasIssues
+                  ? "Per station — slabs entered more than once, and slabs present elsewhere in the batch but missing here. Click any row or value to see the slabs."
+                  : "Every slab is present at each station — no duplicates, nothing missing. Click any row or value to see the slabs."}
               </p>
               {data.slabAudit.notes.length > 0 && (
                 <div className="mb-3 space-y-1 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
@@ -317,11 +321,11 @@ export default async function BatchPage({
             </Card>
             <Card>
               <H2>QC grade distribution</H2>
-              {data.qcGrades.length ? <HBars data={data.qcGrades} colorFor={gradeColor} links={Object.fromEntries(data.qcGrades.map((g) => [g.label, `/tables/PolishQc?b=${encodeURIComponent(data.key)}&q=${encodeURIComponent(g.label)}`]))} /> : <Empty>No QC rows.</Empty>}
+              {data.qcGrades.length ? <HBars data={data.qcGrades} colorFor={gradeColor} links={Object.fromEntries(data.qcGrades.map((g) => [g.label, g.label === "—" ? `/tables/PolishQc?b=${encodeURIComponent(data.key)}&empty=qualityGrade` : `/tables/PolishQc?b=${encodeURIComponent(data.key)}&q=${encodeURIComponent(g.label)}`]))} /> : <Empty>No QC rows.</Empty>}
             </Card>
             <Card>
               <H2>Thickness mix (QC)</H2>
-              {data.thickness.length ? <HBars data={data.thickness} links={Object.fromEntries(data.thickness.map((t) => [t.label, `/tables/PolishQc?b=${encodeURIComponent(data.key)}&q=${encodeURIComponent(t.label)}`]))} /> : <Empty>No QC rows.</Empty>}
+              {data.thickness.length ? <HBars data={data.thickness} links={Object.fromEntries(data.thickness.map((t) => [t.label, t.label === "—" ? `/tables/PolishQc?b=${encodeURIComponent(data.key)}&empty=slabThickness` : `/tables/PolishQc?b=${encodeURIComponent(data.key)}&q=${encodeURIComponent(t.label)}`]))} /> : <Empty>No QC rows.</Empty>}
             </Card>
           </div>
 

@@ -29,7 +29,7 @@ function usageIds(row: Record<string, unknown>): string[] {
   return out;
 }
 
-export default async function TableGrid({ params, searchParams }: { params: Promise<{ model: string }>; searchParams: Promise<{ page?: string; b?: string; silo?: string; from?: string; q?: string; sort?: string; dir?: string }>; }) {
+export default async function TableGrid({ params, searchParams }: { params: Promise<{ model: string }>; searchParams: Promise<{ page?: string; b?: string; silo?: string; from?: string; q?: string; sort?: string; dir?: string; empty?: string }>; }) {
   const { model } = await params;
   const sp = await searchParams;
   const meta = tableMeta(model);
@@ -44,6 +44,7 @@ export default async function TableGrid({ params, searchParams }: { params: Prom
   const page = Math.max(1, parseInt(sp.page ?? "1", 10) || 1);
   const batch = sp.b?.trim() || undefined;
   const q = sp.q?.trim() || undefined;
+  const emptyField = sp.empty?.trim() || undefined;
   const sort = sp.sort?.trim() || undefined;
   const dir: "asc" | "desc" = sp.dir === "asc" ? "asc" : "desc";
   const isSilo = model === "Silo";
@@ -73,7 +74,7 @@ export default async function TableGrid({ params, searchParams }: { params: Prom
 
   let data;
   let error: string | null = null;
-  try { data = await listRows(model, page, 25, batch, q, sort, dir); }
+  try { data = await listRows(model, page, 25, batch, q, sort, dir, emptyField); }
   catch { error = "Could not read this table."; }
 
   // Resolve which mixer cycle (batch · cycle) each bag was used in.
@@ -97,7 +98,7 @@ export default async function TableGrid({ params, searchParams }: { params: Prom
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
   const SORTABLE = new Set(["scalar", "number", "int", "bool", "date"]);
-  const base = (p: number) => `/tables/${model}?page=${p}${batch ? `&b=${encodeURIComponent(batch)}` : ""}${q ? `&q=${encodeURIComponent(q)}` : ""}${silo ? `&silo=${encodeURIComponent(silo)}` : ""}${from ? `&from=${encodeURIComponent(from)}` : ""}`;
+  const base = (p: number) => `/tables/${model}?page=${p}${batch ? `&b=${encodeURIComponent(batch)}` : ""}${q ? `&q=${encodeURIComponent(q)}` : ""}${emptyField ? `&empty=${encodeURIComponent(emptyField)}` : ""}${silo ? `&silo=${encodeURIComponent(silo)}` : ""}${from ? `&from=${encodeURIComponent(from)}` : ""}`;
   const qp = (p: number) => `${base(p)}${sort ? `&sort=${encodeURIComponent(sort)}&dir=${dir}` : ""}`;
   const sortHref = (field: string) => `${base(1)}&sort=${encodeURIComponent(field)}&dir=${sort === field && dir === "asc" ? "desc" : "asc"}`;
 
