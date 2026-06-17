@@ -736,15 +736,29 @@ export interface SiloRow {
   date: Date | null;
   assignee: string | null;
   bag: string | null;
+  supplier: string | null;   // supplier name(s) of the bag(s) in this silo
+  size: string | null;       // grit/filler size(s) of the bag(s) in this silo
 }
 
+// Coerce a Json scalar/array (e.g. ["A&A Silicates"]) to a deduped, comma-joined string.
+function jstr(v: unknown): string | null {
+  if (v == null) return null;
+  if (Array.isArray(v)) {
+    const a = [...new Set(v.filter(Boolean).map((x) => String(x).trim()).filter(Boolean))];
+    return a.length ? a.join(", ") : null;
+  }
+  const str = String(v).trim();
+  return str || null;
+}
 export async function getSiloBags(input: string): Promise<SiloRow[]> {
   const key = normalizeBatch(input);
-  const rows = await prisma.silo.findMany({
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows: any[] = await prisma.silo.findMany({
     where: { batchKey: key },
     select: {
       siloIncrement: true, siloNo: true, sku: true, weight: true,
       remainingWeight: true, date: true, assignee: true, invNoBagNo: true,
+      sizeFromUsedBag: true, nameFromSupplierMasterFromUsedBag: true,
     },
     orderBy: { siloIncrement: "asc" },
   });
@@ -757,5 +771,7 @@ export async function getSiloBags(input: string): Promise<SiloRow[]> {
     date: r.date,
     assignee: r.assignee,
     bag: r.invNoBagNo,
+    supplier: jstr(r.nameFromSupplierMasterFromUsedBag),
+    size: jstr(r.sizeFromUsedBag),
   }));
 }

@@ -13,7 +13,7 @@ interface Cycle {
 interface Silo {
   increment: number | null; siloNo: string | null; sku: string | null;
   weight: number | null; remaining: number | null; date: string | Date | null;
-  assignee: string | null; bag: string | null;
+  assignee: string | null; bag: string | null; supplier: string | null; size: string | null;
 }
 
 const fmt = (n: number) => Math.round(n).toLocaleString("en-IN");
@@ -52,21 +52,35 @@ export function MixerSection({ cycles, silos, mixerListHref }: { cycles: Cycle[]
   const totalGrit = cycles.reduce((a, c) => a + c.gritKg, 0);
   const totalFiller = cycles.reduce((a, c) => a + c.fillerKg, 0);
   const totalResin = cycles.reduce((a, c) => a + c.resinKg, 0);
+  const totalMat = totalGrit + totalFiller + totalResin;
+  const pct = (x: number) => (totalMat > 0 ? Math.round((x / totalMat) * 100) : 0);
 
-  // Materials & suppliers: group silo bags by silo, then by invoice.
-  const bySilo = new Map<string, Map<string, { kg: number; bags: number; sku: Set<string> }>>();
+  // Per-silo size & supplier(s) — used to annotate each cycle's grit/filler lines.
+  const siloInfo = new Map<string, { sizes: Set<string>; suppliers: Set<string> }>();
+  for (const b of silos) {
+    const silo = b.siloNo ?? "—";
+    if (!siloInfo.has(silo)) siloInfo.set(silo, { sizes: new Set(), suppliers: new Set() });
+    const e = siloInfo.get(silo)!;
+    if (b.size) e.sizes.add(b.size);
+    if (b.supplier) e.suppliers.add(b.supplier);
+  }
+  const sizeOf = (silo: string | null) => (silo && siloInfo.get(silo) ? [...siloInfo.get(silo)!.sizes].join(", ") || "—" : "—");
+  const supOf = (silo: string | null) => (silo && siloInfo.get(silo) ? [...siloInfo.get(silo)!.suppliers].join(", ") || "—" : "—");
+
+  // Materials & suppliers panel: group silo bags by silo, then by invoice.
+  const bySilo = new Map<string, Map<string, { kg: number; bags: number; supplier: Set<string>; size: Set<string> }>>();
   for (const b of silos) {
     const silo = b.siloNo ?? "—";
     const inv = invOf(b.bag);
     if (!bySilo.has(silo)) bySilo.set(silo, new Map());
     const invMap = bySilo.get(silo)!;
-    if (!invMap.has(inv)) invMap.set(inv, { kg: 0, bags: 0, sku: new Set() });
+    if (!invMap.has(inv)) invMap.set(inv, { kg: 0, bags: 0, supplier: new Set(), size: new Set() });
     const e = invMap.get(inv)!;
-    e.kg += b.weight ?? 0; e.bags += 1; if (b.sku) e.sku.add(b.sku);
+    e.kg += b.weight ?? 0; e.bags += 1; if (b.supplier) e.supplier.add(b.supplier); if (b.size) e.size.add(b.size);
   }
-  const siloRows: { silo: string; inv: string; sku: string; bags: number; kg: number }[] = [];
+  const siloRows: { silo: string; inv: string; supplier: string; size: string; bags: number; kg: number }[] = [];
   for (const [silo, invMap] of bySilo) {
-    for (const [inv, e] of invMap) siloRows.push({ silo, inv, sku: [...e.sku].join(", ") || "—", bags: e.bags, kg: e.kg });
+    for (const [inv, e] of invMap) siloRows.push({ silo, inv, supplier: [...e.supplier].join(", ") || "—", size: [...e.size].join(", ") || "—", bags: e.bags, kg: e.kg });
   }
 
   if (count === 0) {
@@ -85,16 +99,14 @@ export function MixerSection({ cycles, silos, mixerListHref }: { cycles: Cycle[]
         <Link href={mixerListHref} className="text-sm font-medium text-brand hover:underline">Open mixer list →</Link>
       </div>
 
-      {/* Summary cards */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <Stat label="Cycles done" value={count} />
         <Stat label="First cycle start" value={timeOf(firstStart)} sub={dateOf(firstStart)} />
         <Stat label="Last cycle end" value={timeOf(lastEnd)} sub={dateOf(lastEnd)} />
         <Stat label="Total mix weight" value={fmt(totalWeight)} sub="kg" />
-        <Stat label="Grit · Filler · Resin" value={<span className="text-lg">{fmt(totalGrit)} · {fmt(totalFiller)} · {fmt(totalResin)}</span>} sub="kg" />
+        <Stat label="Grit · Filler · Resin" value={<span className="text-lg">{pct(totalGrit)}% · {pct(totalFiller)}% · {pct(totalResin)}%</span>} sub="of mix" />
       </div>
 
-      {/* Per-cycle list (click a row to expand the material breakdown) */}
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -134,13 +146,15 @@ export function MixerSection({ cycles, silos, mixerListHref }: { cycles: Cycle[]
                       <td colSpan={9} className="py-3 pr-4">
                         <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Material into cycle {c.cycle ?? "—"}</div>
                         {c.lines.length ? (
-                          <table className="w-full max-w-2xl text-xs">
+                          <table className="w-full max-w-3xl text-xs">
                             <thead>
                               <tr className="text-left text-gray-400">
                                 <th className="py-1 pr-4">Mixer</th>
                                 <th className="py-1 pr-4">Grit category</th>
                                 <th className="py-1 pr-4">Weight (kg)</th>
-                                <th className="py-1">From silo</th>
+                                <th className="py-1 pr-4">From silo</th>
+                                <th className="py-1 pr-4">Size</th>
+                                <th className="py-1">Supplier</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -149,14 +163,16 @@ export function MixerSection({ cycles, silos, mixerListHref }: { cycles: Cycle[]
                                   <td className="py-1 pr-4">M{l.mixer}</td>
                                   <td className="py-1 pr-4">{l.cat}</td>
                                   <td className="py-1 pr-4">{fmt(l.kg)}</td>
-                                  <td className="py-1 text-gray-600">{l.silo ?? "—"}</td>
+                                  <td className="py-1 pr-4 text-gray-600">{l.silo ?? "—"}</td>
+                                  <td className="py-1 pr-4 text-gray-600">{sizeOf(l.silo)}</td>
+                                  <td className="py-1 text-gray-600">{supOf(l.silo)}</td>
                                 </tr>
                               ))}
                             </tbody>
                           </table>
                         ) : <div className="text-xs text-gray-500">No grit categories recorded.</div>}
                         <div className="mt-2 text-xs text-gray-600">
-                          Filler: <b>{fmt(c.fillerKg)} kg</b>{c.fillerSilo ? ` (from ${c.fillerSilo})` : ""} · Resin: <b>{fmt(c.resinKg)} kg</b> · Cycle total: <b>{fmt(c.cycleWeight)} kg</b>
+                          Filler: <b>{fmt(c.fillerKg)} kg</b>{c.fillerSilo ? ` — ${c.fillerSilo}${sizeOf(c.fillerSilo) !== "—" ? ` · ${sizeOf(c.fillerSilo)}` : ""}${supOf(c.fillerSilo) !== "—" ? ` · ${supOf(c.fillerSilo)}` : ""}` : ""} · Resin: <b>{fmt(c.resinKg)} kg</b> · Cycle total: <b>{fmt(c.cycleWeight)} kg</b>
                         </div>
                       </td>
                     </tr>
@@ -168,18 +184,18 @@ export function MixerSection({ cycles, silos, mixerListHref }: { cycles: Cycle[]
         </table>
       </div>
 
-      {/* Materials & suppliers (grit/filler bags into the silos this batch drew from) */}
       <div>
         <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Materials &amp; suppliers</div>
-        <p className="mb-2 text-xs text-gray-500">Supplier invoices that fed the silos used by this batch. A silo can hold bags from several invoices (drawn FIFO), so this is the batch-level material source, not a per-cycle attribution.</p>
+        <p className="mb-2 text-xs text-gray-500">Suppliers and sizes that fed the silos used by this batch. A silo can hold bags from several invoices (drawn FIFO), so this is the batch-level material source, not a per-cycle attribution.</p>
         {siloRows.length ? (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-gray-500">
                   <th className="py-2 pr-4">Silo</th>
-                  <th className="py-2 pr-4">Supplier invoice</th>
-                  <th className="py-2 pr-4">SKU</th>
+                  <th className="py-2 pr-4">Supplier</th>
+                  <th className="py-2 pr-4">Size</th>
+                  <th className="py-2 pr-4">Invoice</th>
                   <th className="py-2 pr-4">Bags</th>
                   <th className="py-2">Weight (kg)</th>
                 </tr>
@@ -188,8 +204,9 @@ export function MixerSection({ cycles, silos, mixerListHref }: { cycles: Cycle[]
                 {siloRows.map((r, i) => (
                   <tr key={i} className="border-t border-gray-100">
                     <td className="py-2 pr-4 font-medium">{r.silo}</td>
-                    <td className="py-2 pr-4">{r.inv}</td>
-                    <td className="py-2 pr-4 text-gray-600">{r.sku}</td>
+                    <td className="py-2 pr-4">{r.supplier}</td>
+                    <td className="py-2 pr-4 text-gray-600">{r.size}</td>
+                    <td className="py-2 pr-4 text-gray-600">{r.inv}</td>
                     <td className="py-2 pr-4">{r.bags}</td>
                     <td className="py-2">{fmt(r.kg)}</td>
                   </tr>
@@ -197,7 +214,7 @@ export function MixerSection({ cycles, silos, mixerListHref }: { cycles: Cycle[]
               </tbody>
               <tfoot>
                 <tr className="border-t border-gray-200 text-gray-700">
-                  <td className="py-2 pr-4 font-medium" colSpan={3}>Resin used (from tanks)</td>
+                  <td className="py-2 pr-4 font-medium" colSpan={4}>Resin used (from tanks)</td>
                   <td className="py-2 pr-4">—</td>
                   <td className="py-2 font-medium">{fmt(totalResin)}</td>
                 </tr>
