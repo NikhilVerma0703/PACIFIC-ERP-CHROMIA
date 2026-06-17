@@ -232,7 +232,7 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
         )}
         <div className="rounded-2xl border border-gray-200 bg-white p-4">
           <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">Slab details</div>
-          <div className={grid}>{slabF.map((f) => <SlabField key={f.prismaField} f={f} locked={false} def="" opts={options[f.prismaField]} operatorName={operatorName} unlocked={unlocked} onUnlock={(fld) => setUnlocked((s) => new Set(s).add(fld))} />)}</div>
+          <div className={grid}>{slabF.map((f) => <SlabField key={f.prismaField} f={f} locked={false} def={f.prismaField === "qualityGrade" ? "Not graded yet" : ""} opts={options[f.prismaField]} operatorName={operatorName} unlocked={unlocked} onUnlock={(fld) => setUnlocked((s) => new Set(s).add(fld))} />)}</div>
         </div>
       </div>
 

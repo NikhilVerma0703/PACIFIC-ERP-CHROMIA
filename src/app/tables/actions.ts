@@ -156,6 +156,9 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
   if (SLAB_REQUIRED.has(model) && fd.has("slabNumber") && !hasSlab(data.slabNumber)) {
     return "⚠ Slab number can't be blank — enter it before saving.";
   }
+  // Clearing the QC grade falls back to "Not graded yet" (only when the form
+  // actually submitted the grade field, so edits to other fields don't touch it).
+  if (model === "PolishQc" && fd.has("qualityGrade") && !String(data.qualityGrade ?? "").trim()) data.qualityGrade = "Not graded yet";
   try {
     await delegateOf(model).update({ where: { id }, data });
     if (model === "MixerCycle") {
@@ -196,6 +199,10 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
   if (SLAB_REQUIRED.has(model) && !hasSlab(data.slabNumber)) {
     return "⚠ Slab number is required — enter the slab number (manually or via smart entry) before saving.";
   }
+
+  // QC grade defaults to "Not graded yet" when the operator never picked one
+  // (dropdown untouched or left at "—") — keeps it out of the blank/"—" bucket.
+  if (model === "PolishQc" && !String(data.qualityGrade ?? "").trim()) data.qualityGrade = "Not graded yet";
 
   // ---- DOUBLE-ENTRY GUARDS (the dedupe tool exists for history; new entries are blocked up front) ----
   try {
