@@ -68,10 +68,19 @@ async function reverse(row: any): Promise<void> {
       await delegateOf(p.model).deleteMany({ where: { id: { in: p.ids } } });
     }
   } else if (row.kind === "delete") {
-    // payload: { model, records: object[] } -> recreate the deleted rows
+    // payload: { model, records: object[] }  OR  { groups: [{ model, records }] }
     if (p.model && Array.isArray(p.records)) {
       for (const r of p.records) {
         try { await delegateOf(p.model).create({ data: revive(r) }); } catch { /* skip if it already exists */ }
+      }
+    }
+    if (Array.isArray(p.groups)) {
+      for (const g of p.groups) {
+        if (g?.model && Array.isArray(g.records)) {
+          for (const r of g.records) {
+            try { await delegateOf(g.model).create({ data: revive(r) }); } catch { /* skip if it already exists */ }
+          }
+        }
       }
     }
   } else if (row.kind === "designApply") {

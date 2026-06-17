@@ -12,7 +12,8 @@ import { getLastUndoable } from "./undo";
 import { recentActions } from "@/lib/actionLog";
 import { detectWrongBatch } from "@/lib/batchMismatch";
 import { WrongBatchFix } from "@/components/WrongBatchFix";
-import { canRectify } from "@/lib/rbac";
+import { SlabMismatchPill } from "./SlabMismatchPill";
+import { canRectify, isManager } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
 
@@ -69,8 +70,9 @@ export default async function BatchPage({
   if (query) { try { unbacked = await batchHasUnbacked(normalizeBatch(query) ?? ""); } catch { /* ignore */ } }
   let wrongBatch: Awaited<ReturnType<typeof detectWrongBatch>> | null = null;
   let mayFix = false;
+  let canManage = false;
   if (query && data?.found) {
-    try { [mixerCycles, silos, wrongBatch, mayFix] = await Promise.all([getMixerCycles(query), getSiloBags(query), detectWrongBatch(query), canRectify()]); } catch { /* ignore */ }
+    try { [mixerCycles, silos, wrongBatch, mayFix, canManage] = await Promise.all([getMixerCycles(query), getSiloBags(query), detectWrongBatch(query), canRectify(), isManager()]); } catch { /* ignore */ }
   }
 
   // Build a drill-down href for the current batch.
@@ -164,7 +166,7 @@ export default async function BatchPage({
               <Badge tone="brand">Design: {data.design.primary}</Badge>
             )}
             {data.design.discrepancy && <Badge tone="red">⚠ Design mismatch</Badge>}
-            {data.slabsProduced.discrepancy && <Badge tone="red">⚠ Slab count mismatch</Badge>}
+            {data.slabsProduced.discrepancy && <SlabMismatchPill batch={query ?? ""} blankTotal={data.slabAudit.blankTotal} canManage={canManage} />}
             {!data.slabAudit.hasIssues && data.slabAudit.stations.length > 0 && (
               <Badge tone="green">✓ Slabs reconciled</Badge>
             )}

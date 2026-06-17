@@ -220,3 +220,45 @@ export async function deleteSlabRow(model: string, id: string, batch: string): P
   revalidatePath("/batch");
   return { ok: true, message: `Deleted ${model} ${slabLabel}. (Undoable)` };
 }
+
+/** Remove every slab-less (blank) row in a batch across the slab stations. Manager
+ * and above only; logged as ONE undoable action (Undo recreates all rows). */
+export async function removeBlankSlabRows(batch: string): Promise<ActionResult> {
+  if (!(await isManager())) return { ok: false, message: "Only the production manager and above can remove blank rows." };
+  if ((await currentBranchName()) !== "SHOP_FLOOR") return { ok: false, message: "Production data can only be edited from the Shop Floor branch." };
+  const key = normalizeBatch(batch);
+  if (!key) return { ok: false, message: "No batch specified." };
+  const MODELS = ["Press", "Distributor", "Kreos", "Oven", "Jot", "PolishEntry", "PolishQc"];
+  // "blank" = no usable slab number (null or non-finite) -- the same definition the
+  // slab audit uses for blankTotal, so the shown count and the delete agree.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const isBlank = (r: any) => r.slabNumber == null || !Number.isFinite(r.slabNumber);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const groups: { model: string; records: any[] }[] = [];
+  let total = 0;
+  try {
+    for (const m of MODELS) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const d: any = delegateOf(m);
+      if (!d?.findMany) continue;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const blank: any[] = (await d.findMany({ where: { batchKey: key } })).filter(isBlank);
+      if (!blank.length) continue;
+      // Delete exactly the rows we snapshot (by id): no re-query race, and the
+      // snapshot equals the deleted set so Undo restores precisely these rows.
+      await d.deleteMany({ where: { id: { in: blank.map((r: { id: string }) => r.id) } } });
+      groups.push({ model: m, records: blank });
+      total += blank.length;
+    }
+  } catch (e) {
+    // Partial failure: still log what was already deleted so it stays undoable.
+    if (groups.length) await logAction({ kind: "delete", batchKey: key, model: null, summary: `Removed ${total} blank-slab row(s) in ${key} (partial, stopped on error)`, payload: { groups } });
+    revalidatePath("/batch"); revalidatePath("/batch/slabs");
+    return { ok: false, message: `Removed ${total} row(s) before an error: ${(e as Error).message}` };
+  }
+  if (!total) return { ok: true, message: "No blank-slab rows to remove." };
+  const parts = groups.map((g) => `${g.model} ${g.records.length}`).join(", ");
+  await logAction({ kind: "delete", batchKey: key, model: null, summary: `Removed ${total} blank-slab row(s) in ${key} (${parts})`, payload: { groups } });
+  revalidatePath("/batch"); revalidatePath("/batch/slabs");
+  return { ok: true, message: `Removed ${total} blank-slab row(s). (Undoable)` };
+}

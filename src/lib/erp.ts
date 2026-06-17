@@ -198,6 +198,8 @@ export interface SlabAudit {
   hasIssues: boolean;
   added: number[];                             // slab numbers manually added to this batch (expected even if absent)
   confirmed: { by: string | null; at: string } | null; // range confirmed-as-correct
+  blankRows: { model: string; label: string; count: number }[]; // rows with no slab number (removable)
+  blankTotal: number;                          // total slab-less rows across stations
 }
 
 const AUDIT_STATIONS: string[] = ["Press", "Distributor", "Kreos", "Oven", "Jot", "Polish Entry", "Polish QC"];
@@ -213,6 +215,17 @@ async function slabAuditForKey(key: string): Promise<SlabAudit> {
     prisma.polishEntry.findMany({ where, select: { slabNumber: true, remarks: true } }),
     prisma.polishQc.findMany({ where, select: { slabNumber: true, remarks: true } }),
   ]);
+
+  // Rows with no slab number at all — they inflate raw row counts (false "slab
+  // count mismatch") but carry no slab. Surfaced so a manager can remove them.
+  const STATION_MODEL = ["Press", "Distributor", "Kreos", "Oven", "Jot", "PolishEntry", "PolishQc"];
+  const blankRows: { model: string; label: string; count: number }[] = [];
+  rowsByStation.forEach((rows, i) => {
+    let c = 0;
+    for (const r of rows) { const n = r.slabNumber; if (n == null || !Number.isFinite(n)) c++; }
+    if (c > 0) blankRows.push({ model: STATION_MODEL[i], label: AUDIT_STATIONS[i], count: c });
+  });
+  const blankTotal = blankRows.reduce((a, b) => a + b.count, 0);
 
   const union = new Set<number>();
   const autoByStation: Set<number>[] = [];
@@ -274,7 +287,7 @@ async function slabAuditForKey(key: string): Promise<SlabAudit> {
     notes.length > 0 ||
     stations.some((s) => s.duplicates.length > 0 || s.missing.length > 0 || s.autoAdded.length > 0);
 
-  return { stations, range, globalMissing, notes, hasIssues, added: edits.added, confirmed: edits.confirmed };
+  return { stations, range, globalMissing, notes, hasIssues, added: edits.added, confirmed: edits.confirmed, blankRows, blankTotal };
 }
 
 export interface BatchData {
