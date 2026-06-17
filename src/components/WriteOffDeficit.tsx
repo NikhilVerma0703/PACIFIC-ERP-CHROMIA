@@ -1,9 +1,8 @@
 "use client";
-// Unbacked-deficit banner. Normally the deficit just waits for a backfill
-// (fill the silo / enter the prep and it auto-absorbs). Only after a
-// backfill DROUGHT (no activity for WRITE_OFF_AFTER_HOURS) does it offer
-// "write off & start fresh" — for material that is gone and untraceable
-// (e.g. an old batch whose composition nobody can reconstruct).
+// Unbacked-deficit banner. The deficit can always be resolved two ways, at any
+// time: (1) fill the silo / enter the prep and it auto-absorbs these draws, or
+// (2) write it off & start fresh — for material that's gone and untraceable
+// (composition unknown). There is no time gate on the write-off.
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { writeOffSilo } from "@/app/silo/actions";
@@ -11,14 +10,16 @@ import { writeOffResinTank } from "@/app/resin/actions";
 
 const fmt = (n: number) => Math.round(n).toLocaleString("en-IN");
 
-export function WriteOffDeficit({ kind, no, deficitKg, droughtHours, afterHours, mayEdit }:
+// droughtHours / afterHours are still passed by the pages but no longer gate the
+// write-off — it's available the whole time for any backfill-needed deficit.
+export function WriteOffDeficit({ kind, no, deficitKg, mayEdit }:
   { kind: "silo" | "resin"; no: string; deficitKg: number; droughtHours: number; afterHours: number; mayEdit: boolean }) {
   const router = useRouter();
   const [confirming, setConfirming] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [pending, start] = useTransition();
-  const ripe = droughtHours >= afterHours;
   const fillVerb = kind === "silo" ? "fill the silo" : "enter the prep";
+  const fillNoun = kind === "silo" ? "fill" : "prep";
 
   const run = () => start(async () => {
     const r = kind === "silo" ? await writeOffSilo(no) : await writeOffResinTank(no);
@@ -27,20 +28,16 @@ export function WriteOffDeficit({ kind, no, deficitKg, droughtHours, afterHours,
   });
 
   return (
-    <div className={`mb-5 rounded-xl border p-4 ${ripe ? "border-red-200 bg-red-50" : "border-amber-200 bg-amber-50"}`}>
+    <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div className={`text-sm font-semibold ${ripe ? "text-red-800" : "text-amber-800"}`}>
-            ⚠ {fmt(deficitKg)} kg drawn unbacked — {ripe ? `no backfill for ${Math.floor(droughtHours)} h` : "backfill expected"}
-          </div>
-          <p className={`mt-1 max-w-2xl text-xs ${ripe ? "text-red-700" : "text-amber-700"}`}>
-            {ripe
-              ? <>If this material can&apos;t be traced any more (already consumed, composition unknown), write it off and start fresh: the old cycles stay marked &ldquo;composition unknown&rdquo; and the <b>next {kind === "silo" ? "fill" : "prep"} keeps its full weight</b> instead of covering this deficit. If the material IS known, {fillVerb} instead — it still auto-links.</>
-              : <>Material was used before it was entered. Just {fillVerb} and it auto-links to these draws. Write-off becomes available after {afterHours} h without backfill activity ({Math.ceil(afterHours - droughtHours)} h to go).</>}
+          <div className="text-sm font-semibold text-amber-800">⚠ {fmt(deficitKg)} kg drawn unbacked — backfill needed</div>
+          <p className="mt-1 max-w-2xl text-xs text-amber-700">
+            Material was used before it was entered. {fillVerb.charAt(0).toUpperCase() + fillVerb.slice(1)} and it auto-links to these draws. If it can&apos;t be traced any more (already consumed, composition unknown), you can <b>write it off &amp; start fresh</b> — the old cycles stay &ldquo;composition unknown&rdquo; and the next {fillNoun} keeps its full weight instead of covering this deficit.
           </p>
         </div>
-        {mayEdit && ripe && (!confirming ? (
-          <button onClick={() => { setMsg(null); setConfirming(true); }} className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-100">
+        {mayEdit && (!confirming ? (
+          <button onClick={() => { setMsg(null); setConfirming(true); }} className="shrink-0 rounded-lg border border-red-300 bg-white px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-100">
             Write off &amp; start fresh…
           </button>
         ) : (
@@ -52,7 +49,7 @@ export function WriteOffDeficit({ kind, no, deficitKg, droughtHours, afterHours,
           </div>
         ))}
       </div>
-      {msg && <div className={`mt-2 text-xs font-medium ${ripe ? "text-red-800" : "text-amber-800"}`}>{msg}</div>}
+      {msg && <div className="mt-2 text-xs font-medium text-amber-800">{msg}</div>}
     </div>
   );
 }

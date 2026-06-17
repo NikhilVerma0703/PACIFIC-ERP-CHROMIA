@@ -1,8 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { canRectify, currentUser } from "@/lib/rbac";
-import { writeOffSiloDeficit, WRITE_OFF_AFTER_HOURS, openSiloDeficit } from "@/lib/backfill";
+import { canRectify, currentUser, isManager } from "@/lib/rbac";
+import { writeOffSiloDeficit, openSiloDeficit } from "@/lib/backfill";
 import { isCorrectableSilo } from "@/lib/siloClass";
 import { previewCorrection, applyCorrection, type Op, type CorrectionDiff } from "@/lib/siloCorrection";
 
@@ -23,10 +23,9 @@ export async function applySiloCorrection(siloNo: string, op: Op): Promise<{ ok?
 /** Write off the silo's unbacked deficit ("start fresh") — incharge+, and only
  * after the deficit has sat without any backfill activity for the drought window. */
 export async function writeOffSilo(siloNo: string): Promise<{ ok?: boolean; message?: string; error?: string }> {
-  if (!(await canRectify())) return { error: "Only incharge and above can write off a deficit." };
+  if (!(await isManager())) return { error: "Only the production manager and above can write off a deficit." };
   const open = await openSiloDeficit(siloNo);
   if (!open) return { error: "No open deficit on this silo." };
-  if (open.droughtHours < WRITE_OFF_AFTER_HOURS) return { error: `Backfill is still expected — write-off opens after ${WRITE_OFF_AFTER_HOURS} h without activity (${Math.ceil(WRITE_OFF_AFTER_HOURS - open.droughtHours)} h to go). Fill the silo instead if the material is known.` };
   try {
     const me = await currentUser();
     const r = await writeOffSiloDeficit(siloNo, me?.name || me?.email || "incharge");

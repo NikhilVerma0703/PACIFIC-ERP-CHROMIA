@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { Shell } from "@/components/Shell";
 import { Card, Badge, Empty } from "@/components/ui";
 import { getResinLedger } from "@/lib/resinCorrection";
-import { canRectify } from "@/lib/rbac";
+import { canRectify, isManager } from "@/lib/rbac";
 import { ResinCorrect } from "@/components/ResinCorrect";
 import { WriteOffDeficit } from "@/components/WriteOffDeficit";
 import { openTankDeficit, WRITE_OFF_AFTER_HOURS } from "@/lib/backfill";
@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 export default async function ResinTimeline({ params }: { params: Promise<{ tankNo: string }> }) {
   const { tankNo: raw } = await params;
   const tankNo = decodeURIComponent(raw);
-  const [ledger, mayEdit, deficit] = await Promise.all([getResinLedger(tankNo), canRectify(), openTankDeficit(tankNo)]);
+  const [ledger, mayEdit, deficit, canWriteOff] = await Promise.all([getResinLedger(tankNo), canRectify(), openTankDeficit(tankNo), isManager()]);
   if (!ledger) notFound();
 
   return (
@@ -33,7 +33,7 @@ export default async function ResinTimeline({ params }: { params: Promise<{ tank
         ))}
       </div>
 
-      {deficit && <WriteOffDeficit kind="resin" no={tankNo} deficitKg={deficit.kg} droughtHours={deficit.droughtHours} afterHours={WRITE_OFF_AFTER_HOURS} mayEdit={mayEdit} />}
+      {deficit && <WriteOffDeficit kind="resin" no={tankNo} deficitKg={deficit.kg} droughtHours={deficit.droughtHours} afterHours={WRITE_OFF_AFTER_HOURS} mayEdit={canWriteOff} />}
 
       {ledger.preps.length === 0 ? <Empty>No resin preps recorded for tank {tankNo} yet.</Empty> : <ResinCorrect tankNo={tankNo} preps={ledger.preps} mayEdit={mayEdit} />}
     </Shell>

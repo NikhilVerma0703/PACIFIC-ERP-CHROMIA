@@ -4,7 +4,7 @@ import { Shell } from "@/components/Shell";
 import { Card, Badge, Empty } from "@/components/ui";
 import { getSiloLedger, getRmOptions } from "@/lib/siloCorrection";
 import { classifySilo, isCorrectableSilo } from "@/lib/siloClass";
-import { canRectify } from "@/lib/rbac";
+import { canRectify, isManager } from "@/lib/rbac";
 import { SiloCorrect } from "@/components/SiloCorrect";
 import { WriteOffDeficit } from "@/components/WriteOffDeficit";
 import { openSiloDeficit, WRITE_OFF_AFTER_HOURS } from "@/lib/backfill";
@@ -15,7 +15,7 @@ export default async function SiloTimeline({ params }: { params: Promise<{ siloN
   const { siloNo: raw } = await params;
   const siloNo = decodeURIComponent(raw);
   const kind = classifySilo(siloNo);
-  const [ledger, rmOptions, mayEdit, deficit] = await Promise.all([getSiloLedger(siloNo), isCorrectableSilo(siloNo) ? getRmOptions(siloNo) : Promise.resolve([]), canRectify(), openSiloDeficit(siloNo)]);
+  const [ledger, rmOptions, mayEdit, deficit, canWriteOff] = await Promise.all([getSiloLedger(siloNo), isCorrectableSilo(siloNo) ? getRmOptions(siloNo) : Promise.resolve([]), canRectify(), openSiloDeficit(siloNo), isManager()]);
   if (!ledger) notFound();
 
   return (
@@ -37,7 +37,7 @@ export default async function SiloTimeline({ params }: { params: Promise<{ siloN
         ))}
       </div>
 
-      {deficit && <WriteOffDeficit kind="silo" no={siloNo} deficitKg={deficit.kg} droughtHours={deficit.droughtHours} afterHours={WRITE_OFF_AFTER_HOURS} mayEdit={mayEdit} />}
+      {deficit && <WriteOffDeficit kind="silo" no={siloNo} deficitKg={deficit.kg} droughtHours={deficit.droughtHours} afterHours={WRITE_OFF_AFTER_HOURS} mayEdit={canWriteOff} />}
 
       {!isCorrectableSilo(siloNo) ? (
         <Empty>Corrections are available for the 16 grit silos and 4 filler silos. This silo ({siloNo}) is outside that scope.</Empty>
