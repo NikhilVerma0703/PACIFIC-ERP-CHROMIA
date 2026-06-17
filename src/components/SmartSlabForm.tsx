@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useActionState } from "react";
 import { Toast } from "./Toast";
 import { createRow } from "@/app/tables/actions";
@@ -10,6 +10,15 @@ import { OPERATOR_FIELDS } from "@/lib/operatorFields";
 import { isCurated, OTHER_SENTINEL } from "@/lib/categoricalFields";
 import { secondsToHHMM } from "@/lib/time";
 import type { SlabMode } from "@/lib/smartEntry";
+
+// Current local date+time as a datetime-local value ("YYYY-MM-DDTHH:mm"), used to
+// pre-fill empty Date fields so an entry always carries a date even if the
+// operator doesn't touch it (it stays editable — they can still change it).
+function nowLocalDatetime(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 const inputCls = "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm transition focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
 
@@ -36,6 +45,13 @@ function PumpBoxes({ name, def }: { name: string; def: string }) {
 
 function SlabField({ f, locked, def, opts, operatorName, unlocked, onUnlock }: { f: FieldMeta; locked: boolean; def: string; opts?: string[]; operatorName?: string | null; unlocked: Set<string>; onUnlock: (field: string) => void }) {
   const [typeNew, setTypeNew] = useState(false); // curated fields: "+ Add new…" escape
+  // Pre-fill an empty Date field with the current date+time once mounted (after
+  // SSR, so no hydration mismatch). Remounts per slab via the fields key, so each
+  // slab gets the current time; a value the operator already has is left alone.
+  const dateRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (f.kind === "date" && dateRef.current && !dateRef.current.value) dateRef.current.value = nowLocalDatetime();
+  }, [f.kind]);
   if (f.prismaField === "vacuumPumps") {
     return (
       <label className="block">
@@ -84,7 +100,7 @@ function SlabField({ f, locked, def, opts, operatorName, unlocked, onUnlock }: {
     input = <input name={f.prismaField} type="checkbox" defaultChecked={def === "true"} className="h-4 w-4 rounded border-gray-300 text-brand" />;
   } else {
     const type = f.kind === "number" || f.kind === "int" ? "number" : f.kind === "date" ? "datetime-local" : "text";
-    input = <input name={f.prismaField} type={type} step={type === "number" ? "any" : undefined} defaultValue={def} className={inputCls} />;
+    input = <input ref={f.kind === "date" ? dateRef : undefined} name={f.prismaField} type={type} step={type === "number" ? "any" : undefined} defaultValue={def} className={inputCls} />;
   }
   const isReadonlyText = isLocked && !(opts?.length && (f.airtableType === "singleSelect" || f.airtableType === "multipleSelects"));
   return (
