@@ -81,7 +81,7 @@ export function SiloCorrect({ siloNo, bags, rmOptions, mayEdit }: { siloNo: stri
   function buildOp(bag: LedgerBag): Op | null {
     if (mode === "weight") { const w = parseFloat(newWeight); return Number.isFinite(w) ? { type: "editWeight", bagId: bag.id, newWeight: w } : null; }
     if (mode === "swap") return { type: "swapBag", bagId: bag.id, rmAirtableId: rmId || null };
-    if (mode === "insert") { const w = parseFloat(insWeight); return Number.isFinite(w) && w > 0 ? { type: "insert", afterBagId: bag.id, weight: w, rmAirtableId: insRm || null } : null; }
+    if (mode === "insert") { const w = parseFloat(insWeight); return Number.isFinite(w) && w >= 0 ? { type: "insert", afterBagId: bag.id, weight: w, rmAirtableId: insRm || null } : null; }
     if (mode === "delete") return { type: "delete", bagId: bag.id };
     return null;
   }

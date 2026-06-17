@@ -671,7 +671,7 @@ export async function getMissingSlabs(input: string, station: SlabStation): Prom
 // ---- Mixer cycle & SILO details for the batch lookup --------------------
 // One grit line within a cycle: which mixer, which grit category, how much, from
 // which silo. Filler and resin are summarised per cycle (no per-category split).
-export interface MixerGritLine { mixer: number; cat: string; kg: number; silo: string | null; }
+export interface MixerLine { mixer: number; kind: "grit" | "filler" | "resin"; label: string; kg: number; silo: string | null; }
 export interface MixerCycleRow {
   cycle: number | null;
   operator: string | null;
@@ -684,7 +684,7 @@ export interface MixerCycleRow {
   resinKg: number;           // total resin
   gritSilos: string[];       // distinct silos grit was drawn from
   fillerSilo: string | null; // filler silo / buffer
-  lines: MixerGritLine[];    // per-mixer, per-category grit detail (for expand)
+  lines: MixerLine[];        // per-mixer grit / filler / resin detail (for expand)
 }
 
 export async function getMixerCycles(input: string): Promise<MixerCycleRow[]> {
@@ -693,7 +693,9 @@ export async function getMixerCycles(input: string): Promise<MixerCycleRow[]> {
   const rows: any[] = await prisma.mixerCycle.findMany({ where: { batchKey: key }, orderBy: { cycle: "asc" } });
   return rows.map((r) => {
     const mixers = [r.mixer1 ? 1 : 0, r.mixer2 ? 2 : 0, r.mixer3 ? 3 : 0, r.mixer4 ? 4 : 0].filter((n) => n > 0);
-    const lines: MixerGritLine[] = [];
+    const fillerRaw = r.fillerSiloBuffer;
+    const fillerSilo = fillerRaw != null && String(fillerRaw).trim() !== "" ? String(fillerRaw).trim() : null;
+    const lines: MixerLine[] = [];
     const gritSiloSet = new Set<string>();
     let gritKg = 0, fillerKg = 0, resinKg = 0;
     for (const m of [1, 2, 3, 4]) {
@@ -704,14 +706,16 @@ export async function getMixerCycles(input: string): Promise<MixerCycleRow[]> {
         if (w > 0) {
           gritKg += w;
           if (silo) gritSiloSet.add(silo);
-          lines.push({ mixer: m, cat: `G${g}`, kg: w, silo });
+          lines.push({ mixer: m, kind: "grit", label: `G${g}`, kg: w, silo });
         }
       }
-      fillerKg += num(r[`m${m}FW`]);
-      resinKg += num(r[`m${m}RW`]);
+      const fw = num(r[`m${m}FW`]);
+      fillerKg += fw;
+      if (fw > 0) lines.push({ mixer: m, kind: "filler", label: "Filler", kg: fw, silo: fillerSilo });
+      const rw = num(r[`m${m}RW`]);
+      resinKg += rw;
+      if (rw > 0) lines.push({ mixer: m, kind: "resin", label: "Resin", kg: rw, silo: null });
     }
-    const fillerRaw = r.fillerSiloBuffer;
-    const fillerSilo = fillerRaw != null && String(fillerRaw).trim() !== "" ? String(fillerRaw).trim() : null;
     return {
       cycle: r.cycle,
       operator: r.operator,

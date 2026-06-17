@@ -3,12 +3,12 @@
 import { Fragment, useState } from "react";
 import Link from "next/link";
 
-interface GritLine { mixer: number; cat: string; kg: number; silo: string | null; }
+interface MixerLine { mixer: number; kind: "grit" | "filler" | "resin"; label: string; kg: number; silo: string | null; }
 interface Cycle {
   cycle: number | null; operator: string | null; mixers: number[];
   cycleWeight: number; start: string | Date | null; end: string | Date | null;
   gritKg: number; fillerKg: number; resinKg: number;
-  gritSilos: string[]; fillerSilo: string | null; lines: GritLine[];
+  gritSilos: string[]; fillerSilo: string | null; lines: MixerLine[];
 }
 interface Silo {
   increment: number | null; siloNo: string | null; sku: string | null;
@@ -58,6 +58,7 @@ export function MixerSection({ cycles, silos, mixerListHref }: { cycles: Cycle[]
   // Per-silo size & supplier(s) — used to annotate each cycle's grit/filler lines.
   const siloInfo = new Map<string, { sizes: Set<string>; suppliers: Set<string> }>();
   for (const b of silos) {
+    if (!b.weight || b.weight <= 0) continue; // neutralized (0 kg) bags don't define a silo's material
     const silo = b.siloNo ?? "—";
     if (!siloInfo.has(silo)) siloInfo.set(silo, { sizes: new Set(), suppliers: new Set() });
     const e = siloInfo.get(silo)!;
@@ -70,6 +71,7 @@ export function MixerSection({ cycles, silos, mixerListHref }: { cycles: Cycle[]
   // Materials & suppliers panel: group silo bags by silo, then by invoice.
   const bySilo = new Map<string, Map<string, { kg: number; bags: number; supplier: Set<string>; size: Set<string> }>>();
   for (const b of silos) {
+    if (!b.weight || b.weight <= 0) continue;
     const silo = b.siloNo ?? "—";
     const inv = invOf(b.bag);
     if (!bySilo.has(silo)) bySilo.set(silo, new Map());
@@ -82,6 +84,12 @@ export function MixerSection({ cycles, silos, mixerListHref }: { cycles: Cycle[]
   for (const [silo, invMap] of bySilo) {
     for (const [inv, e] of invMap) siloRows.push({ silo, inv, supplier: [...e.supplier].join(", ") || "—", size: [...e.size].join(", ") || "—", bags: e.bags, kg: e.kg });
   }
+
+  // Per-line size/supplier: resin has no silo; grit/filler look up by their silo.
+  const lineSize = (l: MixerLine) => (l.kind === "resin" ? "—" : sizeOf(l.silo));
+  const lineSup = (l: MixerLine) => (l.kind === "resin" ? "—" : supOf(l.silo));
+  const lineSilo = (l: MixerLine) => (l.silo ?? (l.kind === "resin" ? "tanks" : "—"));
+  const matClass = (k: MixerLine["kind"]) => (k === "filler" ? "text-amber-700" : k === "resin" ? "text-sky-700" : "text-gray-800");
 
   if (count === 0) {
     return (
@@ -150,7 +158,7 @@ export function MixerSection({ cycles, silos, mixerListHref }: { cycles: Cycle[]
                             <thead>
                               <tr className="text-left text-gray-400">
                                 <th className="py-1 pr-4">Mixer</th>
-                                <th className="py-1 pr-4">Grit category</th>
+                                <th className="py-1 pr-4">Material</th>
                                 <th className="py-1 pr-4">Weight (kg)</th>
                                 <th className="py-1 pr-4">From silo</th>
                                 <th className="py-1 pr-4">Size</th>
@@ -161,19 +169,17 @@ export function MixerSection({ cycles, silos, mixerListHref }: { cycles: Cycle[]
                               {c.lines.map((l, j) => (
                                 <tr key={j} className="border-t border-gray-200/70">
                                   <td className="py-1 pr-4">M{l.mixer}</td>
-                                  <td className="py-1 pr-4">{l.cat}</td>
+                                  <td className={`py-1 pr-4 font-medium ${matClass(l.kind)}`}>{l.label}</td>
                                   <td className="py-1 pr-4">{fmt(l.kg)}</td>
-                                  <td className="py-1 pr-4 text-gray-600">{l.silo ?? "—"}</td>
-                                  <td className="py-1 pr-4 text-gray-600">{sizeOf(l.silo)}</td>
-                                  <td className="py-1 text-gray-600">{supOf(l.silo)}</td>
+                                  <td className="py-1 pr-4 text-gray-600">{lineSilo(l)}</td>
+                                  <td className="py-1 pr-4 text-gray-600">{lineSize(l)}</td>
+                                  <td className="py-1 text-gray-600">{lineSup(l)}</td>
                                 </tr>
                               ))}
                             </tbody>
                           </table>
-                        ) : <div className="text-xs text-gray-500">No grit categories recorded.</div>}
-                        <div className="mt-2 text-xs text-gray-600">
-                          Filler: <b>{fmt(c.fillerKg)} kg</b>{c.fillerSilo ? ` — ${c.fillerSilo}${sizeOf(c.fillerSilo) !== "—" ? ` · ${sizeOf(c.fillerSilo)}` : ""}${supOf(c.fillerSilo) !== "—" ? ` · ${supOf(c.fillerSilo)}` : ""}` : ""} · Resin: <b>{fmt(c.resinKg)} kg</b> · Cycle total: <b>{fmt(c.cycleWeight)} kg</b>
-                        </div>
+                        ) : <div className="text-xs text-gray-500">No material lines recorded.</div>}
+                        <div className="mt-2 text-xs text-gray-600">Cycle total: <b>{fmt(c.cycleWeight)} kg</b> (grit {fmt(c.gritKg)} · filler {fmt(c.fillerKg)} · resin {fmt(c.resinKg)})</div>
                       </td>
                     </tr>
                   )}
