@@ -743,6 +743,7 @@ export interface SiloRow {
   supplier: string | null;   // supplier name(s) of the bag(s) in this silo
   size: string | null;       // grit/filler size(s) of the bag(s) in this silo
   grade: string | null;      // grade(s) of the bag(s) in this silo
+  shade: string | null;      // grit/filler shade (from the linked RM bag)
 }
 
 // Coerce a Json scalar/array (e.g. ["A&A Silicates"]) to a deduped, comma-joined string.
@@ -763,10 +764,18 @@ export async function getSiloBags(input: string): Promise<SiloRow[]> {
     select: {
       siloIncrement: true, siloNo: true, sku: true, weight: true,
       remainingWeight: true, date: true, assignee: true, invNoBagNo: true,
-      sizeFromUsedBag: true, nameFromSupplierMasterFromUsedBag: true, gradeFromUsedBag: true,
+      sizeFromUsedBag: true, nameFromSupplierMasterFromUsedBag: true, gradeFromUsedBag: true, rmIds: true,
     },
     orderBy: { siloIncrement: "asc" },
   });
+  // Shade isn't on the silo bag — it's on the linked RM (grit shade for grit, filler shade for filler).
+  const rmIds = [...new Set(rows.flatMap((r) => (Array.isArray(r.rmIds) ? r.rmIds : [])).filter(Boolean))] as string[];
+  const shadeByRm = new Map<string, string | null>();
+  if (rmIds.length) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rms: any[] = await prisma.rm.findMany({ where: { airtableId: { in: rmIds } }, select: { airtableId: true, gritShade: true, fillerShade: true } });
+    for (const rm of rms) shadeByRm.set(rm.airtableId, rm.gritShade ?? rm.fillerShade ?? null);
+  }
   return rows.map((r) => ({
     increment: r.siloIncrement,
     siloNo: r.siloNo,
@@ -779,5 +788,6 @@ export async function getSiloBags(input: string): Promise<SiloRow[]> {
     supplier: jstr(r.nameFromSupplierMasterFromUsedBag),
     size: jstr(r.sizeFromUsedBag),
     grade: jstr(r.gradeFromUsedBag),
+    shade: (Array.isArray(r.rmIds) && r.rmIds[0] ? shadeByRm.get(r.rmIds[0]) : null) ?? null,
   }));
 }
