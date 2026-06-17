@@ -5,7 +5,7 @@ import { currentBranchName } from "@/lib/branch";
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { canRectify, localId } from "@/lib/rbac";
+import { canRectify, isManager, localId } from "@/lib/rbac";
 import { normalizeBatch } from "@/lib/normalizeBatch";
 import { designForBatch, getMissingSlabs, type SlabStation } from "@/lib/erp";
 import { tableMeta, delegateOf, coerceField, selectOptions, type FieldMeta } from "@/lib/tables";
@@ -196,4 +196,27 @@ export async function createVerifiedSlab(model: string, batch: string, fd: FormD
   revalidatePath("/batch/slabs");
   revalidatePath("/batch");
   return { ok: true, id, message: `Slab ${String(data.slabNumber ?? "")} added. (Undoable)` };
+}
+
+/** Delete a single station row by id. Manager-and-above only; logged + reversible (Undo recreates it). */
+export async function deleteSlabRow(model: string, id: string, batch: string): Promise<ActionResult> {
+  if (!(await isManager())) return { ok: false, message: "Only the production manager and above can delete a row." };
+  if ((await currentBranchName()) !== "SHOP_FLOOR") return { ok: false, message: "Production data can only be edited from the Shop Floor branch." };
+  if (!model || !id) return { ok: false, message: "Nothing to delete." };
+  const d: any = delegateOf(model);
+  if (!d?.findUnique) return { ok: false, message: "Unknown table." };
+  const key = normalizeBatch(batch);
+  const row: any = await d.findUnique({ where: { id } });
+  if (!row) return { ok: false, message: "Row not found — it may already be deleted." };
+  if (row.batchKey && key && row.batchKey !== key) return { ok: false, message: "That row does not belong to this batch." };
+  const slabLabel = row.slabNumber != null && Number.isFinite(row.slabNumber) ? `slab ${row.slabNumber}` : "blank-slab row";
+  try {
+    await d.delete({ where: { id } });
+  } catch (e) {
+    return { ok: false, message: `Delete failed: ${(e as Error).message}` };
+  }
+  await logAction({ kind: "delete", batchKey: key, model, summary: `Deleted ${model} ${slabLabel} in ${key}`, payload: { model, records: [row] } });
+  revalidatePath("/batch/slabs");
+  revalidatePath("/batch");
+  return { ok: true, message: `Deleted ${model} ${slabLabel}. (Undoable)` };
 }

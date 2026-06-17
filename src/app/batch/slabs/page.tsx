@@ -3,7 +3,8 @@ import { Card, H2, Empty, Badge, fmt } from "@/components/ui";
 import { BackButton } from "@/components/BackButton";
 import { getStationSlabs, getMissingSlabs, STATION_LABEL, type SlabStation } from "@/lib/erp";
 import Link from "next/link";
-import { RectifyButton, AddAllMissingButton } from "./SlabActions";
+import { RectifyButton, AddAllMissingButton, DeleteRowButton } from "./SlabActions";
+import { isManager } from "@/lib/rbac";
 import { UndoLastButton } from "../UndoLastButton";
 import { getLastUndoable } from "../undo";
 
@@ -43,6 +44,7 @@ export default async function SlabsPage({
 
   let lastAct = null;
   if (batch) { try { lastAct = await getLastUndoable(batch); } catch { /* action_log not migrated yet */ } }
+  const canDelete = batch ? await isManager() : false;
 
   let body = null;
   let error: string | null = null;
@@ -121,7 +123,17 @@ export default async function SlabsPage({
                           </td>
                         ))}
                         <td className="py-2">
-                          <Link href={`/tables/${list.model}/${String(row.id)}`} className="text-brand hover:underline">Edit</Link>
+                          <div className="flex items-center gap-3">
+                            <Link href={`/tables/${list.model}/${String(row.id)}`} className="text-brand hover:underline">Edit</Link>
+                            {canDelete && (
+                              <DeleteRowButton
+                                model={list.model}
+                                id={String(row.id)}
+                                batch={batch}
+                                slabLabel={row[list.idKey] != null ? `slab ${String(row[list.idKey])}` : "blank-slab row"}
+                              />
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );
