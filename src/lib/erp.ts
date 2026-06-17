@@ -669,6 +669,9 @@ export async function getMissingSlabs(input: string, station: SlabStation): Prom
 }
 
 // ---- Mixer cycle & SILO details for the batch lookup --------------------
+// One grit line within a cycle: which mixer, which grit category, how much, from
+// which silo. Filler and resin are summarised per cycle (no per-category split).
+export interface MixerGritLine { mixer: number; cat: string; kg: number; silo: string | null; }
 export interface MixerCycleRow {
   cycle: number | null;
   operator: string | null;
@@ -676,27 +679,52 @@ export interface MixerCycleRow {
   cycleWeight: number;
   start: Date | null;
   end: Date | null;
+  gritKg: number;            // total grit across all mixers/categories
+  fillerKg: number;          // total filler
+  resinKg: number;           // total resin
+  gritSilos: string[];       // distinct silos grit was drawn from
+  fillerSilo: string | null; // filler silo / buffer
+  lines: MixerGritLine[];    // per-mixer, per-category grit detail (for expand)
 }
 
 export async function getMixerCycles(input: string): Promise<MixerCycleRow[]> {
   const key = normalizeBatch(input);
-  const rows = await prisma.mixerCycle.findMany({
-    where: { batchKey: key },
-    select: {
-      cycle: true, operator: true,
-      mixer1: true, mixer2: true, mixer3: true, mixer4: true,
-      totalCycleWeight: true, mixerStartTime: true, mixerEndTime: true,
-    },
-    orderBy: { cycle: "asc" },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows: any[] = await prisma.mixerCycle.findMany({ where: { batchKey: key }, orderBy: { cycle: "asc" } });
+  return rows.map((r) => {
+    const mixers = [r.mixer1 ? 1 : 0, r.mixer2 ? 2 : 0, r.mixer3 ? 3 : 0, r.mixer4 ? 4 : 0].filter((n) => n > 0);
+    const lines: MixerGritLine[] = [];
+    const gritSiloSet = new Set<string>();
+    let gritKg = 0, fillerKg = 0, resinKg = 0;
+    for (const m of [1, 2, 3, 4]) {
+      for (const g of [1, 2, 3, 4, 5]) {
+        const w = num(r[`m${m}W${g}`]);
+        const snRaw = r[`m${m}G${g}Sn`];
+        const silo = snRaw != null && String(snRaw).trim() !== "" ? String(snRaw).trim() : null;
+        if (w > 0) {
+          gritKg += w;
+          if (silo) gritSiloSet.add(silo);
+          lines.push({ mixer: m, cat: `G${g}`, kg: w, silo });
+        }
+      }
+      fillerKg += num(r[`m${m}FW`]);
+      resinKg += num(r[`m${m}RW`]);
+    }
+    const fillerRaw = r.fillerSiloBuffer;
+    const fillerSilo = fillerRaw != null && String(fillerRaw).trim() !== "" ? String(fillerRaw).trim() : null;
+    return {
+      cycle: r.cycle,
+      operator: r.operator,
+      mixers,
+      cycleWeight: num(r.totalCycleWeight),
+      start: r.mixerStartTime,
+      end: r.mixerEndTime,
+      gritKg, fillerKg, resinKg,
+      gritSilos: [...gritSiloSet],
+      fillerSilo,
+      lines,
+    };
   });
-  return rows.map((r) => ({
-    cycle: r.cycle,
-    operator: r.operator,
-    mixers: [r.mixer1 ? 1 : 0, r.mixer2 ? 2 : 0, r.mixer3 ? 3 : 0, r.mixer4 ? 4 : 0].filter((n) => n > 0),
-    cycleWeight: num(r.totalCycleWeight),
-    start: r.mixerStartTime,
-    end: r.mixerEndTime,
-  }));
 }
 
 export interface SiloRow {

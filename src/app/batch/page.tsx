@@ -13,6 +13,7 @@ import { recentActions } from "@/lib/actionLog";
 import { detectWrongBatch } from "@/lib/batchMismatch";
 import { WrongBatchFix } from "@/components/WrongBatchFix";
 import { SlabMismatchPill } from "./SlabMismatchPill";
+import { MixerSection } from "./MixerSection";
 import { canRectify, isManager } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
@@ -329,40 +330,7 @@ export default async function BatchPage({
             </Card>
           </div>
 
-          <Card>
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-              <H2>Mixer cycles · {mixerCycles.length}</H2>
-              <Link href={slab("mixer")} className="text-sm font-medium text-brand hover:underline">Open mixer list →</Link>
-            </div>
-            {mixerCycles.length ? (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-gray-500">
-                      <th className="py-2 pr-4">Cycle</th>
-                      <th className="py-2 pr-4">Mixers</th>
-                      <th className="py-2 pr-4">Cycle weight (kg)</th>
-                      <th className="py-2 pr-4">Operator</th>
-                      <th className="py-2 pr-4">Start</th>
-                      <th className="py-2">End</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {mixerCycles.map((c, i) => (
-                      <tr key={i} className="border-t border-gray-100">
-                        <td className="py-2 pr-4 font-medium">{c.cycle ?? "—"}</td>
-                        <td className="py-2 pr-4">{c.mixers.length ? c.mixers.map((m) => `M${m}`).join(", ") : "—"}</td>
-                        <td className="py-2 pr-4">{fmt(Math.round(c.cycleWeight))}</td>
-                        <td className="py-2 pr-4">{c.operator ?? "—"}</td>
-                        <td className="py-2 pr-4 text-gray-500">{c.start ? c.start.toISOString().slice(0, 16).replace("T", " ") : "—"}</td>
-                        <td className="py-2 text-gray-500">{c.end ? c.end.toISOString().slice(0, 16).replace("T", " ") : "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : <Empty>No mixer cycles for this batch.</Empty>}
-          </Card>
+          <MixerSection cycles={mixerCycles} silos={silos} mixerListHref={slab("mixer")} />
 
           <Card>
             <H2>SILO bags · {silos.length}</H2>
