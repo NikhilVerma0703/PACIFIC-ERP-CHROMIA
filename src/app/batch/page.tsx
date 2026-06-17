@@ -332,41 +332,6 @@ export default async function BatchPage({
 
           <MixerSection cycles={mixerCycles} silos={silos} mixerListHref={slab("mixer")} />
 
-          <Card>
-            <H2>SILO bags · {silos.length}</H2>
-            {silos.length ? (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-gray-500">
-                      <th className="py-2 pr-4">#</th>
-                      <th className="py-2 pr-4">Silo</th>
-                      <th className="py-2 pr-4">SKU</th>
-                      <th className="py-2 pr-4">Bag</th>
-                      <th className="py-2 pr-4">Weight (kg)</th>
-                      <th className="py-2 pr-4">Remaining (kg)</th>
-                      <th className="py-2 pr-4">Assignee</th>
-                      <th className="py-2">Date</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {silos.map((b, i) => (
-                      <tr key={i} className="border-t border-gray-100">
-                        <td className="py-2 pr-4 font-medium">{b.increment ?? "—"}</td>
-                        <td className="py-2 pr-4">{b.siloNo ?? "—"}</td>
-                        <td className="py-2 pr-4">{b.sku ?? "—"}</td>
-                        <td className="py-2 pr-4">{b.bag ?? "—"}</td>
-                        <td className="py-2 pr-4">{b.weight != null ? fmt(b.weight) : "—"}</td>
-                        <td className="py-2 pr-4">{b.remaining != null ? fmt(b.remaining) : "—"}</td>
-                        <td className="py-2 pr-4">{b.assignee ?? "—"}</td>
-                        <td className="py-2 text-gray-500">{b.date ? b.date.toISOString().slice(0, 10) : "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : <Empty>No SILO bags linked to this batch.</Empty>}
-          </Card>
 
           {history.length > 0 && (
             <Card>
