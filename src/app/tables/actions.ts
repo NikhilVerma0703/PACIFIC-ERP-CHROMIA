@@ -69,6 +69,12 @@ function stampBatchKey(data: Record<string, unknown>) {
   if (typeof b === "string" && b.trim()) data.batchKey = normalizeBatch(b);
 }
 
+// Stations where a slab number is mandatory — a row without one is a ghost that
+// breaks counts. Enforced server-side on both create and edit (the form's
+// `required` is client-only and was being bypassed).
+const SLAB_REQUIRED = new Set(["Press", "Oven", "Jot", "Distributor", "Kreos", "PolishEntry", "PolishQc"]);
+const hasSlab = (v: unknown): boolean => { if (v == null || v === "") return false; const n = typeof v === "number" ? v : Number(v); return Number.isFinite(n); };
+
 function buildData(model: string, fd: FormData): Record<string, unknown> {
   const meta = tableMeta(model);
   if (!meta) throw new Error("unknown table");
@@ -145,6 +151,11 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
   const data = buildData(model, fd);
   stampBatchKey(data);
   stampPumps(model, data);
+  // Don't let an edit blank out a slab station's slab number (only enforce when the
+  // form actually carried the field, so partial edits aren't blocked).
+  if (SLAB_REQUIRED.has(model) && fd.has("slabNumber") && !hasSlab(data.slabNumber)) {
+    return "⚠ Slab number can't be blank — enter it before saving.";
+  }
   try {
     await delegateOf(model).update({ where: { id }, data });
     if (model === "MixerCycle") {
@@ -180,6 +191,11 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
   stampMixerTotals(model, data);
   stampPumps(model, data);
   await stampIncrements(model, data);
+
+  // Require a slab number on slab stations (manual or smart entry) — no blank rows.
+  if (SLAB_REQUIRED.has(model) && !hasSlab(data.slabNumber)) {
+    return "⚠ Slab number is required — enter the slab number (manually or via smart entry) before saving.";
+  }
 
   // ---- DOUBLE-ENTRY GUARDS (the dedupe tool exists for history; new entries are blocked up front) ----
   try {
