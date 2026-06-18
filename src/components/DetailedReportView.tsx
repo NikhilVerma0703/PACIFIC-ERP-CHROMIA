@@ -161,9 +161,14 @@ export function DetailedReportView({ r }: { r: DetailedReport }) {
           </tbody>
         </table>
       </div>
+      {r.unbackedKg > 0 && (
+        <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Note: {r.unbackedKg.toLocaleString("en-IN")} kg of this mix was drawn from an unbacked / written-off silo, so it isn&apos;t itemised in the materials table above. It is still included in the {r.batchWeightTotal.toLocaleString("en-IN")} kg mix input that the wastage is calculated against.
+        </p>
+      )}
       {r.wastagePct != null && r.wastagePct < 0 && (
         <p className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-          ⚠ Slab output ({r.outputKg.toLocaleString("en-IN")} kg) exceeds mix consumed ({r.consumptionTotal.toLocaleString("en-IN")} kg) — check Press slab weights for this batch (some entries may be set weights instead of per-slab).
+          ⚠ Slab output ({r.outputKg.toLocaleString("en-IN")} kg) exceeds mix input ({r.batchWeightTotal.toLocaleString("en-IN")} kg) — check Press slab weights for this batch (some entries may be set weights instead of per-slab).
         </p>
       )}
       <p className="mt-2 text-[11px] text-gray-400">Silo starting status is reconstructed (current remaining + this batch&apos;s consumption). Silane/Cobalt are estimated from daily-tank dosing ratios. Dry/Half cleaning counts are not tracked yet.</p>

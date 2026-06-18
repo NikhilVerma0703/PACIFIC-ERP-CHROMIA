@@ -34,6 +34,7 @@ export interface DetailedReport {
   silos: SiloStatRow[];
   materials: MaterialRow[];
   consumptionTotal: number;
+  unbackedKg: number;   // mix drawn from an unbacked/written-off silo (no itemised source)
   avgByThickness: { mm12: number | null; mm20: number | null; mm30: number | null };
   outputKg: number;
   wastagePct: number | null;
@@ -62,7 +63,7 @@ export async function getDetailedReport(input: string): Promise<DetailedReport> 
     db.press.findMany({ where: { batchKey: key }, select: { slabNumber: true, slabWeight: true, designName: true, date: true } }),
   ]);
   if (!cycles.length && !press.length) {
-    return { found: false, batch: key, design: null, startAt: null, endAt: null, cycleGroups: [], totalCycles: 0, batchWeightTotal: 0, slabs: { mm12: 0, mm20: 0, mm30: 0, from: null, to: null, total: 0 }, silos: [], materials: [], consumptionTotal: 0, avgByThickness: { mm12: null, mm20: null, mm30: null }, outputKg: 0, wastagePct: null, wastageKg: null };
+    return { found: false, batch: key, design: null, startAt: null, endAt: null, cycleGroups: [], totalCycles: 0, batchWeightTotal: 0, slabs: { mm12: 0, mm20: 0, mm30: 0, from: null, to: null, total: 0 }, silos: [], materials: [], consumptionTotal: 0, unbackedKg: 0, avgByThickness: { mm12: null, mm20: null, mm30: null }, outputKg: 0, wastagePct: null, wastageKg: null };
   }
 
   // ---- header times & design ----
@@ -229,13 +230,17 @@ export async function getDetailedReport(input: string): Promise<DetailedReport> 
     if (k) { sums[k][0] += p.slabWeight; sums[k][1]++; }
   }
   const avg = (k: string) => (sums[k][1] ? Math.round(sums[k][0] / sums[k][1]) : null);
-  const wastageKg = consumptionTotal > 0 ? r1(consumptionTotal - outputKg) : null;
-  const wastagePct = consumptionTotal > 0 ? r1(((consumptionTotal - outputKg) / consumptionTotal) * 100) : null;
+  // Wastage is measured against the FULL mix input (the mixer weight), not just
+  // the silo-attributable materials — material drawn from an unbacked/written-off
+  // silo still went into the mix. unbackedKg bridges the itemised total to the input.
+  const unbackedKg = r1(Math.max(0, batchWeightTotal - consumptionTotal));
+  const wastageKg = batchWeightTotal > 0 ? r1(batchWeightTotal - outputKg) : null;
+  const wastagePct = batchWeightTotal > 0 ? r1(((batchWeightTotal - outputKg) / batchWeightTotal) * 100) : null;
 
   return {
     found: true, batch: key, design, startAt, endAt,
     cycleGroups, totalCycles: cycles.length, batchWeightTotal,
-    slabs, silos, materials, consumptionTotal,
+    slabs, silos, materials, consumptionTotal, unbackedKg,
     avgByThickness: { mm12: avg("mm12"), mm20: avg("mm20"), mm30: avg("mm30") },
     outputKg, wastagePct, wastageKg,
   };
