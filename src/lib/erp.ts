@@ -2,7 +2,7 @@
 // All functions run on the server (Prisma). Designed to degrade gracefully
 // when the database is empty (before the Phase 2 import is run).
 import { prisma } from "@/lib/prisma";
-import { normalizeBatch } from "@/lib/normalizeBatch";
+import { normalizeBatch, parentBatch, isSubBatch } from "@/lib/normalizeBatch";
 import { getRangeEdits, AUTOFILL_PREFIX } from "@/lib/batchRange";
 
 /** Parse a value that may be a JSON-wrapped Airtable formula/rollup result. */
@@ -204,8 +204,8 @@ export interface SlabAudit {
 
 const AUDIT_STATIONS: string[] = ["Press", "Distributor", "Kreos", "Oven", "Jot", "Polish Entry", "Polish QC"];
 
-async function slabAuditForKey(key: string): Promise<SlabAudit> {
-  const where = { batchKey: key };
+async function slabAuditForKeys(keys: string[]): Promise<SlabAudit> {
+  const where = { batchKey: { in: keys } };
   const rowsByStation = await Promise.all([
     prisma.press.findMany({ where, select: { slabNumber: true, remarks: true } }),
     prisma.distributor.findMany({ where, select: { slabNumber: true, remarks: true } }),
@@ -243,7 +243,7 @@ async function slabAuditForKey(key: string): Promise<SlabAudit> {
     return m;
   });
 
-  const edits = await getRangeEdits(key);
+  const edits = await getRangeEdits(keys[0] ?? "");
   for (const n of edits.added) union.add(n);
 
   // Overall range + true gaps (only meaningful when slab numbers are integers).
@@ -304,14 +304,41 @@ export interface BatchData {
   qcGrades: { label: string; count: number }[];
   thickness: { label: string; count: number }[];
   design: BatchDesign;
+  family: { parent: string; isSub: boolean; keys: string[]; members: { key: string; design: string | null; slabs: number }[] };
+}
+
+// Resolve the family of batch keys to roll up: a parent ("1350") gathers itself
+// plus any design-switch sub-batches ("1350-A", "1350-B"); a sub-batch stands alone.
+export async function batchFamily(input: string): Promise<{ key: string; parent: string; isSub: boolean; keys: string[] }> {
+  const key = normalizeBatch(input);
+  const parent = parentBatch(input);
+  const isSub = isSubBatch(input);
+  if (!key) return { key, parent, isSub, keys: [] };
+  if (isSub) return { key, parent, isSub, keys: [key] };
+  let keys = [key];
+  try {
+    // Discover sub-batches from every stream that stamps a batch key, so the
+    // family is complete whether the suffix was written at the line head (slabs)
+    // or by the mixer operator (cycles).
+    const like = key + "-%";
+    const rows = await prisma.$queryRaw<{ batch_key: string }[]>`
+      SELECT DISTINCT batch_key FROM (
+        SELECT batch_key FROM press WHERE batch_key = ${key} OR batch_key LIKE ${like}
+        UNION SELECT batch_key FROM distributor WHERE batch_key = ${key} OR batch_key LIKE ${like}
+        UNION SELECT batch_key FROM kreos WHERE batch_key = ${key} OR batch_key LIKE ${like}
+        UNION SELECT batch_key FROM mixer_cycle WHERE batch_key = ${key} OR batch_key LIKE ${like}
+      ) t WHERE batch_key IS NOT NULL`;
+    keys = [...new Set([key, ...rows.map((r) => r.batch_key).filter(Boolean)])];
+  } catch { /* fall back to the single key */ }
+  return { key, parent, isSub, keys };
 }
 
 export async function getBatch(input: string): Promise<BatchData> {
-  const key = normalizeBatch(input);
-  const where = { batchKey: key };
-  const [design, audit, [mixer, press, polishEntryCount, qcRows, ovenCount, jotCount]] = await Promise.all([
+  const { key, parent, isSub, keys } = await batchFamily(input);
+  const where = { batchKey: { in: keys } };
+  const [design, audit, [mixer, press, polishEntryCount, qcRows, ovenCount, jotCount], famDesigns, famSlabs] = await Promise.all([
     designForBatch(key),
-    slabAuditForKey(key),
+    slabAuditForKeys(keys),
     Promise.all([
       prisma.mixerCycle.findMany({
         where,
@@ -332,6 +359,8 @@ export async function getBatch(input: string): Promise<BatchData> {
       prisma.oven.count({ where }),
       prisma.jot.count({ where }),
     ]),
+    keys.length > 1 ? designsForBatchKeys(keys) : Promise.resolve(new Map()),
+    keys.length > 1 ? prisma.press.groupBy({ by: ["batchKey"], where, _count: { _all: true } }) : Promise.resolve([] as { batchKey: string | null; _count: { _all: number } }[]),
   ]);
 
   const rawCycleWeight = (m: Record<string, unknown>) => {
@@ -393,6 +422,10 @@ export async function getBatch(input: string): Promise<BatchData> {
     qcGrades: [...gradeMap.entries()].map(([label, count]) => ({ label, count })),
     thickness: [...thickMap.entries()].map(([label, count]) => ({ label, count })),
     design,
+    family: {
+      parent, isSub, keys,
+      members: keys.map((k) => ({ key: k, design: (famDesigns as Map<string, BatchDesign>).get(k)?.primary ?? null, slabs: Number((famSlabs as { batchKey: string | null; _count: { _all: number } }[]).find((r) => r.batchKey === k)?._count?._all ?? (keys.length === 1 ? press.length : 0)) })),
+    },
   };
 }
 
@@ -688,9 +721,9 @@ export interface MixerCycleRow {
 }
 
 export async function getMixerCycles(input: string): Promise<MixerCycleRow[]> {
-  const key = normalizeBatch(input);
+  const { keys } = await batchFamily(input);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const rows: any[] = await prisma.mixerCycle.findMany({ where: { batchKey: key }, orderBy: { cycle: "asc" } });
+  const rows: any[] = await prisma.mixerCycle.findMany({ where: { batchKey: { in: keys } }, orderBy: { cycle: "asc" } });
   return rows.map((r) => {
     const mixers = [r.mixer1 ? 1 : 0, r.mixer2 ? 2 : 0, r.mixer3 ? 3 : 0, r.mixer4 ? 4 : 0].filter((n) => n > 0);
     const fillerRaw = r.fillerSiloBuffer;
@@ -757,10 +790,10 @@ function jstr(v: unknown): string | null {
   return str || null;
 }
 export async function getSiloBags(input: string): Promise<SiloRow[]> {
-  const key = normalizeBatch(input);
+  const { keys } = await batchFamily(input);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rows: any[] = await prisma.silo.findMany({
-    where: { batchKey: key },
+    where: { batchKey: { in: keys } },
     select: {
       siloIncrement: true, siloNo: true, sku: true, weight: true,
       remainingWeight: true, date: true, assignee: true, invNoBagNo: true,

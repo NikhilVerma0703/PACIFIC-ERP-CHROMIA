@@ -178,6 +178,25 @@ export default async function BatchPage({
             )}
           </div>
 
+          {data.family.isSub && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
+              Sub-batch of a mid-batch design switch — part of{" "}
+              <Link href={`/batch?b=${encodeURIComponent(data.family.parent)}`} className="font-semibold underline hover:text-amber-900">{data.family.parent}</Link>. Open the parent to see the whole run rolled up.
+            </div>
+          )}
+          {!data.family.isSub && data.family.keys.length > 1 && (
+            <div className="rounded-xl border border-brand/20 bg-brand/[0.04] px-4 py-3 text-sm">
+              <div className="mb-2 font-medium text-gray-700">Batch family — the totals below include {data.family.keys.length - 1} design-switch sub-batch{data.family.keys.length - 1 === 1 ? "" : "es"}:</div>
+              <div className="flex flex-wrap gap-2">
+                {data.family.members.map((m) => (
+                  <Link key={m.key} href={`/batch?b=${encodeURIComponent(m.key)}`} className={`rounded-lg border px-3 py-1.5 transition hover:border-brand/40 ${m.key === data.key ? "border-brand/40 bg-white" : "border-gray-200 bg-white"}`}>
+                    <span className="font-semibold">{m.key}</span>{m.design ? <span className="text-gray-500"> · {m.design}</span> : ""}<span className="text-gray-400"> · {fmt(m.slabs)} slabs</span>
+                  </Link>
+                ))}
+              </div>
+            </div>
+          )}
+
           {data.slabAudit.range && (
             <RangeControls batch={query ?? ""} batchKey={data.key} min={data.slabAudit.range.min} max={data.slabAudit.range.max} missing={data.slabAudit.globalMissing.length} confirmed={data.slabAudit.confirmed} />
           )}
