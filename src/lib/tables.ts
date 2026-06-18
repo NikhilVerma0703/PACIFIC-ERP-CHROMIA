@@ -142,6 +142,13 @@ export function coerceField(kind: FieldKind, raw: FormDataEntryValue | null): un
 const PRESET_OPTIONS: Record<string, string[]> = {
   distributorVein1GevSlot: ["7mm", "9mm", "11mm"],
   distributorVein2GevSlot: ["7mm", "9mm", "11mm"],
+  // QC dropdowns — canonical options so the field is always a dropdown (never a
+  // text box) and free-text/case typos can't multiply.
+  repolishStatus: ["Direct Ok", "Polish Ok", "Repolish Done", "Repolish Required"],
+  rwStatus: ["Direct Ok", "RW Done Ok", "RW Required and ongoing", "Can't be Reworked"],
+  qualityGrade: ["Not graded yet", "A", "A2", "B", "C (Reject)"],
+  slabThickness: ["1.2 cm", "2 cm", "3 cm", "7 mm"],
+  thickness: ["1.2 cm", "2 cm", "3 cm", "7 mm"],
 };
 
 // Derive dropdown options for singleSelect / multipleSelects fields from the
@@ -155,8 +162,16 @@ export async function selectOptions(model: string): Promise<Record<string, strin
     try {
       if (f.airtableType === "singleSelect" || (CURATED_TEXT_FIELDS.has(f.prismaField) && f.kind === "scalar")) {
         const rows: any[] = await d.findMany({ where: { [f.prismaField]: { not: null } }, select: { [f.prismaField]: true }, distinct: [f.prismaField], take: 500 });
-        const vals = rows.map((r) => r[f.prismaField]).filter((v) => v != null && v !== "").map(String);
-        if (vals.length) out[f.prismaField] = [...new Set(vals)].sort();
+        const vals = rows.map((r) => r[f.prismaField]).filter((v) => v != null && v !== "").map((v) => String(v).trim()).filter(Boolean);
+        // Preset (canonical) first so its casing wins; dedupe case-insensitively so
+        // "Direct ok" can't appear next to "Direct Ok". Presets guarantee the field
+        // always has options (so it renders as a dropdown, not a free-text box).
+        const preset = PRESET_OPTIONS[f.prismaField] ?? [];
+        const seen = new Set(preset.map((x) => x.toLowerCase()));
+        const extras: string[] = [];
+        for (const v of vals) { const k = v.toLowerCase(); if (!seen.has(k)) { seen.add(k); extras.push(v); } }
+        const merged = [...preset, ...extras.sort()]; // preset in authored order, extras sorted after
+        if (merged.length) out[f.prismaField] = merged;
       } else if (f.airtableType === "multipleSelects" && meta.tableMap && f.column) {
         // distinct values computed in the DB (covers the whole table, returns a handful of rows)
         const rows: any[] = await db.$queryRawUnsafe(`SELECT DISTINCT unnest("${f.column}") AS v FROM "${meta.tableMap}" LIMIT 500`);

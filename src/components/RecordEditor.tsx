@@ -123,10 +123,13 @@ export function FieldInput({ f, value, opts, operatorName, label }: { f: FieldMe
     const v = value != null && String(value) ? String(value) : (operatorName as string);
     input = <input name={f.prismaField} defaultValue={v} readOnly className={`${base} bg-brand/[0.04] text-gray-700`} />;
   } else if (THICKNESS_FIELDS.has(f.prismaField)) {
+    // Canonical thicknesses PLUS any transition values seen in the data (e.g.
+    // "3 cm to 2 cm") so edit matches the smart-entry form's full list.
+    const all = [...new Set([...THICKNESS_OPTS, ...(opts ?? [])])];
     const canon = canonThickness(value);
-    const cur = THICKNESS_OPTS.includes(canon) ? canon : (value == null ? "" : String(value));
-    const extra = cur && !THICKNESS_OPTS.includes(cur) ? [cur] : [];
-    input = <select name={f.prismaField} defaultValue={cur} className={base}><option value="">—</option>{[...extra, ...THICKNESS_OPTS].map((o) => <option key={o} value={o}>{o}</option>)}</select>;
+    const cur = all.includes(canon) ? canon : (value == null ? "" : String(value));
+    const extra = cur && !all.includes(cur) ? [cur] : [];
+    input = <select name={f.prismaField} defaultValue={cur} className={base}><option value="">—</option>{[...extra, ...all].map((o) => <option key={o} value={o}>{o}</option>)}</select>;
   } else if (f.airtableType === "duration") {
     input = <input name={f.prismaField} type="time" defaultValue={secondsToHHMM(value)} className={base} />;
   } else if ((f.airtableType === "singleSelect" || isCurated(f.prismaField)) && opts && opts.length) {
