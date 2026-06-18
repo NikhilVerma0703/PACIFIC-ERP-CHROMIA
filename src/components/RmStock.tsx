@@ -55,9 +55,9 @@ export function RmStockPanel({ grit, filler, other, resin, daily }: { grit: RmGr
           <div className={grid}>
             {resin.map((r, i) => (
               <div key={i} className={`rounded-xl border p-3 ${r.active ? "border-green-200 bg-green-50" : "border-gray-200 bg-white"}`}>
-                <div className="flex items-baseline justify-between gap-2">
-                  <div className={`flex items-center gap-1.5 text-sm font-semibold ${r.active ? "text-green-700" : "text-gray-900"}`}>Tank {r.tankNo}{r.active && <span title="delivery logged in the last 30 min" className="h-2 w-2 animate-pulse rounded-full bg-green-500" />}</div>
-                  <div className="shrink-0 text-xs text-gray-500">{r.supplier}</div>
+                <div className="flex items-start justify-between gap-2">
+                  <div className={`flex shrink-0 items-center gap-1.5 text-sm font-semibold ${r.active ? "text-green-700" : "text-gray-900"}`}>Tank {r.tankNo}{r.active && <span title="delivery logged in the last 30 min" className="h-2 w-2 animate-pulse rounded-full bg-green-500" />}</div>
+                  <div className="min-w-0 break-words text-right text-xs leading-tight text-gray-500" title={r.supplier ?? ""}>{r.supplier}</div>
                 </div>
                 <div className="text-xs font-medium text-brand">{fmtKg(r.remaining)} kg remaining{r.quantity ? ` of ${fmtKg(r.quantity)}` : ""}</div>
                 <div className="mt-1 text-[11px] text-gray-500">inv <span className="font-medium text-gray-700">{r.invNo}</span></div>
