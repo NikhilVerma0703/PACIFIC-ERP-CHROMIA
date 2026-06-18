@@ -20,6 +20,19 @@ function pick(row: Record<string, unknown>, needles: string[]): unknown {
   return undefined;
 }
 
+/** Split a single combined "Colour L / A / B" cell ("93.2/0.3/2.2") into [L, A, B].
+ * Returns [null,null,null] unless a colour-LAB column holds exactly three numbers. */
+function labTriple(row: Record<string, unknown>): [number | null, number | null, number | null] {
+  for (const k of Object.keys(row)) {
+    const kn = k.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (kn === "colourlab" || kn === "colorlab") {
+      const parts = String(row[k] ?? "").split(/[\/,|]/).map((x) => Number(x.trim()));
+      if (parts.length === 3 && parts.every((n) => Number.isFinite(n))) return [parts[0], parts[1], parts[2]];
+    }
+  }
+  return [null, null, null];
+}
+
 export interface UploadResult { ok: boolean; added: number; skipped: number; rows: number; errors: string[]; message: string; }
 
 export async function uploadUnassignedRm(_prev: UploadResult2 | null, fd: FormData): Promise<UploadResult2> {
@@ -195,16 +208,18 @@ export async function createAssignedBag(_prev: BagEntryResult | null, fd: FormDa
   const j = (v: unknown) => (v == null || v === "" ? [] : [v]);
 
   try {
-    // duplicate = same invoice + bag + FULL MATERIAL IDENTITY (type, size, shade) —
-    // suppliers reuse bag numbers across materials AND shades within one invoice
+    // duplicate = same invoice + bag + FULL MATERIAL IDENTITY (type, size, GRADE,
+    // shade) — suppliers reuse a bag number across materials, grades AND shades
+    // within one invoice, so two bags can share inv+bag but differ by grade.
     const size0 = canonSize(fd.get("size"));
+    const gradeIn = strOrNull(fd.get("grade"));
     const shadeIn = strOrNull(fd.get("shade"));
     const shadeWhere = type === "Filler" ? { fillerShade: shadeIn } : { gritShade: shadeIn };
-    const dupe = await db.rm.findFirst({ where: { invNo, bagNo, type, size: size0, ...shadeWhere }, select: { id: true } });
-    if (dupe) return fail(`Invoice ${invNo} bag ${bagNo} (${type} ${size0 ?? ""}${shadeIn ? " " + shadeIn : ""}) already exists in Assigned RM — duplicate not saved.`);
+    const dupe = await db.rm.findFirst({ where: { invNo, bagNo, type, size: size0, grade: gradeIn, ...shadeWhere }, select: { id: true } });
+    if (dupe) return fail(`Invoice ${invNo} bag ${bagNo} (${type} ${size0 ?? ""}${gradeIn ? " " + gradeIn : ""}${shadeIn ? " " + shadeIn : ""}) already exists in Assigned RM — duplicate not saved.`);
     await db.rm.create({ data: {
       airtableId: localId("rm"), invNo, bagNo, bagWeight: weight,
-      type, size: size0, grade: strOrNull(fd.get("grade")),
+      type, size: size0, grade: gradeIn,
       gritShade: type.toLowerCase().includes("grit") ? strOrNull(fd.get("shade")) : null,
       fillerShade: type === "Filler" ? strOrNull(fd.get("shade")) : null,
       nameFromSupplierMaster: j(strOrNull(fd.get("supplier"))),
@@ -276,6 +291,11 @@ export async function uploadAssignedBags(_prev: UploadResult2 | null, fd: FormDa
     try {
       const shade0 = strOrNull(pick(row, ["shade"]));
       const size1 = canonSize(pick(row, ["size"]));
+      const lab = labTriple(row);
+      const colourL = lab[0] ?? numOrNull(pick(row, ["colourl", "colorl", "labl"]));
+      const colourA = lab[1] ?? numOrNull(pick(row, ["coloura", "colora", "laba"]));
+      const colourB = lab[2] ?? numOrNull(pick(row, ["colourb", "colorb", "labb"]));
+      const testedBy = strOrNull(pick(row, ["testedby", "tester"]));
       const shadeWhere0 = type === "Filler" ? { fillerShade: shade0 } : { gritShade: shade0 };
       const dupe = await db.rm.findFirst({ where: { invNo, bagNo, type, size: size1, ...shadeWhere0 }, select: { id: true } });
       if (dupe) {
@@ -284,8 +304,8 @@ export async function uploadAssignedBags(_prev: UploadResult2 | null, fd: FormDa
           invNo, bagNo, bagWeight: weight, type, size: canonSize(pick(row, ["size"])), grade: strOrNull(pick(row, ["grade"])),
           gritShade: type.toLowerCase().includes("grit") ? shade0 : null, fillerShade: type === "Filler" ? shade0 : null,
           nameFromSupplierMaster: j(strOrNull(pick(row, ["supplier", "vendor"]))),
-          colourL: numOrNull(pick(row, ["colourl", "colorl", "labl"])), colourA: numOrNull(pick(row, ["coloura", "colora", "laba"])), colourB: numOrNull(pick(row, ["colourb", "colorb", "labb"])),
-          testedBy: strOrNull(pick(row, ["testedby", "tester", "lab"])),
+          colourL, colourA, colourB,
+          testedBy,
         } });
         continue;
       }
@@ -296,10 +316,8 @@ export async function uploadAssignedBags(_prev: UploadResult2 | null, fd: FormDa
         gritShade: type.toLowerCase().includes("grit") ? shade : null,
         fillerShade: type === "Filler" ? shade : null,
         nameFromSupplierMaster: j(await resolveSupplier(strOrNull(pick(row, ["supplier", "vendor"])))),
-        colourL: numOrNull(pick(row, ["colourl", "colorl", "labl"])),
-        colourA: numOrNull(pick(row, ["coloura", "colora", "laba"])),
-        colourB: numOrNull(pick(row, ["colourb", "colorb", "labb"])),
-        testedBy: strOrNull(pick(row, ["testedby", "tester", "lab"])),
+        colourL, colourA, colourB,
+        testedBy,
         status: "Accepted", siloIds: [],
         date: dateOrNull(pick(row, ["date"])) ?? new Date(),
         assignedBy: who, assignedAt: new Date(),
