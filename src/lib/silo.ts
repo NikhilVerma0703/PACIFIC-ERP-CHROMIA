@@ -261,3 +261,42 @@ export async function getAvailableRmBags(): Promise<RmBagOption[]> {
     };
   });
 }
+
+/** Server-side search over ALL available (un-dumped, Accepted) bags — by invoice,
+ *  bag number, supplier, grade, size or type. Unlike getAvailableRmBags this is NOT
+ *  capped to a preloaded slice, so any bag is findable however large the stock. */
+export async function searchAvailableRmBags(q: string): Promise<RmBagOption[]> {
+  const term = (q ?? "").trim();
+  if (!term) return [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const db = prisma as any;
+  const like = `%${term}%`;
+  let rows: any[] = [];
+  try {
+    rows = await db.$queryRawUnsafe(
+      `SELECT "airtableId", inv_no AS "invNo", bag_no AS "bagNo", bag_weight AS "bagWeight",
+              size, grade, type, name_from_supplier_master AS "nameFromSupplierMaster"
+         FROM rm
+        WHERE cardinality(silo) = 0 AND (status IS NULL OR status = 'Accepted')
+          AND ( inv_no ILIKE $1 OR grade ILIKE $1 OR size ILIKE $1 OR type ILIKE $1
+                OR bag_no::text ILIKE $1
+                OR name_from_supplier_master::text ILIKE $1 )
+        ORDER BY date DESC NULLS LAST
+        LIMIT 100`,
+      like,
+    );
+  } catch { rows = []; }
+  const sup = (v: unknown): string | null => {
+    if (Array.isArray(v)) { const x = v.find((y) => y != null && y !== ""); return x == null ? null : String(x); }
+    return v == null ? null : String(v);
+  };
+  return rows.map((r) => {
+    const invBag = `INV: ${r.invNo ?? "-"} ; Bag: ${r.bagNo ?? "-"}`;
+    const mat = [r.size, r.grade].filter(Boolean).join(" ");
+    return {
+      id: r.airtableId, invNo: r.invNo ?? null, bagNo: r.bagNo ?? null, weight: r.bagWeight ?? null,
+      size: r.size ?? null, grade: r.grade ?? null, type: r.type ?? null, supplier: sup(r.nameFromSupplierMaster),
+      invBag, label: `${invBag}${mat ? ` — ${mat}` : ""}${r.bagWeight != null ? ` (${r.bagWeight} kg)` : ""}`,
+    };
+  });
+}

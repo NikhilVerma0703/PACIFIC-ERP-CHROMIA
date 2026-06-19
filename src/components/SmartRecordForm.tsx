@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useActionState } from "react";
 import { Toast } from "./Toast";
 import { createRow } from "@/app/tables/actions";
-import { getRecordDefaults } from "@/app/entry/record/actions";
+import { getRecordDefaults, searchRmBags } from "@/app/entry/record/actions";
 import type { FieldMeta } from "@/lib/tables";
 import { OPERATOR_FIELDS } from "@/lib/operatorFields";
 import { isCurated, OTHER_SENTINEL, tankLabel } from "@/lib/categoricalFields";
@@ -123,6 +123,9 @@ export function SmartRecordForm({ model, tableName, fields, options = {}, operat
   const [weight, setWeight] = useState("");
   const [bagSearch, setBagSearch] = useState("");
   const [bagShow, setBagShow] = useState(60);
+  const [serverBags, setServerBags] = useState<RmBagOption[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [pickedBag, setPickedBag] = useState<RmBagOption | null>(null);
   const [sku, setSku] = useState("");
   const [savedCount, setSavedCount] = useState(0);
   // After a successful save: toast + re-pull defaults so counters (silo
@@ -131,14 +134,31 @@ export function SmartRecordForm({ model, tableName, fields, options = {}, operat
     if (pending || msg !== "ok") return;
     setSavedCount((c) => c + 1);
     // the picked RM bag was just consumed — clear the picker for the next dump
-    setBagId(""); setWeight(""); setBagSearch("");
+    setBagId(""); setWeight(""); setBagSearch(""); setPickedBag(null); setServerBags([]);
     void loadDefaults(key);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending, msg]);
 
+  // Server-side bag search — any accepted bag is findable, not just the preloaded set.
+  useEffect(() => {
+    const term = bagSearch.trim();
+    if (!term) { setServerBags([]); setSearching(false); return; }
+    setSearching(true);
+    let active = true;
+    const t = setTimeout(async () => {
+      try {
+        const res = await searchRmBags(term);
+        if (active) setServerBags(res);
+      } finally {
+        if (active) setSearching(false);
+      }
+    }, 300);
+    return () => { active = false; clearTimeout(t); };
+  }, [bagSearch]);
+
   const isFilling = model === "Silo";
   const isResinPrep = model === "DailyResinTank";
-  const bag = isFilling ? rmBags.find((b) => b.id === bagId) ?? null : null;
+  const bag = isFilling && bagId ? pickedBag : null;
   const hidden = new Set(hideFields);
   // For silo filling, weight + inv/bag are driven by the chosen RM bag, so pull them out of the generic grid.
   const editable = fields.filter((f) => f.editable && f.prismaField !== cfg.keyField && !hidden.has(f.prismaField) && !(isFilling && (f.prismaField === "weight" || f.prismaField === "invNoBagNo" || f.prismaField === "sku")));
@@ -151,10 +171,10 @@ export function SmartRecordForm({ model, tableName, fields, options = {}, operat
     setDefaults(r); setVersion((v) => v + 1); setLoading(false);
   }
 
-  function pickBag(id: string) {
-    setBagId(id);
-    const b = rmBags.find((x) => x.id === id);
-    setWeight(b?.weight != null ? String(b.weight) : "");
+  function pickBag(b: RmBagOption) {
+    setBagId(b.id);
+    setPickedBag(b);
+    setWeight(b.weight != null ? String(b.weight) : "");
   }
 
   const siloInfo = cfg.silo ? silos.find((s) => s.siloNo === key) : undefined;
@@ -166,9 +186,7 @@ export function SmartRecordForm({ model, tableName, fields, options = {}, operat
   const bagChoices = matchBySize.length ? matchBySize : rmBags;
 
   const bagQuery = bagSearch.trim().toLowerCase();
-  const filteredBags = (bagQuery
-    ? rmBags.filter((b) => [b.invNo, b.bagNo, b.supplier, b.grade, b.size, b.type].some((x) => String(x ?? "").toLowerCase().includes(bagQuery)))
-    : bagChoices);
+  const filteredBags = bagQuery ? serverBags : bagChoices;
 
   function dv(f: FieldMeta): string {
     if (cfg.incrementFields.includes(f.prismaField)) {
@@ -253,21 +271,21 @@ export function SmartRecordForm({ model, tableName, fields, options = {}, operat
           <div className="mb-4">
             <span className="mb-1 flex items-center gap-1.5 text-xs font-medium text-gray-600">RM bag <span className="rounded bg-brand/10 px-1.5 py-0.5 text-[10px] text-brand">from inventory</span></span>
             {bag ? (
-              <BagCard b={bag} selected onClear={() => { setBagId(""); setWeight(""); }} />
+              <BagCard b={bag} selected onClear={() => { setBagId(""); setWeight(""); setPickedBag(null); }} />
             ) : (
               <>
                 <input
                   value={bagSearch}
                   onChange={(e) => { setBagSearch(e.target.value); setBagShow(60); }}
-                  placeholder={`Search ${rmBags.length} bags — e.g. "A&A", "013/26-27" or "11"`}
+                  placeholder={`Search all bags — e.g. "A&A", "013/26-27" or "11"`}
                   className={inputCls}
                 />
                 <div className="mt-1 mb-2 text-[11px] text-gray-400">
-                  {bagQuery ? `${filteredBags.length} match` : matchBySize.length ? `${matchBySize.length} bag(s) matching this silo's material — type to search all ${rmBags.length}` : `${rmBags.length} accepted bag(s) in stock`}
+                  {bagQuery ? (searching ? "Searching…" : `${filteredBags.length} match${filteredBags.length >= 100 ? "+ — refine to narrow" : ""}`) : matchBySize.length ? `${matchBySize.length} bag(s) matching this silo's material — type to search all stock` : `${rmBags.length} recent accepted bag(s) — type to search all stock`}
                 </div>
                 <div className="max-h-72 space-y-2 overflow-y-auto rounded-xl border border-gray-200 bg-gray-50/50 p-2">
-                  {filteredBags.length === 0 && <div className="px-2 py-6 text-center text-sm text-gray-400">No matching bags.</div>}
-                  {filteredBags.slice(0, bagShow).map((b) => <BagCard key={b.id} b={b} onPick={() => pickBag(b.id)} />)}
+                  {filteredBags.length === 0 && <div className="px-2 py-6 text-center text-sm text-gray-400">{searching ? "Searching…" : "No matching bags."}</div>}
+                  {filteredBags.slice(0, bagShow).map((b) => <BagCard key={b.id} b={b} onPick={() => pickBag(b)} />)}
                   {filteredBags.length > bagShow && (
                     <button type="button" onClick={() => setBagShow((n) => n + 60)} className="block w-full rounded-lg border border-brand/30 bg-brand/[0.04] px-3 py-2 text-center text-xs font-medium text-brand transition hover:bg-brand/10">
                       Showing {bagShow} of {filteredBags.length} — click to see more
