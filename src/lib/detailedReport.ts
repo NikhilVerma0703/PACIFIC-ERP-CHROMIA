@@ -4,6 +4,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
 import { normalizeBatch } from "@/lib/normalizeBatch";
+import { batchFamily } from "@/lib/erp";
 import { canonThickness } from "@/lib/thickness";
 
 const db = prisma as any;
@@ -45,6 +46,9 @@ const r1 = (n: number) => Math.round(n * 100) / 100;
 
 export async function getDetailedReport(input: string): Promise<DetailedReport> {
   const key = normalizeBatch(input);
+  // Roll up design-switch sub-batches (1350 includes 1350-A, 1350-B, ...)
+  // so the report (mix input + slab output + wastage) matches Batch Lookup.
+  const { keys } = await batchFamily(input);
 
   const cycleSelect: Record<string, boolean> = { cycle: true, createTime: true, mixerStartTime: true, mixerEndTime: true, fillerSiloBuffer: true, fillerSiloIdIds: true };
   for (let n = 1; n <= 4; n++) {
@@ -59,8 +63,8 @@ export async function getDetailedReport(input: string): Promise<DetailedReport> 
   }
 
   const [cycles, press] = await Promise.all([
-    db.mixerCycle.findMany({ where: { batchKey: key }, select: cycleSelect, orderBy: { cycle: "asc" } }),
-    db.press.findMany({ where: { batchKey: key }, select: { slabNumber: true, slabWeight: true, designName: true, date: true } }),
+    db.mixerCycle.findMany({ where: { batchKey: { in: keys } }, select: cycleSelect, orderBy: { cycle: "asc" } }),
+    db.press.findMany({ where: { batchKey: { in: keys } }, select: { slabNumber: true, slabWeight: true, designName: true, date: true } }),
   ]);
   if (!cycles.length && !press.length) {
     return { found: false, batch: key, design: null, startAt: null, endAt: null, cycleGroups: [], totalCycles: 0, batchWeightTotal: 0, slabs: { mm12: 0, mm20: 0, mm30: 0, from: null, to: null, total: 0 }, silos: [], materials: [], consumptionTotal: 0, unbackedKg: 0, avgByThickness: { mm12: null, mm20: null, mm30: null }, outputKg: 0, wastagePct: null, wastageKg: null };
@@ -131,7 +135,7 @@ export async function getDetailedReport(input: string): Promise<DetailedReport> 
     // all stations queried in parallel; first (in priority order) with data wins
     const stations = ["oven", "jot", "distributor", "kreos", "polishEntry"];
     const results = await Promise.all(stations.map((station) =>
-      db[station].findMany({ where: { batchKey: key, slabThickness: { not: null } }, select: { slabNumber: true, slabThickness: true } }).catch(() => [] as any[])
+      db[station].findMany({ where: { batchKey: { in: keys }, slabThickness: { not: null } }, select: { slabNumber: true, slabThickness: true } }).catch(() => [] as any[])
     ));
     thicknessRows = results.find((rows) => rows.length) ?? [];
   }
