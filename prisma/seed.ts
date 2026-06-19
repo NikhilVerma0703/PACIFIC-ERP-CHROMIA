@@ -1,32 +1,18 @@
-import { PrismaClient, Role } from "@prisma/client";
+import { PrismaClient, Role, FabRole } from "@prisma/client";
 import bcrypt from "bcryptjs";
 
 const prisma = new PrismaClient();
 
-async function main() {
-  const email = process.env.SEED_ADMIN_EMAIL || "admin@thepacific.group";
-  const password = process.env.SEED_ADMIN_PASSWORD || "changeme";
-  const passwordHash = await bcrypt.hash(password, 10);
+const DEFAULT_PASSWORD = "Pacific@123";
 
-  const admin = await prisma.user.upsert({
-    where: { email },
-    update: {},
-    create: {
-      email,
-      name: "Administrator",
-      passwordHash,
-      role: Role.ADMIN,
-    },
-  });
-
-  console.log(`Seeded admin user: ${admin.email} (role ${admin.role})`);
-  console.log(`Password: ${password}  ← change this after first login`);
-}
-
-main()
-  .then(() => prisma.$disconnect())
-  .catch(async (e) => {
-    console.error(e);
-    await prisma.$disconnect();
-    process.exit(1);
-  });
+const USERS: Array<{
+  email: string;
+  name: string;
+  role: Role;
+  fabRole?: FabRole;
+}> = [
+  { email: "admin@thepacific.group",                name: "Administrator",  role: Role.ADMIN,        fabRole: FabRole.FAB_ADMIN },
+  { email: "mohamed.shalman@thepacific.group",      name: "Shalman",        role: Role.ADMIN,        fabRole: FabRole.FAB_ADMIN },
+  { email: "manager@thepacific.group",              name: "Fab Manager",    role: Role.LINE_MANAGER, fabRole: FabRole.FAB_MANAGER },
+  { email: "supervisor@thepacific.group",           name: "Fab Supervisor", role: Role.INCHARGE,     fabRole: FabRole.FAB_SUPERVISOR },
+  { email: "cutter@thepacific.group",               name: "Cutter",   
