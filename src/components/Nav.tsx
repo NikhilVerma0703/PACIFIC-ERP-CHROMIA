@@ -66,16 +66,17 @@ export function Nav({ showAdmin = false, branch = "SHOP_FLOOR", role = "", fabRo
           ...(role === "ADMIN" ? [{ href: "/admin/migration", label: "Airtable Sync", icon: I.box }] : []),
           ...(fabRole
             ? [
-                {
-                  href:
-                    fabRole === "FAB_ADMIN" || fabRole === "FAB_MANAGER"
-                      ? "/fab/projects"
-                      : fabRole === "FAB_SUPERVISOR"
-                      ? "/fab/supervisor"
-                      : "/fab/session",
-                  label: "Projects",
-                  icon: I.projects,
-                },
+                ...(fabRole === "FAB_ADMIN" || fabRole === "FAB_MANAGER"
+                  ? [{ href: "/fab/projects", label: "Projects", icon: I.projects }]
+                  : []),
+                ...(fabRole === "FAB_ADMIN" || fabRole === "FAB_SUPERVISOR"
+                  ? [{ href: "/fab/supervisor", label: "Planning", icon: I.supervisor }]
+                  : []),
+                { href: "/fab/cutting", label: "Cutting", icon: I.scissors },
+                { href: "/fab/polishing", label: "Polishing", icon: I.projects },
+                { href: "/fab/sink-cutting", label: "Sink Cut", icon: I.samples },
+                { href: "/fab/fabrication", label: "Fabrication", icon: I.supervisor },
+                { href: "/fab/packaging", label: "Packaging", icon: I.projects },
                 { href: "/cutting", label: "Samples", icon: I.samples },
               ]
             : []),
