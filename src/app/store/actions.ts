@@ -296,12 +296,13 @@ export async function uploadAssignedBags(_prev: UploadResult2 | null, fd: FormDa
       const colourA = lab[1] ?? numOrNull(pick(row, ["coloura", "colora", "laba"]));
       const colourB = lab[2] ?? numOrNull(pick(row, ["colourb", "colorb", "labb"]));
       const testedBy = strOrNull(pick(row, ["testedby", "tester"]));
+      const gradeIn = strOrNull(pick(row, ["grade"]));
       const shadeWhere0 = type === "Filler" ? { fillerShade: shade0 } : { gritShade: shade0 };
-      const dupe = await db.rm.findFirst({ where: { invNo, bagNo, type, size: size1, ...shadeWhere0 }, select: { id: true } });
+      const dupe = await db.rm.findFirst({ where: { invNo, bagNo, type, size: size1, grade: gradeIn, ...shadeWhere0 }, select: { id: true } });
       if (dupe) {
         skipped++;
         dupes.push({ kind: "bag", label: `INV ${invNo} · bag ${bagNo} · ${type} ${canonSize(pick(row, ["size"])) ?? ""} · ${Math.round(weight)} kg`, data: {
-          invNo, bagNo, bagWeight: weight, type, size: canonSize(pick(row, ["size"])), grade: strOrNull(pick(row, ["grade"])),
+          invNo, bagNo, bagWeight: weight, type, size: canonSize(pick(row, ["size"])), grade: gradeIn,
           gritShade: type.toLowerCase().includes("grit") ? shade0 : null, fillerShade: type === "Filler" ? shade0 : null,
           nameFromSupplierMaster: j(strOrNull(pick(row, ["supplier", "vendor"]))),
           colourL, colourA, colourB,
@@ -312,7 +313,7 @@ export async function uploadAssignedBags(_prev: UploadResult2 | null, fd: FormDa
       const shade = shade0;
       await db.rm.create({ data: {
         airtableId: localId("rm"), invNo, bagNo, bagWeight: weight,
-        type, size: canonSize(pick(row, ["size"])), grade: strOrNull(pick(row, ["grade"])),
+        type, size: canonSize(pick(row, ["size"])), grade: gradeIn,
         gritShade: type.toLowerCase().includes("grit") ? shade : null,
         fillerShade: type === "Filler" ? shade : null,
         nameFromSupplierMaster: j(await resolveSupplier(strOrNull(pick(row, ["supplier", "vendor"])))),
@@ -389,7 +390,7 @@ async function nextBatchSuffix(kind: DupeRow["kind"], data: Record<string, unkno
   for (let n = 1; n <= 50; n++) {
     const inv = `${data.invNo ?? data.invoiceNo}-Batch-${n}`;
     let exists = null;
-    if (kind === "bag") exists = await db.rm.findFirst({ where: { invNo: inv, bagNo: data.bagNo, type: data.type, size: data.size, gritShade: data.gritShade ?? null, fillerShade: data.fillerShade ?? null }, select: { id: true } });
+    if (kind === "bag") exists = await db.rm.findFirst({ where: { invNo: inv, bagNo: data.bagNo, type: data.type, size: data.size, grade: data.grade ?? null, gritShade: data.gritShade ?? null, fillerShade: data.fillerShade ?? null }, select: { id: true } });
     else if (kind === "resin") exists = await db.resinStorage.findFirst({ where: { invoiceNo: inv, tankNo: data.tankNo }, select: { id: true } });
     else exists = await db.unassignedRm.findFirst({ where: { invNo: inv, type: String(data.type ?? ""), size: String(data.size ?? ""), grade: String(data.grade ?? "") }, select: { id: true } });
     if (!exists) return inv;
