@@ -43,6 +43,7 @@ export const authConfig = {
         token.station = (user as { station?: string | null }).station ?? null;
         token.branch = (user as { branch?: string | null }).branch ?? null;
         token.sv = (user as { sv?: number }).sv ?? 1;
+        if ((user as any).fabRole !== undefined) token.fabRole = (user as any).fabRole;
       }
       return token;
     },
@@ -53,6 +54,7 @@ export const authConfig = {
         session.user.station = (token.station as string | null) ?? null;
         session.user.branch = (token.branch as string | null) ?? null;
         (session.user as { sv?: number }).sv = (token.sv as number | undefined) ?? 1;
+        session.user.fabRole = (token.fabRole as string | null | undefined) ?? null;
       }
       return session;
     },

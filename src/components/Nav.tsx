@@ -13,6 +13,10 @@ const I = {
   users: "M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 7a4 4 0 100 8 4 4 0 000-8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75",
   box: "M21 16V8l-9-5-9 5v8l9 5 9-5zM3.3 7L12 12l8.7-5M12 22V12",
   factory: "M2 20h20M4 20V8l5 4V8l5 4V4l6 4v12",
+  scissors: "M6 3a3 3 0 110 6 3 3 0 010-6zm12 12a3 3 0 110 6 3 3 0 010-6zM5.2 5.2l13.6 13.6M18.8 5.2 9.4 14.6",
+  projects: "M3 7h18M3 12h18M3 17h18",
+  samples: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2",
+  supervisor: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2",
 };
 
 // Production paths grouped under the single "Shop Floor" tab in the Office branch.
@@ -36,9 +40,10 @@ const TABS = [
   { href: "/tables", label: "Tables", icon: I.tables },
   { href: "/report", label: "Production Report", icon: I.report },
   { href: "/entry", label: "Data Entry", icon: I.entry },
+  { href: "/cutting", label: "Cutting", icon: I.scissors },
 ];
 
-export function Nav({ showAdmin = false, branch = "SHOP_FLOOR", role = "" }: { showAdmin?: boolean; branch?: string; role?: string }) {
+export function Nav({ showAdmin = false, branch = "SHOP_FLOOR", role = "", fabRole = "" }: { showAdmin?: boolean; branch?: string; role?: string; fabRole?: string }) {
   const path = usePathname();
   const office = branch === "OFFICE";
   const base = office
@@ -59,6 +64,21 @@ export function Nav({ showAdmin = false, branch = "SHOP_FLOOR", role = "" }: { s
           ...base,
           ...(showAdmin ? [{ href: "/admin/users", label: "Users & Roles", icon: I.users }] : []),
           ...(role === "ADMIN" ? [{ href: "/admin/migration", label: "Airtable Sync", icon: I.box }] : []),
+          ...(fabRole
+            ? [
+                {
+                  href:
+                    fabRole === "FAB_ADMIN" || fabRole === "FAB_MANAGER"
+                      ? "/fab/projects"
+                      : fabRole === "FAB_SUPERVISOR"
+                      ? "/fab/supervisor"
+                      : "/fab/session",
+                  label: "Projects",
+                  icon: I.projects,
+                },
+                { href: "/cutting", label: "Samples", icon: I.samples },
+              ]
+            : []),
         ];
   return (
     <nav className="flex flex-col gap-1">

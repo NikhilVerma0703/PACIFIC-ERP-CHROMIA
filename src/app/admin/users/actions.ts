@@ -3,7 +3,7 @@
 
 import { revalidatePath } from "next/cache";
 import { currentUser, currentRole, canManageUsers, creatableRoles, rankOf, STATIONS } from "@/lib/rbac";
-import { createUserRecord, setActiveRecord, resetPasswordRecord, setStationRecord, getUserRole, bumpSessionVersion, bumpAllSessionVersions } from "@/lib/users";
+import { createUserRecord, setActiveRecord, resetPasswordRecord, setStationRecord, setFabRoleRecord, getUserRole, bumpSessionVersion, bumpAllSessionVersions } from "@/lib/users";
 import { isAdmin } from "@/lib/rbac";
 
 export interface Res { ok: boolean; message: string }
@@ -82,6 +82,17 @@ export async function setStation(id: string, station: string | null): Promise<Re
   await setStationRecord(id, station);
   revalidatePath("/admin/users");
   return { ok: true, message: "Station updated." };
+}
+
+const VALID_FAB_ROLES = ["FAB_ADMIN", "FAB_MANAGER", "FAB_SUPERVISOR", "FAB_EMPLOYEE"];
+
+export async function setFabRole(id: string, fabRole: string | null): Promise<Res> {
+  const guard = await canManageTarget(id);
+  if (!guard.ok) return guard;
+  if (fabRole && !VALID_FAB_ROLES.includes(fabRole)) return { ok: false, message: "Unknown fab role." };
+  await setFabRoleRecord(id, fabRole);
+  revalidatePath("/admin/users");
+  return { ok: true, message: fabRole ? `Fab role set to ${fabRole}.` : "Fab access removed." };
 }
 
 

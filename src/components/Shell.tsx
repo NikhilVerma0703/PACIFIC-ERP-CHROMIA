@@ -20,6 +20,7 @@ export async function Shell({ children }: { children: ReactNode }) {
     : rankOf(user?.role as string | undefined) >= ROLE_RANK.INCHARGE;
   const stationLabel = (user as { station?: string | null } | undefined)?.station;
   const branch = ((user as { branch?: string | null } | undefined)?.branch as string | undefined) ?? "SHOP_FLOOR";
+  const fabRole = ((user as { fabRole?: string | null } | undefined)?.fabRole as string | undefined) ?? "";
 
   return (
     <div className="flex min-h-screen">
@@ -32,7 +33,7 @@ export async function Shell({ children }: { children: ReactNode }) {
             <div className="text-[11px] text-gray-400">{BRANCH_LABEL[branch] ?? "Production system"}</div>
           </div>
         </div>
-        <Nav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} />
+        <Nav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabRole={fabRole} />
         <div className="mt-auto rounded-xl border border-gray-200 bg-white p-3">
           <div className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-brand/10 text-xs font-semibold text-brand">{initials}</div>
@@ -52,7 +53,7 @@ export async function Shell({ children }: { children: ReactNode }) {
         {/* Mobile top bar */}
         <header className="flex items-center justify-between gap-3 border-b border-gray-200/70 bg-white/70 px-5 py-2 backdrop-blur md:hidden">
           <div className="flex items-center gap-3">
-            <MobileNav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} />
+            <MobileNav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabRole={fabRole} />
             <span className="text-base font-semibold text-brand">Pacific ERP</span>
           </div>
           <form action={logout}><button className="min-h-[44px] text-sm text-gray-500">Sign out</button></form>

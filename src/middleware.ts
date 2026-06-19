@@ -27,6 +27,7 @@ export default auth((req) => {
     p === "/login" ||
     p.startsWith("/api/auth") ||
     p.startsWith("/api/sync") ||
+    p.startsWith("/api/fab/slabs") ||
     STATIC_FILE.test(p);
   if (isPublic) return;
 
@@ -39,6 +40,20 @@ export default auth((req) => {
 
   // 4) capped roles
   const role = (req.auth.user as { role?: string }).role;
+
+  // Fabrication module routing
+  const fabRole = (req.auth?.user as any)?.fabRole;
+  if (fabRole) {
+    const fabHome =
+      fabRole === "FAB_ADMIN" || fabRole === "FAB_MANAGER"
+        ? "/fab/projects"
+        : fabRole === "FAB_SUPERVISOR"
+        ? "/fab/supervisor"
+        : "/fab/session";
+    // Allow /fab/* and /api/fab/*
+    const ok = p.startsWith("/fab") || p.startsWith("/api/fab") || p.startsWith("/api/auth") || STATIC_FILE.test(p);
+    if (!ok) return Response.redirect(new URL(fabHome, nextUrl));
+  }
   if (role === "STORE") {
     const ok = p === "/live" || p.startsWith("/store") || p.startsWith("/api");
     if (!ok) return Response.redirect(new URL("/live", nextUrl));

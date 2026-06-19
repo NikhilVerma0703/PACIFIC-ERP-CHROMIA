@@ -62,7 +62,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // Non-admins may only sign into their own branch; ADMIN may enter either.
         if (branch && !isAdmin && userBranch !== branch) return null;
         const effectiveBranch = isAdmin ? (branch ?? userBranch) : userBranch;
-        return { id: user.id, email: user.email, name: user.name, role: user.role, station: (user as { station?: string | null }).station ?? null, branch: effectiveBranch, sv: (user as { sessionVersion?: number }).sessionVersion ?? 1 } as never;
+        return { id: user.id, email: user.email, name: user.name, role: user.role, station: (user as { station?: string | null }).station ?? null, branch: effectiveBranch, sv: (user as { sessionVersion?: number }).sessionVersion ?? 1, fabRole: (user as any).fabRole ?? null } as never;
       },
     }),
   ],
