@@ -41,18 +41,49 @@ export default auth((req) => {
   // 4) capped roles
   const role = (req.auth.user as { role?: string }).role;
 
-  // Fabrication module routing
+  // Fabrication module routing — return early so fab users bypass OPERATOR/STORE checks
   const fabRole = (req.auth?.user as any)?.fabRole;
   if (fabRole) {
+    const isEmployee = fabRole === "FAB_EMPLOYEE";
     const fabHome =
       fabRole === "FAB_ADMIN" || fabRole === "FAB_MANAGER"
         ? "/fab/projects"
         : fabRole === "FAB_SUPERVISOR"
         ? "/fab/supervisor"
         : "/fab/session";
-    // Allow /fab/* and /api/fab/*
-    const ok = p.startsWith("/fab") || p.startsWith("/api/fab") || p.startsWith("/api/auth") || STATIC_FILE.test(p);
+
+    // Allow public-ish fab API paths always
+    const isFabApi = p.startsWith("/api/fab") || p.startsWith("/api/auth");
+    if (isFabApi) return;
+
+    if (isEmployee) {
+      // Employees must be on /fab/* only
+      const machineType = req.cookies.get("fab_machine_type")?.value;
+      const MACHINE_URLS: Record<string, string> = {
+        CUTTING:      "/fab/cutting",
+        POLISHING:    "/fab/polishing",
+        SINK_CUTTING: "/fab/sink-cutting",
+        FABRICATION:  "/fab/fabrication",
+        PACKAGING:    "/fab/packaging",
+      };
+
+      if (!machineType) {
+        // No session started — send to session picker (unless already there)
+        if (p !== "/fab/session") return Response.redirect(new URL("/fab/session", nextUrl));
+        return; // already on session page
+      }
+
+      const allowedUrl = MACHINE_URLS[machineType];
+      // Allow: their queue page, session page, fab layout assets
+      const ok = p === allowedUrl || p === "/fab/session";
+      if (!ok) return Response.redirect(new URL(allowedUrl ?? "/fab/session", nextUrl));
+      return;
+    }
+
+    // Non-employee fab users: allow all /fab/* and /api/fab/*
+    const ok = p.startsWith("/fab") || STATIC_FILE.test(p);
     if (!ok) return Response.redirect(new URL(fabHome, nextUrl));
+    return;
   }
   if (role === "STORE") {
     const ok = p === "/live" || p.startsWith("/store") || p.startsWith("/api");
