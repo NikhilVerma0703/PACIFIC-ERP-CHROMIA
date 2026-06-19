@@ -54,6 +54,7 @@ function SiloInfo({ s, addKg }: { s: SiloFormInfo; addKg?: number | null }) {
       <div className="font-medium text-gray-800">{mat || "No material info"}</div>
       {s.supplier && <div>Supplier: {s.supplier}</div>}
       <div>Now: {Math.round(s.remaining)} kg · {s.bags} bag{s.bags === 1 ? "" : "s"}</div>
+      {(s.deficitKg ?? 0) > 0 && <div className="mt-0.5 font-medium text-red-600">⚠ {s.deficitKg} kg unbacked demand — fully emptying writes this off</div>}
       {showProj && <div className="mt-0.5 font-medium text-brand">After adding: {Math.round(s.remaining + addKg)} kg · {s.bags + 1} bags</div>}
     </div>
   );
@@ -316,7 +317,7 @@ export function SmartRecordForm({ model, tableName, fields, options = {}, operat
 
       <div className="sticky bottom-0 -mx-5 mt-6 flex items-center justify-between gap-3 border-t border-gray-200 bg-white/85 px-5 py-3 backdrop-blur">
         <div className="text-sm">{msg === "ok" ? <span className="text-green-600">Saved &#10003; — enter the next record</span> : msg ? <span className="text-red-600">{msg}</span> : isFilling && !bag ? <span className="text-amber-600">Pick an RM bag to enable saving</span> : <span className="text-gray-400">{tableName} · smart entry</span>}</div>
-        <button disabled={pending || (isFilling && !bag)} className="min-h-[44px] rounded-lg bg-brand px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-60">{pending ? "Saving…" : "Save record"}</button>
+        <button disabled={pending || (isFilling && !bag)} onClick={(e) => { if (model !== "SiloEmptyingLog" || !siloInfo) return; const form = (e.currentTarget as HTMLButtonElement).form; const w = form ? Number(new FormData(form).get("bagWeight") || 0) : 0; const demand = siloInfo.deficitKg ?? 0; if (w > 0 && w >= siloInfo.remaining - 1e-6 && demand > 0) { if (!window.confirm(`Silo ${key} will be EMPTIED (${Math.round(siloInfo.remaining)} kg) and its ${demand} kg of unbacked demand WRITTEN OFF so it starts fresh.\n\nThis cannot be undone. Continue?`)) e.preventDefault(); } }} className="min-h-[44px] rounded-lg bg-brand px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-60">{pending ? "Saving…" : "Save record"}</button>
       </div>
     </form>
   );

@@ -11,7 +11,7 @@ import { canUseEntryModel, operatorTableModels } from "@/lib/stationAccess";
 import { canWriteModel } from "@/lib/branch";
 import { OPERATOR_FIELDS } from "@/lib/operatorFields";
 import { allocateMixerCycle } from "@/lib/automations-silo";
-import { absorbSiloDeficit, absorbTankDeficit } from "@/lib/backfill";
+import { absorbSiloDeficit, absorbTankDeficit, writeOffSiloDeficit } from "@/lib/backfill";
 import { normalizeBatch } from "@/lib/normalizeBatch";
 import { RECORD_SMART } from "@/lib/recordSmart";
 import { prisma } from "@/lib/prisma";
@@ -286,6 +286,51 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
       const r = await absorbSiloDeficit(data.siloNo, createdId);
       if (r) return `✓ Saved — ${r.absorbedKg} kg of this bag covered the silo's unbacked draws (${r.cyclesRelinked} cycle(s) re-linked${r.cleared ? ", deficit cleared" : ", deficit partly remains"}).`;
     } catch { /* best-effort */ }
+  }
+  // Silo emptying (manual unload): subtract the entered Bag Weight from the silo
+  // FIFO (oldest bag first). If it CLEARS the silo (>= current stock) the silo is
+  // zeroed AND any outstanding unbacked demand is WRITTEN OFF so it starts fresh.
+  // Already-consumed material stays linked to its cycles. We do NOT recreate RM bags.
+  if (model === "SiloEmptyingLog" && typeof data.siloNo === "string" && data.siloNo) {
+    const siloNo = data.siloNo;
+    const want = typeof data.bagWeight === "number" ? data.bagWeight : 0;
+    if (want <= 0) return "\u26a0 Enter the empty bag weight (kg) to subtract from the silo.";
+    let res: { full: boolean; took: number; after: number };
+    try {
+      // Advisory-locked per silo (same key as deficit-absorb / write-off) so the
+      // subtraction can't race a concurrent fill/absorb on the same silo.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      res = await (prismaTx() as any).$transaction(async (tx: any) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"silo:" + siloNo}))`;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const bags: any[] = await tx.silo.findMany({ where: { siloNo, remainingWeight: { gt: 0 } }, orderBy: { siloIncrement: "asc" }, select: { id: true, airtableId: true, remainingWeight: true } });
+        const real = bags.filter((b: any) => !String(b.airtableId).startsWith("deficit_"));
+        const stock = real.reduce((a: number, b: any) => a + (b.remainingWeight ?? 0), 0);
+        const full = want >= stock - 1e-6;            // clears the silo
+        let left = full ? stock : want;
+        let took = 0;
+        for (const b of real) {
+          if (left <= 1e-6) break;
+          const rem = b.remainingWeight ?? 0;
+          const take = Math.min(rem, left);
+          await tx.silo.update({ where: { id: b.id }, data: { remainingWeight: Math.round((rem - take) * 100) / 100 } });
+          left -= take; took += take;
+        }
+        return { full, took: Math.round(took * 100) / 100, after: Math.round((stock - took) * 100) / 100 };
+      });
+    } catch (e) {
+      return `\u26a0 Saved the emptying log, but subtracting from silo ${siloNo} FAILED (${friendlyDbError(e)}). Tell your incharge \u2014 silo stock was NOT changed.`;
+    }
+    if (res.full) {
+      // Silo cleared \u2014 write off any outstanding unbacked demand (separate tx,
+      // same advisory lock) so the silo starts fresh.
+      try {
+        const wo = await writeOffSiloDeficit(siloNo, opName);
+        if (wo && wo.writtenOffKg > 0) return `\u2713 Emptied silo ${siloNo}: ${res.took} kg zeroed \u00b7 wrote off ${wo.writtenOffKg} kg unbacked demand (${wo.cyclesAffected} cycle(s)) \u2014 started fresh.`;
+      } catch { /* best-effort: stock is already zeroed */ }
+      return `\u2713 Emptied silo ${siloNo}: ${res.took} kg zeroed \u2014 started fresh.`;
+    }
+    return `\u2713 Subtracted ${res.took} kg from silo ${siloNo} \u2014 ${res.after} kg remaining.`;
   }
   if (model === "DailyResinTank") {
     // Deduct the prep's kg from the chosen STORAGE tank (FIFO by delivery date)

@@ -185,6 +185,7 @@ export interface SiloFormInfo {
   bags: number;
   bagNos: string[];
   bagList: { id: string; bagNo: string | null; weight: number | null; remaining: number | null }[];
+  deficitKg?: number; // outstanding UNBACKED demand on this silo (negative deficit placeholders), if any
 }
 
 export async function getSiloFormStatus(): Promise<SiloFormInfo[]> {
@@ -216,6 +217,13 @@ export async function getSiloFormStatus(): Promise<SiloFormInfo[]> {
   for (const s of FILLER_SILOS) out.push(by.get(s) ?? { siloNo: s, kind: "filler" as SiloKind, size: null, grade: null, type: null, supplier: null, sku: null, remaining: 0, bags: 0, bagNos: [], bagList: [] });
   for (const [s, info] of by) if (!GRIT_SILOS.includes(s) && !FILLER_SILOS.includes(s)) out.push(info);
   out.forEach((i) => (i.remaining = Math.round(i.remaining)));
+  // attach each silo's outstanding unbacked demand (deficit placeholders, negative remaining)
+  try {
+    const defs = await prisma.silo.findMany({ where: { airtableId: { startsWith: "deficit_" }, remainingWeight: { lt: 0 } }, select: { siloNo: true, remainingWeight: true } });
+    const dmap = new Map<string, number>();
+    for (const d of defs) { const s2 = norm(d.siloNo); if (!s2) continue; dmap.set(s2, (dmap.get(s2) ?? 0) + -(d.remainingWeight ?? 0)); }
+    out.forEach((i) => { i.deficitKg = Math.round((dmap.get(i.siloNo) ?? 0) * 100) / 100; });
+  } catch { /* deficit info is optional */ }
   return out;
 }
 
