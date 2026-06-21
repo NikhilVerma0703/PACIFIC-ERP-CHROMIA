@@ -15,6 +15,7 @@ import { WrongBatchFix } from "@/components/WrongBatchFix";
 import { SlabMismatchPill } from "./SlabMismatchPill";
 import { MixerSection } from "./MixerSection";
 import { canRectify, isManager } from "@/lib/rbac";
+import { getQcParamSummary } from "@/lib/stationParams";
 
 export const dynamic = "force-dynamic";
 
@@ -64,6 +65,8 @@ export default async function BatchPage({
   let lastAct = null;
   let history: Awaited<ReturnType<typeof recentActions>> = [];
   if (query) { try { [lastAct, history] = await Promise.all([getLastUndoable(query), recentActions(query)]); } catch { /* action_log not migrated yet */ } }
+  let qcSummary: string | null = null;
+  if (query && data) { try { qcSummary = await getQcParamSummary(query); } catch { /* qc summary optional */ } }
 
   let mixerCycles: Awaited<ReturnType<typeof getMixerCycles>> = [];
   let silos: Awaited<ReturnType<typeof getSiloBags>> = [];
@@ -239,6 +242,9 @@ export default async function BatchPage({
                   ? "Per station — slabs entered more than once, and slabs present elsewhere in the batch but missing here. Click any row or value to see the slabs."
                   : "Every slab is present at each station — no duplicates, nothing missing. Click any row or value to see the slabs."}
               </p>
+              <p className="mb-3 -mt-1 text-xs text-gray-500">
+                Tip — <span className="font-medium text-brand">Press, Oven, Distributor, Kreos and Mixer</span> rows open the full list of slabs (cycles for Mixer) <span className="font-medium">plus a parameter change log</span>: machine settings &amp; recipe with any mid-batch changes flagged (Mixer flags grit/filler/resin moves of ≥3&nbsp;kg).
+              </p>
               {data.slabAudit.notes.length > 0 && (
                 <div className="mb-3 space-y-1 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
                   {data.slabAudit.notes.map((n) => <div key={n}>⚠ {n}</div>)}
@@ -304,6 +310,12 @@ export default async function BatchPage({
                 </p>
               )}
             </Card>
+          )}
+
+          {qcSummary && (
+            <p className="-mt-1 rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-700">
+              <span className="font-medium text-gray-500">QC vs. parameters — </span>{qcSummary}
+            </p>
           )}
 
           <div className="grid grid-cols-2 items-stretch gap-4 sm:grid-cols-3 lg:grid-cols-6">

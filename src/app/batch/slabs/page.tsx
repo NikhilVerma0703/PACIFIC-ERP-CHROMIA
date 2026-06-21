@@ -7,6 +7,9 @@ import { RectifyButton, AddAllMissingButton, DeleteRowButton } from "./SlabActio
 import { isManager } from "@/lib/rbac";
 import { UndoLastButton } from "../UndoLastButton";
 import { getLastUndoable } from "../undo";
+import { getStationParamLog, getMixerCycleLog } from "@/lib/stationParams";
+import { StationParamLog } from "@/components/StationParamLog";
+import { MixerCycleFlags } from "@/components/MixerCycleFlags";
 
 export const dynamic = "force-dynamic";
 
@@ -45,6 +48,16 @@ export default async function SlabsPage({
   let lastAct = null;
   if (batch) { try { lastAct = await getLastUndoable(batch); } catch { /* action_log not migrated yet */ } }
   const canDelete = batch ? await isManager() : false;
+
+  // Process-parameter change-log for the station (Press/Oven/Distributor/Kreos only)
+  let paramLog = null;
+  let mixerLog = null;
+  if (batch) {
+    try {
+      if (station === "mixer") mixerLog = await getMixerCycleLog(batch);
+      else paramLog = await getStationParamLog(batch, station);
+    } catch { /* params optional */ }
+  }
 
   let body = null;
   let error: string | null = null;
@@ -153,6 +166,8 @@ export default async function SlabsPage({
     <Shell>
       <BackButton fallback={batch ? `/batch?b=${encodeURIComponent(batch)}` : "/batch"} />
       {lastAct && <UndoLastButton batch={batch} label={lastAct.summary} by={lastAct.actor} at={lastAct.createdAt} />}
+      {!error && paramLog && <div className="mb-6"><StationParamLog log={paramLog} /></div>}
+      {!error && mixerLog && <div className="mb-6"><MixerCycleFlags log={mixerLog} /></div>}
       {error ? <Empty>{error}</Empty> : body}
     </Shell>
   );
