@@ -198,6 +198,13 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
   stampPumps(model, data);
   await stampIncrements(model, data);
 
+  // MIS: a single hour can log at most 60 minutes of downtime — block impossible totals.
+  if (model === "Mis") {
+    const dt = Number(data.processDelayDurationMinutes ?? 0) + Number(data.cleaningDelayDurationMinutes ?? 0)
+      + Number(data.breakdownDelayDurationMechanicalOrElectricalMinutes ?? 0) + Number(data.poweroutDelayDurationMinutes ?? 0);
+    if (dt > 60) return `\u26a0 Total delay for this hour is ${Math.round(dt)} min \u2014 an hour can have at most 60 minutes of downtime. Reduce the delay entries before saving.`;
+  }
+
   // Require a slab number on slab stations (manual or smart entry) — no blank rows.
   if (SLAB_REQUIRED.has(model) && !hasSlab(data.slabNumber)) {
     return "⚠ Slab number is required — enter the slab number (manually or via smart entry) before saving.";

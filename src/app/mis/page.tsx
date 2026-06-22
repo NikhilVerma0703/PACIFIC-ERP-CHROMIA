@@ -1,34 +1,67 @@
 import Link from "next/link";
 import { Shell } from "@/components/Shell";
-import { Card, H2, Kpi, Empty, fmt } from "@/components/ui";
-import { getDowntimeReport, fmtDur } from "@/lib/downtime";
+import { Card, H2, Kpi, Empty, Badge, fmt } from "@/components/ui";
+import { getDowntimeReport, fmtDur, DELAY_LABEL } from "@/lib/downtime";
 
 export const dynamic = "force-dynamic";
 
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
 
-export default async function MisPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string; b?: string }> }) {
+export default async function MisPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string; b?: string; type?: string }> }) {
   const sp = await searchParams;
-  const from = sp.from?.trim() || ymd(new Date(Date.now() - 30 * 864e5));
+  const from = sp.from?.trim() || ymd(new Date(Date.now() - 29 * 864e5));
   const to = sp.to?.trim() || ymd(new Date());
   const batch = sp.b?.trim() || "";
 
   let r: Awaited<ReturnType<typeof getDowntimeReport>> | null = null;
   let error: string | null = null;
-  try { r = await getDowntimeReport({ from, to, batch: batch || undefined }); }
+  try { r = await getDowntimeReport({ from, to, batch: batch || undefined, type: sp.type }); }
   catch { error = "Could not read the MIS log."; }
+
+  // link to this page preserving the active filters, with overrides
+  const link = (extra: Record<string, string | null>) => {
+    const q = new URLSearchParams();
+    if (from) q.set("from", from);
+    if (to) q.set("to", to);
+    if (batch) q.set("b", batch);
+    for (const [k, v] of Object.entries(extra)) { if (v) q.set(k, v); }
+    const s = q.toString();
+    return s ? `/mis?${s}` : "/mis";
+  };
+
+  // quick-range presets (preserve the batch filter)
+  const today = ymd(new Date());
+  const dayAgo = (n: number) => ymd(new Date(Date.now() - n * 864e5));
+  const mStart = (() => { const d = new Date(); return ymd(new Date(d.getFullYear(), d.getMonth(), 1)); })();
+  const presets = [
+    { label: "Today", f: today, t: today },
+    { label: "Yesterday", f: dayAgo(1), t: dayAgo(1) },
+    { label: "Last 7 days", f: dayAgo(6), t: today },
+    { label: "Last 30 days", f: dayAgo(29), t: today },
+    { label: "This month", f: mStart, t: today },
+  ];
+  const presetHref = (f: string, t: string) => { const q = new URLSearchParams(); q.set("from", f); q.set("to", t); if (batch) q.set("b", batch); return `/mis?${q.toString()}`; };
 
   const maxReason = r ? Math.max(1, ...r.byReason.map((x) => x.minutes)) : 1;
   const maxTrend = r ? Math.max(1, ...r.trend.map((x) => x.minutes)) : 1;
+  const maxHour = r ? Math.max(1, ...r.byHour.map((x) => x.minutes)) : 1;
+  const maxDesign = r ? Math.max(1, ...r.designs.map((x) => x.slabs)) : 1;
+  const outBase = r ? Math.max(1, r.achievable, r.target, r.actualSlabs) : 1;
 
   return (
     <Shell>
       <h1 className="mb-1 text-2xl font-semibold tracking-tight text-gray-900">Production downtime</h1>
       <p className="mb-5 max-w-3xl text-sm text-gray-500">
-        From the MIS hourly log — total stoppage time by type and reason, the daily trend, and the breakdown/RCA log.{" "}
+        From the MIS hourly log — stoppage time by type and reason, the daily trend, output (slabs &amp; designs made, achievable vs actual), and the breakdown/RCA log.{" "}
         {batch ? `Showing batch ${r?.batch}.` : `Range ${from} to ${to}.`}
       </p>
 
+      <div className="mb-3 flex flex-wrap gap-2">
+        {presets.map((pp) => {
+          const active = from === pp.f && to === pp.t;
+          return <Link key={pp.label} href={presetHref(pp.f, pp.t)} className={`rounded-full px-3 py-1 text-xs font-medium transition ${active ? "bg-brand text-white" : "border border-gray-300 text-gray-600 hover:bg-gray-50"}`}>{pp.label}</Link>;
+        })}
+      </div>
       <form method="GET" className="mb-6 flex flex-wrap items-end gap-3">
         <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">From</span><input type="date" name="from" defaultValue={from} className="rounded-md border border-gray-300 px-3 py-2 text-sm" /></label>
         <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">To</span><input type="date" name="to" defaultValue={to} className="rounded-md border border-gray-300 px-3 py-2 text-sm" /></label>
@@ -40,9 +73,49 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
       {error && <Empty>{error}</Empty>}
       {!error && r && (
         <div className="space-y-6">
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-            <Kpi label="Total downtime" value={fmtDur(r.totalMinutes)} sub={`${fmt(Math.round(r.totalMinutes / 60))} h · ${r.hoursLogged} logged hour(s)`} />
-            {r.byType.map((t) => <Kpi key={t.key} label={t.label} value={fmtDur(t.minutes)} sub={`${t.incidents} incident(s)`} />)}
+          {r.overCap > 0 && (
+            <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800">
+              ⚠ {r.overCap} hour-row(s) log more than 60 min of delay — impossible in a 60-minute hour, so these are entry errors. They&apos;re flagged ⚠ in the log below; fix them in the MIS table.
+            </div>
+          )}
+          {/* ---- Output: slabs & designs made, achievable vs actual ---- */}
+          <div>
+            <H2>Output</H2>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+              <Kpi label="Slabs made (actual)" value={fmt(r.actualSlabs)} sub="distinct slabs pressed" />
+              <Kpi label="Achievable" value={fmt(r.achievable)} sub="MIS, given downtime" />
+              <Kpi label="Target" value={fmt(r.target)} sub="MIS planned" />
+              <Kpi label="Lost to downtime" value={fmt(r.lost)} sub="target − achievable" className={r.lost > 0 ? "ring-1 ring-amber-300" : ""} />
+              <Kpi label="Designs made" value={fmt(r.designs.length)} sub="distinct designs" />
+            </div>
+            <Card className="mt-4">
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Achievable vs actual</div>
+              <div className="space-y-1.5 text-sm">
+                {[{ k: "Target", v: r.target, c: "bg-gray-300" }, { k: "Achievable", v: r.achievable, c: "bg-brand/60" }, { k: "Actual made", v: r.actualSlabs, c: "bg-green-500" }].map((b) => (
+                  <div key={b.k} className="flex items-center gap-3">
+                    <div className="w-28 shrink-0 text-gray-600">{b.k}</div>
+                    <div className="h-4 flex-1 rounded bg-gray-100"><div className={`h-4 rounded ${b.c}`} style={{ width: `${Math.max(2, Math.round((100 * b.v) / outBase))}%` }} /></div>
+                    <div className="w-16 shrink-0 text-right font-medium text-gray-700">{fmt(b.v)}</div>
+                  </div>
+                ))}
+              </div>
+              {r.lost > 0 && <p className="mt-2 text-xs text-amber-700">~{fmt(r.lost)} slab(s) lost to downtime (target − achievable). Total downtime {fmtDur(r.totalMinutes)}.</p>}
+            </Card>
+          </div>
+
+          {/* ---- Downtime KPIs (clickable type cards) ---- */}
+          <div>
+            <H2>Downtime {batch ? `· batch ${r.batch}` : ""}</H2>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+              <Link href={link({})} className="block h-full rounded-2xl transition hover:ring-2 hover:ring-brand/30">
+                <Kpi label="Total downtime" value={fmtDur(r.totalMinutes)} sub={`${r.hoursLogged} logged hour(s)`} />
+              </Link>
+              {r.byType.map((t) => (
+                <Link key={t.key} href={link({ type: t.key })} className={`block h-full rounded-2xl transition hover:ring-2 hover:ring-brand/30 ${r.typeFilter === t.key ? "ring-2 ring-brand" : ""}`}>
+                  <Kpi label={t.label} value={fmtDur(t.minutes)} sub={`${t.incidents} incident(s) · view`} />
+                </Link>
+              ))}
+            </div>
           </div>
 
           <Card>
@@ -77,7 +150,41 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
           </Card>
 
           <Card>
-            <H2>Breakdown &amp; deviation log · {r.incidents.length}</H2>
+            <H2>Downtime by hour of day</H2>
+            {r.byHour.length === 0 ? <p className="text-sm text-gray-400">No downtime in this range.</p> : (
+              <div className="space-y-1.5">
+                {r.byHour.map((x) => (
+                  <div key={x.hour} className="flex items-center gap-3 text-sm">
+                    <div className="w-20 shrink-0 text-gray-500">{x.hour}</div>
+                    <div className="h-4 flex-1 rounded bg-gray-100"><div className="h-4 rounded bg-rose-400" style={{ width: `${Math.max(2, Math.round((100 * x.minutes) / maxHour))}%` }} /></div>
+                    <div className="w-24 shrink-0 text-right text-gray-600">{fmtDur(x.minutes)} · {x.incidents}&times;</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="mt-3 text-[11px] text-gray-400">Each hour-of-day slot is summed across every matching hour in the range (e.g. all the 06–07 hours in the period) — not one hour, which caps at 60 min. For a one-day range it&apos;s that day&apos;s hourly downtime.</p>
+          </Card>
+
+          <Card>
+            <H2>Designs made · {r.designs.length}</H2>
+            {r.designs.length === 0 ? <p className="text-sm text-gray-400">No press records in this range.</p> : (
+              <div className="space-y-1.5">
+                {r.designs.slice(0, 25).map((x) => (
+                  <Link key={x.design} href={x.design === "—" ? link({}) : `/batch?d=${encodeURIComponent(x.design)}`} className="flex items-center gap-3 rounded text-sm hover:bg-gray-50">
+                    <div className="w-56 shrink-0 truncate text-brand hover:underline" title={x.design}>{x.design}</div>
+                    <div className="h-4 flex-1 rounded bg-gray-100"><div className="h-4 rounded bg-green-500" style={{ width: `${Math.max(2, Math.round((100 * x.slabs) / maxDesign))}%` }} /></div>
+                    <div className="w-20 shrink-0 text-right text-gray-600">{fmt(x.slabs)} slab(s)</div>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          <Card>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <H2>Breakdown &amp; deviation log · {r.incidents.length}</H2>
+              {r.typeFilter && <span className="text-sm text-gray-600">Filtered: <Badge tone="brand">{DELAY_LABEL[r.typeFilter]}</Badge> <Link href={link({})} className="ml-2 text-brand hover:underline">show all</Link></span>}
+            </div>
             {r.incidents.length === 0 ? <p className="text-sm text-gray-400">No incidents logged in this range.</p> : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -90,8 +197,8 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
                       <tr key={k} className="border-t border-gray-100 align-top">
                         <td className="py-2 pr-3 whitespace-nowrap text-gray-500">{i.date ?? "—"}</td>
                         <td className="py-2 pr-3 whitespace-nowrap text-gray-500">{i.hour ?? "—"}</td>
-                        <td className="py-2 pr-3 whitespace-nowrap text-gray-700">{i.batch ?? "—"}</td>
-                        <td className="py-2 pr-3 whitespace-nowrap font-medium text-gray-900">{i.minutes > 0 ? fmtDur(i.minutes) : "—"}</td>
+                        <td className="py-2 pr-3 whitespace-nowrap text-gray-700">{i.batch ? <Link href={`/batch?b=${encodeURIComponent(i.batch)}`} className="text-brand hover:underline">{i.batch}</Link> : "—"}</td>
+                        <td className={`py-2 pr-3 whitespace-nowrap font-medium ${i.over ? "text-red-600" : "text-gray-900"}`} title={i.over ? "Over 60 min in one hour — entry error" : undefined}>{i.minutes > 0 ? fmtDur(i.minutes) : "—"}{i.over ? " ⚠" : ""}</td>
                         <td className="py-2 pr-3 text-gray-600">{i.types.join(", ") || "—"}</td>
                         <td className="py-2 pr-3 text-gray-600">{i.reasons.join(", ") || "—"}</td>
                         <td className="py-2 text-gray-600">{[i.details, i.rca ? `RCA ${i.rca}` : null, i.action, i.spares ? `spares: ${i.spares}` : null].filter(Boolean).join(" · ") || "—"}</td>
