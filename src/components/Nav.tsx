@@ -13,6 +13,7 @@ const I = {
   users: "M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 7a4 4 0 100 8 4 4 0 000-8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75",
   box: "M21 16V8l-9-5-9 5v8l9 5 9-5zM3.3 7L12 12l8.7-5M12 22V12",
   factory: "M2 20h20M4 20V8l5 4V8l5 4V4l6 4v12",
+  mis: "M12 2a10 10 0 100 20 10 10 0 000-20zM12 7v5M12 16h.01",
 };
 
 // Production paths grouped under the single "Shop Floor" tab in the Office branch.
@@ -35,6 +36,7 @@ const TABS = [
   { href: "/slab", label: "Slab Lookup", icon: I.batch },
   { href: "/tables", label: "Tables", icon: I.tables },
   { href: "/report", label: "Production Report", icon: I.report },
+  { href: "/mis", label: "Downtime", icon: I.mis },
   { href: "/entry", label: "Data Entry", icon: I.entry },
 ];
 
