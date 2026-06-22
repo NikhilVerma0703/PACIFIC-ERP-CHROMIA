@@ -16,12 +16,13 @@ import { SlabMismatchPill } from "./SlabMismatchPill";
 import { MixerSection } from "./MixerSection";
 import { canRectify, isManager } from "@/lib/rbac";
 import { getQcParamSummary } from "@/lib/stationParams";
+import { slabLabel } from "@/lib/slabLabel";
 
 export const dynamic = "force-dynamic";
 
 // Compact, capped list of slab numbers.
 function listNums(ns: number[], cap = 50): string {
-  const head = ns.slice(0, cap).join(", ");
+  const head = ns.slice(0, cap).map(slabLabel).join(", ");
   return ns.length > cap ? `${head}, +${ns.length - cap} more` : head;
 }
 
@@ -275,7 +276,7 @@ export default async function BatchPage({
                           <td className="py-2 pr-4">
                             {s.duplicates.length ? (
                               <Link href={slab(sk, "dup")} className="text-red-600 hover:underline">
-                                {s.duplicates.map((d) => `${d.slab}×${d.count}`).join(", ")}
+                                {s.duplicates.map((d) => `${slabLabel(d.slab)}×${d.count}`).join(", ")}
                               </Link>
                             ) : (
                               <span className="text-gray-400">—</span>
@@ -307,6 +308,11 @@ export default async function BatchPage({
                 <p className="mt-3 text-sm text-red-700">
                   <span className="font-medium">Missing from every station</span> (gaps in {data.slabAudit.range.min}–{data.slabAudit.range.max}):{" "}
                   {listNums(data.slabAudit.globalMissing)}
+                </p>
+              )}
+              {data.slabAudit.skipped.length > 0 && (
+                <p className="mt-3 text-sm text-gray-500">
+                  <span className="font-medium">Skipped (not counted as missing):</span> {listNums(data.slabAudit.skipped)}
                 </p>
               )}
             </Card>

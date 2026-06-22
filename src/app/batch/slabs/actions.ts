@@ -14,6 +14,8 @@ import { OPERATOR_FIELDS } from "@/lib/operatorFields";
 import { currentUser } from "@/lib/rbac";
 import { THICKNESS_FIELDS, canonThickness } from "@/lib/thickness";
 import { logAction } from "@/lib/actionLog";
+import { skipSlab, unskipSlab } from "@/lib/batchRange";
+import { slabLabel } from "@/lib/slabLabel";
 
 type FixStation = Exclude<SlabStation, "mixer">;
 
@@ -261,4 +263,29 @@ export async function removeBlankSlabRows(batch: string): Promise<ActionResult> 
   await logAction({ kind: "delete", batchKey: key, model: null, summary: `Removed ${total} blank-slab row(s) in ${key} (${parts})`, payload: { groups } });
   revalidatePath("/batch"); revalidatePath("/batch/slabs");
   return { ok: true, message: `Removed ${total} blank-slab row(s). (Undoable)` };
+}
+
+/** Mark a slab number as intentionally skipped (never produced). Incharge+, Shop Floor; logged. */
+export async function markSkipped(batch: string, slab: number): Promise<ActionResult> {
+  if (!(await canRectify())) return { ok: false, message: "Only incharge and above can mark a slab skipped." };
+  if ((await currentBranchName()) !== "SHOP_FLOOR") return { ok: false, message: "Production data can only be edited from the Shop Floor branch." };
+  const key = normalizeBatch(batch);
+  if (!key || !Number.isFinite(slab)) return { ok: false, message: "Invalid slab." };
+  const me = await currentUser();
+  await skipSlab(key, slab, me?.name || me?.email || null);
+  await logAction({ kind: "rangeAdd", batchKey: key, model: null, summary: `Marked slab ${slabLabel(slab)} as skipped (never produced) in ${key}`, payload: { slab } });
+  revalidatePath("/batch/slabs"); revalidatePath("/batch");
+  return { ok: true, message: `Slab ${slabLabel(slab)} marked as skipped \u2014 it won't show as missing.` };
+}
+
+/** Undo a skip mark. Incharge+, Shop Floor; logged. */
+export async function unmarkSkipped(batch: string, slab: number): Promise<ActionResult> {
+  if (!(await canRectify())) return { ok: false, message: "Only incharge and above can change skip marks." };
+  if ((await currentBranchName()) !== "SHOP_FLOOR") return { ok: false, message: "Production data can only be edited from the Shop Floor branch." };
+  const key = normalizeBatch(batch);
+  if (!key || !Number.isFinite(slab)) return { ok: false, message: "Invalid slab." };
+  await unskipSlab(key, slab);
+  await logAction({ kind: "rangeRemove", batchKey: key, model: null, summary: `Un-skipped slab ${slabLabel(slab)} in ${key}`, payload: { slab } });
+  revalidatePath("/batch/slabs"); revalidatePath("/batch");
+  return { ok: true, message: `Slab ${slabLabel(slab)} is no longer skipped.` };
 }

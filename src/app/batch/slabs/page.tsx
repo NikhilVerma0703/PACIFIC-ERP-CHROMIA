@@ -3,7 +3,8 @@ import { Card, H2, Empty, Badge, fmt } from "@/components/ui";
 import { BackButton } from "@/components/BackButton";
 import { getStationSlabs, getMissingSlabs, STATION_LABEL, type SlabStation } from "@/lib/erp";
 import Link from "next/link";
-import { RectifyButton, AddAllMissingButton, DeleteRowButton } from "./SlabActions";
+import { RectifyButton, AddAllMissingButton, DeleteRowButton, MarkSkippedButton, UnskipButton } from "./SlabActions";
+import { slabLabel } from "@/lib/slabLabel";
 import { isManager } from "@/lib/rbac";
 import { UndoLastButton } from "../UndoLastButton";
 import { getLastUndoable } from "../undo";
@@ -68,7 +69,7 @@ export default async function SlabsPage({
     try {
       if (missingMode) {
         const m = await getMissingSlabs(batch, station);
-        body = m.rows.length === 0 ? (
+        body = (m.rows.length === 0 && m.skipped.length === 0) ? (
           <Empty>Nothing missing at {STATION_LABEL[station]} for batch {m.key}.</Empty>
         ) : (
           <Card>
@@ -77,8 +78,16 @@ export default async function SlabsPage({
               {isFix(station) && <AddAllMissingButton batch={batch} station={station} />}
             </div>
             <p className="mb-3 text-sm text-gray-600">
-              Slabs present elsewhere in the batch but with no {m.label} record. Adding a slab sets its weight to the batch average.
+              Slabs present elsewhere in the batch but with no {m.label} record. <strong>Add &amp; verify</strong> creates the slab (weight = batch average); <strong>Mark as skipped</strong> records that the number was never produced so it stops showing as missing.
             </p>
+            {m.skipped.length > 0 && (
+              <p className="mb-3 flex flex-wrap items-center gap-2 text-sm text-gray-500">
+                <span className="font-medium">Skipped (not counted as missing):</span>
+                {m.skipped.map((n) => (
+                  <span key={n} className="inline-flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5">{slabLabel(n)}<UnskipButton batch={batch} slab={n} /></span>
+                ))}
+              </p>
+            )}
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-gray-500">
@@ -90,9 +99,14 @@ export default async function SlabsPage({
               <tbody>
                 {m.rows.map((r) => (
                   <tr key={r.slab} className="border-t border-gray-100">
-                    <td className="py-2 pr-4 font-medium text-amber-700">{r.slab}</td>
+                    <td className="py-2 pr-4 font-medium text-amber-700">{slabLabel(r.slab)}</td>
                     <td className="py-2 pr-4 text-gray-700">{r.presentIn.join(", ") || "—"}</td>
-                    <td className="py-2">{isFix(station) && <Link href={`/batch/slabs/add?b=${encodeURIComponent(batch)}&station=${station}&slab=${r.slab}`} className="rounded-md border border-brand px-3 py-1.5 text-sm font-medium text-brand hover:bg-brand/5">Add &amp; verify</Link>}</td>
+                    <td className="py-2">
+                      <div className="flex flex-wrap items-center gap-3">
+                        {isFix(station) && <Link href={`/batch/slabs/add?b=${encodeURIComponent(batch)}&station=${station}&slab=${r.slab}`} className="rounded-md border border-brand px-3 py-1.5 text-sm font-medium text-brand hover:bg-brand/5">Add &amp; verify</Link>}
+                        <MarkSkippedButton batch={batch} slab={r.slab} />
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -132,7 +146,7 @@ export default async function SlabsPage({
                       <tr key={i} className={`border-t border-gray-100 ${isDup ? "bg-red-50" : ""}`}>
                         {list.columns.map((c) => (
                           <td key={c.key} className={`py-2 pr-4 ${c.key === list.idKey && isDup ? "font-medium text-red-600" : "text-gray-800"}`}>
-                            {cell(row[c.key], c.kind)}{c.key === list.idKey && isDup ? " ⚠" : ""}
+                            {c.key === "slabNumber" ? slabLabel(Number(row[c.key])) : cell(row[c.key], c.kind)}{c.key === list.idKey && isDup ? " ⚠" : ""}
                           </td>
                         ))}
                         <td className="py-2">

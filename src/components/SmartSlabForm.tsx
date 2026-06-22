@@ -203,19 +203,19 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
               </span>
               {slabMode === "dropdown" ? (
                 <>
-                  <input name="slabNumber" type="number" step="any" required list="slab-options" defaultValue="" placeholder="type to search…" onBlur={slabFirst ? (e) => resolveFromSlab(e.target.value) : undefined} className={`${inputCls} font-medium`} />
+                  <input name="slabNumber" type="text" required list="slab-options" defaultValue="" placeholder="type to search…" onBlur={slabFirst ? (e) => resolveFromSlab(e.target.value) : undefined} className={`${inputCls} font-medium`} />
                   <datalist id="slab-options">{slabOptions.map((n) => <option key={n} value={n} />)}</datalist>
                   <span className="mt-1 block text-[11px] text-gray-400">{slabOptions.length.toLocaleString("en-IN")} polish-entry slab(s) awaiting QC · type to search &amp; pick</span>
                 </>
               ) : slabMode === "manual" ? (
                 <>
-                  <input name="slabNumber" type="number" step="any" required defaultValue="" onBlur={slabFirst ? (e) => resolveFromSlab(e.target.value) : undefined} className={`${inputCls} font-medium`} />
-                  <span className="mt-1 block text-[11px] text-gray-400">manual — enter the slab number</span>
+                  <input name="slabNumber" type="text" required defaultValue="" onBlur={slabFirst ? (e) => resolveFromSlab(e.target.value) : undefined} className={`${inputCls} font-medium`} />
+                  <span className="mt-1 block text-[11px] text-gray-400">manual — enter the slab number (e.g. 84, or 84a for an in-between slab)</span>
                 </>
               ) : (
                 <>
-                  <input name="slabNumber" type="number" step="any" required defaultValue={defaults?.slabAutofill ?? ""} className={`${inputCls} font-medium`} />
-                  <span className="mt-1 block text-[11px] text-gray-400">{defaults ? (defaults.slabAutofill != null ? "auto: this station's last in batch + 1 · editable" : "first slab of this batch — enter it manually") : "enter batch — autofills last + 1"}</span>
+                  <input name="slabNumber" type="text" required defaultValue={defaults?.slabAutofill ?? ""} className={`${inputCls} font-medium`} />
+                  <span className="mt-1 block text-[11px] text-gray-400">{defaults ? (defaults.slabAutofill != null ? "auto: last in batch + 1 · editable · extra in-between slab? type e.g. 84a" : "first slab of this batch — enter it manually") : "enter batch — autofills last + 1"}</span>
                 </>
               )}
             </label>

@@ -10,22 +10,25 @@ const db = prisma as any;
 const STATION_MODELS = ["Press", "Oven", "Jot", "PolishEntry", "PolishQc"];
 const dele = (m: string) => db[m[0].toLowerCase() + m.slice(1)];
 
-export interface RangeEdits { confirmed: { by: string | null; at: string } | null; added: number[]; }
+export interface RangeEdits { confirmed: { by: string | null; at: string } | null; added: number[]; skipped: number[]; }
 
 /** Range confirmation + manually-added slab numbers for a batch. */
 export async function getRangeEdits(batchKey: string): Promise<RangeEdits> {
-  if (!batchKey) return { confirmed: null, added: [] };
+  if (!batchKey) return { confirmed: null, added: [], skipped: [] };
   let rows: any[] = [];
   try { rows = await db.$queryRaw`SELECT kind, slab_number, entered_by, created_at FROM batch_range_edit WHERE batch_key = ${batchKey}`; }
-  catch { return { confirmed: null, added: [] }; }
+  catch { return { confirmed: null, added: [], skipped: [] }; }
   let confirmed: RangeEdits["confirmed"] = null;
   const added: number[] = [];
+  const skipped: number[] = [];
   for (const r of rows) {
     if (r.kind === "confirm") confirmed = { by: r.entered_by ?? null, at: new Date(r.created_at).toISOString().slice(0, 10) };
     else if (r.kind === "add" && r.slab_number != null) added.push(Number(r.slab_number));
+    else if (r.kind === "skip" && r.slab_number != null) skipped.push(Number(r.slab_number));
   }
   added.sort((a, b) => a - b);
-  return { confirmed, added };
+  skipped.sort((a, b) => a - b);
+  return { confirmed, added, skipped };
 }
 
 export async function confirmRange(batchKey: string, by: string | null): Promise<void> {
@@ -39,6 +42,21 @@ export async function addSlab(batchKey: string, slabNumber: number, by: string |
   await db.$executeRaw`INSERT INTO batch_range_edit (id, batch_key, slab_number, kind, entered_by)
     VALUES (${localId("bre")}, ${batchKey}, ${slabNumber}, 'add', ${by})
     ON CONFLICT (batch_key, kind, slab_number) DO NOTHING`;
+}
+
+/** Mark a slab number as intentionally SKIPPED (never produced) so it stops
+ * showing as a missing-slab discrepancy and is never auto-filled. */
+export async function skipSlab(batchKey: string, slabNumber: number, by: string | null): Promise<void> {
+  if (!batchKey || !Number.isFinite(slabNumber)) return;
+  await db.$executeRaw`INSERT INTO batch_range_edit (id, batch_key, slab_number, kind, entered_by)
+    VALUES (${localId("bre")}, ${batchKey}, ${slabNumber}, 'skip', ${by})
+    ON CONFLICT (batch_key, kind, slab_number) DO NOTHING`;
+}
+
+/** Undo a skip mark. */
+export async function unskipSlab(batchKey: string, slabNumber: number): Promise<void> {
+  if (!batchKey || !Number.isFinite(slabNumber)) return;
+  await db.$executeRaw`DELETE FROM batch_range_edit WHERE batch_key = ${batchKey} AND kind = 'skip' AND slab_number = ${slabNumber}`;
 }
 
 /** The batch the line head (Distributor/Kreos) says a slab belongs to, if any. */
@@ -124,8 +142,9 @@ export async function autoFillBatch(batchKey: string): Promise<{ created: number
     for (const r of rows) { const n = r.slabNumber; if (n != null && Number.isFinite(n)) { set.add(n); union.add(n); } }
     present[m] = set;
   }
-  const { added } = await getRangeEdits(batchKey);
+  const { added, skipped } = await getRangeEdits(batchKey);
   for (const n of added) union.add(n);
+  for (const n of skipped) union.delete(n); // never auto-fill a skipped slab
   if (!union.size) return { created: 0 };
   const dSize = present["distributor"]?.size ?? 0, kSize = present["kreos"]?.size ?? 0;
   const lineHead = dSize === 0 && kSize === 0 ? null : dSize >= kSize ? "distributor" : "kreos";

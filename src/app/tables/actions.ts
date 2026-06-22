@@ -13,6 +13,7 @@ import { OPERATOR_FIELDS } from "@/lib/operatorFields";
 import { allocateMixerCycle } from "@/lib/automations-silo";
 import { absorbSiloDeficit, absorbTankDeficit, writeOffSiloDeficit } from "@/lib/backfill";
 import { normalizeBatch } from "@/lib/normalizeBatch";
+import { parseSlabInput } from "@/lib/slabLabel";
 import { RECORD_SMART } from "@/lib/recordSmart";
 import { prisma } from "@/lib/prisma";
 
@@ -189,6 +190,8 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
   const me = await currentUser();
   const opName = me?.name || me?.email || "operator";
   const data = buildData(model, fd);
+  // Accept "1a"/"1b" insert labels in the slab-number field -> decimal (1.1/1.2).
+  if (fd.has("slabNumber")) { const ps = parseSlabInput(fd.get("slabNumber")); if (ps != null) data.slabNumber = ps; }
   stampOperator(model, data, opName);
   stampBatchKey(data);
   stampMixerTotals(model, data);

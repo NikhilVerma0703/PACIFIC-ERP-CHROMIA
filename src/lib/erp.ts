@@ -197,6 +197,7 @@ export interface SlabAudit {
   notes: string[];                             // structural anomalies (missing stage / both-or-neither distributor+kreos)
   hasIssues: boolean;
   added: number[];                             // slab numbers manually added to this batch (expected even if absent)
+  skipped: number[];                           // slab numbers intentionally skipped (never produced) — excluded from missing
   confirmed: { by: string | null; at: string } | null; // range confirmed-as-correct
   blankRows: { model: string; label: string; count: number }[]; // rows with no slab number (removable)
   blankTotal: number;                          // total slab-less rows across stations
@@ -246,15 +247,18 @@ async function slabAuditForKeys(keys: string[]): Promise<SlabAudit> {
   const edits = await getRangeEdits(keys[0] ?? "");
   for (const n of edits.added) union.add(n);
 
-  // Overall range + true gaps (only meaningful when slab numbers are integers).
+  // Overall range + true gaps. Computed over the WHOLE-NUMBER sequence only, so an
+  // "insert" slab (a decimal like 1.1 shown as "1a") doesn't disable gap-detection;
+  // intentionally-skipped numbers are excluded from the gaps.
+  const skippedSet = new Set(edits.skipped);
   let range: { min: number; max: number } | null = null;
   const globalMissing: number[] = [];
-  const unionArr = [...union];
-  if (unionArr.length && unionArr.every((n) => Number.isInteger(n))) {
-    const min = Math.min(...unionArr);
-    const max = Math.max(...unionArr);
+  const intSlabs = [...union].filter((n) => Number.isInteger(n));
+  if (intSlabs.length) {
+    const min = Math.min(...intSlabs);
+    const max = Math.max(...intSlabs);
     range = { min, max };
-    for (let i = min; i <= max; i++) if (!union.has(i)) globalMissing.push(i);
+    for (let i = min; i <= max; i++) if (!union.has(i) && !skippedSet.has(i)) globalMissing.push(i);
   }
 
   const stations: StationAudit[] = AUDIT_STATIONS.map((label, i) => {
@@ -264,7 +268,7 @@ async function slabAuditForKeys(keys: string[]): Promise<SlabAudit> {
       .filter(([, c]) => c > 1)
       .map(([slab, count]) => ({ slab, count }))
       .sort((a, b) => a.slab - b.slab);
-    const missing = [...union].filter((n) => !m.has(n)).sort((a, b) => a - b);
+    const missing = [...union].filter((n) => !m.has(n) && !skippedSet.has(n)).sort((a, b) => a - b);
     const total = [...m.values()].reduce((a, c) => a + c, 0);
     const autoAdded = [...(autoByStation[i] ?? new Set<number>())].filter((n) => !duplicates.some((d) => d.slab === n)).sort((a, b) => a - b);
     return { label, total, distinct: m.size, duplicates, missing: missing.filter((n) => !(autoByStation[i] ?? new Set<number>()).has(n)), autoAdded };
@@ -287,7 +291,7 @@ async function slabAuditForKeys(keys: string[]): Promise<SlabAudit> {
     notes.length > 0 ||
     stations.some((s) => s.duplicates.length > 0 || s.missing.length > 0 || s.autoAdded.length > 0);
 
-  return { stations, range, globalMissing, notes, hasIssues, added: edits.added, confirmed: edits.confirmed, blankRows, blankTotal };
+  return { stations, range, globalMissing, notes, hasIssues, added: edits.added, skipped: edits.skipped, confirmed: edits.confirmed, blankRows, blankTotal };
 }
 
 export interface BatchData {
@@ -669,6 +673,7 @@ export interface MissingPresence {
   station: SlabStation;
   label: string;
   rows: { slab: number; presentIn: string[] }[];
+  skipped: number[]; // slab numbers already marked as intentionally skipped
 }
 
 export async function getMissingSlabs(input: string, station: SlabStation): Promise<MissingPresence> {
@@ -692,13 +697,15 @@ export async function getMissingSlabs(input: string, station: SlabStation): Prom
   }));
   const union = new Set<number>();
   for (const s of sets) for (const n of s.set) union.add(n);
+  const { skipped } = await getRangeEdits(key);
+  const skippedSet = new Set(skipped);
   const me = sets.find((s) => s.station === station);
-  const missing = [...union].filter((n) => !(me?.set.has(n))).sort((a, b) => a - b);
+  const missing = [...union].filter((n) => !(me?.set.has(n)) && !skippedSet.has(n)).sort((a, b) => a - b);
   const rows = missing.map((slab) => ({
     slab,
     presentIn: sets.filter((s) => s.set.has(slab)).map((s) => s.label),
   }));
-  return { key, station, label: STATION_LABEL[station], rows };
+  return { key, station, label: STATION_LABEL[station], rows, skipped };
 }
 
 // ---- Mixer cycle & SILO details for the batch lookup --------------------
