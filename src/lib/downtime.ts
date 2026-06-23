@@ -3,7 +3,7 @@
 //   - Downtime by type (process/cleaning/breakdown/power-out), reason, day, hour;
 //     incident/RCA log; impossible (>60 min/hr) flag.
 //   - Target = 24 slabs/hr x 21 productive hrs/day (24h - 3h planned cleaning) x days.
-//     ROBO days (MIS production_type = "Robo") are rated 12 slabs/hr.
+//     The rate blends PER HOUR by what ran (robo hours @ 12/hr, else 24/hr).
 //   - Achievable = Target - lost output, where "lost" = unplanned downtime
 //     (process+breakdown+power-out) PLUS cleaning beyond the 3 h/day baseline
 //     (multiple SKU changes => extra cleaning => fewer productive hours).
@@ -43,7 +43,7 @@ export interface DowntimeReport {
   rows: number; hoursLogged: number; totalMinutes: number; overCap: number;
   byType: DelayType[]; byReason: ReasonRow[]; trend: TrendPoint[]; byHour: HourRow[]; incidents: IncidentRow[];
   actualSlabs: number; target: number; achievable: number; lost: number; designs: DesignRow[];
-  daysCounted: number; roboDays: number;
+  daysCounted: number; roboHours: number; normalHours: number;
   pressBatches: number; misBatches: number; unloggedBatches: number; unloggedBatchList: string[];
 }
 
@@ -135,31 +135,37 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   const designs = [...designMap.entries()].map(([design, set]) => ({ design, slabs: set.size })).sort((a, b) => b.slabs - a.slabs);
 
   // ---- capacity target + achievable ----
-  // lost output = unplanned downtime + cleaning beyond the 3 h/day baseline.
-  let target = 0, lost = 0, roboDays = 0, daysCounted = 0;
+  // Rate is PER HOUR by what ran (robo 12/hr, else 24/hr), so a day that switches
+  // SKU/design blends; applied to 21 productive hrs/day. downtimeCost (slabs) =
+  // unplanned downtime + cleaning beyond the 3 h/day baseline, at that day's rate.
+  // Achievable = target - downtimeCost; reported Lost = Achievable - Actual.
+  const blendRate = (robo: number, other: number) => (robo + other > 0 ? (robo * ROBO_RATE + other * NORMAL_RATE) / (robo + other) : NORMAL_RATE);
+  let target = 0, downtimeCost = 0, roboHours = 0, normalHours = 0, daysCounted = 0;
   if (batch) {
-    const batchRobo = rows.length > 0 && rows.filter((r) => isRobo(r.productionType)).length * 2 >= rows.length;
-    const rate = batchRobo ? ROBO_RATE : NORMAL_RATE;
+    const roboR = rows.filter((r) => isRobo(r.productionType)).length;
+    const normR = rows.length - roboR;
+    const rate = blendRate(roboR, normR);
     daysCounted = pressDaySet.size || 1;
     target = rate * HOURS_PER_DAY * daysCounted;
     const lostMin = otherTotal + Math.max(0, cleanTotal - CLEAN_BASELINE_MIN * daysCounted);
-    lost = r0(rate * (lostMin / 60));
-    roboDays = batchRobo ? daysCounted : 0;
+    downtimeCost = rate * (lostMin / 60);
+    roboHours = roboR; normalHours = normR;
   } else {
     for (let d = new Date(from); d <= toEnd; d = new Date(d.getTime() + 864e5)) {
       const day = dayKey(d);
       const e = dayRobo.get(day);
-      const robo = e ? e.robo > e.other : false;
-      const rate = robo ? ROBO_RATE : NORMAL_RATE;
-      if (robo) roboDays++;
+      const robo = e?.robo ?? 0, other = e?.other ?? 0;
+      const rate = blendRate(robo, other);
+      roboHours += robo; normalHours += other;
       daysCounted++;
       target += rate * HOURS_PER_DAY;
       const dayLostMin = (otherByDay.get(day) ?? 0) + Math.max(0, (cleanByDay.get(day) ?? 0) - CLEAN_BASELINE_MIN);
-      lost += r0(rate * (dayLostMin / 60));
+      downtimeCost += rate * (dayLostMin / 60);
     }
   }
-  lost = Math.min(lost, target);
-  const achievable = Math.max(0, target - lost);
+  target = r0(target);
+  const achievable = Math.max(0, target - r0(downtimeCost));
+  const lost = Math.max(0, achievable - actualSlabs);
 
   // ---- MIS logging completeness: batches pressed but never logged in MIS ----
   const misBatchSet = new Set<string>();
@@ -178,7 +184,7 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
     from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10), batch, typeFilter,
     rows: rows.length, hoursLogged, totalMinutes: r0(totalMinutes), overCap,
     byType, byReason, trend, byHour, incidents: shown.slice(0, 300),
-    actualSlabs, target, achievable, lost, designs, daysCounted, roboDays,
+    actualSlabs, target, achievable, lost, designs, daysCounted, roboHours, normalHours,
     pressBatches: pressBatchSet.size, misBatches: misBatchSet.size, unloggedBatches: unloggedBatchList.length, unloggedBatchList: unloggedBatchList.slice(0, 60),
   };
 }
