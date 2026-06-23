@@ -2,6 +2,9 @@ import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { Card, H2, Kpi, Empty, Badge, fmt } from "@/components/ui";
 import { getDowntimeReport, fmtDur, DELAY_LABEL } from "@/lib/downtime";
+import { getDowntimeResponses } from "@/lib/downtimeResponse";
+import { canRespondDowntime } from "@/lib/rbac";
+import { DowntimeRespond } from "@/components/DowntimeRespond";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +21,8 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
   let error: string | null = null;
   try { r = await getDowntimeReport({ from, to, batch: batch || undefined, type: sp.type }); }
   catch { error = "Could not read the MIS log."; }
+  const respMap = r ? await getDowntimeResponses(r.incidents.map((i) => i.id)) : null;
+  const canRespond = await canRespondDowntime();
 
   // link to this page preserving the active filters, with overrides
   const link = (extra: Record<string, string | null>) => {
@@ -197,7 +202,7 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
                 <table className="w-full text-sm">
                   <thead><tr className="text-left text-gray-500">
                     <th className="py-2 pr-3">Date</th><th className="py-2 pr-3">Hour</th><th className="py-2 pr-3">Batch</th>
-                    <th className="py-2 pr-3">Down</th><th className="py-2 pr-3">Type</th><th className="py-2 pr-3">Reason(s)</th><th className="py-2">Details / RCA / action</th>
+                    <th className="py-2 pr-3">Down</th><th className="py-2 pr-3">Type</th><th className="py-2 pr-3">Reason(s)</th><th className="py-2 pr-3">Details / RCA / action</th><th className="py-2">Maintenance response</th>
                   </tr></thead>
                   <tbody>
                     {r.incidents.map((i, k) => (
@@ -208,7 +213,8 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
                         <td className={`py-2 pr-3 whitespace-nowrap font-medium ${i.over ? "text-red-600" : "text-gray-900"}`} title={i.over ? "Over 60 min in one hour — entry error" : undefined}>{i.minutes > 0 ? fmtDur(i.minutes) : "—"}{i.over ? " ⚠" : ""}</td>
                         <td className="py-2 pr-3 text-gray-600">{i.types.join(", ") || "—"}</td>
                         <td className="py-2 pr-3 text-gray-600">{i.reasons.join(", ") || "—"}</td>
-                        <td className="py-2 text-gray-600">{[i.details, i.rca ? `RCA ${i.rca}` : null, i.action, i.spares ? `spares: ${i.spares}` : null].filter(Boolean).join(" · ") || "—"}</td>
+                        <td className="py-2 pr-3 text-gray-600">{[i.details, i.rca ? `RCA ${i.rca}` : null, i.action, i.spares ? `spares: ${i.spares}` : null].filter(Boolean).join(" · ") || "—"}</td>
+                        <td className="py-2 align-top"><DowntimeRespond misId={i.id} canRespond={canRespond} status={respMap?.get(i.id)?.status ?? null} note={respMap?.get(i.id)?.note ?? null} by={respMap?.get(i.id)?.by ?? null} at={respMap?.get(i.id)?.at ?? null} /></td>
                       </tr>
                     ))}
                   </tbody>

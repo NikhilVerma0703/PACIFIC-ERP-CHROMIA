@@ -29,6 +29,12 @@ const STORE_TABS = [
   { href: "/store/assign", label: "RM Assignment", icon: I.tables },
 ];
 
+// Maintenance Manager is capped: Overview + the Downtime report only.
+const MAINTENANCE_TABS = [
+  { href: "/", label: "Overview", icon: I.overview },
+  { href: "/mis", label: "Downtime", icon: I.mis },
+];
+
 const TABS = [
   { href: "/", label: "Overview", icon: I.overview },
   { href: "/live", label: "Live Status", icon: I.live },
@@ -51,6 +57,8 @@ export function Nav({ showAdmin = false, branch = "SHOP_FLOOR", role = "" }: { s
     : TABS;
   const tabs = role === "STORE"
     ? STORE_TABS
+    : role === "MAINTENANCE"
+      ? MAINTENANCE_TABS
     : role === "OPERATOR"
       ? [
           { href: "/entry", label: "Data Entry", icon: I.entry },

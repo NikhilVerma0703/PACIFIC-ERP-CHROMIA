@@ -34,7 +34,7 @@ export interface TrendPoint { day: string; minutes: number; }
 export interface HourRow { hour: string; minutes: number; incidents: number; }
 export interface DesignRow { design: string; slabs: number; }
 export interface IncidentRow {
-  date: string | null; hour: string | null; batch: string | null;
+  id: string; date: string | null; hour: string | null; batch: string | null;
   minutes: number; over: boolean; typeKeys: string[]; types: string[]; reasons: string[];
   details: string | null; rca: string | null; action: string | null; spares: string | null;
 }
@@ -66,7 +66,7 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   const typeFilter = DELAY_FIELDS.some((d) => d.key === opts.type) ? opts.type! : null;
 
   const misWhere: any = batch ? { batchKey: batch } : { date: { gte: from, lte: toEnd } };
-  const sel: any = { date: true, hour: true, batch: true, batchKey: true, productionType: true, reasonForDeviation: true, details: true, rcaNo: true, actionTaken: true, sparesUsed: true, anyBreakdownYesNo: true };
+  const sel: any = { id: true, date: true, hour: true, batch: true, batchKey: true, productionType: true, reasonForDeviation: true, details: true, rcaNo: true, actionTaken: true, sparesUsed: true, anyBreakdownYesNo: true };
   for (const d of DELAY_FIELDS) sel[d.col] = true;
   const pressWhere: any = batch ? { batchKey: batch } : { date: { gte: from, lte: toEnd } };
 
@@ -116,7 +116,7 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
     const isBreakdown = String(r.anyBreakdownYesNo ?? "").toLowerCase().startsWith("y");
     if (rowMin > 0 || isBreakdown || r.rcaNo || r.details) {
       incidents.push({
-        date: day, hour: r.hour ?? null, batch: r.batch ?? r.batchKey ?? null,
+        id: r.id, date: day, hour: r.hour ?? null, batch: r.batch ?? r.batchKey ?? null,
         minutes: r0(rowMin), over: rowMin > 60, typeKeys, types, reasons,
         details: r.details ?? null, rca: r.rcaNo ?? null, action: r.actionTaken ?? null, spares: r.sparesUsed ?? null,
       });

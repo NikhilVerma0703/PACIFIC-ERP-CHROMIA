@@ -48,6 +48,12 @@ export default auth((req) => {
     const ok = p.startsWith("/entry") || p === "/live" || p.startsWith("/tables") || p.startsWith("/api");
     if (!ok) return Response.redirect(new URL("/entry", nextUrl));
   }
+  if (role === "MAINTENANCE") {
+    // maintenance manager: Overview + the Downtime report only (may also POST the
+    // downtime response, which is a server action on /mis)
+    const ok = p === "/" || p.startsWith("/mis") || p.startsWith("/api");
+    if (!ok) return Response.redirect(new URL("/", nextUrl));
+  }
 });
 
 export const config = {
