@@ -9,7 +9,7 @@ const ymd = (d: Date) => d.toISOString().slice(0, 10);
 
 export default async function MisPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string; b?: string; type?: string }> }) {
   const sp = await searchParams;
-  const from = sp.from?.trim() || ymd(new Date(Date.now() - 29 * 864e5));
+  const from = sp.from?.trim() || ymd(new Date()); // default: today
   const to = sp.to?.trim() || ymd(new Date());
   const batch = sp.b?.trim() || "";
 
@@ -78,13 +78,18 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
               ⚠ {r.overCap} hour-row(s) log more than 60 min of delay — impossible in a 60-minute hour, so these are entry errors. They&apos;re flagged ⚠ in the log below; fix them in the MIS table.
             </div>
           )}
+          {r.unloggedBatches > 0 && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              ⚠ {fmt(r.unloggedBatches)} of {fmt(r.pressBatches)} pressed batch(es) have <strong>no MIS entry</strong> — their downtime, target and reasons aren&apos;t tracked. Log MIS for: {r.unloggedBatchList.slice(0, 30).join(", ")}{r.unloggedBatches > 30 ? ` +${r.unloggedBatches - 30} more` : ""}.
+            </div>
+          )}
           {/* ---- Output: slabs & designs made, achievable vs actual ---- */}
           <div>
             <H2>Output</H2>
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
               <Kpi label="Slabs made (actual)" value={fmt(r.actualSlabs)} sub="distinct slabs pressed" />
-              <Kpi label="Achievable" value={fmt(r.achievable)} sub="MIS, given downtime" />
-              <Kpi label="Target" value={fmt(r.target)} sub="MIS planned" />
+              <Kpi label="Achievable" value={fmt(r.achievable)} sub="target − downtime" />
+              <Kpi label="Target" value={fmt(r.target)} sub={`24/12 per hr × 21h × ${fmt(r.daysCounted)}d`} />
               <Kpi label="Lost to downtime" value={fmt(r.lost)} sub="target − achievable" className={r.lost > 0 ? "ring-1 ring-amber-300" : ""} />
               <Kpi label="Designs made" value={fmt(r.designs.length)} sub="distinct designs" />
             </div>
@@ -100,6 +105,7 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
                 ))}
               </div>
               {r.lost > 0 && <p className="mt-2 text-xs text-amber-700">~{fmt(r.lost)} slab(s) lost to downtime (target − achievable). Total downtime {fmtDur(r.totalMinutes)}.</p>}
+              <p className="mt-2 text-[11px] text-gray-400">Target = capacity: 24 slabs/hr (robo days 12/hr) × 21 productive h/day (3 h cleaning) × {fmt(r.daysCounted)} day(s){r.roboDays > 0 ? ` · ${fmt(r.roboDays)} robo day(s) @ 12/hr` : ""}. Achievable subtracts unplanned downtime + cleaning beyond 3 h/day (extra SKU changes). Actual = slabs pressed; {fmt(r.misBatches)} of {fmt(r.pressBatches)} pressed batches have MIS entries.</p>
             </Card>
           </div>
 

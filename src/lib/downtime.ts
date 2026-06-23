@@ -1,14 +1,24 @@
-// Production downtime tracker, built from the MIS hourly log, plus output
-// (slabs/designs made) from the real station data.
-//   - Downtime minutes by type (process/cleaning/breakdown/power-out) and reason.
-//   - "Achievable" & "Target" come from MIS (its own computed numbers).
-//   - "Actual" slabs made + designs come from PRESS (reliable; MIS's own
-//     numberOfSlabsProduced has bad rollup data, so we don't trust it).
+// Production downtime tracker from the MIS hourly log, plus real output and a
+// capacity-based target.
+//   - Downtime by type (process/cleaning/breakdown/power-out), reason, day, hour;
+//     incident/RCA log; impossible (>60 min/hr) flag.
+//   - Target = 24 slabs/hr x 21 productive hrs/day (24h - 3h planned cleaning) x days.
+//     ROBO days (MIS production_type = "Robo") are rated 12 slabs/hr.
+//   - Achievable = Target - lost output, where "lost" = unplanned downtime
+//     (process+breakdown+power-out) PLUS cleaning beyond the 3 h/day baseline
+//     (multiple SKU changes => extra cleaning => fewer productive hours).
+//   - Actual = slabs pressed (reliable). MIS's own produced count is bad data.
+//   - Flags batches PRESSED but with NO MIS entry (logging gap).
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
 import { normalizeBatch } from "@/lib/normalizeBatch";
 
 const db = prisma as any;
+
+export const NORMAL_RATE = 24;       // slabs/hr (non-robo)
+export const ROBO_RATE = 12;         // slabs/hr (robo)
+export const HOURS_PER_DAY = 21;     // 24h - 3h planned cleaning
+export const CLEAN_BASELINE_MIN = (24 - HOURS_PER_DAY) * 60; // 180 min/day "free" cleaning
 
 export const DELAY_FIELDS = [
   { key: "process", label: "Process delay", col: "processDelayDurationMinutes" },
@@ -25,71 +35,66 @@ export interface HourRow { hour: string; minutes: number; incidents: number; }
 export interface DesignRow { design: string; slabs: number; }
 export interface IncidentRow {
   date: string | null; hour: string | null; batch: string | null;
-  minutes: number; typeKeys: string[]; types: string[]; reasons: string[];
+  minutes: number; over: boolean; typeKeys: string[]; types: string[]; reasons: string[];
   details: string | null; rca: string | null; action: string | null; spares: string | null;
-  over: boolean; // total delay > 60 min in a single hour = impossible (entry error)
 }
 export interface DowntimeReport {
   from: string; to: string; batch: string | null; typeFilter: string | null;
   rows: number; hoursLogged: number; totalMinutes: number; overCap: number;
-  byType: DelayType[];
-  byReason: ReasonRow[];
-  trend: TrendPoint[];
-  byHour: HourRow[];     // downtime by hour-of-day slot (e.g. "13 - 14")
-  incidents: IncidentRow[];
-  // production output
-  actualSlabs: number;   // distinct slabs pressed in scope (reliable)
-  achievable: number;    // MIS achievableSlabOutput (sum)
-  target: number;        // MIS targetProduction (sum)
-  lost: number;          // target - achievable = output lost to downtime, floored at 0
-  designs: DesignRow[];  // designs made (from press) with slab counts
+  byType: DelayType[]; byReason: ReasonRow[]; trend: TrendPoint[]; byHour: HourRow[]; incidents: IncidentRow[];
+  actualSlabs: number; target: number; achievable: number; lost: number; designs: DesignRow[];
+  daysCounted: number; roboDays: number;
+  pressBatches: number; misBatches: number; unloggedBatches: number; unloggedBatchList: string[];
 }
 
 const r0 = (n: number) => Math.round(n);
-/** Coerce a MIS JSON cell (number or numeric string like "22") to a number. */
-function jnum(v: unknown): number {
-  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
-  if (typeof v === "string") { const n = parseFloat(v.replace(/[^0-9.\-]/g, "")); return Number.isFinite(n) ? n : 0; }
-  return 0;
-}
+const dayKey = (d: any) => new Date(d).toISOString().slice(0, 10);
+const isRobo = (t: unknown) => String(t ?? "").trim().toLowerCase() === "robo";
 
 export async function getDowntimeReport(opts: { from?: string; to?: string; batch?: string; type?: string }): Promise<DowntimeReport> {
   const to = opts.to ? new Date(opts.to) : new Date();
-  const from = opts.from ? new Date(opts.from) : new Date(Date.now() - 30 * 864e5);
+  const from = opts.from ? new Date(opts.from) : new Date(Date.now() - 864e5);
   const toEnd = new Date(to); toEnd.setHours(23, 59, 59, 999);
   const batch = opts.batch && opts.batch.trim() ? normalizeBatch(opts.batch) : null;
   const typeFilter = DELAY_FIELDS.some((d) => d.key === opts.type) ? opts.type! : null;
 
   const misWhere: any = batch ? { batchKey: batch } : { date: { gte: from, lte: toEnd } };
-  const sel: any = { date: true, hour: true, batch: true, batchKey: true, reasonForDeviation: true, details: true, rcaNo: true, actionTaken: true, sparesUsed: true, anyBreakdownYesNo: true, achievableSlabOutput: true, targetProduction: true };
+  const sel: any = { date: true, hour: true, batch: true, batchKey: true, productionType: true, reasonForDeviation: true, details: true, rcaNo: true, actionTaken: true, sparesUsed: true, anyBreakdownYesNo: true };
   for (const d of DELAY_FIELDS) sel[d.col] = true;
-
-  // press supplies the reliable "actual" output + designs
   const pressWhere: any = batch ? { batchKey: batch } : { date: { gte: from, lte: toEnd } };
 
   const [rows, press]: [any[], any[]] = await Promise.all([
     db.mis.findMany({ where: misWhere, select: sel }).catch(() => [] as any[]),
-    db.press.findMany({ where: pressWhere, select: { slabNumber: true, designName: true } }).catch(() => [] as any[]),
+    db.press.findMany({ where: pressWhere, select: { slabNumber: true, designName: true, batchKey: true, date: true } }).catch(() => [] as any[]),
   ]);
 
   const byType: DelayType[] = DELAY_FIELDS.map((d) => ({ key: d.key, label: d.label, minutes: 0, incidents: 0 }));
   const reasonMap = new Map<string, ReasonRow>();
-  const trendMap = new Map<string, number>();
+  const trendMap = new Map<string, number>();         // total stoppage minutes per day
+  const cleanByDay = new Map<string, number>();        // cleaning minutes per day
+  const otherByDay = new Map<string, number>();        // process+breakdown+power-out per day
   const hourMap = new Map<string, { minutes: number; incidents: number }>();
+  const dayRobo = new Map<string, { robo: number; other: number }>();
   const incidents: IncidentRow[] = [];
-  let totalMinutes = 0, hoursLogged = 0, achievable = 0, target = 0, overCap = 0;
+  let totalMinutes = 0, hoursLogged = 0, overCap = 0, cleanTotal = 0, otherTotal = 0;
 
   for (const r of rows) {
-    achievable += jnum(r.achievableSlabOutput);
-    target += jnum(r.targetProduction);
+    const day = r.date ? dayKey(r.date) : null;
+    if (day) { const e = dayRobo.get(day) ?? { robo: 0, other: 0 }; if (isRobo(r.productionType)) e.robo++; else e.other++; dayRobo.set(day, e); }
 
     let rowMin = 0; const typeKeys: string[] = []; const types: string[] = [];
     DELAY_FIELDS.forEach((d, i) => {
       const v = Number(r[d.col] ?? 0);
       if (v > 0) { byType[i].minutes += v; byType[i].incidents++; rowMin += v; typeKeys.push(d.key); types.push(d.label); }
     });
-    if (rowMin > 0) { totalMinutes += rowMin; hoursLogged++; }
+    const cleanMin = Number(r.cleaningDelayDurationMinutes ?? 0) || 0;
+    const otherMin = Math.max(0, rowMin - cleanMin);
+    if (rowMin > 0) { totalMinutes += rowMin; hoursLogged++; cleanTotal += cleanMin; otherTotal += otherMin; }
     if (rowMin > 60) overCap++;
+    if (day) {
+      if (cleanMin > 0) cleanByDay.set(day, (cleanByDay.get(day) ?? 0) + cleanMin);
+      if (otherMin > 0) otherByDay.set(day, (otherByDay.get(day) ?? 0) + otherMin);
+    }
 
     const reasons: string[] = Array.isArray(r.reasonForDeviation)
       ? r.reasonForDeviation.filter((x: any) => x && String(x).toUpperCase() !== "NO DEVIATION")
@@ -98,29 +103,27 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
       const e = reasonMap.get(reason) ?? { reason, incidents: 0, minutes: 0 };
       e.incidents++; e.minutes += rowMin; reasonMap.set(reason, e);
     }
-    if (rowMin > 0 && r.date) {
-      const day = new Date(r.date).toISOString().slice(0, 10);
-      trendMap.set(day, (trendMap.get(day) ?? 0) + rowMin);
-    }
-    if (rowMin > 0 && r.hour) {
-      const h = String(r.hour); const e = hourMap.get(h) ?? { minutes: 0, incidents: 0 };
-      e.minutes += rowMin; e.incidents++; hourMap.set(h, e);
-    }
+    if (rowMin > 0 && day) trendMap.set(day, (trendMap.get(day) ?? 0) + rowMin);
+    if (rowMin > 0 && r.hour) { const h = String(r.hour); const e = hourMap.get(h) ?? { minutes: 0, incidents: 0 }; e.minutes += rowMin; e.incidents++; hourMap.set(h, e); }
+
     const isBreakdown = String(r.anyBreakdownYesNo ?? "").toLowerCase().startsWith("y");
     if (rowMin > 0 || isBreakdown || r.rcaNo || r.details) {
       incidents.push({
-        date: r.date ? new Date(r.date).toISOString().slice(0, 10) : null,
-        hour: r.hour ?? null, batch: r.batch ?? r.batchKey ?? null,
+        date: day, hour: r.hour ?? null, batch: r.batch ?? r.batchKey ?? null,
         minutes: r0(rowMin), over: rowMin > 60, typeKeys, types, reasons,
         details: r.details ?? null, rca: r.rcaNo ?? null, action: r.actionTaken ?? null, spares: r.sparesUsed ?? null,
       });
     }
   }
 
-  // actual output + designs from press (distinct slab numbers)
+  // ---- output (actual) + designs from press ----
   const slabSet = new Set<number>();
   const designMap = new Map<string, Set<number>>();
+  const pressBatchSet = new Set<string>();
+  const pressDaySet = new Set<string>();
   for (const p of press) {
+    if (p.batchKey) pressBatchSet.add(String(p.batchKey));
+    if (p.date) pressDaySet.add(dayKey(p.date));
     const n = p.slabNumber;
     if (typeof n !== "number" || !Number.isFinite(n)) continue;
     slabSet.add(n);
@@ -131,19 +134,52 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   const actualSlabs = slabSet.size;
   const designs = [...designMap.entries()].map(([design, set]) => ({ design, slabs: set.size })).sort((a, b) => b.slabs - a.slabs);
 
+  // ---- capacity target + achievable ----
+  // lost output = unplanned downtime + cleaning beyond the 3 h/day baseline.
+  let target = 0, lost = 0, roboDays = 0, daysCounted = 0;
+  if (batch) {
+    const batchRobo = rows.length > 0 && rows.filter((r) => isRobo(r.productionType)).length * 2 >= rows.length;
+    const rate = batchRobo ? ROBO_RATE : NORMAL_RATE;
+    daysCounted = pressDaySet.size || 1;
+    target = rate * HOURS_PER_DAY * daysCounted;
+    const lostMin = otherTotal + Math.max(0, cleanTotal - CLEAN_BASELINE_MIN * daysCounted);
+    lost = r0(rate * (lostMin / 60));
+    roboDays = batchRobo ? daysCounted : 0;
+  } else {
+    for (let d = new Date(from); d <= toEnd; d = new Date(d.getTime() + 864e5)) {
+      const day = dayKey(d);
+      const e = dayRobo.get(day);
+      const robo = e ? e.robo > e.other : false;
+      const rate = robo ? ROBO_RATE : NORMAL_RATE;
+      if (robo) roboDays++;
+      daysCounted++;
+      target += rate * HOURS_PER_DAY;
+      const dayLostMin = (otherByDay.get(day) ?? 0) + Math.max(0, (cleanByDay.get(day) ?? 0) - CLEAN_BASELINE_MIN);
+      lost += r0(rate * (dayLostMin / 60));
+    }
+  }
+  lost = Math.min(lost, target);
+  const achievable = Math.max(0, target - lost);
+
+  // ---- MIS logging completeness: batches pressed but never logged in MIS ----
+  const misBatchSet = new Set<string>();
+  for (const r of rows) if (r.batchKey) misBatchSet.add(String(r.batchKey));
+  const unloggedBatchList = [...pressBatchSet].filter((b) => !misBatchSet.has(b)).sort();
+
+  // ---- finalize ----
   byType.forEach((t) => (t.minutes = r0(t.minutes)));
   const byReason = [...reasonMap.values()].map((x) => ({ ...x, minutes: r0(x.minutes) })).sort((a, b) => b.minutes - a.minutes || b.incidents - a.incidents);
   const trend = [...trendMap.entries()].map(([day, m]) => ({ day, minutes: r0(m) })).sort((a, b) => a.day.localeCompare(b.day));
   const hourNum = (h: string) => { const m = h.match(/\d+/); return m ? parseInt(m[0], 10) : 99; };
   const byHour = [...hourMap.entries()].map(([hour, v]) => ({ hour, minutes: r0(v.minutes), incidents: v.incidents })).sort((a, b) => hourNum(a.hour) - hourNum(b.hour));
-
   const shown = (typeFilter ? incidents.filter((i) => i.typeKeys.includes(typeFilter)) : incidents).sort((a, b) => b.minutes - a.minutes);
 
   return {
     from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10), batch, typeFilter,
     rows: rows.length, hoursLogged, totalMinutes: r0(totalMinutes), overCap,
     byType, byReason, trend, byHour, incidents: shown.slice(0, 300),
-    actualSlabs, achievable: r0(achievable), target: r0(target), lost: Math.max(0, r0(target - achievable)), designs,
+    actualSlabs, target, achievable, lost, designs, daysCounted, roboDays,
+    pressBatches: pressBatchSet.size, misBatches: misBatchSet.size, unloggedBatches: unloggedBatchList.length, unloggedBatchList: unloggedBatchList.slice(0, 60),
   };
 }
 
