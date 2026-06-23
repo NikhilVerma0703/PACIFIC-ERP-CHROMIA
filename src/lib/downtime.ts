@@ -43,7 +43,7 @@ export interface DowntimeReport {
   rows: number; hoursLogged: number; totalMinutes: number; overCap: number;
   byType: DelayType[]; byReason: ReasonRow[]; trend: TrendPoint[]; byHour: HourRow[]; incidents: IncidentRow[];
   actualSlabs: number; target: number; achievable: number; lost: number; designs: DesignRow[];
-  daysCounted: number; roboHours: number; normalHours: number;
+  daysCounted: number; productiveHours: number; roboHours: number; normalHours: number;
   pressBatches: number; misBatches: number; unloggedBatches: number; unloggedBatchList: string[];
 }
 
@@ -147,7 +147,11 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   // unplanned downtime + cleaning beyond the 3 h/day baseline, at that day's rate.
   // Achievable = target - downtimeCost; reported Lost = Achievable - Actual.
   const blendRate = (robo: number, other: number) => (robo + other > 0 ? (robo * ROBO_RATE + other * NORMAL_RATE) / (robo + other) : NORMAL_RATE);
-  let target = 0, downtimeCost = 0, roboHours = 0, normalHours = 0, daysCounted = 0;
+  let target = 0, downtimeCost = 0, roboHours = 0, normalHours = 0, daysCounted = 0, productiveHours = 0;
+  // For an in-progress "Today", prorate productive hours + cleaning baseline to the
+  // fraction of the day elapsed (IST), so a full-day target isn't set against a part-day actual.
+  const todayKey = istNow.toISOString().slice(0, 10);
+  const elapsedFrac = Math.min(1, Math.max(0, (istNow.getTime() - new Date(`${todayKey}T00:00:00.000Z`).getTime()) / 864e5));
   if (batch) {
     const roboR = rows.filter((r) => isRobo(r.productionType)).length;
     const normR = rows.length - roboR;
@@ -156,21 +160,25 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
     target = rate * HOURS_PER_DAY * daysCounted;
     const lostMin = otherTotal + Math.max(0, cleanTotal - CLEAN_BASELINE_MIN * daysCounted);
     downtimeCost = rate * (lostMin / 60);
-    roboHours = roboR; normalHours = normR;
+    roboHours = roboR; normalHours = normR; productiveHours = HOURS_PER_DAY * daysCounted;
   } else {
     for (let d = new Date(from); d <= toEnd; d = new Date(d.getTime() + 864e5)) {
       const day = dayKey(d);
       const e = dayRobo.get(day);
       const robo = e?.robo ?? 0, other = e?.other ?? 0;
       const rate = blendRate(robo, other);
+      const frac = day === todayKey ? elapsedFrac : 1; // prorate the in-progress day
       roboHours += robo; normalHours += other;
       daysCounted++;
-      target += rate * HOURS_PER_DAY;
-      const dayLostMin = (otherByDay.get(day) ?? 0) + Math.max(0, (cleanByDay.get(day) ?? 0) - CLEAN_BASELINE_MIN);
+      const dayHours = HOURS_PER_DAY * frac;
+      productiveHours += dayHours;
+      target += rate * dayHours;
+      const dayLostMin = (otherByDay.get(day) ?? 0) + Math.max(0, (cleanByDay.get(day) ?? 0) - CLEAN_BASELINE_MIN * frac);
       downtimeCost += rate * (dayLostMin / 60);
     }
   }
   target = r0(target);
+  productiveHours = Math.round(productiveHours * 10) / 10;
   const achievable = Math.max(0, target - r0(downtimeCost));
   const lost = Math.max(0, achievable - actualSlabs);
 
@@ -191,7 +199,7 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
     from: fromStr, to: toStr, batch, typeFilter,
     rows: rows.length, hoursLogged, totalMinutes: r0(totalMinutes), overCap,
     byType, byReason, trend, byHour, incidents: shown.slice(0, 300),
-    actualSlabs, target, achievable, lost, designs, daysCounted, roboHours, normalHours,
+    actualSlabs, target, achievable, lost, designs, daysCounted, productiveHours, roboHours, normalHours,
     pressBatches: pressBatchSet.size, misBatches: misBatchSet.size, unloggedBatches: unloggedBatchList.length, unloggedBatchList: unloggedBatchList.slice(0, 60),
   };
 }

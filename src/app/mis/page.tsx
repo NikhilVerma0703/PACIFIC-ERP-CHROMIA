@@ -90,7 +90,7 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
               <Kpi label="Slabs made (actual)" value={fmt(r.actualSlabs)} sub="distinct slabs pressed" />
               <Kpi label="Achievable" value={fmt(r.achievable)} sub="target − downtime" />
-              <Kpi label="Target" value={fmt(r.target)} sub={`24/12 per hr × 21h × ${fmt(r.daysCounted)}d`} />
+              <Kpi label="Target" value={fmt(r.target)} sub={`24/12 per hr × ${r.productiveHours}h productive`} />
               <Kpi label="Lost to downtime" value={fmt(r.lost)} sub="achievable - actual" className={r.lost > 0 ? "ring-1 ring-amber-300" : ""} />
               <Kpi label="Designs made" value={fmt(r.designs.length)} sub={r.designs.length === 0 ? "distinct designs" : r.designs.length <= 2 ? r.designs.map((d) => d.design).join(", ") : `${fmt(r.designs.length)} distinct designs`} />
             </div>
@@ -106,7 +106,7 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
                 ))}
               </div>
               {r.lost > 0 && <p className="mt-2 text-xs text-amber-700">~{fmt(r.lost)} slab(s) lost to downtime (achievable - actual). Total downtime {fmtDur(r.totalMinutes)}.</p>}
-              <p className="mt-2 text-[11px] text-gray-400">Target = capacity: 21 productive h/day (3 h cleaning) at the rate that ran each hour - 24 slabs/hr normal, 12/hr robo - over {fmt(r.daysCounted)} day(s) (this period: {fmt(r.roboHours)} robo hr @ 12, {fmt(r.normalHours)} normal hr @ 24). Achievable subtracts unplanned downtime + cleaning beyond 3 h/day. Lost = Achievable - Actual. {fmt(r.pressBatches - r.unloggedBatches)} of {fmt(r.pressBatches)} pressed batches have MIS entries.</p>
+              <p className="mt-2 text-[11px] text-gray-400">Target = capacity: 21 productive h/day (3 h cleaning) at the rate that ran each hour - 24 slabs/hr normal, 12/hr robo - over {fmt(r.daysCounted)} day(s) = {r.productiveHours} productive h (the in-progress day is prorated to hours elapsed) (this period: {fmt(r.roboHours)} robo hr @ 12, {fmt(r.normalHours)} normal hr @ 24). Achievable subtracts unplanned downtime + cleaning beyond 3 h/day. Lost = Achievable - Actual. {fmt(r.pressBatches - r.unloggedBatches)} of {fmt(r.pressBatches)} pressed batches have MIS entries.</p>
             </Card>
           </div>
 
