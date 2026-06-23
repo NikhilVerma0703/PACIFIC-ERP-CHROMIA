@@ -9,8 +9,9 @@ const ymd = (d: Date) => d.toISOString().slice(0, 10);
 
 export default async function MisPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string; b?: string; type?: string }> }) {
   const sp = await searchParams;
-  const from = sp.from?.trim() || ymd(new Date()); // default: today
-  const to = sp.to?.trim() || ymd(new Date());
+  const istToday = ymd(new Date(Date.now() + 330 * 60000)); // IST calendar day
+  const from = sp.from?.trim() || istToday; // default: today (IST)
+  const to = sp.to?.trim() || istToday;
   const batch = sp.b?.trim() || "";
 
   let r: Awaited<ReturnType<typeof getDowntimeReport>> | null = null;
@@ -30,9 +31,9 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
   };
 
   // quick-range presets (preserve the batch filter)
-  const today = ymd(new Date());
-  const dayAgo = (n: number) => ymd(new Date(Date.now() - n * 864e5));
-  const mStart = (() => { const d = new Date(); return ymd(new Date(d.getFullYear(), d.getMonth(), 1)); })();
+  const today = istToday;
+  const dayAgo = (n: number) => ymd(new Date(Date.now() + 330 * 60000 - n * 864e5));
+  const mStart = istToday.slice(0, 8) + "01";
   const presets = [
     { label: "Today", f: today, t: today },
     { label: "Yesterday", f: dayAgo(1), t: dayAgo(1) },
@@ -91,7 +92,7 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
               <Kpi label="Achievable" value={fmt(r.achievable)} sub="target − downtime" />
               <Kpi label="Target" value={fmt(r.target)} sub={`24/12 per hr × 21h × ${fmt(r.daysCounted)}d`} />
               <Kpi label="Lost to downtime" value={fmt(r.lost)} sub="achievable - actual" className={r.lost > 0 ? "ring-1 ring-amber-300" : ""} />
-              <Kpi label="Designs made" value={fmt(r.designs.length)} sub="distinct designs" />
+              <Kpi label="Designs made" value={fmt(r.designs.length)} sub={r.designs.length === 0 ? "distinct designs" : r.designs.length <= 2 ? r.designs.map((d) => d.design).join(", ") : `${fmt(r.designs.length)} distinct designs`} />
             </div>
             <Card className="mt-4">
               <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Achievable vs actual</div>

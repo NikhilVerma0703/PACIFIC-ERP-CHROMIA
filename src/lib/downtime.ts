@@ -52,9 +52,16 @@ const dayKey = (d: any) => new Date(d).toISOString().slice(0, 10);
 const isRobo = (t: unknown) => String(t ?? "").trim().toLowerCase() === "robo";
 
 export async function getDowntimeReport(opts: { from?: string; to?: string; batch?: string; type?: string }): Promise<DowntimeReport> {
-  const to = opts.to ? new Date(opts.to) : new Date();
-  const from = opts.from ? new Date(opts.from) : new Date(Date.now() - 864e5);
-  const toEnd = new Date(to); toEnd.setHours(23, 59, 59, 999);
+  // DB dates are naive IST (IST wall-clock stored as UTC). Build the window in IST
+  // and cap the upper bound at "now", so "Today" runs 12am IST -> now (not the whole
+  // calendar day, and never future-logged hours).
+  const IST_MS = 330 * 60000;
+  const istNow = new Date(Date.now() + IST_MS);
+  const fromStr = (opts.from && opts.from.trim()) || istNow.toISOString().slice(0, 10);
+  const toStr = (opts.to && opts.to.trim()) || istNow.toISOString().slice(0, 10);
+  const from = new Date(`${fromStr}T00:00:00.000Z`);
+  let toEnd = new Date(`${toStr}T23:59:59.999Z`);
+  if (toEnd > istNow) toEnd = istNow;
   const batch = opts.batch && opts.batch.trim() ? normalizeBatch(opts.batch) : null;
   const typeFilter = DELAY_FIELDS.some((d) => d.key === opts.type) ? opts.type! : null;
 
@@ -181,7 +188,7 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   const shown = (typeFilter ? incidents.filter((i) => i.typeKeys.includes(typeFilter)) : incidents).sort((a, b) => b.minutes - a.minutes);
 
   return {
-    from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10), batch, typeFilter,
+    from: fromStr, to: toStr, batch, typeFilter,
     rows: rows.length, hoursLogged, totalMinutes: r0(totalMinutes), overCap,
     byType, byReason, trend, byHour, incidents: shown.slice(0, 300),
     actualSlabs, target, achievable, lost, designs, daysCounted, roboHours, normalHours,
