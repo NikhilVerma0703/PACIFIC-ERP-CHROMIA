@@ -193,7 +193,7 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   const trend = [...trendMap.entries()].map(([day, m]) => ({ day, minutes: r0(m) })).sort((a, b) => a.day.localeCompare(b.day));
   const hourNum = (h: string) => { const m = h.match(/\d+/); return m ? parseInt(m[0], 10) : 99; };
   const byHour = [...hourMap.entries()].map(([hour, v]) => ({ hour, minutes: r0(v.minutes), incidents: v.incidents })).sort((a, b) => hourNum(a.hour) - hourNum(b.hour));
-  const shown = (typeFilter ? incidents.filter((i) => i.typeKeys.includes(typeFilter)) : incidents).sort((a, b) => b.minutes - a.minutes);
+  const shown = (typeFilter ? incidents.filter((i) => i.typeKeys.includes(typeFilter)) : incidents).sort((a, b) => (a.date ?? "").localeCompare(b.date ?? "") || hourNum(a.hour ?? "") - hourNum(b.hour ?? ""));
 
   return {
     from: fromStr, to: toStr, batch, typeFilter,
