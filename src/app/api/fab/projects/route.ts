@@ -42,31 +42,30 @@ export async function POST(req: Request) {
         drawingsMap.set(dn as string, drawing.id);
       }
       for (const r of requirements) {
-        const INCH_TO_MM = 25.4;
         const sinkRequired = (r.sinkCuts ?? 0) > 0 || !!(r.sinkModel?.trim());
         const polishRequired = (r.depLength ?? 0) > 0;
         await tx.fabRequirement.create({
           data: {
-            projectId: proj.id,
-            drawingId: drawingsMap.get(r.drawingNumber),
-            pieceLabel: r.pieceLabel,
+            projectId:   proj.id,
+            drawingId:   drawingsMap.get(r.drawingNumber),
+            pieceLabel:  r.pieceLabel,
             description: r.description,
-            slabCode: r.description ?? r.pieceLabel ?? "UNKNOWN",
-            length: r.length ? Math.round(r.length * INCH_TO_MM * 100) / 100 : null,
-            width: r.width ? Math.round(r.width * INCH_TO_MM * 100) / 100 : null,
-            thickness: r.thickness ? Math.round(r.thickness * INCH_TO_MM * 100) / 100 : null,
-            quantity: r.quantity || 1,
+            slabCode:    r.description ?? r.pieceLabel ?? "UNKNOWN",
+            length:      r.length    ?? null,
+            width:       r.width     ?? null,
+            thickness:   r.thickness ?? null,
+            quantity:    r.quantity  || 1,
             sinkRequired,
             fabricationRequired: sinkRequired,
             polishRequired,
-            sinkModel: r.sinkModel,
-            sinkCuts: r.sinkCuts,
-            faucetCount: r.faucets,
-            depLength: r.depLength ? Math.round(r.depLength * INCH_TO_MM * 100) / 100 : null,
-            jointCount: r.joints,
+            sinkModel:    r.sinkModel,
+            sinkCuts:     r.sinkCuts,
+            faucetCount:  r.faucets,
+            depLength:    r.depLength    ?? null,
+            jointCount:   r.joints,
             sqftPerPiece: r.sqftPerPiece,
-            totalSqft: r.totalSqft,
-            notes: r.notes,
+            totalSqft:    r.totalSqft,
+            notes:        r.notes,
           },
         });
       }

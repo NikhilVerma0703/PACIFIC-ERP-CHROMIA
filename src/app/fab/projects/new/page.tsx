@@ -39,7 +39,7 @@ export default function NewFabProjectPage() {
     });
     const data = await res.json();
     if (!res.ok) { setError(data.error ?? "Failed"); setStep("preview"); return; }
-    router.push("/fab/supervisor");
+    router.push(`/fab/projects/${data.id}`);
   }
 
   return (
@@ -92,9 +92,9 @@ export default function NewFabProjectPage() {
           {preview.warnings?.map((w: string, i: number) => (
             <p key={i} className="text-yellow-700 text-xs mb-1">⚠ {w}</p>
           ))}
-          <button onClick={handleSubmit} disabled={step === "saving"}
+          <button onClick={handleSubmit} disabled={step !== "preview"}
             className="w-full bg-blue-600 text-white py-2 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 mt-2">
-            {step === "saving" ? "Creating…" : "Create Project"}
+            {step !== "preview" ? "Creating…" : "Create Project"}
           </button>
         </div>
       )}

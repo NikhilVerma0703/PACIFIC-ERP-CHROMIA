@@ -1,133 +1,436 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 
-interface Slab { id: string; slabCode: string; colour?: string | null; thickness?: number | null; }
-interface Allocation { id: string; slabId: string; allocatedQuantity: number; slab: Slab; }
-interface Requirement { id: string; pieceLabel?: string | null; description?: string | null; length?: number | null; width?: number | null; quantity: number; sinkRequired: boolean; fabricationRequired: boolean; status: string; allocations: Allocation[]; }
-interface Drawing { id: string; drawingNumber: string; defaultSlabId?: string | null; defaultSlab?: Slab | null; requirements: Requirement[]; }
-interface Project { id: string; projectCode: string; customerName?: string | null; status: string; drawings: Drawing[]; }
+/* ─── Types ─────────────────────────────────────────── */
+interface QcSlab {
+  pacificQcId:  string;
+  slabCode:     string;
+  colour:       string | null;
+  thicknessMm:  number | null;
+  qualityGrade: string | null;
+  batchKey:     string | null;
+}
+interface SlabPiece {
+  requirementId: string;
+  drawingNumber: string;
+  pieceLabel:    string;
+  description:   string | null;
+  lengthIn:      number | null;
+  widthIn:       number | null;
+  qty:           number;
+}
+interface FabSlabRow {
+  slabId:          string;
+  slabCode:        string;
+  slabJobStatus:   string | null;
+  pacificQcId:     string | null;
+  qcSlabCode:      string | null;
+  qcSlabColour:    string | null;
+  thicknessBucket: 2 | 3 | null;
+  wastagePct:      number | null;
+  pieces:          SlabPiece[];
+  projectId:       string;
+  projectCode:     string;
+  customerName:    string | null;
+}
+interface Project {
+  id: string; projectCode: string; customerName: string | null; status: string;
+}
 
-const PILL_COLOURS = ["bg-blue-100 text-blue-800","bg-violet-100 text-violet-800","bg-emerald-100 text-emerald-800","bg-amber-100 text-amber-800","bg-rose-100 text-rose-800"];
-const colourCache: Record<string,string> = {}; let colourIdx = 0;
-function pillColour(id: string) { if (!colourCache[id]) colourCache[id] = PILL_COLOURS[colourIdx++ % PILL_COLOURS.length]; return colourCache[id]; }
-function slabLabel(s: Slab) { return `${s.slabCode}${s.colour ? ` · ${s.colour}` : ""}${s.thickness ? ` · ${s.thickness}mm` : ""}`; }
+/* ─── Small UI ───────────────────────────────────────── */
+function StatusChip({ status }: { status: string | null }) {
+  if (!status)                  return <span className="text-[10px] font-bold uppercase tracking-wide text-gray-400">Pending</span>;
+  if (status === "READY")       return <span className="text-[10px] font-bold uppercase tracking-wide text-blue-600">Sent to cutter</span>;
+  if (status === "IN_PROGRESS") return <span className="text-[10px] font-bold uppercase tracking-wide text-amber-600">Cutting</span>;
+  if (status === "COMPLETED")   return <span className="text-[10px] font-bold uppercase tracking-wide text-green-600">Cut complete</span>;
+  return <span className="text-[10px] text-gray-400">{status}</span>;
+}
+function WastePill({ pct }: { pct: number | null }) {
+  if (pct === null) return null;
+  const [bg, txt] = pct > 40 ? ["bg-red-100","text-red-700"] : pct > 20 ? ["bg-amber-100","text-amber-700"] : ["bg-green-100","text-green-700"];
+  return <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${bg} ${txt}`}>{pct.toFixed(1)}% waste</span>;
+}
+function ThickChip({ bucket }: { bucket: 2 | 3 | null }) {
+  if (!bucket) return null;
+  return <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${bucket === 3 ? "bg-purple-100 text-purple-700" : "bg-blue-100 text-blue-700"}`}>{bucket}cm</span>;
+}
 
-function SlabSelect({ value, slabs, onChange, placeholder = "Select slab…" }: { value: string; slabs: Slab[]; onChange: (id: string) => void; placeholder?: string }) {
+/* ─── Slab picker — portal-based, no layout shift ───── */
+function SlabPicker({ slab, qcSlabs, onAssign }: {
+  slab:     FabSlabRow;
+  qcSlabs:  QcSlab[];
+  onAssign: (fabSlabId: string, qcId: string | null) => Promise<void>;
+}) {
+  const [open,   setOpen]   = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [search, setSearch] = useState("");
+  const [rect,   setRect]   = useState<DOMRect | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+
+  function openPicker() {
+    if (btnRef.current) setRect(btnRef.current.getBoundingClientRect());
+    setOpen(true);
+  }
+  function close() { setOpen(false); setSearch(""); }
+
+  async function pick(qcId: string | null) {
+    setSaving(true);
+    await onAssign(slab.slabId, qcId);
+    setSaving(false);
+    close();
+  }
+
+  const filtered = qcSlabs.filter(q => {
+    const matchThick  = slab.thicknessBucket === 3 ? q.thicknessMm === 30 : true;
+    const matchSearch = !search || [q.slabCode, q.colour ?? "", q.batchKey ?? ""]
+      .some(v => v.toLowerCase().includes(search.toLowerCase()));
+    return matchThick && matchSearch;
+  });
+
+  /* Panel position: align right edge to button right edge, open below */
+  const panelStyle: React.CSSProperties = rect ? {
+    position: "fixed",
+    top:      rect.bottom + 6,
+    left:     Math.max(8, rect.right - 320),
+    width:    320,
+    zIndex:   9999,
+  } : {};
+
   return (
-    <select value={value} onChange={e => onChange(e.target.value)} className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm min-w-[180px]">
-      <option value="">{placeholder}</option>
-      {slabs.map(s => <option key={s.id} value={s.id}>{slabLabel(s)}</option>)}
-    </select>
+    <>
+      <button
+        ref={btnRef}
+        onClick={openPicker}
+        disabled={saving}
+        className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition whitespace-nowrap
+          ${slab.pacificQcId
+            ? "bg-white border border-gray-300 text-gray-700 hover:border-indigo-400 hover:text-indigo-700"
+            : "bg-indigo-600 text-white hover:bg-indigo-700"}`}>
+        {saving ? "Saving…" : slab.pacificQcId ? "Change slab" : "Assign slab"}
+      </button>
+
+      {open && typeof window !== "undefined" && createPortal(
+        <>
+          {/* backdrop */}
+          <div className="fixed inset-0 z-[9998]" onClick={close} />
+          {/* panel */}
+          <div style={panelStyle} className="bg-white border border-gray-200 rounded-2xl shadow-2xl overflow-hidden">
+            {/* header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50">
+              <span className="text-xs font-bold text-gray-700">
+                {slab.thicknessBucket === 3 ? "3cm slabs only" : "All slabs"}
+                <span className="ml-1 text-gray-400 font-normal">({filtered.length} available)</span>
+              </span>
+              <button onClick={close} className="text-gray-400 hover:text-gray-600 text-lg leading-none">&times;</button>
+            </div>
+            {/* search */}
+            <div className="px-3 py-2 border-b border-gray-100">
+              <input
+                autoFocus
+                type="text"
+                placeholder="Search slab code or colour…"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="w-full text-xs border border-gray-200 rounded-lg px-3 py-2 outline-none focus:border-indigo-300 focus:ring-1 focus:ring-indigo-100"
+              />
+            </div>
+            {/* list */}
+            <div className="max-h-60 overflow-y-auto">
+              {slab.pacificQcId && (
+                <button onClick={() => pick(null)}
+                  className="w-full text-left px-4 py-2.5 text-xs text-red-600 hover:bg-red-50 border-b border-gray-100">
+                  Clear assignment
+                </button>
+              )}
+              {filtered.length === 0 && (
+                <p className="px-4 py-4 text-xs text-gray-400 italic">No matching slabs</p>
+              )}
+              {filtered.map(q => (
+                <button key={q.pacificQcId} onClick={() => pick(q.pacificQcId)}
+                  className={`w-full text-left px-4 py-3 border-b border-gray-50 last:border-0 transition
+                    ${slab.pacificQcId === q.pacificQcId ? "bg-indigo-50" : "hover:bg-gray-50"}`}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-bold text-gray-900">Slab {q.slabCode}</span>
+                    {slab.pacificQcId === q.pacificQcId && (
+                      <span className="text-[10px] font-bold text-indigo-600 bg-indigo-100 px-2 py-0.5 rounded-full">Current</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 mt-0.5 text-[11px] text-gray-400">
+                    {q.colour     && <span>{q.colour}</span>}
+                    {q.thicknessMm && <span>&middot; {q.thicknessMm}mm</span>}
+                    {q.qualityGrade && <span>&middot; Grade {q.qualityGrade}</span>}
+                    {q.batchKey   && <span>&middot; {q.batchKey}</span>}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </>,
+        document.body
+      )}
+    </>
   );
 }
 
+/* ─── Slab card ──────────────────────────────────────── */
+function SlabCard({ slab, qcSlabs, onAssign, onSend }: {
+  slab:     FabSlabRow;
+  qcSlabs:  QcSlab[];
+  onAssign: (fabSlabId: string, qcId: string | null) => Promise<void>;
+  onSend:   (slabId: string) => Promise<void>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [sending,  setSending]  = useState(false);
+  const isAssigned = !!slab.pacificQcId;
+  const isSent     = !!slab.slabJobStatus;
+  const totalPcs   = slab.pieces.reduce((s, p) => s + p.qty, 0);
+
+  async function handleSend() {
+    setSending(true);
+    await onSend(slab.slabId);
+    setSending(false);
+  }
+
+  return (
+    <div className={`rounded-2xl border transition-colors
+      ${isSent     ? "border-blue-200 bg-blue-50/20"
+      : isAssigned ? "border-indigo-200 bg-white"
+                   : "border-gray-200 bg-white"}`}>
+
+      <div className="px-5 py-4 flex items-center gap-4 flex-wrap">
+        {/* Left: identity */}
+        <div className="flex-1 min-w-0">
+          {isAssigned ? (
+            <div className="flex items-center gap-2 flex-wrap mb-1.5">
+              <span className="text-base font-bold text-gray-900">Slab {slab.qcSlabCode}</span>
+              {slab.qcSlabColour && <span className="text-sm text-gray-500">{slab.qcSlabColour}</span>}
+              <span className="text-xs font-mono text-gray-400">({slab.slabCode})</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="text-base font-mono font-bold text-gray-400">{slab.slabCode}</span>
+              <span className="text-xs text-amber-600 font-semibold">Needs a slab</span>
+            </div>
+          )}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[11px] font-bold text-gray-600 bg-gray-100 px-2 py-0.5 rounded-full">
+              {slab.projectCode}
+            </span>
+            <ThickChip bucket={slab.thicknessBucket} />
+            <span className="text-[11px] text-gray-400">{totalPcs} pcs &middot; {slab.pieces.length} types</span>
+            <WastePill pct={slab.wastagePct} />
+            <StatusChip status={slab.slabJobStatus} />
+          </div>
+        </div>
+
+        {/* Right: actions — fixed-size, never move */}
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => setExpanded(v => !v)}
+            className="text-xs text-gray-400 hover:text-gray-700 underline underline-offset-2">
+            {expanded ? "Hide" : "Pieces"}
+          </button>
+          {!isSent && (
+            <SlabPicker slab={slab} qcSlabs={qcSlabs} onAssign={onAssign} />
+          )}
+          {isAssigned && !isSent && (
+            <button
+              onClick={handleSend}
+              disabled={sending}
+              className="text-xs font-bold bg-gray-900 hover:bg-gray-700 disabled:opacity-40 text-white px-4 py-1.5 rounded-lg transition">
+              {sending ? "Sending…" : "Send to Cutter"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Pieces table */}
+      {expanded && (
+        <div className="border-t border-gray-100">
+          <table className="w-full text-xs">
+            <thead className="bg-gray-50">
+              <tr>
+                {["Dwg","Piece","Description","L (in)","W (in)","Qty"].map(h => (
+                  <th key={h} className={`px-5 py-2 text-gray-400 font-semibold ${h === "Qty" ? "text-center" : "text-left"}`}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {slab.pieces.map((p, i) => (
+                <tr key={i} className="hover:bg-gray-50/60">
+                  <td className="px-5 py-2 font-mono text-gray-400 text-[11px]">{p.drawingNumber}</td>
+                  <td className="px-5 py-2 font-mono font-bold text-gray-800">{p.pieceLabel}</td>
+                  <td className="px-5 py-2 text-gray-500 max-w-xs truncate">{p.description ?? "—"}</td>
+                  <td className="px-5 py-2 font-mono text-gray-600">{p.lengthIn ?? "—"}</td>
+                  <td className="px-5 py-2 font-mono text-gray-600">{p.widthIn ?? "—"}</td>
+                  <td className="px-5 py-2 text-center font-bold text-gray-800">{p.qty}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Main page ──────────────────────────────────────── */
 export default function FabSupervisorPage() {
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [slabs, setSlabs] = useState<Slab[]>([]);
-  const [releasing, setReleasing] = useState<Record<string, boolean>>({});
-  const [loading, setLoading] = useState(true);
+  const [allSlabs, setAllSlabs] = useState<FabSlabRow[]>([]);
+  const [qcSlabs,  setQcSlabs]  = useState<QcSlab[]>([]);
+  const [loading,  setLoading]  = useState(true);
+  const [filter,   setFilter]   = useState<"all"|"unassigned"|"ready"|"sent">("all");
 
   const load = useCallback(async () => {
-    const [pRes, sRes] = await Promise.all([
+    setLoading(true);
+    const [pRes, qRes] = await Promise.all([
       fetch("/api/fab/supervisor/projects"),
       fetch("/api/fab/slabs"),
     ]);
-    const [pData, sData] = await Promise.all([pRes.json(), sRes.json()]);
-    setProjects(Array.isArray(pData) ? pData : []);
-    setSlabs(Array.isArray(sData) ? sData : []);
+    const [projects, qData] = await Promise.all([pRes.json(), qRes.json()]);
+
+    setQcSlabs(Array.isArray(qData) ? qData : []);
+
+    if (!Array.isArray(projects) || !projects.length) {
+      setAllSlabs([]); setLoading(false); return;
+    }
+
+    const results = await Promise.all(
+      projects.map(async (p: Project) => {
+        const res  = await fetch(`/api/fab/slab-allocation?projectId=${p.id}`);
+        const data = await res.json();
+        return (Array.isArray(data) ? data : []).map((s: any) => ({
+          ...s, projectId: p.id, projectCode: p.projectCode, customerName: p.customerName,
+        }));
+      })
+    );
+
+    const flat = (results.flat() as FabSlabRow[]).sort((a, b) => {
+      const rank = (s: FabSlabRow) =>
+        !s.pacificQcId ? 0 : !s.slabJobStatus ? 1 : s.slabJobStatus === "COMPLETED" ? 3 : 2;
+      return rank(a) - rank(b);
+    });
+
+    setAllSlabs(flat);
     setLoading(false);
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
-  async function assignDrawingSlab(drawingId: string, slabId: string, projectId: string) {
-    if (!slabId) return;
-    await fetch("/api/fab/supervisor/assign-drawing-slab", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ drawingId, slabId, projectId }) });
+  async function assignQcSlab(fabSlabId: string, qcId: string | null) {
+    await fetch("/api/fab/assign-qc-slab", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fabSlabId, pacificQcId: qcId }),
+    });
     await load();
   }
 
-  async function saveOverride(reqId: string, slabId: string, projectId: string) {
-    if (!slabId) return;
-    await fetch("/api/fab/supervisor/allocate-requirement", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requirementId: reqId, slabId, allocatedQuantity: 1 }) });
+  async function sendToCutter(slabId: string) {
+    await fetch("/api/fab/approve-slab", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slabId }),
+    });
     await load();
   }
 
-  async function releaseProject(projectId: string, projectCode: string) {
-    if (!confirm(`Release "${projectCode}" to production?`)) return;
-    setReleasing(p => ({ ...p, [projectId]: true }));
-    const res = await fetch("/api/fab/supervisor/release-project", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId }) });
-    const data = await res.json();
-    if (!res.ok) alert(data.error ?? "Release failed");
-    else await load();
-    setReleasing(p => ({ ...p, [projectId]: false }));
+  const [fixingCascade, setFixingCascade] = useState(false);
+  const [fixResult,     setFixResult]     = useState<string | null>(null);
+  async function runCascadeFix() {
+    setFixingCascade(true);
+    setFixResult(null);
+    try {
+      const res  = await fetch("/api/fab/admin/fix-cascade", { method: "POST" });
+      const data = await res.json();
+      setFixResult(data.message ?? (data.error ? `Error: ${data.error}` : "Done"));
+    } catch {
+      setFixResult("Request failed");
+    }
+    setFixingCascade(false);
   }
 
-  if (loading) return <div className="text-center py-20 text-gray-400">Loading…</div>;
+  const counts = {
+    all:        allSlabs.length,
+    unassigned: allSlabs.filter(s => !s.pacificQcId).length,
+    ready:      allSlabs.filter(s =>  s.pacificQcId && !s.slabJobStatus).length,
+    sent:       allSlabs.filter(s => !!s.slabJobStatus).length,
+  };
+
+  const filtered = allSlabs.filter(s =>
+    filter === "unassigned" ? !s.pacificQcId
+    : filter === "ready"    ?  s.pacificQcId && !s.slabJobStatus
+    : filter === "sent"     ? !!s.slabJobStatus
+    : true
+  );
+
+  if (loading) return (
+    <div className="flex items-center justify-center py-24 text-gray-400 text-sm gap-2">
+      <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeDashoffset="12"/>
+      </svg>
+      Loading…
+    </div>
+  );
 
   return (
-    <div>
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">Planning Board</h1>
-      {projects.length === 0 ? (
-        <div className="text-center py-20 text-gray-400">No projects awaiting allocation.</div>
+    <div className="max-w-4xl">
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Slab Cut Queue</h1>
+          <p className="text-sm text-gray-400 mt-0.5">Assign a physical slab, then send to cutter — one at a time</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={load}
+            className="text-xs text-gray-500 border border-gray-200 hover:border-gray-300 px-3 py-1.5 rounded-lg transition">
+            Refresh
+          </button>
+          <button onClick={runCascadeFix} disabled={fixingCascade}
+            title="Fix pieces stuck in Pending after slabs were marked Cut"
+            className="text-xs text-orange-600 border border-orange-200 hover:bg-orange-50 disabled:opacity-50 px-3 py-1.5 rounded-lg transition font-medium">
+            {fixingCascade ? "Fixing…" : "🔧 Fix Pending Queues"}
+          </button>
+        </div>
+        {fixResult && (
+          <div className="w-full mt-2 text-xs px-3 py-2 rounded-lg bg-green-50 border border-green-200 text-green-800">
+            {fixResult}
+          </div>
+        )}
+      </div>
+
+      {/* Filter tabs */}
+      <div className="flex items-center gap-2 mb-5 flex-wrap">
+        {(["all","unassigned","ready","sent"] as const).map(key => {
+          const labels = { all:"All", unassigned:"Needs slab", ready:"Ready to cut", sent:"Sent" };
+          const dotCol = { all:"bg-gray-400", unassigned:"bg-amber-400", ready:"bg-indigo-500", sent:"bg-blue-500" };
+          return (
+            <button key={key} onClick={() => setFilter(key)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition border
+                ${filter === key
+                  ? "bg-gray-900 text-white border-gray-900"
+                  : "bg-white text-gray-600 border-gray-200 hover:border-gray-300"}`}>
+              <span className={`w-2 h-2 rounded-full ${filter === key ? "bg-white/60" : dotCol[key]}`} />
+              {labels[key]}
+              <span className={`text-xs ${filter === key ? "text-white/60" : "text-gray-400"}`}>{counts[key]}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="text-center py-16 text-gray-400 text-sm bg-white rounded-2xl border border-gray-200">
+          {filter === "all" ? "No slab allocations uploaded yet." : "No slabs in this state."}
+        </div>
       ) : (
-        <div className="space-y-6">
-          {projects.map(project => {
-            const allAllocated = project.drawings.every(d =>
-              d.requirements.every(r => r.allocations[0]?.slabId || d.defaultSlabId)
-            );
-            return (
-              <div key={project.id} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-                  <div>
-                    <span className="font-semibold text-gray-900">{project.projectCode}</span>
-                    <span className="text-sm text-gray-500 ml-2">{project.customerName}</span>
-                  </div>
-                  <button onClick={() => releaseProject(project.id, project.projectCode)}
-                    disabled={!allAllocated || releasing[project.id]}
-                    className="bg-green-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium disabled:opacity-40 hover:bg-green-700">
-                    {releasing[project.id] ? "Releasing…" : "Release"}
-                  </button>
-                </div>
-                <div className="divide-y divide-gray-50">
-                  {project.drawings.map(drawing => (
-                    <div key={drawing.id} className="px-5 py-4">
-                      <div className="flex items-center gap-3 mb-3">
-                        <span className="font-medium text-gray-700">Drawing {drawing.drawingNumber}</span>
-                        <SlabSelect value={drawing.defaultSlabId ?? ""} slabs={slabs}
-                          placeholder="Default slab…"
-                          onChange={sid => assignDrawingSlab(drawing.id, sid, project.id)} />
-                        {drawing.defaultSlab && (
-                          <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${pillColour(drawing.defaultSlab.id)}`}>
-                            {drawing.defaultSlab.slabCode}
-                          </span>
-                        )}
-                      </div>
-                      <div className="space-y-2 ml-4">
-                        {drawing.requirements.map(req => {
-                          const override = req.allocations[0];
-                          const resolved = override?.slab ?? drawing.defaultSlab;
-                          return (
-                            <div key={req.id} className="flex items-center gap-3 text-sm">
-                              <span className="text-gray-500 w-24">{req.pieceLabel ?? req.description}</span>
-                              <span className="text-gray-400">x{req.quantity}</span>
-                              {req.sinkRequired && <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded">Sink</span>}
-                              {req.fabricationRequired && <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">Fab</span>}
-                              <SlabSelect value={override?.slabId ?? ""} slabs={slabs}
-                                placeholder={resolved ? `↳ ${resolved.slabCode}` : "Override slab…"}
-                                onChange={sid => saveOverride(req.id, sid, project.id)} />
-                              <span className={`text-xs px-2 py-0.5 rounded-full ${req.status === "ALLOCATED" ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
-                                {req.status}
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
+        <div className="space-y-3">
+          {filtered.map(slab => (
+            <SlabCard
+              key={slab.slabId}
+              slab={slab}
+              qcSlabs={qcSlabs}
+              onAssign={assignQcSlab}
+              onSend={sendToCutter}
+            />
+          ))}
         </div>
       )}
     </div>

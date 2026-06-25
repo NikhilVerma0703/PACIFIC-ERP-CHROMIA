@@ -6,7 +6,7 @@ export async function GET() {
   if (!session?.user?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
   const projects = await prisma.fabProject.findMany({
-    where: { status: { in: ["PLANNING", "ALLOCATED"] } },
+    where: { status: { in: ["PLANNING", "ALLOCATED"] }, projectCode: { not: "UNASSIGNED" } },
     orderBy: { createdAt: "desc" },
     include: {
       drawings: {

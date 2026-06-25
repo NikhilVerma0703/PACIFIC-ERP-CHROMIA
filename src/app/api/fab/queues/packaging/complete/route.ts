@@ -8,6 +8,16 @@ export async function POST(req: Request) {
   const { pieceIds, packageCode, remarks } = await req.json();
   if (!pieceIds?.length) return Response.json({ error: "pieceIds required" }, { status: 400 });
 
+  // Idempotency guard: reject if any piece is already packaged (prevents double-submit)
+  const alreadyPackaged = await prisma.fabPiece.count({
+    where: { id: { in: pieceIds }, status: "PACKAGED" },
+  });
+  if (alreadyPackaged > 0)
+    return Response.json(
+      { error: `${alreadyPackaged} piece(s) already packaged — refresh and try again` },
+      { status: 409 }
+    );
+
   const code = packageCode || `PKG-${Date.now()}`;
 
   const pkg = await prisma.$transaction(async (tx) => {

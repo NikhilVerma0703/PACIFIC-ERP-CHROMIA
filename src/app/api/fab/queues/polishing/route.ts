@@ -6,7 +6,7 @@ export async function GET() {
   if (!session?.user?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
   const pieces = await prisma.fabPiece.findMany({
-    where: { polishRequired: true, polishingCompleted: false },
+    where: { polishRequired: true, polishingCompleted: false, status: { not: "PENDING" } },
     include: {
       project: { select: { projectCode: true, customerName: true } },
       drawing: { select: { drawingNumber: true } },

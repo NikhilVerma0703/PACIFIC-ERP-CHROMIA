@@ -14,6 +14,18 @@ export async function POST(req: Request) {
   const machine = await prisma.fabMachine.findUnique({ where: { id: machineId } });
   if (!machine) return Response.json({ error: "Machine not found" }, { status: 404 });
 
+  // Block if another user already has an active session on this machine
+  const occupied = await prisma.fabMachineSession.findFirst({
+    where: { machineId, isActive: true, userId: { not: (session.user as any).id } },
+    select: { user: { select: { name: true } } },
+  });
+  if (occupied) {
+    return Response.json(
+      { error: `Machine is already in use by ${occupied.user.name ?? "another operator"}` },
+      { status: 409 }
+    );
+  }
+
   // End any existing active sessions for this user
   await prisma.fabMachineSession.updateMany({
     where: { userId: (session.user as any).id, isActive: true },

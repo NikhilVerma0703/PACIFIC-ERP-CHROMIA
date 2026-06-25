@@ -1,12 +1,13 @@
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/auth";
 
-export async function GET(req: Request, { params }: { params: { projectId: string } }) {
+export async function GET(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
+  const { projectId } = await params;
   const session = await auth();
   if (!session?.user?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
   const localSlabs = await prisma.fabSlab.findMany({
-    where: { projectId: params.projectId },
+    where: { projectId: projectId },
     orderBy: { createdAt: "desc" },
   });
 

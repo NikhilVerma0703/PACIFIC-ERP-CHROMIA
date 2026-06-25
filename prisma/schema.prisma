@@ -1997,6 +1997,30 @@ model SyncState {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Cutting / Sampling Module
+// ─────────────────────────────────────────────────────────────────────────────
+
+model CuttingEntry {
+  id          String   @id @default(cuid())
+  slabNumber  Float
+  batchKey    String   @map("batch_key")
+  design      String?
+  cutDate     DateTime @map("cut_date")
+  operator    String
+  lengthCm    Float?   @map("length_cm")
+  widthCm     Float?   @map("width_cm")
+  thicknessMm Float?   @map("thickness_mm")
+  quantity    Int      @default(1)
+  purpose     String?
+  remarks     String?
+  createdById String?  @map("created_by_id")
+  createdBy   User?    @relation(fields: [createdById], references: [id])
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("cutting_entry")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Fabrication Module (erp-v4 integrated)
 // All tables prefixed fab_ to avoid conflicts with existing Pacific-ERP tables.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2287,6 +2311,7 @@ model FabPieceOperation {
   sequence      Int
   isRequired    Boolean          @default(true) @map("is_required")
   isCompleted   Boolean          @default(false) @map("is_completed")
+  startedAt     DateTime?        @map("started_at")
   completedAt   DateTime?        @map("completed_at")
   operationId   String?          @map("operation_id")
   operation     FabOperation?    @relation(fields: [operationId], references: [id])

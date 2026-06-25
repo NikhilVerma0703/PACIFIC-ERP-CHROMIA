@@ -32,8 +32,11 @@ export async function GET() {
     const qcSlabs = await prisma.polishQc.findMany({
       where: {
         slabNumber: { not: null },
-        // Exclude rework-pending slabs
-        NOT: { rwStatus: "RW" },
+        // Exclude rework slabs — must use OR because NOT: {} also filters out NULLs in SQL
+        OR: [
+          { rwStatus: null },
+          { rwStatus: { not: "RW" } },
+        ],
       },
       select: {
         id: true,
@@ -77,7 +80,7 @@ export async function GET() {
       }))
     );
   } catch (error) {
-    console.error("fab/slabs error:", error);
-    return Response.json({ error: String(error) }, { status: 500 });
+    console.error("[fab/slabs]", error);
+    return Response.json({ error: "Internal error" }, { status: 500 });
   }
 }
