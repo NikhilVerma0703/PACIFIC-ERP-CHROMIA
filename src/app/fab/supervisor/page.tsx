@@ -2,7 +2,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 
-/* ─── Types ─────────────────────────────────────────── */
+/* -- Types ----------------------------------------------------------------- */
 interface QcSlab {
   pacificQcId:  string;
   slabCode:     string;
@@ -38,7 +38,7 @@ interface Project {
   id: string; projectCode: string; customerName: string | null; status: string;
 }
 
-/* ─── Small UI ───────────────────────────────────────── */
+/* -- Small UI -------------------------------------------------------------- */
 function StatusChip({ status }: { status: string | null }) {
   if (!status)                  return <span className="text-[10px] font-bold uppercase tracking-wide text-gray-400">Pending</span>;
   if (status === "READY")       return <span className="text-[10px] font-bold uppercase tracking-wide text-blue-600">Sent to cutter</span>;
@@ -56,7 +56,7 @@ function ThickChip({ bucket }: { bucket: 2 | 3 | null }) {
   return <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${bucket === 3 ? "bg-purple-100 text-purple-700" : "bg-blue-100 text-blue-700"}`}>{bucket}cm</span>;
 }
 
-/* ─── Slab picker — portal-based, no layout shift ───── */
+/* -- Slab picker (portal-based) -------------------------------------------- */
 function SlabPicker({ slab, qcSlabs, onAssign }: {
   slab:     FabSlabRow;
   qcSlabs:  QcSlab[];
@@ -88,7 +88,6 @@ function SlabPicker({ slab, qcSlabs, onAssign }: {
     return matchThick && matchSearch;
   });
 
-  /* Panel position: align right edge to button right edge, open below */
   const panelStyle: React.CSSProperties = rect ? {
     position: "fixed",
     top:      rect.bottom + 6,
@@ -107,16 +106,13 @@ function SlabPicker({ slab, qcSlabs, onAssign }: {
           ${slab.pacificQcId
             ? "bg-white border border-gray-300 text-gray-700 hover:border-indigo-400 hover:text-indigo-700"
             : "bg-indigo-600 text-white hover:bg-indigo-700"}`}>
-        {saving ? "Saving…" : slab.pacificQcId ? "Change slab" : "Assign slab"}
+        {saving ? "Saving..." : slab.pacificQcId ? "Change slab" : "Assign slab"}
       </button>
 
       {open && typeof window !== "undefined" && createPortal(
         <>
-          {/* backdrop */}
           <div className="fixed inset-0 z-[9998]" onClick={close} />
-          {/* panel */}
           <div style={panelStyle} className="bg-white border border-gray-200 rounded-2xl shadow-2xl overflow-hidden">
-            {/* header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50">
               <span className="text-xs font-bold text-gray-700">
                 {slab.thicknessBucket === 3 ? "3cm slabs only" : "All slabs"}
@@ -124,18 +120,16 @@ function SlabPicker({ slab, qcSlabs, onAssign }: {
               </span>
               <button onClick={close} className="text-gray-400 hover:text-gray-600 text-lg leading-none">&times;</button>
             </div>
-            {/* search */}
             <div className="px-3 py-2 border-b border-gray-100">
               <input
                 autoFocus
                 type="text"
-                placeholder="Search slab code or colour…"
+                placeholder="Search slab code or colour..."
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 className="w-full text-xs border border-gray-200 rounded-lg px-3 py-2 outline-none focus:border-indigo-300 focus:ring-1 focus:ring-indigo-100"
               />
             </div>
-            {/* list */}
             <div className="max-h-60 overflow-y-auto">
               {slab.pacificQcId && (
                 <button onClick={() => pick(null)}
@@ -157,10 +151,10 @@ function SlabPicker({ slab, qcSlabs, onAssign }: {
                     )}
                   </div>
                   <div className="flex items-center gap-2 mt-0.5 text-[11px] text-gray-400">
-                    {q.colour     && <span>{q.colour}</span>}
+                    {q.colour      && <span>{q.colour}</span>}
                     {q.thicknessMm && <span>&middot; {q.thicknessMm}mm</span>}
                     {q.qualityGrade && <span>&middot; Grade {q.qualityGrade}</span>}
-                    {q.batchKey   && <span>&middot; {q.batchKey}</span>}
+                    {q.batchKey    && <span>&middot; {q.batchKey}</span>}
                   </div>
                 </button>
               ))}
@@ -173,12 +167,13 @@ function SlabPicker({ slab, qcSlabs, onAssign }: {
   );
 }
 
-/* ─── Slab card ──────────────────────────────────────── */
-function SlabCard({ slab, qcSlabs, onAssign, onSend }: {
-  slab:     FabSlabRow;
-  qcSlabs:  QcSlab[];
-  onAssign: (fabSlabId: string, qcId: string | null) => Promise<void>;
-  onSend:   (slabId: string) => Promise<void>;
+/* -- Slab card ------------------------------------------------------------- */
+function SlabCard({ slab, qcSlabs, onAssign, onSend, printerEmail }: {
+  slab:         FabSlabRow;
+  qcSlabs:      QcSlab[];
+  onAssign:     (fabSlabId: string, qcId: string | null) => Promise<void>;
+  onSend:       (slabId: string) => Promise<void>;
+  printerEmail: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [sending,  setSending]  = useState(false);
@@ -190,6 +185,30 @@ function SlabCard({ slab, qcSlabs, onAssign, onSend }: {
     setSending(true);
     await onSend(slab.slabId);
     setSending(false);
+  }
+
+  function handleMailLabels() {
+    const subject = `Print Labels - ${slab.projectCode} / Slab ${slab.slabCode}`;
+    const bodyLines = [
+      `LABEL PRINT REQUEST`,
+      `------------------------------`,
+      `Project : ${slab.projectCode}${slab.customerName ? ` (${slab.customerName})` : ""}`,
+      `Slab    : ${slab.qcSlabCode ?? slab.slabCode}`,
+      `Date    : ${new Date().toLocaleDateString()}`,
+      ``,
+      `LABELS TO PRINT:`,
+      `------------------------------`,
+      ...slab.pieces.map(p => `${p.drawingNumber}-${p.pieceLabel}  x  ${p.qty}`),
+      `------------------------------`,
+      `Total labels: ${totalPcs}`,
+      ``,
+      `-- Pacific ERP`,
+    ];
+    const mailto =
+      `mailto:${encodeURIComponent(printerEmail)}` +
+      `?subject=${encodeURIComponent(subject)}` +
+      `&body=${encodeURIComponent(bodyLines.join("\n"))}`;
+    window.open(mailto);
   }
 
   return (
@@ -224,12 +243,18 @@ function SlabCard({ slab, qcSlabs, onAssign, onSend }: {
           </div>
         </div>
 
-        {/* Right: actions — fixed-size, never move */}
-        <div className="flex items-center gap-2 shrink-0">
+        {/* Right: actions */}
+        <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
           <button
             onClick={() => setExpanded(v => !v)}
             className="text-xs text-gray-400 hover:text-gray-700 underline underline-offset-2">
             {expanded ? "Hide" : "Pieces"}
+          </button>
+          <button
+            onClick={handleMailLabels}
+            title="Open email client pre-filled with labels for the printer"
+            className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-teal-300 text-teal-700 bg-teal-50 hover:bg-teal-100 transition whitespace-nowrap">
+            Mail Labels
           </button>
           {!isSent && (
             <SlabPicker slab={slab} qcSlabs={qcSlabs} onAssign={onAssign} />
@@ -239,7 +264,7 @@ function SlabCard({ slab, qcSlabs, onAssign, onSend }: {
               onClick={handleSend}
               disabled={sending}
               className="text-xs font-bold bg-gray-900 hover:bg-gray-700 disabled:opacity-40 text-white px-4 py-1.5 rounded-lg transition">
-              {sending ? "Sending…" : "Send to Cutter"}
+              {sending ? "Sending..." : "Send to Cutter"}
             </button>
           )}
         </div>
@@ -261,9 +286,9 @@ function SlabCard({ slab, qcSlabs, onAssign, onSend }: {
                 <tr key={i} className="hover:bg-gray-50/60">
                   <td className="px-5 py-2 font-mono text-gray-400 text-[11px]">{p.drawingNumber}</td>
                   <td className="px-5 py-2 font-mono font-bold text-gray-800">{p.pieceLabel}</td>
-                  <td className="px-5 py-2 text-gray-500 max-w-xs truncate">{p.description ?? "—"}</td>
-                  <td className="px-5 py-2 font-mono text-gray-600">{p.lengthIn ?? "—"}</td>
-                  <td className="px-5 py-2 font-mono text-gray-600">{p.widthIn ?? "—"}</td>
+                  <td className="px-5 py-2 text-gray-500 max-w-xs truncate">{p.description ?? "-"}</td>
+                  <td className="px-5 py-2 font-mono text-gray-600">{p.lengthIn ?? "-"}</td>
+                  <td className="px-5 py-2 font-mono text-gray-600">{p.widthIn ?? "-"}</td>
                   <td className="px-5 py-2 text-center font-bold text-gray-800">{p.qty}</td>
                 </tr>
               ))}
@@ -275,12 +300,17 @@ function SlabCard({ slab, qcSlabs, onAssign, onSend }: {
   );
 }
 
-/* ─── Main page ──────────────────────────────────────── */
+/* -- Main page ------------------------------------------------------------- */
 export default function FabSupervisorPage() {
-  const [allSlabs, setAllSlabs] = useState<FabSlabRow[]>([]);
-  const [qcSlabs,  setQcSlabs]  = useState<QcSlab[]>([]);
-  const [loading,  setLoading]  = useState(true);
-  const [filter,   setFilter]   = useState<"all"|"unassigned"|"ready"|"sent">("all");
+  const [allSlabs,     setAllSlabs]     = useState<FabSlabRow[]>([]);
+  const [qcSlabs,      setQcSlabs]      = useState<QcSlab[]>([]);
+  const [loading,      setLoading]      = useState(true);
+  const [filter,       setFilter]       = useState<"all"|"unassigned"|"ready"|"sent">("all");
+  const [printerEmail, setPrinterEmail] = useState<string>(() =>
+    typeof window !== "undefined" ? (localStorage.getItem("fab_printer_email") ?? "") : ""
+  );
+  const [editingEmail, setEditingEmail] = useState(false);
+  const [emailDraft,   setEmailDraft]   = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -368,16 +398,17 @@ export default function FabSupervisorPage() {
       <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
         <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeDashoffset="12"/>
       </svg>
-      Loading…
+      Loading...
     </div>
   );
 
   return (
     <div className="max-w-4xl">
-      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Slab Cut Queue</h1>
-          <p className="text-sm text-gray-400 mt-0.5">Assign a physical slab, then send to cutter — one at a time</p>
+          <p className="text-sm text-gray-400 mt-0.5">Assign a physical slab, then send to cutter</p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={load}
@@ -387,13 +418,56 @@ export default function FabSupervisorPage() {
           <button onClick={runCascadeFix} disabled={fixingCascade}
             title="Fix pieces stuck in Pending after slabs were marked Cut"
             className="text-xs text-orange-600 border border-orange-200 hover:bg-orange-50 disabled:opacity-50 px-3 py-1.5 rounded-lg transition font-medium">
-            {fixingCascade ? "Fixing…" : "🔧 Fix Pending Queues"}
+            {fixingCascade ? "Fixing..." : "Fix Pending Queues"}
           </button>
         </div>
         {fixResult && (
           <div className="w-full mt-2 text-xs px-3 py-2 rounded-lg bg-green-50 border border-green-200 text-green-800">
             {fixResult}
           </div>
+        )}
+      </div>
+
+      {/* Printer email settings */}
+      <div className="mb-5 flex items-center gap-2 bg-teal-50 border border-teal-200 rounded-xl px-4 py-2.5 flex-wrap">
+        <span className="text-xs font-semibold text-teal-700">Label printer email:</span>
+        {editingEmail ? (
+          <>
+            <input
+              autoFocus
+              type="email"
+              value={emailDraft}
+              onChange={e => setEmailDraft(e.target.value)}
+              placeholder="printer@company.com"
+              className="text-xs border border-teal-300 rounded-lg px-3 py-1.5 outline-none focus:ring-1 focus:ring-teal-400 w-64"
+            />
+            <button
+              onClick={() => {
+                const trimmed = emailDraft.trim();
+                setPrinterEmail(trimmed);
+                if (typeof window !== "undefined") localStorage.setItem("fab_printer_email", trimmed);
+                setEditingEmail(false);
+              }}
+              className="text-xs font-bold bg-teal-600 text-white px-3 py-1.5 rounded-lg hover:bg-teal-700 transition">
+              Save
+            </button>
+            <button onClick={() => setEditingEmail(false)}
+              className="text-xs text-teal-500 hover:text-teal-700 underline">
+              Cancel
+            </button>
+          </>
+        ) : (
+          <>
+            {printerEmail
+              ? <span className="text-xs font-mono text-teal-900 bg-white border border-teal-200 rounded-lg px-3 py-1.5">{printerEmail}</span>
+              : <span className="text-xs text-teal-400 italic">Not set - Mail Labels will open with blank To field</span>
+            }
+            <button
+              onClick={() => { setEmailDraft(printerEmail); setEditingEmail(true); }}
+              className="text-xs text-teal-600 hover:text-teal-800 underline underline-offset-2">
+              {printerEmail ? "Change" : "Set email"}
+            </button>
+          </>
         )}
       </div>
 
@@ -429,6 +503,7 @@ export default function FabSupervisorPage() {
               qcSlabs={qcSlabs}
               onAssign={assignQcSlab}
               onSend={sendToCutter}
+              printerEmail={printerEmail}
             />
           ))}
         </div>
