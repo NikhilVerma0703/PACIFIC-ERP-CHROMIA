@@ -110,20 +110,20 @@ function NavGroup({ icon, label, active, defaultOpen, children }: {
         <span className="flex-1 text-left">{label}</span>
         <Chevron open={open} />
       </button>
-      {open && <div className="mt-0.5 ml-5 pl-2 border-l-2 border-gray-100 space-y-0.5">{children}</div>}
+      {open && <div className="mt-1 ml-2 space-y-1">{children}</div>}
     </div>
   );
 }
 
-/* L2 sub-link */
+/* L2 sub-link — same look as the app's main nav tabs */
 function SubLink({ href, icon, label, path }: { href: string; icon: string; label: string; path: string }) {
   const active = path === href || path.startsWith(href + "/") || path.startsWith(href + "?");
   return (
     <Link href={href}
-      className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] font-medium transition ${
-        active ? "bg-brand/10 text-brand" : "text-gray-500 hover:bg-white hover:text-brand"
+      className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
+        active ? "bg-brand text-white shadow-sm" : "text-gray-600 hover:bg-white hover:text-brand"
       }`}>
-      <NavIcon d={icon} size={14} />
+      <NavIcon d={icon} />
       {label}
     </Link>
   );
@@ -159,6 +159,18 @@ function DeepLink({ href, label, path }: { href: string; label: string; path: st
       }`}>
       {label}
     </Link>
+  );
+}
+
+/* Overview group — Dashboard + management dashboards (CEO / Manager), admin only */
+function OverviewGroup({ path }: { path: string }) {
+  const active = path === "/" || path.startsWith("/fab/ceo") || path.startsWith("/fab/projects");
+  return (
+    <NavGroup icon={I.overview} label="Overview" active={active} defaultOpen>
+      <SubLink href="/"             icon={I.overview} label="Dashboard"     path={path} />
+      <SubLink href="/fab/ceo"      icon={I.ceo}      label="CEO Dashboard" path={path} />
+      <SubLink href="/fab/projects" icon={I.manager}  label="Manager View"  path={path} />
+    </NavGroup>
   );
 }
 
@@ -211,12 +223,7 @@ export function Nav({
             { href: "/tables", label: "My Tables",   icon: I.tables },
           ]
         : [
-            ...base.slice(0, 1),
-            ...(showCuttingGroup ? [
-              { href: "/fab/ceo",      label: "CEO Dashboard", icon: I.ceo     },
-              { href: "/fab/projects", label: "Manager View",  icon: I.manager },
-            ] : []),
-            ...base.slice(1),
+            ...base,
             ...(showAdmin       ? [{ href: "/admin/users",      label: "Users & Roles", icon: I.users }] : []),
             ...(role === "ADMIN"? [{ href: "/admin/migration",   label: "Airtable Sync", icon: I.box   }] : []),
             // Flat fab links only for non-admin fab roles (MANAGER/SUPERVISOR/EMPLOYEE) in Shell
@@ -239,10 +246,15 @@ export function Nav({
   const cuttingIdx = tabs.findIndex(t => t.href === "/admin/users");
   const before = cuttingIdx >= 0 ? tabs.slice(0, cuttingIdx) : tabs;
   const after  = cuttingIdx >= 0 ? tabs.slice(cuttingIdx)    : [];
+  // Management users get an Overview group (Dashboard + CEO + Manager); drop the
+  // standalone "/" link so the dashboard isn't listed twice.
+  const showOverviewGroup = showCuttingGroup && !office;
+  const flat = showOverviewGroup ? before.filter(t => t.href !== "/") : before;
 
   return (
     <nav className="flex flex-col gap-1">
-      {before.map(t => (
+      {showOverviewGroup && <OverviewGroup path={path} />}
+      {flat.map(t => (
         <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} office={office} />
       ))}
       {showCuttingGroup && <CuttingGroup path={path} />}
