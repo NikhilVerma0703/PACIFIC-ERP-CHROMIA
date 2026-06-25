@@ -44,20 +44,13 @@ export default auth((req) => {
   // Fabrication module routing — return early so fab users bypass OPERATOR/STORE checks
   const fabRole = (req.auth?.user as any)?.fabRole;
   if (fabRole) {
-    const isEmployee = fabRole === "FAB_EMPLOYEE";
-    const fabHome =
-      fabRole === "FAB_ADMIN" || fabRole === "FAB_MANAGER"
-        ? "/fab/projects"
-        : fabRole === "FAB_SUPERVISOR"
-        ? "/fab/supervisor"
-        : "/fab/session";
-
-    // Allow public-ish fab API paths always
     const isFabApi = p.startsWith("/api/fab") || p.startsWith("/api/auth");
     if (isFabApi) return;
 
-    if (isEmployee) {
-      // Employees must be on /fab/* only
+    // FAB_ADMIN: full access — treated like regular ADMIN (can use main ERP + fab)
+    if (fabRole === "FAB_ADMIN") return;
+
+    if (fabRole === "FAB_EMPLOYEE") {
       const machineType = req.cookies.get("fab_machine_type")?.value;
       const MACHINE_URLS: Record<string, string> = {
         CUTTING:      "/fab/cutting",
@@ -66,22 +59,19 @@ export default auth((req) => {
         FABRICATION:  "/fab/fabrication",
         PACKAGING:    "/fab/packaging",
       };
-
       if (!machineType) {
-        // No session started — send to session picker (unless already there)
         if (p !== "/fab/session") return Response.redirect(new URL("/fab/session", nextUrl));
-        return; // already on session page
+        return;
       }
-
       const allowedUrl = MACHINE_URLS[machineType];
-      // Allow: their queue page, session page, fab layout assets
       const ok = p === allowedUrl || p === "/fab/session";
       if (!ok) return Response.redirect(new URL(allowedUrl ?? "/fab/session", nextUrl));
       return;
     }
 
-    // Non-employee fab users: allow all /fab/* and /api/fab/*
-    const ok = p.startsWith("/fab") || STATIC_FILE.test(p);
+    // FAB_MANAGER / FAB_SUPERVISOR: allow /fab/* and the main-app /cutting (Samples)
+    const fabHome = fabRole === "FAB_MANAGER" ? "/fab/projects" : "/fab/supervisor";
+    const ok = p.startsWith("/fab") || p === "/cutting" || p.startsWith("/api") || STATIC_FILE.test(p);
     if (!ok) return Response.redirect(new URL(fabHome, nextUrl));
     return;
   }
