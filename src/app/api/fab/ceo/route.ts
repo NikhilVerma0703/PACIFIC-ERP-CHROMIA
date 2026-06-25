@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/auth";
+import { expireStaleSessions } from "@/lib/fab/expireStaleSessions";
 
 const IDLE_MS = 30 * 60 * 1000;
 
@@ -10,6 +11,9 @@ export async function GET(req: Request) {
   if (fabRole !== "FAB_ADMIN" && mainRole !== "ADMIN") {
     return Response.json({ error: "Forbidden" }, { status: 403 });
   }
+
+  // Auto-close sessions left open when operators shut down without logging out
+  await expireStaleSessions();
 
   const { searchParams } = new URL(req.url);
   const dateParam = searchParams.get("date");

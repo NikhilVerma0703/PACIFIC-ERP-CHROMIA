@@ -364,7 +364,8 @@ export default function FabSupervisorPage() {
     await load();
   }
 
-  const [fixingCascade, setFixingCascade] = useState(false);
+  const [fixingCascade,  setFixingCascade]  = useState(false);
+  const [endingSessions, setEndingSessions] = useState(false);
   const [fixResult,     setFixResult]     = useState<string | null>(null);
   async function runCascadeFix() {
     setFixingCascade(true);
@@ -377,6 +378,20 @@ export default function FabSupervisorPage() {
       setFixResult("Request failed");
     }
     setFixingCascade(false);
+  }
+
+  async function endAllSessions() {
+    if (!confirm("Force-logout all machine operators? (Use at shift end or if operators forgot to log out)")) return;
+    setEndingSessions(true);
+    setFixResult(null);
+    try {
+      const res  = await fetch("/api/fab/admin/end-all-sessions", { method: "POST" });
+      const data = await res.json();
+      setFixResult(data.error ? `Error: ${data.error}` : `Done -- ${data.closed} session(s) closed`);
+    } catch {
+      setFixResult("Request failed");
+    }
+    setEndingSessions(false);
   }
 
   const counts = {
@@ -419,6 +434,11 @@ export default function FabSupervisorPage() {
             title="Fix pieces stuck in Pending after slabs were marked Cut"
             className="text-xs text-orange-600 border border-orange-200 hover:bg-orange-50 disabled:opacity-50 px-3 py-1.5 rounded-lg transition font-medium">
             {fixingCascade ? "Fixing..." : "Fix Pending Queues"}
+          </button>
+          <button onClick={endAllSessions} disabled={endingSessions}
+            title="Force-logout all machine operators (use at shift end)"
+            className="text-xs text-red-600 border border-red-200 hover:bg-red-50 disabled:opacity-50 px-3 py-1.5 rounded-lg transition font-medium">
+            {endingSessions ? "Ending..." : "End All Sessions"}
           </button>
         </div>
         {fixResult && (

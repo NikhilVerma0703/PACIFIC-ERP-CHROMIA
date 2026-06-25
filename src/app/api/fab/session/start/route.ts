@@ -1,12 +1,16 @@
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/auth";
 import { cookies } from "next/headers";
+import { expireStaleSessions } from "@/lib/fab/expireStaleSessions";
 
 export async function POST(req: Request) {
   const session = await auth();
   if (!session?.user) return Response.json({ error: "Unauthorized" }, { status: 401 });
   const fabRole = (session.user as any).fabRole;
   if (!fabRole) return Response.json({ error: "No fab role" }, { status: 403 });
+
+  // Auto-close sessions left open when operators shut down without logging out
+  await expireStaleSessions();
 
   const { machineId, shift } = await req.json();
   if (!machineId || !shift) return Response.json({ error: "machineId and shift required" }, { status: 400 });
