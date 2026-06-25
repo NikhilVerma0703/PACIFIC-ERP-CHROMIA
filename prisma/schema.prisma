@@ -39,12 +39,21 @@ enum Station {
   SILO
   POLISH_QC
   POLISH_ENTRY
+  CUTTING
 }
 
 enum Branch {
   SHOP_FLOOR
   OFFICE
 }
+
+enum FabRole {
+  FAB_ADMIN
+  FAB_MANAGER
+  FAB_SUPERVISOR
+  FAB_EMPLOYEE
+}
+
 
 model User {
   id             String   @id @default(cuid())
@@ -55,12 +64,17 @@ model User {
   role         Role     @default(OPERATOR)
   station      Station?
   branch       Branch   @default(SHOP_FLOOR)
+  fabRole      FabRole?           @map("fab_role")
   active       Boolean  @default(true)
-  createdById  String?
-  createdBy    User?    @relation("UserCreator", fields: [createdById], references: [id])
-  createdUsers User[]   @relation("UserCreator")
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdById      String?
+  createdBy        User?             @relation("UserCreator", fields: [createdById], references: [id])
+  createdUsers     User[]            @relation("UserCreator")
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  cuttingEntries   CuttingEntry[]
+  fabMachineSessions FabMachineSession[]
+  fabSlabJobs        FabSlabJob[]
+  fabOperations      FabOperation[]
 
   @@map("users")
 }
@@ -1982,4 +1996,392 @@ model SyncState {
   cutoverBy      String?   @map("cutover_by")        // "auto" | user name
 
   @@map("sync_state")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cutting / Sampling Module
+// ─────────────────────────────────────────────────────────────────────────────
+
+model CuttingEntry {
+  id          String   @id @default(cuid())
+  slabNumber  Float
+  batchKey    String   @map("batch_key")
+  design      String?
+  cutDate     DateTime @map("cut_date")
+  operator    String
+  lengthCm    Float?   @map("length_cm")
+  widthCm     Float?   @map("width_cm")
+  thicknessMm Float?   @map("thickness_mm")
+  quantity    Int      @default(1)
+  purpose     String?
+  remarks     String?
+  createdById String?  @map("created_by_id")
+  createdBy   User?    @relation(fields: [createdById], references: [id])
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("cutting_entry")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fabrication Module (erp-v4 integrated)
+// All tables prefixed fab_ to avoid conflicts with existing Pacific-ERP tables.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum FabProjectStatus {
+  PLANNING
+  ALLOCATED
+  RELEASED_TO_PRODUCTION
+  COMPLETED
+}
+
+enum FabRequirementStatus {
+  PENDING
+  ALLOCATED
+  RELEASED
+}
+
+enum FabPieceStatus {
+  PENDING
+  CUTTING
+  CUT
+  POLISHING
+  POLISHED
+  SINK_CUTTING
+  SINK_CUT
+  FABRICATION
+  FABRICATED
+  PACKAGED
+}
+
+enum FabMachineType {
+  CUTTING
+  POLISHING
+  SINK_CUTTING
+  FABRICATION
+  PACKAGING
+}
+
+enum FabOperationType {
+  CUTTING
+  POLISHING
+  SINK_CUTTING
+  FABRICATION
+  PACKAGING
+}
+
+enum FabOperationStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum FabSlabProductionStatus {
+  READY
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum FabShapeType {
+  RECTANGLE
+  L_SHAPE
+  CURVE
+  ROUND
+  CUSTOM
+}
+
+model FabMachine {
+  id         String              @id @default(cuid())
+  code       String              @unique
+  name       String
+  type       FabMachineType
+  createdAt  DateTime            @default(now()) @map("created_at")
+  sessions   FabMachineSession[]
+  operations FabOperation[]
+  slabJobs   FabSlabJob[]
+
+  @@map("fab_machine")
+}
+
+model FabMachineSession {
+  id         String     @id @default(cuid())
+  userId     String     @map("user_id")
+  user       User       @relation(fields: [userId], references: [id])
+  machineId  String     @map("machine_id")
+  machine    FabMachine @relation(fields: [machineId], references: [id])
+  shift      String
+  loginTime  DateTime   @default(now()) @map("login_time")
+  logoutTime DateTime?  @map("logout_time")
+  isActive   Boolean    @default(true) @map("is_active")
+
+  @@map("fab_machine_session")
+}
+
+model FabProject {
+  id             String           @id @default(cuid())
+  projectCode    String           @unique @map("project_code")
+  customerName   String           @map("customer_name")
+  status         FabProjectStatus @default(PLANNING)
+  numberOfPieces Int              @default(0) @map("number_of_pieces")
+  drawingPdfUrl  String?          @map("drawing_pdf_url")
+  remarks        String?
+  createdAt      DateTime         @default(now()) @map("created_at")
+  slabs          FabSlab[]
+  pieces         FabPiece[]
+  requirements   FabRequirement[]
+  drawings       FabDrawing[]
+
+  @@map("fab_project")
+}
+
+model FabDrawing {
+  id            String         @id @default(cuid())
+  drawingNumber String         @map("drawing_number")
+  unitType      String?        @map("unit_type")
+  units         Int?
+  areaName      String?        @map("area_name")
+  projectId     String         @map("project_id")
+  project       FabProject     @relation(fields: [projectId], references: [id])
+  defaultSlabId String?        @map("default_slab_id")
+  defaultSlab   FabSlab?       @relation("DrawingDefaultSlab", fields: [defaultSlabId], references: [id])
+  remarks       String?
+  createdAt     DateTime       @default(now()) @map("created_at")
+  pieces        FabPiece[]
+  requirements  FabRequirement[]
+
+  @@map("fab_drawing")
+}
+
+model FabSlab {
+  id                     String                    @id @default(cuid())
+  slabCode               String                    @map("slab_code")
+  colour                 String?
+  material               String?
+  thickness              Float?
+  length                 Float?
+  width                  Float?
+  totalArea              Float?                    @map("total_area")
+  reservedArea           Float?                    @default(0) @map("reserved_area")
+  availableArea          Float?                    @map("available_area")
+  pacificQcId            String?                   @map("pacific_qc_id")
+  projectId              String                    @map("project_id")
+  project                FabProject                @relation(fields: [projectId], references: [id])
+  createdAt              DateTime                  @default(now()) @map("created_at")
+  pieces                 FabPiece[]
+  slabJobs               FabSlabJob[]
+  allocations            FabSlabAllocation[]
+  requirementAllocations FabRequirementAllocation[]
+  assignedDrawings       FabDrawing[]              @relation("DrawingDefaultSlab")
+  residuals              FabResidualBag[]
+
+  @@map("fab_slab")
+}
+
+model FabSlabJob {
+  id              String                  @id @default(cuid())
+  slabId          String                  @map("slab_id")
+  slab            FabSlab                 @relation(fields: [slabId], references: [id])
+  machineId       String?                 @map("machine_id")
+  machine         FabMachine?             @relation(fields: [machineId], references: [id])
+  operatorId      String?                 @map("operator_id")
+  operator        User?                   @relation(fields: [operatorId], references: [id])
+  status          FabSlabProductionStatus @default(READY)
+  startTime       DateTime?               @map("start_time")
+  endTime         DateTime?               @map("end_time")
+  usedAreaSqft    Float?                  @map("used_area_sqft")
+  totalWastagePct Float?                  @map("total_wastage_pct")
+  trueScrapPct    Float?                  @map("true_scrap_pct")
+  kerfMm          Float?                  @default(3) @map("kerf_mm")
+  createdAt       DateTime                @default(now()) @map("created_at")
+
+  @@map("fab_slab_job")
+}
+
+model FabRequirement {
+  id                  String                     @id @default(cuid())
+  projectId           String                     @map("project_id")
+  project             FabProject                 @relation(fields: [projectId], references: [id])
+  drawingId           String?                    @map("drawing_id")
+  drawing             FabDrawing?                @relation(fields: [drawingId], references: [id])
+  pieceLabel          String?                    @map("piece_label")
+  description         String?
+  slabCode            String                     @map("slab_code")
+  length              Float?
+  width               Float?
+  thickness           Float?
+  quantity            Int
+  shapeType           FabShapeType?              @map("shape_type")
+  sinkRequired        Boolean                    @default(false) @map("sink_required")
+  fabricationRequired Boolean                    @default(false) @map("fabrication_required")
+  polishRequired      Boolean                    @default(false) @map("polish_required")
+  sinkModel           String?                    @map("sink_model")
+  sinkCuts            Int?                       @default(0) @map("sink_cuts")
+  faucetCount         Int?                       @default(0) @map("faucet_count")
+  depLength           Float?                     @map("dep_length")
+  jointCount          Int?                       @default(0) @map("joint_count")
+  jointDepLength      Float?                     @map("joint_dep_length")
+  radiusCorners       Int?                       @default(0) @map("radius_corners")
+  sqftPerPiece        Float?                     @map("sqft_per_piece")
+  totalSqft           Float?                     @map("total_sqft")
+  notes               String?
+  status              FabRequirementStatus       @default(PENDING)
+  createdAt           DateTime                   @default(now()) @map("created_at")
+  pieces              FabPiece[]
+  allocations         FabRequirementAllocation[]
+
+  @@map("fab_requirement")
+}
+
+model FabRequirementAllocation {
+  id                String         @id @default(cuid())
+  requirementId     String         @map("requirement_id")
+  requirement       FabRequirement @relation(fields: [requirementId], references: [id])
+  slabId            String         @map("slab_id")
+  slab              FabSlab        @relation(fields: [slabId], references: [id])
+  allocatedQuantity Int            @map("allocated_quantity")
+  createdAt         DateTime       @default(now()) @map("created_at")
+
+  @@map("fab_requirement_allocation")
+}
+
+model FabPiece {
+  id                   String              @id @default(cuid())
+  pieceCode            String              @unique @map("piece_code")
+  projectId            String              @map("project_id")
+  project              FabProject          @relation(fields: [projectId], references: [id])
+  slabId               String?             @map("slab_id")
+  slab                 FabSlab?            @relation(fields: [slabId], references: [id])
+  drawingId            String?             @map("drawing_id")
+  drawing              FabDrawing?         @relation(fields: [drawingId], references: [id])
+  requirementId        String?             @map("requirement_id")
+  requirement          FabRequirement?     @relation(fields: [requirementId], references: [id])
+  shapeType            FabShapeType?       @map("shape_type")
+  length               Float?
+  width                Float?
+  remarks              String?
+  hasSink              Boolean             @default(false) @map("has_sink")
+  polishRequired       Boolean             @default(false) @map("polish_required")
+  fabricationRequired  Boolean             @default(false) @map("fabrication_required")
+  polishingCompleted   Boolean             @default(false) @map("polishing_completed")
+  sinkCompleted        Boolean             @default(false) @map("sink_completed")
+  fabricationCompleted Boolean             @default(false) @map("fabrication_completed")
+  status               FabPieceStatus      @default(PENDING)
+  createdAt            DateTime            @default(now()) @map("created_at")
+  operations           FabOperation[]
+  pieceOperations      FabPieceOperation[]
+  allocations          FabSlabAllocation[]
+  packagePieces        FabPackagePiece[]
+
+  @@map("fab_piece")
+}
+
+model FabSlabAllocation {
+  id            String   @id @default(cuid())
+  pieceId       String   @map("piece_id")
+  piece         FabPiece @relation(fields: [pieceId], references: [id])
+  slabId        String   @map("slab_id")
+  slab          FabSlab  @relation(fields: [slabId], references: [id])
+  allocatedArea Float?   @map("allocated_area")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@map("fab_slab_allocation")
+}
+
+model FabOperation {
+  id              String              @id @default(cuid())
+  pieceId         String              @map("piece_id")
+  piece           FabPiece            @relation(fields: [pieceId], references: [id])
+  machineId       String?             @map("machine_id")
+  machine         FabMachine?         @relation(fields: [machineId], references: [id])
+  operatorId      String              @map("operator_id")
+  operator        User                @relation(fields: [operatorId], references: [id])
+  operationType   FabOperationType    @map("operation_type")
+  pieceOperations FabPieceOperation[]
+  startTime       DateTime?           @map("start_time")
+  endTime         DateTime?           @map("end_time")
+  remarks         String?
+  status          FabOperationStatus  @default(IN_PROGRESS)
+  createdAt       DateTime            @default(now()) @map("created_at")
+
+  @@map("fab_operation")
+}
+
+model FabPieceOperation {
+  id            String           @id @default(cuid())
+  pieceId       String           @map("piece_id")
+  piece         FabPiece         @relation(fields: [pieceId], references: [id])
+  operationType FabOperationType @map("operation_type")
+  sequence      Int
+  isRequired    Boolean          @default(true) @map("is_required")
+  isCompleted   Boolean          @default(false) @map("is_completed")
+  startedAt     DateTime?        @map("started_at")
+  completedAt   DateTime?        @map("completed_at")
+  operationId   String?          @map("operation_id")
+  operation     FabOperation?    @relation(fields: [operationId], references: [id])
+  createdAt     DateTime         @default(now()) @map("created_at")
+
+  @@map("fab_piece_operation")
+}
+
+model FabPackage {
+  id          String            @id @default(cuid())
+  packageCode String            @unique @map("package_code")
+  remarks     String?
+  createdAt   DateTime          @default(now()) @map("created_at")
+  pieces      FabPackagePiece[]
+  dispatches  FabDispatch[]
+
+  @@map("fab_package")
+}
+
+model FabPackagePiece {
+  id        String     @id @default(cuid())
+  packageId String     @map("package_id")
+  package   FabPackage @relation(fields: [packageId], references: [id])
+  pieceId   String     @map("piece_id")
+  piece     FabPiece   @relation(fields: [pieceId], references: [id])
+  createdAt DateTime   @default(now()) @map("created_at")
+
+  @@map("fab_package_piece")
+}
+
+model FabDispatch {
+  id            String     @id @default(cuid())
+  packageId     String     @map("package_id")
+  package       FabPackage @relation(fields: [packageId], references: [id])
+  vehicleNumber String?    @map("vehicle_number")
+  driverName    String?    @map("driver_name")
+  destination   String?
+  dispatchDate  DateTime   @map("dispatch_date")
+  remarks       String?
+  createdAt     DateTime   @default(now()) @map("created_at")
+
+  @@map("fab_dispatch")
+}
+
+model FabResidualBag {
+  id        String             @id @default(cuid())
+  bagCode   String             @unique @map("bag_code")
+  slabId    String             @map("slab_id")
+  slab      FabSlab            @relation(fields: [slabId], references: [id])
+  rack      String?
+  remarks   String?
+  createdAt DateTime           @default(now()) @map("created_at")
+  pieces    FabResidualPiece[]
+
+  @@map("fab_residual_bag")
+}
+
+model FabResidualPiece {
+  id        String         @id @default(cuid())
+  bagId     String         @map("bag_id")
+  bag       FabResidualBag @relation(fields: [bagId], references: [id])
+  length    Float
+  width     Float
+  quantity  Int
+  area      Float
+  reusable  Boolean        @default(true)
+  remarks   String?
+  createdAt DateTime       @default(now()) @map("created_at")
+
+  @@map("fab_residual_piece")
 }

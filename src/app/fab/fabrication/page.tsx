@@ -1,0 +1,230 @@
+"use client";
+import { useEffect, useState, useCallback } from "react";
+
+interface Piece {
+  id: string; pieceCode: string;
+  project: { projectCode: string };
+  drawing: { drawingNumber: string } | null;
+  requirement: { pieceLabel: string | null; length: number | null; width: number | null; sinkModel: string | null } | null;
+  slab: { slabCode: string; colour: string | null } | null;
+}
+interface CompletedPiece {
+  opId: string; pieceId: string; pieceCode: string; projectCode: string;
+  drawingNumber: string | null; pieceLabel: string | null;
+  length: number | null; width: number | null;
+  slabCode: string | null; slabColour: string | null; completedAt: string;
+  operatorName?: string | null;
+}
+
+function useElapsed(startMs: number | null) {
+  const [elapsed, setElapsed] = useState("");
+  useEffect(() => {
+    if (!startMs) { setElapsed(""); return; }
+    const tick = () => {
+      const secs = Math.floor((Date.now() - startMs) / 1000);
+      setElapsed(`${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, "0")}s`);
+    };
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => clearInterval(t);
+  }, [startMs]);
+  return elapsed;
+}
+
+function PieceRow({ p, startMs, onStart, onComplete, completing }: {
+  p: Piece; startMs: number | null;
+  onStart: () => void; onComplete: () => void; completing: boolean;
+}) {
+  const elapsed = useElapsed(startMs);
+  const isStarted = startMs !== null;
+  return (
+    <tr className={`hover:bg-gray-50 transition ${isStarted ? "bg-rose-50" : ""}`}>
+      <td className="px-5 py-3 font-mono text-xs text-gray-700">{p.pieceCode}</td>
+      <td className="px-5 py-3 text-gray-500">{p.requirement?.pieceLabel ?? "—"}</td>
+      <td className="px-5 py-3 text-gray-500">{p.drawing?.drawingNumber ?? "—"}</td>
+      <td className="px-5 py-3 text-gray-500">
+        {p.requirement?.length && p.requirement?.width ? `${p.requirement.length} × ${p.requirement.width}` : "—"}
+      </td>
+      <td className="px-5 py-3 text-gray-500">{p.slab?.slabCode ?? "—"}{p.slab?.colour ? ` · ${p.slab.colour}` : ""}</td>
+      <td className="px-5 py-3 text-gray-500">{p.project.projectCode}</td>
+      {p.requirement?.sinkModel && <td className="px-5 py-3 text-xs text-rose-700 font-medium">{p.requirement.sinkModel}</td>}
+      {!p.requirement?.sinkModel && <td className="px-5 py-3 text-gray-300 text-xs">—</td>}
+      <td className="px-5 py-3 text-right">
+        {!isStarted ? (
+          <button onClick={onStart}
+            className="bg-rose-100 hover:bg-rose-200 text-rose-700 px-3 py-1.5 rounded-lg text-xs font-semibold transition">
+            Start
+          </button>
+        ) : (
+          <div className="flex items-center justify-end gap-2">
+            <span className="text-xs font-mono text-rose-600 animate-pulse">{elapsed}</span>
+            <button onClick={onComplete} disabled={completing}
+              className="bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition">
+              {completing ? "…" : "Complete"}
+            </button>
+          </div>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+export default function FabFabricationPage() {
+  const [tab, setTab]               = useState<"open"|"done">("open");
+  const [pieces, setPieces]         = useState<Piece[]>([]);
+  const [completed, setCompleted]   = useState<CompletedPiece[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [completing, setCompleting] = useState<Record<string, boolean>>({});
+  const [undoing, setUndoing]       = useState<Record<string, boolean>>({});
+  const [started, setStarted]       = useState<Record<string, number>>({});
+  const [doneDate, setDoneDate]     = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  });
+
+  const loadOpen = useCallback(async () => {
+    const res = await fetch("/api/fab/queues/fabrication");
+    const data = await res.json();
+    setPieces(Array.isArray(data) ? data : []);
+  }, []);
+  const loadDone = useCallback(async (date: string) => {
+    const res = await fetch(`/api/fab/queues/completed?type=FABRICATION&date=${date}`);
+    const data = await res.json();
+    setCompleted(Array.isArray(data) ? data : []);
+  }, []);
+
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([loadOpen(), loadDone(doneDate)]).finally(() => setLoading(false));
+    const t = setInterval(loadOpen, 20000);
+    return () => clearInterval(t);
+  }, [loadOpen, loadDone, doneDate]);
+
+  async function complete(pieceId: string) {
+    setCompleting(p => ({ ...p, [pieceId]: true }));
+    await fetch("/api/fab/queues/fabrication/complete", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pieceId }),
+    });
+    setStarted(s => { const n = { ...s }; delete n[pieceId]; return n; });
+    await Promise.all([loadOpen(), loadDone(doneDate)]);
+    setCompleting(p => ({ ...p, [pieceId]: false }));
+  }
+
+  async function undo(pieceId: string, opId: string) {
+    setUndoing(p => ({ ...p, [opId]: true }));
+    await fetch("/api/fab/queues/undo", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pieceId, operationType: "FABRICATION" }),
+    });
+    await Promise.all([loadOpen(), loadDone(doneDate)]);
+    setUndoing(p => ({ ...p, [opId]: false }));
+  }
+
+  if (loading) return <div className="text-center py-20 text-gray-400">Loading…</div>;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Fabrication Queue</h1>
+          <p className="text-sm text-gray-400 mt-0.5">{pieces.length} piece{pieces.length !== 1 ? "s" : ""} pending</p>
+        </div>
+        <div className="flex items-center gap-3">
+          {tab === "done" && (
+            <input type="date" value={doneDate} onChange={e => { setDoneDate(e.target.value); loadDone(e.target.value); }}
+              className="text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-rose-200" />
+          )}
+          <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+            <button onClick={() => setTab("open")}
+              className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${tab === "open" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}>
+              Open <span className="ml-1.5 text-xs bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded-full">{pieces.length}</span>
+            </button>
+            <button onClick={() => setTab("done")}
+              className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${tab === "done" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}>
+              Completed <span className="ml-1.5 text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full">{completed.length}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {tab === "open" ? (
+        pieces.length === 0 ? (
+          <div className="text-center py-20 text-gray-400">No pieces pending fabrication.</div>
+        ) : (
+          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-xs text-gray-500">
+                <tr>
+                  <th className="text-left px-5 py-3">Piece</th>
+                  <th className="text-left px-5 py-3">Label</th>
+                  <th className="text-left px-5 py-3">Drawing</th>
+                  <th className="text-left px-5 py-3">Size</th>
+                  <th className="text-left px-5 py-3">Slab</th>
+                  <th className="text-left px-5 py-3">Project</th>
+                  <th className="text-left px-5 py-3">Sink Model</th>
+                  <th className="px-5 py-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {pieces.map(p => (
+                  <PieceRow key={p.id} p={p}
+                    startMs={started[p.id] ?? null}
+                    onStart={async () => {
+                      setStarted(s => ({ ...s, [p.id]: Date.now() }));
+                      await fetch("/api/fab/queues/start-op", {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ pieceId: p.id, operationType: "FABRICATION" }),
+                      });
+                    }}
+                    onComplete={() => complete(p.id)}
+                    completing={!!completing[p.id]} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      ) : (
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          {completed.length === 0 ? (
+            <div className="text-center py-16 text-gray-400 text-sm">No pieces completed on {doneDate}.</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-xs text-gray-500">
+                <tr>
+                  <th className="text-left px-5 py-3">Piece</th>
+                  <th className="text-left px-5 py-3">Drawing</th>
+                  <th className="text-left px-5 py-3">Size</th>
+                  <th className="text-left px-5 py-3">Slab</th>
+                  <th className="text-left px-5 py-3">Project</th>
+                  <th className="text-left px-5 py-3">Operator</th>
+                  <th className="text-left px-5 py-3">Time</th>
+                  <th className="px-5 py-3"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {completed.map(c => (
+                  <tr key={c.opId} className="hover:bg-gray-50">
+                    <td className="px-5 py-3 font-mono text-xs text-gray-700">{c.pieceCode}</td>
+                    <td className="px-5 py-3 text-gray-500">{c.drawingNumber ?? "—"}</td>
+                    <td className="px-5 py-3 text-gray-500">{c.length && c.width ? `${c.length}×${c.width}` : "—"}</td>
+                    <td className="px-5 py-3 text-gray-500">{c.slabCode ?? "—"}{c.slabColour ? ` · ${c.slabColour}` : ""}</td>
+                    <td className="px-5 py-3 text-gray-500">{c.projectCode}</td>
+                    <td className="px-5 py-3 text-xs font-medium text-indigo-500">{c.operatorName ?? "—"}</td>
+                    <td className="px-5 py-3 text-gray-400 text-xs">{new Date(c.completedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</td>
+                    <td className="px-5 py-3 text-right">
+                      <button onClick={() => undo(c.pieceId, c.opId)} disabled={undoing[c.opId]}
+                        className="border border-red-200 text-red-600 hover:bg-red-50 px-3 py-1 rounded-lg text-xs font-medium disabled:opacity-50 transition">
+                        {undoing[c.opId] ? "…" : "↩ Revert"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

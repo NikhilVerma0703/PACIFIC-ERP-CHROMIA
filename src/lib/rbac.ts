@@ -7,12 +7,12 @@ import { prisma } from "@/lib/prisma";
 export type RoleName = "OPERATOR" | "INCHARGE" | "LINE_MANAGER" | "ADMIN" | "FINANCE" | "ACCOUNTS" | "STORE" | "MAINTENANCE";
 export type StationName =
   | "PRESS" | "OVEN" | "JOT" | "MIXER" | "KREOS"
-  | "DISTRIBUTOR" | "SILO" | "POLISH_QC" | "POLISH_ENTRY";
+  | "DISTRIBUTOR" | "SILO" | "POLISH_QC" | "POLISH_ENTRY" | "CUTTING";
 
-export const STATIONS: StationName[] = ["PRESS", "OVEN", "JOT", "MIXER", "KREOS", "DISTRIBUTOR", "SILO", "POLISH_QC", "POLISH_ENTRY"];
+export const STATIONS: StationName[] = ["PRESS", "OVEN", "JOT", "MIXER", "KREOS", "DISTRIBUTOR", "SILO", "POLISH_QC", "POLISH_ENTRY", "CUTTING"];
 export const STATION_LABEL: Record<string, string> = {
   PRESS: "Press", OVEN: "Oven", JOT: "Jot", MIXER: "Mixer", KREOS: "Kreos",
-  DISTRIBUTOR: "Distributor", SILO: "Silo", POLISH_QC: "Polish QC", POLISH_ENTRY: "Polish Entry",
+  DISTRIBUTOR: "Distributor", SILO: "Silo", POLISH_QC: "Polish QC", POLISH_ENTRY: "Polish Entry", CUTTING: "Cutting",
 };
 
 // FINANCE and ACCOUNTS are flat office roles directly under ADMIN (rank 2:

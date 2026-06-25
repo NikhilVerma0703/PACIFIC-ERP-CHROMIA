@@ -12,6 +12,7 @@ export interface UserRow {
   name: string | null;
   role: string;
   station: string | null;
+  fabRole?: string | null;
   active: boolean;
   branch: string;
   createdAt: Date;
@@ -35,6 +36,7 @@ export async function listUsersRows(branch?: string | null): Promise<UserRow[]> 
     station: u.station ?? null,
     active: !!u.active,
     branch: String(u.branch ?? "SHOP_FLOOR"),
+    fabRole: u.fabRole ?? null,
     createdAt: u.createdAt,
     createdByName: u.createdById ? (nameById.get(u.createdById) ?? null) : null,
   }));
@@ -91,4 +93,8 @@ export async function bumpAllSessionVersions() {
 
 export async function setStationRecord(id: string, station: string | null) {
   return db.user.update({ where: { id }, data: { station } });
+}
+
+export async function setFabRoleRecord(id: string, fabRole: string | null) {
+  return db.user.update({ where: { id }, data: { fabRole: fabRole as any } });
 }

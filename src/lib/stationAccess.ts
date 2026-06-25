@@ -15,6 +15,7 @@ export const STATION_MODELS: Record<string, string[]> = {
   SILO: ["Silo", "SiloEmptyingLog", "Rm"],
   POLISH_QC: ["PolishQc"],
   POLISH_ENTRY: ["PolishEntry"],
+  CUTTING: ["CuttingEntry"], // post-QC sample/offcut cutting
 };
 
 export interface EntryAccess {
@@ -55,7 +56,7 @@ export async function canUseEntryModel(model: string): Promise<boolean> {
 }
 
 /** Production line order (slots; Distributor/Kreos share the line-head slot). */
-const LINE: string[][] = [["SILO"], ["MIXER"], ["DISTRIBUTOR", "KREOS"], ["PRESS"], ["OVEN"], ["JOT"], ["POLISH_ENTRY"], ["POLISH_QC"]];
+const LINE: string[][] = [["SILO"], ["MIXER"], ["DISTRIBUTOR", "KREOS"], ["PRESS"], ["OVEN"], ["JOT"], ["POLISH_ENTRY"], ["POLISH_QC"], ["CUTTING"]];
 
 /** Stations an operator may watch on Live Status: previous · own · next slot. */
 export function liveWindow(station: string | null | undefined): Set<string> {
