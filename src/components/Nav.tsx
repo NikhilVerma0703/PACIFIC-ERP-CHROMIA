@@ -166,38 +166,16 @@ function DeepLink({ href, label, path }: { href: string; label: string; path: st
 function CuttingGroup({ path }: { path: string }) {
   const inFab     = FAB_PATHS.some(p => path.startsWith(p));
   const inCutting = path === "/cutting";
-  const inProj    = path.startsWith("/fab/projects");
-  const inPlan    = path.startsWith("/fab/supervisor");
-  const inQueue   = path.startsWith("/fab/cutting") || path.startsWith("/fab/polishing") ||
-                    path.startsWith("/fab/sink") || path.startsWith("/fab/fabrication") ||
-                    path.startsWith("/fab/packaging");
-  const inCeo     = path.startsWith("/fab/ceo");
-  const inAnyProj = inProj || inPlan || inQueue || inCeo;
 
   return (
     <NavGroup icon={I.scissors} label="Cutting" active={inFab || inCutting}>
-      {/* Projects sub-group — expands when already on a fab sub-page */}
-      <SubGroup icon={I.projects} label="Projects" active={inAnyProj} defaultOpen={inAnyProj}>
-        <SubLink href="/fab/ceo" icon={I.ceo} label="CEO Dashboard" path={path} />
-
-        {/* Planning — always starts collapsed */}
-        <SubGroup icon={I.planning} label="Planning" active={inPlan} defaultOpen={false}>
-          <DeepLink href="/fab/supervisor" label="Supervisor Board" path={path} />
-        </SubGroup>
-
-        <SubLink href="/fab/projects" icon={I.manager} label="Manager View" path={path} />
-
-        {/* Production — always starts collapsed */}
-        <SubGroup icon={I.production} label="Production" active={inQueue} defaultOpen={false}>
-          <DeepLink href="/fab/cutting"      label="Cutting"      path={path} />
-          <DeepLink href="/fab/polishing"    label="Polishing"    path={path} />
-          <DeepLink href="/fab/sink-cutting" label="Sink Cutting" path={path} />
-          <DeepLink href="/fab/fabrication"  label="Fabrication"  path={path} />
-          <DeepLink href="/fab/packaging"    label="Packaging"    path={path} />
-        </SubGroup>
-      </SubGroup>
-
-      <SubLink href="/cutting" icon={I.samples} label="Samples" path={path} />
+      <SubLink href="/fab/supervisor"   icon={I.planning}    label="Supervisor Board" path={path} />
+      <SubLink href="/fab/cutting"      icon={I.scissors}    label="Cutting"          path={path} />
+      <SubLink href="/fab/polishing"    icon={I.polishing}   label="Polishing"        path={path} />
+      <SubLink href="/fab/sink-cutting" icon={I.sink}        label="Sink Cutting"     path={path} />
+      <SubLink href="/fab/fabrication"  icon={I.fabrication} label="Fabrication"      path={path} />
+      <SubLink href="/fab/packaging"    icon={I.packaging}   label="Packaging"        path={path} />
+      <SubLink href="/cutting"          icon={I.samples}     label="Samples"          path={path} />
     </NavGroup>
   );
 }
@@ -233,7 +211,12 @@ export function Nav({
             { href: "/tables", label: "My Tables",   icon: I.tables },
           ]
         : [
-            ...base,
+            ...base.slice(0, 1),
+            ...(showCuttingGroup ? [
+              { href: "/fab/ceo",      label: "CEO Dashboard", icon: I.ceo     },
+              { href: "/fab/projects", label: "Manager View",  icon: I.manager },
+            ] : []),
+            ...base.slice(1),
             ...(showAdmin       ? [{ href: "/admin/users",      label: "Users & Roles", icon: I.users }] : []),
             ...(role === "ADMIN"? [{ href: "/admin/migration",   label: "Airtable Sync", icon: I.box   }] : []),
             // Flat fab links only for non-admin fab roles (MANAGER/SUPERVISOR/EMPLOYEE) in Shell
