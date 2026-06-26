@@ -45,13 +45,7 @@ enum Station {
 enum Branch {
   SHOP_FLOOR
   OFFICE
-}
-
-enum FabRole {
-  FAB_ADMIN
-  FAB_MANAGER
-  FAB_SUPERVISOR
-  FAB_EMPLOYEE
+  FABRICATION
 }
 
 
@@ -64,7 +58,6 @@ model User {
   role         Role     @default(OPERATOR)
   station      Station?
   branch       Branch   @default(SHOP_FLOOR)
-  fabRole      FabRole?           @map("fab_role")
   active       Boolean  @default(true)
   createdById      String?
   createdBy        User?             @relation("UserCreator", fields: [createdById], references: [id])

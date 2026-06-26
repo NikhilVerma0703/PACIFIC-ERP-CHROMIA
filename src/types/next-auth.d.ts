@@ -8,7 +8,6 @@ declare module "next-auth" {
       role: Role;
       station?: string | null;
       branch?: string | null;
-      fabRole?: string | null;
     } & DefaultSession["user"];
   }
 
@@ -16,7 +15,6 @@ declare module "next-auth" {
     role: Role;
     station?: string | null;
     branch?: string | null;
-    fabRole?: string | null;
   }
 }
 
@@ -26,6 +24,5 @@ declare module "next-auth/jwt" {
     role: Role;
     station?: string | null;
     branch?: string | null;
-    fabRole?: string | null;
   }
 }

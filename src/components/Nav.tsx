@@ -192,75 +192,88 @@ function CuttingGroup({ path }: { path: string }) {
   );
 }
 
-/* Main Nav export */
+/* Section — a labelled, non-collapsible group of links (same look as the app tabs) */
+function Section({ label, items, path }: { label: string; items: { href: string; icon: string; label: string }[]; path: string }) {
+  if (!items.length) return null;
+  return (
+    <div className="mt-4 first:mt-0">
+      <p className="mb-1 px-3 text-[10px] font-bold uppercase tracking-[0.12em] text-gray-400">{label}</p>
+      <div className="flex flex-col gap-0.5">
+        {items.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}
+      </div>
+    </div>
+  );
+}
+
+/* Main Nav export — flat, access-filtered sections (no dropdowns) */
 export function Nav({
-  showAdmin = false, branch = "SHOP_FLOOR", role = "", fabRole = "",
+  showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "",
 }: {
-  showAdmin?: boolean; branch?: string; role?: string; fabRole?: string;
+  showAdmin?: boolean; branch?: string; role?: string; fabTier?: string;
 }) {
-  const path   = usePathname();
-  const office = branch === "OFFICE";
-  const base   = office
-    ? [{ href: "/office", label: "Shop Floor", icon: I.factory }, { href: "/entry", label: "Data Entry", icon: I.entry }]
-    : TABS;
+  const path    = usePathname();
+  const office  = branch === "OFFICE";
+  const isAdmin = role === "ADMIN";                                  // admins span every department
+  const isFab   = isAdmin || branch === "FABRICATION";               // fabrication section
+  const isProd  = isAdmin || (!office && branch !== "FABRICATION");  // production section
+  const mgmt    = fabTier === "ADMIN" || fabTier === "MANAGER";
+  const supPlus = mgmt || fabTier === "SUPERVISOR";
 
-  // FAB_ADMIN lands on the main Shell (redirected to /), so they also get CuttingGroup.
-  // Regular ADMIN always gets it. Other fab roles (MANAGER/SUPERVISOR/EMPLOYEE) use the
-  // fab layout sidebar and only hit Shell on /cutting (Samples), so they get flat links.
-  const showCuttingGroup =
-    fabRole === "FAB_ADMIN" ||
-    (!fabRole && (role === "ADMIN" || role === "LINE_MANAGER" || showAdmin));
+  if (role === "STORE")
+    return <nav className="flex flex-col gap-1">{STORE_TABS.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}</nav>;
+  if (role === "MAINTENANCE")
+    return <nav className="flex flex-col gap-1">{MAINTENANCE_TABS.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}</nav>;
+  if (role === "OPERATOR" && branch !== "FABRICATION")
+    return (
+      <nav className="flex flex-col gap-1">
+        <NavLink href="/entry"  icon={I.entry}  label="Data Entry"  path={path} />
+        <NavLink href="/live"   icon={I.live}   label="Live Status" path={path} />
+        <NavLink href="/tables" icon={I.tables} label="My Tables"   path={path} />
+      </nav>
+    );
+  if (office)
+    return (
+      <nav className="flex flex-col gap-1">
+        <NavLink href="/office" icon={I.factory} label="Shop Floor" path={path} office />
+        <NavLink href="/entry"  icon={I.entry}   label="Data Entry" path={path} />
+        {showAdmin && <NavLink href="/admin/users" icon={I.users} label="Users & Roles" path={path} />}
+      </nav>
+    );
 
-  const tabs =
-    role === "STORE"
-      ? STORE_TABS
-      : role === "MAINTENANCE"
-        ? MAINTENANCE_TABS
-      : role === "OPERATOR"
-        ? [
-            { href: "/entry",  label: "Data Entry", icon: I.entry  },
-            { href: "/live",   label: "Live Status", icon: I.live   },
-            { href: "/tables", label: "My Tables",   icon: I.tables },
-          ]
-        : [
-            ...base,
-            ...(showAdmin       ? [{ href: "/admin/users",      label: "Users & Roles", icon: I.users }] : []),
-            ...(role === "ADMIN"? [{ href: "/admin/migration",   label: "Airtable Sync", icon: I.box   }] : []),
-            // Flat fab links only for non-admin fab roles (MANAGER/SUPERVISOR/EMPLOYEE) in Shell
-            ...(!showCuttingGroup && fabRole
-              ? [
-                  ...(fabRole === "FAB_MANAGER"
-                    ? [{ href: "/fab/projects",   label: "Projects", icon: I.projects  }] : []),
-                  ...(fabRole === "FAB_SUPERVISOR"
-                    ? [{ href: "/fab/supervisor", label: "Planning", icon: I.supervisor }] : []),
-                  { href: "/fab/cutting",      label: "Cutting",     icon: I.scissors    },
-                  { href: "/fab/polishing",    label: "Polishing",   icon: I.polishing   },
-                  { href: "/fab/sink-cutting", label: "Sink Cut",    icon: I.sink        },
-                  { href: "/fab/fabrication",  label: "Fabrication", icon: I.fabrication },
-                  { href: "/fab/packaging",    label: "Packaging",   icon: I.packaging   },
-                ]
-              : []),
-          ];
-
-  // Insert CuttingGroup between Data Entry and Users & Roles
-  const cuttingIdx = tabs.findIndex(t => t.href === "/admin/users");
-  const before = cuttingIdx >= 0 ? tabs.slice(0, cuttingIdx) : tabs;
-  const after  = cuttingIdx >= 0 ? tabs.slice(cuttingIdx)    : [];
-  // Management users get an Overview group (Dashboard + CEO + Manager); drop the
-  // standalone "/" link so the dashboard isn't listed twice.
-  const showOverviewGroup = showCuttingGroup && !office;
-  const flat = showOverviewGroup ? before.filter(t => t.href !== "/") : before;
+  const overview = [
+    ...(isProd ? [{ href: "/", icon: I.overview, label: "Production Dashboard" }] : []),
+    ...(isFab  ? [{ href: "/fab/ceo", icon: I.ceo, label: "Fabrication Dashboard" }] : []),
+  ];
+  const production = [
+    { href: "/live",   icon: I.live,   label: "Live Status" },
+    { href: "/batch",  icon: I.batch,  label: "Batch Lookup" },
+    { href: "/slab",   icon: I.batch,  label: "Slab Lookup" },
+    { href: "/tables", icon: I.tables, label: "Tables" },
+    { href: "/report", icon: I.report, label: "Production Report" },
+    { href: "/mis",    icon: I.mis,    label: "Downtime" },
+    { href: "/entry",  icon: I.entry,  label: "Data Entry" },
+  ];
+  const fabrication = [
+    ...(mgmt ? [{ href: "/fab/projects", icon: I.manager, label: "Manager View" }] : []),
+    ...(supPlus ? [{ href: "/fab/supervisor", icon: I.planning, label: "Supervisor Board" }] : []),
+    { href: "/fab/cutting",      icon: I.scissors,    label: "Cutting" },
+    { href: "/fab/polishing",    icon: I.polishing,   label: "Polishing" },
+    { href: "/fab/sink-cutting", icon: I.sink,        label: "Sink Cutting" },
+    { href: "/fab/fabrication",  icon: I.fabrication, label: "Fabrication" },
+    { href: "/fab/packaging",    icon: I.packaging,   label: "Packaging" },
+    { href: "/cutting",          icon: I.samples,     label: "Samples" },
+  ];
+  const admin = [
+    ...(showAdmin ? [{ href: "/admin/users", icon: I.users, label: "Users & Roles" }] : []),
+    ...(isAdmin   ? [{ href: "/admin/migration", icon: I.box, label: "Airtable Sync" }] : []),
+  ];
 
   return (
-    <nav className="flex flex-col gap-1">
-      {showOverviewGroup && <OverviewGroup path={path} />}
-      {flat.map(t => (
-        <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} office={office} />
-      ))}
-      {showCuttingGroup && <CuttingGroup path={path} />}
-      {after.map(t => (
-        <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} office={office} />
-      ))}
+    <nav className="flex flex-col">
+      <Section label="Overview" items={overview} path={path} />
+      {isProd && <Section label="Production" items={production} path={path} />}
+      {isFab  && <Section label="Fabrication" items={fabrication} path={path} />}
+      <Section label="Admin" items={admin} path={path} />
     </nav>
   );
 }

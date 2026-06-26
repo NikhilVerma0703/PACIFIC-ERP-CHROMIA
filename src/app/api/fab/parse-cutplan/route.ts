@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 import { execSync } from "child_process";
 import { writeFileSync, unlinkSync, readdirSync } from "fs";
 import { join, basename } from "path";
@@ -186,12 +186,13 @@ type SlabPlan   = { stockSheet: string; page: number; labels: LabelEntry[] };
 type DebugPage  = { page: number; file: string; stock: string | null; labels: LabelEntry[] };
 
 export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const g = await fabGate("SUPERVISOR");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
   const formData = await req.formData();
   const file = formData.get("file") as File | null;
   if (!file) return Response.json({ error: "No file uploaded" }, { status: 400 });
+  if (file.size > 10 * 1024 * 1024) return Response.json({ error: "File too large (max 10 MB)" }, { status: 413 });
   if (!file.name.match(/\.pdf$/i)) return Response.json({ error: "Only PDF files accepted" }, { status: 400 });
 
   const tmpDir  = tmpdir();

@@ -3,17 +3,18 @@
 import { useState, useTransition } from "react";
 import { useActionState } from "react";
 import { useRouter } from "next/navigation";
-import { createUser, setActive, resetPassword, setStation, setFabRole, signOutEverywhere, signOutEveryone } from "./actions";
+import { createUser, setActive, resetPassword, setStation, signOutEverywhere, signOutEveryone } from "./actions";
 import { STATION_LABEL, ROLE_LABEL, ROLE_RANK, type RoleName } from "@/lib/rbac";
+import { BRANCH_LABEL } from "@/lib/branch";
 
 export interface UserRow {
   id: string; email: string; name: string | null; role: string; station: string | null;
-  fabRole?: string | null; active: boolean; createdAt: string; createdByName: string | null;
+  branch?: string | null; active: boolean; createdAt: string; createdByName: string | null;
 }
 
 const base = "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
 
-export function UserAdmin({ users, creatable, stations, office = false, showGlobal = false, myRole = "", myId = "" }: { users: UserRow[]; creatable: RoleName[]; stations: string[]; office?: boolean; showGlobal?: boolean; myRole?: string; myId?: string }) {
+export function UserAdmin({ users, creatable, stations, office = false, showGlobal = false, myRole = "", myId = "", branches = [] }: { users: UserRow[]; creatable: RoleName[]; stations: string[]; office?: boolean; showGlobal?: boolean; myRole?: string; myId?: string; branches?: string[] }) {
   const [msg, action, pending] = useActionState(createUser, undefined);
   const [role, setRole] = useState<string>(creatable[creatable.length - 1] ?? "");
   const [globalPending, startGlobal] = useTransition();
@@ -37,6 +38,10 @@ export function UserAdmin({ users, creatable, stations, office = false, showGlob
             <select name="role" value={role} onChange={(e) => setRole(e.target.value)} className={base}>
               {creatable.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
             </select></label>
+          {branches.length > 1 && <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">Department</span>
+            <select name="branch" defaultValue={branches[0]} className={base}>
+              {branches.map((b) => <option key={b} value={b}>{BRANCH_LABEL[b] ?? b}</option>)}
+            </select></label>}
           {!office && <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">Machine / station {role === "OPERATOR" ? "(required)" : "(operators only)"}</span>
             <select name="station" disabled={role !== "OPERATOR"} className={`${base} disabled:bg-gray-50 disabled:text-gray-400`}>
               <option value="">—</option>
@@ -76,7 +81,7 @@ export function UserAdmin({ users, creatable, stations, office = false, showGlob
                 <th className="py-2 pr-4">User</th>
                 <th className="py-2 pr-4">Role</th>
                 <th className="py-2 pr-4">Machine</th>
-                <th className="py-2 pr-4">Fab Role</th>
+                <th className="py-2 pr-4">Department</th>
                 <th className="py-2 pr-4">Status</th>
                 <th className="py-2 pr-4">Created by</th>
                 <th className="py-2">Actions</th>
@@ -121,19 +126,7 @@ function Row({ u, stations, myRole, myId, onChange }: { u: UserRow; stations: st
           </select>
         ) : <span className="text-gray-400">—</span>}
       </td>
-      <td className="py-2 pr-4">
-        {manageable ? (
-          <select defaultValue={u.fabRole ?? ""} disabled={pending}
-            onChange={(e) => act(() => setFabRole(u.id, e.target.value || null))}
-            className="rounded-md border border-gray-300 px-2 py-1 text-xs">
-            <option value="">No Fab Access</option>
-            <option value="FAB_ADMIN">Fab Admin</option>
-            <option value="FAB_MANAGER">Fab Manager</option>
-            <option value="FAB_SUPERVISOR">Fab Supervisor</option>
-            <option value="FAB_EMPLOYEE">Fab Employee</option>
-          </select>
-        ) : <span className="text-gray-400">{u.fabRole ? u.fabRole.replace("FAB_", "") : "—"}</span>}
-      </td>
+      <td className="py-2 pr-4 text-gray-600">{BRANCH_LABEL[u.branch ?? "SHOP_FLOOR"] ?? u.branch ?? "—"}</td>
       <td className="py-2 pr-4">{u.active ? <span className="text-green-600">Active</span> : <span className="text-gray-400">Disabled</span>}</td>
       <td className="py-2 pr-4 text-gray-500">{u.createdByName ?? "—"}</td>
       <td className="py-2">

@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 
 async function resolveOrImportSlab(slabId: string, projectId: string | null): Promise<string> {
   if (!slabId.startsWith("qc:")) return slabId;
@@ -27,8 +27,8 @@ async function resolveOrImportSlab(slabId: string, projectId: string | null): Pr
  *  mode="add":               append a new allocation without touching existing ones
  */
 export async function POST(req: Request) {
-  const session = await auth();
-  if (!session?.user?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const g = await fabGate("SUPERVISOR");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   const { requirementId, slabId, allocatedQuantity, mode } = await req.json();
   if (!requirementId || !slabId) return Response.json({ error: "requirementId and slabId required" }, { status: 400 });
 
@@ -53,8 +53,8 @@ export async function POST(req: Request) {
 
 /** PATCH — update quantity of a specific allocation */
 export async function PATCH(req: Request) {
-  const session = await auth();
-  if (!session?.user?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const g = await fabGate("SUPERVISOR");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   const { allocationId, allocatedQuantity } = await req.json();
   if (!allocationId) return Response.json({ error: "allocationId required" }, { status: 400 });
   const allocation = await prisma.fabRequirementAllocation.update({
@@ -66,8 +66,8 @@ export async function PATCH(req: Request) {
 
 /** DELETE — by allocationId (remove one) or requirementId (clear all) */
 export async function DELETE(req: Request) {
-  const session = await auth();
-  if (!session?.user?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const g = await fabGate("SUPERVISOR");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   const { searchParams } = new URL(req.url);
   const allocationId  = searchParams.get("allocationId");
   const requirementId = searchParams.get("requirementId");

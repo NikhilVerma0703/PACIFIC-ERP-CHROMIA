@@ -54,7 +54,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         failedLogins.delete(tkey);
         const userBranch = ((user as { branch?: string | null }).branch as string | null) ?? "SHOP_FLOOR";
         const isAdmin = String(user.role) === "ADMIN";
-        if (branch && !isAdmin && userBranch !== branch) return null;
+        // Fabrication is shop-side: a fab user logs in via the Shop Floor portal,
+        // then is routed to /fab by their DB branch. Only reject a true office<->shop mismatch.
+        const side = (b: string) => (b === "OFFICE" ? "OFFICE" : "SHOP");
+        if (branch && !isAdmin && side(userBranch) !== side(branch)) return null;
         const effectiveBranch = isAdmin ? (branch ?? userBranch) : userBranch;
         return {
           id: user.id,
@@ -64,7 +67,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           station: (user as { station?: string | null }).station ?? null,
           branch: effectiveBranch,
           sv: (user as { sessionVersion?: number }).sessionVersion ?? 1,
-          fabRole: (user as any).fabRole ?? null,
         } as never;
       },
     }),
@@ -86,7 +88,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.station  = (user as any).station ?? null;
         token.branch   = (user as any).branch ?? null;
         token.sv       = (user as any).sv ?? 1;
-        token.fabRole  = (user as any).fabRole ?? null;
         return token;
       }
 

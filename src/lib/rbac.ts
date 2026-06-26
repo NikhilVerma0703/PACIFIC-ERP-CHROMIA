@@ -79,6 +79,7 @@ export async function canManageUsers(): Promise<boolean> {
 export function creatableRoles(role?: string | null, branch?: string | null): RoleName[] {
   const r = rankOf(role);
   if (branch === "OFFICE") return r >= ROLE_RANK.ADMIN ? (["FINANCE", "ACCOUNTS"] as RoleName[]) : [];
+  if (branch === "FABRICATION") return (["LINE_MANAGER", "INCHARGE", "OPERATOR"] as RoleName[]).filter((x) => ROLE_RANK[x] < r);
   return (["LINE_MANAGER", "INCHARGE", "OPERATOR", "STORE", "MAINTENANCE"] as RoleName[]).filter((x) => ROLE_RANK[x] < r);
 }
 

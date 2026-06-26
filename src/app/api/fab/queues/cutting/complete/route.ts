@@ -1,10 +1,10 @@
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 
 export async function POST(req: Request) {
-  const session = await auth();
-  if (!session?.user?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
-  const userId = (session.user as any).id as string;
+  const g = await fabGate("EMPLOYEE");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+  const userId = g.user.id as string;
 
   const { slabId, pieceIds } = await req.json();
   if (!slabId || !pieceIds?.length) return Response.json({ error: "slabId and pieceIds required" }, { status: 400 });

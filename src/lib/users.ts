@@ -12,17 +12,16 @@ export interface UserRow {
   name: string | null;
   role: string;
   station: string | null;
-  fabRole?: string | null;
   active: boolean;
   branch: string;
   createdAt: Date;
   createdByName: string | null;
 }
 
-export async function listUsersRows(branch?: string | null): Promise<UserRow[]> {
+export async function listUsersRows(branch?: string | string[] | null): Promise<UserRow[]> {
   let rows: any[];
   try {
-    rows = await db.user.findMany({ where: branch ? { branch } : undefined, orderBy: [{ active: "desc" }, { email: "asc" }] });
+    rows = await db.user.findMany({ where: branch ? { branch: Array.isArray(branch) ? { in: branch } : branch } : undefined, orderBy: [{ active: "desc" }, { email: "asc" }] });
   } catch {
     // branch column not migrated yet — fall back to unfiltered
     rows = await db.user.findMany({ orderBy: [{ active: "desc" }, { email: "asc" }] });
@@ -36,7 +35,6 @@ export async function listUsersRows(branch?: string | null): Promise<UserRow[]> 
     station: u.station ?? null,
     active: !!u.active,
     branch: String(u.branch ?? "SHOP_FLOOR"),
-    fabRole: u.fabRole ?? null,
     createdAt: u.createdAt,
     createdByName: u.createdById ? (nameById.get(u.createdById) ?? null) : null,
   }));
@@ -95,6 +93,3 @@ export async function setStationRecord(id: string, station: string | null) {
   return db.user.update({ where: { id }, data: { station } });
 }
 
-export async function setFabRoleRecord(id: string, fabRole: string | null) {
-  return db.user.update({ where: { id }, data: { fabRole: fabRole as any } });
-}

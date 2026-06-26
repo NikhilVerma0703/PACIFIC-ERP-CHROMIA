@@ -6,10 +6,18 @@ function fmtKg(n: number): string {
   return n.toLocaleString("en-IN");
 }
 
-export function RmStockPanel({ grit, filler, other, resin, daily }: { grit: RmGroup[]; filler: RmGroup[]; other: RmGroup[]; resin: ResinLot[]; daily: DailyTank[] }) {
+export function RmStockPanel({ grit, filler, other, resin, daily, canDownload = false }: { grit: RmGroup[]; filler: RmGroup[]; other: RmGroup[]; resin: ResinLot[]; daily: DailyTank[]; canDownload?: boolean }) {
   const grid = "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4";
   return (
     <div className="space-y-5">
+      {canDownload && (
+        <div className="flex justify-end">
+          <a href="/api/store/rm-stock" className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>
+            Download stock (CSV)
+          </a>
+        </div>
+      )}
       <div>
         <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Quartz grit</div>
         {grit.length ? <RmStockTable groups={grit} /> : <div className="text-sm text-gray-400">No grit bags in store.</div>}

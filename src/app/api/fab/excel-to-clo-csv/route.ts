@@ -6,7 +6,7 @@
 // Response: { xlsx2cm, xlsx3cm, mapping, counts }
 
 import { NextRequest } from "next/server";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 import { prisma } from "@/lib/prisma";
 import * as XLSX from "xlsx";
 
@@ -33,9 +33,8 @@ function buildXlsx(rows: { label: string; length: number; width: number; quantit
 }
 
 export async function GET(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.fabRole)
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const g = await fabGate("SUPERVISOR");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
   const projectId = req.nextUrl.searchParams.get("projectId");
   if (!projectId)

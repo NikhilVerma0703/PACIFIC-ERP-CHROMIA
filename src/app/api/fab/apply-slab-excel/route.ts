@@ -13,7 +13,7 @@
 //           lookup FabRequirement where drawing.drawingNumber="1" AND pieceLabel="2B"
 
 import { NextRequest } from "next/server";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 import { prisma } from "@/lib/prisma";
 import * as XLSX from "xlsx";
 
@@ -61,8 +61,8 @@ function normSlabCode(raw: string): string {
 }
 
 export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const g = await fabGate("SUPERVISOR");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
   const fd        = await req.formData();
   const projectId = (fd.get("projectId") as string | null)?.trim();
@@ -70,6 +70,7 @@ export async function POST(req: NextRequest) {
 
   if (!projectId) return Response.json({ error: "projectId required" }, { status: 400 });
   if (!file)      return Response.json({ error: "No file uploaded" },   { status: 400 });
+  if (file.size > 10 * 1024 * 1024) return Response.json({ error: "File too large (max 10 MB)" }, { status: 413 });
   if (!file.name.match(/\.(xlsx|xls)$/i))
     return Response.json({ error: "Only .xlsx / .xls accepted" }, { status: 400 });
 

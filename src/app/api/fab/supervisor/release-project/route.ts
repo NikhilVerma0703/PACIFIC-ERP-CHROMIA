@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 
 const INCH_TO_MM = 25.4;
 
@@ -10,8 +10,8 @@ function deriveRoutingFlags(req: any) {
 }
 
 export async function POST(req: Request) {
-  const session = await auth();
-  if (!session?.user?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const g = await fabGate("SUPERVISOR");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
   const { projectId } = await req.json();
   if (!projectId) return Response.json({ error: "projectId required" }, { status: 400 });

@@ -1,12 +1,12 @@
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 
 const SESSION_MAX_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 export async function GET() {
-  const session = await auth();
-  const userId  = (session?.user as any)?.id as string | undefined;
-  if (!(session?.user as any)?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const g = await fabGate("EMPLOYEE");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+  const userId  = g.user.id as string | undefined;
 
   // Auto-expire sessions older than 12 hours
   const expiryCutoff = new Date(Date.now() - SESSION_MAX_MS);

@@ -5,12 +5,12 @@
 // creates them from FabRequirementAllocation data and marks CUTTING as completed.
 
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 
 export async function POST(req: Request) {
-  const session = await auth();
-  if (!session?.user?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
-  const userId = (session.user as any).id as string;
+  const g = await fabGate("EMPLOYEE");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+  const userId = g.user.id as string;
 
   const { slabJobId } = await req.json();
   if (!slabJobId) return Response.json({ error: "slabJobId required" }, { status: 400 });

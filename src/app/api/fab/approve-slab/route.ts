@@ -5,17 +5,12 @@
 // already exists it returns it unchanged.
 
 import { NextRequest } from "next/server";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 import { prisma } from "@/lib/prisma";
 
 export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
-
-  const role = (session.user as any).fabRole as string;
-  const allowed = ["FAB_SUPERVISOR", "FAB_ADMIN", "ADMIN"];
-  if (!allowed.includes(role))
-    return Response.json({ error: "Only supervisors can approve slabs" }, { status: 403 });
+  const g = await fabGate("SUPERVISOR");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
   const { slabId } = await req.json() as { slabId?: string };
   if (!slabId) return Response.json({ error: "slabId required" }, { status: 400 });

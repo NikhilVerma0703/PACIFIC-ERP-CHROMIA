@@ -1,13 +1,11 @@
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 import { cookies } from "next/headers";
 import { expireStaleSessions } from "@/lib/fab/expireStaleSessions";
 
 export async function POST(req: Request) {
-  const session = await auth();
-  if (!session?.user) return Response.json({ error: "Unauthorized" }, { status: 401 });
-  const fabRole = (session.user as any).fabRole;
-  if (!fabRole) return Response.json({ error: "No fab role" }, { status: 403 });
+  const g = await fabGate("EMPLOYEE");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
   // Auto-close sessions left open when operators shut down without logging out
   await expireStaleSessions();
@@ -20,7 +18,7 @@ export async function POST(req: Request) {
 
   // Block if another user already has an active session on this machine
   const occupied = await prisma.fabMachineSession.findFirst({
-    where: { machineId, isActive: true, userId: { not: (session.user as any).id } },
+    where: { machineId, isActive: true, userId: { not: g.user.id } },
     select: { user: { select: { name: true } } },
   });
   if (occupied) {
@@ -32,14 +30,14 @@ export async function POST(req: Request) {
 
   // End any existing active sessions for this user
   await prisma.fabMachineSession.updateMany({
-    where: { userId: (session.user as any).id, isActive: true },
+    where: { userId: g.user.id, isActive: true },
     data: { isActive: false, logoutTime: new Date() },
   });
 
   // Create new session
   const machineSession = await prisma.fabMachineSession.create({
     data: {
-      userId: (session.user as any).id,
+      userId: g.user.id,
       machineId,
       shift,
       isActive: true,

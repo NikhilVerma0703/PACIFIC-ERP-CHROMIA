@@ -3,13 +3,11 @@
 // with per-machine-type stats (slabs, pieces, avg/best/slowest time).
 
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 
 export async function GET(req: Request) {
-  const session = await auth();
-  const fabRole  = (session?.user as any)?.fabRole as string | null;
-  const mainRole = (session?.user as any)?.role as string | null;
-  if (!fabRole && mainRole !== "ADMIN") return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const g = await fabGate("SUPERVISOR");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
   const { searchParams } = new URL(req.url);
   const projectId = searchParams.get("projectId");

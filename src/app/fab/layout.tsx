@@ -50,24 +50,22 @@ function SLink({ href, icon, label, sub }: { href: string; icon: string; label: 
 export default async function FabLayout({ children }: { children: React.ReactNode }) {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  const fabRole  = (session.user as any).fabRole  as string | null;
-  const mainRole = (session.user as any).role     as string | null;
+  const mainRole  = (session.user as any).role   as string | null;
+  const fabBranch = (session.user as any).branch as string | null;
 
-  // ADMIN + FAB_ADMIN use the main ERP Shell
-  if (!fabRole && mainRole === "ADMIN") return <Shell>{children}</Shell>;
-  if (fabRole === "FAB_ADMIN")          return <Shell>{children}</Shell>;
-  if (!fabRole) redirect("/");
+  // Admins use the main ERP Shell; only Fabrication-department staff use this layout.
+  if (mainRole === "ADMIN") return <Shell>{children}</Shell>;
+  if (fabBranch !== "FABRICATION") redirect("/");
 
   const cookieStore = await cookies();
   const machineType = cookieStore.get("fab_machine_type")?.value ?? null;
   const machineName = cookieStore.get("fab_machine_name")?.value ?? null;
-  const isEmployee  = fabRole === "FAB_EMPLOYEE";
-  const isManager   = fabRole === "FAB_MANAGER";
-  const isSupervisor= fabRole === "FAB_SUPERVISOR";
+  const isEmployee  = mainRole === "OPERATOR";
+  const isManager   = mainRole === "LINE_MANAGER";
+  const isSupervisor= mainRole === "INCHARGE";
   const machineUrl  = machineType ? MACHINE_URLS[machineType] : null;
   const typeMeta    = machineType ? TYPE_META[machineType]    : null;
-  const roleLabel   = fabRole.replace("FAB_", "").charAt(0) +
-                      fabRole.replace("FAB_", "").slice(1).toLowerCase();
+  const roleLabel   = isManager ? "Manager" : isSupervisor ? "Supervisor" : "Employee";
 
   const SIGN_OUT_PATH = "M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9";
 

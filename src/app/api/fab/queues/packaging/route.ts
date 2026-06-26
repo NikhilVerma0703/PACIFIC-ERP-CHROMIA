@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 
 function isReadyForPackaging(p: { polishRequired: boolean; polishingCompleted: boolean; hasSink: boolean; sinkCompleted: boolean; fabricationRequired: boolean; fabricationCompleted: boolean }): boolean {
   return (!p.polishRequired || p.polishingCompleted)
@@ -8,8 +8,8 @@ function isReadyForPackaging(p: { polishRequired: boolean; polishingCompleted: b
 }
 
 export async function GET() {
-  const session = await auth();
-  if (!session?.user?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const g = await fabGate("EMPLOYEE");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
   const pieces = await prisma.fabPiece.findMany({
     where: { status: { not: "PACKAGED" } },

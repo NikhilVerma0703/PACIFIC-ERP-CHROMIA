@@ -5,6 +5,7 @@ import Link from "next/link";
 import { CutPlanUpload } from "../CutPlanUpload";
 import { ExcelToCsvExport } from "../ExcelToCsvExport";
 import { SlabAllocationView } from "../SlabAllocationView";
+import { fabTierOf } from "@/lib/fab/access";
 
 export default async function FabProjectDetailPage({
   params,
@@ -14,8 +15,8 @@ export default async function FabProjectDetailPage({
   const { id } = await params;
   const session = await auth();
   if (!session?.user) redirect("/login");
-  const fabRole = (session.user as any).fabRole;
-  if (!fabRole) redirect("/");
+  const tier = fabTierOf(session.user);
+  if (!tier) redirect("/");
 
   const project = await prisma.fabProject.findUnique({
     where: { id },
@@ -51,13 +52,13 @@ export default async function FabProjectDetailPage({
     0
   );
 
-  const isSupervisor = fabRole === "FAB_SUPERVISOR";
+  const isSupervisor = tier === "SUPERVISOR";
 
   const canApproveSlab =
-    fabRole === "FAB_SUPERVISOR" || fabRole === "FAB_ADMIN" || fabRole === "ADMIN";
+    tier === "SUPERVISOR" || tier === "MANAGER" || tier === "ADMIN";
 
   const canUploadPlan =
-    fabRole === "FAB_MANAGER" || fabRole === "FAB_ADMIN" || fabRole === "ADMIN";
+    tier === "MANAGER" || tier === "ADMIN";
 
   return (
     <div>

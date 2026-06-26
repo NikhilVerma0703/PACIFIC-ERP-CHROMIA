@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { Shell } from "@/components/Shell";
-import { canManageUsers, currentRole, currentUser, creatableRoles, STATIONS } from "@/lib/rbac";
+import { canManageUsers, currentRole, currentUser, creatableRoles, rankOf, ROLE_RANK, STATIONS } from "@/lib/rbac";
 import { listUsersRows } from "@/lib/users";
 import { UserAdmin } from "./UserAdmin";
 
@@ -10,11 +10,15 @@ export default async function UsersPage() {
   if (!(await canManageUsers())) redirect("/");
   const role = await currentRole();
   const myBranch = ((((await currentUser()) as any)?.branch as string | undefined) ?? "SHOP_FLOOR");
+  const assignable = rankOf(role) >= ROLE_RANK.ADMIN
+    ? (myBranch === "OFFICE" ? ["OFFICE"] : ["SHOP_FLOOR", "FABRICATION"])
+    : [myBranch];
+  const creatableUnion = [...new Set(assignable.flatMap((b) => creatableRoles(role, b)))];
   /* eslint-disable @typescript-eslint/no-explicit-any */
   let rows: { id: string; email: string; name: string | null; role: string; station: string | null; active: boolean; branch: string; createdAt: string; createdByName: string | null }[] = [];
   let migrateNeeded = false;
   try {
-    const users = await listUsersRows((((await currentUser()) as any)?.branch as string | undefined) ?? "SHOP_FLOOR");
+    const users = await listUsersRows(assignable);
     rows = users.map((u) => ({ ...u, createdAt: u.createdAt.toISOString() }));
   } catch {
     migrateNeeded = true;
@@ -44,7 +48,7 @@ export default async function UsersPage() {
             : "Create logins for roles below yours, assign operators to a machine, deactivate accounts, and reset passwords. Admins can create line managers, incharges and operators; line managers create incharges and operators; incharges create operators."}
         </p>
       </div>
-      <UserAdmin users={rows} creatable={creatableRoles(role, myBranch)} stations={STATIONS} office={myBranch === "OFFICE"} showGlobal={role === "ADMIN"} myRole={role} myId={String(((await currentUser()) as any)?.id ?? "")} />
+      <UserAdmin users={rows} creatable={creatableUnion} branches={assignable} stations={STATIONS} office={myBranch === "OFFICE"} showGlobal={role === "ADMIN"} myRole={role} myId={String(((await currentUser()) as any)?.id ?? "")} />
     </Shell>
   );
 }

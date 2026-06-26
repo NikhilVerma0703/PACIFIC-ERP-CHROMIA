@@ -1,10 +1,11 @@
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 
 export async function GET(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
+  const g = await fabGate("EMPLOYEE");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+
   const { projectId } = await params;
-  const session = await auth();
-  if (!session?.user?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
   const localSlabs = await prisma.fabSlab.findMany({
     where: { projectId: projectId },

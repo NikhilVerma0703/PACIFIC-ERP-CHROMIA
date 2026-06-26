@@ -1,13 +1,13 @@
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 import { cookies } from "next/headers";
 
 export async function POST() {
-  const session = await auth();
-  if (!session?.user) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const g = await fabGate("EMPLOYEE");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
   await prisma.fabMachineSession.updateMany({
-    where: { userId: (session.user as any).id, isActive: true },
+    where: { userId: g.user.id, isActive: true },
     data: { isActive: false, logoutTime: new Date() },
   });
 

@@ -2,7 +2,7 @@
 // Returns slabs with pieces, assigned QC slab info, thickness bucket, and wastage %.
 
 import { NextRequest } from "next/server";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 import { prisma } from "@/lib/prisma";
 
 // Standard Pacific slab: 137 x 79 inches
@@ -23,8 +23,8 @@ function thickBucket(t: number | null | undefined): 2 | 3 | null {
 }
 
 export async function GET(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const g = await fabGate("SUPERVISOR");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
   const projectId = req.nextUrl.searchParams.get("projectId");
   if (!projectId) return Response.json({ error: "projectId required" }, { status: 400 });

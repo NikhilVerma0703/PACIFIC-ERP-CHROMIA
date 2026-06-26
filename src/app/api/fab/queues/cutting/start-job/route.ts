@@ -5,12 +5,12 @@
 // calling UI can show a "locked" message.
 
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 
 export async function POST(req: Request) {
-  const session = await auth();
-  const userId = (session?.user as any)?.id as string | undefined;
-  if (!userId) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const g = await fabGate("EMPLOYEE");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+  const userId = g.user.id as string;
 
   const { slabJobId } = await req.json();
   if (!slabJobId) return Response.json({ error: "slabJobId required" }, { status: 400 });

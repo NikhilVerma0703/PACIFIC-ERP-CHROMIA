@@ -6,8 +6,12 @@
 
 import { parseExcelBuffer } from "@/lib/fab/excelParser";
 import type { ExcelRow } from "@/lib/fab/excelParser";
+import { fabGate } from "@/lib/fab/access";
 
 export async function POST(req: Request) {
+  const g = await fabGate("SUPERVISOR");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+
   try {
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
@@ -15,6 +19,8 @@ export async function POST(req: Request) {
     if (!file) {
       return Response.json({ error: "No file uploaded" }, { status: 400 });
     }
+
+    if (file.size > 10 * 1024 * 1024) return Response.json({ error: "File too large (max 10 MB)" }, { status: 413 });
 
     const allowedTypes = [
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

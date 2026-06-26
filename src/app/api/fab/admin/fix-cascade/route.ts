@@ -6,15 +6,11 @@
 // Safe to call multiple times. Requires FAB_ADMIN or ADMIN.
 
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 
 export async function POST() {
-  const session = await auth();
-  const fabRole  = (session?.user as any)?.fabRole as string | null;
-  const mainRole = (session?.user as any)?.role as string | null;
-  if (fabRole !== "FAB_ADMIN" && mainRole !== "ADMIN") {
-    return Response.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const g = await fabGate("MANAGER");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
   const now = new Date();
 

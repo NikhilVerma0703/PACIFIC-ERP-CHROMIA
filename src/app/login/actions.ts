@@ -10,16 +10,15 @@ export async function authenticate(
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
   let redirectTo = "/";
   try {
-    const user = await prisma.user.findUnique({ where: { email }, select: { fabRole: true } });
-    if (user?.fabRole) {
-      const fabRole = user.fabRole as string;
-      // FAB_ADMIN → main ERP home (can navigate to fab via sidebar)
-      // FAB_MANAGER/SUPERVISOR/EMPLOYEE → direct fab landing
+    const user = await prisma.user.findUnique({ where: { email }, select: { role: true, branch: true } });
+    if (user && String(user.branch) === "FABRICATION") {
+      const role = String(user.role);
+      // Fabrication staff land in their part of the fab module (admins use the main shell)
       redirectTo =
-        fabRole === "FAB_ADMIN"       ? "/" :
-        fabRole === "FAB_MANAGER"     ? "/fab/projects" :
-        fabRole === "FAB_SUPERVISOR"  ? "/fab/supervisor" :
-                                        "/fab/session";
+        role === "ADMIN"        ? "/" :
+        role === "LINE_MANAGER" ? "/fab/projects" :
+        role === "INCHARGE"     ? "/fab/supervisor" :
+                                  "/fab/session";   // OPERATOR -> pick machine
     }
   } catch { /* non-critical */ }
   try {

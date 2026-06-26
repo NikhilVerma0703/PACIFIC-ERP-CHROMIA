@@ -1,16 +1,13 @@
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 
 export async function GET(req: Request) {
-  const session = await auth();
-  const fabRole  = (session?.user as any)?.fabRole  as string | null;
-  const mainRole = (session?.user as any)?.role      as string | null;
-  const isAdmin  = mainRole === "ADMIN" || fabRole === "FAB_ADMIN";
-  if (!fabRole && !isAdmin) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const g = await fabGate("EMPLOYEE");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
-  const userId     = (session!.user as any).id as string;
-  const isEmployee = fabRole === "FAB_EMPLOYEE";
-  const filterByUser = isEmployee;
+  const userId     = g.user.id as string;
+  // Operators (EMPLOYEE tier) see only their own completions; supervisors+ see all.
+  const filterByUser = g.tier === "EMPLOYEE";
 
   const { searchParams } = new URL(req.url);
   const type = searchParams.get("type")?.toUpperCase();

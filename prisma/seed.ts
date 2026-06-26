@@ -1,22 +1,22 @@
-import { PrismaClient, Role, FabRole, FabMachineType } from "@prisma/client";
+import { PrismaClient, Role, FabMachineType } from "@prisma/client";
 import bcrypt from "bcryptjs";
 
 const prisma = new PrismaClient();
 
-const DEFAULT_PASSWORD = "Pacific@123";
+const DEFAULT_PASSWORD = process.env.SEED_PASSWORD || "Pacific@123";
 
 const USERS: Array<{
   email: string;
   name: string;
   role: Role;
-  fabRole?: FabRole;
+  branch?: string;
 }> = [
-  { email: "admin@thepacific.group",                name: "Administrator",  role: Role.ADMIN,        fabRole: FabRole.FAB_ADMIN },
-  { email: "mohamed.shalman@thepacific.group",      name: "Shalman",        role: Role.ADMIN,        fabRole: FabRole.FAB_ADMIN },
-  { email: "manager@thepacific.group",              name: "Fab Manager",    role: Role.LINE_MANAGER, fabRole: FabRole.FAB_MANAGER },
-  { email: "supervisor@thepacific.group",           name: "Fab Supervisor", role: Role.INCHARGE,     fabRole: FabRole.FAB_SUPERVISOR },
-  { email: "cutter@thepacific.group",               name: "Cutter",        role: Role.OPERATOR,     fabRole: FabRole.FAB_EMPLOYEE },
-  { email: "polisher@thepacific.group",             name: "Polisher",      role: Role.OPERATOR,     fabRole: FabRole.FAB_EMPLOYEE },
+  { email: "admin@thepacific.group",           name: "Administrator",  role: Role.ADMIN },
+  { email: "mohamed.shalman@thepacific.group", name: "Shalman",        role: Role.ADMIN },
+  { email: "manager@thepacific.group",         name: "Fab Manager",    role: Role.LINE_MANAGER, branch: "FABRICATION" },
+  { email: "supervisor@thepacific.group",      name: "Fab Supervisor", role: Role.INCHARGE,     branch: "FABRICATION" },
+  { email: "cutter@thepacific.group",          name: "Cutter",         role: Role.OPERATOR,     branch: "FABRICATION" },
+  { email: "polisher@thepacific.group",        name: "Polisher",       role: Role.OPERATOR,     branch: "FABRICATION" },
 ];
 
 const MACHINES = [
@@ -35,10 +35,10 @@ async function main() {
     const passwordHash = await bcrypt.hash(DEFAULT_PASSWORD, 10);
     await prisma.user.upsert({
       where: { email: u.email },
-      update: { name: u.name, role: u.role, fabRole: u.fabRole ?? null },
-      create: { email: u.email, name: u.name, passwordHash, role: u.role, fabRole: u.fabRole ?? null },
+      update: { name: u.name, role: u.role, branch: (u.branch ?? "SHOP_FLOOR") as any },
+      create: { email: u.email, name: u.name, passwordHash, role: u.role, branch: (u.branch ?? "SHOP_FLOOR") as any },
     });
-    console.log(`Seeded user: ${u.email} (${u.role}${u.fabRole ? " / " + u.fabRole : ""})`);
+    console.log(`Seeded user: ${u.email} (${u.role}${u.branch ? " / " + u.branch : ""})`);
   }
 
   // Seed machines

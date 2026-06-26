@@ -6,11 +6,11 @@
 // Uses same dual-path piece discovery as complete-job.
 
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 
 export async function POST(req: Request) {
-  const session = await auth();
-  if (!session?.user?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const g = await fabGate("SUPERVISOR");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
   const { slabJobId } = await req.json();
   if (!slabJobId) return Response.json({ error: "slabJobId required" }, { status: 400 });

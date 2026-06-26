@@ -1,13 +1,13 @@
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 
 interface LabelEntry { label: string; qty: number; }
 interface SlabPlan   { stockSheet: string; page: number; labels: LabelEntry[]; }
 
 export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const g = await fabGate("SUPERVISOR");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
   const { projectId, plan }: { projectId: string; plan: SlabPlan[] } = await req.json();
   if (!projectId || !plan?.length) return Response.json({ error: "projectId and plan required" }, { status: 400 });

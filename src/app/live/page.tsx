@@ -7,7 +7,7 @@ import { getLiveStatus, type StationLive } from "@/lib/live";
 import { getRmStock } from "@/lib/rmStock";
 import { RmStockPanel } from "@/components/RmStock";
 import { listUnassignedPool } from "@/app/store/actions";
-import { currentUser } from "@/lib/rbac";
+import { currentUser, canManageRm } from "@/lib/rbac";
 import { liveWindow, LIVE_KEY } from "@/lib/stationAccess";
 
 export const dynamic = "force-dynamic";
@@ -143,7 +143,7 @@ export default async function LivePage() {
         <Card>
           <div className="mb-1 flex items-center gap-2"><H2>Assigned RM — bags in store</H2><span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-medium text-green-700">assigned</span></div>
           <p className="-mt-1 mb-4 text-xs text-gray-400">Bags assigned to an invoice and accepted, not yet dumped into a silo · resin daily &amp; storage tanks with remaining quantity.</p>
-          <RmStockPanel grit={rm.grit} filler={rm.filler} other={rm.other} resin={rm.resin} daily={rm.daily} />
+          <RmStockPanel grit={rm.grit} filler={rm.filler} other={rm.other} resin={rm.resin} daily={rm.daily} canDownload={await canManageRm()} />
         </Card>
 
         {/* RM stock — UNASSIGNED bulk pool, not yet broken into bags */}

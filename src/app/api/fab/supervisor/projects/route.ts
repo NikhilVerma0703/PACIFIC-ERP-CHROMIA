@@ -1,9 +1,9 @@
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 
 export async function GET() {
-  const session = await auth();
-  if (!session?.user?.fabRole) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const g = await fabGate("SUPERVISOR");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
   const projects = await prisma.fabProject.findMany({
     where: { status: { in: ["PLANNING", "ALLOCATED"] }, projectCode: { not: "UNASSIGNED" } },

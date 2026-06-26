@@ -2,6 +2,7 @@ import { auth } from "@/auth";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import Link from "next/link";
+import { fabTierOf } from "@/lib/fab/access";
 
 export default async function FabProjectsPage({
   searchParams,
@@ -10,9 +11,8 @@ export default async function FabProjectsPage({
 }) {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  const fabRole = (session.user as any).fabRole;
-  const mainRole = (session.user as any).role;
-  if (!fabRole && mainRole !== "ADMIN") redirect("/");
+  const tier = fabTierOf(session.user);
+  if (!tier) redirect("/");
 
   const { view = "production" } = await searchParams;
 
@@ -56,7 +56,7 @@ export default async function FabProjectsPage({
     { id: "all",        label: "All",         count: total               },
   ];
 
-  const canCreate = fabRole === "FAB_ADMIN" || fabRole === "FAB_MANAGER" || mainRole === "ADMIN";
+  const canCreate = tier === "ADMIN" || tier === "MANAGER";
 
   return (
     <div>

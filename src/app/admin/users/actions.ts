@@ -2,8 +2,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { revalidatePath } from "next/cache";
-import { currentUser, currentRole, canManageUsers, creatableRoles, rankOf, STATIONS } from "@/lib/rbac";
-import { createUserRecord, setActiveRecord, resetPasswordRecord, setStationRecord, setFabRoleRecord, getUserRole, bumpSessionVersion, bumpAllSessionVersions } from "@/lib/users";
+import { currentUser, currentRole, canManageUsers, creatableRoles, rankOf, ROLE_RANK, STATIONS } from "@/lib/rbac";
+import { createUserRecord, setActiveRecord, resetPasswordRecord, setStationRecord, getUserRole, bumpSessionVersion, bumpAllSessionVersions } from "@/lib/users";
 import { isAdmin } from "@/lib/rbac";
 
 export interface Res { ok: boolean; message: string }
@@ -33,7 +33,12 @@ export async function createUser(_prev: string | undefined, fd: FormData): Promi
   if (password.length < 8) return "Password must be at least 8 characters.";
 
   const myBranch = (((me as any)?.branch as string | undefined) ?? "SHOP_FLOOR");
-  const allowed = creatableRoles(myRole, myBranch);
+  const branchRaw = String(fd.get("branch") || "").trim();
+  const assignable = rankOf(myRole) >= ROLE_RANK.ADMIN
+    ? (myBranch === "OFFICE" ? ["OFFICE"] : ["SHOP_FLOOR", "FABRICATION"])
+    : [myBranch];
+  const branch = assignable.includes(branchRaw) ? branchRaw : myBranch;
+  const allowed = creatableRoles(myRole, branch);
   if (!allowed.includes(role as any)) return `You can only create: ${allowed.join(", ") || "(no roles)"}.`;
 
   let station: string | null = null;
@@ -43,8 +48,7 @@ export async function createUser(_prev: string | undefined, fd: FormData): Promi
   }
 
   try {
-    const myBranch = ((me as any)?.branch as string | undefined) ?? "SHOP_FLOOR";
-    await createUserRecord({ email, name, password, role, station, createdById: me?.id ?? null, branch: myBranch });
+    await createUserRecord({ email, name, password, role, station, createdById: me?.id ?? null, branch });
   } catch (e: any) {
     const msg = String(e?.message || "");
     if (msg.includes("Unique") || msg.includes("unique")) return "A user with that email already exists.";
@@ -83,18 +87,6 @@ export async function setStation(id: string, station: string | null): Promise<Re
   revalidatePath("/admin/users");
   return { ok: true, message: "Station updated." };
 }
-
-const VALID_FAB_ROLES = ["FAB_ADMIN", "FAB_MANAGER", "FAB_SUPERVISOR", "FAB_EMPLOYEE"];
-
-export async function setFabRole(id: string, fabRole: string | null): Promise<Res> {
-  const guard = await canManageTarget(id);
-  if (!guard.ok) return guard;
-  if (fabRole && !VALID_FAB_ROLES.includes(fabRole)) return { ok: false, message: "Unknown fab role." };
-  await setFabRoleRecord(id, fabRole);
-  revalidatePath("/admin/users");
-  return { ok: true, message: fabRole ? `Fab role set to ${fabRole}.` : "Fab access removed." };
-}
-
 
 /** Sign one user out of all their devices (phones, tablets, PCs). */
 export async function signOutEverywhere(id: string): Promise<Res> {

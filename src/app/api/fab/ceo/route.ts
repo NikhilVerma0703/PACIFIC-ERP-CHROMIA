@@ -1,16 +1,12 @@
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { fabGate } from "@/lib/fab/access";
 import { expireStaleSessions } from "@/lib/fab/expireStaleSessions";
 
 const IDLE_MS = 30 * 60 * 1000;
 
 export async function GET(req: Request) {
-  const session = await auth();
-  const fabRole  = (session?.user as any)?.fabRole;
-  const mainRole = (session?.user as any)?.role;
-  if (fabRole !== "FAB_ADMIN" && mainRole !== "ADMIN") {
-    return Response.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const g = await fabGate("MANAGER");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
   // Auto-close sessions left open when operators shut down without logging out
   await expireStaleSessions();

@@ -8,6 +8,7 @@
 //   - slabNumber is present
 
 import { prisma } from "@/lib/prisma";
+import { fabGate } from "@/lib/fab/access";
 
 const THICKNESS_MAP: Record<string, number> = {
   "2cm": 20,
@@ -28,6 +29,9 @@ function parseThicknessMm(raw: string | null | undefined): number | null {
 }
 
 export async function GET() {
+  const g = await fabGate("EMPLOYEE");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+
   try {
     const qcSlabs = await prisma.polishQc.findMany({
       where: {
