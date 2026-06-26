@@ -26,15 +26,17 @@ export async function Shell({ children }: { children: ReactNode }) {
     <div className="flex min-h-screen">
       {/* Sidebar */}
       <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-r border-gray-200/70 bg-white/70 px-4 py-5 backdrop-blur md:flex">
-        <div className="mb-6 flex items-center gap-2.5 px-2">
+        <div className="mb-6 flex shrink-0 items-center gap-2.5 px-2">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-pacific-dark shadow-sm"><img src="/logo-white.png" alt="Pacific Surfaces" className="h-5 w-5 object-contain" /></div>
           <div className="leading-tight">
             <div className="text-sm font-semibold text-gray-900">Pacific ERP</div>
             <div className="text-[11px] text-gray-400">{BRANCH_LABEL[branch] ?? "Production system"}</div>
           </div>
         </div>
-        <Nav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabRole={fabRole} />
-        <div className="mt-auto rounded-xl border border-gray-200 bg-white p-3">
+        <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
+          <Nav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabRole={fabRole} />
+        </div>
+        <div className="mt-3 shrink-0 rounded-xl border border-gray-200 bg-white p-3">
           <div className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-brand/10 text-xs font-semibold text-brand">{initials}</div>
             <div className="min-w-0 leading-tight">
