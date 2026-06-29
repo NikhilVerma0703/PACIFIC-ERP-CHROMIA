@@ -142,6 +142,11 @@ export function coerceField(kind: FieldKind, raw: FormDataEntryValue | null): un
 const PRESET_OPTIONS: Record<string, string[]> = {
   distributorVein1GevSlot: ["7mm", "9mm", "11mm"],
   distributorVein2GevSlot: ["7mm", "9mm", "11mm"],
+  // Design names that should always be offered on every design dropdown, even
+  // before any record uses them. Designs already in the data are appended after.
+  // (designName: Press, Kreos, Jot, Distributor, Oven, Robot… · design: MIS, Polish…)
+  designName: ["Tokyo", "Maple Haze"],
+  design: ["Tokyo", "Maple Haze"],
   // QC dropdowns — canonical options so the field is always a dropdown (never a
   // text box) and free-text/case typos can't multiply.
   repolishStatus: ["Direct Ok", "Polish Ok", "Repolish Done", "Repolish Required"],
