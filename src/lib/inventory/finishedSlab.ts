@@ -70,6 +70,7 @@ export async function autolinkFinishedSlabFromQc(
     design: qc.design ?? null,
     grade: canonicalGrade(qc.qualityGrade),
     slabThickness: qc.slabThickness ?? null,
+    qualityIssue: Array.isArray(qc.qualityIssue) ? qc.qualityIssue : [],
     rwStatus: qc.rwStatus ?? null,
     repolishStatus: qc.repolishStatus ?? null,
     batchNumber: qc.batchNumber ?? null,
@@ -166,4 +167,116 @@ export async function assignSlabLocation(
     res.updated++;
   }
   return res;
+}
+
+// ---------------------------------------------------------------------------
+// Status lifecycle: AVAILABLE -> RESERVED (PI hold, 7-day expiry) -> PACKED ->
+// DISPATCHED -> RETURNED (un-dispatch) -> back to AVAILABLE via release.
+// ---------------------------------------------------------------------------
+
+export type StatusAction = "reserve" | "release" | "pack" | "dispatch" | "return";
+
+const TRANSITIONS: Record<StatusAction, { from: string[]; to: string }> = {
+  reserve:  { from: ["AVAILABLE", "RETURNED"],                     to: "RESERVED" },
+  release:  { from: ["RESERVED", "PACKED", "RETURNED"],            to: "AVAILABLE" },
+  pack:     { from: ["AVAILABLE", "RESERVED", "RETURNED"],         to: "PACKED" },
+  dispatch: { from: ["AVAILABLE", "RESERVED", "PACKED"],           to: "DISPATCHED" },
+  return:   { from: ["DISPATCHED"],                                 to: "RETURNED" },
+};
+
+export const DEFAULT_RESERVATION_DAYS = 7;
+
+export interface StatusChangeResult {
+  updated: number;
+  missing: number[];
+  skipped: { slab: number; reason: string }[];
+}
+
+/**
+ * Apply a lifecycle action to a list of slabs. Invalid transitions are skipped
+ * (reported, never forced). Reserve sets PI/customer + expiry (default 7 days;
+ * caller enforces that only Admin overrides). Release clears the hold. Every
+ * change writes a SlabEvent (old -> new, who, source).
+ */
+export async function changeSlabStatus(
+  slabNumbers: number[],
+  action: StatusAction,
+  opts: { pi?: string | null; customer?: string | null; expiryDays?: number; by?: string | null; source?: string | null } = {}
+): Promise<StatusChangeResult> {
+  const res: StatusChangeResult = { updated: 0, missing: [], skipped: [] };
+  const t = TRANSITIONS[action];
+  if (!t) return res;
+  const src = opts.source ?? "Inventory";
+  const days = Number.isFinite(opts.expiryDays) && (opts.expiryDays as number) > 0 ? (opts.expiryDays as number) : DEFAULT_RESERVATION_DAYS;
+
+  for (const sn of slabNumbers) {
+    const slab = await db.finishedSlab.findUnique({
+      where: { slabNumber: sn },
+      select: { status: true, reservedForPi: true },
+    });
+    if (!slab) { res.missing.push(sn); continue; }
+    if (!t.from.includes(slab.status)) { res.skipped.push({ slab: sn, reason: `${slab.status} → ${t.to} not allowed` }); continue; }
+
+    const data: Record<string, unknown> = { status: t.to };
+    if (action === "reserve") {
+      data.reservedForPi = opts.pi ?? null;
+      data.customer = opts.customer ?? null;
+      data.reservedAt = new Date();
+      data.reservationExpiresAt = new Date(Date.now() + days * 86400000);
+    }
+    if (action === "release") {
+      data.reservedForPi = null; data.customer = null;
+      data.reservedAt = null; data.reservationExpiresAt = null;
+    }
+    if (action === "dispatch" && opts.pi !== undefined && opts.pi !== null) data.reservedForPi = opts.pi;
+    if (action === "dispatch") { data.reservationExpiresAt = null; }
+
+    // guarded write: only flips if the status is still one we validated against
+    // (a concurrent action loses the race and is reported as skipped).
+    const n = await db.finishedSlab.updateMany({ where: { slabNumber: sn, status: { in: t.from } }, data });
+    if (n.count === 0) { res.skipped.push({ slab: sn, reason: "changed concurrently — retry" }); continue; }
+    const effectivePi = opts.pi ?? slab.reservedForPi;
+    const detail =
+      action === "reserve" ? [opts.pi ? `PI ${opts.pi}` : null, opts.customer, `${days}d hold`].filter(Boolean).join(" · ")
+      : action === "dispatch" && effectivePi ? `PI ${effectivePi}`
+      : null;
+    await writeSlabEvent(sn, action, { field: "status", oldValue: slab.status, newValue: t.to + (detail ? ` (${detail})` : ""), by: opts.by, source: src });
+    res.updated++;
+  }
+  return res;
+}
+
+/**
+ * Lazy reservation-expiry sweep: any RESERVED slab whose hold has lapsed goes
+ * back to AVAILABLE (hold cleared, event logged). Called best-effort from the
+ * inventory read APIs, so expired holds never show as reserved.
+ */
+export async function sweepExpiredReservations(): Promise<number> {
+  try {
+    const now = new Date();
+    const lapsed: { slabNumber: number; reservedForPi: string | null }[] = await db.finishedSlab.findMany({
+      where: { status: "RESERVED", reservationExpiresAt: { lt: now } },
+      select: { slabNumber: true, reservedForPi: true },
+      take: 500,
+    });
+    if (lapsed.length === 0) return 0;
+    let released = 0;
+    for (const l of lapsed) {
+      // guarded per-row: re-checks status AND expiry, so a re-reserved slab
+      // (fresh hold) is untouched and concurrent sweeps can't double-log.
+      const n = await db.finishedSlab.updateMany({
+        where: { slabNumber: l.slabNumber, status: "RESERVED", reservationExpiresAt: { lt: now } },
+        data: { status: "AVAILABLE", reservedForPi: null, customer: null, reservedAt: null, reservationExpiresAt: null },
+      });
+      if (n.count === 1) {
+        released++;
+        await writeSlabEvent(l.slabNumber, "reservation_expired", {
+          field: "status", oldValue: "RESERVED",
+          newValue: `AVAILABLE (hold${l.reservedForPi ? ` PI ${l.reservedForPi}` : ""} lapsed)`,
+          source: "Auto-expiry",
+        });
+      }
+    }
+    return released;
+  } catch { return 0; }
 }

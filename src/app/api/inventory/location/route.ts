@@ -22,7 +22,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => null);
     const slabs: number[] = Array.isArray(body?.slabs)
-      ? body.slabs.map(Number).filter((n: number) => Number.isInteger(n) && n > 0)
+      ? body.slabs.map(Number).filter((n: number) => Number.isFinite(n) && n > 0)
       : [];
     if (slabs.length === 0) return Response.json({ error: "No slabs selected" }, { status: 400 });
     if (slabs.length > MAX_SLABS) return Response.json({ error: `Max ${MAX_SLABS} slabs per move` }, { status: 400 });

@@ -4,19 +4,22 @@
 import { prisma } from "@/lib/prisma";
 import { inventoryGate } from "@/lib/inventory/access";
 import { normalizeBatch } from "@/lib/normalizeBatch";
+import { sweepExpiredReservations } from "@/lib/inventory/finishedSlab";
 
 const db = prisma as any;
 const SQFT_TO_SQM = 0.092903;
 
 function withDerived(r: any) {
   const sqft = ((r.lengthIn ?? 0) * (r.widthIn ?? 0)) / 144;
-  return { ...r, sqft: Math.round(sqft * 100) / 100, sqm: Math.round(sqft * SQFT_TO_SQM * 100) / 100 };
+  const ageDays = r.firstSeenAt ? Math.max(0, Math.floor((Date.now() - new Date(r.firstSeenAt).getTime()) / 86400000)) : null;
+  return { ...r, sqft: Math.round(sqft * 100) / 100, sqm: Math.round(sqft * SQFT_TO_SQM * 100) / 100, ageDays };
 }
 
 export async function GET(request: Request) {
   const g = await inventoryGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   try {
+    await sweepExpiredReservations(); // lapsed PI holds -> AVAILABLE before we report
     const { searchParams } = new URL(request.url);
     const q = (k: string) => (searchParams.get(k) ?? "").trim();
     const where: any = {};
@@ -45,7 +48,11 @@ export async function GET(request: Request) {
     if (q("grade")) where.grade = q("grade");
     if (q("bay")) where.bayNumber = { contains: q("bay"), mode: "insensitive" };
     if (q("status")) where.status = q("status");
-    if (q("slab")) { const n = Number(q("slab")); if (Number.isFinite(n)) where.slabNumber = n; }
+    if (q("slab")) {
+      const n = Number(q("slab"));
+      if (Number.isFinite(n)) where.slabNumber = n;
+      else where.barcode = { contains: q("slab"), mode: "insensitive" }; // non-numeric -> barcode search
+    }
 
     const rows = await db.finishedSlab.findMany({ where, orderBy: { slabNumber: "desc" }, take: 1000 });
     return Response.json(rows.map(withDerived));

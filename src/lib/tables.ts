@@ -156,6 +156,7 @@ const PRESET_OPTIONS: Record<string, string[]> = {
   rwStatus: ["Direct Ok", "RW Done Ok", "RW Required and ongoing", "Can't be Reworked"],
   qualityGrade: ["Not graded yet", "A", "A2", "B", "C (Reject)", "CTS", "Printing"],
   polishType: ["Polish", "Suede", "Honed", "Leathered"],
+  bay: ["Bay 1", "Bay 2", "Bay 3", "Bay 4", "Bay 5"],
   slabThickness: ["1.2 cm", "2 cm", "3 cm", "7 mm"],
   thickness: ["1.2 cm", "2 cm", "3 cm", "7 mm"],
 };

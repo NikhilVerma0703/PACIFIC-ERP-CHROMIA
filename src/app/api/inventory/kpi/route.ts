@@ -2,6 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
 import { inventoryGate } from "@/lib/inventory/access";
+import { sweepExpiredReservations } from "@/lib/inventory/finishedSlab";
 
 const db = prisma as any;
 
@@ -9,6 +10,7 @@ export async function GET() {
   const g = await inventoryGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   try {
+    await sweepExpiredReservations(); // lapsed PI holds -> AVAILABLE before we count
     const [total, byGrade, byStatus, pendingPolish, pendingRw] = await Promise.all([
       db.finishedSlab.count(),
       db.finishedSlab.groupBy({ by: ["grade"], _count: { _all: true }, where: { status: { not: "DISPATCHED" } } }), // grades = stock on hand
@@ -22,7 +24,7 @@ export async function GET() {
       total,
       gradeA: g_("A"), gradeA2: g_("A2"), gradeB: g_("B"), gradeC: g_("C"),
       cts: g_("CTS"), printing: g_("Printing"),
-      available: s_("AVAILABLE"), reserved: s_("RESERVED"), packed: s_("PACKED"), dispatched: s_("DISPATCHED"),
+      available: s_("AVAILABLE"), reserved: s_("RESERVED"), packed: s_("PACKED"), dispatched: s_("DISPATCHED"), returned: s_("RETURNED"),
       pendingPolish, pendingRw,
     });
   } catch (e) {

@@ -2641,7 +2641,7 @@
         "airtableName": "Bay",
         "prismaField": "bay",
         "column": "bay",
-        "airtableType": "singleLineText",
+        "airtableType": "singleSelect",
         "kind": "scalar"
       },
       "native_polish_type": {

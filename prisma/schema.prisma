@@ -2410,6 +2410,7 @@ model FinishedSlab {
   design         String?   @map("design")
   grade          String?   @map("grade")           // A / A2 / B / C / CTS / Printing (exclusive)
   slabThickness  String?   @map("slab_thickness")
+  qualityIssue   String[]  @default([]) @map("quality_issue") // mirrored from PolishQc each QC pass
   polishType     String?   @map("polish_type")     // Polish / Suede / Honed / Leathered
   rwStatus       String?   @map("rw_status")
   repolishStatus String?   @map("repolish_status")

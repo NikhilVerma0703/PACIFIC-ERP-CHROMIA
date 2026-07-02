@@ -5,12 +5,13 @@ import { useEffect, useState } from "react";
 interface Kpi {
   total: number; gradeA: number; gradeA2: number; gradeB: number; gradeC: number;
   cts: number; printing: number; available: number; reserved: number; packed: number;
-  dispatched: number; pendingPolish: number; pendingRw: number;
+  dispatched: number; returned: number; pendingPolish: number; pendingRw: number;
 }
 interface Slab {
   id: string; slabNumber: number; design: string | null; grade: string | null;
   slabThickness: string | null; polishType: string | null; batchNumber: string | null;
   bayNumber: string | null; frameNumber: string | null; status: string; sqft: number; sqm: number;
+  ageDays: number | null; qualityIssue: string[] | null;
 }
 interface Alias { id: string; variant: string; canonical: string; createdBy: string | null }
 
@@ -23,6 +24,15 @@ interface SlabEvent {
 const STATUSES = ["", "AVAILABLE", "RESERVED", "PACKED", "DISPATCHED", "RETURNED"];
 const GRADES = ["", "A", "A2", "B", "C", "CTS", "Printing"];
 const THICKNESSES = ["", "1.2 cm", "2 cm", "3 cm", "7 mm"];
+const BAYS = ["Bay 1", "Bay 2", "Bay 3", "Bay 4", "Bay 5"];
+const ACTIONS = [
+  { value: "", label: "Change status…" },
+  { value: "reserve", label: "Reserve (PI hold)" },
+  { value: "pack", label: "Mark Packed" },
+  { value: "dispatch", label: "Mark Dispatched" },
+  { value: "return", label: "Mark Returned (un-dispatch)" },
+  { value: "release", label: "Release to Available" },
+];
 const EMPTY = { design: "", batch: "", thickness: "", grade: "", slab: "", bay: "", status: "" };
 
 const fmtAt = (iso: string) => {
@@ -41,6 +51,8 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
   const [mv, setMv] = useState({ bay: "", frame: "", clearBay: false, clearFrame: false });
   const [moving, setMoving] = useState(false);
   const [moveMsg, setMoveMsg] = useState<string | null>(null);
+  const [st, setSt] = useState({ action: "", pi: "", customer: "", expiryDays: "" });
+  const [stBusy, setStBusy] = useState(false);
 
   // activity feed
   const [view, setView] = useState<"slabs" | "activity" | "designs">("slabs");
@@ -55,9 +67,10 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
   const [mergeMsg, setMergeMsg] = useState<string | null>(null);
   const [merging, setMerging] = useState(false);
 
-  useEffect(() => {
+  const loadKpi = () => {
     fetch("/api/inventory/kpi").then((r) => (r.ok ? r.json() : null)).then((d) => setKpi(d && !d.error ? d : null)).catch(() => {});
-  }, []);
+  };
+  useEffect(() => { loadKpi(); }, []);
 
   const run = (filters: typeof EMPTY) => {
     setLoading(true);
@@ -131,6 +144,28 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
     finally { setMoving(false); }
   };
 
+  const applyStatus = async () => {
+    if (sel.size === 0 || !st.action) return;
+    setStBusy(true); setMoveMsg(null);
+    try {
+      const payload: Record<string, unknown> = { slabs: [...sel], action: st.action };
+      if (st.pi.trim()) payload.pi = st.pi.trim();
+      if (st.customer.trim()) payload.customer = st.customer.trim();
+      if (admin && st.expiryDays.trim()) payload.expiryDays = Number(st.expiryDays);
+      const r = await fetch("/api/inventory/status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const d = await r.json().catch(() => null);
+      if (!r.ok || !d || d.error) setMoveMsg(d?.error ?? "Action failed.");
+      else {
+        setMoveMsg(`${d.updated} slab(s) updated` +
+          (d.skipped?.length ? `; ${d.skipped.length} skipped (${d.skipped.slice(0, 3).map((x: any) => `#${x.slab}: ${x.reason}`).join("; ")}${d.skipped.length > 3 ? "…" : ""})` : "") +
+          (d.missing?.length ? `; ${d.missing.length} not in inventory` : "") + ".");
+        setSt({ action: "", pi: "", customer: "", expiryDays: "" });
+        run(f); loadKpi();
+      }
+    } catch { setMoveMsg("Action failed."); }
+    finally { setStBusy(false); }
+  };
+
   const card = (label: string, value: number, tone = "text-gray-900") => (
     <div className="rounded-xl border border-gray-200 bg-white p-4">
       <div className="text-[11px] font-medium uppercase tracking-wide text-gray-400">{label}</div>
@@ -160,6 +195,7 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
           {card("Available", kpi.available, "text-emerald-600")}
           {card("Packed", kpi.packed, "text-amber-600")}
           {card("Dispatched", kpi.dispatched, "text-gray-500")}
+          {card("Returned", kpi.returned, "text-sky-600")}
           {card("Grade A", kpi.gradeA)}
           {card("Grade A2", kpi.gradeA2)}
           {card("Grade B", kpi.gradeB)}
@@ -262,8 +298,8 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
               <input className={inputCls} placeholder="Colour / design" value={f.design} onChange={(e) => setF({ ...f, design: e.target.value })} />
               <input className={inputCls} placeholder="Batch" value={f.batch} onChange={(e) => setF({ ...f, batch: e.target.value })} />
-              <input className={inputCls} placeholder="Slab #" value={f.slab} onChange={(e) => setF({ ...f, slab: e.target.value })} />
-              <input className={inputCls} placeholder="Bay" value={f.bay} onChange={(e) => setF({ ...f, bay: e.target.value })} />
+              <input className={inputCls} placeholder="Slab # / barcode" value={f.slab} onChange={(e) => setF({ ...f, slab: e.target.value })} />
+              <select className={inputCls} value={f.bay} onChange={(e) => setF({ ...f, bay: e.target.value })}>{["", ...BAYS].map((b) => <option key={b} value={b}>{b || "Any bay"}</option>)}</select>
               <select className={inputCls} value={f.grade} onChange={(e) => setF({ ...f, grade: e.target.value })}>{GRADES.map((g) => <option key={g} value={g}>{g || "Any grade"}</option>)}</select>
               <select className={inputCls} value={f.thickness} onChange={(e) => setF({ ...f, thickness: e.target.value })}>{THICKNESSES.map((t) => <option key={t} value={t}>{t || "Any thickness"}</option>)}</select>
               <select className={inputCls} value={f.status} onChange={(e) => setF({ ...f, status: e.target.value })}>{STATUSES.map((s) => <option key={s} value={s}>{s || "Any status"}</option>)}</select>
@@ -280,7 +316,9 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
                 <div className="text-sm font-medium text-gray-900">{sel.size} slab(s) selected</div>
                 <div className="w-36">
                   <label className="mb-1 block text-xs font-medium text-gray-500">Move to bay</label>
-                  <input className={inputCls} placeholder="Bay" value={mv.bay} disabled={mv.clearBay} onChange={(e) => setMv({ ...mv, bay: e.target.value })} />
+                  <select className={inputCls} value={mv.bay} disabled={mv.clearBay} onChange={(e) => setMv({ ...mv, bay: e.target.value })}>
+                    {["", ...BAYS].map((b) => <option key={b} value={b}>{b || "— keep bay —"}</option>)}
+                  </select>
                 </div>
                 <div className="w-36">
                   <label className="mb-1 block text-xs font-medium text-gray-500">Assign frame</label>
@@ -291,7 +329,35 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
                 <button onClick={applyMove} disabled={moving} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark disabled:opacity-50">{moving ? "Applying…" : "Apply"}</button>
                 <button onClick={() => setSel(new Set())} className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">Deselect</button>
               </div>
-              <p className="mt-2 text-xs text-gray-500">Blank field = unchanged. Every change is logged to the audit trail.</p>
+              <div className="mt-3 flex flex-wrap items-end gap-3 border-t border-brand/10 pt-3">
+                <div className="w-56">
+                  <label className="mb-1 block text-xs font-medium text-gray-500">Status action</label>
+                  <select className={inputCls} value={st.action} onChange={(e) => setSt({ ...st, action: e.target.value })}>
+                    {ACTIONS.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
+                  </select>
+                </div>
+                {(st.action === "reserve" || st.action === "dispatch") && (
+                  <div className="w-40">
+                    <label className="mb-1 block text-xs font-medium text-gray-500">PI no.</label>
+                    <input className={inputCls} placeholder="PI" value={st.pi} onChange={(e) => setSt({ ...st, pi: e.target.value })} />
+                  </div>
+                )}
+                {st.action === "reserve" && (
+                  <div className="w-44">
+                    <label className="mb-1 block text-xs font-medium text-gray-500">Customer</label>
+                    <input className={inputCls} placeholder="Customer" value={st.customer} onChange={(e) => setSt({ ...st, customer: e.target.value })} />
+                  </div>
+                )}
+                {st.action === "reserve" && admin && (
+                  <div className="w-28">
+                    <label className="mb-1 block text-xs font-medium text-gray-500">Hold (days)</label>
+                    <input className={inputCls} placeholder="7" value={st.expiryDays} onChange={(e) => setSt({ ...st, expiryDays: e.target.value })} />
+                  </div>
+                )}
+                <button onClick={applyStatus} disabled={stBusy || !st.action} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark disabled:opacity-50">{stBusy ? "Applying…" : "Apply status"}</button>
+                {st.action === "reserve" && !admin && <p className="pb-2 text-xs text-gray-400">7-day hold (Admin can change)</p>}
+              </div>
+              <p className="mt-2 text-xs text-gray-500">Blank field = unchanged. Reservations auto-release after the hold lapses. Every change is logged to the audit trail.</p>
             </div>
           )}
           {moveMsg && <p className="text-sm text-gray-600">{moveMsg}</p>}
@@ -302,15 +368,15 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
                 <tr className="border-b border-gray-100 text-left text-gray-500">
                   <th className="px-3 py-2"><input type="checkbox" checked={rows.length > 0 && sel.size === rows.length} onChange={toggleAll} /></th>
                   <th className="px-3 py-2">Slab #</th><th className="px-3 py-2">Design</th><th className="px-3 py-2">Batch</th>
-                  <th className="px-3 py-2">Thk</th><th className="px-3 py-2">Grade</th><th className="px-3 py-2">Polish</th>
-                  <th className="px-3 py-2">Bay</th><th className="px-3 py-2">Frame</th><th className="px-3 py-2 text-right">Sqft</th><th className="px-3 py-2">Status</th>
+                  <th className="px-3 py-2">Thk</th><th className="px-3 py-2">Grade</th><th className="px-3 py-2">Quality Issue</th><th className="px-3 py-2">Polish</th>
+                  <th className="px-3 py-2">Bay</th><th className="px-3 py-2">Frame</th><th className="px-3 py-2 text-right">Sqft</th><th className="px-3 py-2 text-right">Age</th><th className="px-3 py-2">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={11} className="px-3 py-10 text-center text-gray-400">Loading…</td></tr>
+                  <tr><td colSpan={13} className="px-3 py-10 text-center text-gray-400">Loading…</td></tr>
                 ) : rows.length === 0 ? (
-                  <tr><td colSpan={11} className="px-3 py-10 text-center text-gray-400">No slabs match the current filters.</td></tr>
+                  <tr><td colSpan={13} className="px-3 py-10 text-center text-gray-400">No slabs match the current filters.</td></tr>
                 ) : (
                   rows.map((r) => (
                     <tr key={r.id} className="border-t border-gray-50 hover:bg-gray-50/50">
@@ -322,10 +388,12 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
                       <td className="px-3 py-2">{r.batchNumber ?? "—"}</td>
                       <td className="px-3 py-2">{r.slabThickness ?? "—"}</td>
                       <td className="px-3 py-2">{r.grade ?? "—"}</td>
+                      <td className="px-3 py-2 max-w-[180px] truncate" title={(r.qualityIssue ?? []).join(", ")}>{r.qualityIssue?.length ? r.qualityIssue.join(", ") : "—"}</td>
                       <td className="px-3 py-2">{r.polishType ?? "—"}</td>
                       <td className="px-3 py-2">{r.bayNumber ?? "—"}</td>
                       <td className="px-3 py-2">{r.frameNumber ?? "—"}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{r.sqft || "—"}</td>
+                      <td className="px-3 py-2 text-right tabular-nums" title="Days in inventory">{r.ageDays ?? "—"}{r.ageDays != null ? "d" : ""}</td>
                       <td className="px-3 py-2"><span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">{r.status}</span></td>
                     </tr>
                   ))
