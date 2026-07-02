@@ -1,14 +1,24 @@
-// Finished-goods inventory access: Admin, production management (Line Manager,
-// Incharge) and office Commercial staff (Finance, Accounts) — the Commercial /
-// QC / Management users of the inventory module. STORE (RM store) is excluded;
-// add it to INVENTORY_ROLES if the Store Incharge should see finished goods.
-// Mirrors the fabGate shape.
-import { currentUser, currentRole } from "@/lib/rbac";
+// Finished-goods inventory access — an OFFICE (Commercial) module. Only office
+// staff (Finance, Accounts) and Admins can see it; shop-floor and fabrication
+// users never do, mirroring the department separation. Extend OFFICE side by
+// adding roles to INVENTORY_ROLES.
+import { currentUser } from "@/lib/rbac";
 
-export const INVENTORY_ROLES = new Set(["ADMIN", "LINE_MANAGER", "INCHARGE", "FINANCE", "ACCOUNTS"]);
+export const INVENTORY_ROLES = new Set(["ADMIN", "FINANCE", "ACCOUNTS"]);
+
+/** Sync check used by Shell/Nav and the gates: Admin anywhere; otherwise the
+ * session must be an Office-branch user with an inventory role. */
+export function hasInventoryAccess(role: string, branch: string): boolean {
+  if (role === "ADMIN") return true; // admins span every department
+  return branch === "OFFICE" && INVENTORY_ROLES.has(role);
+}
 
 export async function canAccessInventory(): Promise<boolean> {
-  return INVENTORY_ROLES.has(await currentRole());
+  const user = await currentUser();
+  if (!user) return false;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const u = user as any;
+  return hasInventoryAccess(String(u.role ?? ""), String(u.branch ?? ""));
 }
 
 export interface InventoryGate {
@@ -19,12 +29,12 @@ export interface InventoryGate {
 }
 
 /** Server gate for /api/inventory routes + inventory pages. Revalidates the
- * session (active + sessionVersion via currentUser) and enforces the role set. */
+ * session (active + sessionVersion via currentUser) and enforces role+branch. */
 export async function inventoryGate(): Promise<InventoryGate> {
   const user = await currentUser();
   if (!user) return { ok: false, status: 401, user: null };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const role = String((user as any).role ?? "");
-  if (!INVENTORY_ROLES.has(role)) return { ok: false, status: 403, user };
+  const u = user as any;
+  if (!hasInventoryAccess(String(u.role ?? ""), String(u.branch ?? ""))) return { ok: false, status: 403, user };
   return { ok: true, status: 200, user };
 }

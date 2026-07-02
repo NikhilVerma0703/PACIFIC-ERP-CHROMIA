@@ -5,7 +5,7 @@ import { currentUser } from "@/lib/rbac";
 import { logout } from "@/app/actions";
 import { Nav } from "./Nav";
 import { fabTierOf } from "@/lib/fab/access";
-import { INVENTORY_ROLES } from "@/lib/inventory/access";
+import { hasInventoryAccess } from "@/lib/inventory/access";
 import { MobileNav } from "./MobileNav";
 import { ROLE_LABEL, STATION_LABEL, rankOf, ROLE_RANK } from "@/lib/rbac";
 import { BRANCH_LABEL } from "@/lib/branch";
@@ -23,7 +23,7 @@ export async function Shell({ children }: { children: ReactNode }) {
   const stationLabel = (user as { station?: string | null } | undefined)?.station;
   const branch = ((user as { branch?: string | null } | undefined)?.branch as string | undefined) ?? "SHOP_FLOOR";
   const fabTier = fabTierOf(user) ?? "";
-  const inventory = INVENTORY_ROLES.has(String(user?.role ?? ""));
+  const inventory = hasInventoryAccess(String(user?.role ?? ""), branch);
 
   return (
     <div className="flex min-h-screen">

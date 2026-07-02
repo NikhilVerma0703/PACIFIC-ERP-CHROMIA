@@ -71,6 +71,10 @@ export default auth((req) => {
     // Production / Office staff never see fabrication.
     return Response.redirect(new URL("/", nextUrl));
   }
+  if (!isAdmin && branch !== "OFFICE" && p.startsWith("/inventory")) {
+    // Finished-goods inventory is an Office (Commercial) module — shop floor never sees it.
+    return Response.redirect(new URL("/", nextUrl));
+  }
 
   if (role === "STORE") {
     // /tables is allowed but capped to RM tables (canSeeModel -> STORE_MODELS).
