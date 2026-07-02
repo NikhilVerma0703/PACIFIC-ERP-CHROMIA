@@ -2637,6 +2637,20 @@
         "airtableType": "singleSelect",
         "kind": "scalar"
       },
+      "native_bay": {
+        "airtableName": "Bay",
+        "prismaField": "bay",
+        "column": "bay",
+        "airtableType": "singleLineText",
+        "kind": "scalar"
+      },
+      "native_polish_type": {
+        "airtableName": "Polish Type",
+        "prismaField": "polishType",
+        "column": "polish_type",
+        "airtableType": "singleSelect",
+        "kind": "scalar"
+      },
       "fldhONIvwbaRZddcC": {
         "airtableName": "Top Polish",
         "prismaField": "topPolish",

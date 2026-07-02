@@ -154,7 +154,8 @@ const PRESET_OPTIONS: Record<string, string[]> = {
   // text box) and free-text/case typos can't multiply.
   repolishStatus: ["Direct Ok", "Polish Ok", "Repolish Done", "Repolish Required"],
   rwStatus: ["Direct Ok", "RW Done Ok", "RW Required and ongoing", "Can't be Reworked"],
-  qualityGrade: ["Not graded yet", "A", "A2", "B", "C (Reject)"],
+  qualityGrade: ["Not graded yet", "A", "A2", "B", "C (Reject)", "CTS", "Printing"],
+  polishType: ["Polish", "Suede", "Honed", "Leathered"],
   slabThickness: ["1.2 cm", "2 cm", "3 cm", "7 mm"],
   thickness: ["1.2 cm", "2 cm", "3 cm", "7 mm"],
 };

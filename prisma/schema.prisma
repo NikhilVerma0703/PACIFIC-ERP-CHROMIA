@@ -580,6 +580,8 @@ model PolishQc {
   bottomPolish        Boolean   @default(false) @map("bottom_polish")
   lamination          Boolean   @default(false) @map("lamination")
   sku                 String?   @map("sku")
+  bay                 String?   @map("bay")
+  polishType          String?   @map("polish_type")
   dispatchStatus      String?   @map("dispatch_status")
   barcode             Json?     @map("barcode")
   barcodeApiLink      Json?     @map("barcode_api_link")
@@ -2377,4 +2379,99 @@ model FabResidualPiece {
   createdAt DateTime       @default(now()) @map("created_at")
 
   @@map("fab_residual_piece")
+}
+
+// ============================================================================
+// Finished-Goods Inventory  (native, fg_*).  QC (polish_qc) autolinks into this.
+// Design: docs/finished-goods-inventory-design.md
+// NOTE: slabNumber is Float to match polish_qc + accommodate valid ".1" insert
+// slabs; integer-only enforcement (if wanted) is applied at the app layer,
+// pending the user's final decision on decimal slabs.
+// ============================================================================
+
+enum SlabStatus {
+  AVAILABLE
+  RESERVED
+  PACKED
+  DISPATCHED
+  RETURNED
+}
+
+enum SlabSource {
+  QC_AUTOLINK
+  BULK_UPLOAD
+}
+
+model FinishedSlab {
+  id         String @id @default(cuid())
+  slabNumber Float  @unique @map("slab_number")
+
+  // ---- QC-owned: overwritten each time the slab passes QC ----
+  design         String?   @map("design")
+  grade          String?   @map("grade")           // A / A2 / B / C / CTS / Printing (exclusive)
+  slabThickness  String?   @map("slab_thickness")
+  polishType     String?   @map("polish_type")     // Polish / Suede / Honed / Leathered
+  rwStatus       String?   @map("rw_status")
+  repolishStatus String?   @map("repolish_status")
+  batchNumber    String?   @map("batch_number")
+  batchKey       String?   @map("batch_key")
+  barcode        String?   @map("barcode")
+  qcInspector    String?   @map("qc_inspector")
+  lastQcAt       DateTime? @map("last_qc_at")
+  lengthIn       Float?    @default(137) @map("length_in") // default full slab 137" x 79"
+  widthIn        Float?    @default(79)  @map("width_in")  // sqft = L*W/144, sqm = sqft*0.092903 (derived)
+
+  // ---- Location: Bay set at QC, Frame set by Dispatch (cleared on re-QC) ----
+  bayNumber   String? @map("bay_number")
+  frameNumber String? @map("frame_number")
+
+  // ---- Inventory-owned: never overwritten by QC ----
+  status               SlabStatus @default(AVAILABLE) @map("status")
+  reservedForPi        String?    @map("reserved_for_pi")
+  customer             String?    @map("customer")
+  reservedAt           DateTime?  @map("reserved_at")
+  reservationExpiresAt DateTime?  @map("reservation_expires_at")
+  notes                String?    @map("notes")
+
+  // ---- Provenance / stock-age ----
+  source      SlabSource @default(QC_AUTOLINK) @map("source")
+  firstSeenAt DateTime   @default(now())       @map("first_seen_at")
+  createdAt   DateTime   @default(now())       @map("created_at")
+  updatedAt   DateTime   @updatedAt            @map("updated_at")
+
+  events SlabEvent[]
+
+  @@index([batchKey])
+  @@index([status])
+  @@index([grade])
+  @@index([design])
+  @@map("fg_finished_slab")
+}
+
+model DesignAlias {
+  id        String   @id @default(cuid())
+  variant   String   @unique @map("variant")
+  canonical String   @map("canonical")
+  createdBy String?  @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([canonical])
+  @@map("fg_design_alias")
+}
+
+model SlabEvent {
+  id         String       @id @default(cuid())
+  slabNumber Float        @map("slab_number")
+  slab       FinishedSlab @relation(fields: [slabNumber], references: [slabNumber])
+  kind       String       @map("kind")   // created | qc_update | location | status | reserve | pack | dispatch | return | flagged_non_integer
+  field      String?      @map("field")
+  oldValue   String?      @map("old_value")
+  newValue   String?      @map("new_value")
+  changedBy  String?      @map("changed_by")
+  source     String?      @map("source")
+  at         DateTime     @default(now()) @map("at")
+
+  @@index([slabNumber])
+  @@index([at])
+  @@map("fg_slab_event")
 }

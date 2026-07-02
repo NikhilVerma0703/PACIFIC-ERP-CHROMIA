@@ -16,6 +16,7 @@ import { normalizeBatch } from "@/lib/normalizeBatch";
 import { parseSlabInput } from "@/lib/slabLabel";
 import { RECORD_SMART } from "@/lib/recordSmart";
 import { prisma } from "@/lib/prisma";
+import { autolinkFinishedSlabFromQc, relinkFinishedSlabAfterNumberChange } from "@/lib/inventory/finishedSlab";
 
 // tx-scoped equivalents of delegateOf() for $transaction blocks
 const prismaTx = () => prisma;
@@ -160,6 +161,12 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
   // Clearing the QC grade falls back to "Not graded yet" (only when the form
   // actually submitted the grade field, so edits to other fields don't touch it).
   if (model === "PolishQc" && fd.has("qualityGrade") && !String(data.qualityGrade ?? "").trim()) data.qualityGrade = "Not graded yet";
+  // If this QC edit changes the slab number, the old number's inventory row must
+  // be re-projected (or removed) — capture it before the update.
+  let qcPrevSlabNumber: number | null = null;
+  if (model === "PolishQc" && data.slabNumber !== undefined) {
+    try { qcPrevSlabNumber = Number((await delegateOf(model).findUnique({ where: { id }, select: { slabNumber: true } }))?.slabNumber ?? NaN) || null; } catch { /* best-effort */ }
+  }
   try {
     await delegateOf(model).update({ where: { id }, data });
     if (model === "MixerCycle") {
@@ -174,6 +181,12 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
   revalidatePath(`/tables/${model}`);
   if (model === "PolishQc") {
     await logAction({ kind: "edit", batchKey: (data.batchKey as string | undefined) ?? null, model: "PolishQc", summary: `Edited Polish QC slab ${String(data.slabNumber ?? "")}`.trim(), payload: { id, slabNumber: data.slabNumber ?? null } });
+    try {
+      const by = (await currentUser())?.name ?? null;
+      const sn = typeof data.slabNumber === "number" ? data.slabNumber : Number((await delegateOf(model).findUnique({ where: { id }, select: { slabNumber: true } }))?.slabNumber);
+      await autolinkFinishedSlabFromQc(sn, { by });
+      if (qcPrevSlabNumber != null && qcPrevSlabNumber !== sn) await relinkFinishedSlabAfterNumberChange(qcPrevSlabNumber, by);
+    } catch { /* inventory autolink is best-effort */ }
   }
   return "ok";
 }
@@ -287,6 +300,10 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
   catch (e) { return `Create failed: ${friendlyDbError(e)}`; }
   void createdAirtableId;
   revalidatePath(`/tables/${model}`);
+  if (model === "PolishQc") {
+    // Autolink this QC slab into finished-goods inventory (best-effort).
+    try { await autolinkFinishedSlabFromQc(data.slabNumber as number, { by: opName }); } catch { /* inventory autolink is best-effort */ }
+  }
   if (model === "MixerCycle") {
     try { const r = await allocateMixerCycle(createdId); return r.message || "ok"; } catch { return "ok"; }
   }

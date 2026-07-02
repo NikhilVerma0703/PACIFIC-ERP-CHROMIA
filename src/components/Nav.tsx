@@ -207,9 +207,9 @@ function Section({ label, items, path }: { label: string; items: { href: string;
 
 /* Main Nav export — flat, access-filtered sections (no dropdowns) */
 export function Nav({
-  showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "",
+  showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false,
 }: {
-  showAdmin?: boolean; branch?: string; role?: string; fabTier?: string;
+  showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; inventory?: boolean;
 }) {
   const path    = usePathname();
   const office  = branch === "OFFICE";
@@ -236,6 +236,7 @@ export function Nav({
       <nav className="flex flex-col gap-1">
         <NavLink href="/office" icon={I.factory} label="Shop Floor" path={path} office />
         <NavLink href="/entry"  icon={I.entry}   label="Data Entry" path={path} />
+        {inventory && <NavLink href="/inventory" icon={I.box} label="Finished Goods" path={path} />}
         {showAdmin && <NavLink href="/admin/users" icon={I.users} label="Users & Roles" path={path} />}
       </nav>
     );
@@ -273,6 +274,7 @@ export function Nav({
       <Section label="Overview" items={overview} path={path} />
       {isProd && <Section label="Production" items={production} path={path} />}
       {isFab  && <Section label="Fabrication" items={fabrication} path={path} />}
+      {inventory && <Section label="Inventory" items={[{ href: "/inventory", icon: I.box, label: "Finished Goods" }]} path={path} />}
       <Section label="Admin" items={admin} path={path} />
     </nav>
   );
