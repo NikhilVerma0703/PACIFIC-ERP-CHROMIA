@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { Card, H2 } from "@/components/ui";
 import { allTables } from "@/lib/tables";
-import { currentBranchName, OFFICE_MODELS, HIDDEN_TABLES, ADMIN_ONLY_TABLES } from "@/lib/branch";
+import { currentBranchName, OFFICE_MODELS, HIDDEN_TABLES, ADMIN_ONLY_TABLES, STORE_MODELS } from "@/lib/branch";
 import { isAdmin, currentUser } from "@/lib/rbac";
 import { operatorTableModels } from "@/lib/stationAccess";
 
@@ -23,12 +23,15 @@ export default async function TablesIndex() {
   const branch = await currentBranchName();
   const admin = await isAdmin();
   const me = await currentUser();
-  const isOperator = String((me as { role?: string } | null)?.role ?? "") === "OPERATOR";
+  const roleName = String((me as { role?: string } | null)?.role ?? "");
+  const isOperator = roleName === "OPERATOR";
+  const isStore = roleName === "STORE";
   const myModels = isOperator ? operatorTableModels((me as { station?: string | null } | null)?.station) : null;
   const tables = allTables().filter((t) =>
     !HIDDEN_TABLES.has(t.model) &&
     (admin || !ADMIN_ONLY_TABLES.has(t.model)) &&
     (myModels ? myModels.has(t.model) : true) &&
+    (!isStore || STORE_MODELS.has(t.model)) &&
     (branch === "OFFICE" ? true : !OFFICE_MODELS.has(t.model)));
   const core = tables.filter((t) => CORE.has(t.tableName));
   const other = tables.filter((t) => !CORE.has(t.tableName));
@@ -49,9 +52,9 @@ export default async function TablesIndex() {
   return (
     <Shell>
       <H2>Tables</H2>
-      <p className="mb-4 text-sm text-gray-500">{isOperator ? "Your station's tables — view only." : "Browse, edit and create records in any table — the full Airtable grid, on your own database."}</p>
-      <Grid items={isOperator ? tables : core} />
-      {!isOperator && (
+      <p className="mb-4 text-sm text-gray-500">{isOperator ? "Your station's tables — view only." : isStore ? "Your RM tables — view only (entries go through the Store forms)." : "Browse, edit and create records in any table — the full Airtable grid, on your own database."}</p>
+      <Grid items={isOperator || isStore ? tables : core} />
+      {!isOperator && !isStore && (
         <details className="mt-6">
           <summary className="cursor-pointer text-sm font-medium text-gray-600">Other tables ({other.length})</summary>
           <div className="mt-3"><Grid items={other} /></div>

@@ -39,6 +39,7 @@ const STORE_TABS = [
   { href: "/store/resin",  label: "Resin Intake",  icon: I.live   },
   { href: "/store/upload", label: "RM Upload",     icon: I.box    },
   { href: "/store/assign", label: "RM Assignment", icon: I.tables },
+  { href: "/tables",       label: "RM Tables",     icon: I.tables },
 ];
 
 // Maintenance Manager is capped: Overview + the Downtime report only.
@@ -247,12 +248,14 @@ export function Nav({
   ];
   const production = [
     { href: "/live",   icon: I.live,   label: "Live Status" },
+    { href: "/entry",  icon: I.entry,  label: "Data Entry" },
+    { href: "/tables", icon: I.tables, label: "Tables" },
+  ];
+  const reports = [
     { href: "/batch",  icon: I.batch,  label: "Batch Lookup" },
     { href: "/slab",   icon: I.batch,  label: "Slab Lookup" },
-    { href: "/tables", icon: I.tables, label: "Tables" },
     { href: "/report", icon: I.report, label: "Production Report" },
     { href: "/mis",    icon: I.mis,    label: "Downtime" },
-    { href: "/entry",  icon: I.entry,  label: "Data Entry" },
   ];
   const fabrication = [
     ...(mgmt ? [{ href: "/fab/projects", icon: I.manager, label: "Manager View" }] : []),
@@ -273,6 +276,7 @@ export function Nav({
     <nav className="flex flex-col">
       <Section label="Overview" items={overview} path={path} />
       {isProd && <Section label="Production" items={production} path={path} />}
+      {isProd && <Section label="Lookups &amp; Reports" items={reports} path={path} />}
       {isFab  && <Section label="Fabrication" items={fabrication} path={path} />}
       {inventory && <Section label="Inventory" items={[{ href: "/inventory", icon: I.box, label: "Finished Goods" }]} path={path} />}
       <Section label="Admin" items={admin} path={path} />
