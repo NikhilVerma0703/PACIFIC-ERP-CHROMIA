@@ -6,6 +6,7 @@ interface Kpi {
   total: number; gradeA: number; gradeA2: number; gradeB: number; gradeC: number;
   cts: number; printing: number; available: number; reserved: number; packed: number;
   dispatched: number; returned: number; pendingPolish: number; pendingRw: number;
+  thk12cm: number; thk2cm: number; thk3cm: number;
 }
 interface Slab {
   id: string; slabNumber: number; design: string | null; grade: string | null;
@@ -70,11 +71,17 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
   const loadKpi = () => {
     fetch("/api/inventory/kpi").then((r) => (r.ok ? r.json() : null)).then((d) => setKpi(d && !d.error ? d : null)).catch(() => {});
   };
-  useEffect(() => { loadKpi(); }, []);
+  useEffect(() => {
+    loadKpi();
+    const id = setInterval(loadKpi, 60000); // live refresh every minute
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const run = (filters: typeof EMPTY) => {
     setLoading(true);
     setSel(new Set());
+    loadKpi();
     const p = new URLSearchParams();
     Object.entries(filters).forEach(([k, v]) => { if (v) p.set(k, v); });
     fetch(`/api/inventory?${p.toString()}`)
@@ -196,6 +203,8 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
           {card("Packed", kpi.packed, "text-amber-600")}
           {card("Dispatched", kpi.dispatched, "text-gray-500")}
           {card("Returned", kpi.returned, "text-sky-600")}
+          {card("2 cm", kpi.thk2cm)}
+          {card("3 cm", kpi.thk3cm)}
           {card("Grade A", kpi.gradeA)}
           {card("Grade A2", kpi.gradeA2)}
           {card("Grade B", kpi.gradeB)}
