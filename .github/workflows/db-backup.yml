@@ -20,7 +20,9 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           test -n "$DATABASE_URL" || { echo "DATABASE_URL secret not set"; exit 1; }
-          pg_dump "$DATABASE_URL" --format=custom --no-owner --file=backup.dump
+          # use the v17 binary explicitly — the runner's default pg_dump is v16,
+          # and pg_dump refuses to dump a newer (PG 17) server
+          /usr/lib/postgresql/17/bin/pg_dump "$DATABASE_URL" --format=custom --no-owner --file=backup.dump
           ls -lh backup.dump
       - uses: actions/upload-artifact@v4
         with:
