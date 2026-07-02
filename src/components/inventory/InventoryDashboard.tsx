@@ -55,6 +55,10 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
   const [st, setSt] = useState({ action: "", pi: "", customer: "", expiryDays: "" });
   const [stBusy, setStBusy] = useState(false);
 
+  // slab detail modal
+  const [detail, setDetail] = useState<any | null>(null);
+  const [detailBusy, setDetailBusy] = useState(false);
+
   // activity feed
   const [view, setView] = useState<"slabs" | "activity" | "designs">("slabs");
   const [events, setEvents] = useState<SlabEvent[]>([]);
@@ -103,6 +107,15 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
       .finally(() => setEvLoading(false));
   };
   const openActivity = (slab: string) => { setEvSlab(slab); setView("activity"); loadEvents(slab); };
+
+  const openDetail = (n: number) => {
+    setDetailBusy(true); setDetail({ slabNumber: n });
+    fetch(`/api/inventory/slab?number=${n}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setDetail((cur: any) => (cur?.slabNumber === n ? (d && !d.error ? { slabNumber: n, ...d } : { slabNumber: n, error: d?.error ?? "Failed to load" }) : cur)))
+      .catch(() => setDetail((cur: any) => (cur?.slabNumber === n ? { slabNumber: n, error: "Failed to load" } : cur)))
+      .finally(() => setDetail((cur: any) => { if (cur?.slabNumber === n || cur == null) setDetailBusy(false); return cur; }));
+  };
 
   const loadDesigns = () => {
     fetch("/api/inventory/designs")
@@ -197,23 +210,46 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
       </div>
 
       {kpi && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-6">
-          {card("Total Slabs", kpi.total)}
-          {card("Available", kpi.available, "text-emerald-600")}
-          {card("Packed", kpi.packed, "text-amber-600")}
-          {card("Dispatched", kpi.dispatched, "text-gray-500")}
-          {card("Returned", kpi.returned, "text-sky-600")}
-          {card("2 cm", kpi.thk2cm)}
-          {card("3 cm", kpi.thk3cm)}
-          {card("Grade A", kpi.gradeA)}
-          {card("Grade A2", kpi.gradeA2)}
-          {card("Grade B", kpi.gradeB)}
-          {card("Grade C", kpi.gradeC)}
-          {card("CTS", kpi.cts)}
-          {card("Printing", kpi.printing)}
-          {card("Pending Polish", kpi.pendingPolish, "text-red-600")}
-          {card("Pending R/W", kpi.pendingRw, "text-red-600")}
-          {card("Reserved", kpi.reserved)}
+        <div className="space-y-4">
+          <div>
+            <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400">Stock</p>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+              {card("Total Slabs", kpi.total)}
+              {card("Available", kpi.available, "text-emerald-600")}
+              {card("Reserved", kpi.reserved, "text-amber-600")}
+              {card("Packed", kpi.packed, "text-amber-600")}
+              {card("Dispatched", kpi.dispatched, "text-gray-500")}
+              {card("Returned", kpi.returned, "text-sky-600")}
+            </div>
+          </div>
+          <div>
+            <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400">Grades (in stock)</p>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+              {card("Grade A", kpi.gradeA)}
+              {card("Grade A2", kpi.gradeA2)}
+              {card("Grade B", kpi.gradeB)}
+              {card("Grade C", kpi.gradeC)}
+              {card("CTS", kpi.cts)}
+              {card("Printing", kpi.printing)}
+            </div>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div>
+              <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400">Thickness (in stock)</p>
+              <div className="grid grid-cols-3 gap-3">
+                {card("1.2 cm", kpi.thk12cm)}
+                {card("2 cm", kpi.thk2cm)}
+                {card("3 cm", kpi.thk3cm)}
+              </div>
+            </div>
+            <div>
+              <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400">Needs attention</p>
+              <div className="grid grid-cols-2 gap-3">
+                {card("Pending Polish", kpi.pendingPolish, "text-red-600")}
+                {card("Pending R/W", kpi.pendingRw, "text-red-600")}
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -392,7 +428,7 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
                     <tr key={r.id} className="border-t border-gray-50 hover:bg-gray-50/50">
                       <td className="px-3 py-2"><input type="checkbox" checked={sel.has(r.slabNumber)} onChange={() => toggle(r.slabNumber)} /></td>
                       <td className="px-3 py-2 font-medium text-gray-900">
-                        <button className="hover:text-brand hover:underline" title="View history" onClick={() => openActivity(String(r.slabNumber))}>{r.slabNumber}</button>
+                        <button className="hover:text-brand hover:underline" title="View slab details" onClick={() => openDetail(r.slabNumber)}>{r.slabNumber}</button>
                       </td>
                       <td className="px-3 py-2">{r.design ?? "—"}</td>
                       <td className="px-3 py-2">{r.batchNumber ?? "—"}</td>
@@ -415,6 +451,85 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
             <p className="text-xs text-gray-400">{rows.length.toLocaleString("en-IN")} slab(s){rows.length === 1000 ? " (showing first 1000 — narrow the filters)" : ""}.</p>
           )}
         </>
+      )}
+      {detail && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 sm:p-8" onClick={() => setDetail(null)}>
+          <div className="w-full max-w-3xl rounded-2xl bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900">Slab {detail.slabNumber}</h2>
+                {detail.slab && <span className="mt-1 inline-block rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">{detail.slab.status}</span>}
+              </div>
+              <button onClick={() => setDetail(null)} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50">Close ✕</button>
+            </div>
+            {detailBusy ? (
+              <p className="py-10 text-center text-gray-400">Loading…</p>
+            ) : detail.error ? (
+              <p className="py-10 text-center text-gray-400">{detail.error}</p>
+            ) : (
+              <div className="mt-4 space-y-5">
+                {detail.slab && (
+                  <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
+                    {([
+                      ["Design", detail.slab.design], ["Batch", detail.slab.batchNumber], ["Thickness", detail.slab.slabThickness],
+                      ["Grade", detail.slab.grade], ["Polish type", detail.slab.polishType],
+                      ["Quality issues", (detail.slab.qualityIssue ?? []).join(", ") || null],
+                      ["Bay", detail.slab.bayNumber], ["Frame", detail.slab.frameNumber],
+                      ["Size", `${detail.slab.sqft} sqft · ${detail.slab.sqm} sqm`],
+                      ["Age in stock", detail.slab.ageDays != null ? `${detail.slab.ageDays} day(s)` : null],
+                      ["Barcode", detail.slab.barcode], ["Source", detail.slab.source],
+                      ["PI", detail.slab.reservedForPi], ["Customer", detail.slab.customer],
+                      ["Hold expires", detail.slab.reservationExpiresAt ? fmtAt(detail.slab.reservationExpiresAt) : null],
+                      ["Entered stock", detail.slab.firstSeenAt ? fmtAt(detail.slab.firstSeenAt) : null],
+                      ["Last QC", detail.slab.lastQcAt ? fmtAt(detail.slab.lastQcAt) : null],
+                    ] as [string, string | null][]).map(([k, v]) => (
+                      <div key={k}><span className="block text-[11px] font-medium uppercase tracking-wide text-gray-400">{k}</span><span className="text-gray-900">{v ?? "—"}</span></div>
+                    ))}
+                  </div>
+                )}
+                {detail.qc && (
+                  <div>
+                    <h3 className="mb-2 text-sm font-semibold text-gray-900">Latest QC record</h3>
+                    <div className="grid grid-cols-2 gap-x-6 gap-y-2 rounded-xl bg-gray-50 p-3 text-sm sm:grid-cols-3">
+                      {([
+                        ["Inspector", detail.qc.inspector], ["QC grade", detail.qc.qualityGrade],
+                        ["R/W status", detail.qc.rwStatus], ["Repolish", detail.qc.repolishStatus],
+                        ["Top polish", detail.qc.topPolish ? "Yes" : "No"], ["Bottom polish", detail.qc.bottomPolish ? "Yes" : "No"],
+                        ["QC at", detail.qc.createdTime ? fmtAt(detail.qc.createdTime) : null],
+                      ] as [string, string | null][]).map(([k, v]) => (
+                        <div key={k}><span className="block text-[11px] font-medium uppercase tracking-wide text-gray-400">{k}</span><span className="text-gray-900">{v ?? "—"}</span></div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div>
+                  <h3 className="mb-2 text-sm font-semibold text-gray-900">History</h3>
+                  {Array.isArray(detail.events) && detail.events.length > 0 ? (
+                    <div className="max-h-56 overflow-y-auto rounded-xl border border-gray-100">
+                      <table className="w-full text-sm">
+                        <tbody>
+                          {detail.events.map((e: SlabEvent) => (
+                            <tr key={e.id} className="border-t border-gray-50 first:border-t-0">
+                              <td className="px-3 py-1.5 whitespace-nowrap text-gray-500">{fmtAt(e.at)}</td>
+                              <td className="px-3 py-1.5"><span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">{e.kind}</span></td>
+                              <td className="px-3 py-1.5">{e.oldValue || e.newValue ? <>{e.oldValue ?? "—"} <span className="text-gray-400">→</span> {e.newValue ?? "—"}</> : "—"}</td>
+                              <td className="px-3 py-1.5 text-gray-500">{e.changedBy ?? "—"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-400">No events yet.</p>
+                  )}
+                </div>
+                <div className="flex justify-end">
+                  <a href={`/slab?s=${detail.slabNumber}`} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark">Full production timeline →</a>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
