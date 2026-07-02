@@ -3,35 +3,45 @@
 // the reservation expiry. Invalid transitions are skipped, never forced.
 // Body: { slabs: number[], action, pi?, customer?, expiryDays? }
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { z } from "zod";
 import { inventoryGate } from "@/lib/inventory/access";
 import { changeSlabStatus, DEFAULT_RESERVATION_DAYS, type StatusAction } from "@/lib/inventory/finishedSlab";
 
-const ACTIONS = new Set(["reserve", "release", "pack", "dispatch", "return"]);
 const MAX_SLABS = 500;
-const clean = (v: unknown) => { const t = String(v ?? "").trim().slice(0, 120); return t === "" ? null : t; };
+const optText = z.preprocess(
+  (v) => { const t = String(v ?? "").trim().slice(0, 120); return t === "" ? null : t; },
+  z.string().nullable()
+);
+const bodySchema = z.object({
+  action: z.enum(["reserve", "release", "pack", "dispatch", "return"]),
+  slabs: z.array(z.coerce.number().finite().positive())
+    .min(1, "No slabs selected")
+    .max(MAX_SLABS, `Max ${MAX_SLABS} slabs per action`)
+    .transform((a) => [...new Set(a)]),
+  pi: optText.optional().default(null),
+  customer: optText.optional().default(null),
+  expiryDays: z.unknown().optional(),
+});
 
 export async function POST(request: Request) {
   const g = await inventoryGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   try {
-    const body = await request.json().catch(() => null);
-    const action = String(body?.action ?? "");
-    if (!ACTIONS.has(action)) return Response.json({ error: "Unknown action" }, { status: 400 });
-    const slabs: number[] = Array.isArray(body?.slabs)
-      ? [...new Set<number>(body.slabs.map(Number).filter((n: number) => Number.isFinite(n) && n > 0))]
-      : [];
-    if (slabs.length === 0) return Response.json({ error: "No slabs selected" }, { status: 400 });
-    if (slabs.length > MAX_SLABS) return Response.json({ error: `Max ${MAX_SLABS} slabs per action` }, { status: 400 });
-
-    const pi = clean(body?.pi);
-    const customer = clean(body?.customer);
+    const raw = await request.json().catch(() => null);
+    const parsed = bodySchema.safeParse(raw);
+    if (!parsed.success) return Response.json({ error: parsed.error.issues[0]?.message ?? "Invalid request" }, { status: 400 });
+    const body: any = parsed.data;
+    const action = body.action;
+    const slabs: number[] = body.slabs;
+    const pi = body.pi;
+    const customer = body.customer;
     if (action === "reserve" && !pi && !customer)
       return Response.json({ error: "Reserve needs a PI and/or customer" }, { status: 400 });
 
     // Only Admin may override the default hold; everyone else gets 7 days.
     // (Only meaningful for reserve — ignored for other actions.)
     let expiryDays = DEFAULT_RESERVATION_DAYS;
-    if (action === "reserve" && body?.expiryDays !== undefined && body?.expiryDays !== null && String(body.expiryDays).trim() !== "") {
+    if (action === "reserve" && body.expiryDays !== undefined && body.expiryDays !== null && String(body.expiryDays).trim() !== "") {
       const isAdminUser = String((g.user as any)?.role ?? "") === "ADMIN";
       const rawDays = Number(body.expiryDays);
       if (!Number.isFinite(rawDays) || rawDays < 1) return Response.json({ error: "Hold must be a whole number of days (1–365)" }, { status: 400 });

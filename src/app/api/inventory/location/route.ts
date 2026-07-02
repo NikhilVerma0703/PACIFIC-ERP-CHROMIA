@@ -5,29 +5,32 @@
 //   - field null / ""      -> cleared
 //   - field non-empty text -> set
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { z } from "zod";
 import { inventoryGate } from "@/lib/inventory/access";
 import { assignSlabLocation } from "@/lib/inventory/finishedSlab";
 
 const MAX_SLABS = 500;
-const clean = (v: unknown): string | null | undefined => {
-  if (v === undefined) return undefined;
-  if (v === null) return null;
-  const t = String(v).trim().slice(0, 60);
-  return t === "" ? null : t;
-};
+// omitted -> undefined (untouched) · null/"" -> null (clear) · text -> set
+const locText = z.preprocess(
+  (v) => { if (v === undefined) return undefined; if (v === null) return null; const t = String(v).trim().slice(0, 60); return t === "" ? null : t; },
+  z.string().nullable().optional()
+);
+const bodySchema = z.object({
+  slabs: z.array(z.coerce.number().finite().positive())
+    .min(1, "No slabs selected")
+    .max(MAX_SLABS, `Max ${MAX_SLABS} slabs per move`),
+  bay: locText,
+  frame: locText,
+});
 
 export async function POST(request: Request) {
   const g = await inventoryGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   try {
-    const body = await request.json().catch(() => null);
-    const slabs: number[] = Array.isArray(body?.slabs)
-      ? body.slabs.map(Number).filter((n: number) => Number.isFinite(n) && n > 0)
-      : [];
-    if (slabs.length === 0) return Response.json({ error: "No slabs selected" }, { status: 400 });
-    if (slabs.length > MAX_SLABS) return Response.json({ error: `Max ${MAX_SLABS} slabs per move` }, { status: 400 });
-    const bay = clean(body?.bay);
-    const frame = clean(body?.frame);
+    const raw = await request.json().catch(() => null);
+    const parsed = bodySchema.safeParse(raw);
+    if (!parsed.success) return Response.json({ error: parsed.error.issues[0]?.message ?? "Invalid request" }, { status: 400 });
+    const { slabs, bay, frame } = parsed.data;
     if (bay === undefined && frame === undefined)
       return Response.json({ error: "Nothing to change — provide bay and/or frame" }, { status: 400 });
 

@@ -1,0 +1,29 @@
+# Nightly production DB backup (03:00 IST), kept 30 days as workflow artifacts.
+# Requires the DATABASE_URL repo secret (Settings -> Secrets -> Actions).
+# Restore: download artifact -> pg_restore --clean --no-owner -d <url> backup.dump
+name: DB backup
+on:
+  schedule:
+    - cron: "30 21 * * *"   # 21:30 UTC = 03:00 IST
+  workflow_dispatch: {}      # manual run button
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install PostgreSQL 17 client
+        run: |
+          wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
+          sudo sh -c 'echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list' 
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client-17
+      - name: Dump
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          test -n "$DATABASE_URL" || { echo "DATABASE_URL secret not set"; exit 1; }
+          pg_dump "$DATABASE_URL" --format=custom --no-owner --file=backup.dump
+          ls -lh backup.dump
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neon-backup-${{ github.run_id }}
+          path: backup.dump
+          retention-days: 30

@@ -3,12 +3,17 @@
 // POST { variant, canonical }  -> create/update a merge   (admin only)
 // DELETE ?variant=...          -> un-merge                (admin only)
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { inventoryGate } from "@/lib/inventory/access";
 import { isAdmin } from "@/lib/rbac";
 
 const db = prisma as any;
 const clean = (v: unknown) => String(v ?? "").trim().slice(0, 120);
+const mergeSchema = z.object({
+  variant: z.string().trim().min(1, "Both variant and canonical are required").max(120),
+  canonical: z.string().trim().min(1, "Both variant and canonical are required").max(120),
+});
 
 export async function GET() {
   const g = await inventoryGate();
@@ -30,10 +35,10 @@ export async function POST(request: Request) {
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   if (!(await isAdmin())) return Response.json({ error: "Admin only" }, { status: 403 });
   try {
-    const body = await request.json().catch(() => null);
-    const variant = clean(body?.variant);
-    const canonical = clean(body?.canonical);
-    if (!variant || !canonical) return Response.json({ error: "Both variant and canonical are required" }, { status: 400 });
+    const raw = await request.json().catch(() => null);
+    const parsed = mergeSchema.safeParse(raw);
+    if (!parsed.success) return Response.json({ error: parsed.error.issues[0]?.message ?? "Invalid request" }, { status: 400 });
+    const { variant, canonical } = parsed.data;
     if (variant === canonical) return Response.json({ error: "Variant and canonical are the same" }, { status: 400 });
     // no chains: canonical must not itself be a merged variant; variant must not be a canonical of others
     const [chainUp, chainDown] = await Promise.all([

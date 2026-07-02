@@ -6,6 +6,9 @@
 // regardless of client regeneration timing.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
+import { canonicalGrade, TRANSITIONS, DEFAULT_RESERVATION_DAYS, type StatusAction } from "./grading";
+
+export { DEFAULT_RESERVATION_DAYS, type StatusAction } from "./grading";
 
 const db = prisma as any;
 
@@ -28,15 +31,6 @@ async function writeSlabEvent(
     });
   } catch { /* event log is best-effort */ }
 }
-
-/** Normalize QC grade to the canonical exclusive set (A/A2/B/C/CTS/Printing).
- *  QC historically uses "C (Reject)" for C; "Not graded yet" means no grade. */
-const canonicalGrade = (g: unknown): string | null => {
-  if (typeof g !== "string") return null;
-  const t = g.trim();
-  if (!t || /^not graded/i.test(t)) return null;
-  return t.replace(/\s*\(reject\)\s*$/i, "");
-};
 
 const barcodeStr = (v: unknown): string | null =>
   typeof v === "string" ? v : v && typeof v === "object" ? JSON.stringify(v).slice(0, 200) : null;
@@ -173,18 +167,6 @@ export async function assignSlabLocation(
 // Status lifecycle: AVAILABLE -> RESERVED (PI hold, 7-day expiry) -> PACKED ->
 // DISPATCHED -> RETURNED (un-dispatch) -> back to AVAILABLE via release.
 // ---------------------------------------------------------------------------
-
-export type StatusAction = "reserve" | "release" | "pack" | "dispatch" | "return";
-
-const TRANSITIONS: Record<StatusAction, { from: string[]; to: string }> = {
-  reserve:  { from: ["AVAILABLE", "RETURNED"],                     to: "RESERVED" },
-  release:  { from: ["RESERVED", "PACKED", "RETURNED"],            to: "AVAILABLE" },
-  pack:     { from: ["AVAILABLE", "RESERVED", "RETURNED"],         to: "PACKED" },
-  dispatch: { from: ["AVAILABLE", "RESERVED", "PACKED"],           to: "DISPATCHED" },
-  return:   { from: ["DISPATCHED"],                                 to: "RETURNED" },
-};
-
-export const DEFAULT_RESERVATION_DAYS = 7;
 
 export interface StatusChangeResult {
   updated: number;

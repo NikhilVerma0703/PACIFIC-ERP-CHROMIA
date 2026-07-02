@@ -6,24 +6,53 @@ import { prisma } from "@/lib/prisma";
 import { authConfig } from "./auth.config";
 
 // ---- failed-login throttle (per email+IP, fixed window) ----
-const FAILS_MAX = 5;
+// Sensible for humans, hostile to bots: 10 wrong passwords in 15 minutes locks
+// that email+IP pair, the lock lifts by itself when the window ends, and one
+// successful login clears the count. Typos never lock anyone out for long.
+const FAILS_MAX = 10;
 const FAIL_WINDOW_MS = 15 * 60_000;
 const failedLogins = new Map<string, { n: number; first: number }>();
 function throttleKey(email: string, req: Request | undefined): string {
   const ip = req?.headers?.get?.("x-forwarded-for")?.split(",")[0]?.trim() ?? "?";
   return `${email.toLowerCase()}|${ip}`;
 }
-function isLocked(key: string): boolean {
+function isLockedMem(key: string): boolean {
   const f = failedLogins.get(key);
   if (!f) return false;
   if (Date.now() - f.first > FAIL_WINDOW_MS) { failedLogins.delete(key); return false; }
   return f.n >= FAILS_MAX;
 }
-function recordFailure(key: string) {
+function recordFailureMem(key: string) {
   const f = failedLogins.get(key);
   if (!f || Date.now() - f.first > FAIL_WINDOW_MS) failedLogins.set(key, { n: 1, first: Date.now() });
   else f.n += 1;
   if (failedLogins.size > 5000) failedLogins.clear();
+}
+// DB-backed versions: survive across serverless instances (the in-memory map is
+// per-lambda, so alone it under-counts a distributed attack). If the
+// login_attempt table is missing, fall back to the in-memory throttle.
+async function isLocked(key: string): Promise<boolean> {
+  try {
+    const rows = await prisma.$queryRaw<{ locked: boolean }[]>`
+      SELECT true AS locked FROM login_attempt
+      WHERE key = ${key} AND n >= ${FAILS_MAX} AND first_at > now() - interval '15 minutes'`;
+    return rows.length > 0;
+  } catch { return isLockedMem(key); }
+}
+async function recordFailure(key: string): Promise<void> {
+  try {
+    await prisma.$executeRaw`
+      INSERT INTO login_attempt (key, n, first_at) VALUES (${key}, 1, now())
+      ON CONFLICT (key) DO UPDATE SET
+        n = CASE WHEN login_attempt.first_at < now() - interval '15 minutes' THEN 1 ELSE login_attempt.n + 1 END,
+        first_at = CASE WHEN login_attempt.first_at < now() - interval '15 minutes' THEN now() ELSE login_attempt.first_at END`;
+    // opportunistic cleanup of stale rows (cheap, tiny table)
+    if (Math.random() < 0.02) await prisma.$executeRaw`DELETE FROM login_attempt WHERE first_at < now() - interval '1 day'`;
+  } catch { recordFailureMem(key); }
+}
+async function clearFailures(key: string): Promise<void> {
+  try { await prisma.$executeRaw`DELETE FROM login_attempt WHERE key = ${key}`; } catch { /* table absent */ }
+  failedLogins.delete(key);
 }
 
 const credentialsSchema = z.object({
@@ -46,18 +75,18 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!parsed.success) return null;
         const { email, password, branch } = parsed.data;
         const tkey = throttleKey(email, request as Request | undefined);
-        if (isLocked(tkey)) return null;
+        if (await isLocked(tkey)) return null;
         const user = await prisma.user.findUnique({ where: { email } });
-        if (!user || !user.active) { recordFailure(tkey); return null; }
+        if (!user || !user.active) { await recordFailure(tkey); return null; }
         const ok = await bcrypt.compare(password, user.passwordHash);
-        if (!ok) { recordFailure(tkey); return null; }
-        failedLogins.delete(tkey);
+        if (!ok) { await recordFailure(tkey); return null; }
         const userBranch = ((user as { branch?: string | null }).branch as string | null) ?? "SHOP_FLOOR";
         const isAdmin = String(user.role) === "ADMIN";
         // Fabrication is shop-side: a fab user logs in via the Shop Floor portal,
         // then is routed to /fab by their DB branch. Only reject a true office<->shop mismatch.
         const side = (b: string) => (b === "OFFICE" ? "OFFICE" : "SHOP");
         if (branch && !isAdmin && side(userBranch) !== side(branch)) return null;
+        await clearFailures(tkey); // fully valid sign-in — reset the counter
         const effectiveBranch = isAdmin ? (branch ?? userBranch) : userBranch;
         return {
           id: user.id,
