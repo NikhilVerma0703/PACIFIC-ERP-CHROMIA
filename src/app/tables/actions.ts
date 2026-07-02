@@ -17,6 +17,7 @@ import { parseSlabInput } from "@/lib/slabLabel";
 import { RECORD_SMART } from "@/lib/recordSmart";
 import { prisma } from "@/lib/prisma";
 import { autolinkFinishedSlabFromQc, relinkFinishedSlabAfterNumberChange } from "@/lib/inventory/finishedSlab";
+import { REQUIRED_FORM_FIELDS, REQUIRED_FIELD_LABELS } from "@/lib/requiredFields";
 
 // tx-scoped equivalents of delegateOf() for $transaction blocks
 const prismaTx = () => prisma;
@@ -161,6 +162,9 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
   // Clearing the QC grade falls back to "Not graded yet" (only when the form
   // actually submitted the grade field, so edits to other fields don't touch it).
   if (model === "PolishQc" && fd.has("qualityGrade") && !String(data.qualityGrade ?? "").trim()) data.qualityGrade = "Not graded yet";
+  // Mandatory fields: block clearing them on edit (only when the form sent the field).
+  for (const rf of REQUIRED_FORM_FIELDS[model] ?? [])
+    if (fd.has(rf) && !String(data[rf] ?? "").trim()) return `${REQUIRED_FIELD_LABELS[rf] ?? rf} is required.`;
   // If this QC edit changes the slab number, the old number's inventory row must
   // be re-projected (or removed) — capture it before the update.
   let qcPrevSlabNumber: number | null = null;
@@ -203,6 +207,9 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
   const me = await currentUser();
   const opName = me?.name || me?.email || "operator";
   const data = buildData(model, fd);
+  // Mandatory fields (client `required` can be bypassed — enforce here too).
+  for (const rf of REQUIRED_FORM_FIELDS[model] ?? [])
+    if (!String(data[rf] ?? "").trim()) return `${REQUIRED_FIELD_LABELS[rf] ?? rf} is required.`;
   // Accept "1a"/"1b" insert labels in the slab-number field -> decimal (1.1/1.2).
   if (fd.has("slabNumber")) { const ps = parseSlabInput(fd.get("slabNumber")); if (ps != null) data.slabNumber = ps; }
   stampOperator(model, data, opName);

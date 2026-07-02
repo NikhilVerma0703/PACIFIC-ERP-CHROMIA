@@ -100,7 +100,7 @@ function RecordField({ f, def, badge, opts, operatorName }: { f: FieldMeta; def:
     input = <input name={f.prismaField} type="checkbox" defaultChecked={def === "true"} className="h-4 w-4 rounded border-gray-300 text-brand" />;
   } else {
     const type = f.kind === "number" || f.kind === "int" ? "number" : f.kind === "date" ? "datetime-local" : "text";
-    input = <input name={f.prismaField} type={type} step={type === "number" ? "any" : undefined} defaultValue={def} className={inputCls} />;
+    input = <input name={f.prismaField} type={type} step={type === "number" ? "any" : undefined} inputMode={f.kind === "int" ? "numeric" : f.kind === "number" ? "decimal" : undefined} defaultValue={def} className={inputCls} />;
   }
   return (
     <label className="block">
@@ -212,7 +212,7 @@ export function SmartRecordForm({ model, tableName, fields, options = {}, operat
   }
 
   return (
-    <form action={action}>
+    <form action={action} autoComplete="off">
       <Toast trigger={savedCount} text="Saved — enter the next record" />
       <input type="hidden" name="__model" value={model} />
       {isFilling && bag && <input type="hidden" name="__rmBagId" value={bag.id} />}

@@ -10,6 +10,7 @@ import { OPERATOR_FIELDS } from "@/lib/operatorFields";
 import { isCurated, OTHER_SENTINEL } from "@/lib/categoricalFields";
 import { secondsToHHMM } from "@/lib/time";
 import type { SlabMode } from "@/lib/smartEntry";
+import { isRequiredField } from "@/lib/requiredFields";
 
 // Current local date+time as a datetime-local value ("YYYY-MM-DDTHH:mm"), used to
 // pre-fill empty Date fields so an entry always carries a date even if the
@@ -43,7 +44,7 @@ function PumpBoxes({ name, def }: { name: string; def: string }) {
   );
 }
 
-function SlabField({ f, locked, def, opts, operatorName, unlocked, onUnlock }: { f: FieldMeta; locked: boolean; def: string; opts?: string[]; operatorName?: string | null; unlocked: Set<string>; onUnlock: (field: string) => void }) {
+function SlabField({ f, locked, def, opts, operatorName, unlocked, onUnlock, required = false }: { f: FieldMeta; locked: boolean; def: string; opts?: string[]; operatorName?: string | null; unlocked: Set<string>; onUnlock: (field: string) => void; required?: boolean }) {
   const [typeNew, setTypeNew] = useState(false); // curated fields: "+ Add new…" escape
   // Pre-fill an empty Date field with the current date+time once mounted (after
   // SSR, so no hydration mismatch). Remounts per slab via the fields key, so each
@@ -82,7 +83,7 @@ function SlabField({ f, locked, def, opts, operatorName, unlocked, onUnlock }: {
   } else if (selectable) {
     const extra = def && !opts!.includes(def) ? [def] : [];
     input = (
-      <select name={f.prismaField} defaultValue={def} onChange={(e) => { if (e.target.value === OTHER_SENTINEL) setTypeNew(true); }} className={inputCls + tint}>
+      <select name={f.prismaField} defaultValue={def} required={required} onChange={(e) => { if (e.target.value === OTHER_SENTINEL) setTypeNew(true); }} className={inputCls + tint}>
         <option value="">—</option>
         {[...extra, ...opts!].map((o) => <option key={o} value={o}>{o}</option>)}
         {isCurated(f.prismaField) && <option value={OTHER_SENTINEL}>+ Add new…</option>}
@@ -100,12 +101,12 @@ function SlabField({ f, locked, def, opts, operatorName, unlocked, onUnlock }: {
     input = <input name={f.prismaField} type="checkbox" defaultChecked={def === "true"} className="h-4 w-4 rounded border-gray-300 text-brand" />;
   } else {
     const type = f.kind === "number" || f.kind === "int" ? "number" : f.kind === "date" ? "datetime-local" : "text";
-    input = <input ref={f.kind === "date" ? dateRef : undefined} name={f.prismaField} type={type} step={type === "number" ? "any" : undefined} defaultValue={def} className={inputCls} />;
+    input = <input ref={f.kind === "date" ? dateRef : undefined} name={f.prismaField} type={type} step={type === "number" ? "any" : undefined} inputMode={f.kind === "int" ? "numeric" : f.kind === "number" ? "decimal" : undefined} required={required} defaultValue={def} className={inputCls} />;
   }
   const isReadonlyText = isLocked && !(opts?.length && (f.airtableType === "singleSelect" || f.airtableType === "multipleSelects"));
   return (
     <label className="block" onDoubleClick={() => isReadonlyText && onUnlock(f.prismaField)}>
-      <span className="mb-1 flex items-center gap-1.5 text-xs font-medium text-gray-600">{f.airtableName}{isLocked && <span className="rounded bg-brand/10 px-1.5 py-0.5 text-[10px] text-brand">from batch{isReadonlyText ? " · dbl-click" : ""}</span>}</span>
+      <span className="mb-1 flex items-center gap-1.5 text-xs font-medium text-gray-600">{f.airtableName}{required && <span className="text-red-500" title="Required">*</span>}{isLocked && <span className="rounded bg-brand/10 px-1.5 py-0.5 text-[10px] text-brand">from batch{isReadonlyText ? " · dbl-click" : ""}</span>}</span>
       {input}
     </label>
   );
@@ -173,7 +174,7 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
   }
 
   return (
-    <form action={action}>
+    <form action={action} autoComplete="off">
       <Toast trigger={savedCount} text="Saved — enter the next slab" />
       {batch.trim() && defaults && (
         <div className="sticky top-0 z-10 -mx-5 mb-4 border-b border-brand/20 bg-brand/[0.06] px-5 py-2 backdrop-blur">
@@ -227,12 +228,12 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
         {paramF.length > 0 && (
           <div className="mb-5 rounded-2xl border border-brand/15 bg-brand/[0.02] p-4">
             <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-brand/80">Batch parameters {defaults ? "· auto-filled" : ""}</div>
-            <div className={grid}>{paramF.map((f) => <SlabField key={f.prismaField} f={f} locked={defaults?.values?.[f.prismaField] != null} def={dv(f.prismaField)} opts={options[f.prismaField]} operatorName={operatorName} unlocked={unlocked} onUnlock={(fld) => setUnlocked((s) => new Set(s).add(fld))} />)}</div>
+            <div className={grid}>{paramF.map((f) => <SlabField key={f.prismaField} f={f} locked={defaults?.values?.[f.prismaField] != null} def={dv(f.prismaField)} opts={options[f.prismaField]} operatorName={operatorName} unlocked={unlocked} onUnlock={(fld) => setUnlocked((s) => new Set(s).add(fld))} required={isRequiredField(model, f.prismaField)} />)}</div>
           </div>
         )}
         <div className="rounded-2xl border border-gray-200 bg-white p-4">
           <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">Slab details</div>
-          <div className={grid}>{slabF.map((f) => <SlabField key={f.prismaField} f={f} locked={false} def={f.prismaField === "qualityGrade" ? "Not graded yet" : ""} opts={options[f.prismaField]} operatorName={operatorName} unlocked={unlocked} onUnlock={(fld) => setUnlocked((s) => new Set(s).add(fld))} />)}</div>
+          <div className={grid}>{slabF.map((f) => <SlabField key={f.prismaField} f={f} locked={false} def={f.prismaField === "qualityGrade" ? "Not graded yet" : ""} opts={options[f.prismaField]} operatorName={operatorName} unlocked={unlocked} onUnlock={(fld) => setUnlocked((s) => new Set(s).add(fld))} required={isRequiredField(model, f.prismaField)} />)}</div>
         </div>
       </div>
 

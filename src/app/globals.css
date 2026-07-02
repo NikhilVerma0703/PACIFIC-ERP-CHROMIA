@@ -29,6 +29,8 @@ body {
   input:not([type="checkbox"]):not([type="radio"]), select, textarea { font-size: 16px; min-height: 44px; }
   /* comfortable tap targets everywhere */
   button, a.rounded-md, a.rounded-lg, summary { min-height: 44px; }
+  /* checkboxes & radios big enough to hit with a finger */
+  input[type="checkbox"], input[type="radio"] { min-width: 20px; min-height: 20px; }
   summary { display: flex; align-items: center; }
   /* momentum scrolling for wide tables */
   .overflow-x-auto { -webkit-overflow-scrolling: touch; }

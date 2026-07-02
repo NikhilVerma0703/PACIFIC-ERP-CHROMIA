@@ -9,6 +9,7 @@ import { fmt } from "@/components/ui";
 import { secondsToHHMM } from "@/lib/time";
 import { THICKNESS_FIELDS, THICKNESS_OPTS, canonThickness } from "@/lib/thickness";
 import { OPERATOR_FIELDS } from "@/lib/operatorFields";
+import { isRequiredField } from "@/lib/requiredFields";
 import { isCurated } from "@/lib/categoricalFields";
 import { classifyMixer, mixerFullLabel } from "@/lib/mixerLabels";
 import type { SiloFormInfo } from "@/lib/silo";
@@ -106,12 +107,13 @@ function FillerPicker({ name, defaultValue, numbers, silos, canEditBags }: { nam
   );
 }
 
-export function FieldInput({ f, value, opts, operatorName, label }: { f: FieldMeta; value: unknown; opts?: string[]; operatorName?: string | null; label?: string }) {
+export function FieldInput({ f, value, opts, operatorName, label, required = false }: { f: FieldMeta; value: unknown; opts?: string[]; operatorName?: string | null; label?: string; required?: boolean }) {
   const niceName = label ?? mixerFullLabel(f.prismaField, f.airtableName);
   const autoOp = f.editable && OPERATOR_FIELDS.has(f.prismaField) && !!operatorName;
   const labelEl = (
     <span className="mb-1 flex items-center gap-1.5 text-xs font-medium text-gray-600">
       {niceName}
+      {required && <span className="text-red-500" title="Required">*</span>}
       {!f.editable && <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-400">read-only</span>}
       {autoOp && <span className="rounded bg-brand/10 px-1.5 py-0.5 text-[10px] text-brand">you · auto</span>}
     </span>
@@ -135,7 +137,7 @@ export function FieldInput({ f, value, opts, operatorName, label }: { f: FieldMe
   } else if ((f.airtableType === "singleSelect" || isCurated(f.prismaField)) && opts && opts.length) {
     const cur = value == null ? "" : String(value);
     const extra = cur && !opts.includes(cur) ? [cur] : [];
-    input = <select name={f.prismaField} defaultValue={cur} className={base}><option value="">—</option>{[...extra, ...opts].map((o) => <option key={o} value={o}>{o}</option>)}</select>;
+    input = <select name={f.prismaField} defaultValue={cur} required={required} className={base}><option value="">—</option>{[...extra, ...opts].map((o) => <option key={o} value={o}>{o}</option>)}</select>;
   } else if (f.airtableType === "multipleSelects" && opts && opts.length) {
     const arr = Array.isArray(value) ? value.map(String) : [];
     input = <div className="flex max-h-32 flex-wrap gap-1.5 overflow-auto rounded-lg border border-gray-200 p-2">{opts.map((o) => <label key={o} className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-xs hover:bg-gray-50"><input type="checkbox" name={f.prismaField} value={o} defaultChecked={arr.includes(o)} className="h-3.5 w-3.5 rounded border-gray-300 text-brand" />{o}</label>)}</div>;
@@ -146,7 +148,7 @@ export function FieldInput({ f, value, opts, operatorName, label }: { f: FieldMe
     input = <input name={f.prismaField} type="datetime-local" defaultValue={d} className={base} />;
   } else {
     const type = f.kind === "number" || f.kind === "int" ? "number" : "text";
-    input = <input name={f.prismaField} type={type} step={type === "number" ? "any" : undefined} defaultValue={display(value)} className={base} />;
+    input = <input name={f.prismaField} type={type} step={type === "number" ? "any" : undefined} inputMode={f.kind === "int" ? "numeric" : f.kind === "number" ? "decimal" : undefined} required={required} defaultValue={display(value)} className={base} />;
   }
   return <label className="block">{labelEl}{input}</label>;
 }
@@ -194,7 +196,7 @@ export function RecordEditor({ model, id, fields, values, mode, options = {}, hi
   const renderFields = (fs: FieldMeta[]) => fs.map((f) =>
     f.prismaField === "fillerSiloBuffer"
       ? <FillerPicker key={f.prismaField} name={f.prismaField} defaultValue={values[f.prismaField] as string} numbers={fillerNumbers} silos={silos} canEditBags={canEditBags} />
-      : <FieldInput key={f.prismaField} f={f} value={values[f.prismaField]} opts={options[f.prismaField]} operatorName={operatorName} />);
+      : <FieldInput key={f.prismaField} f={f} value={values[f.prismaField]} opts={options[f.prismaField]} operatorName={operatorName} required={isRequiredField(model, f.prismaField)} />);
 
   function renderMixer(n: number, fs: FieldMeta[]) {
     const grits = new Map<number, { silo?: FieldMeta; weight?: FieldMeta }>();
@@ -236,7 +238,7 @@ export function RecordEditor({ model, id, fields, values, mode, options = {}, hi
               </div>
             </div>
           )}
-          {others.length > 0 && <div className={grid}>{others.map((f) => <FieldInput key={f.prismaField} f={f} value={values[f.prismaField]} opts={options[f.prismaField]} operatorName={operatorName} />)}</div>}
+          {others.length > 0 && <div className={grid}>{others.map((f) => <FieldInput key={f.prismaField} f={f} value={values[f.prismaField]} opts={options[f.prismaField]} operatorName={operatorName} required={isRequiredField(model, f.prismaField)} />)}</div>}
         </div>
       </div>
     );

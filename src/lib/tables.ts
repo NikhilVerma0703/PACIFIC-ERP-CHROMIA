@@ -168,7 +168,11 @@ export async function selectOptions(model: string): Promise<Record<string, strin
   if (!meta) return {};
   const d = delegateOf(model);
   const out: Record<string, string[]> = {};
-  for (const f of meta.fields) {
+  // One distinct-values query per select field — run them in PARALLEL batches
+  // (sequentially this was the slowest part of loading every entry form; small
+  // batches keep well under the Prisma/Neon connection-pool limit).
+  const BATCH = 8;
+  const fieldJob = async (f: (typeof meta.fields)[number]) => {
     try {
       if (f.airtableType === "singleSelect" || (CURATED_TEXT_FIELDS.has(f.prismaField) && f.kind === "scalar")) {
         const rows: any[] = await d.findMany({ where: { [f.prismaField]: { not: null } }, select: { [f.prismaField]: true }, distinct: [f.prismaField], take: 500 });
@@ -195,7 +199,9 @@ export async function selectOptions(model: string): Promise<Record<string, strin
         if (set.size) out[f.prismaField] = [...set].sort();
       }
     } catch { /* ignore */ }
-  }
+  };
+  for (let i = 0; i < meta.fields.length; i += BATCH)
+    await Promise.all(meta.fields.slice(i, i + BATCH).map(fieldJob));
   return out;
 }
 
