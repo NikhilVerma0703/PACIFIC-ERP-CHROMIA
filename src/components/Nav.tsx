@@ -1,7 +1,6 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
 
 const I = {
   overview:    "M3 12l9-9 9 9M5 10v10h5v-6h4v6h5V10",
@@ -15,18 +14,14 @@ const I = {
   box:         "M21 16V8l-9-5-9 5v8l9 5 9-5zM3.3 7L12 12l8.7-5M12 22V12",
   factory:     "M2 20h20M4 20V8l5 4V8l5 4V4l6 4v12",
   scissors:    "M6 3a3 3 0 110 6 3 3 0 010-6zm12 12a3 3 0 110 6 3 3 0 010-6zM5.2 5.2l13.6 13.6M18.8 5.2 9.4 14.6",
-  projects:    "M3 7h18M3 12h18M3 17h18",
   samples:     "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2",
-  supervisor:  "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2",
   ceo:         "M18 20V10M12 20V4M6 20v-6",
   planning:    "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01",
-  production:  "M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18",
   manager:     "M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 7a4 4 0 100 8 4 4 0 000-8z",
   polishing:   "M12 2a10 10 0 100 20 10 10 0 000-20z",
   sink:        "M5 9V5h14v4M2 9h20v2a5 5 0 01-5 5H7a5 5 0 01-5-5V9z",
   fabrication: "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z",
   packaging:   "M21 16V8l-9-5-9 5v8l9 5 9-5z",
-  chevron:     "M6 9l6 6 6-6",
 };
 
 const SHOP_PATHS = ["/", "/live", "/batch", "/slab", "/tables", "/report", "/office", "/silo", "/resin", "/store"];
@@ -48,32 +43,12 @@ const MAINTENANCE_TABS = [
   { href: "/mis", label: "Downtime", icon: I.mis      },
 ];
 
-const TABS = [
-  { href: "/",       label: "Overview",         icon: I.overview },
-  { href: "/live",   label: "Live Status",       icon: I.live     },
-  { href: "/batch",  label: "Batch Lookup",      icon: I.batch    },
-  { href: "/slab",   label: "Slab Lookup",       icon: I.batch    },
-  { href: "/tables", label: "Tables",            icon: I.tables   },
-  { href: "/report", label: "Production Report", icon: I.report   },
-  { href: "/mis",    label: "Downtime",          icon: I.mis      },
-  { href: "/entry",  label: "Data Entry",        icon: I.entry    },
-];
-
 /* helpers */
 function NavIcon({ d, size = 18 }: { d: string; size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
       strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d={d} />
-    </svg>
-  );
-}
-function Chevron({ open }: { open: boolean }) {
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"
-      className={`transition-transform duration-150 flex-shrink-0 ${open ? "rotate-180" : ""}`}>
-      <path d={I.chevron} />
     </svg>
   );
 }
@@ -93,103 +68,6 @@ function NavLink({ href, icon, label, path, office }: {
       <NavIcon d={icon} />
       {label}
     </Link>
-  );
-}
-
-/* L1 collapsible group */
-function NavGroup({ icon, label, active, defaultOpen, children }: {
-  icon: string; label: string; active: boolean; defaultOpen?: boolean; children: React.ReactNode;
-}) {
-  const [open, setOpen] = useState(defaultOpen ?? active);
-  return (
-    <div>
-      <button onClick={() => setOpen(o => !o)}
-        className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
-          active ? "bg-brand text-white shadow-sm" : "text-gray-600 hover:bg-white hover:text-brand"
-        }`}>
-        <NavIcon d={icon} />
-        <span className="flex-1 text-left">{label}</span>
-        <Chevron open={open} />
-      </button>
-      {open && <div className="mt-1 ml-2 space-y-1">{children}</div>}
-    </div>
-  );
-}
-
-/* L2 sub-link — same look as the app's main nav tabs */
-function SubLink({ href, icon, label, path }: { href: string; icon: string; label: string; path: string }) {
-  const active = path === href || path.startsWith(href + "/") || path.startsWith(href + "?");
-  return (
-    <Link href={href}
-      className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
-        active ? "bg-brand text-white shadow-sm" : "text-gray-600 hover:bg-white hover:text-brand"
-      }`}>
-      <NavIcon d={icon} />
-      {label}
-    </Link>
-  );
-}
-
-/* L2 collapsible sub-group — always starts closed unless defaultOpen=true */
-function SubGroup({ icon, label, active, defaultOpen, children }: {
-  icon: string; label: string; active: boolean; defaultOpen?: boolean; children: React.ReactNode;
-}) {
-  const [open, setOpen] = useState(defaultOpen ?? false);
-  return (
-    <div>
-      <button onClick={() => setOpen(o => !o)}
-        className={`w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] font-medium transition ${
-          active ? "bg-brand/10 text-brand" : "text-gray-500 hover:bg-white hover:text-brand"
-        }`}>
-        <NavIcon d={icon} size={14} />
-        <span className="flex-1 text-left">{label}</span>
-        <Chevron open={open} />
-      </button>
-      {open && <div className="mt-0.5 ml-4 pl-2 border-l-2 border-gray-100 space-y-0.5">{children}</div>}
-    </div>
-  );
-}
-
-/* L3 deep link */
-function DeepLink({ href, label, path }: { href: string; label: string; path: string }) {
-  const active = path === href || path.startsWith(href + "/") || path.startsWith(href + "?");
-  return (
-    <Link href={href}
-      className={`block rounded-md px-2 py-1 text-[12px] font-medium transition ${
-        active ? "text-brand font-semibold" : "text-gray-400 hover:text-brand"
-      }`}>
-      {label}
-    </Link>
-  );
-}
-
-/* Overview group — Dashboard + management dashboards (CEO / Manager), admin only */
-function OverviewGroup({ path }: { path: string }) {
-  const active = path === "/" || path.startsWith("/fab/ceo") || path.startsWith("/fab/projects");
-  return (
-    <NavGroup icon={I.overview} label="Overview" active={active} defaultOpen>
-      <SubLink href="/"             icon={I.overview} label="Dashboard"     path={path} />
-      <SubLink href="/fab/ceo"      icon={I.ceo}      label="CEO Dashboard" path={path} />
-      <SubLink href="/fab/projects" icon={I.manager}  label="Manager View"  path={path} />
-    </NavGroup>
-  );
-}
-
-/* Full Cutting group — for ADMIN and FAB_ADMIN in the main Shell */
-function CuttingGroup({ path }: { path: string }) {
-  const inFab     = FAB_PATHS.some(p => path.startsWith(p));
-  const inCutting = path === "/cutting";
-
-  return (
-    <NavGroup icon={I.scissors} label="Cutting" active={inFab || inCutting}>
-      <SubLink href="/fab/supervisor"   icon={I.planning}    label="Supervisor Board" path={path} />
-      <SubLink href="/fab/cutting"      icon={I.scissors}    label="Cutting"          path={path} />
-      <SubLink href="/fab/polishing"    icon={I.polishing}   label="Polishing"        path={path} />
-      <SubLink href="/fab/sink-cutting" icon={I.sink}        label="Sink Cutting"     path={path} />
-      <SubLink href="/fab/fabrication"  icon={I.fabrication} label="Fabrication"      path={path} />
-      <SubLink href="/fab/packaging"    icon={I.packaging}   label="Packaging"        path={path} />
-      <SubLink href="/cutting"          icon={I.samples}     label="Samples"          path={path} />
-    </NavGroup>
   );
 }
 
