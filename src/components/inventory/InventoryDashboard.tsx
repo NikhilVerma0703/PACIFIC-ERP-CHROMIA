@@ -263,6 +263,7 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
       ) : view === "activity" ? (
         <div className="space-y-3">
           <div className="flex flex-wrap items-end gap-2 rounded-xl border border-gray-200 bg-white p-4">
+            <button onClick={() => setView("slabs")} className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50">← Back to slabs</button>
             <div className="w-40">
               <label className="mb-1 block text-xs font-medium text-gray-500">Slab #</label>
               <input className={inputCls} placeholder="All slabs" value={evSlab} onChange={(e) => setEvSlab(e.target.value)} />
