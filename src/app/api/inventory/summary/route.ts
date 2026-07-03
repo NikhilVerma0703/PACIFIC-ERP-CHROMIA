@@ -39,8 +39,9 @@ export async function GET() {
         ORDER BY 1, 2, 3`,
       db.designAlias.findMany({ select: { variant: true, canonical: true } }).catch(() => []),
     ]);
-    const hiddenRows: any[] = await db.$queryRaw`SELECT design FROM fg_sales_hidden_design`.catch(() => []);
-    const hidden = new Set<string>(hiddenRows.map((h) => h.design));
+    const hiddenRows: any[] = await db.$queryRaw`SELECT design, batch FROM fg_sales_hidden_design`.catch(() => []);
+    const hidden = new Set<string>(hiddenRows.filter((h) => !h.batch).map((h) => h.design));
+    const hiddenBatch = new Set<string>(hiddenRows.filter((h) => h.batch).map((h) => `${h.design} ${h.batch}`));
     const alias = new Map<string, string>(aliases.map((x: any) => [x.variant, x.canonical]));
     const merged = new Map<string, any>();
     for (const r of rows) {
@@ -63,10 +64,14 @@ export async function GET() {
       const a = aggT.get(d);
       return /(trial|trail)/i.test(d) || (!!a && a.trial > 0 && a.trial >= a.all);
     };
-    out = out.map((r) => ({
-      ...r,
-      approved: !(hidden.has(r.design) || (isTrialDesign(r.design) && hidden.has("__TRIALS__"))),
-    }));
+    out = out.map((r) => {
+      const designApproved = !(hidden.has(r.design) || (isTrialDesign(r.design) && hidden.has("__TRIALS__")));
+      return {
+        ...r,
+        designApproved,
+        approved: designApproved && !hiddenBatch.has(`${r.design} ${r.batch}`),
+      };
+    });
     // Sales logins only ever see approved stock
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if (String((g.user as any)?.role ?? "") === "SALES") out = out.filter((r) => r.approved);

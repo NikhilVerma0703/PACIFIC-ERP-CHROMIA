@@ -5,11 +5,11 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 
 interface Row {
-  design: string; thickness: string; batch: string; total: number; dispatched: number;
+  design: string; thickness: string; batch: string; rawBatch?: string; total: number; dispatched: number;
   bay5: number; bay4: number; bay3: number; nobay: number;
   a: number; a2: number; b: number; c: number; cts: number; printing: number;
   trial: number; ungraded: number; pending_polish: number; pending_rw: number;
-  approved: boolean;
+  approved: boolean; designApproved: boolean;
 }
 const NUMS = ["total","dispatched","bay5","bay4","bay3","nobay","a","a2","b","c","cts","printing","trial","ungraded","pending_polish","pending_rw"] as const;
 type Agg = Record<(typeof NUMS)[number], number>;
@@ -68,7 +68,7 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
       const agg = sumRows(list);
       const allTrial = agg.trial > 0 && agg.trial >= agg.total + agg.dispatched;
       if (isTrialName(design) || allTrial) {
-        for (const r of list) trialRows.push({ ...r, batch: `${design} - ${r.batch}` });
+        for (const r of list) trialRows.push({ ...r, rawBatch: r.batch, batch: `${design} - ${r.batch}` });
       } else {
         normal.push({ name: design, rows: list, agg });
       }
@@ -80,14 +80,16 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
 
   const toggle = (k: string) => setOpen((s) => { const c = new Set(s); if (c.has(k)) c.delete(k); else c.add(k); return c; });
   const toggleT = (k: string) => setOpenT((s) => { const c = new Set(s); if (c.has(k)) c.delete(k); else c.add(k); return c; });
-  const setApproved = (groupName: string, approved: boolean) => {
-    setOv((m) => new Map(m).set(groupName, approved));
+  const setApproved = (groupName: string, batch: string, approved: boolean) => {
+    setOv((m) => new Map(m).set(`${groupName}|${batch}`, approved));
     const design = groupName === "Trials" ? "__TRIALS__" : groupName;
-    fetch("/api/inventory/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ design, approved }) }).catch(() => {});
+    fetch("/api/inventory/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ design, batch, approved }) }).catch(() => {});
   };
-  const ApproveBox = ({ name, rows: list, span }: { name: string; rows: Row[]; span?: number }) => (
-    <td rowSpan={span} className={`${bcell} align-middle`} onClick={(e) => e.stopPropagation()}>
-      <input type="checkbox" checked={ov.get(name) ?? (list[0]?.approved ?? true)} onChange={(e) => setApproved(name, e.target.checked)} title="Show in the Sales register" />
+  // batch = "" -> the whole colour's master checkbox
+  const ApproveBox = ({ name, batch = "", current }: { name: string; batch?: string; current: boolean }) => (
+    <td className={`${bcell} align-middle`} onClick={(e) => e.stopPropagation()}>
+      <input type="checkbox" checked={ov.get(`${name}|${batch}`) ?? current} onChange={(e) => setApproved(name, batch, e.target.checked)}
+        title={batch ? `Show batch ${batch} in the Sales register` : "Show this colour in the Sales register"} />
     </td>
   );
   const sortRows = (list: Row[]) =>
@@ -138,7 +140,7 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
                   </td>
                   <td className={bcell}>-</td><td className={bcell}>-</td>
                   <Cells v={agg} />
-                  {canApprove && <ApproveBox name={name} rows={list} />}
+                  {canApprove && <ApproveBox name={name} current={list[0]?.designApproved ?? true} />}
                 </tr>
               );
               const byThick = new Map<string, Row[]>();
@@ -189,7 +191,9 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
                           <Cells v={agg} />
                         </>
                       )}
-                      {i === 0 && canApprove && <ApproveBox name={name} rows={list} span={entries.length} />}
+                      {canApprove && e.kind === "thick" && <td className={`${bcell} text-gray-300`}>-</td>}
+                      {canApprove && e.kind === "batch" && <ApproveBox name={e.r.design} batch={e.r.rawBatch ?? e.r.batch} current={e.r.approved} />}
+                      {canApprove && e.kind === "total" && <ApproveBox name={name} current={list[0]?.designApproved ?? true} />}
                     </tr>
                   ))}
                 </Fragment>
