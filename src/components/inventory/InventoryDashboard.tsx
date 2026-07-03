@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { slabLabel } from "@/lib/slabLabel";
 
 interface Kpi {
   total: number; gradeA: number; gradeA2: number; gradeB: number; gradeC: number;
@@ -428,7 +429,7 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
                     <tr key={r.id} className="border-t border-gray-50 hover:bg-gray-50/50">
                       <td className="px-3 py-2"><input type="checkbox" checked={sel.has(r.slabNumber)} onChange={() => toggle(r.slabNumber)} /></td>
                       <td className="px-3 py-2 font-medium text-gray-900">
-                        <button className="hover:text-brand hover:underline" title="View slab details" onClick={() => openDetail(r.slabNumber)}>{r.slabNumber}</button>
+                        <button className="hover:text-brand hover:underline" title="View slab details" onClick={() => openDetail(r.slabNumber)}>{slabLabel(r.slabNumber)}</button>
                       </td>
                       <td className="px-3 py-2">{r.design ?? "—"}</td>
                       <td className="px-3 py-2">{r.batchNumber ?? "—"}</td>
@@ -457,7 +458,7 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
           <div className="w-full max-w-3xl rounded-2xl bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h2 className="text-xl font-semibold text-gray-900">Slab {detail.slabNumber}</h2>
+                <h2 className="text-xl font-semibold text-gray-900">Slab {slabLabel(detail.slabNumber)}</h2>
                 {detail.slab && <span className="mt-1 inline-block rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">{detail.slab.status}</span>}
               </div>
               <button onClick={() => setDetail(null)} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50">Close ✕</button>
