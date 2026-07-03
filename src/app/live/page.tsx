@@ -2,6 +2,8 @@ import { Shell } from "@/components/Shell";
 import { AutoRefresh } from "@/components/AutoRefresh";
 import { Card, H2, Empty } from "@/components/ui";
 import { SiloStatus } from "@/components/SiloStatus";
+import { RunAllocator } from "@/components/RunAllocator";
+import { isAdmin } from "@/lib/rbac";
 import { getSiloOverview } from "@/lib/silo";
 import { getLiveStatus, type StationLive } from "@/lib/live";
 import { getRmStock } from "@/lib/rmStock";
@@ -129,6 +131,7 @@ export default async function LivePage() {
         {/* Silos */}
         {showSilos && <Card>
           <H2>Silo status</H2>
+          {await isAdmin() && <div className="mb-2 flex justify-end"><RunAllocator /></div>}
           <SiloStatus grit={silos.grit} filler={silos.filler} />
         </Card>}
 

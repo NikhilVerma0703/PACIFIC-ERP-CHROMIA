@@ -66,6 +66,17 @@ function stampMixerTotals(model: string, data: Record<string, unknown>) {
   if (total > 0) { data.totalCycleWeight = Math.round(total * 100) / 100; data.totalMixer1Weight = Math.round(m1 * 100) / 100; }
 }
 
+/** Mixer cycle: filler weight without a silo/buffer name can never be deducted
+ * from stock — block it at save time (both create and edit). */
+function fillerBufferMissing(model: string, data: Record<string, unknown>, fd: FormData): string | null {
+  if (model !== "MixerCycle") return null;
+  const fw = ["m1FW", "m2FW", "m3FW", "m4FW"].reduce((a, k) => a + (typeof data[k] === "number" ? (data[k] as number) : 0), 0);
+  if (fw <= 0) return null;
+  if (fd.has("fillerSiloBuffer") && !String(data.fillerSiloBuffer ?? "").trim())
+    return "Filler weight entered but no Filler Silo/Buffer selected — pick the buffer so stock gets deducted.";
+  return null;
+}
+
 /** Models carrying batch/batchNumber also carry batchKey — keep it in sync. */
 function stampBatchKey(data: Record<string, unknown>) {
   const b = data.batch ?? data.batchNumber;
@@ -165,6 +176,7 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
   // Mandatory fields: block clearing them on edit (only when the form sent the field).
   for (const rf of REQUIRED_FORM_FIELDS[model] ?? [])
     if (fd.has(rf) && !String(data[rf] ?? "").trim()) return `${REQUIRED_FIELD_LABELS[rf] ?? rf} is required.`;
+  { const fbErr = fillerBufferMissing(model, data, fd); if (fbErr) return fbErr; }
   // If this QC edit changes the slab number, the old number's inventory row must
   // be re-projected (or removed) — capture it before the update.
   let qcPrevSlabNumber: number | null = null;
@@ -182,6 +194,9 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
     }
   }
   catch (e) { return `Save failed: ${friendlyDbError(e)}`; }
+  // Self-heal: an edited mixer cycle re-runs FIFO allocation (already-linked
+  // slots are skipped) so filling in a missing silo/buffer deducts stock.
+  if (model === "MixerCycle") { try { await allocateMixerCycle(id); } catch { /* best-effort */ } }
   revalidatePath(`/tables/${model}`);
   if (model === "PolishQc") {
     await logAction({ kind: "edit", batchKey: (data.batchKey as string | undefined) ?? null, model: "PolishQc", summary: `Edited Polish QC slab ${String(data.slabNumber ?? "")}`.trim(), payload: { id, slabNumber: data.slabNumber ?? null } });
@@ -237,6 +252,7 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
   // Mandatory fields (client `required` can be bypassed — enforce here too).
   for (const rf of REQUIRED_FORM_FIELDS[model] ?? [])
     if (!String(data[rf] ?? "").trim()) return `${REQUIRED_FIELD_LABELS[rf] ?? rf} is required.`;
+  { const fbErr = fillerBufferMissing(model, data, fd); if (fbErr) return fbErr; }
   // Accept "1a"/"1b" insert labels in the slab-number field -> decimal (1.1/1.2).
   if (fd.has("slabNumber")) { const ps = parseSlabInput(fd.get("slabNumber")); if (ps != null) data.slabNumber = ps; }
   stampOperator(model, data, opName);
