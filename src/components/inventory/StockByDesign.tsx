@@ -97,6 +97,9 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
       }
     }
     normal.sort((x, y) => x.name.localeCompare(y.name));
+    // "(No Name)" pins to the bottom, just above Trials
+    const noNameIdx = normal.findIndex((g) => g.name === "(No Name)");
+    if (noNameIdx >= 0) normal.push(normal.splice(noNameIdx, 1)[0]);
     if (trialRows.length) normal.push({ name: "Trials", rows: trialRows, agg: sumRows(trialRows) });
     return normal;
   }, [rows, q, canApprove]);
