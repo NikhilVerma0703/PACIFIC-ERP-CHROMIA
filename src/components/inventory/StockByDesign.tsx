@@ -21,7 +21,8 @@ export function StockByDesign() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
-  const [open, setOpen] = useState<Set<string>>(new Set());
+  const [closed, setClosed] = useState<Set<string>>(new Set()); // collapsed designs (all open by default)
+  const [open, setOpen] = useState<Set<string>>(new Set());     // expanded batch lists
 
   useEffect(() => {
     fetch("/api/inventory/summary")
@@ -42,10 +43,11 @@ export function StockByDesign() {
     }
     return [...byDesign.entries()]
       .map(([design, list]) => ({ design, list, agg: sumRows(list) }))
-      .sort((x, y) => y.agg.total - x.agg.total);
+      .sort((x, y) => x.design.localeCompare(y.design));
   }, [rows, q]);
 
   const toggle = (k: string) => setOpen((s) => { const c = new Set(s); if (c.has(k)) c.delete(k); else c.add(k); return c; });
+  const toggleDesign = (k: string) => setClosed((s) => { const c = new Set(s); if (c.has(k)) c.delete(k); else c.add(k); return c; });
   const inputCls = "w-full max-w-xs rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
 
   const Cells = ({ v }: { v: Agg }) => (
@@ -64,7 +66,7 @@ export function StockByDesign() {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white p-4">
         <input className={inputCls} placeholder="Filter colour / design…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <p className="text-xs text-gray-400">Stock on hand (dispatched excluded) · click a design for thicknesses, a thickness for batches.</p>
+        <p className="text-xs text-gray-400">Stock on hand (dispatched excluded) · thickness shown per design · click a thickness for its batches, a design name to collapse it.</p>
       </div>
       <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
         <table className="w-full text-sm">
@@ -94,11 +96,11 @@ export function StockByDesign() {
               }
               return (
                 <Fragment key={design}>
-                  <tr className="cursor-pointer border-t border-gray-100 bg-gray-50/60 hover:bg-gray-100/60" onClick={() => toggle(dKey)}>
-                    <td className="px-3 py-1.5 font-semibold text-gray-900"><span className="mr-1.5 inline-block w-3 text-gray-400">{open.has(dKey) ? "▾" : "▸"}</span>{design}</td>
+                  <tr className="cursor-pointer border-t border-gray-100 bg-gray-50/60 hover:bg-gray-100/60" onClick={() => toggleDesign(dKey)}>
+                    <td className="px-3 py-1.5 font-semibold text-gray-900"><span className="mr-1.5 inline-block w-3 text-gray-400">{closed.has(dKey) ? "▸" : "▾"}</span>{design}</td>
                     <Cells v={agg} />
                   </tr>
-                  {open.has(dKey) && [...byThick.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([thickness, tlist]) => {
+                  {!closed.has(dKey) && [...byThick.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([thickness, tlist]) => {
                     const tKey = ["t", design, thickness].join("\u0000");
                     return (
                       <Fragment key={tKey}>
