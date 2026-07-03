@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { slabLabel } from "@/lib/slabLabel";
+import { StockByDesign } from "./StockByDesign";
 
 interface Kpi {
   total: number; gradeA: number; gradeA2: number; gradeB: number; gradeC: number;
@@ -65,7 +66,7 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
   const [detailBusy, setDetailBusy] = useState(false);
 
   // activity feed
-  const [view, setView] = useState<"slabs" | "activity" | "designs">("slabs");
+  const [view, setView] = useState<"slabs" | "activity" | "designs" | "summary">("slabs");
   const [events, setEvents] = useState<SlabEvent[]>([]);
   const [evSlab, setEvSlab] = useState("");
   const [evLoading, setEvLoading] = useState(false);
@@ -209,6 +210,7 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
         </div>
         <div className="flex gap-1 rounded-xl border border-gray-200 bg-white p-1">
           <button className={tabCls(view === "slabs")} onClick={() => setView("slabs")}>Slabs</button>
+          <button className={tabCls(view === "summary")} onClick={() => setView("summary")}>Stock by Design</button>
           <button className={tabCls(view === "activity")} onClick={() => openActivity(evSlab)}>Activity</button>
           {admin && <button className={tabCls(view === "designs")} onClick={() => { setView("designs"); loadDesigns(); }}>Designs</button>}
         </div>
@@ -258,7 +260,9 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
         </div>
       )}
 
-      {view === "designs" && admin ? (
+      {view === "summary" ? (
+        <StockByDesign />
+      ) : view === "designs" && admin ? (
         <div className="space-y-3">
           <div className="rounded-xl border border-gray-200 bg-white p-4">
             <h2 className="text-sm font-semibold text-gray-900">Merge two designs</h2>
