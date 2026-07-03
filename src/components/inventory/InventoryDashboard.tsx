@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { slabLabel } from "@/lib/slabLabel";
 import { StockByDesign } from "./StockByDesign";
 
@@ -78,8 +78,11 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
   const [mergeMsg, setMergeMsg] = useState<string | null>(null);
   const [merging, setMerging] = useState(false);
 
+  const kpiFilters = useRef({ ...EMPTY }); // cards mirror the last search
   const loadKpi = () => {
-    fetch("/api/inventory/kpi").then((r) => (r.ok ? r.json() : null)).then((d) => setKpi(d && !d.error ? d : null)).catch(() => {});
+    const p = new URLSearchParams();
+    Object.entries(kpiFilters.current).forEach(([k, v]) => { if (v) p.set(k, v); });
+    fetch(`/api/inventory/kpi?${p.toString()}`).then((r) => (r.ok ? r.json() : null)).then((d) => setKpi(d && !d.error ? d : null)).catch(() => {});
   };
   useEffect(() => {
     loadKpi();
@@ -91,6 +94,7 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
   const run = (filters: typeof EMPTY) => {
     setLoading(true);
     setSel(new Set());
+    kpiFilters.current = { ...filters };
     loadKpi();
     const p = new URLSearchParams();
     Object.entries(filters).forEach(([k, v]) => { if (v) p.set(k, v); });

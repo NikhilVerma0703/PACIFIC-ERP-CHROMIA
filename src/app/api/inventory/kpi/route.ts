@@ -3,21 +3,24 @@
 import { prisma } from "@/lib/prisma";
 import { inventoryGate } from "@/lib/inventory/access";
 import { sweepExpiredReservations } from "@/lib/inventory/finishedSlab";
+import { buildInventoryWhere } from "@/lib/inventory/searchWhere";
 
 const db = prisma as any;
 
-export async function GET() {
+export async function GET(request: Request) {
   const g = await inventoryGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   try {
     await sweepExpiredReservations(); // lapsed PI holds -> AVAILABLE before we count
+    // Cards follow the SAME filters as the slab table (empty filters = global).
+    const w: any = await buildInventoryWhere(new URL(request.url).searchParams);
     const [total, byGrade, byStatus, byThickness, pendingPolish, pendingRw] = await Promise.all([
-      db.finishedSlab.count(),
-      db.finishedSlab.groupBy({ by: ["grade"], _count: { _all: true }, where: { status: { not: "DISPATCHED" } } }), // grades = stock on hand
-      db.finishedSlab.groupBy({ by: ["status"], _count: { _all: true } }),
-      db.finishedSlab.groupBy({ by: ["slabThickness"], _count: { _all: true }, where: { status: { not: "DISPATCHED" } } }), // thickness = stock on hand
-      db.finishedSlab.count({ where: { repolishStatus: "Repolish Required" } }),
-      db.finishedSlab.count({ where: { rwStatus: "RW Required and ongoing" } }),
+      db.finishedSlab.count({ where: w }),
+      db.finishedSlab.groupBy({ by: ["grade"], _count: { _all: true }, where: { ...w, status: w.status ?? { not: "DISPATCHED" } } }), // grades = stock on hand
+      db.finishedSlab.groupBy({ by: ["status"], _count: { _all: true }, where: w }),
+      db.finishedSlab.groupBy({ by: ["slabThickness"], _count: { _all: true }, where: { ...w, status: w.status ?? { not: "DISPATCHED" } } }), // thickness = stock on hand
+      db.finishedSlab.count({ where: { ...w, repolishStatus: "Repolish Required" } }),
+      db.finishedSlab.count({ where: { ...w, rwStatus: "RW Required and ongoing" } }),
     ]);
     const g_ = (grade: string) => byGrade.find((r: any) => r.grade === grade)?._count?._all ?? 0;
     const s_ = (status: string) => byStatus.find((r: any) => r.status === status)?._count?._all ?? 0;
