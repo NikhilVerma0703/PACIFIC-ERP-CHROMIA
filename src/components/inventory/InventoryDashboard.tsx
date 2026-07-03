@@ -23,8 +23,8 @@ interface SlabEvent {
 }
 
 const STATUSES = ["", "AVAILABLE", "RESERVED", "PACKED", "DISPATCHED", "RETURNED"];
-const GRADES = ["", "A", "A2", "B", "C", "CTS", "Printing"];
-const THICKNESSES = ["", "1.2 cm", "2 cm", "3 cm", "7 mm"];
+const GRADES = ["", "A", "A2", "B", "C", "CTS", "Printing", "Trial"];
+const THICKNESSES = ["", "1.2 cm", "2 cm", "3 cm", "4 cm", "7 mm", "8 mm", "10 mm"];
 const BAYS = ["Bay 1", "Bay 2", "Bay 3", "Bay 4", "Bay 5"];
 const ACTIONS = [
   { value: "", label: "Change status…" },
