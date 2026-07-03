@@ -230,7 +230,6 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
               {card("Available", kpi.available, "text-emerald-600")}
               {card("Reserved", kpi.reserved, "text-amber-600")}
               {card("Packed", kpi.packed, "text-amber-600")}
-              {card("Dispatched", kpi.dispatched, "text-gray-500")}
               {card("Returned", kpi.returned, "text-sky-600")}
             </div>
           </div>
