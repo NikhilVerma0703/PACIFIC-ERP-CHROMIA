@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useTransition } from "react";
 import { useActionState } from "react";
-import { useEffect } from "react";
-import { saveRow, createRow } from "@/app/tables/actions";
+import { useRouter } from "next/navigation";
+import { saveRow, createRow, deleteRow } from "@/app/tables/actions";
 import type { FieldMeta } from "@/lib/tables";
 import { fmt } from "@/components/ui";
 import { secondsToHHMM } from "@/lib/time";
@@ -167,11 +167,24 @@ function groupFields(fs: FieldMeta[]): { title: string; fields: FieldMeta[] }[] 
   return [...groups.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)).map((t) => ({ title: t, fields: groups.get(t)! }));
 }
 
-export function RecordEditor({ model, id, fields, values, mode, options = {}, hideFields = [], operatorName, silos, canEditBags, onSaved }: { model: string; id?: string; fields: FieldMeta[]; values: Record<string, unknown>; mode: "edit" | "new"; options?: Record<string, string[]>; hideFields?: string[]; operatorName?: string | null; silos?: SiloFormInfo[]; canEditBags?: boolean; onSaved?: () => void; }) {
+export function RecordEditor({ model, id, fields, values, mode, options = {}, hideFields = [], operatorName, silos, canEditBags, onSaved, canDelete = false }: { model: string; id?: string; fields: FieldMeta[]; values: Record<string, unknown>; mode: "edit" | "new"; options?: Record<string, string[]>; hideFields?: string[]; operatorName?: string | null; silos?: SiloFormInfo[]; canEditBags?: boolean; onSaved?: () => void; canDelete?: boolean; }) {
   const [msg, action, pending] = useActionState(mode === "edit" ? saveRow : createRow, undefined);
+  const router = useRouter();
+  const [deleting, startDelete] = useTransition();
+  const [delMsg, setDelMsg] = useState<string | null>(null);
+  const onDelete = () => {
+    if (!id) return;
+    setDelMsg(null);
+    if (!window.confirm("Delete this record permanently? It can be restored with Undo.")) return;
+    startDelete(async () => {
+      const r = await deleteRow(model, id);
+      if (r === "ok") { router.push(`/tables/${model}`); router.refresh(); }
+      else setDelMsg(r);
+    });
+  };
   // notify the wrapper (smart mixer form) after a successful save
   useEffect(() => {
-    if (!pending && (msg === "ok" || (typeof msg === "string" && msg.startsWith("\u2713")))) onSaved?.();
+    if (!pending && (msg === "ok" || (typeof msg === "string" && msg.startsWith("\u2713")))) { setDelMsg(null); onSaved?.(); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending, msg]);
 
@@ -287,8 +300,16 @@ export function RecordEditor({ model, id, fields, values, mode, options = {}, hi
       )}
 
       <div className="sticky bottom-0 -mx-5 mt-6 flex items-center justify-between gap-3 border-t border-gray-200 bg-white/85 px-5 py-3 backdrop-blur">
-        <div className="text-sm">{msg === "ok" ? <span className="text-green-600">Saved &#10003;</span> : msg?.startsWith("✓") ? <span className="text-green-600">{msg}</span> : msg ? <span className="text-red-600">{msg}</span> : <span className="text-gray-400">{editable.length} editable fields</span>}</div>
-        <button disabled={pending} className="rounded-lg bg-brand px-5 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-60">{pending ? "Saving…" : mode === "edit" ? "Save changes" : "Create record"}</button>
+        <div className="text-sm">{delMsg ? <span className="text-red-600">{delMsg}</span> : msg === "ok" ? <span className="text-green-600">Saved &#10003;</span> : msg?.startsWith("✓") ? <span className="text-green-600">{msg}</span> : msg ? <span className="text-red-600">{msg}</span> : <span className="text-gray-400">{editable.length} editable fields</span>}</div>
+        <div className="flex items-center gap-2">
+          {mode === "edit" && canDelete && id && (
+            <button type="button" onClick={onDelete} disabled={deleting || pending}
+              className="rounded-lg border border-red-300 px-4 py-2 text-sm font-medium text-red-600 transition hover:bg-red-50 disabled:opacity-60">
+              {deleting ? "Deleting…" : "Delete"}
+            </button>
+          )}
+          <button disabled={pending || deleting} className="rounded-lg bg-brand px-5 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-60">{pending ? "Saving…" : mode === "edit" ? "Save changes" : "Create record"}</button>
+        </div>
       </div>
     </form>
   );

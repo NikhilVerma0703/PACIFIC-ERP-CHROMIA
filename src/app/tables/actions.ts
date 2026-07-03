@@ -4,11 +4,11 @@ import { revalidatePath } from "next/cache";
 import { delegateOf, tableMeta, coerceField } from "@/lib/tables";
 import { hhmmToSeconds } from "@/lib/time";
 import { THICKNESS_FIELDS, canonThickness } from "@/lib/thickness";
-import { canRectify, canEnterData, currentUser, currentRole, localId } from "@/lib/rbac";
+import { canRectify, canEnterData, currentUser, currentRole, localId, isAdmin } from "@/lib/rbac";
 import { AUTOFILL_PREFIX } from "@/lib/batchRange";
 import { logAction } from "@/lib/actionLog";
 import { canUseEntryModel, operatorTableModels } from "@/lib/stationAccess";
-import { canWriteModel } from "@/lib/branch";
+import { canWriteModel, canSeeModel } from "@/lib/branch";
 import { OPERATOR_FIELDS } from "@/lib/operatorFields";
 import { allocateMixerCycle } from "@/lib/automations-silo";
 import { absorbSiloDeficit, absorbTankDeficit, writeOffSiloDeficit } from "@/lib/backfill";
@@ -192,6 +192,33 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
       if (qcPrevSlabNumber != null && qcPrevSlabNumber !== sn) await relinkFinishedSlabAfterNumberChange(qcPrevSlabNumber, by);
     } catch { /* inventory autolink is best-effort */ }
   }
+  return "ok";
+}
+
+/**
+ * Permanently delete a record — ADMIN ONLY. The full row is captured in the
+ * action log first, so the in-app Undo can restore it. Deleting a PolishQc row
+ * also re-projects (or removes) the slab's finished-goods inventory entry.
+ */
+export async function deleteRow(model: string, id: string): Promise<string> {
+  if (!(await isAdmin())) return "Only an administrator can delete records.";
+  if (!model || !id) return "Missing table or record.";
+  if (!(await canSeeModel(model))) return "Unknown table.";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let row: any;
+  try { row = await delegateOf(model).findUnique({ where: { id } }); } catch { return "Delete failed: table unavailable."; }
+  if (!row) return "Record not found — it may already be deleted.";
+  // Log FIRST (so the row is always recoverable), then delete. A phantom log
+  // entry from a failed delete is harmless: undo's create skips existing ids.
+  const batchKey = typeof row.batchKey === "string" ? row.batchKey : null;
+  const label = row.slabNumber != null ? ` (slab ${row.slabNumber})` : row.batch ? ` (batch ${row.batch})` : "";
+  await logAction({ kind: "delete", batchKey, model, summary: `Deleted ${model} record${label} — admin`, payload: { model, records: [row] } });
+  try { await delegateOf(model).delete({ where: { id } }); }
+  catch (e) { return `Delete failed: ${friendlyDbError(e)}`; }
+  if (model === "PolishQc" && typeof row.slabNumber === "number") {
+    try { await relinkFinishedSlabAfterNumberChange(row.slabNumber, (await currentUser())?.name ?? null); } catch { /* best-effort */ }
+  }
+  revalidatePath(`/tables/${model}`);
   return "ok";
 }
 

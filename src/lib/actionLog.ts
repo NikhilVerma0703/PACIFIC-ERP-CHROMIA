@@ -4,6 +4,7 @@
 import { prisma } from "@/lib/prisma";
 import { delegateOf } from "@/lib/tables";
 import { currentUser } from "@/lib/rbac";
+import { autolinkFinishedSlabFromQc } from "@/lib/inventory/finishedSlab";
 
 const log = () => (prisma as any).actionLog;
 
@@ -55,6 +56,7 @@ export async function lastUndoable(batchKey?: string | null): Promise<UndoableIn
 function revive(rec: Record<string, any>): Record<string, any> {
   const out: Record<string, any> = {};
   for (const [k, v] of Object.entries(rec)) {
+    if (v === null) continue; // omit nulls: nullable columns default to null, and Prisma rejects plain null for Json? fields
     out[k] = typeof v === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(v) ? new Date(v) : v;
   }
   return out;
@@ -69,19 +71,20 @@ async function reverse(row: any): Promise<void> {
     }
   } else if (row.kind === "delete") {
     // payload: { model, records: object[] }  OR  { groups: [{ model, records }] }
-    if (p.model && Array.isArray(p.records)) {
-      for (const r of p.records) {
-        try { await delegateOf(p.model).create({ data: revive(r) }); } catch { /* skip if it already exists */ }
+    const qcSlabs = new Set<number>();
+    const restore = async (model: string, records: any[]) => {
+      for (const r of records) {
+        try { await delegateOf(model).create({ data: revive(r) }); } catch { /* skip if it already exists */ }
+        if (model === "PolishQc" && typeof r?.slabNumber === "number") qcSlabs.add(r.slabNumber);
       }
-    }
+    };
+    if (p.model && Array.isArray(p.records)) await restore(p.model, p.records);
     if (Array.isArray(p.groups)) {
-      for (const g of p.groups) {
-        if (g?.model && Array.isArray(g.records)) {
-          for (const r of g.records) {
-            try { await delegateOf(g.model).create({ data: revive(r) }); } catch { /* skip if it already exists */ }
-          }
-        }
-      }
+      for (const g of p.groups) if (g?.model && Array.isArray(g.records)) await restore(g.model, g.records);
+    }
+    // restored QC rows flow back into finished-goods inventory
+    for (const sn of qcSlabs) {
+      try { await autolinkFinishedSlabFromQc(sn, { by: "undo" }); } catch { /* best-effort */ }
     }
   } else if (row.kind === "designApply") {
     // payload: { entries: [{ model, field, id, old }] } -> restore previous design values

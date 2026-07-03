@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { currentUser } from "@/lib/rbac";
+import { currentUser, isAdmin } from "@/lib/rbac";
 import { Shell } from "@/components/Shell";
 import { Card } from "@/components/ui";
 import { BackButton } from "@/components/BackButton";
@@ -60,7 +60,7 @@ export default async function EditRecord({ params }: { params: Promise<{ model: 
       <BackButton fallback={`/tables/${model}`} />
       <h1 className="mb-1 text-xl font-semibold">Edit record</h1>
       {ownRow ? <p className="mb-4 text-sm text-gray-500">Your own entry — you can correct it. Other records are view-only for you.</p> : polishQcShared ? <p className="mb-4 text-sm text-gray-500">Polish QC — any QC operator can correct this entry; the change is logged.</p> : null}
-      <Card><RecordEditor model={model} id={id} fields={meta.fields} values={row} mode="edit" options={options} hideFields={HIDDEN_FORM_FIELDS[model] ?? []} operatorName={operatorName} /></Card>
+      <Card><RecordEditor model={model} id={id} fields={meta.fields} values={row} mode="edit" options={options} hideFields={HIDDEN_FORM_FIELDS[model] ?? []} operatorName={operatorName} canDelete={await isAdmin()} /></Card>
     </Shell>
   );
 }
