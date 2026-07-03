@@ -13,7 +13,7 @@ interface Slab {
   id: string; slabNumber: number; design: string | null; grade: string | null;
   slabThickness: string | null; polishType: string | null; batchNumber: string | null;
   bayNumber: string | null; frameNumber: string | null; status: string; sqft: number; sqm: number;
-  ageDays: number | null; qualityIssue: string[] | null;
+  ageDays: number | null; qualityIssue: string[] | null; barcode: string | null;
 }
 interface Alias { id: string; variant: string; canonical: string; createdBy: string | null }
 
@@ -36,6 +36,10 @@ const ACTIONS = [
   { value: "release", label: "Release to Available" },
 ];
 const EMPTY = { design: "", batch: "", thickness: "", grade: "", slab: "", bay: "", status: "" };
+
+// Legacy no-number slabs (imported as 9,000,000+n) display by their NB label.
+const displaySlab = (n: number, barcode?: string | null) =>
+  n >= 9000000 && barcode ? barcode : slabLabel(n);
 
 const fmtAt = (iso: string) => {
   const d = new Date(iso);
@@ -429,7 +433,7 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
                     <tr key={r.id} className="border-t border-gray-50 hover:bg-gray-50/50">
                       <td className="px-3 py-2"><input type="checkbox" checked={sel.has(r.slabNumber)} onChange={() => toggle(r.slabNumber)} /></td>
                       <td className="px-3 py-2 font-medium text-gray-900">
-                        <button className="hover:text-brand hover:underline" title="View slab details" onClick={() => openDetail(r.slabNumber)}>{slabLabel(r.slabNumber)}</button>
+                        <button className="hover:text-brand hover:underline" title="View slab details" onClick={() => openDetail(r.slabNumber)}>{displaySlab(r.slabNumber, r.barcode)}</button>
                       </td>
                       <td className="px-3 py-2">{r.design ?? "—"}</td>
                       <td className="px-3 py-2">{r.batchNumber ?? "—"}</td>
@@ -458,7 +462,7 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
           <div className="w-full max-w-3xl rounded-2xl bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h2 className="text-xl font-semibold text-gray-900">Slab {slabLabel(detail.slabNumber)}</h2>
+                <h2 className="text-xl font-semibold text-gray-900">Slab {displaySlab(detail.slabNumber, detail.slab?.barcode)}</h2>
                 {detail.slab && <span className="mt-1 inline-block rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">{detail.slab.status}</span>}
               </div>
               <button onClick={() => setDetail(null)} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50">Close ✕</button>
