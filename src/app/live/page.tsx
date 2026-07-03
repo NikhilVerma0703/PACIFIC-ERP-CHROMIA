@@ -13,6 +13,7 @@ import { currentUser, canManageRm } from "@/lib/rbac";
 import { liveWindow, LIVE_KEY } from "@/lib/stationAccess";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60; // the admin allocator action can take a while
 
 // Placeholder machine icons — swap the `d` paths (or replace with <img>) once
 // the user provides the real machine icons.
