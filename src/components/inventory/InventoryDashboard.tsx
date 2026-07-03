@@ -349,7 +349,7 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
         </div>
       ) : (
         <>
-          <div className="rounded-xl border border-gray-200 bg-white p-4">
+          <form className="rounded-xl border border-gray-200 bg-white p-4" onSubmit={(e) => { e.preventDefault(); run(f); }}>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
               <input className={inputCls} placeholder="Colour / design" value={f.design} onChange={(e) => setF({ ...f, design: e.target.value })} />
               <input className={inputCls} placeholder="Batch" value={f.batch} onChange={(e) => setF({ ...f, batch: e.target.value })} />
@@ -360,10 +360,10 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
               <select className={inputCls} value={f.status} onChange={(e) => setF({ ...f, status: e.target.value })}>{STATUSES.map((s) => <option key={s} value={s}>{s || "Any status"}</option>)}</select>
             </div>
             <div className="mt-3 flex gap-2">
-              <button onClick={() => run(f)} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark">Search</button>
-              <button onClick={() => { setF({ ...EMPTY }); run(EMPTY); }} className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">Clear</button>
+              <button type="submit" className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark">Search</button>
+              <button type="button" onClick={() => { setF({ ...EMPTY }); run(EMPTY); }} className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">Clear</button>
             </div>
-          </div>
+          </form>
 
           {sel.size > 0 && (
             <div className="rounded-xl border border-brand/30 bg-brand/5 p-4">

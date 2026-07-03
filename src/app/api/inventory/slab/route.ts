@@ -31,6 +31,10 @@ export async function GET(request: Request) {
     if (!slab && !qc) return Response.json({ error: "Slab not found" }, { status: 404 });
 
     let derived = null;
+    if (slab?.design) {
+      const al = await db.designAlias.findUnique({ where: { variant: slab.design } }).catch(() => null);
+      if (al) slab.design = al.canonical;
+    }
     if (slab) {
       const sqft = ((slab.lengthIn ?? 0) * (slab.widthIn ?? 0)) / 144;
       const ageDays = slab.firstSeenAt ? Math.max(0, Math.floor((Date.now() - new Date(slab.firstSeenAt).getTime()) / 86400000)) : null;

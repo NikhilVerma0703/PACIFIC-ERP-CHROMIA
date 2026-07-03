@@ -74,6 +74,10 @@ export async function GET(request: Request) {
         : [];
       rows = [...normal, ...nb];
     }
+    // display canonical design names (merged variants show their correct name)
+    const aliasRows: any[] = await db.designAlias.findMany({ select: { variant: true, canonical: true } }).catch(() => []);
+    const amap = new Map<string, string>(aliasRows.map((x) => [x.variant, x.canonical]));
+    rows = rows.map((r: any) => (r.design && amap.has(r.design) ? { ...r, design: amap.get(r.design) } : r));
     return Response.json(rows.map(withDerived));
   } catch (e) {
     console.error("Inventory search error:", e);
