@@ -9,6 +9,7 @@ interface Row {
   bay5: number; bay4: number; bay3: number; nobay: number;
   a: number; a2: number; b: number; c: number; cts: number; printing: number;
   trial: number; ungraded: number; pending_polish: number; pending_rw: number;
+  approved: boolean;
 }
 const NUMS = ["total","dispatched","bay5","bay4","bay3","nobay","a","a2","b","c","cts","printing","trial","ungraded","pending_polish","pending_rw"] as const;
 type Agg = Record<(typeof NUMS)[number], number>;
@@ -36,11 +37,12 @@ function Cells({ v }: { v: Agg }) {
   );
 }
 
-export function StockByDesign() {
+export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [open, setOpen] = useState<Set<string>>(new Set());   // open designs (closed by default)
+  const [ov, setOv] = useState<Map<string, boolean>>(new Map()); // optimistic Approved overrides
   const [openT, setOpenT] = useState<Set<string>>(new Set()); // open thickness groups
 
   useEffect(() => {
@@ -78,6 +80,16 @@ export function StockByDesign() {
 
   const toggle = (k: string) => setOpen((s) => { const c = new Set(s); if (c.has(k)) c.delete(k); else c.add(k); return c; });
   const toggleT = (k: string) => setOpenT((s) => { const c = new Set(s); if (c.has(k)) c.delete(k); else c.add(k); return c; });
+  const setApproved = (groupName: string, approved: boolean) => {
+    setOv((m) => new Map(m).set(groupName, approved));
+    const design = groupName === "Trials" ? "__TRIALS__" : groupName;
+    fetch("/api/inventory/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ design, approved }) }).catch(() => {});
+  };
+  const ApproveBox = ({ name, rows: list, span }: { name: string; rows: Row[]; span?: number }) => (
+    <td rowSpan={span} className={`${bcell} align-middle`} onClick={(e) => e.stopPropagation()}>
+      <input type="checkbox" checked={ov.get(name) ?? (list[0]?.approved ?? true)} onChange={(e) => setApproved(name, e.target.checked)} title="Show in the Sales register" />
+    </td>
+  );
   const sortRows = (list: Row[]) =>
     [...list].sort((x, y) => x.thickness.localeCompare(y.thickness) || x.batch.localeCompare(y.batch, undefined, { numeric: true }));
 
@@ -105,13 +117,14 @@ export function StockByDesign() {
               <th className="border border-brand-dark/40 px-2 py-2">Trial</th>
               <th className="border border-brand-dark/40 px-2 py-2">No Gr.</th>
               <th className="border border-brand-dark/40 px-2 py-2">R/W</th>
+              {canApprove && <th className="border border-brand-dark/40 px-2 py-2">Approved</th>}
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={14} className="px-3 py-10 text-center text-gray-400">Loading...</td></tr>
+              <tr><td colSpan={canApprove ? 15 : 14} className="px-3 py-10 text-center text-gray-400">Loading...</td></tr>
             ) : groups.length === 0 ? (
-              <tr><td colSpan={14} className="px-3 py-10 text-center text-gray-400">No stock matches.</td></tr>
+              <tr><td colSpan={canApprove ? 15 : 14} className="px-3 py-10 text-center text-gray-400">No stock matches.</td></tr>
             ) : groups.map(({ name, rows: list, agg }, gi) => {
               const slno = String(gi + 1).padStart(2, "0");
               const isOpen = open.has(name);
@@ -125,6 +138,7 @@ export function StockByDesign() {
                   </td>
                   <td className={bcell}>-</td><td className={bcell}>-</td>
                   <Cells v={agg} />
+                  {canApprove && <ApproveBox name={name} rows={list} />}
                 </tr>
               );
               const byThick = new Map<string, Row[]>();
@@ -175,6 +189,7 @@ export function StockByDesign() {
                           <Cells v={agg} />
                         </>
                       )}
+                      {i === 0 && canApprove && <ApproveBox name={name} rows={list} span={entries.length} />}
                     </tr>
                   ))}
                 </Fragment>
@@ -191,6 +206,7 @@ export function StockByDesign() {
                 {(() => { const g = sumRows(groups.flatMap((x) => x.rows)); return NUMS.filter((k) => !["dispatched","bay5","bay4","bay3","nobay","pending_polish"].includes(k)).map((k) => (
                   <td key={k} className="border border-brand-dark/40 px-2 py-2 text-center tabular-nums">{g[k] ? g[k].toLocaleString("en-IN") : "-"}</td>
                 )); })()}
+                {canApprove && <td className="border border-brand-dark/40 px-2 py-2 text-center">-</td>}
               </tr>
             </tfoot>
           )}

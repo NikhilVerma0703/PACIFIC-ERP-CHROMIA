@@ -39,6 +39,8 @@ export async function GET() {
         ORDER BY 1, 2, 3`,
       db.designAlias.findMany({ select: { variant: true, canonical: true } }).catch(() => []),
     ]);
+    const hiddenRows: any[] = await db.$queryRaw`SELECT design FROM fg_sales_hidden_design`.catch(() => []);
+    const hidden = new Set<string>(hiddenRows.map((h) => h.design));
     const alias = new Map<string, string>(aliases.map((x: any) => [x.variant, x.canonical]));
     const merged = new Map<string, any>();
     for (const r of rows) {
@@ -49,7 +51,26 @@ export async function GET() {
       if (!m) merged.set(key, { ...r, design, batch });
       else for (const k of KEYS) m[k] += r[k];
     }
-    return Response.json([...merged.values()]);
+    let out = [...merged.values()];
+    // per-design aggregates to classify the Trials group (same rule as the UI)
+    const aggT = new Map<string, { trial: number; all: number }>();
+    for (const r of out) {
+      const a = aggT.get(r.design) ?? { trial: 0, all: 0 };
+      a.trial += r.trial; a.all += r.total + r.dispatched;
+      aggT.set(r.design, a);
+    }
+    const isTrialDesign = (d: string) => {
+      const a = aggT.get(d);
+      return /(trial|trail)/i.test(d) || (!!a && a.trial > 0 && a.trial >= a.all);
+    };
+    out = out.map((r) => ({
+      ...r,
+      approved: !(hidden.has(r.design) || (isTrialDesign(r.design) && hidden.has("__TRIALS__"))),
+    }));
+    // Sales logins only ever see approved stock
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (String((g.user as any)?.role ?? "") === "SALES") out = out.filter((r) => r.approved);
+    return Response.json(out);
   } catch (e) {
     console.error("Inventory summary error:", e);
     return Response.json([], { status: 500 });

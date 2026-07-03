@@ -276,7 +276,7 @@ export function InventoryDashboard({ admin = false, summaryOnly = false }: { adm
       )}
 
       {view === "summary" ? (
-        <StockByDesign />
+        <StockByDesign canApprove />
       ) : view === "designs" && admin ? (
         <div className="space-y-3">
           <div className="rounded-xl border border-gray-200 bg-white p-4">
