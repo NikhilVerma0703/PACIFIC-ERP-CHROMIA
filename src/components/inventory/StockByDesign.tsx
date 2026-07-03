@@ -181,6 +181,19 @@ export function StockByDesign() {
               );
             })}
           </tbody>
+          {!loading && groups.length > 0 && (
+            <tfoot className="sticky bottom-0 z-10">
+              <tr className="bg-brand font-bold text-white">
+                <td className="border border-brand-dark/40 px-2 py-2 text-center">-</td>
+                <td className="border border-brand-dark/40 px-3 py-2 text-[11px] uppercase tracking-wide">Grand Total</td>
+                <td className="border border-brand-dark/40 px-2 py-2 text-center">-</td>
+                <td className="border border-brand-dark/40 px-2 py-2 text-center">-</td>
+                {(() => { const g = sumRows(groups.flatMap((x) => x.rows)); return NUMS.filter((k) => !["dispatched","bay5","bay4","bay3","nobay","pending_polish"].includes(k)).map((k) => (
+                  <td key={k} className="border border-brand-dark/40 px-2 py-2 text-center tabular-nums">{g[k] ? g[k].toLocaleString("en-IN") : "-"}</td>
+                )); })()}
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
       {!loading && <p className="text-xs text-gray-400">{groups.length.toLocaleString("en-IN")} colour(s) in stock.</p>}
