@@ -54,12 +54,20 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
         .catch(() => {})
         .finally(() => { if (alive) setLoading(false); });
     load();
-    // live: approval changes made elsewhere show up within seconds
-    const id = setInterval(load, 8000);
+    // live sync: a ~5ms version check every 1.5s; approval changes anywhere
+    // trigger an immediate full reload (plus a 30s full-refresh floor for stock).
+    let ver = "";
+    const check = () =>
+      fetch("/api/inventory/approve")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => { if (alive && d?.v !== undefined) { if (ver && d.v !== ver) load(); ver = d.v; } })
+        .catch(() => {});
+    const idV = setInterval(check, 1500);
+    const idFull = setInterval(load, 30000);
     const onFocus = () => load();
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);
-    return () => { alive = false; clearInterval(id); window.removeEventListener("focus", onFocus); document.removeEventListener("visibilitychange", onFocus); };
+    return () => { alive = false; clearInterval(idV); clearInterval(idFull); window.removeEventListener("focus", onFocus); document.removeEventListener("visibilitychange", onFocus); };
   }, []);
 
   const groups = useMemo(() => {
