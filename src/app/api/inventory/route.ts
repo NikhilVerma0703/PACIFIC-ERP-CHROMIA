@@ -54,7 +54,26 @@ export async function GET(request: Request) {
       else where.barcode = { contains: q("slab"), mode: "insensitive" }; // non-numeric -> barcode search
     }
 
-    const rows = await db.finishedSlab.findMany({ where, orderBy: { slabNumber: "desc" }, take: 1000 });
+    // Real slab numbers first (newest on top); NB-series legacy slabs
+    // (9,000,000+, no original number) always sort to the BOTTOM.
+    const NB_FLOOR = 9000000;
+    let rows;
+    if (where.slabNumber !== undefined) {
+      rows = await db.finishedSlab.findMany({ where, orderBy: { slabNumber: "desc" }, take: 1000 });
+    } else {
+      const normal = await db.finishedSlab.findMany({
+        where: { ...where, slabNumber: { lt: NB_FLOOR } },
+        orderBy: { slabNumber: "desc" }, take: 1000,
+      });
+      const room = 1000 - normal.length;
+      const nb = room > 0
+        ? await db.finishedSlab.findMany({
+            where: { ...where, slabNumber: { gte: NB_FLOOR } },
+            orderBy: { slabNumber: "asc" }, take: room,
+          })
+        : [];
+      rows = [...normal, ...nb];
+    }
     return Response.json(rows.map(withDerived));
   } catch (e) {
     console.error("Inventory search error:", e);
