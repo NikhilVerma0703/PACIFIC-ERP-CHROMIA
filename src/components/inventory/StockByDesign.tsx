@@ -9,7 +9,7 @@ interface Row {
   bay5: number; bay4: number; bay3: number; nobay: number;
   a: number; a2: number; b: number; c: number; cts: number; printing: number;
   trial: number; ungraded: number; pending_polish: number; pending_rw: number;
-  approved: boolean; designApproved: boolean;
+  approved: boolean; designApproved: boolean; pending: boolean;
 }
 const NUMS = ["total","dispatched","bay5","bay4","bay3","nobay","a","a2","b","c","cts","printing","trial","ungraded","pending_polish","pending_rw"] as const;
 type Agg = Record<(typeof NUMS)[number], number>;
@@ -70,10 +70,16 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
     return () => { alive = false; clearInterval(idV); clearInterval(idFull); window.removeEventListener("focus", onFocus); document.removeEventListener("visibilitychange", onFocus); };
   }, []);
 
+  const pendingRows = useMemo(
+    () => (canApprove ? rows.filter((r) => r.pending) : []),
+    [rows, canApprove]
+  );
+
   const groups = useMemo(() => {
     const term = q.trim().toLowerCase();
     const byDesign = new Map<string, Row[]>();
     for (const r of rows) {
+      if (canApprove && r.pending) continue; // pending stock sits in the strip above
       if (term && !r.design.toLowerCase().includes(term)) continue;
       const list = byDesign.get(r.design) ?? [];
       if (!list.length) byDesign.set(r.design, list);
@@ -93,7 +99,7 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
     normal.sort((x, y) => x.name.localeCompare(y.name));
     if (trialRows.length) normal.push({ name: "Trials", rows: trialRows, agg: sumRows(trialRows) });
     return normal;
-  }, [rows, q]);
+  }, [rows, q, canApprove]);
 
   const toggle = (k: string) => setOpen((s) => { const c = new Set(s); if (c.has(k)) c.delete(k); else c.add(k); return c; });
   const toggleT = (k: string) => setOpenT((s) => { const c = new Set(s); if (c.has(k)) c.delete(k); else c.add(k); return c; });
@@ -114,6 +120,35 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
 
   return (
     <div className="space-y-3">
+      {canApprove && pendingRows.length > 0 && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4">
+          <h3 className="text-sm font-bold uppercase tracking-wide text-amber-800">New stock awaiting approval ({pendingRows.length})</h3>
+          <p className="mb-2 text-xs text-amber-700">Tick to approve — the line moves into the register and becomes visible to Sales within seconds.</p>
+          <div className="max-h-64 overflow-auto rounded-lg border border-amber-200 bg-white">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-amber-100 text-left text-[11px] font-bold uppercase text-amber-900">
+                  <th className="px-3 py-1.5">Colour</th><th className="px-2 py-1.5">Thick</th><th className="px-2 py-1.5">Batch</th>
+                  <th className="px-2 py-1.5 text-right">Slabs</th><th className="px-2 py-1.5 text-center">Approve</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pendingRows.map((r) => (
+                  <tr key={`${r.design}|${r.thickness}|${r.batch}`} className="border-t border-amber-100">
+                    <td className="px-3 py-1.5 font-medium text-gray-900">{r.design}</td>
+                    <td className="px-2 py-1.5">{r.thickness}</td>
+                    <td className="px-2 py-1.5">{r.batch}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">{r.total + r.dispatched}</td>
+                    <td className="px-2 py-1.5 text-center" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={ov.get(`${r.design}|${r.batch}`) ?? false} onChange={(e) => setApproved(r.design, r.batch, e.target.checked)} title="Approve for the register + Sales" />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white p-4">
         <input className="w-full max-w-xs rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20" placeholder="Filter colour / design..." value={q} onChange={(e) => setQ(e.target.value)} />
         <p className="text-xs text-gray-400">Stock register - click a colour to open its batches - trials grouped at the end.</p>

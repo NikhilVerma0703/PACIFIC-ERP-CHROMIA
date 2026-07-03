@@ -39,9 +39,10 @@ export async function GET() {
         ORDER BY 1, 2, 3`,
       db.designAlias.findMany({ select: { variant: true, canonical: true } }).catch(() => []),
     ]);
-    const hiddenRows: any[] = await db.$queryRaw`SELECT design, batch FROM fg_sales_hidden_design`.catch(() => []);
-    const hidden = new Set<string>(hiddenRows.filter((h) => !h.batch).map((h) => h.design));
-    const hiddenBatch = new Set<string>(hiddenRows.filter((h) => h.batch).map((h) => `${h.design} ${h.batch}`));
+    const hiddenRows: any[] = await db.$queryRaw`SELECT design FROM fg_sales_hidden_design WHERE batch = ''`.catch(() => []);
+    const hidden = new Set<string>(hiddenRows.map((h) => h.design));
+    const approvedRows: any[] = await db.$queryRaw`SELECT design, batch FROM fg_sales_approved_batch`.catch(() => []);
+    const approvedSet = new Set<string>(approvedRows.map((a) => `${a.design} ${a.batch}`));
     const alias = new Map<string, string>(aliases.map((x: any) => [x.variant, x.canonical]));
     const merged = new Map<string, any>();
     for (const r of rows) {
@@ -66,10 +67,12 @@ export async function GET() {
     };
     out = out.map((r) => {
       const designApproved = !(hidden.has(r.design) || (isTrialDesign(r.design) && hidden.has("__TRIALS__")));
+      const batchApproved = approvedSet.has(`${r.design} ${r.batch}`);
       return {
         ...r,
         designApproved,
-        approved: designApproved && !hiddenBatch.has(`${r.design} ${r.batch}`),
+        approved: designApproved && batchApproved,      // visible to Sales
+        pending: designApproved && !batchApproved,      // new stock awaiting admin approval
       };
     });
     // Sales logins only ever see approved stock
