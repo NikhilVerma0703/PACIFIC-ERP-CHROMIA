@@ -32,7 +32,6 @@ function Cells({ v }: { v: Agg }) {
       {cell(v.dispatched)}
       {cell(v.a, "font-semibold")}{cell(v.a2)}{cell(v.b)}{cell(v.c)}
       {cell(v.cts)}{cell(v.printing)}{cell(v.trial)}{cell(v.ungraded, "text-gray-500")}
-      {cell(v.pending_polish, "font-semibold text-red-600")}
       {cell(v.pending_rw, "font-semibold text-red-600")}
     </>
   );
@@ -105,15 +104,14 @@ export function StockByDesign() {
               <th className="border border-gray-400 px-2 py-2">Print</th>
               <th className="border border-gray-400 px-2 py-2">Trial</th>
               <th className="border border-gray-400 px-2 py-2">No Gr.</th>
-              <th className="border border-gray-400 px-2 py-2">Pol/Bal</th>
               <th className="border border-gray-400 px-2 py-2">R/W</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={16} className="px-3 py-10 text-center text-gray-400">Loading...</td></tr>
+              <tr><td colSpan={15} className="px-3 py-10 text-center text-gray-400">Loading...</td></tr>
             ) : groups.length === 0 ? (
-              <tr><td colSpan={16} className="px-3 py-10 text-center text-gray-400">No stock matches.</td></tr>
+              <tr><td colSpan={15} className="px-3 py-10 text-center text-gray-400">No stock matches.</td></tr>
             ) : groups.map(({ name, rows: list, agg }, gi) => {
               const slno = String(gi + 1).padStart(2, "0");
               const isOpen = open.has(name);

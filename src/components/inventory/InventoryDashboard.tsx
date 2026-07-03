@@ -252,7 +252,6 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
             <div>
               <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400">Needs attention</p>
               <div className="grid grid-cols-2 gap-3">
-                {card("Pending Polish", kpi.pendingPolish, "text-red-600")}
                 {card("Pending R/W", kpi.pendingRw, "text-red-600")}
               </div>
             </div>
