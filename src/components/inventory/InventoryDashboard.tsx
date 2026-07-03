@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { slabLabel } from "@/lib/slabLabel";
+import { displayBatch } from "@/lib/batchDisplay";
 import { StockByDesign } from "./StockByDesign";
 
 interface Kpi {
@@ -443,7 +444,7 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
                         <button className="hover:text-brand hover:underline" title="View slab details" onClick={() => openDetail(r.slabNumber)}>{displaySlab(r.slabNumber, r.barcode)}</button>
                       </td>
                       <td className="px-3 py-2">{r.design ?? "—"}</td>
-                      <td className="px-3 py-2">{r.batchNumber ?? "—"}</td>
+                      <td className="px-3 py-2">{displayBatch(r.batchNumber)}</td>
                       <td className="px-3 py-2">{r.slabThickness ?? "—"}</td>
                       <td className="px-3 py-2">{r.grade ?? "—"}</td>
                       <td className="px-3 py-2 max-w-[180px] truncate" title={(r.qualityIssue ?? []).join(", ")}>{r.qualityIssue?.length ? r.qualityIssue.join(", ") : "—"}</td>
@@ -483,7 +484,7 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
                 {detail.slab && (
                   <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
                     {([
-                      ["Design", detail.slab.design], ["Batch", detail.slab.batchNumber], ["Thickness", detail.slab.slabThickness],
+                      ["Design", detail.slab.design], ["Batch", displayBatch(detail.slab.batchNumber)], ["Thickness", detail.slab.slabThickness],
                       ["Grade", detail.slab.grade], ["Polish type", detail.slab.polishType],
                       ["Quality issues", (detail.slab.qualityIssue ?? []).join(", ") || null],
                       ["Bay", detail.slab.bayNumber], ["Frame", detail.slab.frameNumber],

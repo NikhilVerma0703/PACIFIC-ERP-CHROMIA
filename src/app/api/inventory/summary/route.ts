@@ -4,6 +4,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
 import { inventoryGate } from "@/lib/inventory/access";
+import { displayBatch } from "@/lib/batchDisplay";
 
 const db = prisma as any;
 const KEYS = ["total","dispatched","bay5","bay4","bay3","nobay","a","a2","b","c","cts","printing","trial","ungraded","pending_polish","pending_rw"];
@@ -42,9 +43,10 @@ export async function GET() {
     const merged = new Map<string, any>();
     for (const r of rows) {
       const design = alias.get(r.design) ?? r.design;
-      const key = [design, r.thickness, r.batch].join(" ");
+      const batch = r.batch === "-" ? r.batch : displayBatch(r.batch);
+      const key = [design, r.thickness, batch].join(" ");
       const m = merged.get(key);
-      if (!m) merged.set(key, { ...r, design });
+      if (!m) merged.set(key, { ...r, design, batch });
       else for (const k of KEYS) m[k] += r[k];
     }
     return Response.json([...merged.values()]);
