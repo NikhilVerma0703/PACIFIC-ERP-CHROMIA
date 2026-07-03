@@ -48,7 +48,7 @@ const fmtAt = (iso: string) => {
   return d.toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 };
 
-export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
+export function InventoryDashboard({ admin = false, summaryOnly = false }: { admin?: boolean; summaryOnly?: boolean }) {
   const [kpi, setKpi] = useState<Kpi | null>(null);
   const [rows, setRows] = useState<Slab[]>([]);
   const [loading, setLoading] = useState(true);
@@ -205,6 +205,18 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
   );
   const inputCls = "w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
   const tabCls = (active: boolean) => `rounded-lg px-3 py-1.5 text-sm font-medium ${active ? "bg-brand text-white" : "text-gray-600 hover:bg-gray-100"}`;
+
+  if (summaryOnly) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Finished-Goods Stock</h1>
+          <p className="mt-1 text-sm text-gray-500">Stock by design, thickness and batch.</p>
+        </div>
+        <StockByDesign />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

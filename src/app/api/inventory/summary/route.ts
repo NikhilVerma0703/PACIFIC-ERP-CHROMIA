@@ -3,14 +3,14 @@
 // polish / R&W. Design names are alias-aware. Gated to inventory roles.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
-import { inventoryGate } from "@/lib/inventory/access";
+import { summaryGate } from "@/lib/inventory/access";
 import { displayBatch } from "@/lib/batchDisplay";
 
 const db = prisma as any;
 const KEYS = ["total","dispatched","bay5","bay4","bay3","nobay","a","a2","b","c","cts","printing","trial","ungraded","pending_polish","pending_rw"];
 
 export async function GET() {
-  const g = await inventoryGate();
+  const g = await summaryGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   try {
     const [rows, aliases] = await Promise.all([

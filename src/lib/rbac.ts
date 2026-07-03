@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 
 // Role hierarchy (low -> high). Kept as string-typed so this compiles even
 // before `prisma generate` refreshes the @prisma/client enum.
-export type RoleName = "OPERATOR" | "INCHARGE" | "LINE_MANAGER" | "ADMIN" | "FINANCE" | "ACCOUNTS" | "STORE" | "MAINTENANCE";
+export type RoleName = "OPERATOR" | "INCHARGE" | "LINE_MANAGER" | "ADMIN" | "FINANCE" | "ACCOUNTS" | "SALES" | "STORE" | "MAINTENANCE";
 export type StationName =
   | "PRESS" | "OVEN" | "JOT" | "MIXER" | "KREOS"
   | "DISTRIBUTOR" | "SILO" | "POLISH_QC" | "POLISH_ENTRY" | "CUTTING";
@@ -17,10 +17,10 @@ export const STATION_LABEL: Record<string, string> = {
 
 // FINANCE and ACCOUNTS are flat office roles directly under ADMIN (rank 2:
 // they may edit office tables, but user management stays admin-only in Office).
-export const ROLE_RANK: Record<string, number> = { OPERATOR: 1, STORE: 1, MAINTENANCE: 1, INCHARGE: 2, FINANCE: 2, ACCOUNTS: 2, LINE_MANAGER: 3, ADMIN: 4 };
+export const ROLE_RANK: Record<string, number> = { OPERATOR: 1, STORE: 1, MAINTENANCE: 1, SALES: 1, INCHARGE: 2, FINANCE: 2, ACCOUNTS: 2, LINE_MANAGER: 3, ADMIN: 4 };
 export const ROLE_LABEL: Record<string, string> = {
   OPERATOR: "Operator", INCHARGE: "Incharge", LINE_MANAGER: "Line Manager", ADMIN: "Administrator",
-  FINANCE: "Finance", ACCOUNTS: "Accounts", STORE: "Store Incharge", MAINTENANCE: "Maintenance Manager",
+  FINANCE: "Finance", ACCOUNTS: "Accounts", SALES: "Sales", STORE: "Store Incharge", MAINTENANCE: "Maintenance Manager",
 };
 export function rankOf(role?: string | null): number { return ROLE_RANK[String(role ?? "")] ?? 0; }
 
@@ -78,7 +78,7 @@ export async function canManageUsers(): Promise<boolean> {
  * Office: ADMIN creates the flat Finance / Accounts roles; nobody else creates. */
 export function creatableRoles(role?: string | null, branch?: string | null): RoleName[] {
   const r = rankOf(role);
-  if (branch === "OFFICE") return r >= ROLE_RANK.ADMIN ? (["FINANCE", "ACCOUNTS"] as RoleName[]) : [];
+  if (branch === "OFFICE") return r >= ROLE_RANK.ADMIN ? (["FINANCE", "ACCOUNTS", "SALES"] as RoleName[]) : [];
   if (branch === "FABRICATION") return (["LINE_MANAGER", "INCHARGE", "OPERATOR"] as RoleName[]).filter((x) => ROLE_RANK[x] < r);
   return (["LINE_MANAGER", "INCHARGE", "OPERATOR", "STORE", "MAINTENANCE"] as RoleName[]).filter((x) => ROLE_RANK[x] < r);
 }

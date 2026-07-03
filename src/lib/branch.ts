@@ -30,6 +30,12 @@ async function isAdminSession(): Promise<boolean> {
   return rankOf((u as any)?.role as string | undefined) >= ROLE_RANK.ADMIN;
 }
 
+async function isSalesSession(): Promise<boolean> {
+  const u = await currentUser();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return String((u as any)?.role ?? "") === "SALES";
+}
+
 async function isStoreSession(): Promise<boolean> {
   const u = await currentUser();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -57,6 +63,8 @@ export async function canWriteModel(model: string): Promise<boolean> {
   if (HIDDEN_TABLES.has(model)) return false;
   // Store Incharge: RM tables are view-only in the grid — writes go through /store.
   if (await isStoreSession()) return false;
+  // Sales: read-only everywhere — the stock summary is their whole world.
+  if (await isSalesSession()) return false;
   // ADMIN can edit everything — including store-incharge tables that are
   // read-only for everyone else (UnassignedRm etc.).
   if (READONLY_TABLES.has(model) && !(await isAdminSession())) return false;
@@ -71,6 +79,7 @@ export async function canWriteModel(model: string): Promise<boolean> {
 export async function canSeeModel(model: string): Promise<boolean> {
   if (HIDDEN_TABLES.has(model)) return false;
   if (await isStoreSession()) return STORE_MODELS.has(model); // Store Incharge: RM tables only
+  if (await isSalesSession()) return false; // Sales: no table access at all
   if (ADMIN_ONLY_TABLES.has(model) && !(await isAdminSession())) return false;
   const b = await currentBranchName();
   return b === "OFFICE" ? true : !OFFICE_MODELS.has(model);

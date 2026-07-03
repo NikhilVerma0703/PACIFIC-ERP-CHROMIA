@@ -25,6 +25,7 @@ enum Role {
   ADMIN
   FINANCE
   ACCOUNTS
+  SALES
   STORE
   MAINTENANCE
 }

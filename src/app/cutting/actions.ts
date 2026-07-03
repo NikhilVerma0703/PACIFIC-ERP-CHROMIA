@@ -30,6 +30,8 @@ export async function createCuttingEntry(
   fd: FormData,
 ): Promise<CuttingResult> {
   const fail = (message: string): CuttingResult => ({ ok: false, message, stamp: Date.now() });
+  // Summary-only office roles (Sales) can never write production records.
+  if (String((await currentUser())?.role ?? "") === "SALES") return fail("Your login is view-only.");
 
   const me = await currentUser();
   if (!me) return fail("You must be signed in.");

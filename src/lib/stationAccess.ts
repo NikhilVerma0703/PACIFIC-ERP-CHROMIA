@@ -34,8 +34,9 @@ export async function entryAccess(): Promise<EntryAccess> {
   const station = ((u as any).station as string | undefined) ?? null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const branch = (((u as any).branch as string | undefined) === "OFFICE" ? "OFFICE" : "SHOP_FLOOR") as "SHOP_FLOOR" | "OFFICE";
-  // Office branch: finance/dispatch forms only, for every office role.
-  if (branch === "OFFICE") return { models: [...OFFICE_MODELS], station, branch };
+  // Office branch: finance/dispatch forms only — except Sales, who is
+  // summary-only and gets no entry forms at all.
+  if (branch === "OFFICE") return { models: role === "SALES" ? [] : [...OFFICE_MODELS], station, branch };
   if (rankOf(role) >= ROLE_RANK.INCHARGE) return { models: null, station, branch };
   return { models: STATION_MODELS[String(station ?? "")] ?? [], station, branch };
 }
