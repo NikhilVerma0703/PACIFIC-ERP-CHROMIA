@@ -29,3 +29,22 @@ jobs:
           name: neon-backup-${{ github.run_id }}
           path: backup.dump
           retention-days: 30
+      - name: Data integrity check (batch keys normalized)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          # Every batch_key must be normalized (no letter prefixes, spaces or commas).
+          # A non-zero count means some writer regressed — fail the run so GitHub
+          # notifies the repo owner. (Backup above has already been uploaded.)
+          BAD=$(/usr/lib/postgresql/17/bin/psql "$DATABASE_URL" -t -A -c "
+            SELECT COALESCE(SUM(n),0) FROM (
+              SELECT count(*) n FROM press        WHERE batch_key ~ '^[A-Za-z]' OR batch_key ~ '[ ,]'
+              UNION ALL SELECT count(*) FROM oven         WHERE batch_key ~ '^[A-Za-z]' OR batch_key ~ '[ ,]'
+              UNION ALL SELECT count(*) FROM jot          WHERE batch_key ~ '^[A-Za-z]' OR batch_key ~ '[ ,]'
+              UNION ALL SELECT count(*) FROM distributor  WHERE batch_key ~ '^[A-Za-z]' OR batch_key ~ '[ ,]'
+              UNION ALL SELECT count(*) FROM kreos        WHERE batch_key ~ '^[A-Za-z]' OR batch_key ~ '[ ,]'
+              UNION ALL SELECT count(*) FROM polish_entry WHERE batch_key ~ '^[A-Za-z]' OR batch_key ~ '[ ,]'
+              UNION ALL SELECT count(*) FROM polish_qc    WHERE batch_key ~ '^[A-Za-z]' OR batch_key ~ '[ ,]'
+            ) x")
+          echo "Un-normalized batch keys: $BAD"
+          test "$BAD" = "0" || { echo "::error::$BAD rows have un-normalized batch_key — a writer has regressed (see docs: src/lib/normalizeBatch.ts)"; exit 1; }
