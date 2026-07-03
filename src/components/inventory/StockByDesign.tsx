@@ -46,11 +46,20 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
   const [openT, setOpenT] = useState<Set<string>>(new Set()); // open thickness groups
 
   useEffect(() => {
-    fetch("/api/inventory/summary")
-      .then((r) => (r.ok ? r.json() : []))
-      .then((d) => setRows(Array.isArray(d) ? d : []))
-      .catch(() => setRows([]))
-      .finally(() => setLoading(false));
+    let alive = true;
+    const load = () =>
+      fetch("/api/inventory/summary")
+        .then((r) => (r.ok ? r.json() : []))
+        .then((d) => { if (alive) setRows(Array.isArray(d) ? d : []); })
+        .catch(() => {})
+        .finally(() => { if (alive) setLoading(false); });
+    load();
+    // live: approval changes made elsewhere show up within seconds
+    const id = setInterval(load, 8000);
+    const onFocus = () => load();
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => { alive = false; clearInterval(id); window.removeEventListener("focus", onFocus); document.removeEventListener("visibilitychange", onFocus); };
   }, []);
 
   const groups = useMemo(() => {
