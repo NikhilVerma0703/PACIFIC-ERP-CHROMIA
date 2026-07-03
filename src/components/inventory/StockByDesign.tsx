@@ -87,7 +87,7 @@ export function StockByDesign() {
         <input className="w-full max-w-xs rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20" placeholder="Filter colour / design..." value={q} onChange={(e) => setQ(e.target.value)} />
         <p className="text-xs text-gray-400">Stock register - click a colour to open its batches - trials grouped at the end.</p>
       </div>
-      <div className="max-h-[75vh] overflow-auto rounded-lg border border-gray-300 bg-white">
+      <div className="max-h-[85vh] overflow-auto rounded-lg border border-gray-300 bg-white">
         <table className="w-full border-collapse text-sm">
           <thead className="sticky top-0 z-10">
             <tr className="bg-brand text-[11px] font-bold uppercase tracking-wide text-white">
