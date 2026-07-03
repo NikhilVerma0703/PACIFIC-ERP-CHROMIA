@@ -1,7 +1,7 @@
 "use client";
-// Stock summary in the physical register's layout: design header row, then one
-// row per thickness+batch with bay-wise stock, grade split, dispatched and
-// pending polish / R&W. All trial designs live under one "Trials" group.
+// Stock summary styled after the physical stock register: SL.NO + merged
+// colour cell, a row per thickness+batch, full grid lines, yellow sticky
+// header. Designs collapsed by default; all trial designs under "Trials".
 import { Fragment, useEffect, useMemo, useState } from "react";
 
 interface Row {
@@ -20,19 +20,20 @@ function sumRows(rows: Row[]): Agg {
   return out;
 }
 
+const bcell = "border border-gray-300 px-2 py-1.5 text-center tabular-nums";
+
 function Cells({ v }: { v: Agg }) {
   const cell = (n: number, cls = "") => (
-    <td className={`px-2 py-1.5 text-right tabular-nums ${n ? cls : "text-gray-300"}`}>{n || "-"}</td>
+    <td className={`${bcell} ${n ? cls : "text-gray-300"}`}>{n || "-"}</td>
   );
   return (
     <>
-      <td className="px-2 py-1.5 text-right font-semibold tabular-nums">{v.total.toLocaleString("en-IN")}</td>
-      {cell(v.dispatched, "text-gray-500")}
-      {cell(v.bay5)}{cell(v.bay4)}{cell(v.bay3)}{cell(v.nobay, "text-gray-500")}
-      {cell(v.a)}{cell(v.a2)}{cell(v.b)}{cell(v.c)}{cell(v.cts)}{cell(v.printing)}
-      {cell(v.trial, "text-gray-500")}{cell(v.ungraded, "text-gray-500")}
-      {cell(v.pending_polish, "font-medium text-red-600")}
-      {cell(v.pending_rw, "font-medium text-red-600")}
+      <td className={`${bcell} font-semibold`}>{v.total || "-"}</td>
+      {cell(v.dispatched)}
+      {cell(v.a, "font-semibold")}{cell(v.a2)}{cell(v.b)}{cell(v.c)}
+      {cell(v.cts)}{cell(v.printing)}{cell(v.trial)}{cell(v.ungraded, "text-gray-500")}
+      {cell(v.pending_polish, "font-semibold text-red-600")}
+      {cell(v.pending_rw, "font-semibold text-red-600")}
     </>
   );
 }
@@ -41,7 +42,7 @@ export function StockByDesign() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
-  const [closed, setClosed] = useState<Set<string>>(new Set());
+  const [open, setOpen] = useState<Set<string>>(new Set()); // closed by default
 
   useEffect(() => {
     fetch("/api/inventory/summary")
@@ -60,7 +61,7 @@ export function StockByDesign() {
       if (!list.length) byDesign.set(r.design, list);
       list.push(r);
     }
-    const normal: { name: string; rows: Row[]; agg: Agg; trial: boolean }[] = [];
+    const normal: { name: string; rows: Row[]; agg: Agg }[] = [];
     const trialRows: Row[] = [];
     for (const [design, list] of byDesign) {
       const agg = sumRows(list);
@@ -68,15 +69,15 @@ export function StockByDesign() {
       if (isTrialName(design) || allTrial) {
         for (const r of list) trialRows.push({ ...r, batch: `${design} - ${r.batch}` });
       } else {
-        normal.push({ name: design, rows: list, agg, trial: false });
+        normal.push({ name: design, rows: list, agg });
       }
     }
     normal.sort((x, y) => x.name.localeCompare(y.name));
-    if (trialRows.length) normal.push({ name: "Trials", rows: trialRows, agg: sumRows(trialRows), trial: true });
+    if (trialRows.length) normal.push({ name: "Trials", rows: trialRows, agg: sumRows(trialRows) });
     return normal;
   }, [rows, q]);
 
-  const toggle = (k: string) => setClosed((s) => { const c = new Set(s); if (c.has(k)) c.delete(k); else c.add(k); return c; });
+  const toggle = (k: string) => setOpen((s) => { const c = new Set(s); if (c.has(k)) c.delete(k); else c.add(k); return c; });
   const sortRows = (list: Row[]) =>
     [...list].sort((x, y) => x.thickness.localeCompare(y.thickness) || x.batch.localeCompare(y.batch, undefined, { numeric: true }));
 
@@ -84,50 +85,77 @@ export function StockByDesign() {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white p-4">
         <input className="w-full max-w-xs rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20" placeholder="Filter colour / design..." value={q} onChange={(e) => setQ(e.target.value)} />
-        <p className="text-xs text-gray-400">Register view - a row per thickness &amp; batch - bay-wise stock on hand - all trial designs under &quot;Trials&quot; - click a design name to collapse.</p>
+        <p className="text-xs text-gray-400">Stock register - click a colour to open its batches - trials grouped at the end.</p>
       </div>
-      <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-gray-100 text-left text-gray-500">
-              <th className="px-3 py-2">Thick</th><th className="px-3 py-2">Batch</th>
-              <th className="px-2 py-2 text-right">Slabs</th><th className="px-2 py-2 text-right">Disp.</th>
-              <th className="px-2 py-2 text-right">Bay 5</th><th className="px-2 py-2 text-right">Bay 4</th>
-              <th className="px-2 py-2 text-right">Bay 3</th><th className="px-2 py-2 text-right">Other</th>
-              <th className="px-2 py-2 text-right">A</th><th className="px-2 py-2 text-right">A2</th>
-              <th className="px-2 py-2 text-right">B</th><th className="px-2 py-2 text-right">C</th>
-              <th className="px-2 py-2 text-right">CTS</th><th className="px-2 py-2 text-right">Print</th>
-              <th className="px-2 py-2 text-right">Trial</th><th className="px-2 py-2 text-right">No gr.</th>
-              <th className="px-2 py-2 text-right">Pend. Pol</th><th className="px-2 py-2 text-right">Pend. R/W</th>
+      <div className="max-h-[75vh] overflow-auto rounded-lg border border-gray-300 bg-white">
+        <table className="w-full border-collapse text-sm">
+          <thead className="sticky top-0 z-10">
+            <tr className="bg-yellow-300 text-[11px] font-bold uppercase tracking-wide text-gray-900">
+              <th className="border border-gray-400 px-2 py-2">SL.No</th>
+              <th className="border border-gray-400 px-3 py-2">Colour Name</th>
+              <th className="border border-gray-400 px-2 py-2">Thick</th>
+              <th className="border border-gray-400 px-2 py-2">Batch No</th>
+              <th className="border border-gray-400 px-2 py-2">Slabs</th>
+              <th className="border border-gray-400 px-2 py-2">Dispatch</th>
+              <th className="border border-gray-400 px-2 py-2">A</th>
+              <th className="border border-gray-400 px-2 py-2">A2</th>
+              <th className="border border-gray-400 px-2 py-2">B</th>
+              <th className="border border-gray-400 px-2 py-2">C</th>
+              <th className="border border-gray-400 px-2 py-2">CTS</th>
+              <th className="border border-gray-400 px-2 py-2">Print</th>
+              <th className="border border-gray-400 px-2 py-2">Trial</th>
+              <th className="border border-gray-400 px-2 py-2">No Gr.</th>
+              <th className="border border-gray-400 px-2 py-2">Pol/Bal</th>
+              <th className="border border-gray-400 px-2 py-2">R/W</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={18} className="px-3 py-10 text-center text-gray-400">Loading...</td></tr>
+              <tr><td colSpan={16} className="px-3 py-10 text-center text-gray-400">Loading...</td></tr>
             ) : groups.length === 0 ? (
-              <tr><td colSpan={18} className="px-3 py-10 text-center text-gray-400">No stock matches.</td></tr>
-            ) : groups.map(({ name, rows: list, agg }) => (
-              <Fragment key={name}>
-                <tr className="cursor-pointer border-t border-gray-200 bg-gray-50/80 hover:bg-gray-100/70" onClick={() => toggle(name)}>
-                  <td colSpan={2} className="px-3 py-2 font-semibold text-gray-900">
-                    <span className="mr-1.5 inline-block w-3 text-gray-400">{closed.has(name) ? "▸" : "▾"}</span>
-                    {name}
+              <tr><td colSpan={16} className="px-3 py-10 text-center text-gray-400">No stock matches.</td></tr>
+            ) : groups.map(({ name, rows: list, agg }, gi) => {
+              const slno = String(gi + 1).padStart(2, "0");
+              const isOpen = open.has(name);
+              const sorted = sortRows(list);
+              if (!isOpen) return (
+                <tr key={name} className="cursor-pointer hover:bg-yellow-50" onClick={() => toggle(name)}>
+                  <td className={bcell}>{slno}</td>
+                  <td className="border border-gray-300 px-3 py-1.5 font-semibold uppercase tracking-wide text-gray-900">
+                    <span className="mr-1.5 text-gray-400">&#9656;</span>{name}
+                    <span className="ml-2 text-[11px] font-normal normal-case text-gray-400">{list.length} batch(es)</span>
                   </td>
+                  <td className={bcell}>-</td><td className={bcell}>-</td>
                   <Cells v={agg} />
                 </tr>
-                {!closed.has(name) && sortRows(list).map((r) => (
-                  <tr key={`${name}|${r.design}|${r.thickness}|${r.batch}`} className="border-t border-gray-50">
-                    <td className="py-1.5 pl-8 pr-3 font-medium text-gray-700">{r.thickness}</td>
-                    <td className="px-3 py-1.5 text-gray-600">{r.batch}</td>
-                    <Cells v={r} />
+              );
+              return (
+                <Fragment key={name}>
+                  {sorted.map((r, i) => (
+                    <tr key={`${r.design}|${r.thickness}|${r.batch}`} className="hover:bg-gray-50/60">
+                      {i === 0 && <td rowSpan={sorted.length + 1} className={`${bcell} align-middle`}>{slno}</td>}
+                      {i === 0 && (
+                        <td rowSpan={sorted.length + 1} className="cursor-pointer border border-gray-300 px-3 py-1.5 text-center align-middle font-semibold uppercase tracking-wide text-gray-900 hover:bg-yellow-50" onClick={() => toggle(name)}>
+                          <span className="mr-1.5 text-gray-400">&#9662;</span>{name}
+                        </td>
+                      )}
+                      <td className={`${bcell} font-medium`}>{r.thickness}</td>
+                      <td className={bcell}>{r.batch}</td>
+                      <Cells v={r} />
+                    </tr>
+                  ))}
+                  <tr className="bg-gray-100/80 font-semibold">
+                    <td className={bcell}>-</td>
+                    <td className={`${bcell} text-left text-[11px] uppercase text-gray-500`}>Total</td>
+                    <Cells v={agg} />
                   </tr>
-                ))}
-              </Fragment>
-            ))}
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
-      {!loading && <p className="text-xs text-gray-400">{groups.length.toLocaleString("en-IN")} design group(s) in stock.</p>}
+      {!loading && <p className="text-xs text-gray-400">{groups.length.toLocaleString("en-IN")} colour(s) in stock.</p>}
     </div>
   );
 }
