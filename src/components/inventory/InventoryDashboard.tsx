@@ -357,10 +357,10 @@ export function InventoryDashboard({ admin = false }: { admin?: boolean }) {
               <input className={inputCls} placeholder="Colour / design" value={f.design} onChange={(e) => setF({ ...f, design: e.target.value })} />
               <input className={inputCls} placeholder="Batch" value={f.batch} onChange={(e) => setF({ ...f, batch: e.target.value })} />
               <input className={inputCls} placeholder="Slab # / barcode" value={f.slab} onChange={(e) => setF({ ...f, slab: e.target.value })} />
-              <select className={inputCls} value={f.bay} onChange={(e) => setF({ ...f, bay: e.target.value })}>{["", ...BAYS].map((b) => <option key={b} value={b}>{b || "Any bay"}</option>)}</select>
-              <select className={inputCls} value={f.grade} onChange={(e) => setF({ ...f, grade: e.target.value })}>{GRADES.map((g) => <option key={g} value={g}>{g || "Any grade"}</option>)}</select>
-              <select className={inputCls} value={f.thickness} onChange={(e) => setF({ ...f, thickness: e.target.value })}>{THICKNESSES.map((t) => <option key={t} value={t}>{t || "Any thickness"}</option>)}</select>
-              <select className={inputCls} value={f.status} onChange={(e) => setF({ ...f, status: e.target.value })}>{STATUSES.map((s) => <option key={s} value={s}>{s || "Any status"}</option>)}</select>
+              <select className={inputCls} value={f.bay} onChange={(e) => { const n = { ...f, bay: e.target.value }; setF(n); run(n); }}>{["", ...BAYS].map((b) => <option key={b} value={b}>{b || "Any bay"}</option>)}</select>
+              <select className={inputCls} value={f.grade} onChange={(e) => { const n = { ...f, grade: e.target.value }; setF(n); run(n); }}>{GRADES.map((g) => <option key={g} value={g}>{g || "Any grade"}</option>)}</select>
+              <select className={inputCls} value={f.thickness} onChange={(e) => { const n = { ...f, thickness: e.target.value }; setF(n); run(n); }}>{THICKNESSES.map((t) => <option key={t} value={t}>{t || "Any thickness"}</option>)}</select>
+              <select className={inputCls} value={f.status} onChange={(e) => { const n = { ...f, status: e.target.value }; setF(n); run(n); }}>{STATUSES.map((s) => <option key={s} value={s}>{s || "Any status"}</option>)}</select>
             </div>
             <div className="mt-3 flex gap-2">
               <button type="submit" className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark">Search</button>
