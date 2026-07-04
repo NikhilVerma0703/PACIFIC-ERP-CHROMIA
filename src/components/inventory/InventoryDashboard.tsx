@@ -393,6 +393,15 @@ export function InventoryDashboard({ admin = false, summaryOnly = false }: { adm
             <div className="mt-3 flex gap-2">
               <button type="submit" className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark">Search</button>
               <button type="button" onClick={() => { setF({ ...EMPTY }); run(EMPTY); }} className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">Clear</button>
+              {admin && (
+                <a
+                  href={`/api/inventory/export?${(() => { const p = new URLSearchParams(); Object.entries(f).forEach(([k, v]) => { if (v) p.set(k, v); }); return p.toString(); })()}`}
+                  className="ml-auto rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
+                  title="Excel file of everything matching the current filters"
+                >
+                  ⬇ Download (Excel)
+                </a>
+              )}
             </div>
           </form>
 
