@@ -54,19 +54,8 @@ export async function GET() {
       else for (const k of KEYS) m[k] += r[k];
     }
     let out = [...merged.values()];
-    // per-design aggregates to classify the Trials group (same rule as the UI)
-    const aggT = new Map<string, { trial: number; all: number }>();
-    for (const r of out) {
-      const a = aggT.get(r.design) ?? { trial: 0, all: 0 };
-      a.trial += r.trial; a.all += r.total + r.dispatched;
-      aggT.set(r.design, a);
-    }
-    const isTrialDesign = (d: string) => {
-      const a = aggT.get(d);
-      return /(trial|trail)/i.test(d) || (!!a && a.trial > 0 && a.trial >= a.all);
-    };
     out = out.map((r) => {
-      const designApproved = !(hidden.has(r.design) || (isTrialDesign(r.design) && hidden.has("__TRIALS__")));
+      const designApproved = !hidden.has(r.design);
       const batchApproved = approvedSet.has(`${r.design} ${r.batch}`);
       return {
         ...r,

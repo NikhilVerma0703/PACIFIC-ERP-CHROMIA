@@ -13,8 +13,6 @@ interface Row {
 }
 const NUMS = ["total","dispatched","bay5","bay4","bay3","nobay","a","a2","b","c","cts","printing","trial","ungraded","pending_polish","pending_rw"] as const;
 type Agg = Record<(typeof NUMS)[number], number>;
-const isTrialName = (d: string) => /(trial|trail)/i.test(d);
-
 function sumRows(rows: Row[]): Agg {
   const out = Object.fromEntries(NUMS.map((k) => [k, 0])) as Agg;
   for (const r of rows) for (const k of NUMS) out[k] += r[k];
@@ -91,15 +89,8 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
       list.push(r);
     }
     const normal: { name: string; rows: Row[]; agg: Agg }[] = [];
-    const trialRows: Row[] = [];
     for (const [design, list] of byDesign) {
-      const agg = sumRows(list);
-      const allTrial = agg.trial > 0 && agg.trial >= agg.total + agg.dispatched;
-      if (isTrialName(design) || allTrial) {
-        for (const r of list) trialRows.push({ ...r, rawBatch: r.batch, batch: `${design} - ${r.batch}` });
-      } else {
-        normal.push({ name: design, rows: list, agg });
-      }
+      normal.push({ name: design, rows: list, agg: sumRows(list) });
     }
     normal.sort((x, y) => {
       for (const so of sorts) {
@@ -108,10 +99,11 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
       }
       return 0;
     });
-    // "(No Name)" pins to the bottom, just above Trials
-    const noNameIdx = normal.findIndex((g) => g.name === "(No Name)");
-    if (noNameIdx >= 0) normal.push(normal.splice(noNameIdx, 1)[0]);
-    if (trialRows.length) normal.push({ name: "Trials", rows: trialRows, agg: sumRows(trialRows) });
+    // "(No Name)" and "Trial" always pin to the bottom (in that order)
+    for (const pin of ["(No Name)", "Trial"]) {
+      const i = normal.findIndex((g) => g.name === pin);
+      if (i >= 0) normal.push(normal.splice(i, 1)[0]);
+    }
     return normal;
   }, [rows, q, thick, batchQ, sorts, canApprove]);
 
@@ -138,7 +130,7 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
   const toggleT = (k: string) => setOpenT((s) => { const c = new Set(s); if (c.has(k)) c.delete(k); else c.add(k); return c; });
   const setApproved = (groupName: string, batch: string, approved: boolean) => {
     setOv((m) => new Map(m).set(`${groupName}|${batch}`, approved));
-    const design = groupName === "Trials" ? "__TRIALS__" : groupName;
+    const design = groupName;
     fetch("/api/inventory/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ design, batch, approved }) }).catch(() => {});
   };
   // batch = "" -> the whole colour's master checkbox
