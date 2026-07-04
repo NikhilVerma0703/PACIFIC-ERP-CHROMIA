@@ -48,7 +48,7 @@ const fmtAt = (iso: string) => {
   return d.toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 };
 
-export function InventoryDashboard({ admin = false, summaryOnly = false }: { admin?: boolean; summaryOnly?: boolean }) {
+export function InventoryDashboard({ admin = false, summaryOnly = false, slabsOnly = false }: { admin?: boolean; summaryOnly?: boolean; slabsOnly?: boolean }) {
   const [kpi, setKpi] = useState<Kpi | null>(null);
   const [rows, setRows] = useState<Slab[]>([]);
   const [sSorts, setSSorts] = useState<{ k: keyof Slab; d: 1 | -1 }[]>([]);
@@ -61,6 +61,7 @@ export function InventoryDashboard({ admin = false, summaryOnly = false }: { adm
   const [moving, setMoving] = useState(false);
   const [moveMsg, setMoveMsg] = useState<string | null>(null);
   const [st, setSt] = useState({ action: "", pi: "", customer: "", expiryDays: "" });
+  const [invFile, setInvFile] = useState<File | null>(null);
   const [stBusy, setStBusy] = useState(false);
 
   // slab detail modal
@@ -177,7 +178,30 @@ export function InventoryDashboard({ admin = false, summaryOnly = false }: { adm
   };
 
   const applyStatus = async () => {
-    if (sel.size === 0 || !st.action) return;
+    const action = slabsOnly ? "dispatch" : st.action;
+    if (sel.size === 0 || !action) return;
+    if (action === "dispatch" && (invFile || slabsOnly)) {
+      if (slabsOnly && !invFile) { setMoveMsg("Attach the invoice file."); return; }
+      if (!st.pi.trim() || !st.customer.trim()) { setMoveMsg("PI number and customer name are required."); return; }
+      setStBusy(true); setMoveMsg(null);
+      try {
+        const body = new FormData();
+        body.set("slabs", JSON.stringify([...sel]));
+        body.set("pi", st.pi.trim());
+        body.set("customer", st.customer.trim());
+        if (invFile) body.set("invoice", invFile);
+        const r = await fetch("/api/inventory/dispatch", { method: "POST", body });
+        const d = await r.json().catch(() => null);
+        if (!r.ok || !d || d.error) setMoveMsg(d?.error ?? "Dispatch failed.");
+        else {
+          setMoveMsg(`Dispatched ${d.updated} slab(s)` + (d.skipped?.length ? `; ${d.skipped.length} skipped` : "") + (d.invoiceId ? " · invoice attached" : "") + ".");
+          setSt({ action: "", pi: "", customer: "", expiryDays: "" }); setInvFile(null);
+          run(f); loadKpi();
+        }
+      } catch { setMoveMsg("Dispatch failed."); }
+      finally { setStBusy(false); }
+      return;
+    }
     setStBusy(true); setMoveMsg(null);
     try {
       const payload: Record<string, unknown> = { slabs: [...sel], action: st.action };
@@ -259,15 +283,15 @@ export function InventoryDashboard({ admin = false, summaryOnly = false }: { adm
           <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Finished-Goods Inventory</h1>
           <p className="mt-1 text-sm text-gray-500">Slabs from QC approval through packing &amp; dispatch.</p>
         </div>
-        <div className="flex gap-1 rounded-xl border border-gray-200 bg-white p-1">
+        {!slabsOnly && <div className="flex gap-1 rounded-xl border border-gray-200 bg-white p-1">
           <button className={tabCls(view === "slabs")} onClick={() => setView("slabs")}>Slabs</button>
           <button className={tabCls(view === "summary")} onClick={() => setView("summary")}>Stock by Design</button>
           <button className={tabCls(view === "activity")} onClick={() => openActivity(evSlab)}>Activity</button>
           {admin && <button className={tabCls(view === "designs")} onClick={() => { setView("designs"); loadDesigns(); }}>Designs</button>}
-        </div>
+        </div>}
       </div>
 
-      {kpi && (
+      {!slabsOnly && kpi && (
         <div className="space-y-4">
           <div>
             <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400">Stock</p>
@@ -427,7 +451,7 @@ export function InventoryDashboard({ admin = false, summaryOnly = false }: { adm
             <div className="rounded-xl border border-brand/30 bg-brand/5 p-4">
               <div className="flex flex-wrap items-end gap-3">
                 <div className="text-sm font-medium text-gray-900">{sel.size} slab(s) selected</div>
-                <div className="w-36">
+                {!slabsOnly && <><div className="w-36">
                   <label className="mb-1 block text-xs font-medium text-gray-500">Move to bay</label>
                   <select className={inputCls} value={mv.bay} disabled={mv.clearBay} onChange={(e) => setMv({ ...mv, bay: e.target.value })}>
                     {["", ...BAYS].map((b) => <option key={b} value={b}>{b || "— keep bay —"}</option>)}
@@ -439,26 +463,37 @@ export function InventoryDashboard({ admin = false, summaryOnly = false }: { adm
                 </div>
                 <label className="flex items-center gap-1.5 pb-2 text-xs text-gray-600"><input type="checkbox" checked={mv.clearBay} onChange={(e) => setMv({ ...mv, clearBay: e.target.checked, bay: "" })} /> Clear bay</label>
                 <label className="flex items-center gap-1.5 pb-2 text-xs text-gray-600"><input type="checkbox" checked={mv.clearFrame} onChange={(e) => setMv({ ...mv, clearFrame: e.target.checked, frame: "" })} /> Clear frame</label>
-                <button onClick={applyMove} disabled={moving} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark disabled:opacity-50">{moving ? "Applying…" : "Apply"}</button>
+                <button onClick={applyMove} disabled={moving} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark disabled:opacity-50">{moving ? "Applying…" : "Apply"}</button></>}
                 <button onClick={() => setSel(new Set())} className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">Deselect</button>
               </div>
               <div className="mt-3 flex flex-wrap items-end gap-3 border-t border-brand/10 pt-3">
+                {slabsOnly ? (
+                  <div className="pb-2 text-sm font-semibold text-gray-900">Mark Dispatched</div>
+                ) : (
                 <div className="w-56">
                   <label className="mb-1 block text-xs font-medium text-gray-500">Status action</label>
                   <select className={inputCls} value={st.action} onChange={(e) => setSt({ ...st, action: e.target.value })}>
                     {ACTIONS.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
                   </select>
                 </div>
-                {(st.action === "reserve" || st.action === "dispatch") && (
+                )}
+                {(slabsOnly || st.action === "reserve" || st.action === "dispatch") && (
                   <div className="w-40">
                     <label className="mb-1 block text-xs font-medium text-gray-500">PI no.</label>
                     <input className={inputCls} placeholder="PI" value={st.pi} onChange={(e) => setSt({ ...st, pi: e.target.value })} />
                   </div>
                 )}
-                {st.action === "reserve" && (
+                {(slabsOnly || st.action === "reserve" || st.action === "dispatch") && (
                   <div className="w-44">
                     <label className="mb-1 block text-xs font-medium text-gray-500">Customer</label>
                     <input className={inputCls} placeholder="Customer" value={st.customer} onChange={(e) => setSt({ ...st, customer: e.target.value })} />
+                  </div>
+                )}
+                {(slabsOnly || (admin && st.action === "dispatch")) && (
+                  <div className="w-60">
+                    <label className="mb-1 block text-xs font-medium text-gray-500">Invoice (PDF/image){slabsOnly ? "" : " — optional"}</label>
+                    <input type="file" accept="application/pdf,image/*" className="block w-full text-xs text-gray-600 file:mr-2 file:rounded-lg file:border-0 file:bg-brand/10 file:px-3 file:py-2 file:text-xs file:font-medium file:text-brand"
+                      onChange={(e) => setInvFile(e.target.files?.[0] ?? null)} />
                   </div>
                 )}
                 {st.action === "reserve" && admin && (
@@ -467,7 +502,7 @@ export function InventoryDashboard({ admin = false, summaryOnly = false }: { adm
                     <input className={inputCls} placeholder="7" value={st.expiryDays} onChange={(e) => setSt({ ...st, expiryDays: e.target.value })} />
                   </div>
                 )}
-                <button onClick={applyStatus} disabled={stBusy || !st.action} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark disabled:opacity-50">{stBusy ? "Applying…" : "Apply status"}</button>
+                <button onClick={applyStatus} disabled={stBusy || (!slabsOnly && !st.action)} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark disabled:opacity-50">{stBusy ? "Applying…" : slabsOnly ? "Mark Dispatched" : "Apply status"}</button>
                 {st.action === "reserve" && !admin && <p className="pb-2 text-xs text-gray-400">7-day hold (Admin can change)</p>}
               </div>
               <p className="mt-2 text-xs text-gray-500">Blank field = unchanged. Reservations auto-release after the hold lapses. Every change is logged to the audit trail.</p>
@@ -590,6 +625,12 @@ export function InventoryDashboard({ admin = false, summaryOnly = false }: { adm
                     <p className="text-sm text-gray-400">No events yet.</p>
                   )}
                 </div>
+                {detail.invoice && (
+                  <p className="text-sm text-gray-600">
+                    Invoice: <a className="font-medium text-brand hover:underline" href={`/api/inventory/invoice?id=${detail.invoice.id}`}>{detail.invoice.filename}</a>
+                    {detail.invoice.pi ? ` · PI ${detail.invoice.pi}` : ""}{detail.invoice.customer ? ` · ${detail.invoice.customer}` : ""} · {fmtAt(detail.invoice.at)}
+                  </p>
+                )}
                 <div className="flex justify-end">
                   <a href={`/slab?s=${detail.slabNumber}`} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark">Full production timeline →</a>
                 </div>

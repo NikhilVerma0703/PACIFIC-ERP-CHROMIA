@@ -100,6 +100,8 @@ export function Nav({
 
   if (role === "STORE")
     return <nav className="flex flex-col gap-1">{STORE_TABS.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}</nav>;
+  if (role === "COMMERCIAL")
+    return <nav className="flex flex-col gap-1"><NavLink href="/inventory" icon={I.box} label="Finished Goods" path={path} /></nav>;
   if (role === "SALES")
     return <nav className="flex flex-col gap-1"><NavLink href="/inventory" icon={I.box} label="Finished Goods" path={path} /></nav>;
   if (role === "MAINTENANCE")

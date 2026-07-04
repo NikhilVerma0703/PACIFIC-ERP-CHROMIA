@@ -86,6 +86,11 @@ export default auth((req) => {
     const ok = p.startsWith("/entry") || p === "/live" || p.startsWith("/tables") || p.startsWith("/api");
     if (!ok) return Response.redirect(new URL("/entry", nextUrl));
   }
+  if (role === "COMMERCIAL") {
+    // Commercial: the finished-goods slabs table only.
+    const ok = p.startsWith("/inventory") || p.startsWith("/api");
+    if (!ok) return Response.redirect(new URL("/inventory", nextUrl));
+  }
   if (role === "SALES") {
     // Sales: the finished-goods stock summary only.
     const ok = p.startsWith("/inventory") || p.startsWith("/api");

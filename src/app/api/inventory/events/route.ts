@@ -2,13 +2,15 @@
 // activity feed. Gated to inventory roles.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
-import { inventoryGate } from "@/lib/inventory/access";
+import { inventoryGate, SLABS_ONLY_ROLES } from "@/lib/inventory/access";
 
 const db = prisma as any;
 
 export async function GET(request: Request) {
   const g = await inventoryGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (SLABS_ONLY_ROLES.has(String((g.user as any)?.role ?? ""))) return Response.json({ error: "Not available for this login" }, { status: 403 });
   try {
     const { searchParams } = new URL(request.url);
     const slabRaw = (searchParams.get("slab") ?? "").trim();

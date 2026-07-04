@@ -211,6 +211,7 @@ export async function changeSlabStatus(
       data.reservedAt = null; data.reservationExpiresAt = null;
     }
     if (action === "dispatch" && opts.pi !== undefined && opts.pi !== null) data.reservedForPi = opts.pi;
+    if (action === "dispatch" && opts.customer !== undefined && opts.customer !== null) data.customer = opts.customer;
     if (action === "dispatch") { data.reservationExpiresAt = null; }
 
     // guarded write: only flips if the status is still one we validated against
@@ -220,7 +221,7 @@ export async function changeSlabStatus(
     const effectivePi = opts.pi ?? slab.reservedForPi;
     const detail =
       action === "reserve" ? [opts.pi ? `PI ${opts.pi}` : null, opts.customer, `${days}d hold`].filter(Boolean).join(" · ")
-      : action === "dispatch" && effectivePi ? `PI ${effectivePi}`
+      : action === "dispatch" ? ([effectivePi ? `PI ${effectivePi}` : null, opts.customer].filter(Boolean).join(" · ") || null)
       : null;
     await writeSlabEvent(sn, action, { field: "status", oldValue: slab.status, newValue: t.to + (detail ? ` (${detail})` : ""), by: opts.by, source: src });
     res.updated++;

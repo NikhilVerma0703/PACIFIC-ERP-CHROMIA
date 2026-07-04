@@ -4,7 +4,7 @@
 // Body: { slabs: number[], action, pi?, customer?, expiryDays? }
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { z } from "zod";
-import { inventoryGate } from "@/lib/inventory/access";
+import { inventoryGate, SLABS_ONLY_ROLES } from "@/lib/inventory/access";
 import { changeSlabStatus, DEFAULT_RESERVATION_DAYS, type StatusAction } from "@/lib/inventory/finishedSlab";
 
 const MAX_SLABS = 500;
@@ -26,6 +26,8 @@ const bodySchema = z.object({
 export async function POST(request: Request) {
   const g = await inventoryGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (SLABS_ONLY_ROLES.has(String((g.user as any)?.role ?? ""))) return Response.json({ error: "Not available for this login" }, { status: 403 });
   try {
     const raw = await request.json().catch(() => null);
     const parsed = bodySchema.safeParse(raw);

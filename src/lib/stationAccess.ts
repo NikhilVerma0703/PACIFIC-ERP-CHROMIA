@@ -36,7 +36,7 @@ export async function entryAccess(): Promise<EntryAccess> {
   const branch = (((u as any).branch as string | undefined) === "OFFICE" ? "OFFICE" : "SHOP_FLOOR") as "SHOP_FLOOR" | "OFFICE";
   // Office branch: finance/dispatch forms only — except Sales, who is
   // summary-only and gets no entry forms at all.
-  if (branch === "OFFICE") return { models: role === "SALES" ? [] : [...OFFICE_MODELS], station, branch };
+  if (branch === "OFFICE") return { models: role === "SALES" || role === "COMMERCIAL" ? [] : [...OFFICE_MODELS], station, branch };
   if (rankOf(role) >= ROLE_RANK.INCHARGE) return { models: null, station, branch };
   return { models: STATION_MODELS[String(station ?? "")] ?? [], station, branch };
 }

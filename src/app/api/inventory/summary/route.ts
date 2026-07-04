@@ -3,7 +3,7 @@
 // polish / R&W. Design names are alias-aware. Gated to inventory roles.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
-import { summaryGate } from "@/lib/inventory/access";
+import { summaryGate, SLABS_ONLY_ROLES } from "@/lib/inventory/access";
 import { displayBatch } from "@/lib/batchDisplay";
 
 const db = prisma as any;
@@ -12,6 +12,8 @@ const KEYS = ["total","dispatched","bay5","bay4","bay3","nobay","a","a2","b","c"
 export async function GET() {
   const g = await summaryGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (SLABS_ONLY_ROLES.has(String((g.user as any)?.role ?? ""))) return Response.json({ error: "Not available for this login" }, { status: 403 });
   try {
     const [rows, aliases] = await Promise.all([
       db.$queryRaw`

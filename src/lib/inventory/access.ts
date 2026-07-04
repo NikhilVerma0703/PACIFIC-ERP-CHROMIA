@@ -7,12 +7,14 @@ import { currentUser } from "@/lib/rbac";
 export const INVENTORY_ROLES = new Set(["ADMIN", "FINANCE", "ACCOUNTS"]);
 /** Sales: sees the inventory module but ONLY the Stock by Design summary. */
 export const SUMMARY_ONLY_ROLES = new Set(["SALES"]);
+/** Commercial: sees ONLY the Slabs table; may dispatch (PI + customer + invoice). */
+export const SLABS_ONLY_ROLES = new Set(["COMMERCIAL"]);
 
 /** Sync check used by Shell/Nav and the gates: Admin anywhere; otherwise the
  * session must be an Office-branch user with an inventory role. */
 export function hasInventoryAccess(role: string, branch: string): boolean {
   if (role === "ADMIN") return true; // admins span every department
-  return branch === "OFFICE" && (INVENTORY_ROLES.has(role) || SUMMARY_ONLY_ROLES.has(role));
+  return branch === "OFFICE" && (INVENTORY_ROLES.has(role) || SUMMARY_ONLY_ROLES.has(role) || SLABS_ONLY_ROLES.has(role));
 }
 
 export async function canAccessInventory(): Promise<boolean> {

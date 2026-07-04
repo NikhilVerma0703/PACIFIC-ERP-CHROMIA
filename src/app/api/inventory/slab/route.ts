@@ -40,7 +40,15 @@ export async function GET(request: Request) {
       const ageDays = slab.firstSeenAt ? Math.max(0, Math.floor((Date.now() - new Date(slab.firstSeenAt).getTime()) / 86400000)) : null;
       derived = { ...slab, sqft: Math.round(sqft * 100) / 100, sqm: Math.round(sqft * SQFT_TO_SQM * 100) / 100, ageDays };
     }
-    return Response.json({ slab: derived, qc, events });
+    // dispatch invoice (visible to Commercial + Admin)
+    let invoice = null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const role = String((g.user as any)?.role ?? "");
+    if (role === "ADMIN" || role === "COMMERCIAL") {
+      const inv: any[] = await db.$queryRaw`SELECT id, pi, customer, filename, at FROM fg_dispatch_invoice WHERE ${n} = ANY(slab_numbers) ORDER BY at DESC LIMIT 1`.catch(() => []);
+      if (inv.length) invoice = inv[0];
+    }
+    return Response.json({ slab: derived, qc, events, invoice });
   } catch (e) {
     console.error("Inventory slab detail error:", e);
     return Response.json({ error: "Failed" }, { status: 500 });

@@ -1,7 +1,7 @@
 // Finished-goods dashboard KPIs. Gated to inventory roles.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
-import { inventoryGate } from "@/lib/inventory/access";
+import { inventoryGate, SLABS_ONLY_ROLES } from "@/lib/inventory/access";
 import { sweepExpiredReservations } from "@/lib/inventory/finishedSlab";
 import { buildInventoryWhere } from "@/lib/inventory/searchWhere";
 
@@ -10,6 +10,8 @@ const db = prisma as any;
 export async function GET(request: Request) {
   const g = await inventoryGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (SLABS_ONLY_ROLES.has(String((g.user as any)?.role ?? ""))) return Response.json({ error: "Not available for this login" }, { status: 403 });
   try {
     await sweepExpiredReservations(); // lapsed PI holds -> AVAILABLE before we count
     // Cards follow the SAME filters as the slab table (empty filters = global).

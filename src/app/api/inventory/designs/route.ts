@@ -5,7 +5,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { inventoryGate } from "@/lib/inventory/access";
+import { inventoryGate, SLABS_ONLY_ROLES } from "@/lib/inventory/access";
 import { isAdmin } from "@/lib/rbac";
 
 const db = prisma as any;
@@ -18,6 +18,8 @@ const mergeSchema = z.object({
 export async function GET() {
   const g = await inventoryGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (SLABS_ONLY_ROLES.has(String((g.user as any)?.role ?? ""))) return Response.json({ error: "Not available for this login" }, { status: 403 });
   try {
     const [aliases, designRows] = await Promise.all([
       db.designAlias.findMany({ orderBy: [{ canonical: "asc" }, { variant: "asc" }] }),
@@ -33,6 +35,8 @@ export async function GET() {
 export async function POST(request: Request) {
   const g = await inventoryGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (SLABS_ONLY_ROLES.has(String((g.user as any)?.role ?? ""))) return Response.json({ error: "Not available for this login" }, { status: 403 });
   if (!(await isAdmin())) return Response.json({ error: "Admin only" }, { status: 403 });
   try {
     const raw = await request.json().catch(() => null);
@@ -63,6 +67,8 @@ export async function POST(request: Request) {
 export async function DELETE(request: Request) {
   const g = await inventoryGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (SLABS_ONLY_ROLES.has(String((g.user as any)?.role ?? ""))) return Response.json({ error: "Not available for this login" }, { status: 403 });
   if (!(await isAdmin())) return Response.json({ error: "Admin only" }, { status: 403 });
   try {
     const variant = clean(new URL(request.url).searchParams.get("variant"));
