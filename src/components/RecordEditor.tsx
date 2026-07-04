@@ -10,6 +10,7 @@ import { secondsToHHMM } from "@/lib/time";
 import { THICKNESS_FIELDS, THICKNESS_OPTS, canonThickness } from "@/lib/thickness";
 import { OPERATOR_FIELDS } from "@/lib/operatorFields";
 import { isRequiredField } from "@/lib/requiredFields";
+import { PhotoField } from "./PhotoField";
 import { isCurated } from "@/lib/categoricalFields";
 import { classifyMixer, mixerFullLabel } from "@/lib/mixerLabels";
 import type { SiloFormInfo } from "@/lib/silo";
@@ -299,6 +300,7 @@ export function RecordEditor({ model, id, fields, values, mode, options = {}, hi
         </div>
       )}
 
+      <div className="mb-4 max-w-sm"><PhotoField /></div>
       <div className="sticky bottom-0 -mx-5 mt-6 flex items-center justify-between gap-3 border-t border-gray-200 bg-white/85 px-5 py-3 backdrop-blur">
         <div className="text-sm">{delMsg ? <span className="text-red-600">{delMsg}</span> : msg === "ok" ? <span className="text-green-600">Saved &#10003;</span> : msg?.startsWith("✓") ? <span className="text-green-600">{msg}</span> : msg ? <span className="text-red-600">{msg}</span> : <span className="text-gray-400">{editable.length} editable fields</span>}</div>
         <div className="flex items-center gap-2">

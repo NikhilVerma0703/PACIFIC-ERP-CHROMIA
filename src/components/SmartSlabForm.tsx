@@ -11,6 +11,7 @@ import { isCurated, OTHER_SENTINEL } from "@/lib/categoricalFields";
 import { secondsToHHMM } from "@/lib/time";
 import type { SlabMode } from "@/lib/smartEntry";
 import { isRequiredField } from "@/lib/requiredFields";
+import { PhotoField } from "./PhotoField";
 
 // Current local date+time as a datetime-local value ("YYYY-MM-DDTHH:mm"), used to
 // pre-fill empty Date fields so an entry always carries a date even if the
@@ -233,7 +234,7 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
         )}
         <div className="rounded-2xl border border-gray-200 bg-white p-4">
           <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">Slab details</div>
-          <div className={grid}>{slabF.map((f) => <SlabField key={f.prismaField} f={f} locked={false} def={f.prismaField === "qualityGrade" ? "Not graded yet" : ""} opts={options[f.prismaField]} operatorName={operatorName} unlocked={unlocked} onUnlock={(fld) => setUnlocked((s) => new Set(s).add(fld))} required={isRequiredField(model, f.prismaField)} />)}</div>
+          <div className={grid}>{slabF.map((f) => <SlabField key={f.prismaField} f={f} locked={false} def={f.prismaField === "qualityGrade" ? "Not graded yet" : ""} opts={options[f.prismaField]} operatorName={operatorName} unlocked={unlocked} onUnlock={(fld) => setUnlocked((s) => new Set(s).add(fld))} required={isRequiredField(model, f.prismaField)} />)}<PhotoField /></div>
         </div>
       </div>
 

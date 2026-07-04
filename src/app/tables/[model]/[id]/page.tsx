@@ -7,6 +7,7 @@ import { tableMeta, getRow, selectOptions, HIDDEN_FORM_FIELDS } from "@/lib/tabl
 import { RecordEditor } from "@/components/RecordEditor";
 import { canSeeModel } from "@/lib/branch";
 import { operatorTableModels } from "@/lib/stationAccess";
+import { photosForRecord } from "@/lib/entryPhoto";
 
 export const dynamic = "force-dynamic";
 
@@ -19,8 +20,19 @@ export default async function EditRecord({ params }: { params: Promise<{ model: 
   if (!(await canSeeModel(model))) notFound();
   const isOperator = String((_me as { role?: string } | null)?.role ?? "") === "OPERATOR";
   if (isOperator && !operatorTableModels((_me as { station?: string | null } | null)?.station).has(model)) notFound();
-  const [row, options] = await Promise.all([getRow(model, id), selectOptions(model)]);
+  const [row, options, photos] = await Promise.all([getRow(model, id), selectOptions(model), photosForRecord(model, id)]);
   if (!row) notFound();
+  const PhotoStrip = () =>
+    photos.length ? (
+      <div className="mb-4 flex flex-wrap gap-3">
+        {photos.map((ph) => (
+          <a key={ph.id} href={`/api/photo?id=${ph.id}`} target="_blank" className="block overflow-hidden rounded-lg border border-gray-200 shadow-sm transition hover:border-brand" title={`${ph.filename}${ph.taken_by ? ` · ${ph.taken_by}` : ""}`}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={`/api/photo?id=${ph.id}`} alt={ph.filename} className="h-24 w-24 object-cover" />
+          </a>
+        ))}
+      </div>
+    ) : null;
   // an operator's OWN entry is editable (matched by user id stamped at creation)
   const ownRow = isOperator && !!(_me as { id?: string } | null)?.id && (row as { enteredById?: string | null }).enteredById === (_me as { id?: string }).id;
   // Polish QC is shared: any QC operator may correct any QC row (saveRow enforces
@@ -41,6 +53,7 @@ export default async function EditRecord({ params }: { params: Promise<{ model: 
         <BackButton fallback={`/tables/${model}`} />
         <h1 className="mb-1 text-xl font-semibold">{meta.tableName} — record</h1>
         <p className="mb-4 text-sm text-gray-500">View only — ask your incharge to correct anything that&apos;s wrong.</p>
+        <PhotoStrip />
         <Card>
           <dl className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
             {meta.fields.filter((f) => !["id"].includes(f.prismaField)).map((f) => (
@@ -60,6 +73,7 @@ export default async function EditRecord({ params }: { params: Promise<{ model: 
       <BackButton fallback={`/tables/${model}`} />
       <h1 className="mb-1 text-xl font-semibold">Edit record</h1>
       {ownRow ? <p className="mb-4 text-sm text-gray-500">Your own entry — you can correct it. Other records are view-only for you.</p> : polishQcShared ? <p className="mb-4 text-sm text-gray-500">Polish QC — any QC operator can correct this entry; the change is logged.</p> : null}
+      <PhotoStrip />
       <Card><RecordEditor model={model} id={id} fields={meta.fields} values={row} mode="edit" options={options} hideFields={HIDDEN_FORM_FIELDS[model] ?? []} operatorName={operatorName} canDelete={await isAdmin()} /></Card>
     </Shell>
   );

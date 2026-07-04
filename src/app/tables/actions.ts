@@ -18,6 +18,7 @@ import { RECORD_SMART } from "@/lib/recordSmart";
 import { prisma } from "@/lib/prisma";
 import { autolinkFinishedSlabFromQc, relinkFinishedSlabAfterNumberChange } from "@/lib/inventory/finishedSlab";
 import { REQUIRED_FORM_FIELDS, REQUIRED_FIELD_LABELS } from "@/lib/requiredFields";
+import { savePhotoFromForm } from "@/lib/entryPhoto";
 
 // tx-scoped equivalents of delegateOf() for $transaction blocks
 const prismaTx = () => prisma;
@@ -194,6 +195,7 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
     }
   }
   catch (e) { return `Save failed: ${friendlyDbError(e)}`; }
+  await savePhotoFromForm(fd, model, id, (await currentUser())?.name ?? null); // optional photo, best-effort
   // Self-heal: an edited mixer cycle re-runs FIFO allocation (already-linked
   // slots are skipped) so filling in a missing silo/buffer deducts stock.
   if (model === "MixerCycle") { try { await allocateMixerCycle(id); } catch { /* best-effort */ } }
@@ -349,6 +351,7 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
   }
   catch (e) { return `Create failed: ${friendlyDbError(e)}`; }
   void createdAirtableId;
+  await savePhotoFromForm(fd, model, createdId, opName); // optional photo, best-effort
   revalidatePath(`/tables/${model}`);
   if (model === "PolishQc") {
     // Autolink this QC slab into finished-goods inventory (best-effort).
