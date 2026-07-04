@@ -51,6 +51,7 @@ const fmtAt = (iso: string) => {
 export function InventoryDashboard({ admin = false, summaryOnly = false }: { admin?: boolean; summaryOnly?: boolean }) {
   const [kpi, setKpi] = useState<Kpi | null>(null);
   const [rows, setRows] = useState<Slab[]>([]);
+  const [sSort, setSSort] = useState<{ k: keyof Slab; d: 1 | -1 } | null>(null);
   const [loading, setLoading] = useState(true);
   const [f, setF] = useState({ ...EMPTY });
 
@@ -196,6 +197,21 @@ export function InventoryDashboard({ admin = false, summaryOnly = false }: { adm
     } catch { setMoveMsg("Action failed."); }
     finally { setStBusy(false); }
   };
+
+  const displayRows = sSort
+    ? [...rows].sort((a, b) => {
+        const va = a[sSort.k], vb = b[sSort.k];
+        if (va == null && vb == null) return 0;
+        if (va == null) return 1;
+        if (vb == null) return -1;
+        if (typeof va === "number" && typeof vb === "number") return sSort.d * (va - vb);
+        return sSort.d * String(va).localeCompare(String(vb), undefined, { numeric: true });
+      })
+    : rows;
+  const slabSort = (k: keyof Slab) =>
+    setSSort((cur) => (cur?.k === k ? (cur.d === 1 ? { k, d: -1 } : null) : { k, d: 1 }));
+  const slabArrow = (k: keyof Slab) => (sSort?.k === k ? (sSort.d === 1 ? " ▴" : " ▾") : "");
+  const thSort = "cursor-pointer px-3 py-2 hover:text-brand";
 
   const card = (label: string, value: number, tone = "text-gray-900") => (
     <div className="rounded-xl border border-gray-200 bg-white p-4">
@@ -437,9 +453,9 @@ export function InventoryDashboard({ admin = false, summaryOnly = false }: { adm
               <thead>
                 <tr className="border-b border-gray-100 text-left text-gray-500">
                   <th className="px-3 py-2"><input type="checkbox" checked={rows.length > 0 && sel.size === rows.length} onChange={toggleAll} /></th>
-                  <th className="px-3 py-2">Slab #</th><th className="px-3 py-2">Design</th><th className="px-3 py-2">Batch</th>
-                  <th className="px-3 py-2">Thk</th><th className="px-3 py-2">Grade</th><th className="px-3 py-2">Quality Issue</th><th className="px-3 py-2">Polish</th>
-                  <th className="px-3 py-2">Bay</th><th className="px-3 py-2">Frame</th><th className="px-3 py-2 text-right">Sqft</th><th className="px-3 py-2 text-right">Age</th><th className="px-3 py-2">Status</th>
+                  <th className={thSort} title="Sort" onClick={() => slabSort("slabNumber")}>Slab #{slabArrow("slabNumber")}</th><th className={thSort} title="Sort" onClick={() => slabSort("design")}>Design{slabArrow("design")}</th><th className={thSort} title="Sort" onClick={() => slabSort("batchNumber")}>Batch{slabArrow("batchNumber")}</th>
+                  <th className={thSort} title="Sort" onClick={() => slabSort("slabThickness")}>Thk{slabArrow("slabThickness")}</th><th className={thSort} title="Sort" onClick={() => slabSort("grade")}>Grade{slabArrow("grade")}</th><th className="px-3 py-2">Quality Issue</th><th className={thSort} title="Sort" onClick={() => slabSort("polishType")}>Polish{slabArrow("polishType")}</th>
+                  <th className={thSort} title="Sort" onClick={() => slabSort("bayNumber")}>Bay{slabArrow("bayNumber")}</th><th className={thSort} title="Sort" onClick={() => slabSort("frameNumber")}>Frame{slabArrow("frameNumber")}</th><th className={`${thSort} text-right`} title="Sort" onClick={() => slabSort("sqft")}>Sqft{slabArrow("sqft")}</th><th className={`${thSort} text-right`} title="Sort" onClick={() => slabSort("ageDays")}>Age{slabArrow("ageDays")}</th><th className={thSort} title="Sort" onClick={() => slabSort("status")}>Status{slabArrow("status")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -448,7 +464,7 @@ export function InventoryDashboard({ admin = false, summaryOnly = false }: { adm
                 ) : rows.length === 0 ? (
                   <tr><td colSpan={13} className="px-3 py-10 text-center text-gray-400">No slabs match the current filters.</td></tr>
                 ) : (
-                  rows.map((r) => (
+                  displayRows.map((r) => (
                     <tr key={r.id} className="border-t border-gray-50 hover:bg-gray-50/50">
                       <td className="px-3 py-2"><input type="checkbox" checked={sel.has(r.slabNumber)} onChange={() => toggle(r.slabNumber)} /></td>
                       <td className="px-3 py-2 font-medium text-gray-900">

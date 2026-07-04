@@ -41,6 +41,10 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
+  const [thick, setThick] = useState("");
+  const [batchQ, setBatchQ] = useState("");
+  const [sortKey, setSortKey] = useState<"name" | (typeof NUMS)[number]>("name");
+  const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [open, setOpen] = useState<Set<string>>(new Set());   // open designs (closed by default)
   const [ov, setOv] = useState<Map<string, boolean>>(new Map()); // optimistic Approved overrides
   const [openT, setOpenT] = useState<Set<string>>(new Set()); // open thickness groups
@@ -81,6 +85,8 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
     for (const r of rows) {
       if (canApprove && r.pending) continue; // pending stock sits in the strip above
       if (term && !r.design.toLowerCase().includes(term)) continue;
+      if (thick && r.thickness !== thick) continue;
+      if (batchQ.trim() && !r.batch.toLowerCase().includes(batchQ.trim().toLowerCase())) continue;
       const list = byDesign.get(r.design) ?? [];
       if (!list.length) byDesign.set(r.design, list);
       list.push(r);
@@ -96,13 +102,22 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
         normal.push({ name: design, rows: list, agg });
       }
     }
-    normal.sort((x, y) => x.name.localeCompare(y.name));
+    normal.sort((x, y) =>
+      sortKey === "name" ? sortDir * x.name.localeCompare(y.name) : sortDir * (x.agg[sortKey] - y.agg[sortKey])
+    );
     // "(No Name)" pins to the bottom, just above Trials
     const noNameIdx = normal.findIndex((g) => g.name === "(No Name)");
     if (noNameIdx >= 0) normal.push(normal.splice(noNameIdx, 1)[0]);
     if (trialRows.length) normal.push({ name: "Trials", rows: trialRows, agg: sumRows(trialRows) });
     return normal;
-  }, [rows, q, canApprove]);
+  }, [rows, q, thick, batchQ, sortKey, sortDir, canApprove]);
+
+  const thickOptions = useMemo(() => [...new Set(rows.map((r) => r.thickness))].sort(), [rows]);
+  const onSort = (k: "name" | (typeof NUMS)[number]) => {
+    if (sortKey === k) setSortDir((d) => (d === 1 ? -1 : 1));
+    else { setSortKey(k); setSortDir(k === "name" ? 1 : -1); }
+  };
+  const arrow = (k: string) => (sortKey === k ? (sortDir === 1 ? " ▴" : " ▾") : "");
 
   const toggle = (k: string) => setOpen((s) => { const c = new Set(s); if (c.has(k)) c.delete(k); else c.add(k); return c; });
   const toggleT = (k: string) => setOpenT((s) => { const c = new Set(s); if (c.has(k)) c.delete(k); else c.add(k); return c; });
@@ -153,7 +168,12 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
         </div>
       )}
       <div className="flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white p-4">
-        <input className="w-full max-w-xs rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20" placeholder="Filter colour / design..." value={q} onChange={(e) => setQ(e.target.value)} />
+        <input className="w-full max-w-[220px] rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20" placeholder="Filter colour / design..." value={q} onChange={(e) => setQ(e.target.value)} />
+        <select className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none" value={thick} onChange={(e) => setThick(e.target.value)}>
+          <option value="">Any thickness</option>
+          {thickOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <input className="w-full max-w-[140px] rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20" placeholder="Batch..." value={batchQ} onChange={(e) => setBatchQ(e.target.value)} />
         <p className="text-xs text-gray-400">Stock register - click a colour to open its batches - trials grouped at the end.</p>
       </div>
       <div className="max-h-[85vh] overflow-auto rounded-lg border border-gray-300 bg-white">
@@ -161,19 +181,12 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
           <thead className="sticky top-0 z-10">
             <tr className="bg-brand text-[11px] font-bold uppercase tracking-wide text-white">
               <th className="border border-brand-dark/40 px-2 py-2">SL.No</th>
-              <th className="border border-brand-dark/40 px-3 py-2">Colour Name</th>
+              <th className="cursor-pointer border border-brand-dark/40 px-3 py-2 hover:bg-brand-dark/40" title="Sort" onClick={() => onSort("name")}>Colour Name{arrow("name")}</th>
               <th className="border border-brand-dark/40 px-2 py-2">Thick</th>
               <th className="border border-brand-dark/40 px-2 py-2">Batch No</th>
-              <th className="border border-brand-dark/40 px-2 py-2">Slabs</th>
-              <th className="border border-brand-dark/40 px-2 py-2">A</th>
-              <th className="border border-brand-dark/40 px-2 py-2">A2</th>
-              <th className="border border-brand-dark/40 px-2 py-2">B</th>
-              <th className="border border-brand-dark/40 px-2 py-2">C</th>
-              <th className="border border-brand-dark/40 px-2 py-2">CTS</th>
-              <th className="border border-brand-dark/40 px-2 py-2">Print</th>
-              <th className="border border-brand-dark/40 px-2 py-2">Trial</th>
-              <th className="border border-brand-dark/40 px-2 py-2">No Gr.</th>
-              <th className="border border-brand-dark/40 px-2 py-2">R/W</th>
+              {([["Slabs","total"],["A","a"],["A2","a2"],["B","b"],["C","c"],["CTS","cts"],["Print","printing"],["Trial","trial"],["No Gr.","ungraded"],["R/W","pending_rw"]] as [string, (typeof NUMS)[number]][]).map(([label, k]) => (
+                <th key={k} className="cursor-pointer border border-brand-dark/40 px-2 py-2 hover:bg-brand-dark/40" title="Sort" onClick={() => onSort(k)}>{label}{arrow(k)}</th>
+              ))}
               {canApprove && <th className="border border-brand-dark/40 px-2 py-2">Approved</th>}
             </tr>
           </thead>
