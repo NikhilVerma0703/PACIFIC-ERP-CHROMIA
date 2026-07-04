@@ -43,8 +43,7 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
   const [q, setQ] = useState("");
   const [thick, setThick] = useState("");
   const [batchQ, setBatchQ] = useState("");
-  const [sortKey, setSortKey] = useState<"name" | (typeof NUMS)[number]>("name");
-  const [sortDir, setSortDir] = useState<1 | -1>(1);
+  const [sorts, setSorts] = useState<{ k: "name" | (typeof NUMS)[number]; d: 1 | -1 }[]>([{ k: "name", d: 1 }]);
   const [open, setOpen] = useState<Set<string>>(new Set());   // open designs (closed by default)
   const [ov, setOv] = useState<Map<string, boolean>>(new Map()); // optimistic Approved overrides
   const [openT, setOpenT] = useState<Set<string>>(new Set()); // open thickness groups
@@ -102,22 +101,38 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
         normal.push({ name: design, rows: list, agg });
       }
     }
-    normal.sort((x, y) =>
-      sortKey === "name" ? sortDir * x.name.localeCompare(y.name) : sortDir * (x.agg[sortKey] - y.agg[sortKey])
-    );
+    normal.sort((x, y) => {
+      for (const so of sorts) {
+        const c = so.k === "name" ? x.name.localeCompare(y.name) : x.agg[so.k] - y.agg[so.k];
+        if (c) return so.d * c;
+      }
+      return 0;
+    });
     // "(No Name)" pins to the bottom, just above Trials
     const noNameIdx = normal.findIndex((g) => g.name === "(No Name)");
     if (noNameIdx >= 0) normal.push(normal.splice(noNameIdx, 1)[0]);
     if (trialRows.length) normal.push({ name: "Trials", rows: trialRows, agg: sumRows(trialRows) });
     return normal;
-  }, [rows, q, thick, batchQ, sortKey, sortDir, canApprove]);
+  }, [rows, q, thick, batchQ, sorts, canApprove]);
 
   const thickOptions = useMemo(() => [...new Set(rows.map((r) => r.thickness))].sort(), [rows]);
-  const onSort = (k: "name" | (typeof NUMS)[number]) => {
-    if (sortKey === k) setSortDir((d) => (d === 1 ? -1 : 1));
-    else { setSortKey(k); setSortDir(k === "name" ? 1 : -1); }
+  // click = primary sort (click again to flip) · Shift+Click = add another level
+  const onSort = (k: "name" | (typeof NUMS)[number], additive: boolean) => {
+    setSorts((cur) => {
+      const i = cur.findIndex((x) => x.k === k);
+      if (additive) {
+        if (i >= 0) { const c = [...cur]; c[i] = { k, d: c[i].d === 1 ? -1 : 1 }; return c; }
+        return [...cur, { k, d: k === "name" ? 1 : -1 }];
+      }
+      if (i === 0 && cur.length === 1) return [{ k, d: cur[0].d === 1 ? -1 : 1 }];
+      return [{ k, d: k === "name" ? 1 : -1 }];
+    });
   };
-  const arrow = (k: string) => (sortKey === k ? (sortDir === 1 ? " ▴" : " ▾") : "");
+  const arrow = (k: string) => {
+    const i = sorts.findIndex((x) => x.k === k);
+    if (i < 0) return "";
+    return (sorts[i].d === 1 ? " ▴" : " ▾") + (sorts.length > 1 ? String(i + 1) : "");
+  };
 
   const toggle = (k: string) => setOpen((s) => { const c = new Set(s); if (c.has(k)) c.delete(k); else c.add(k); return c; });
   const toggleT = (k: string) => setOpenT((s) => { const c = new Set(s); if (c.has(k)) c.delete(k); else c.add(k); return c; });
@@ -181,11 +196,11 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
           <thead className="sticky top-0 z-10">
             <tr className="bg-brand text-[11px] font-bold uppercase tracking-wide text-white">
               <th className="border border-brand-dark/40 px-2 py-2">SL.No</th>
-              <th className="cursor-pointer border border-brand-dark/40 px-3 py-2 hover:bg-brand-dark/40" title="Sort" onClick={() => onSort("name")}>Colour Name{arrow("name")}</th>
+              <th className="cursor-pointer border border-brand-dark/40 px-3 py-2 hover:bg-brand-dark/40" title="Sort · Shift+Click adds a level" onClick={(e) => onSort("name", e.shiftKey)}>Colour Name{arrow("name")}</th>
               <th className="border border-brand-dark/40 px-2 py-2">Thick</th>
               <th className="border border-brand-dark/40 px-2 py-2">Batch No</th>
               {([["Slabs","total"],["A","a"],["A2","a2"],["B","b"],["C","c"],["CTS","cts"],["Print","printing"],["Trial","trial"],["No Gr.","ungraded"],["R/W","pending_rw"]] as [string, (typeof NUMS)[number]][]).map(([label, k]) => (
-                <th key={k} className="cursor-pointer border border-brand-dark/40 px-2 py-2 hover:bg-brand-dark/40" title="Sort" onClick={() => onSort(k)}>{label}{arrow(k)}</th>
+                <th key={k} className="cursor-pointer border border-brand-dark/40 px-2 py-2 hover:bg-brand-dark/40" title="Sort · Shift+Click adds a level" onClick={(e) => onSort(k, e.shiftKey)}>{label}{arrow(k)}</th>
               ))}
               {canApprove && <th className="border border-brand-dark/40 px-2 py-2">Approved</th>}
             </tr>

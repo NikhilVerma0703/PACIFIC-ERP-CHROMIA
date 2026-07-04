@@ -51,7 +51,7 @@ const fmtAt = (iso: string) => {
 export function InventoryDashboard({ admin = false, summaryOnly = false }: { admin?: boolean; summaryOnly?: boolean }) {
   const [kpi, setKpi] = useState<Kpi | null>(null);
   const [rows, setRows] = useState<Slab[]>([]);
-  const [sSort, setSSort] = useState<{ k: keyof Slab; d: 1 | -1 } | null>(null);
+  const [sSorts, setSSorts] = useState<{ k: keyof Slab; d: 1 | -1 }[]>([]);
   const [loading, setLoading] = useState(true);
   const [f, setF] = useState({ ...EMPTY });
 
@@ -198,19 +198,37 @@ export function InventoryDashboard({ admin = false, summaryOnly = false }: { adm
     finally { setStBusy(false); }
   };
 
-  const displayRows = sSort
+  const displayRows = sSorts.length
     ? [...rows].sort((a, b) => {
-        const va = a[sSort.k], vb = b[sSort.k];
-        if (va == null && vb == null) return 0;
-        if (va == null) return 1;
-        if (vb == null) return -1;
-        if (typeof va === "number" && typeof vb === "number") return sSort.d * (va - vb);
-        return sSort.d * String(va).localeCompare(String(vb), undefined, { numeric: true });
+        for (const so of sSorts) {
+          const va = a[so.k], vb = b[so.k];
+          let c = 0;
+          if (va == null && vb == null) c = 0;
+          else if (va == null) c = 1 / so.d; // nulls always last
+          else if (vb == null) c = -1 / so.d;
+          else if (typeof va === "number" && typeof vb === "number") c = va - vb;
+          else c = String(va).localeCompare(String(vb), undefined, { numeric: true });
+          if (c) return so.d * c;
+        }
+        return 0;
       })
     : rows;
-  const slabSort = (k: keyof Slab) =>
-    setSSort((cur) => (cur?.k === k ? (cur.d === 1 ? { k, d: -1 } : null) : { k, d: 1 }));
-  const slabArrow = (k: keyof Slab) => (sSort?.k === k ? (sSort.d === 1 ? " ▴" : " ▾") : "");
+  // click = primary sort (asc -> desc -> off) · Shift+Click = add another level
+  const slabSort = (k: keyof Slab, additive: boolean) =>
+    setSSorts((cur) => {
+      const i = cur.findIndex((x) => x.k === k);
+      if (additive) {
+        if (i >= 0) { const c = [...cur]; c[i] = { k, d: c[i].d === 1 ? -1 : 1 }; return c; }
+        return [...cur, { k, d: 1 }];
+      }
+      if (i === 0 && cur.length === 1) return cur[0].d === 1 ? [{ k, d: -1 }] : [];
+      return [{ k, d: 1 }];
+    });
+  const slabArrow = (k: keyof Slab) => {
+    const i = sSorts.findIndex((x) => x.k === k);
+    if (i < 0) return "";
+    return (sSorts[i].d === 1 ? " ▴" : " ▾") + (sSorts.length > 1 ? String(i + 1) : "");
+  };
   const thSort = "cursor-pointer px-3 py-2 hover:text-brand";
 
   const card = (label: string, value: number, tone = "text-gray-900") => (
@@ -462,9 +480,9 @@ export function InventoryDashboard({ admin = false, summaryOnly = false }: { adm
               <thead>
                 <tr className="border-b border-gray-100 text-left text-gray-500">
                   <th className="px-3 py-2"><input type="checkbox" checked={rows.length > 0 && sel.size === rows.length} onChange={toggleAll} /></th>
-                  <th className={thSort} title="Sort" onClick={() => slabSort("slabNumber")}>Slab #{slabArrow("slabNumber")}</th><th className={thSort} title="Sort" onClick={() => slabSort("design")}>Design{slabArrow("design")}</th><th className={thSort} title="Sort" onClick={() => slabSort("batchNumber")}>Batch{slabArrow("batchNumber")}</th>
-                  <th className={thSort} title="Sort" onClick={() => slabSort("slabThickness")}>Thk{slabArrow("slabThickness")}</th><th className={thSort} title="Sort" onClick={() => slabSort("grade")}>Grade{slabArrow("grade")}</th><th className="px-3 py-2">Quality Issue</th><th className={thSort} title="Sort" onClick={() => slabSort("polishType")}>Polish{slabArrow("polishType")}</th>
-                  <th className={thSort} title="Sort" onClick={() => slabSort("bayNumber")}>Bay{slabArrow("bayNumber")}</th><th className={thSort} title="Sort" onClick={() => slabSort("frameNumber")}>Frame{slabArrow("frameNumber")}</th><th className={`${thSort} text-right`} title="Sort" onClick={() => slabSort("sqft")}>Sqft{slabArrow("sqft")}</th><th className={`${thSort} text-right`} title="Sort" onClick={() => slabSort("ageDays")}>Age{slabArrow("ageDays")}</th><th className={thSort} title="Sort" onClick={() => slabSort("status")}>Status{slabArrow("status")}</th>
+                  <th className={thSort} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("slabNumber", e.shiftKey)}>Slab #{slabArrow("slabNumber")}</th><th className={thSort} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("design", e.shiftKey)}>Design{slabArrow("design")}</th><th className={thSort} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("batchNumber", e.shiftKey)}>Batch{slabArrow("batchNumber")}</th>
+                  <th className={thSort} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("slabThickness", e.shiftKey)}>Thk{slabArrow("slabThickness")}</th><th className={thSort} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("grade", e.shiftKey)}>Grade{slabArrow("grade")}</th><th className="px-3 py-2">Quality Issue</th><th className={thSort} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("polishType", e.shiftKey)}>Polish{slabArrow("polishType")}</th>
+                  <th className={thSort} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("bayNumber", e.shiftKey)}>Bay{slabArrow("bayNumber")}</th><th className={thSort} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("frameNumber", e.shiftKey)}>Frame{slabArrow("frameNumber")}</th><th className={`${thSort} text-right`} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("sqft", e.shiftKey)}>Sqft{slabArrow("sqft")}</th><th className={`${thSort} text-right`} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("ageDays", e.shiftKey)}>Age{slabArrow("ageDays")}</th><th className={thSort} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("status", e.shiftKey)}>Status{slabArrow("status")}</th>
                 </tr>
               </thead>
               <tbody>
