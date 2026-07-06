@@ -33,6 +33,7 @@ export async function buildInventoryWhere(searchParams: URLSearchParams): Promis
   if (q("grade")) where.grade = q("grade");
   if (q("bay")) where.bayNumber = { contains: q("bay"), mode: "insensitive" };
   if (q("status")) where.status = q("status");
+  if (q("rw") === "1") where.rwStatus = "RW Required and ongoing";
   if (q("slab")) {
     const n = Number(q("slab"));
     if (Number.isFinite(n)) where.slabNumber = n;

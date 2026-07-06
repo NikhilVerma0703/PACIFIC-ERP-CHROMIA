@@ -21,7 +21,7 @@ export async function GET(request: Request) {
         where: { slabNumber: n },
         orderBy: [{ createdTime: "desc" }, { importedAt: "desc" }],
         select: {
-          design: true, batchNumber: true, qualityGrade: true, qualityIssue: true,
+          id: true, design: true, batchNumber: true, qualityGrade: true, qualityIssue: true,
           slabThickness: true, rwStatus: true, repolishStatus: true, inspector: true,
           bay: true, polishType: true, topPolish: true, bottomPolish: true, createdTime: true,
         },
@@ -32,6 +32,7 @@ export async function GET(request: Request) {
 
     let derived = null;
     if (slab?.design) {
+      slab.designRaw = slab.design; // raw stored value (edits must not silently canonicalize)
       const al = await db.designAlias.findUnique({ where: { variant: slab.design } }).catch(() => null);
       if (al) slab.design = al.canonical;
     }

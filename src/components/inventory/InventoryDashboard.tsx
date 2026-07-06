@@ -37,7 +37,7 @@ const ACTIONS = [
   { value: "return", label: "Mark Returned (un-dispatch)" },
   { value: "release", label: "Release to Available" },
 ];
-const EMPTY = { design: "", batch: "", thickness: "", grade: "", slab: "", bay: "", status: "" };
+const EMPTY = { design: "", batch: "", thickness: "", grade: "", slab: "", bay: "", status: "", rw: "" };
 
 // Legacy no-number slabs (imported as 9,000,000+n) display by their NB label.
 const displaySlab = (n: number, barcode?: string | null) =>
@@ -121,7 +121,31 @@ export function InventoryDashboard({ admin = false, summaryOnly = false, slabsOn
   };
   const openActivity = (slab: string) => { setEvSlab(slab); setView("activity"); loadEvents(slab); };
 
+  const [editing, setEditing] = useState(false);
+  const [ef, setEf] = useState<Record<string, string>>({});
+  const [editMsg, setEditMsg] = useState<string | null>(null);
+  const startEdit = () => {
+    const sl = detail?.slab; if (!sl) return;
+    setEf({
+      design: sl.designRaw ?? sl.design ?? "", batchNumber: sl.batchNumber ?? "", slabThickness: sl.slabThickness ?? "",
+      grade: sl.grade ?? "", polishType: sl.polishType ?? "", bayNumber: sl.bayNumber ?? "",
+      frameNumber: sl.frameNumber ?? "", notes: sl.notes ?? "",
+    });
+    setEditMsg(null); setEditing(true);
+  };
+  const saveEdit = async () => {
+    if (!detail) return;
+    setEditMsg(null);
+    try {
+      const r = await fetch("/api/inventory/slab/edit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slabNumber: detail.slabNumber, ...ef }) });
+      const d = await r.json().catch(() => null);
+      if (!r.ok || d?.error) setEditMsg(d?.error ?? "Save failed.");
+      else { setEditing(false); openDetail(detail.slabNumber); run(f); }
+    } catch { setEditMsg("Save failed."); }
+  };
+
   const openDetail = (n: number) => {
+    setEditing(false);
     setDetailBusy(true); setDetail({ slabNumber: n });
     fetch(`/api/inventory/slab?number=${n}`)
       .then((r) => (r.ok ? r.json() : null))
@@ -255,8 +279,16 @@ export function InventoryDashboard({ admin = false, summaryOnly = false, slabsOn
   };
   const thSort = "cursor-pointer px-3 py-2 hover:text-brand";
 
-  const card = (label: string, value: number, tone = "text-gray-900") => (
-    <div className="rounded-xl border border-gray-200 bg-white p-4">
+  const applyCard = (patch: Partial<typeof EMPTY>) => {
+    const next = { ...EMPTY, ...patch };
+    setView("slabs"); setF(next); run(next);
+  };
+  const card = (label: string, value: number, tone = "text-gray-900", patch?: Partial<typeof EMPTY>) => (
+    <div
+      className={`rounded-xl border border-gray-200 bg-white p-4 ${patch ? "cursor-pointer transition hover:border-brand hover:shadow-sm" : ""}`}
+      title={patch ? "Click to see these slabs" : undefined}
+      onClick={patch ? () => applyCard(patch) : undefined}
+    >
       <div className="text-[11px] font-medium uppercase tracking-wide text-gray-400">{label}</div>
       <div className={`mt-1 text-2xl font-semibold tabular-nums ${tone}`}>{value.toLocaleString("en-IN")}</div>
     </div>
@@ -284,7 +316,7 @@ export function InventoryDashboard({ admin = false, summaryOnly = false, slabsOn
           <p className="mt-1 text-sm text-gray-500">Slabs from QC approval through packing &amp; dispatch.</p>
         </div>
         {!slabsOnly && <div className="flex gap-1 rounded-xl border border-gray-200 bg-white p-1">
-          <button className={tabCls(view === "slabs")} onClick={() => setView("slabs")}>Slabs</button>
+          <button className={tabCls(view === "slabs")} onClick={() => { setView("slabs"); kpiFilters.current = { ...f }; loadKpi(); }}>Slabs</button>
           <button className={tabCls(view === "summary")} onClick={() => setView("summary")}>Stock by Design</button>
           <button className={tabCls(view === "activity")} onClick={() => openActivity(evSlab)}>Activity</button>
           {admin && <button className={tabCls(view === "designs")} onClick={() => { setView("designs"); loadDesigns(); }}>Designs</button>}
@@ -296,37 +328,37 @@ export function InventoryDashboard({ admin = false, summaryOnly = false, slabsOn
           <div>
             <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400">Stock</p>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-              {card("Total Slabs", kpi.total)}
-              {card("Available", kpi.available, "text-emerald-600")}
-              {card("Reserved", kpi.reserved, "text-amber-600")}
-              {card("Packed", kpi.packed, "text-amber-600")}
-              {card("Returned", kpi.returned, "text-sky-600")}
+              {card("Total Slabs", kpi.total, "text-gray-900", {})}
+              {card("Available", kpi.available, "text-emerald-600", { status: "AVAILABLE" })}
+              {card("Reserved", kpi.reserved, "text-amber-600", { status: "RESERVED" })}
+              {card("Packed", kpi.packed, "text-amber-600", { status: "PACKED" })}
+              {card("Returned", kpi.returned, "text-sky-600", { status: "RETURNED" })}
             </div>
           </div>
           <div>
             <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400">Grades (in stock)</p>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-              {card("Grade A", kpi.gradeA)}
-              {card("Grade A2", kpi.gradeA2)}
-              {card("Grade B", kpi.gradeB)}
-              {card("Grade C", kpi.gradeC)}
-              {card("CTS", kpi.cts)}
-              {card("Printing", kpi.printing)}
+              {card("Grade A", kpi.gradeA, "text-gray-900", { grade: "A" })}
+              {card("Grade A2", kpi.gradeA2, "text-gray-900", { grade: "A2" })}
+              {card("Grade B", kpi.gradeB, "text-gray-900", { grade: "B" })}
+              {card("Grade C", kpi.gradeC, "text-gray-900", { grade: "C" })}
+              {card("CTS", kpi.cts, "text-gray-900", { grade: "CTS" })}
+              {card("Printing", kpi.printing, "text-gray-900", { grade: "Printing" })}
             </div>
           </div>
           <div className="grid gap-4 lg:grid-cols-2">
             <div>
               <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400">Thickness (in stock)</p>
               <div className="grid grid-cols-3 gap-3">
-                {card("1.2 cm", kpi.thk12cm)}
-                {card("2 cm", kpi.thk2cm)}
-                {card("3 cm", kpi.thk3cm)}
+                {card("1.2 cm", kpi.thk12cm, "text-gray-900", { thickness: "1.2 cm" })}
+                {card("2 cm", kpi.thk2cm, "text-gray-900", { thickness: "2 cm" })}
+                {card("3 cm", kpi.thk3cm, "text-gray-900", { thickness: "3 cm" })}
               </div>
             </div>
             <div>
               <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400">Needs attention</p>
               <div className="grid grid-cols-2 gap-3">
-                {card("Pending R/W", kpi.pendingRw, "text-red-600")}
+                {card("Pending R/W", kpi.pendingRw, "text-red-600", { rw: "1" })}
               </div>
             </div>
           </div>
@@ -334,7 +366,11 @@ export function InventoryDashboard({ admin = false, summaryOnly = false, slabsOn
       )}
 
       {view === "summary" ? (
-        <StockByDesign canApprove={admin} />
+        <StockByDesign
+          canApprove={admin}
+          onFilters={(sf) => { kpiFilters.current = { ...EMPTY, design: sf.design, thickness: sf.thickness, batch: sf.batch }; loadKpi(); }}
+          onOpenSlabs={admin ? (sel) => { const next = { ...EMPTY, design: sel.design ?? "", thickness: sel.thickness ?? "", batch: sel.batch ?? "" }; setView("slabs"); setF(next); run(next); } : undefined}
+        />
       ) : view === "designs" && admin ? (
         <div className="space-y-3">
           <div className="rounded-xl border border-gray-200 bg-white p-4">
@@ -432,6 +468,9 @@ export function InventoryDashboard({ admin = false, summaryOnly = false, slabsOn
               <select className={inputCls} value={f.thickness} onChange={(e) => { const n = { ...f, thickness: e.target.value }; setF(n); run(n); }}>{THICKNESSES.map((t) => <option key={t} value={t}>{t || "Any thickness"}</option>)}</select>
               <select className={inputCls} value={f.status} onChange={(e) => { const n = { ...f, status: e.target.value }; setF(n); run(n); }}>{STATUSES.map((s) => <option key={s} value={s}>{s || "Any status"}</option>)}</select>
             </div>
+            {f.rw === "1" && (
+              <p className="mt-2 text-xs text-red-600">Showing: Pending R/W slabs <button type="button" className="ml-1 underline" onClick={() => { const n = { ...f, rw: "" }; setF(n); run(n); }}>clear</button></p>
+            )}
             <div className="mt-3 flex gap-2">
               <button type="submit" className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark">Search</button>
               <button type="button" onClick={() => { setF({ ...EMPTY }); run(EMPTY); }} className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">Clear</button>
@@ -562,7 +601,12 @@ export function InventoryDashboard({ admin = false, summaryOnly = false, slabsOn
                 <h2 className="text-xl font-semibold text-gray-900">Slab {displaySlab(detail.slabNumber, detail.slab?.barcode)}</h2>
                 {detail.slab && <span className="mt-1 inline-block rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">{detail.slab.status}</span>}
               </div>
-              <button onClick={() => setDetail(null)} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50">Close ✕</button>
+              <div className="flex gap-2">
+                {admin && detail.slab && !editing && (
+                  <button onClick={startEdit} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50">Edit</button>
+                )}
+                <button onClick={() => setDetail(null)} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50">Close ✕</button>
+              </div>
             </div>
             {detailBusy ? (
               <p className="py-10 text-center text-gray-400">Loading…</p>
@@ -570,7 +614,30 @@ export function InventoryDashboard({ admin = false, summaryOnly = false, slabsOn
               <p className="py-10 text-center text-gray-400">{detail.error}</p>
             ) : (
               <div className="mt-4 space-y-5">
-                {detail.slab && (
+                {detail.slab && editing && (
+                  <div className="space-y-3 rounded-xl border border-brand/20 bg-brand/[0.03] p-4">
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                      {([["design","Design"],["batchNumber","Batch"],["slabThickness","Thickness"],["grade","Grade"],["polishType","Polish type"],["bayNumber","Bay"],["frameNumber","Frame"]] as [string,string][]).map(([k, label]) => (
+                        <label key={k} className="block">
+                          <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-gray-400">{label}</span>
+                          <input className={inputCls} value={ef[k] ?? ""} onChange={(e) => setEf({ ...ef, [k]: e.target.value })} />
+                        </label>
+                      ))}
+                    </div>
+                    <label className="block">
+                      <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-gray-400">Notes</span>
+                      <input className={inputCls} value={ef.notes ?? ""} onChange={(e) => setEf({ ...ef, notes: e.target.value })} />
+                    </label>
+                    {editMsg && <p className="text-sm text-red-600">{editMsg}</p>}
+                    <div className="flex gap-2">
+                      <button onClick={saveEdit} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark">Save changes</button>
+                      <button onClick={() => setEditing(false)} className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">Cancel</button>
+                      {detail.qc?.id && <a href={`/tables/PolishQc/${detail.qc.id}`} className="ml-auto rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">Open QC record →</a>}
+                    </div>
+                    <p className="text-xs text-gray-400">Every change is logged. QC-owned fields will be refreshed if this slab passes QC again.</p>
+                  </div>
+                )}
+                {detail.slab && !editing && (
                   <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
                     {([
                       ["Design", detail.slab.design], ["Batch", displayBatch(detail.slab.batchNumber)], ["Thickness", detail.slab.slabThickness],

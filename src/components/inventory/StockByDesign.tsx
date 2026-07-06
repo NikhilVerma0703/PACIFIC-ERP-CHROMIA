@@ -35,7 +35,11 @@ function Cells({ v }: { v: Agg }) {
   );
 }
 
-export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) {
+export function StockByDesign({ canApprove = false, onFilters, onOpenSlabs }: {
+  canApprove?: boolean;
+  onFilters?: (f: { design: string; thickness: string; batch: string }) => void;
+  onOpenSlabs?: (sel: { design?: string; thickness?: string; batch?: string }) => void;
+}) {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
@@ -107,6 +111,11 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
     return normal;
   }, [rows, q, thick, batchQ, sorts, canApprove]);
 
+  useEffect(() => {
+    onFilters?.({ design: q.trim(), thickness: thick, batch: batchQ.trim() });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, thick, batchQ]);
+
   const thickOptions = useMemo(() => [...new Set(rows.map((r) => r.thickness))].sort(), [rows]);
   // click = primary sort (click again to flip) · Shift+Click = add another level
   const onSort = (k: "name" | (typeof NUMS)[number], additive: boolean) => {
@@ -160,7 +169,11 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
               <tbody>
                 {pendingRows.map((r) => (
                   <tr key={`${r.design}|${r.thickness}|${r.batch}`} className="border-t border-amber-100">
-                    <td className="px-3 py-1.5 font-medium text-gray-900">{r.design}</td>
+                    <td
+                      className={`px-3 py-1.5 font-medium text-gray-900 ${onOpenSlabs ? "cursor-pointer hover:text-brand hover:underline" : ""}`}
+                      title={onOpenSlabs ? "Open these slabs" : undefined}
+                      onClick={onOpenSlabs ? () => onOpenSlabs({ design: r.design, thickness: r.thickness === "-" ? undefined : r.thickness, batch: r.batch === "-" ? undefined : r.batch }) : undefined}
+                    >{r.design}</td>
                     <td className="px-2 py-1.5">{r.thickness}</td>
                     <td className="px-2 py-1.5">{r.batch}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums">{r.total + r.dispatched}</td>
@@ -255,7 +268,11 @@ export function StockByDesign({ canApprove = false }: { canApprove?: boolean }) 
                       {e.kind === "batch" && (
                         <>
                           <td className={bcell}></td>
-                          <td className={bcell}>{e.r.batch}</td>
+                          <td
+                            className={`${bcell} ${onOpenSlabs ? "cursor-pointer font-medium text-brand hover:underline" : ""}`}
+                            title={onOpenSlabs ? "Open these slabs" : undefined}
+                            onClick={onOpenSlabs ? (ev) => { ev.stopPropagation(); onOpenSlabs({ design: e.r.design, thickness: e.r.thickness === "-" ? undefined : e.r.thickness, batch: e.r.batch === "-" ? undefined : (e.r.rawBatch ?? e.r.batch) }); } : undefined}
+                          >{e.r.batch}</td>
                           <Cells v={e.r} />
                         </>
                       )}
