@@ -4,7 +4,8 @@
 import { prisma } from "@/lib/prisma";
 import { inventoryGate } from "@/lib/inventory/access";
 import { sweepExpiredReservations } from "@/lib/inventory/finishedSlab";
-import { buildInventoryWhere } from "@/lib/inventory/searchWhere";
+import { buildInventoryWhere, approvedOnlyWhere } from "@/lib/inventory/searchWhere";
+import { isAdmin } from "@/lib/rbac";
 
 const db = prisma as any;
 const SQFT_TO_SQM = 0.092903;
@@ -21,7 +22,10 @@ export async function GET(request: Request) {
   try {
     await sweepExpiredReservations(); // lapsed PI holds -> AVAILABLE before we report
     const { searchParams } = new URL(request.url);
-    const where: any = await buildInventoryWhere(searchParams);
+    let where: any = await buildInventoryWhere(searchParams);
+    // Unapproved stock is ADMIN-only, and only when explicitly requested.
+    const showPending = searchParams.get("pending") === "1" && (await isAdmin());
+    if (!showPending) where = await approvedOnlyWhere(where);
 
     // Real slab numbers first (newest on top); NB-series legacy slabs
     // (9,000,000+, no original number) always sort to the BOTTOM.

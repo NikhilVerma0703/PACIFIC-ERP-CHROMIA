@@ -35,8 +35,9 @@ function Cells({ v }: { v: Agg }) {
   );
 }
 
-export function StockByDesign({ canApprove = false, onFilters, onOpenSlabs }: {
+export function StockByDesign({ canApprove = false, showPending = false, onFilters, onOpenSlabs }: {
   canApprove?: boolean;
+  showPending?: boolean;
   onFilters?: (f: { design: string; thickness: string; batch: string }) => void;
   onOpenSlabs?: (sel: { design?: string; thickness?: string; batch?: string }) => void;
 }) {
@@ -53,7 +54,7 @@ export function StockByDesign({ canApprove = false, onFilters, onOpenSlabs }: {
   useEffect(() => {
     let alive = true;
     const load = () =>
-      fetch("/api/inventory/summary")
+      fetch(`/api/inventory/summary${showPending ? "?pending=1" : ""}`)
         .then((r) => (r.ok ? r.json() : []))
         .then((d) => { if (alive) setRows(Array.isArray(d) ? d : []); })
         .catch(() => {})
@@ -73,7 +74,8 @@ export function StockByDesign({ canApprove = false, onFilters, onOpenSlabs }: {
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);
     return () => { alive = false; clearInterval(idV); clearInterval(idFull); window.removeEventListener("focus", onFocus); document.removeEventListener("visibilitychange", onFocus); };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showPending]);
 
   const pendingRows = useMemo(
     () => (canApprove ? rows.filter((r) => r.pending) : []),
@@ -154,7 +156,7 @@ export function StockByDesign({ canApprove = false, onFilters, onOpenSlabs }: {
 
   return (
     <div className="space-y-3">
-      {canApprove && pendingRows.length > 0 && (
+      {canApprove && showPending && pendingRows.length > 0 && (
         <div className="rounded-xl border border-amber-300 bg-amber-50 p-4">
           <h3 className="text-sm font-bold uppercase tracking-wide text-amber-800">New stock awaiting approval ({pendingRows.length})</h3>
           <p className="mb-2 text-xs text-amber-700">Tick to approve — the line moves into the register and becomes visible to Sales within seconds.</p>

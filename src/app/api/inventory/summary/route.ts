@@ -9,7 +9,7 @@ import { displayBatch } from "@/lib/batchDisplay";
 const db = prisma as any;
 const KEYS = ["total","dispatched","bay5","bay4","bay3","nobay","a","a2","b","c","cts","printing","trial","ungraded","pending_polish","pending_rw"];
 
-export async function GET() {
+export async function GET(request: Request) {
   const g = await summaryGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -44,7 +44,7 @@ export async function GET() {
     const hiddenRows: any[] = await db.$queryRaw`SELECT design FROM fg_sales_hidden_design WHERE batch = ''`.catch(() => []);
     const hidden = new Set<string>(hiddenRows.map((h) => h.design));
     const approvedRows: any[] = await db.$queryRaw`SELECT design, batch FROM fg_sales_approved_batch`.catch(() => []);
-    const approvedSet = new Set<string>(approvedRows.map((a) => `${a.design} ${a.batch}`));
+    const approvedSet = new Set<string>(approvedRows.map((a) => `${a.design}\u0000${a.batch}`));
     const alias = new Map<string, string>(aliases.map((x: any) => [x.variant, x.canonical]));
     const merged = new Map<string, any>();
     for (const r of rows) {
@@ -58,7 +58,7 @@ export async function GET() {
     let out = [...merged.values()];
     out = out.map((r) => {
       const designApproved = !hidden.has(r.design);
-      const batchApproved = approvedSet.has(`${r.design} ${r.batch}`);
+      const batchApproved = approvedSet.has(`${r.design}\u0000${r.batch}`);
       return {
         ...r,
         designApproved,
@@ -66,9 +66,11 @@ export async function GET() {
         pending: designApproved && !batchApproved,      // new stock awaiting admin approval
       };
     });
-    // Sales logins only ever see approved stock
+    // Unapproved stock is ADMIN-only, and only when the pending toggle is on.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if (String((g.user as any)?.role ?? "") === "SALES") out = out.filter((r) => r.approved);
+    const isAdm = String((g.user as any)?.role ?? "") === "ADMIN";
+    const showPending = isAdm && new URL(request.url).searchParams.get("pending") === "1";
+    if (!showPending) out = out.filter((r) => r.approved);
     return Response.json(out);
   } catch (e) {
     console.error("Inventory summary error:", e);

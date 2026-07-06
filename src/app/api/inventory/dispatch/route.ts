@@ -5,6 +5,8 @@
 import { prisma } from "@/lib/prisma";
 import { inventoryGate } from "@/lib/inventory/access";
 import { changeSlabStatus } from "@/lib/inventory/finishedSlab";
+import { getUnapprovedSlabNumbers } from "@/lib/inventory/searchWhere";
+import { isAdmin as isAdminCheck } from "@/lib/rbac";
 
 const db = prisma as any;
 const MAX_FILE = 8 * 1024 * 1024;
@@ -27,6 +29,12 @@ export async function POST(request: Request) {
     const file = fd.get("invoice");
     if (slabs.length === 0) return Response.json({ error: "No slabs selected" }, { status: 400 });
     if (slabs.length > 500) return Response.json({ error: "Max 500 slabs per dispatch" }, { status: 400 });
+    if (!(await isAdminCheck())) {
+      const unapproved = new Set(await getUnapprovedSlabNumbers(true));
+      const filtered = slabs.filter((n) => !unapproved.has(n));
+      if (!filtered.length) return Response.json({ error: "Selected slabs are not available" }, { status: 400 });
+      slabs.length = 0; slabs.push(...filtered);
+    }
     if (!pi) return Response.json({ error: "PI number is required" }, { status: 400 });
     if (!customer) return Response.json({ error: "Customer name is required" }, { status: 400 });
     const hasFile = file instanceof File && file.size > 0;

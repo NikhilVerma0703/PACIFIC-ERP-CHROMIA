@@ -48,9 +48,15 @@ const fmtAt = (iso: string) => {
   return d.toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 };
 
-export function InventoryDashboard({ admin = false, summaryOnly = false, slabsOnly = false }: { admin?: boolean; summaryOnly?: boolean; slabsOnly?: boolean }) {
+export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: roleSummaryOnly = false, slabsOnly: roleSlabsOnly = false }: { admin?: boolean; summaryOnly?: boolean; slabsOnly?: boolean }) {
+  // ADMIN preview: view the module exactly as a Sales or Commercial login would
+  const [viewAs, setViewAs] = useState<"admin" | "sales" | "commercial">("admin");
+  const admin = isRealAdmin && viewAs === "admin";
+  const summaryOnly = roleSummaryOnly || (isRealAdmin && viewAs === "sales");
+  const slabsOnly = roleSlabsOnly || (isRealAdmin && viewAs === "commercial");
   const [kpi, setKpi] = useState<Kpi | null>(null);
   const [rows, setRows] = useState<Slab[]>([]);
+  const [showPending, setShowPending] = useState(false); // ADMIN: include unapproved stock everywhere
   const [sSorts, setSSorts] = useState<{ k: keyof Slab; d: 1 | -1 }[]>([]);
   const [loading, setLoading] = useState(true);
   const [f, setF] = useState({ ...EMPTY });
@@ -82,9 +88,11 @@ export function InventoryDashboard({ admin = false, summaryOnly = false, slabsOn
   const [merging, setMerging] = useState(false);
 
   const kpiFilters = useRef({ ...EMPTY }); // cards mirror the last search
+  const showPendingRef = useRef(false);
   const loadKpi = () => {
     const p = new URLSearchParams();
     Object.entries(kpiFilters.current).forEach(([k, v]) => { if (v) p.set(k, v); });
+    if (showPendingRef.current) p.set("pending", "1");
     fetch(`/api/inventory/kpi?${p.toString()}`).then((r) => (r.ok ? r.json() : null)).then((d) => setKpi(d && !d.error ? d : null)).catch(() => {});
   };
   useEffect(() => {
@@ -101,6 +109,7 @@ export function InventoryDashboard({ admin = false, summaryOnly = false, slabsOn
     loadKpi();
     const p = new URLSearchParams();
     Object.entries(filters).forEach(([k, v]) => { if (v) p.set(k, v); });
+    if (showPendingRef.current) p.set("pending", "1");
     fetch(`/api/inventory?${p.toString()}`)
       .then((r) => (r.ok ? r.json() : []))
       .then((d) => setRows(Array.isArray(d) ? d : []))
@@ -279,6 +288,27 @@ export function InventoryDashboard({ admin = false, summaryOnly = false, slabsOn
   };
   const thSort = "cursor-pointer px-3 py-2 hover:text-brand";
 
+  const viewAsControl = isRealAdmin ? (
+    <label className="flex items-center gap-2 rounded-xl border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-600" title="Preview the module as another role sees it">
+      View as
+      <select
+        className="rounded-lg border border-gray-300 px-2 py-1 text-xs"
+        value={viewAs}
+        onChange={(e) => {
+          const v = e.target.value as "admin" | "sales" | "commercial";
+          setViewAs(v);
+          showPendingRef.current = showPending && v === "admin";
+          kpiFilters.current = { ...EMPTY };
+          run(EMPTY); setF({ ...EMPTY });
+        }}
+      >
+        <option value="admin">Admin</option>
+        <option value="sales">Sales</option>
+        <option value="commercial">Commercial</option>
+      </select>
+    </label>
+  ) : null;
+
   const applyCard = (patch: Partial<typeof EMPTY>) => {
     const next = { ...EMPTY, ...patch };
     setView("slabs"); setF(next); run(next);
@@ -299,9 +329,12 @@ export function InventoryDashboard({ admin = false, summaryOnly = false, slabsOn
   if (summaryOnly) {
     return (
       <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Finished-Goods Stock</h1>
-          <p className="mt-1 text-sm text-gray-500">Stock by design, thickness and batch.</p>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Finished-Goods Stock</h1>
+            <p className="mt-1 text-sm text-gray-500">Stock by design, thickness and batch.</p>
+          </div>
+          {viewAsControl}
         </div>
         <StockByDesign />
       </div>
@@ -315,6 +348,13 @@ export function InventoryDashboard({ admin = false, summaryOnly = false, slabsOn
           <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Finished-Goods Inventory</h1>
           <p className="mt-1 text-sm text-gray-500">Slabs from QC approval through packing &amp; dispatch.</p>
         </div>
+        {viewAsControl}
+        {admin && !slabsOnly && (
+          <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800" title="Admin only — include stock that is still awaiting approval in every list and card">
+            <input type="checkbox" checked={showPending} onChange={(e) => { setShowPending(e.target.checked); showPendingRef.current = e.target.checked; run(f); }} />
+            Show unapproved stock
+          </label>
+        )}
         {!slabsOnly && <div className="flex gap-1 rounded-xl border border-gray-200 bg-white p-1">
           <button className={tabCls(view === "slabs")} onClick={() => { setView("slabs"); kpiFilters.current = { ...f }; loadKpi(); }}>Slabs</button>
           <button className={tabCls(view === "summary")} onClick={() => setView("summary")}>Stock by Design</button>
@@ -368,6 +408,7 @@ export function InventoryDashboard({ admin = false, summaryOnly = false, slabsOn
       {view === "summary" ? (
         <StockByDesign
           canApprove={admin}
+          showPending={showPending}
           onFilters={(sf) => { kpiFilters.current = { ...EMPTY, design: sf.design, thickness: sf.thickness, batch: sf.batch }; loadKpi(); }}
           onOpenSlabs={admin ? (sel) => { const next = { ...EMPTY, design: sel.design ?? "", thickness: sel.thickness ?? "", batch: sel.batch ?? "" }; setView("slabs"); setF(next); run(next); } : undefined}
         />
@@ -476,7 +517,7 @@ export function InventoryDashboard({ admin = false, summaryOnly = false, slabsOn
               <button type="button" onClick={() => { setF({ ...EMPTY }); run(EMPTY); }} className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">Clear</button>
               {admin && (
                 <a
-                  href={`/api/inventory/export?${(() => { const p = new URLSearchParams(); Object.entries(f).forEach(([k, v]) => { if (v) p.set(k, v); }); return p.toString(); })()}`}
+                  href={`/api/inventory/export?${(() => { const p = new URLSearchParams(); Object.entries(f).forEach(([k, v]) => { if (v) p.set(k, v); }); if (showPending && admin) p.set("pending", "1"); return p.toString(); })()}`}
                   className="ml-auto rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
                   title="Excel file of everything matching the current filters"
                 >

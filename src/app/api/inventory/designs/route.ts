@@ -18,6 +18,7 @@ const mergeSchema = z.object({
 export async function GET() {
   const g = await inventoryGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+  if (!(await isAdmin())) return Response.json({ error: "Admin only" }, { status: 403 });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   if (SLABS_ONLY_ROLES.has(String((g.user as any)?.role ?? ""))) return Response.json({ error: "Not available for this login" }, { status: 403 });
   try {

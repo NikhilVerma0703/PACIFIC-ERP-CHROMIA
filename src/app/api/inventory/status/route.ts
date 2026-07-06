@@ -6,6 +6,8 @@
 import { z } from "zod";
 import { inventoryGate, SLABS_ONLY_ROLES } from "@/lib/inventory/access";
 import { changeSlabStatus, DEFAULT_RESERVATION_DAYS, type StatusAction } from "@/lib/inventory/finishedSlab";
+import { getUnapprovedSlabNumbers } from "@/lib/inventory/searchWhere";
+import { isAdmin as isAdminCheck } from "@/lib/rbac";
 
 const MAX_SLABS = 500;
 const optText = z.preprocess(
@@ -34,7 +36,12 @@ export async function POST(request: Request) {
     if (!parsed.success) return Response.json({ error: parsed.error.issues[0]?.message ?? "Invalid request" }, { status: 400 });
     const body: any = parsed.data;
     const action = body.action;
-    const slabs: number[] = body.slabs;
+    let slabs: number[] = body.slabs;
+    if (!(await isAdminCheck())) {
+      const unapproved = new Set(await getUnapprovedSlabNumbers(true));
+      slabs = slabs.filter((n: number) => !unapproved.has(n));
+      if (!slabs.length) return Response.json({ error: "Selected slabs are not available" }, { status: 400 });
+    }
     const pi = body.pi;
     const customer = body.customer;
     if (action === "reserve" && !pi && !customer)

@@ -3,7 +3,8 @@
 import { prisma } from "@/lib/prisma";
 import { inventoryGate, SLABS_ONLY_ROLES } from "@/lib/inventory/access";
 import { sweepExpiredReservations } from "@/lib/inventory/finishedSlab";
-import { buildInventoryWhere } from "@/lib/inventory/searchWhere";
+import { buildInventoryWhere, approvedOnlyWhere } from "@/lib/inventory/searchWhere";
+import { isAdmin } from "@/lib/rbac";
 
 const db = prisma as any;
 
@@ -15,7 +16,10 @@ export async function GET(request: Request) {
   try {
     await sweepExpiredReservations(); // lapsed PI holds -> AVAILABLE before we count
     // Cards follow the SAME filters as the slab table (empty filters = global).
-    const w: any = await buildInventoryWhere(new URL(request.url).searchParams);
+    const sp = new URL(request.url).searchParams;
+    let w: any = await buildInventoryWhere(sp);
+    const showPending = sp.get("pending") === "1" && (await isAdmin());
+    if (!showPending) w = await approvedOnlyWhere(w);
     const [total, byGrade, byStatus, byThickness, pendingPolish, pendingRw] = await Promise.all([
       db.finishedSlab.count({ where: w }),
       db.finishedSlab.groupBy({ by: ["grade"], _count: { _all: true }, where: { ...w, status: w.status ?? { not: "DISPATCHED" } } }), // grades = stock on hand

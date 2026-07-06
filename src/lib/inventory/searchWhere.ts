@@ -41,3 +41,48 @@ export async function buildInventoryWhere(searchParams: URLSearchParams): Promis
   }
   return where;
 }
+
+/**
+ * Slab numbers of UNAPPROVED (pending or master-hidden) stock. Approval is
+ * decided per (canonical design, display batch); this resolves it back to the
+ * raw rows. Small result in practice (only new/unticked stock).
+ */
+export async function getUnapprovedSlabNumbers(strict = false): Promise<number[]> {
+  try {
+    const [combos, aliases, approved, hiddenRows] = await Promise.all([
+      db.$queryRaw`SELECT DISTINCT design, batch_number AS batch FROM fg_finished_slab`,
+      db.designAlias.findMany({ select: { variant: true, canonical: true } }).catch(() => []),
+      db.$queryRaw`SELECT design, batch FROM fg_sales_approved_batch`,
+      db.$queryRaw`SELECT design FROM fg_sales_hidden_design WHERE batch = ''`,
+    ]);
+    const amap = new Map<string, string>((aliases as any[]).map((x) => [x.variant, x.canonical]));
+    const SEP = "\u0000"; // can never appear in names
+    const ok = new Set<string>((approved as any[]).map((a) => `${a.design}${SEP}${a.batch}`));
+    const hidden = new Set<string>((hiddenRows as any[]).map((h) => h.design));
+    const { displayBatch } = await import("@/lib/batchDisplay");
+    const pendingPairs: { design: string | null; batch: string | null }[] = [];
+    for (const c of combos as any[]) {
+      const canon = amap.get(c.design ?? "(no design)") ?? (c.design ?? "(no design)");
+      const disp = c.batch == null ? "-" : displayBatch(c.batch);
+      if (hidden.has(canon) || !ok.has(`${canon}${SEP}${disp}`)) pendingPairs.push({ design: c.design ?? null, batch: c.batch ?? null });
+    }
+    if (!pendingPairs.length) return [];
+    const rows: any[] = await db.finishedSlab.findMany({
+      where: { OR: pendingPairs.map((p) => ({ design: p.design, batchNumber: p.batch })) },
+      select: { slabNumber: true },
+    });
+    return rows.map((r) => r.slabNumber);
+  } catch (e) {
+    if (strict) throw e; // WRITE routes must fail CLOSED
+    return [];           // read views degrade to showing approved-known state
+  }
+}
+
+/** Wrap a where clause so unapproved stock is excluded (approved-only view). */
+export async function approvedOnlyWhere(where: any): Promise<any> {
+  const pending = await getUnapprovedSlabNumbers();
+  if (!pending.length) return where;
+  // preserve top-level keys (status etc.) — some callers read them back
+  const prevAnd = Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : [];
+  return { ...where, AND: [...prevAnd, { slabNumber: { notIn: pending } }] };
+}

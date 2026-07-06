@@ -3,6 +3,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
 import { inventoryGate } from "@/lib/inventory/access";
+import { getUnapprovedSlabNumbers } from "@/lib/inventory/searchWhere";
+import { isAdmin } from "@/lib/rbac";
 
 const db = prisma as any;
 const SQFT_TO_SQM = 0.092903;
@@ -29,6 +31,10 @@ export async function GET(request: Request) {
       db.slabEvent.findMany({ where: { slabNumber: n }, orderBy: { at: "desc" }, take: 100 }),
     ]);
     if (!slab && !qc) return Response.json({ error: "Slab not found" }, { status: 404 });
+    if (slab && !(await isAdmin())) {
+      const unapproved = await getUnapprovedSlabNumbers();
+      if (unapproved.includes(n)) return Response.json({ error: "Slab not found" }, { status: 404 });
+    }
 
     let derived = null;
     if (slab?.design) {

@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
 import { inventoryGate } from "@/lib/inventory/access";
-import { buildInventoryWhere } from "@/lib/inventory/searchWhere";
+import { buildInventoryWhere, approvedOnlyWhere } from "@/lib/inventory/searchWhere";
 import { isAdmin } from "@/lib/rbac";
 import { slabLabel } from "@/lib/slabLabel";
 import { displayBatch } from "@/lib/batchDisplay";
@@ -15,7 +15,9 @@ export async function GET(request: Request) {
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   if (!(await isAdmin())) return Response.json({ error: "Admin only" }, { status: 403 });
   try {
-    const where = await buildInventoryWhere(new URL(request.url).searchParams);
+    const sp = new URL(request.url).searchParams;
+    let where = await buildInventoryWhere(sp);
+    if (sp.get("pending") !== "1") where = await approvedOnlyWhere(where); // export matches the visible view
     const rows: any[] = await db.finishedSlab.findMany({ where, orderBy: { slabNumber: "desc" }, take: 50000 });
     const aliasRows: any[] = await db.designAlias.findMany({ select: { variant: true, canonical: true } }).catch(() => []);
     const amap = new Map<string, string>(aliasRows.map((x) => [x.variant, x.canonical]));

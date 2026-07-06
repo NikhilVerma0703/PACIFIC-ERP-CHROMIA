@@ -8,6 +8,8 @@
 import { z } from "zod";
 import { inventoryGate, SLABS_ONLY_ROLES } from "@/lib/inventory/access";
 import { assignSlabLocation } from "@/lib/inventory/finishedSlab";
+import { getUnapprovedSlabNumbers } from "@/lib/inventory/searchWhere";
+import { isAdmin as isAdminCheck } from "@/lib/rbac";
 
 const MAX_SLABS = 500;
 // omitted -> undefined (untouched) · null/"" -> null (clear) · text -> set
@@ -32,7 +34,13 @@ export async function POST(request: Request) {
     const raw = await request.json().catch(() => null);
     const parsed = bodySchema.safeParse(raw);
     if (!parsed.success) return Response.json({ error: parsed.error.issues[0]?.message ?? "Invalid request" }, { status: 400 });
-    const { slabs, bay, frame } = parsed.data;
+    let { slabs } = parsed.data;
+    const { bay, frame } = parsed.data;
+    if (!(await isAdminCheck())) {
+      const unapproved = new Set(await getUnapprovedSlabNumbers(true));
+      slabs = slabs.filter((n) => !unapproved.has(n));
+      if (!slabs.length) return Response.json({ error: "Selected slabs are not available" }, { status: 400 });
+    }
     if (bay === undefined && frame === undefined)
       return Response.json({ error: "Nothing to change — provide bay and/or frame" }, { status: 400 });
 
