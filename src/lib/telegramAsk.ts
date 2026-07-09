@@ -8,7 +8,7 @@ import { getLastShiftReport } from "@/lib/misShift";
 import { ymdIST, plusDay, lastCompletedHourIST, hourlyMessage } from "@/lib/telegramReports";
 import { esc } from "@/lib/telegram";
 
-async function dataPack(): Promise<string> {
+async function dataPack(question = ""): Promise<string> {
   const today = ymdIST();
   const wk = plusDay(today, -6);
   const { bucket, date } = lastCompletedHourIST();
@@ -78,6 +78,24 @@ async function dataPack(): Promise<string> {
         + [...byBatch.entries()].slice(0, 10).map(([b, gs]) => `${b}: ${gs.join(" ")}`).join("; "));
     }
   } catch { /* pack still useful without the global block */ }
+  // QUESTION-AWARE: any batch number mentioned gets full targeted stats —
+  // never again "no data" because a list cap cut the asked batch out.
+  try {
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const db = prisma as any;
+    const keys = [...new Set((question.match(/\b[A-Za-z]{0,2}(\d{3,4})\b/g) ?? []).map((t) => t.replace(/\D/g, "")))].slice(0, 3);
+    for (const k of keys) {
+      const like = `%${k}%`;
+      const [pr, mi, qc, jt]: any[][] = await Promise.all([
+        db.$queryRaw`SELECT count(DISTINCT slab_number)::int n, min(slab_number)::int lo, max(slab_number)::int hi FROM press WHERE batch ILIKE ${like}`,
+        db.$queryRaw`SELECT sum(slabs_per_hour_actual)::float s, count(*) FILTER (WHERE slabs_per_hour_actual IS NULL)::int miss FROM mis WHERE batch ILIKE ${like}`,
+        db.$queryRaw`SELECT quality_grade g, count(*)::int n FROM polish_qc WHERE batch_key = ${k} OR batch_number ILIKE ${like} GROUP BY 1`,
+        db.$queryRaw`SELECT slab_defect d, count(*)::int n FROM jot WHERE batch ILIKE ${like} GROUP BY 1`,
+      ]);
+      if (!(pr[0]?.n || qc.length || jt.length)) continue;
+      lines.push(`ASKED BATCH ${k} (all-time detail): press ${pr[0]?.n ?? 0} slabs${pr[0]?.lo ? ` (#${pr[0].lo}-#${pr[0].hi})` : ""}; MIS logged ${mi[0]?.s ?? 0}${mi[0]?.miss ? ` (${mi[0].miss} hrs without counts)` : ""}; QC ${qc.length ? qc.map((r: any) => `${r.g ?? "ungraded"}:${r.n}`).join(" ") : "none yet"}; JOT ${jt.length ? jt.map((r: any) => `${r.d ?? "no-defect"}:${r.n}`).join(" ") : "none yet"}`);
+    }
+  } catch { /* best-effort */ }
   return lines.join("\n");
 }
 
@@ -85,7 +103,7 @@ export async function aiAnswer(question: string): Promise<string> {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) return "🤖 Free-text questions aren't switched on yet (no AI key configured). The command reports still work: /status /shift /day /yesterday";
   try {
-    const pack = await dataPack();
+    const pack = await dataPack(question);
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
