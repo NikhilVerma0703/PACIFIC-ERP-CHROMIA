@@ -11,10 +11,13 @@ const ALLOWED = new Set(["ADMIN", "STORE", "LINE_MANAGER", "INCHARGE"]);
 /** The consumables tier for a user, or null if they can't see the section. */
 export function consumablesTierOf(user: unknown): ConsumablesTier | null {
   if (!user) return null;
-  const u = user as { role?: string | null };
+  const u = user as { role?: string | null; branch?: string | null };
   const role = String(u.role ?? "");
   if (!ALLOWED.has(role)) return null;
-  if (rankOf(role) >= ROLE_RANK.ADMIN) return "ADMIN";
+  if (rankOf(role) >= ROLE_RANK.ADMIN) return "ADMIN"; // admins span every department
+  // Fabrication staff are department-locked by the middleware — showing them
+  // the section (or letting the API through) would be a dead link / mismatch.
+  if (String(u.branch ?? "") === "FABRICATION") return null;
   return "WRITE"; // Store/Incharge/Line Manager both see and log
 }
 

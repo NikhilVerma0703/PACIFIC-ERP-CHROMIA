@@ -66,6 +66,14 @@ function getCategory(itemName) {
 }
 
 async function main() {
+  // One-shot guard: re-seeding would wipe live master edits (film-roll layer
+  // counts, stock PATCHes). Refuse when data already exists unless --force.
+  const existing = await prisma.consumptionEntry.count().catch(() => 0);
+  const rolls = await prisma.filmRoll.count().catch(() => 0);
+  if ((existing > 0 || rolls > 0) && !process.argv.includes("--force")) {
+    console.error(`Refusing to re-seed: ${existing} consumption entries / ${rolls} film rolls already present. Re-run with --force if you really mean it.`);
+    process.exit(1);
+  }
   // ---- departments (upsert; never deleted) ----
   const departments = {};
   for (const name of DEPARTMENTS) {
