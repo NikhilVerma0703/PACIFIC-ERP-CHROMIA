@@ -28,6 +28,7 @@ export default auth((req) => {
     p.startsWith("/api/auth") ||
     p.startsWith("/api/sync") ||
     p.startsWith("/api/telegram/report") ||   // cron-only: gated by CRON_SECRET inside
+    p.startsWith("/api/telegram/webhook") ||  // Telegram-only: gated by webhook secret inside
     p.startsWith("/api/sales/cron") ||        // cron-only: gated by CRON_SECRET inside
     STATIC_FILE.test(p);
   if (isPublic) return;
