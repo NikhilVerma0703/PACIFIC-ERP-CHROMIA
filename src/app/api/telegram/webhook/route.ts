@@ -7,7 +7,7 @@
 //   /help   - this list
 // Security: Telegram must present X-Telegram-Bot-Api-Secret-Token matching
 // TELEGRAM_WEBHOOK_SECRET, and only the configured group chat is answered.
-import { sendTelegram } from "@/lib/telegram";
+import { sendTelegramTo, telegramChatIds } from "@/lib/telegram";
 import { hourlyMessage, shiftMessage, dailyMessage, lastCompletedHourIST, ymdIST } from "@/lib/telegramReports";
 import { shiftOfHour } from "@/lib/misShiftHours";
 
@@ -51,8 +51,11 @@ export async function POST(req: Request) {
     const msg = update?.message ?? update?.channel_post;
     const text = String(msg?.text ?? "").trim();
     const chatId = String(msg?.chat?.id ?? "");
-    // only serve the configured group — ignore DMs and strangers
-    if (!text.startsWith("/") || chatId !== String(process.env.TELEGRAM_CHAT_ID ?? "")) {
+    // only serve approved chats: the report group(s) + TELEGRAM_EXTRA_CHAT_IDS
+    // (comma-separated, commands/Q&A only — no scheduled reports there)
+    const extra = String(process.env.TELEGRAM_EXTRA_CHAT_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const allowed = new Set([...telegramChatIds(), ...extra]);
+    if (!text.startsWith("/") || !allowed.has(chatId)) {
       return Response.json({ ok: true });
     }
     const cmd = text.split(/[\s@]/)[0].toLowerCase(); // "/status@PacificERPbot" -> "/status"
@@ -64,7 +67,7 @@ export async function POST(req: Request) {
     } else {
       reply = await answer(cmd);
     }
-    if (reply) await sendTelegram(reply);
+    if (reply) await sendTelegramTo(chatId, reply); // answer in the chat that asked
     return Response.json({ ok: true });
   } catch (e) {
     console.error("Telegram webhook error:", e);
