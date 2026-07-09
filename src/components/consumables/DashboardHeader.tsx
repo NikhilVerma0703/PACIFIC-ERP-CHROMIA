@@ -74,7 +74,7 @@ export default function DashboardHeader({
             {/* Company Logo */}
             <div className="w-11 h-11 rounded-lg bg-white/10 border border-white/20 flex items-center justify-center shrink-0 p-1.5">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src="/pacific-logo.png" alt="Pacific Group" className="w-full h-full object-contain" />
+              <img src="/logo-white.png" alt="Pacific Group" className="w-full h-full object-contain" />
             </div>
             <div>
               <p className="text-blue-300 text-xs font-semibold tracking-widest uppercase">
