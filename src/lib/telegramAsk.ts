@@ -84,12 +84,12 @@ async function dataPack(question = ""): Promise<string> {
     /* eslint-disable @typescript-eslint/no-explicit-any */
     const db = prisma as any;
     const [qcAct, prAct, jtAct]: any[][] = await Promise.all([
-      db.$queryRaw`SELECT slab_number, quality_grade, batch_number FROM polish_qc WHERE imported_at > now() - interval '75 minutes' ORDER BY imported_at DESC LIMIT 40`,
+      db.$queryRaw`SELECT slab_number, quality_grade, batch_number, design FROM polish_qc WHERE imported_at > now() - interval '75 minutes' ORDER BY imported_at DESC LIMIT 40`,
       db.$queryRaw`SELECT slab_number, batch FROM press WHERE imported_at > now() - interval '75 minutes' ORDER BY imported_at DESC LIMIT 40`,
       db.$queryRaw`SELECT slab_number, slab_defect, batch FROM jot WHERE imported_at > now() - interval '75 minutes' ORDER BY imported_at DESC LIMIT 40`,
     ]);
     lines.push(`POLISH QC ENTRIES LAST ~75min (${qcAct.length}${qcAct.length === 40 ? "+" : ""}): ` + (qcAct.length
-      ? qcAct.map((r: any) => `${r.slab_number}(${r.quality_grade ?? "ungraded"})`).join(" ") + ` — batches ${[...new Set(qcAct.map((r: any) => r.batch_number).filter(Boolean))].join(",")}`
+      ? qcAct.map((r: any) => `${r.slab_number}(${r.quality_grade ?? "ungraded"})`).join(" ") + ` — batches ${[...new Set(qcAct.map((r: any) => r.batch_number).filter(Boolean))].join(",")} designs ${[...new Set(qcAct.map((r: any) => r.design).filter(Boolean))].join(",") || "?"}`
       : "none"));
     lines.push(`PRESS ENTRIES LAST ~75min (${prAct.length}${prAct.length === 40 ? "+" : ""}): ` + (prAct.length
       ? prAct.map((r: any) => r.slab_number).join(" ") + ` — batch ${[...new Set(prAct.map((r: any) => r.batch).filter(Boolean))].join(",")}`
@@ -106,7 +106,7 @@ async function dataPack(question = ""): Promise<string> {
     const ago = (d: any) => `${Math.max(0, Math.round((Date.now() - new Date(d).getTime()) / 60000))}min ago`;
     const one = (sql: Promise<any[]>) => sql.then((r) => r[0] ?? null).catch(() => null);
     const [lqc, lpr, ljt, lov, lmx, ldi, lkr, silos, fgs]: any[] = await Promise.all([
-      one(db.$queryRaw`SELECT slab_number, quality_grade, batch_number, imported_at FROM polish_qc ORDER BY imported_at DESC LIMIT 1`),
+      one(db.$queryRaw`SELECT slab_number, quality_grade, batch_number, design, imported_at FROM polish_qc ORDER BY imported_at DESC LIMIT 1`),
       one(db.$queryRaw`SELECT slab_number, batch, imported_at FROM press ORDER BY imported_at DESC LIMIT 1`),
       one(db.$queryRaw`SELECT slab_number, batch, slab_defect, imported_at FROM jot ORDER BY imported_at DESC LIMIT 1`),
       one(db.$queryRaw`SELECT slab_number, batch, imported_at FROM oven ORDER BY imported_at DESC LIMIT 1`),
@@ -119,7 +119,7 @@ async function dataPack(question = ""): Promise<string> {
     const L: string[] = [];
     if (lpr) L.push(`press slab ${lpr.slab_number} (${lpr.batch ?? "?"}, ${ago(lpr.imported_at)})`);
     if (ljt) L.push(`JOT slab ${ljt.slab_number}${ljt.slab_defect ? ` DEFECT ${ljt.slab_defect}` : ""} (${ljt.batch ?? "?"}, ${ago(ljt.imported_at)})`);
-    if (lqc) L.push(`polishQC slab ${lqc.slab_number} grade ${lqc.quality_grade ?? "ungraded"} (${lqc.batch_number ?? "?"}, ${ago(lqc.imported_at)})`);
+    if (lqc) L.push(`polishQC slab ${lqc.slab_number} design ${lqc.design ?? "?"} grade ${lqc.quality_grade ?? "ungraded"} (${lqc.batch_number ?? "?"}, ${ago(lqc.imported_at)})`);
     if (lov) L.push(`oven slab ${lov.slab_number} (${lov.batch ?? "?"}, ${ago(lov.imported_at)})`);
     if (lmx) L.push(`mixer ${lmx.batch ?? "?"} (${ago(lmx.imported_at)})`);
     if (ldi) L.push(`distributor ${ldi.batch ?? "?"} slab ${ldi.slab_number ?? "?"} (${ago(ldi.imported_at)})`);
