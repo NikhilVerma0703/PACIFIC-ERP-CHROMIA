@@ -1,0 +1,20 @@
+# Hourly Telegram reports: every hour at :10 IST (=:40 UTC) the ERP posts the
+# completed hour's MIS summary (or a missed-entry alert) to the group; the
+# route itself adds the shift-end report at 06/14/22 IST and the daily at 07.
+name: Telegram reports
+on:
+  schedule:
+    - cron: "40 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call report endpoint
+        run: |
+          code=$(curl -s --max-time 60 --retry 2 --retry-delay 10 -o /tmp/out.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://erp.pacific-surfaces.com/api/telegram/report")
+          cat /tmp/out.json
+          [ "$code" = "200" ] || exit 1

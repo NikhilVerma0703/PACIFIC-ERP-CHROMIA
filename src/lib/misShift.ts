@@ -33,6 +33,13 @@ export async function getLastShiftReport(): Promise<LastShiftReport | null> {
     if (!rowDay) return null;
     // anchor = the date the shift STARTED (C rows after midnight started yesterday)
     const anchor = shift === "C" && Number(String(latest.hour).slice(0, 2)) < 12 ? plusDay(rowDay, -1) : rowDay;
+    return await getShiftReport(anchor, shift);
+  } catch { return null; }
+}
+
+/** Report for ONE specific shift instance (anchor = the date it started). */
+export async function getShiftReport(anchor: string, shift: "A" | "B" | "C"): Promise<LastShiftReport | null> {
+  try {
 
     const hours = HOURS[shift];
     const dayWhere = (d: string, hs: string[]) => ({

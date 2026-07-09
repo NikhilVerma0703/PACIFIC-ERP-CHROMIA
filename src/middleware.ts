@@ -27,6 +27,7 @@ export default auth((req) => {
     p === "/login" ||
     p.startsWith("/api/auth") ||
     p.startsWith("/api/sync") ||
+    p.startsWith("/api/telegram/report") ||   // cron-only: gated by CRON_SECRET inside
     STATIC_FILE.test(p);
   if (isPublic) return;
 
