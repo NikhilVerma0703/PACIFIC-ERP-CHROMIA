@@ -12,6 +12,8 @@ export const dynamic = "force-dynamic";
 const db = prisma as never as {
   mis:   { findMany: (q: unknown) => Promise<MisRowLite[]> };
   press: { findFirst: (q: unknown) => Promise<{ batch: string | null; designName: string | null } | null> };
+  kreos: { findFirst: (q: unknown) => Promise<{ slabThickness: string | null; importedAt: Date } | null> };
+  distributor: { findFirst: (q: unknown) => Promise<{ slabThickness: string | null; importedAt: Date } | null> };
 };
 
 const ymdIST = (ms = Date.now()) => new Date(ms + 330 * 60000).toISOString().slice(0, 10);
@@ -79,8 +81,31 @@ async function pressPrefill(hourDate: string, hour: string): Promise<{ batch: st
   ] });
   try {
     const inHour = await db.press.findFirst({ where: win(dayStart + h * 3600_000, dayStart + (h + 1) * 3600_000), ...sel });
-    if (inHour) return inHour;
-    return await db.press.findFirst({ where: win(dayStart, dayStart + 24 * 3600_000), ...sel });
+    return inHour; // hour-only: if nothing ran this hour, leave fields empty (still mandatory)
+  } catch { return null; }
+}
+
+// Which line-head form is being filled this hour -> production type + thickness.
+const THK_MM: Record<string, string> = { "3cm": "30", "2cm": "20", "12mm": "12", "7mm": "7", "1.2 cm": "12", "2 cm": "20", "3 cm": "30" };
+async function lineHeadPrefill(hourDate: string, hour: string): Promise<{ productionType: string; thk: string } | null> {
+  const dayStart = Date.parse(`${hourDate}T00:00:00+05:30`);
+  const h = Number(hour.slice(0, 2));
+  const win = {
+    OR: [
+      { createdTime: { gte: new Date(dayStart + h * 3600_000), lt: new Date(dayStart + (h + 1) * 3600_000) } },
+      { AND: [{ createdTime: null }, { importedAt: { gte: new Date(dayStart + h * 3600_000), lt: new Date(dayStart + (h + 1) * 3600_000) } }] },
+    ],
+  };
+  const sel = { select: { slabThickness: true, importedAt: true }, orderBy: { importedAt: "desc" } } as const;
+  try {
+    const [k, d] = await Promise.all([
+      db.kreos.findFirst({ where: win, ...sel }),
+      db.distributor.findFirst({ where: win, ...sel }),
+    ]);
+    const pick = k && d ? (k.importedAt > d.importedAt ? { m: "Kreos", r: k } : { m: "Distributor", r: d }) : k ? { m: "Kreos", r: k } : d ? { m: "Distributor", r: d } : null;
+    if (!pick) return null;
+    const t = String(pick.r.slabThickness ?? "").trim();
+    return { productionType: pick.m, thk: THK_MM[t] ?? t.replace(/[^0-9.]/g, "") };
   } catch { return null; }
 }
 
@@ -103,14 +128,13 @@ export default async function MisSheetPage({ searchParams }: { searchParams: Pro
   // from the previous MIS row of this shift. All of it stays editable.
   const initialHour = initialHourFor(rows, shift, hourParam);
   const hourDate = shiftOfHour(initialHour) === "C" && Number(initialHour.slice(0, 2)) < 12 ? plusDay(date, 1) : date;
-  const press = await pressPrefill(hourDate, initialHour);
-  const prev = rows.length ? rows[rows.length - 1] : undefined;
+  const [press, line] = await Promise.all([pressPrefill(hourDate, initialHour), lineHeadPrefill(hourDate, initialHour)]);
   const prefill: MisPrefill = {
     batch:  press?.batch ?? "",
     design: press?.designName ?? "",
     fromPress: !!press,
-    thkPress: prev?.thkAtPressMm != null ? String(prev.thkAtPressMm) : "",
-    productionType: prev?.productionType && (options.productionType ?? []).includes(prev.productionType) ? prev.productionType : "",
+    thkPress: line?.thk ?? "",
+    productionType: line?.productionType && (options.productionType ?? []).includes(line.productionType) ? line.productionType : (line?.productionType ?? ""),
     prodIncharge: operatorName,
   };
 

@@ -91,6 +91,9 @@ export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName
     const delay = DELAYS.reduce((a, [k]) => a + (Number(fd.get(k) || 0) || 0), 0);
     if (delay > 60) { setErr(`${Math.round(delay)} min delay — max 60 in one hour`); return; }
     if (!batch.trim()) { setErr("Batch is required"); return; }
+    if (!design.trim()) { setErr("Design / product is required"); return; }
+    if (!productionType.trim()) { setErr("Production type is required — pick it before saving"); return; }
+    if (!thkPress.trim()) { setErr("Thk at Press (mm) is required"); return; }
     if (logged.has(hour)) { setErr(`Hour ${hour} is already logged — use its edit link below`); return; }
     fd.set("__model", "Mis");
     fd.set("hour", hour);
@@ -134,13 +137,13 @@ export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
           <label className="block"><span className={lbl}>Batch *{prefill?.fromPress && batch === prefill?.batch && batch ? <span className="ml-1 font-normal text-gray-400">(from press data)</span> : null}</span>
             <input value={batch} onChange={(e) => setBatch(e.target.value)} placeholder="e.g. 1375" className={inp} /></label>
-          <label className="block"><span className={lbl}>Design / product{prefill?.fromPress && design === prefill?.design && design ? <span className="ml-1 font-normal text-gray-400">(from press data)</span> : null}</span>
+          <label className="block"><span className={lbl}>Design / product *{prefill?.fromPress && design === prefill?.design && design ? <span className="ml-1 font-normal text-gray-400">(from press data)</span> : null}</span>
             <input value={design} onChange={(e) => setDesign(e.target.value)} list="mis-designs" className={inp} />
             <datalist id="mis-designs">{(options.design ?? []).map((o) => <option key={o} value={o} />)}</datalist></label>
-          <label className="block"><span className={lbl}>Production type{prefill?.productionType && productionType === prefill?.productionType ? <span className="ml-1 font-normal text-gray-400">(from previous hour)</span> : null}</span>
+          <label className="block"><span className={lbl}>Production type *{prefill?.productionType && productionType === prefill?.productionType ? <span className="ml-1 font-normal text-gray-400">(from line data)</span> : null}</span>
             <select value={productionType} onChange={(e) => setProductionType(e.target.value)} className={inp}>
               <option value="">—</option>{(options.productionType ?? []).map((o) => <option key={o}>{o}</option>)}</select></label>
-          <label className="block"><span className={lbl}>Thk at Press (mm){prefill?.thkPress && thkPress === prefill?.thkPress ? <span className="ml-1 font-normal text-gray-400">(from previous hour)</span> : null}</span>
+          <label className="block"><span className={lbl}>Thk at Press (mm) *{prefill?.thkPress && thkPress === prefill?.thkPress ? <span className="ml-1 font-normal text-gray-400">(from line data)</span> : null}</span>
             <input value={thkPress} onChange={(e) => setThkPress(e.target.value)} type="number" step="any" min="0" className={inp} /></label>
           <label className="block"><span className={lbl}>Production Incharge</span>
             <input value={prodIncharge} onChange={(e) => setProdIncharge(e.target.value)} className={inp} /></label>
