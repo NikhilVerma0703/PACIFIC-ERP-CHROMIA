@@ -52,8 +52,22 @@ export async function hourlyMessage(bucket: string, date: string): Promise<strin
     });
   } catch { /* report as missing rather than crash the cron */ }
   const shift = shiftOfHour(bucket);
-  if (rows.length === 0)
-    return `⚠️ <b>MIS not logged</b> — hour <b>${bucket}</b> (${date}, Shift ${shift}) has no entry yet. Please fill it on the MIS sheet.`;
+  // machine truth for the same hour: how many slabs did the press actually log?
+  let pressN = 0;
+  try {
+    const h = Number(bucket.slice(0, 2));
+    const a0 = new Date(Date.parse(`${date}T00:00:00+05:30`) + h * 3600_000);
+    const a1 = new Date(a0.getTime() + 3600_000);
+    const pr: any[] = await db.$queryRaw`
+      SELECT count(DISTINCT slab_number)::int n FROM press
+      WHERE (created_time >= ${a0} AND created_time < ${a1})
+         OR (created_time IS NULL AND imported_at >= ${a0} AND imported_at < ${a1})`;
+    pressN = pr[0]?.n ?? 0;
+  } catch { /* comparison is best-effort */ }
+  if (rows.length === 0) {
+    const extra = pressN > 0 ? `\n🚨 The press logged <b>${pressN} slab(s)</b> this hour — production ran but nobody filled MIS.` : "";
+    return `⚠️ <b>MIS not logged</b> — hour <b>${bucket}</b> (${date}, Shift ${shift}) has no entry yet. Please fill it on the MIS sheet.${extra}`;
+  }
 
   const r = rows[0];
   const delayParts = DELAYS.map(([k, l]) => (n0(r[k]) > 0 ? `${l} ${Math.round(n0(r[k]))}m` : null)).filter(Boolean);
@@ -72,6 +86,9 @@ export async function hourlyMessage(bucket: string, date: string): Promise<strin
     if ((r.reasonForDeviation ?? []).length) lines.push(`Reason: ${esc(r.reasonForDeviation.join(", "))}`);
     if (r.details) lines.push(`“${esc(r.details)}”`);
   }
+  const misN = Number(r.slabsPerHourActual ?? 0) || 0;
+  if (pressN > 0 && Math.abs(pressN - misN) >= 2)
+    lines.push(`🚨 <b>Count mismatch</b>: press logged ${pressN} slab(s) this hour, MIS says ${misN || "—"}`);
   if (String(r.anyBreakdownYesNo ?? "").toLowerCase() === "yes") lines.push("🛠 Breakdown reported");
   lines.push(`By: ${esc(r.productionInchargeName ?? r.submittedBy ?? "—")}`);
   return lines.join("\n");
