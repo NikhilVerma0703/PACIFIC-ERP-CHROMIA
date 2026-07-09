@@ -48,6 +48,7 @@ enum Branch {
   SHOP_FLOOR
   OFFICE
   FABRICATION
+  INTERNATIONAL_SALES
 }
 
 
@@ -2625,4 +2626,560 @@ model InventoryEntry {
   createdAt DateTime @default(now())
 
   @@map("consumable_inventory_entry")
+}
+
+
+// ============================================================================
+// International Sales module (ported from Shalman's fork). Native ERP tables —
+// preserve across regens.
+//
+// Porting notes (Phase 1):
+//  - The fork attached hard relations to User (sp/manager/createdBy/checkedBy/
+//    user). Our core User model is untouched: those are plain String id
+//    columns here (commented "-> users.id"), resolved in app code.
+//  - PRODUCTION_MANAGER (fork SalesRole) is intentionally NOT ported; those
+//    checks map to ADMIN in Phase 2. users.sales_role / users.sales_factory
+//    columns are also deferred to Phase 2.
+//  - proforma_invoices.payment_terms_data, sales_payment_divisions
+//    (extended_due_date/overridden_*/override_note/reminders_sent),
+//    sales_shipment_docs extras and sales_config.invoice_config_* are
+//    raw-SQL-only columns (kept out of Prisma client by the fork to avoid
+//    P2022); they exist in scripts/0019-international-sales-tables.sql only,
+//    as does the model-less sales_notifications table.
+// ============================================================================
+
+enum SalesOrderStatus {
+  DRAFT
+  PENDING_PAYMENT
+  PENDING_STOCK_CHECK
+  STOCK_CONFIRMED
+  PENDING_PRODUCTION
+  IN_PRODUCTION
+  PACKING
+  DISPATCHED
+  IN_TRANSIT
+  PORT_ARRIVED
+  DELIVERED
+  CANCELLED
+}
+
+enum PIStatus {
+  DRAFT
+  SENT
+  UNDER_REVISION
+  REJECTED
+  ACCEPTED
+}
+
+enum ProductType {
+  QUARTZ
+  GRANITE
+}
+
+enum PaymentDivisionType {
+  ADVANCE
+  CAD
+  INSPECTION
+  RECEIVE_TO_PAY
+  BL_TO_PAY
+  CREDIT
+}
+
+enum PaymentDivisionStatus {
+  PENDING
+  PAID
+  OVERDUE
+}
+
+enum SalesProductionJobStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  ON_HOLD
+}
+
+enum SalesProductionType {
+  SLAB
+  FAB
+}
+
+enum PackingListStatus {
+  PENDING_SEND
+  SENT
+  ACCEPTED
+  REJECTED
+}
+
+enum StockCheckStatus {
+  PENDING
+  AVAILABLE
+  UNAVAILABLE
+  PARTIAL
+}
+
+enum PortDeliveryStatus {
+  PENDING
+  CLEARED
+  OVERRIDE
+  DELIVERED
+}
+
+enum CreditNoteStatus {
+  PENDING_INSPECTION
+  INSPECTED
+  ISSUED
+  REJECTED
+}
+
+model SalesManagerAssignment {
+  id         String   @id @default(cuid())
+  spId       String   @map("sp_id") // -> users.id (no hard FK; core User untouched)
+  managerId  String   @map("manager_id") // -> users.id (no hard FK)
+  isActive   Boolean  @default(true) @map("is_active")
+  assignedAt DateTime @default(now()) @map("assigned_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+  note       String?
+
+  @@map("sales_manager_assignments")
+}
+
+model SalesClient {
+  id       String  @id @default(cuid())
+  name     String
+  email    String?
+  isActive Boolean @default(true) @map("is_active")
+
+  phone         String?
+  address       String?
+  country       String
+  contactPerson String? @map("contact_person")
+  createdById   String  @map("created_by_id") // -> users.id (no hard FK)
+
+  defaultCurrency        String?  @map("default_currency")
+  defaultUnit            String?  @map("default_unit")
+  defaultPortOfDischarge String?  @map("default_port_of_discharge")
+  defaultDeliveryTerms   String?  @map("default_delivery_terms")
+  defaultPaymentTerms    String?  @map("default_payment_terms")
+  ccEmails               String[] @map("cc_emails")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  proformaInvoices ProformaInvoice[]
+  orders           SalesOrder[]
+
+  @@map("sales_clients")
+}
+
+model ProformaInvoice {
+  id             String      @id @default(cuid())
+  piNumber       String      @unique @map("pi_number")
+  spId           String      @map("sp_id") // -> users.id (no hard FK)
+  clientId       String      @map("client_id")
+  orderId        String?     @map("order_id")
+  status         PIStatus    @default(DRAFT)
+  productType    ProductType @default(QUARTZ) @map("product_type")
+  rejectionCount Int         @default(0) @map("rejection_count")
+  revisionCount  Int         @default(0) @map("revision_count")
+
+  items               Json
+  totalAmount         Float   @map("total_amount")
+  currency            String  @default("USD")
+  deliveryTerms       String? @map("delivery_terms")
+  paymentTermsSummary String? @map("payment_terms_summary")
+  // paymentTermsData stored in payment_terms_data column (raw SQL only — not in Prisma client to avoid P2022)
+  notes               String?
+  validityDays        Int?    @map("validity_days")
+
+  // Shipping / consignee fields
+  buyerPoNo            String?   @map("buyer_po_no")
+  deliveryDate         DateTime? @map("delivery_date")
+  consigneeDetails     String?   @map("consignee_details")
+  notifyPartyDetails   String?   @map("notify_party_details")
+  buyerIfNotConsignee  String?   @map("buyer_if_not_consignee")
+  countryOfDestination String?   @map("country_of_destination")
+  preCarriageBy        String?   @default("By Road") @map("pre_carriage_by")
+  placeOfReceipt       String?   @map("place_of_receipt")
+  portOfLoading        String?   @default("Chennai Port") @map("port_of_loading")
+  portOfDischarge      String?   @map("port_of_discharge")
+  finalDestination     String?   @map("final_destination")
+  grossWeight          Float?    @map("gross_weight")
+  netWeight            Float?    @map("net_weight")
+  discountAmount       Float?    @default(0) @map("discount_amount")
+
+  sentAt     DateTime? @map("sent_at")
+  acceptedAt DateTime? @map("accepted_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  client        SalesClient      @relation(fields: [clientId], references: [id])
+  order         SalesOrder?      @relation(fields: [orderId], references: [id])
+  rejectionLogs PIRejectionLog[]
+  revisions     PIRevision[]
+
+  @@map("proforma_invoices")
+}
+
+model PIRevision {
+  id              String    @id @default(cuid())
+  piId            String    @map("pi_id")
+  revisionNo      Int       @map("revision_no")
+  reason          String? // SP's note on what changed
+  customerRemarks String?   @map("customer_remarks")
+  createdById     String    @map("created_by_id") // -> users.id (no hard FK)
+  sentAt          DateTime? @map("sent_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  pi ProformaInvoice @relation(fields: [piId], references: [id])
+
+  @@map("pi_revisions")
+}
+
+model PIRejectionLog {
+  id         String   @id @default(cuid())
+  piId       String   @map("pi_id")
+  reason     String?
+  rejectedAt DateTime @default(now()) @map("rejected_at")
+
+  pi ProformaInvoice @relation(fields: [piId], references: [id])
+
+  @@map("pi_rejection_logs")
+}
+
+model SalesOrder {
+  id            String           @id @default(cuid())
+  orderNumber   String           @unique @map("order_number")
+  clientId      String           @map("client_id")
+  spId          String           @map("sp_id") // -> users.id (no hard FK)
+  status        SalesOrderStatus @default(PENDING_PAYMENT)
+  totalAmount   Float?           @map("total_amount")
+  currency      String?          @default("USD")
+  deliveryTerms String?          @map("delivery_terms")
+  notes         String?
+  invoiceNumber String?          @unique @map("invoice_number") // PESPL/XXXX format
+  createdAt     DateTime         @default(now()) @map("created_at")
+  updatedAt     DateTime         @updatedAt @map("updated_at")
+
+  client           SalesClient            @relation(fields: [clientId], references: [id])
+  proformaInvoices ProformaInvoice[]
+  paymentTerms     SalesPaymentTerms?
+  paymentDivisions SalesPaymentDivision[]
+  stockCheck       SalesStockCheck?
+  productionJob    SalesProductionJob?
+  packages         SalesPackage[]
+  packingList      SalesPackingList?
+  container        SalesContainer?
+  shipmentDocs     SalesShipmentDocs?
+  portArrival      SalesPortArrival?
+  logs             SalesOrderLog[]
+  adminAlerts      SalesAdminAlert[]
+  creditNotes      SalesCreditNote[]
+
+  @@map("sales_orders")
+}
+
+model SalesPaymentTerms {
+  id      String @id @default(cuid())
+  orderId String @unique @map("order_id")
+
+  advancePct Float @default(0) @map("advance_pct")
+  cadPct     Float @default(0) @map("cad_pct")
+
+  inspectionPct  Float @default(0) @map("inspection_pct")
+  inspectionDays Int?  @map("inspection_days")
+
+  receiveToPayPct  Float @default(0) @map("receive_to_pay_pct")
+  receiveToPayDays Int?  @map("receive_to_pay_days")
+
+  blToPayPct  Float @default(0) @map("bl_to_pay_pct")
+  blToPayDays Int?  @map("bl_to_pay_days")
+
+  creditPct  Float @default(0) @map("credit_pct")
+  creditDays Int?  @map("credit_days")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  order            SalesOrder             @relation(fields: [orderId], references: [id])
+  paymentDivisions SalesPaymentDivision[]
+
+  @@map("sales_payment_terms")
+}
+
+model SalesPaymentDivision {
+  id           String                @id @default(cuid())
+  orderId      String                @map("order_id")
+  termsId      String?               @map("terms_id")
+  type         PaymentDivisionType
+  percentage   Float
+  amount       Float
+  deadlineDays Int?                  @map("deadline_days")
+  dueDate      DateTime?             @map("due_date")
+  paidAt       DateTime?             @map("paid_at")
+  status       PaymentDivisionStatus @default(PENDING)
+  notes        String?
+  // extended_due_date / overridden_at / overridden_by_id / override_note /
+  // reminders_sent live in the table for raw SQL only (see 0019 SQL)
+  createdAt    DateTime              @default(now()) @map("created_at")
+  updatedAt    DateTime              @updatedAt @map("updated_at")
+
+  order SalesOrder         @relation(fields: [orderId], references: [id])
+  terms SalesPaymentTerms? @relation(fields: [termsId], references: [id])
+
+  @@map("sales_payment_divisions")
+}
+
+model SalesStockCheck {
+  id      String           @id @default(cuid())
+  orderId String           @unique @map("order_id")
+  status  StockCheckStatus @default(PENDING)
+
+  filterDesign    String? @map("filter_design")
+  filterThickness String? @map("filter_thickness")
+  filterGrade     String? @map("filter_grade")
+  filterSku       String? @map("filter_sku")
+
+  assignedSlabIds Json    @default("[]") @map("assigned_slab_ids")
+  resultCount     Int     @default(0) @map("result_count")
+  notes           String?
+
+  checkedById String?  @map("checked_by_id") // -> users.id (no hard FK)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  order SalesOrder @relation(fields: [orderId], references: [id])
+
+  @@map("sales_stock_checks")
+}
+
+model SalesProductionJob {
+  id      String                   @id @default(cuid())
+  orderId String                   @unique @map("order_id")
+  type    SalesProductionType      @default(SLAB)
+  status  SalesProductionJobStatus @default(PENDING)
+
+  fabProjectId   String? @map("fab_project_id") // -> fab project (string link, as in fork)
+  fabProjectCode String? @map("fab_project_code")
+  assignedToId   String? @map("assigned_to_id") // -> users.id (no hard FK)
+
+  notes       String?
+  completedAt DateTime? @map("completed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  order SalesOrder @relation(fields: [orderId], references: [id])
+
+  @@map("sales_production_jobs")
+}
+
+model SalesPackage {
+  id          String   @id @default(cuid())
+  orderId     String   @map("order_id")
+  packageCode String?  @map("package_code")
+  slabIds     Json     @default("[]") @map("slab_ids")
+  totalWeight Float?   @map("total_weight")
+  notes       String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  order         SalesOrder        @relation(fields: [orderId], references: [id])
+  packingList   SalesPackingList? @relation(fields: [packingListId], references: [id])
+  packingListId String?           @map("packing_list_id")
+
+  @@map("sales_packages")
+}
+
+model SalesPackingList {
+  id        String            @id @default(cuid())
+  orderId   String            @unique @map("order_id")
+  status    PackingListStatus @default(PENDING_SEND)
+  sentAt    DateTime?         @map("sent_at")
+  notes     String?
+  createdAt DateTime          @default(now()) @map("created_at")
+  updatedAt DateTime          @updatedAt @map("updated_at")
+
+  order    SalesOrder     @relation(fields: [orderId], references: [id])
+  packages SalesPackage[]
+
+  @@map("sales_packing_lists")
+}
+
+model SalesContainer {
+  id      String @id @default(cuid())
+  orderId String @unique @map("order_id")
+
+  containerNumber String?   @map("container_number")
+  vesselName      String?   @map("vessel_name")
+  etd             DateTime? @map("etd")
+  eta             DateTime? @map("eta")
+  stuffingDetails Json?     @map("stuffing_details")
+  stuffingSentAt  DateTime? @map("stuffing_sent_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  order SalesOrder @relation(fields: [orderId], references: [id])
+
+  @@map("sales_containers")
+}
+
+model SalesShipmentDocs {
+  id      String @id @default(cuid())
+  orderId String @unique @map("order_id")
+
+  // Document URLs
+  blDocUrl          String? @map("bl_doc_url")
+  fumigationCertUrl String? @map("fumigation_cert_url")
+  invoiceUrl        String? @map("invoice_url")
+  bankDetailsUrl    String? @map("bank_details_url")
+
+  // Invoice / BL / SB references
+  commercialInvoiceNo   String?   @map("commercial_invoice_no")
+  commercialInvoiceDate DateTime? @map("commercial_invoice_date")
+  blNo                  String?   @map("bl_no")
+  sbNo                  String?   @map("sb_no")
+  blDate                DateTime? @map("bl_date")
+  blDocSentAt           DateTime? @map("bl_doc_sent_at")
+  t15MailSentAt         DateTime? @map("t15_mail_sent_at")
+
+  // Container / shipment details (from stuffing/loading)
+  containerNo        String?   @map("container_no")
+  vesselName         String?   @map("vessel_name")
+  portOfLoading      String?   @map("port_of_loading")
+  portOfDischarge    String?   @map("port_of_discharge")
+  etaDate            DateTime? @map("eta_date")
+  etdDate            DateTime? @map("etd_date")
+  linerOtlNo         String?   @map("liner_otl_no")
+  eSealNo            String?   @map("e_seal_no")
+  vehicleNo          String?   @map("vehicle_no")
+  trackingLink       String?   @map("tracking_link")
+  packageDescription String?   @map("package_description") // e.g. "08 Wooden Crate(S) + 03 Sample Box"
+
+  // Weight (MT)
+  grossWeight Float? @map("gross_weight")
+  netWeight   Float? @map("net_weight")
+
+  // Per-item net weights entered by Commercial for invoice/packing list
+  // Array of { index: number, netWeight: number } matching PI items by index
+  packingItems Json? @map("packing_items")
+
+  // Stuffing / dispatch email
+  stuffingPhotos     Json      @default("[]") @map("stuffing_photos") // [{url, filename, caption?}]
+  stuffingMailSentAt DateTime? @map("stuffing_mail_sent_at")
+  combinedPdfUrl     String?   @map("combined_pdf_url") // Invoice+PL+ML combined PDF URL
+
+  // Shipping docs email (sent when BL ready)
+  shippingDocsMailSentAt DateTime? @map("shipping_docs_mail_sent_at")
+  paymentDueDate         DateTime? @map("payment_due_date")
+
+  // packing_list_upload / measurement_list_upload / discount_amount /
+  // insurance_pct / ocean_freight / packing_charges / marks_nos /
+  // item_net_weights live in the table for raw SQL only (see 0019 SQL)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  order SalesOrder @relation(fields: [orderId], references: [id])
+
+  @@map("sales_shipment_docs")
+}
+
+model SalesPortArrival {
+  id      String @id @default(cuid())
+  orderId String @unique @map("order_id")
+
+  arrivalDate    DateTime?          @map("arrival_date")
+  freeDays       Int?               @map("free_days")
+  freeDaysExpiry DateTime?          @map("free_days_expiry")
+  cadCleared     Boolean            @default(false) @map("cad_cleared")
+  deliveryStatus PortDeliveryStatus @default(PENDING) // fork has no @map — column is "deliveryStatus"
+
+  overrideById String?   @map("override_by_id") // -> users.id (no hard FK)
+  overrideAt   DateTime? @map("override_at")
+  overrideNote String?   @map("override_note")
+
+  arrivalNotifSentAt DateTime? @map("arrival_notif_sent_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  order SalesOrder @relation(fields: [orderId], references: [id])
+
+  @@map("sales_port_arrivals")
+}
+
+model SalesAdminAlert {
+  id      String @id @default(cuid())
+  orderId String @map("order_id")
+
+  type         String
+  message      String
+  resolved     Boolean   @default(false)
+  resolvedAt   DateTime? @map("resolved_at")
+  resolvedById String?   @map("resolved_by_id") // -> users.id (no hard FK)
+  resolution   String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  order SalesOrder @relation(fields: [orderId], references: [id])
+
+  @@map("sales_admin_alerts")
+}
+
+model SalesOrderLog {
+  id        String   @id @default(cuid())
+  orderId   String   @map("order_id")
+  userId    String   @map("user_id") // -> users.id (no hard FK)
+  action    String
+  note      String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  order SalesOrder @relation(fields: [orderId], references: [id])
+
+  @@map("sales_order_logs")
+}
+
+model SalesConfig {
+  id             String   @id @default("global")
+  // CC emails always included in all outbound sales emails
+  ccEmails       String[] @map("cc_emails") // e.g. ["customs@pacific-surfaces.com","acreceivables@pacific-surfaces.com"]
+  // Company details for PDF headers
+  companyName    String   @default("Pacific Engineered Surface Pvt Ltd") @map("company_name")
+  companyAddress String?  @map("company_address")
+  iecCode        String?  @map("iec_code")
+  gstNo          String?  @map("gst_no")
+  panNo          String?  @map("pan_no")
+  // Bank details for PDF
+  bankName       String?  @map("bank_name")
+  bankBranch     String?  @map("bank_branch")
+  accountNo      String?  @map("account_no")
+  ifscCode       String?  @map("ifsc_code")
+  swiftCode      String?  @map("swift_code")
+  adCode         String?  @map("ad_code")
+  logoUrl        String?  @map("logo_url")
+  ceoEmail       String?  @map("ceo_email") // receives CEO overdue alerts
+  // invoice_config_quartz / invoice_config_granite live in the table for raw SQL only (see 0019 SQL)
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("sales_config")
+}
+
+model SalesCreditNote {
+  id           String           @id @default(cuid())
+  orderId      String           @map("order_id")
+  creditNumber String           @unique @map("credit_number") // CN-YYYY-NNNN
+  reason       String // e.g. "Broken slab — 2 slabs damaged on arrival"
+  description  String? // item details
+  amount       Float
+  currency     String           @default("USD")
+  status       CreditNoteStatus @default(PENDING_INSPECTION)
+  inspectedAt  DateTime?        @map("inspected_at")
+  issuedAt     DateTime?        @map("issued_at")
+  notes        String?
+  createdById  String           @map("created_by_id") // -> users.id (no hard FK)
+  createdAt    DateTime         @default(now()) @map("created_at")
+  updatedAt    DateTime         @updatedAt @map("updated_at")
+
+  order SalesOrder @relation(fields: [orderId], references: [id])
+
+  @@map("sales_credit_notes")
 }
