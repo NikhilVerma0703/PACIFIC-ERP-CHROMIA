@@ -171,7 +171,7 @@ export default async function MisSheetPage({ searchParams }: { searchParams: Pro
       <Link href="/entry" className="mb-1 inline-flex items-center gap-1 text-sm text-brand hover:underline">← Data entry</Link>
       <h1 className="mb-1 text-2xl font-semibold tracking-tight text-gray-900">MIS — Daily Production &amp; Utilization</h1>
       <p className="mb-5 max-w-3xl text-sm text-gray-500">One hour per save: pick the hour (shift comes up on its own), fill what happened, Save. Logged hours appear in the table below. Delay per hour caps at 60 min.</p>
-      <MisShiftSheet rows={rows} date={date} shift={shift} hour={hourParam} operatorName={operatorName} options={options} prefill={prefill} />
+      <MisShiftSheet key={`${date}|${shift}|${initialHour}`} rows={rows} date={date} shift={shift} hour={hourParam ?? initialHour} operatorName={operatorName} options={options} prefill={prefill} />
     </Shell>
   );
 }

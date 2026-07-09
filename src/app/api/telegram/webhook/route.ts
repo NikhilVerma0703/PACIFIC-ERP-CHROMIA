@@ -20,7 +20,7 @@ const HELP = [
   "/shift — the running shift's report",
   "/day — today so far",
   "/yesterday — yesterday's daily report",
-  "/ask <question> — free-text (AI) answer from live data",
+  "/ask &lt;question&gt; — free-text (AI) answer from live data",
 ].join("\n");
 
 const plusDay = (d: string, n: number) => { const x = new Date(`${d}T12:00:00Z`); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
@@ -39,7 +39,7 @@ async function answer(cmd: string): Promise<string | null> {
   return null; // silence for normal chatter
 }
 
-const HELP_ASK = "/ask <question> — e.g. /ask how many slabs did we lose to downtime this week?";
+const HELP_ASK = "/ask &lt;question&gt; — e.g. /ask how many slabs did we lose to downtime this week?";
 
 export async function POST(req: Request) {
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET;

@@ -41,7 +41,7 @@ async function dataPack(): Promise<string> {
       SELECT batch, sum(slabs_per_hour_actual)::float logged,
              count(*) FILTER (WHERE slabs_per_hour_actual IS NULL)::int hours_without_count
       FROM mis WHERE imported_at > now() - interval '10 days' AND batch IS NOT NULL
-      GROUP BY batch LIMIT 8`;
+      GROUP BY batch ORDER BY max(imported_at) DESC LIMIT 8`;
     if (misSums.length) lines.push("MIS MANUAL LOG BY BATCH (same period — compare with press to spot gaps): "
       + misSums.map((m) => `${m.batch}: logged ${m.logged ?? 0}${m.hours_without_count ? ` (+${m.hours_without_count} hrs missing counts)` : ""}`).join("; "));
     const fg: any[] = await db.$queryRaw`SELECT count(*)::int n FROM fg_finished_slab WHERE status = 'AVAILABLE'`;
@@ -52,6 +52,22 @@ async function dataPack(): Promise<string> {
       FROM polish_qc
       WHERE imported_at > now() - interval '10 days' AND batch_key IS NOT NULL
       GROUP BY 1, 2`;
+    // JOT station: defects + inspection volume per batch (last 10 days)
+    const jot: any[] = await db.$queryRaw`
+      SELECT batch, slab_defect, count(*)::int n
+      FROM jot WHERE imported_at > now() - interval '10 days' AND batch IS NOT NULL
+      GROUP BY 1, 2 ORDER BY max(imported_at) DESC LIMIT 24`;
+    if (jot.length) {
+      const byB = new Map<string, { total: number; defects: string[] }>();
+      for (const r of jot) {
+        const e = byB.get(String(r.batch)) ?? { total: 0, defects: [] };
+        e.total += r.n;
+        if (r.slab_defect) e.defects.push(`${r.slab_defect}:${r.n}`);
+        byB.set(String(r.batch), e);
+      }
+      lines.push("JOT STATION BY BATCH (last 10 days — slabs inspected + defects found): "
+        + [...byB.entries()].slice(0, 8).map(([b, e]) => `${b}: ${e.total} slabs${e.defects.length ? ` (defects ${e.defects.join(" ")})` : " (no defects)"}`).join("; "));
+    }
     if (qc.length) {
       const byBatch = new Map<string, string[]>();
       for (const r of qc) {

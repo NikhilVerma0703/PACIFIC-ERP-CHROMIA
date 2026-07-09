@@ -64,7 +64,9 @@ export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName
 
   const logged = useMemo(() => new Set(rows.map((r) => r.hour)), [rows]);
   const defaultHour = () => {
-    const h = new Date(Date.now() + 330 * 60000).getUTCHours(); // IST hour
+    // the just-ENDED hour — MUST mirror the server's initialHourFor rule,
+    // else prefill (computed server-side) belongs to a different hour
+    const h = (new Date(Date.now() + 330 * 60000).getUTCHours() + 23) % 24;
     const wall = `${String(h).padStart(2, "0")} - ${String((h + 1) % 24).padStart(2, "0")}`;
     // stay inside the shift whose rows are loaded (bookmarked links, old tabs)
     if (shiftOfHour(wall) === shift) return wall;
