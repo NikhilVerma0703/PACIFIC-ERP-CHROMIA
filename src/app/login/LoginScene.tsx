@@ -11,7 +11,7 @@ export function LoginScene({ children }: { children: ReactNode }) {
       <div className="pointer-events-none absolute inset-0 opacity-[0.05]" style={{ backgroundImage: "linear-gradient(rgba(218,225,232,0.45) 1px, transparent 1px), linear-gradient(90deg, rgba(218,225,232,0.45) 1px, transparent 1px)", backgroundSize: "56px 56px" }} />
       {/* watermark mark */}
       <img src="/logo-white.png" alt="" aria-hidden className="pointer-events-none absolute -right-32 top-1/2 h-[34rem] w-[34rem] -translate-y-1/2 object-contain opacity-[0.04]" />
-      <div className="relative z-10 w-full max-w-3xl">{children}</div>
+      <div className="relative z-10 w-full max-w-4xl">{children}</div>
       <div className="pointer-events-none absolute inset-x-0 bottom-5 text-center text-[10px] font-medium uppercase tracking-[0.3em] text-pacific-mid/40">The Pacific Group</div>
     </main>
   );

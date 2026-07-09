@@ -8,7 +8,7 @@ function BranchCard({ href, title, desc, icon }: { href: string; title: string; 
   return (
     <Link
       href={href}
-      className="group block w-72 rounded-2xl border border-pacific-mid/15 bg-white/5 p-7 text-left backdrop-blur-sm transition duration-300 hover:-translate-y-1 hover:border-pacific-mid/40 hover:bg-white/10"
+      className="group flex w-72 flex-col rounded-2xl border border-pacific-mid/15 bg-white/5 p-7 text-left backdrop-blur-sm transition duration-300 hover:-translate-y-1 hover:border-pacific-mid/40 hover:bg-white/10"
     >
       <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-xl border border-pacific-mid/20 bg-white/5 text-pacific-light transition group-hover:bg-white group-hover:text-pacific-dark">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d={icon} /></svg>
@@ -37,7 +37,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
         <h1 className="mt-3 text-4xl font-light tracking-tight text-white sm:text-5xl">Production ERP</h1>
         <p className="mt-4 text-sm text-pacific-mid">Choose your branch to sign in</p>
       </div>
-      <div className="flex flex-wrap items-stretch justify-center gap-5">
+      <div className="flex flex-col items-center gap-5 md:flex-row md:items-stretch md:justify-center">
         <BranchCard
           href="/login?branch=shop"
           title="Shop Floor"
