@@ -58,7 +58,7 @@ async function clearFailures(key: string): Promise<void> {
 const credentialsSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
-  branch: z.enum(["SHOP_FLOOR", "OFFICE"]).optional(),
+  branch: z.enum(["SHOP_FLOOR", "OFFICE", "INTERNATIONAL_SALES"]).optional(),
 });
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
@@ -84,7 +84,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const isAdmin = String(user.role) === "ADMIN";
         // Fabrication is shop-side: a fab user logs in via the Shop Floor portal,
         // then is routed to /fab by their DB branch. Only reject a true office<->shop mismatch.
-        const side = (b: string) => (b === "OFFICE" ? "OFFICE" : "SHOP");
+        const side = (b: string) => (b === "OFFICE" ? "OFFICE" : b === "INTERNATIONAL_SALES" ? "SALES" : "SHOP");
         if (branch && !isAdmin && side(userBranch) !== side(branch)) return null;
         await clearFailures(tkey); // fully valid sign-in — reset the counter
         const effectiveBranch = isAdmin ? (branch ?? userBranch) : userBranch;
