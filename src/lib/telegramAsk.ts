@@ -98,6 +98,36 @@ async function dataPack(question = ""): Promise<string> {
       ? jtAct.map((r: any) => `${r.slab_number}${r.slab_defect ? `(${r.slab_defect})` : ""}`).join(" ")
       : "none"));
   } catch { /* best-effort */ }
+  // LATEST ENTRY per station (all-time) + silo stock + FG by status — the
+  // broad live picture, so "last slab polished / what's in silo 201" answers.
+  try {
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const db = prisma as any;
+    const ago = (d: any) => `${Math.max(0, Math.round((Date.now() - new Date(d).getTime()) / 60000))}min ago`;
+    const one = (sql: Promise<any[]>) => sql.then((r) => r[0] ?? null).catch(() => null);
+    const [lqc, lpr, ljt, lov, lmx, ldi, lkr, silos, fgs]: any[] = await Promise.all([
+      one(db.$queryRaw`SELECT slab_number, quality_grade, batch_number, imported_at FROM polish_qc ORDER BY imported_at DESC LIMIT 1`),
+      one(db.$queryRaw`SELECT slab_number, batch, imported_at FROM press ORDER BY imported_at DESC LIMIT 1`),
+      one(db.$queryRaw`SELECT slab_number, batch, slab_defect, imported_at FROM jot ORDER BY imported_at DESC LIMIT 1`),
+      one(db.$queryRaw`SELECT slab_number, batch, imported_at FROM oven ORDER BY imported_at DESC LIMIT 1`),
+      one(db.$queryRaw`SELECT batch, imported_at FROM mixer_cycle ORDER BY imported_at DESC LIMIT 1`),
+      one(db.$queryRaw`SELECT batch, slab_number, imported_at FROM distributor ORDER BY imported_at DESC LIMIT 1`),
+      one(db.$queryRaw`SELECT batch, slab_number, imported_at FROM kreos ORDER BY imported_at DESC LIMIT 1`),
+      db.$queryRaw`SELECT silo_no, round(sum(remaining_weight)::numeric)::float kg FROM silo WHERE remaining_weight > 0 AND silo_no IS NOT NULL GROUP BY 1 ORDER BY 1 LIMIT 16`.catch(() => []),
+      db.$queryRaw`SELECT status, count(*)::int n FROM fg_finished_slab GROUP BY 1`.catch(() => []),
+    ]);
+    const L: string[] = [];
+    if (lpr) L.push(`press slab ${lpr.slab_number} (${lpr.batch ?? "?"}, ${ago(lpr.imported_at)})`);
+    if (ljt) L.push(`JOT slab ${ljt.slab_number}${ljt.slab_defect ? ` DEFECT ${ljt.slab_defect}` : ""} (${ljt.batch ?? "?"}, ${ago(ljt.imported_at)})`);
+    if (lqc) L.push(`polishQC slab ${lqc.slab_number} grade ${lqc.quality_grade ?? "ungraded"} (${lqc.batch_number ?? "?"}, ${ago(lqc.imported_at)})`);
+    if (lov) L.push(`oven slab ${lov.slab_number} (${lov.batch ?? "?"}, ${ago(lov.imported_at)})`);
+    if (lmx) L.push(`mixer ${lmx.batch ?? "?"} (${ago(lmx.imported_at)})`);
+    if (ldi) L.push(`distributor ${ldi.batch ?? "?"} slab ${ldi.slab_number ?? "?"} (${ago(ldi.imported_at)})`);
+    if (lkr) L.push(`kreos ${lkr.batch ?? "?"} slab ${lkr.slab_number ?? "?"} (${ago(lkr.imported_at)})`);
+    if (L.length) lines.push("LATEST ENTRY PER STATION: " + L.join("; "));
+    if (silos.length) lines.push("SILO STOCK (kg remaining): " + silos.map((r: any) => `${r.silo_no}:${r.kg}`).join(" "));
+    if (fgs.length) lines.push("FINISHED GOODS BY STATUS: " + fgs.map((r: any) => `${r.status}:${r.n}`).join(" "));
+  } catch { /* best-effort */ }
   // QUESTION-AWARE: any batch number mentioned gets full targeted stats —
   // never again "no data" because a list cap cut the asked batch out.
   try {
@@ -124,12 +154,13 @@ async function dataPack(question = ""): Promise<string> {
     for (const n of slabs) {
       const [pr, jt, qc, fg]: any[][] = await Promise.all([
         db.$queryRaw`SELECT batch, design_name FROM press WHERE slab_number = ${n} LIMIT 1`,
-        db.$queryRaw`SELECT slab_defect, bend_mm FROM jot WHERE slab_number = ${n} ORDER BY imported_at DESC LIMIT 1`,
+        db.$queryRaw`SELECT slab_defect, bend_mm, design_name FROM jot WHERE slab_number = ${n} ORDER BY imported_at DESC LIMIT 1`,
         db.$queryRaw`SELECT quality_grade, repolish_status, rw_status FROM polish_qc WHERE slab_number = ${n} ORDER BY imported_at DESC LIMIT 1`,
         db.$queryRaw`SELECT status, bay_number, design FROM fg_finished_slab WHERE slab_number = ${n} LIMIT 1`,
       ]);
       if (!(pr.length || jt.length || qc.length || fg.length)) continue;
-      lines.push(`ASKED SLAB ${n}: press ${pr[0] ? `${pr[0].batch ?? "?"} ${pr[0].design_name ?? ""}`.trim() : "no entry"}; JOT ${jt[0] ? (jt[0].slab_defect ?? "no defect") : "no entry"}; QC ${qc[0] ? `${qc[0].quality_grade ?? "ungraded"}${qc[0].repolish_status ? ` ${qc[0].repolish_status}` : ""}` : "no entry"}; stock ${fg[0] ? `${fg[0].status} ${fg[0].bay_number ?? ""}`.trim() : "not in finished goods"}`);
+      const dsg = pr[0]?.design_name ?? jt[0]?.design_name ?? fg[0]?.design ?? null;
+      lines.push(`ASKED SLAB ${n}: design ${dsg ?? "unknown"}; press ${pr[0] ? `batch ${pr[0].batch ?? "?"}` : "no entry"}; JOT ${jt[0] ? (jt[0].slab_defect ?? "no defect") : "no entry"}; QC ${qc[0] ? `${qc[0].quality_grade ?? "ungraded"}${qc[0].repolish_status ? ` ${qc[0].repolish_status}` : ""}` : "no entry"}; stock ${fg[0] ? `${fg[0].status} ${fg[0].bay_number ?? ""}`.trim() : "not in finished goods"}`);
     }
   } catch { /* best-effort */ }
   try {
@@ -161,7 +192,7 @@ export async function aiAnswer(question: string): Promise<string> {
       body: JSON.stringify({
         model: "claude-haiku-4-5",
         max_tokens: 400,
-        system: "You are the Pacific Surfaces factory ERP assistant answering in a Telegram group. Answer ONLY from the production data provided — never invent numbers. PRESS MACHINE TOTALS are the authoritative slab counts per batch; the LAST ~75min station lines list the individual slabs just entered at Polish QC / press / JOT — use them for any "last hour / just now / recent entries" question; the MIS lines are the manual hourly log and can be incomplete (hours logged without counts). For batch totals ALWAYS use the press totals. When asked about issues/discrepancies, COMPARE press totals against the MIS log: flag batches where MIS logged noticeably fewer slabs than the press made, and hours missing counts. If the question needs data not present here, say exactly what is missing instead of estimating. Be short (2-5 lines), plain text, numbers bold-free. If the data can't answer the question, say so and suggest /status, /shift, /day or the ERP dashboard.",
+        system: "You are the Pacific Surfaces factory ERP assistant answering in a Telegram group. Answer ONLY from the production data provided — never invent numbers. PRESS MACHINE TOTALS are the authoritative slab counts per batch; the LAST ~75min station lines list the individual slabs just entered at Polish QC / press / JOT, and LATEST ENTRY lines give the most recent record per station with its age — use these for any 'last hour / just now / latest / most recent' question; the MIS lines are the manual hourly log and can be incomplete (hours logged without counts). For batch totals ALWAYS use the press totals. When asked about issues/discrepancies, COMPARE press totals against the MIS log: flag batches where MIS logged noticeably fewer slabs than the press made, and hours missing counts. If the question needs data not present here, say exactly what is missing instead of estimating. Be short (2-5 lines), plain text, numbers bold-free. If the data can't answer the question, say so and suggest /status, /shift, /day or the ERP dashboard.",
         messages: [{ role: "user", content: `Production data:\n${pack}\n\nQuestion: ${question.slice(0, 500)}` }],
       }),
     });
