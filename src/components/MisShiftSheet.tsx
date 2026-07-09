@@ -11,6 +11,7 @@ import { SHIFT_HOURS, shiftOfHour } from "@/lib/misShiftHours";
 
 export interface MisRowLite {
   id: string; hour: string | null; batch: string | null; design: string | null;
+  productionType: string | null; thkAtPressMm: number | null;
   slabsPerHourStd: number | null; slabsPerHourActual: number | null;
   startingSlabNumber: number | null; endingSlabNumber: number | null; numberOfJumpedSlabs: number | null;
   areaOfProblem: string[]; details: string | null;
@@ -33,20 +34,27 @@ const lbl = "mb-1 block text-xs font-medium text-gray-600";
 const num = (v: unknown) => (v == null || v === "" ? "" : String(v));
 const plusDay = (d: string, n: number) => { const x = new Date(`${d}T12:00:00Z`); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
 
-export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName, options }: {
+export interface MisPrefill {
+  batch?: string; design?: string; thkPress?: string; productionType?: string;
+  prodIncharge?: string; fromPress?: boolean;
+}
+
+export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName, options, prefill }: {
   rows: MisRowLite[]; date: string; shift: "A" | "B" | "C"; hour?: string;
-  operatorName: string; options: Record<string, string[]>;
+  operatorName: string; options: Record<string, string[]>; prefill?: MisPrefill;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [err, setErr] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
-  const [batch, setBatch] = useState("");
-  const [design, setDesign] = useState("");
-  const [productionType, setProductionType] = useState("");
-  const [thkPress, setThkPress] = useState("");
-  const [prodIncharge, setProdIncharge] = useState("");
+  // Header initializes from the server-computed prefill (login + live press
+  // data + previous MIS row of this shift) but every field stays editable.
+  const [batch, setBatch] = useState(prefill?.batch ?? "");
+  const [design, setDesign] = useState(prefill?.design ?? "");
+  const [productionType, setProductionType] = useState(prefill?.productionType ?? "");
+  const [thkPress, setThkPress] = useState(prefill?.thkPress ?? "");
+  const [prodIncharge, setProdIncharge] = useState(prefill?.prodIncharge ?? operatorName);
   const [maintIncharge, setMaintIncharge] = useState("");
   const [areas, setAreas] = useState<string[]>([]);
   const [reasons, setReasons] = useState<string[]>([]);
@@ -124,15 +132,15 @@ export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName
           <div className="rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-700">Filled by: <span className="font-semibold">{operatorName}</span></div>
         </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <label className="block"><span className={lbl}>Batch *</span>
+          <label className="block"><span className={lbl}>Batch *{prefill?.fromPress && batch === prefill?.batch && batch ? <span className="ml-1 font-normal text-gray-400">(from press data)</span> : null}</span>
             <input value={batch} onChange={(e) => setBatch(e.target.value)} placeholder="e.g. 1375" className={inp} /></label>
-          <label className="block"><span className={lbl}>Design / product</span>
+          <label className="block"><span className={lbl}>Design / product{prefill?.fromPress && design === prefill?.design && design ? <span className="ml-1 font-normal text-gray-400">(from press data)</span> : null}</span>
             <input value={design} onChange={(e) => setDesign(e.target.value)} list="mis-designs" className={inp} />
             <datalist id="mis-designs">{(options.design ?? []).map((o) => <option key={o} value={o} />)}</datalist></label>
-          <label className="block"><span className={lbl}>Production type</span>
+          <label className="block"><span className={lbl}>Production type{prefill?.productionType && productionType === prefill?.productionType ? <span className="ml-1 font-normal text-gray-400">(from previous hour)</span> : null}</span>
             <select value={productionType} onChange={(e) => setProductionType(e.target.value)} className={inp}>
               <option value="">—</option>{(options.productionType ?? []).map((o) => <option key={o}>{o}</option>)}</select></label>
-          <label className="block"><span className={lbl}>Thk at Press (mm)</span>
+          <label className="block"><span className={lbl}>Thk at Press (mm){prefill?.thkPress && thkPress === prefill?.thkPress ? <span className="ml-1 font-normal text-gray-400">(from previous hour)</span> : null}</span>
             <input value={thkPress} onChange={(e) => setThkPress(e.target.value)} type="number" step="any" min="0" className={inp} /></label>
           <label className="block"><span className={lbl}>Production Incharge</span>
             <input value={prodIncharge} onChange={(e) => setProdIncharge(e.target.value)} className={inp} /></label>

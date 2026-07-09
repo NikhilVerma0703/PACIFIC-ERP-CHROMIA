@@ -28,6 +28,7 @@ export default auth((req) => {
     p.startsWith("/api/auth") ||
     p.startsWith("/api/sync") ||
     p.startsWith("/api/telegram/report") ||   // cron-only: gated by CRON_SECRET inside
+    p.startsWith("/api/sales/cron") ||        // cron-only: gated by CRON_SECRET inside
     STATIC_FILE.test(p);
   if (isPublic) return;
 
@@ -70,6 +71,17 @@ export default auth((req) => {
   }
   if (!isAdmin && fabPath) {
     // Production / Office staff never see fabrication.
+    return Response.redirect(new URL("/", nextUrl));
+  }
+  if (!isAdmin && branch === "INTERNATIONAL_SALES") {
+    // International Sales staff: sales pages + API only — never production/office pages.
+    if (p.startsWith("/api")) return;
+    const ok = p.startsWith("/sales") || STATIC_FILE.test(p);
+    if (!ok) return Response.redirect(new URL("/sales", nextUrl));
+    return;
+  }
+  if (!isAdmin && p.startsWith("/sales")) {
+    // Staff from every other department never see International Sales.
     return Response.redirect(new URL("/", nextUrl));
   }
   if (!isAdmin && branch !== "OFFICE" && p.startsWith("/inventory")) {
