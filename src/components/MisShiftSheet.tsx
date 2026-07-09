@@ -1,16 +1,16 @@
 "use client";
-// MIS shift sheet — mirrors the paper "Daily Production & Utilization Report":
-// one screen per shift, one row per hour. Each hour row saves as its own MIS
-// record via the generic createRow action. Slabs/hour are ENTERED by the
-// incharge (std = from cycle time, actual = counted) — never auto-calculated.
+// MIS hourly entry — paper layout, ONE hour per save:
+// pick the hour from a dropdown (defaults to the running hour), the shift
+// comes up automatically from that hour, and who's filling is stamped from
+// the login (shown read-only). Slabs/hour Std. and Actual are both WRITTEN
+// by the incharge — never auto-calculated.
 import { useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { createRow } from "@/app/tables/actions";
-import { SHIFT_HOURS } from "@/lib/misShiftHours";
+import { SHIFT_HOURS, shiftOfHour } from "@/lib/misShiftHours";
 
 export interface MisRowLite {
   id: string; hour: string | null; batch: string | null; design: string | null;
-  cyclesUnloaded: number | null; cyclesMixed: number | null;
   slabsPerHourStd: number | null; slabsPerHourActual: number | null;
   startingSlabNumber: number | null; endingSlabNumber: number | null; numberOfJumpedSlabs: number | null;
   areaOfProblem: string[]; details: string | null;
@@ -18,6 +18,7 @@ export interface MisRowLite {
   breakdownDelayDurationMechanicalOrElectricalMinutes: number | null; poweroutDelayDurationMinutes: number | null;
 }
 
+const ALL_HOURS = [...SHIFT_HOURS.A, ...SHIFT_HOURS.B, ...SHIFT_HOURS.C];
 const AREAS = ["Silos", "Mixer", "Distributor", "Kreos", "Chessboard", "Robot", "Press", "Oven", "Rubber Line", "Cooling Tower", "Jot"];
 const DELAYS = [
   ["processDelayDurationMinutes", "Operational"],
@@ -25,229 +26,240 @@ const DELAYS = [
   ["breakdownDelayDurationMechanicalOrElectricalMinutes", "Mech/Elec"],
   ["poweroutDelayDurationMinutes", "Power out"],
 ] as const;
+const CATS = [["aCategory", "A cat."], ["aCategory2", "A- cat."], ["bCategory", "B cat."], ["cCategory", "C cat."]] as const;
 
-const inp = "w-full rounded border border-gray-300 px-1.5 py-1.5 text-sm";
+const inp = "w-full rounded-md border border-gray-300 px-2.5 py-2 text-sm";
+const lbl = "mb-1 block text-xs font-medium text-gray-600";
 const num = (v: unknown) => (v == null || v === "" ? "" : String(v));
+const plusDay = (d: string, n: number) => { const x = new Date(`${d}T12:00:00Z`); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
 
-function HourRow({ hour, date, header, existing }: {
-  hour: string; date: string;
-  header: { batch: string; design: string; productionType: string; thkMixer: string; thkPress: string; std: string; prodIncharge: string; maintIncharge: string };
-  existing: MisRowLite | null;
+export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName, options }: {
+  rows: MisRowLite[]; date: string; shift: "A" | "B" | "C"; hour?: string;
+  operatorName: string; options: Record<string, string[]>;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [err, setErr] = useState<string | null>(null);
-  const [areas, setAreas] = useState<string[]>([]);
+  const [ok, setOk] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
+  const [batch, setBatch] = useState("");
+  const [design, setDesign] = useState("");
+  const [productionType, setProductionType] = useState("");
+  const [thkPress, setThkPress] = useState("");
+  const [prodIncharge, setProdIncharge] = useState("");
+  const [maintIncharge, setMaintIncharge] = useState("");
+  const [areas, setAreas] = useState<string[]>([]);
+  const [reasons, setReasons] = useState<string[]>([]);
 
-  if (existing) {
-    const delay = DELAYS.reduce((a, [k]) => a + (Number(existing[k] ?? 0) || 0), 0);
-    return (
-      <tr className="border-t border-gray-100 bg-emerald-50/40 text-sm">
-        <td className="whitespace-nowrap px-2 py-2 font-medium text-gray-700">{hour}</td>
-        <td className="px-2 py-2 text-center">{num(existing.cyclesUnloaded) || "—"}</td>
-        <td className="px-2 py-2 text-center">{num(existing.cyclesMixed) || "—"}</td>
-        <td className="px-2 py-2 text-center font-medium">{num(existing.slabsPerHourStd) || "—"}</td>
-        <td className="px-2 py-2 text-center font-semibold text-gray-900">{num(existing.slabsPerHourActual) || "—"}</td>
-        <td className="px-2 py-2 text-center">{num(existing.startingSlabNumber) || "—"}</td>
-        <td className="px-2 py-2 text-center">{num(existing.endingSlabNumber) || "—"}</td>
-        <td className="px-2 py-2 text-center">{num(existing.numberOfJumpedSlabs) || "—"}</td>
-        <td className="px-2 py-2 text-xs">{existing.areaOfProblem.join(", ") || "—"}</td>
-        <td className="px-2 py-2 text-center text-xs">{delay > 0 ? `${delay} min` : "—"}</td>
-        <td className="max-w-[200px] truncate px-2 py-2 text-xs" title={existing.details ?? ""}>{existing.details || "—"}</td>
-        <td className="px-2 py-2"><a href={`/tables/Mis/${existing.id}`} className="text-xs text-brand hover:underline">edit</a></td>
-      </tr>
-    );
-  }
+  const logged = useMemo(() => new Set(rows.map((r) => r.hour)), [rows]);
+  const defaultHour = () => {
+    const h = new Date(Date.now() + 330 * 60000).getUTCHours(); // IST hour
+    const wall = `${String(h).padStart(2, "0")} - ${String((h + 1) % 24).padStart(2, "0")}`;
+    // stay inside the shift whose rows are loaded (bookmarked links, old tabs)
+    if (shiftOfHour(wall) === shift) return wall;
+    return SHIFT_HOURS[shift].find((x) => !logged.has(x)) ?? SHIFT_HOURS[shift][0];
+  };
+  const [hour, setHour] = useState<string>(hourParam && ALL_HOURS.includes(hourParam) ? hourParam : defaultHour());
+  const hShift = shiftOfHour(hour);
+  // calendar date OF THE CHOSEN HOUR (C-shift hours past midnight = anchor+1)
+  const hourDate = hShift === "C" && Number(hour.slice(0, 2)) < 12 ? plusDay(date, 1) : date;
+
+  const onHour = (h: string) => {
+    setHour(h);
+    const s = shiftOfHour(h);
+    if (s !== shift) {
+      // moving into another shift's window -> reload that shift's rows.
+      // Picking an after-midnight hour from a day view means LAST night's C shift.
+      const anchor = s === "C" && Number(h.slice(0, 2)) < 6 ? plusDay(date, -1) : date;
+      router.push(`/entry/mis?date=${anchor}&shift=${s}&hour=${encodeURIComponent(h)}`);
+    }
+  };
 
   const save = () => {
     const form = formRef.current;
     if (!form) return;
+    if (hShift !== shift) { setErr("Loading that shift\u2026 tap Save again in a moment"); return; }
     const fd = new FormData(form);
     const delay = DELAYS.reduce((a, [k]) => a + (Number(fd.get(k) || 0) || 0), 0);
-    if (delay > 60) { setErr(`${Math.round(delay)} min delay — max 60/hour`); return; }
-    if (!header.batch.trim()) { setErr("Fill Batch in the sheet header first"); return; }
+    if (delay > 60) { setErr(`${Math.round(delay)} min delay — max 60 in one hour`); return; }
+    if (!batch.trim()) { setErr("Batch is required"); return; }
+    if (logged.has(hour)) { setErr(`Hour ${hour} is already logged — use its edit link below`); return; }
     fd.set("__model", "Mis");
     fd.set("hour", hour);
-    fd.set("date", date);
-    fd.set("dateAndTime", `${date}T${hour.slice(0, 2)}:00:00+05:30`); // pin IST — server TZ must not shift it
-    fd.set("batch", header.batch); fd.set("design", header.design);
-    if (header.productionType) fd.set("productionType", header.productionType);
-    if (header.thkMixer) fd.set("thkAtMixerMm", header.thkMixer);
-    if (header.thkPress) fd.set("thkAtPressMm", header.thkPress);
-    if (header.std) fd.set("slabsPerHourStd", header.std);
-    if (header.prodIncharge) fd.set("productionInchargeName", header.prodIncharge);
-    if (header.maintIncharge) fd.set("maintenanceInchargeName", header.maintIncharge);
+    fd.set("date", hourDate);
+    fd.set("dateAndTime", `${hourDate}T${hour.slice(0, 2)}:00:00+05:30`); // IST-pinned
+    fd.set("batch", batch); fd.set("design", design);
+    if (productionType) fd.set("productionType", productionType);
+    if (thkPress) fd.set("thkAtPressMm", thkPress);
+    if (prodIncharge) fd.set("productionInchargeName", prodIncharge);
+    if (maintIncharge) fd.set("maintenanceInchargeName", maintIncharge);
     for (const a of areas) fd.append("areaOfProblem", a);
+    for (const r of reasons) fd.append("reasonForDeviation", r);
     start(async () => {
       const r = await createRow(undefined, fd);
-      if (r && r !== "ok") setErr(r); else { setErr(null); router.refresh(); }
+      if (r && r !== "ok") { setOk(null); setErr(r); }
+      else {
+        setErr(null); setOk(`Hour ${hour} saved ✓`);
+        form.reset(); setAreas([]); setReasons([]);
+        router.refresh();
+      }
     });
   };
 
-  return (
-    <tr className="border-t border-gray-100 align-top text-sm">
-      <td className="whitespace-nowrap px-2 py-2 font-medium text-gray-700">{hour}</td>
-      {/* the row's own fields live in a form via the form= attribute trick:
-          a <form> can't wrap <td>s, so inputs reference an off-table form */}
-      <td className="px-1 py-1.5"><input form={`f-${hour.slice(0, 2)}`} name="cyclesUnloaded" type="number" step="any" min="0" className={inp} /></td>
-      <td className="px-1 py-1.5"><input form={`f-${hour.slice(0, 2)}`} name="cyclesMixed" type="number" step="any" min="0" className={inp} /></td>
-      <td className="px-1 py-1.5 text-center text-xs text-gray-500">{header.std || "—"}</td>
-      <td className="px-1 py-1.5"><input form={`f-${hour.slice(0, 2)}`} name="slabsPerHourActual" type="number" step="any" min="0" className={`${inp} font-semibold`} /></td>
-      <td className="px-1 py-1.5"><input form={`f-${hour.slice(0, 2)}`} name="startingSlabNumber" type="number" step="any" min="0" className={inp} /></td>
-      <td className="px-1 py-1.5"><input form={`f-${hour.slice(0, 2)}`} name="endingSlabNumber" type="number" step="any" min="0" className={inp} /></td>
-      <td className="px-1 py-1.5"><input form={`f-${hour.slice(0, 2)}`} name="numberOfJumpedSlabs" type="number" step="any" min="0" className={inp} /></td>
-      <td className="px-1 py-1.5">
-        <div className="flex max-w-[190px] flex-wrap gap-1">
-          {AREAS.map((a) => (
-            <button key={a} type="button" onClick={() => setAreas((p) => p.includes(a) ? p.filter((x) => x !== a) : [...p, a])}
-              className={`rounded-full border px-1.5 py-0.5 text-[10px] ${areas.includes(a) ? "border-brand bg-brand/10 font-medium text-brand" : "border-gray-200 text-gray-500"}`}>
-              {a}
-            </button>
-          ))}
-        </div>
-      </td>
-      <td className="px-1 py-1.5">
-        <div className="grid w-[170px] grid-cols-2 gap-1">
-          {DELAYS.map(([k, label]) => (
-            <label key={k} className="block">
-              <span className="block text-[9px] uppercase tracking-wide text-gray-400">{label}</span>
-              <input form={`f-${hour.slice(0, 2)}`} name={k} type="number" min="0" max="60" className={inp} />
-            </label>
-          ))}
-        </div>
-      </td>
-      <td className="px-1 py-1.5">
-        <textarea form={`f-${hour.slice(0, 2)}`} name="details" rows={2} placeholder="Issues (why avg slabs not reached)" className={`${inp} min-w-[160px] text-xs`} />
-      </td>
-      <td className="px-1 py-1.5">
-        <form id={`f-${hour.slice(0, 2)}`} ref={formRef} />
-        <button type="button" disabled={pending} onClick={save}
-          className="min-h-[38px] rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-dark disabled:opacity-50">
-          {pending ? "…" : "Save"}
-        </button>
-        {err && <div className="mt-1 max-w-[130px] text-[10px] leading-tight text-red-600">{err}</div>}
-      </td>
-    </tr>
-  );
-}
+  const totActual = rows.reduce((a, r) => a + (Number(r.slabsPerHourActual ?? 0) || 0), 0);
+  const totDelay = rows.reduce((a, r) => a + DELAYS.reduce((x, [k]) => x + (Number(r[k] ?? 0) || 0), 0), 0);
 
-export function MisShiftSheet({ rows, date, shift, options }: {
-  rows: MisRowLite[]; date: string; shift: "A" | "B" | "C";
-  options: Record<string, string[]>;
-}) {
-  const router = useRouter();
-  const [batch, setBatch] = useState("");
-  const [design, setDesign] = useState("");
-  const [productionType, setProductionType] = useState("");
-  const [thkMixer, setThkMixer] = useState("");
-  const [thkPress, setThkPress] = useState("");
-  const [std, setStd] = useState("");
-  const [prodIncharge, setProdIncharge] = useState("");
-  const [maintIncharge, setMaintIncharge] = useState("");
-
-  const hours = SHIFT_HOURS[shift];
-  const byHour = useMemo(() => {
-    const m = new Map<string, MisRowLite>();
-    for (const r of rows) if (r.hour) m.set(r.hour, r);
-    return m;
-  }, [rows]);
-  // C shift crosses midnight: 00-06 rows belong to the NEXT calendar date
-  const nextDay = useMemo(() => {
-    const d = new Date(`${date}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + 1);
-    return d.toISOString().slice(0, 10);
-  }, [date]);
-  const rowDate = (hour: string) => (shift === "C" && Number(hour.slice(0, 2)) < 12 ? nextDay : date);
-
-  const header = { batch, design, productionType, thkMixer, thkPress, std, prodIncharge, maintIncharge };
-  const saved = rows;
-  const tot = (f: (r: MisRowLite) => number) => saved.reduce((a, r) => a + f(r), 0);
-  const totActual = tot((r) => Number(r.slabsPerHourActual ?? 0) || 0);
-  const totCycU = tot((r) => Number(r.cyclesUnloaded ?? 0) || 0);
-  const totCycM = tot((r) => Number(r.cyclesMixed ?? 0) || 0);
-  const totDelay = tot((r) => DELAYS.reduce((a, [k]) => a + (Number(r[k] ?? 0) || 0), 0));
-
-  const hInp = "rounded-md border border-gray-300 px-2.5 py-2 text-sm";
-  const nav = (d: string, s: string) => router.push(`/entry/mis?date=${d}&shift=${s}`);
   return (
     <div className="space-y-4">
-      {/* ---- Sheet header (applies to every hour row saved) ---- */}
+      {/* ---- Header: when + who + what's running ---- */}
       <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
         <div className="mb-3 flex flex-wrap items-end gap-3">
-          <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">Date (shift start)</span>
-            <input type="date" value={date} onChange={(e) => e.target.value && nav(e.target.value, shift)} className={hInp} /></label>
-          <div>
-            <span className="mb-1 block text-xs font-medium text-gray-600">Shift</span>
-            <div className="flex gap-1">
-              {(["A", "B", "C"] as const).map((s) => (
-                <button key={s} type="button" onClick={() => nav(date, s)}
-                  className={`rounded-lg px-4 py-2 text-sm font-semibold ${s === shift ? "bg-brand text-white" : "border border-gray-300 text-gray-600 hover:bg-gray-50"}`}>
-                  {s}
-                </button>
+          <label className="block"><span className={lbl}>Date</span>
+            <input type="date" value={date} onChange={(e) => e.target.value && router.push(`/entry/mis?date=${e.target.value}&shift=${shift}&hour=${encodeURIComponent(hour)}`)} className={inp + " w-auto"} /></label>
+          <label className="block"><span className={lbl}>Hour</span>
+            <select value={hour} onChange={(e) => onHour(e.target.value)} className={inp + " w-auto font-medium"}>
+              {ALL_HOURS.map((h) => <option key={h} value={h}>{h}{logged.has(h) && shiftOfHour(h) === shift ? " ✓ logged" : ""}</option>)}
+            </select></label>
+          <div className="rounded-lg bg-brand/10 px-3 py-2 text-sm font-semibold text-brand">Shift {hShift} (auto)</div>
+          <div className="rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-700">Filled by: <span className="font-semibold">{operatorName}</span></div>
+        </div>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          <label className="block"><span className={lbl}>Batch *</span>
+            <input value={batch} onChange={(e) => setBatch(e.target.value)} placeholder="e.g. 1375" className={inp} /></label>
+          <label className="block"><span className={lbl}>Design / product</span>
+            <input value={design} onChange={(e) => setDesign(e.target.value)} list="mis-designs" className={inp} />
+            <datalist id="mis-designs">{(options.design ?? []).map((o) => <option key={o} value={o} />)}</datalist></label>
+          <label className="block"><span className={lbl}>Production type</span>
+            <select value={productionType} onChange={(e) => setProductionType(e.target.value)} className={inp}>
+              <option value="">—</option>{(options.productionType ?? []).map((o) => <option key={o}>{o}</option>)}</select></label>
+          <label className="block"><span className={lbl}>Thk at Press (mm)</span>
+            <input value={thkPress} onChange={(e) => setThkPress(e.target.value)} type="number" step="any" min="0" className={inp} /></label>
+          <label className="block"><span className={lbl}>Production Incharge</span>
+            <input value={prodIncharge} onChange={(e) => setProdIncharge(e.target.value)} className={inp} /></label>
+          <label className="block"><span className={lbl}>Maintenance Incharge</span>
+            <input value={maintIncharge} onChange={(e) => setMaintIncharge(e.target.value)} className={inp} /></label>
+        </div>
+      </div>
+
+      {/* ---- This hour's entry ---- */}
+      <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="mb-3 text-sm font-semibold text-gray-800">Hour {hour} — production</div>
+        <form ref={formRef}>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+            <label className="block"><span className={lbl}>Slabs/hr — Std. (from cycle time)</span>
+              <input name="slabsPerHourStd" type="number" step="any" min="0" className={inp} /></label>
+            <label className="block"><span className={lbl}>Slabs/hr — Actual</span>
+              <input name="slabsPerHourActual" type="number" step="any" min="0" className={`${inp} font-semibold`} /></label>
+            <label className="block"><span className={lbl}>Starting slab no.</span>
+              <input name="startingSlabNumber" type="number" step="any" min="0" className={inp} /></label>
+            <label className="block"><span className={lbl}>Ending slab no.</span>
+              <input name="endingSlabNumber" type="number" step="any" min="0" className={inp} /></label>
+            <label className="block"><span className={lbl}>Jumped slabs</span>
+              <input name="numberOfJumpedSlabs" type="number" step="any" min="0" className={inp} /></label>
+            {CATS.map(([k, label]) => (
+              <label key={k} className="block"><span className={lbl}>{label}</span>
+                <input name={k} type="number" step="any" min="0" className={inp} /></label>
+            ))}
+          </div>
+
+          <div className="mb-3 mt-5 text-sm font-semibold text-gray-800">Problems &amp; downtime (if any)</div>
+          <div className="mb-3">
+            <span className={lbl}>Area of problem</span>
+            <div className="flex flex-wrap gap-1.5">
+              {(options.areaOfProblem?.length ? options.areaOfProblem : AREAS).map((a) => (
+                <button key={a} type="button" onClick={() => setAreas((p) => p.includes(a) ? p.filter((x) => x !== a) : [...p, a])}
+                  className={`rounded-full border px-2.5 py-1 text-xs ${areas.includes(a) ? "border-brand bg-brand/10 font-medium text-brand" : "border-gray-200 text-gray-500"}`}>{a}</button>
               ))}
             </div>
           </div>
-          <div className="text-xs text-gray-500">A 06–14 · B 14–22 · C 22–06</div>
-        </div>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">Batch *</span>
-            <input value={batch} onChange={(e) => setBatch(e.target.value)} placeholder="e.g. 1375" className={`${hInp} w-full`} /></label>
-          <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">Design / product</span>
-            <input value={design} onChange={(e) => setDesign(e.target.value)} list="mis-designs" className={`${hInp} w-full`} />
-            <datalist id="mis-designs">{(options.design ?? []).map((o) => <option key={o} value={o} />)}</datalist></label>
-          <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">Production type</span>
-            <select value={productionType} onChange={(e) => setProductionType(e.target.value)} className={`${hInp} w-full`}>
-              <option value="">—</option>{(options.productionType ?? []).map((o) => <option key={o}>{o}</option>)}</select></label>
-          <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">Slabs/hr from cycle time (Std.)</span>
-            <input value={std} onChange={(e) => setStd(e.target.value)} type="number" step="any" min="0" placeholder="write, not auto" className={`${hInp} w-full`} /></label>
-          <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">Thk at Mixer (mm)</span>
-            <input value={thkMixer} onChange={(e) => setThkMixer(e.target.value)} type="number" step="any" min="0" className={`${hInp} w-full`} /></label>
-          <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">Thk at Press (mm)</span>
-            <input value={thkPress} onChange={(e) => setThkPress(e.target.value)} type="number" step="any" min="0" className={`${hInp} w-full`} /></label>
-          <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">Shift Production Incharge</span>
-            <input value={prodIncharge} onChange={(e) => setProdIncharge(e.target.value)} className={`${hInp} w-full`} /></label>
-          <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">Shift Maintenance Incharge</span>
-            <input value={maintIncharge} onChange={(e) => setMaintIncharge(e.target.value)} className={`${hInp} w-full`} /></label>
+          {(options.reasonForDeviation ?? []).length > 0 && (
+            <div className="mb-3">
+              <span className={lbl}>Reason for deviation</span>
+              <div className="flex flex-wrap gap-1.5">
+                {(options.reasonForDeviation ?? []).map((r) => (
+                  <button key={r} type="button" onClick={() => setReasons((p) => p.includes(r) ? p.filter((x) => x !== r) : [...p, r])}
+                    className={`rounded-full border px-2.5 py-1 text-xs ${reasons.includes(r) ? "border-amber-500 bg-amber-50 font-medium text-amber-700" : "border-gray-200 text-gray-500"}`}>{r}</button>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {DELAYS.map(([k, label]) => (
+              <label key={k} className="block"><span className={lbl}>{label} delay (min)</span>
+                <input name={k} type="number" min="0" max="60" className={inp} /></label>
+            ))}
+          </div>
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <label className="block"><span className={lbl}>Any breakdown?</span>
+              <select name="anyBreakdownYesNo" className={inp}><option value="">—</option><option>Yes</option><option>No</option></select></label>
+            <label className="block"><span className={lbl}>Action taken</span>
+              {(options.actionTaken ?? []).length > 0
+                ? <select name="actionTaken" className={inp}><option value="">—</option>{(options.actionTaken ?? []).map((o) => <option key={o}>{o}</option>)}</select>
+                : <input name="actionTaken" className={inp} />}</label>
+            <label className="block"><span className={lbl}>Spares used</span>
+              <input name="sparesUsed" className={inp} /></label>
+            <label className="block"><span className={lbl}>Additional remarks</span>
+              <input name="additionalRemarks" className={inp} /></label>
+          </div>
+          <label className="mt-3 block"><span className={lbl}>Issues (why avg slabs could not be reached)</span>
+            <textarea name="details" rows={2} className={inp} /></label>
+        </form>
+        <div className="mt-4 flex items-center gap-3">
+          <button type="button" disabled={pending} onClick={save}
+            className="min-h-[44px] rounded-lg bg-brand px-6 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-brand-dark disabled:opacity-60">
+            {pending ? "Saving…" : `Save hour ${hour}`}
+          </button>
+          {err && <span className="text-sm text-red-600">{err}</span>}
+          {ok && !err && <span className="text-sm text-emerald-600">{ok}</span>}
         </div>
       </div>
 
-      {/* ---- Hour rows, like the paper ---- */}
+      {/* ---- Already logged this shift ---- */}
       <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
-        <table className="w-full min-w-[1050px]">
+        <div className="px-4 pt-3 text-sm font-semibold text-gray-800">Shift {shift} — logged hours ({rows.length}/8)</div>
+        <table className="w-full min-w-[860px] text-sm">
           <thead>
-            <tr className="bg-gray-50 text-left text-[11px] uppercase tracking-wider text-gray-500">
-              <th className="px-2 py-2">Hour</th>
-              <th className="px-2 py-2">Cycles unloaded (Silos)</th>
-              <th className="px-2 py-2">Cycles mixed (Mixer)</th>
-              <th className="px-2 py-2">Slabs/hr Std.</th>
-              <th className="px-2 py-2">Slabs/hr Actual</th>
-              <th className="px-2 py-2">Start slab</th>
-              <th className="px-2 py-2">End slab</th>
-              <th className="px-2 py-2">Jumped</th>
-              <th className="px-2 py-2">Area of problem</th>
-              <th className="px-2 py-2">Delay (min)</th>
-              <th className="px-2 py-2">Issues</th>
-              <th className="px-2 py-2"></th>
+            <tr className="text-left text-[11px] uppercase tracking-wider text-gray-500">
+              <th className="px-3 py-2">Hour</th><th className="px-3 py-2">Batch</th>
+              <th className="px-3 py-2">Std.</th><th className="px-3 py-2">Actual</th>
+              <th className="px-3 py-2">Start</th><th className="px-3 py-2">End</th><th className="px-3 py-2">Jumped</th>
+              <th className="px-3 py-2">Areas</th><th className="px-3 py-2">Delay</th><th className="px-3 py-2">Issues</th><th className="px-3 py-2"></th>
             </tr>
           </thead>
           <tbody>
-            {hours.map((h) => <HourRow key={h} hour={h} date={rowDate(h)} header={header} existing={byHour.get(h) ?? null} />)}
+            {rows.length === 0 && <tr><td colSpan={11} className="px-3 py-4 text-center text-gray-400">No hours logged yet in this shift.</td></tr>}
+            {rows.map((r) => {
+              const delay = DELAYS.reduce((a, [k]) => a + (Number(r[k] ?? 0) || 0), 0);
+              return (
+                <tr key={r.id} className="border-t border-gray-100">
+                  <td className="whitespace-nowrap px-3 py-2 font-medium">{r.hour}</td>
+                  <td className="px-3 py-2">{r.batch ?? "—"}</td>
+                  <td className="px-3 py-2 text-center">{num(r.slabsPerHourStd) || "—"}</td>
+                  <td className="px-3 py-2 text-center font-semibold">{num(r.slabsPerHourActual) || "—"}</td>
+                  <td className="px-3 py-2 text-center">{num(r.startingSlabNumber) || "—"}</td>
+                  <td className="px-3 py-2 text-center">{num(r.endingSlabNumber) || "—"}</td>
+                  <td className="px-3 py-2 text-center">{num(r.numberOfJumpedSlabs) || "—"}</td>
+                  <td className="max-w-[160px] truncate px-3 py-2 text-xs" title={r.areaOfProblem.join(", ")}>{r.areaOfProblem.join(", ") || "—"}</td>
+                  <td className="whitespace-nowrap px-3 py-2 text-center">{delay > 0 ? `${delay} min` : "—"}</td>
+                  <td className="max-w-[180px] truncate px-3 py-2 text-xs" title={r.details ?? ""}>{r.details || "—"}</td>
+                  <td className="px-3 py-2"><a href={`/tables/Mis/${r.id}`} className="text-xs text-brand hover:underline">edit</a></td>
+                </tr>
+              );
+            })}
           </tbody>
-          <tfoot>
-            <tr className="border-t-2 border-gray-300 bg-gray-50 text-sm font-semibold text-gray-800">
-              <td className="px-2 py-2">Total</td>
-              <td className="px-2 py-2 text-center">{totCycU || "—"}</td>
-              <td className="px-2 py-2 text-center">{totCycM || "—"}</td>
-              <td className="px-2 py-2"></td>
-              <td className="px-2 py-2 text-center">{totActual || "—"}</td>
-              <td className="px-2 py-2" colSpan={4}>Shift output: {totActual || 0} slab(s) · {saved.length}/{hours.length} hour(s) logged</td>
-              <td className="px-2 py-2 text-center">{totDelay ? `${totDelay} min` : "—"}</td>
-              <td className="px-2 py-2" colSpan={2}></td>
-            </tr>
-          </tfoot>
+          {rows.length > 0 && (
+            <tfoot>
+              <tr className="border-t-2 border-gray-300 bg-gray-50 font-semibold text-gray-800">
+                <td className="px-3 py-2" colSpan={3}>Shift total</td>
+                <td className="px-3 py-2 text-center">{totActual || "—"}</td>
+                <td className="px-3 py-2" colSpan={4}>slab(s) this shift</td>
+                <td className="px-3 py-2 text-center">{totDelay ? `${totDelay} min` : "—"}</td>
+                <td className="px-3 py-2" colSpan={2}></td>
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
-      <p className="text-xs text-gray-500">Each hour saves as its own MIS record (audited, editable from the row's “edit” link). Slabs/hour are written by the incharge — Std. from cycle time, Actual counted at the press — not auto-calculated.</p>
     </div>
   );
 }

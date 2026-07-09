@@ -274,7 +274,10 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
   if (model === "Mis" && data.hour && data.date instanceof Date && !isNaN(data.date.getTime())) {
     const d0 = new Date(Date.UTC(data.date.getUTCFullYear(), data.date.getUTCMonth(), data.date.getUTCDate()));
     const d1 = new Date(d0.getTime() + 864e5);
-    const dupe = await delegateOf(model).findFirst({ where: { hour: data.hour, date: { gte: d0, lt: d1 } }, select: { id: true } }).catch(() => null);
+    const dupe = await delegateOf(model).findFirst({ where: { hour: data.hour, OR: [
+      { date: { gte: d0, lt: d1 } },
+      { AND: [{ date: null }, { dateAndTime: { gte: d0, lt: d1 } }] }, // legacy rows carry only dateAndTime
+    ] }, select: { id: true } }).catch(() => null);
     if (dupe) return `\u26a0 Hour ${data.hour} is already logged for this date — open it with the row's edit link instead of saving again.`;
   }
 
