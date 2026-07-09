@@ -92,7 +92,7 @@ async function dataPack(question = ""): Promise<string> {
         db.$queryRaw`SELECT quality_grade g, count(*)::int n FROM polish_qc WHERE batch_key = ${k} OR batch_number ILIKE ${like} GROUP BY 1`,
         db.$queryRaw`SELECT slab_defect d, count(*)::int n FROM jot WHERE batch ILIKE ${like} GROUP BY 1`,
       ]);
-      if (!(pr[0]?.n || qc.length || jt.length)) continue;
+      if (!(pr[0]?.n || mi[0]?.s || qc.length || jt.length)) continue;
       lines.push(`ASKED BATCH ${k} (all-time detail): press ${pr[0]?.n ?? 0} slabs${pr[0]?.lo ? ` (#${pr[0].lo}-#${pr[0].hi})` : ""}; MIS logged ${mi[0]?.s ?? 0}${mi[0]?.miss ? ` (${mi[0].miss} hrs without counts)` : ""}; QC ${qc.length ? qc.map((r: any) => `${r.g ?? "ungraded"}:${r.n}`).join(" ") : "none yet"}; JOT ${jt.length ? jt.map((r: any) => `${r.d ?? "no-defect"}:${r.n}`).join(" ") : "none yet"}`);
     }
   } catch { /* best-effort */ }
@@ -111,8 +111,12 @@ async function dataPack(question = ""): Promise<string> {
       if (!(pr.length || jt.length || qc.length || fg.length)) continue;
       lines.push(`ASKED SLAB ${n}: press ${pr[0] ? `${pr[0].batch ?? "?"} ${pr[0].design_name ?? ""}`.trim() : "no entry"}; JOT ${jt[0] ? (jt[0].slab_defect ?? "no defect") : "no entry"}; QC ${qc[0] ? `${qc[0].quality_grade ?? "ungraded"}${qc[0].repolish_status ? ` ${qc[0].repolish_status}` : ""}` : "no entry"}; stock ${fg[0] ? `${fg[0].status} ${fg[0].bay_number ?? ""}`.trim() : "not in finished goods"}`);
     }
+  } catch { /* best-effort */ }
+  try {
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const db = prisma as any;
     // ASKED DESIGNS: match question words against known design names
-    const designs: any[] = await db.$queryRaw`SELECT DISTINCT design FROM fg_finished_slab WHERE design IS NOT NULL LIMIT 300`;
+    const designs: any[] = await db.$queryRaw`SELECT DISTINCT design FROM fg_finished_slab WHERE design IS NOT NULL ORDER BY design LIMIT 300`;
     const qLower = question.toLowerCase();
     const hits = designs.map((d: any) => String(d.design)).filter((d) => d.length >= 4 && qLower.includes(d.toLowerCase())).slice(0, 2);
     for (const d of hits) {
