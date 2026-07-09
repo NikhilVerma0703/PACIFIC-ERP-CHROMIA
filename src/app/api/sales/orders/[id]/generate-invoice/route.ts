@@ -15,7 +15,7 @@ import { salesAuth as auth } from "@/lib/sales/session";
 import { prisma }                      from "@/lib/prisma";
 import { NextResponse }                from "next/server";
 import { generateCommercialInvoicePdf } from "@/lib/sales/pdf/commercialInvoicePdf";
-import { QUARTZ_DEFAULTS, GRANITE_DEFAULTS } from "@/app/api/sales/invoice-config/route";
+import { QUARTZ_DEFAULTS, GRANITE_DEFAULTS } from "@/lib/sales/invoiceDefaults";
 
 const db = prisma as any;
 

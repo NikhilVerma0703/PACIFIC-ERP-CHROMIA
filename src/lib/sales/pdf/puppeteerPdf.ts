@@ -16,7 +16,7 @@ const fs = require("fs");
 function loadPuppeteer(): any {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    return require("puppeteer");
+    return eval("require")("puppeteer"); // eval keeps webpack from resolving an optional dep
   } catch {
     throw new Error(
       "PDF engine not installed: this document is rendered from HTML via puppeteer. Run `npm install puppeteer` on the server to enable it.",
