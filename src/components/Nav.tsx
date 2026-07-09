@@ -87,18 +87,20 @@ function Section({ label, items, path }: { label: string; items: { href: string;
 
 /* Main Nav export — flat, access-filtered sections (no dropdowns) */
 export function Nav({
-  showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false,
+  showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false, intlSales = false,
 }: {
-  showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; inventory?: boolean; consumables?: boolean;
+  showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; inventory?: boolean; consumables?: boolean; intlSales?: boolean;
 }) {
   const path    = usePathname();
   const office  = branch === "OFFICE";
   const isAdmin = role === "ADMIN";                                  // admins span every department
   const isFab   = isAdmin || branch === "FABRICATION";               // fabrication section
-  const isProd  = isAdmin || (!office && branch !== "FABRICATION");  // production section
+  const isProd  = isAdmin || (!office && branch !== "FABRICATION" && branch !== "INTERNATIONAL_SALES");  // production section
   const mgmt    = fabTier === "ADMIN" || fabTier === "MANAGER";
   const supPlus = mgmt || fabTier === "SUPERVISOR";
 
+  if (branch === "INTERNATIONAL_SALES" && !isAdmin)
+    return <nav className="flex flex-col gap-1"><NavLink href="/sales" icon={I.box} label="International Sales" path={path} /></nav>;
   if (role === "STORE")
     return <nav className="flex flex-col gap-1">{STORE_TABS.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}</nav>;
   if (role === "COMMERCIAL")
@@ -163,6 +165,7 @@ export function Nav({
       {isFab  && <Section label="Fabrication" items={fabrication} path={path} />}
       {inventory && <Section label="Inventory" items={[{ href: "/inventory", icon: I.box, label: "Finished Goods" }]} path={path} />}
       {consumables && <Section label="Consumables" items={[{ href: "/consumables", icon: I.box, label: "Consumables" }]} path={path} />}
+      {intlSales && <Section label="International Sales" items={[{ href: "/sales", icon: I.box, label: "International Sales" }]} path={path} />}
       <Section label="Admin" items={admin} path={path} />
     </nav>
   );

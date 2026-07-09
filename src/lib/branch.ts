@@ -3,9 +3,9 @@
 // branch for a session is set at login and carried in the JWT.
 import { currentUser, rankOf, ROLE_RANK } from "@/lib/rbac";
 
-export type BranchName = "SHOP_FLOOR" | "OFFICE" | "FABRICATION";
-export const BRANCHES: BranchName[] = ["SHOP_FLOOR", "OFFICE", "FABRICATION"];
-export const BRANCH_LABEL: Record<string, string> = { SHOP_FLOOR: "Shop Floor", OFFICE: "Office", FABRICATION: "Fabrication" };
+export type BranchName = "SHOP_FLOOR" | "OFFICE" | "FABRICATION" | "INTERNATIONAL_SALES";
+export const BRANCHES: BranchName[] = ["SHOP_FLOOR", "OFFICE", "FABRICATION", "INTERNATIONAL_SALES"];
+export const BRANCH_LABEL: Record<string, string> = { SHOP_FLOOR: "Shop Floor", OFFICE: "Office", FABRICATION: "Fabrication", INTERNATIONAL_SALES: "International Sales" };
 
 /** Tables that belong to the Office ERP (finance / dispatch). */
 export const OFFICE_MODELS = new Set(["ShippingInvoice", "NazzBhai"]);
@@ -55,7 +55,7 @@ export async function currentBranchName(): Promise<BranchName> {
   const u = await currentUser();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const b = (u as any)?.branch as string | undefined;
-  return b === "OFFICE" ? "OFFICE" : b === "FABRICATION" ? "FABRICATION" : "SHOP_FLOOR";
+  return b === "OFFICE" ? "OFFICE" : b === "FABRICATION" ? "FABRICATION" : b === "INTERNATIONAL_SALES" ? "INTERNATIONAL_SALES" : "SHOP_FLOOR";
 }
 
 /** Can this session's branch WRITE (create/edit) records of this table? */
