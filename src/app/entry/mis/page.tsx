@@ -10,7 +10,7 @@ import { SHIFT_HOURS, shiftOfHour } from "@/lib/misShiftHours";
 
 export const dynamic = "force-dynamic";
 const db = prisma as never as {
-  mis:   { findMany: (q: unknown) => Promise<MisRowLite[]> };
+  mis:   { findMany: (q: unknown) => Promise<MisRowLite[]>; findFirst: (q: unknown) => Promise<{ electricalInchargeName: string | null; mechanicalInchargeName: string | null; productionType: string | null } | null> };
   press: { findMany: (q: unknown) => Promise<{ batch: string | null; designName: string | null; slabNumber: number | null; importedAt: Date }[]> };
   kreos: { findFirst: (q: unknown) => Promise<{ slabThickness: string | null; importedAt: Date } | null> };
   distributor: { findFirst: (q: unknown) => Promise<{ slabThickness: string | null; importedAt: Date } | null> };
@@ -139,17 +139,28 @@ export default async function MisSheetPage({ searchParams }: { searchParams: Pro
   // from the previous MIS row of this shift. All of it stays editable.
   const initialHour = initialHourFor(rows, shift, hourParam);
   const hourDate = shiftOfHour(initialHour) === "C" && Number(initialHour.slice(0, 2)) < 12 ? plusDay(date, 1) : date;
-  const [press, line] = await Promise.all([pressPrefill(hourDate, initialHour), lineHeadPrefill(hourDate, initialHour)]);
+  const [press, line, lastEntry] = await Promise.all([
+    pressPrefill(hourDate, initialHour),
+    lineHeadPrefill(hourDate, initialHour),
+    // the most recent MIS entry ANYWHERE (any shift/day) — incharge names and
+    // production type carry over even on the first hour of a fresh shift
+    db.mis.findFirst({
+      where: { OR: [{ electricalInchargeName: { not: null } }, { mechanicalInchargeName: { not: null } }, { productionType: { not: null } }] },
+      select: { electricalInchargeName: true, mechanicalInchargeName: true, productionType: true },
+      orderBy: [{ dateAndTime: { sort: "desc", nulls: "last" } }, { importedAt: "desc" }],
+    }).catch(() => null),
+  ]);
   const prev = rows.length ? rows[rows.length - 1] : undefined;
   const prefill: MisPrefill = {
     batch:  press?.batch ?? "",
     design: press?.designName ?? "",
     fromPress: !!press,
     thkPress: line?.thk ?? "",
-    productionType: line?.productionType && (options.productionType ?? []).includes(line.productionType) ? line.productionType : (line?.productionType ?? ""),
+    productionType: (line?.productionType && (options.productionType ?? []).includes(line.productionType) ? line.productionType : line?.productionType)
+      || prev?.productionType || lastEntry?.productionType || "",
     prodIncharge: operatorName,
-    elecIncharge: prev?.electricalInchargeName ?? "",
-    mechIncharge: prev?.mechanicalInchargeName ?? "",
+    elecIncharge: prev?.electricalInchargeName ?? lastEntry?.electricalInchargeName ?? "",
+    mechIncharge: prev?.mechanicalInchargeName ?? lastEntry?.mechanicalInchargeName ?? "",
     startSlab: press?.startSlab != null ? String(press.startSlab) : "",
     endSlab: press?.endSlab != null ? String(press.endSlab) : "",
     actual: press?.count != null ? String(press.count) : "",
