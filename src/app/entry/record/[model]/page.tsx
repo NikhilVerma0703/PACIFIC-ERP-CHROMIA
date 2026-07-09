@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { currentUser } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 import { Shell } from "@/components/Shell";
@@ -22,6 +22,9 @@ export default async function SmartRecord({ params }: { params: Promise<{ model:
     storageTanks = rows.map((r) => String(r.tank_no));
   } catch { /* optional */ }
   const { model } = await params;
+  // MIS moved to the one-hour sheet — the old form let the date and the
+  // date+time disagree, which put back-filled hours on the wrong day.
+  if (model === "Mis") redirect("/entry/mis");
   const cfg = RECORD_SMART[model];
   const meta = tableMeta(model);
   if (!cfg || !meta) notFound();

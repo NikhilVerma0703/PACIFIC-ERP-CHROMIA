@@ -269,6 +269,12 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
       + Number(data.breakdownDelayDurationMechanicalOrElectricalMinutes ?? 0) + Number(data.poweroutDelayDurationMinutes ?? 0);
     if (dt > 60) return `\u26a0 Total delay for this hour is ${Math.round(dt)} min \u2014 an hour can have at most 60 minutes of downtime. Reduce the delay entries before saving.`;
   }
+  // MIS: the row's DATE must be the IST day of its DATE AND TIME — the old
+  // form let them disagree, landing back-filled hours on the wrong day's sheet.
+  if (model === "Mis" && data.dateAndTime instanceof Date && !isNaN(data.dateAndTime.getTime())) {
+    const istDay = new Date(data.dateAndTime.getTime() + 330 * 60000).toISOString().slice(0, 10);
+    data.date = new Date(`${istDay}T00:00:00.000Z`);
+  }
   // MIS: one row per hour per day — a double-tap or a second tablet must not
   // create a duplicate (it would double-count slabs and downtime downstream).
   if (model === "Mis" && data.hour && data.date instanceof Date && !isNaN(data.date.getTime())) {
