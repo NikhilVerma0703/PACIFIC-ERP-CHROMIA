@@ -7,7 +7,7 @@ import { useState, useTransition } from "react";
 import { logConsumables } from "@/lib/consumables/quickLog";
 
 export interface ConsumableItem { itemName: string; unit: string; currentStock: number }
-interface Line { itemName: string; quantity: string; unit: string }
+interface Line { itemName: string; quantity: string; unit: string; custom?: boolean }
 
 export function ConsumablesQuickLog({ model, dept, items }: { model: string; dept: string; items: ConsumableItem[] }) {
   const [open, setOpen] = useState(false);
@@ -48,13 +48,27 @@ export function ConsumablesQuickLog({ model, dept, items }: { model: string; dep
       </button>
       {open && (
         <div className="mt-3 space-y-2">
-          <datalist id={`cq-items-${model}`}>
-            {items.map((it) => <option key={it.itemName} value={it.itemName}>{`${it.unit} · ${Math.round(it.currentStock)} in stock`}</option>)}
-          </datalist>
           {lines.map((l, i) => (
             <div key={i} className="flex flex-wrap items-center gap-2">
-              <input list={`cq-items-${model}`} value={l.itemName} onChange={(e) => upd(i, { itemName: e.target.value })}
-                placeholder="Item (e.g. Gloves)" className={`${inp} min-w-[180px] flex-1`} />
+              {items.length > 0 && !l.custom ? (
+                <select value={l.itemName} className={`${inp} min-w-[200px] flex-1`}
+                  onChange={(e) => e.target.value === "__other__" ? upd(i, { itemName: "", custom: true }) : upd(i, { itemName: e.target.value })}>
+                  <option value="">— pick item —</option>
+                  {items.map((it) => (
+                    <option key={it.itemName} value={it.itemName}>{it.itemName} · {it.unit} · {Math.round(it.currentStock)} in stock</option>
+                  ))}
+                  <option value="__other__">Other (type manually)…</option>
+                </select>
+              ) : (
+                <span className="flex min-w-[200px] flex-1 items-center gap-1">
+                  <input value={l.itemName} onChange={(e) => upd(i, { itemName: e.target.value })}
+                    placeholder="Item name" className={`${inp} flex-1`} autoFocus={!!l.custom} />
+                  {items.length > 0 && (
+                    <button type="button" title="Back to the item list" onClick={() => upd(i, { itemName: "", custom: false })}
+                      className="rounded border border-gray-200 px-1.5 py-1 text-[10px] text-gray-500 hover:bg-gray-50">list</button>
+                  )}
+                </span>
+              )}
               <input type="number" step="any" min="0" value={l.quantity} onChange={(e) => upd(i, { quantity: e.target.value })}
                 placeholder="Qty" className={`${inp} w-24`} />
               <input value={l.unit} onChange={(e) => upd(i, { unit: e.target.value })} placeholder="Unit" className={`${inp} w-20`} />
