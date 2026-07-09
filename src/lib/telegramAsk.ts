@@ -37,6 +37,21 @@ async function dataPack(): Promise<string> {
       + batches.map((b) => `${b.batch}: ${b.slabs} slabs (#${b.lo}-#${b.hi})`).join("; "));
     const fg: any[] = await db.$queryRaw`SELECT count(*)::int n FROM fg_finished_slab WHERE status = 'AVAILABLE'`;
     lines.push(`FINISHED GOODS: ${fg[0]?.n ?? "?"} slabs currently AVAILABLE in stock`);
+    // Polish QC grade split (the "ABC report") per batch, last 10 days
+    const qc: any[] = await db.$queryRaw`
+      SELECT batch_key, quality_grade, count(*)::int n
+      FROM polish_qc
+      WHERE imported_at > now() - interval '10 days' AND batch_key IS NOT NULL
+      GROUP BY 1, 2`;
+    if (qc.length) {
+      const byBatch = new Map<string, string[]>();
+      for (const r of qc) {
+        const k = String(r.batch_key);
+        byBatch.set(k, [...(byBatch.get(k) ?? []), `${r.quality_grade ?? "ungraded"}:${r.n}`]);
+      }
+      lines.push("POLISH QC GRADES BY BATCH (last 10 days — the ABC quality report): "
+        + [...byBatch.entries()].slice(0, 8).map(([b, gs]) => `${b}: ${gs.join(" ")}`).join("; "));
+    }
   } catch { /* pack still useful without the global block */ }
   return lines.join("\n");
 }
