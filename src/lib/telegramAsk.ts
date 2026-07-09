@@ -78,6 +78,26 @@ async function dataPack(question = ""): Promise<string> {
         + [...byBatch.entries()].slice(0, 10).map(([b, gs]) => `${b}: ${gs.join(" ")}`).join("; "));
     }
   } catch { /* pack still useful without the global block */ }
+  // LAST-HOUR ACTIVITY per station: slab-level, so "what was entered in the
+  // last hour at Polish QC / press / JOT" answers with the actual entries.
+  try {
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const db = prisma as any;
+    const [qcAct, prAct, jtAct]: any[][] = await Promise.all([
+      db.$queryRaw`SELECT slab_number, quality_grade, batch_number FROM polish_qc WHERE imported_at > now() - interval '75 minutes' ORDER BY imported_at DESC LIMIT 40`,
+      db.$queryRaw`SELECT slab_number, batch FROM press WHERE imported_at > now() - interval '75 minutes' ORDER BY imported_at DESC LIMIT 40`,
+      db.$queryRaw`SELECT slab_number, slab_defect, batch FROM jot WHERE imported_at > now() - interval '75 minutes' ORDER BY imported_at DESC LIMIT 40`,
+    ]);
+    lines.push(`POLISH QC ENTRIES LAST ~75min (${qcAct.length}${qcAct.length === 40 ? "+" : ""}): ` + (qcAct.length
+      ? qcAct.map((r: any) => `${r.slab_number}(${r.quality_grade ?? "ungraded"})`).join(" ") + ` — batches ${[...new Set(qcAct.map((r: any) => r.batch_number).filter(Boolean))].join(",")}`
+      : "none"));
+    lines.push(`PRESS ENTRIES LAST ~75min (${prAct.length}${prAct.length === 40 ? "+" : ""}): ` + (prAct.length
+      ? prAct.map((r: any) => r.slab_number).join(" ") + ` — batch ${[...new Set(prAct.map((r: any) => r.batch).filter(Boolean))].join(",")}`
+      : "none"));
+    lines.push(`JOT ENTRIES LAST ~75min (${jtAct.length}${jtAct.length === 40 ? "+" : ""}): ` + (jtAct.length
+      ? jtAct.map((r: any) => `${r.slab_number}${r.slab_defect ? `(${r.slab_defect})` : ""}`).join(" ")
+      : "none"));
+  } catch { /* best-effort */ }
   // QUESTION-AWARE: any batch number mentioned gets full targeted stats —
   // never again "no data" because a list cap cut the asked batch out.
   try {
@@ -141,7 +161,7 @@ export async function aiAnswer(question: string): Promise<string> {
       body: JSON.stringify({
         model: "claude-haiku-4-5",
         max_tokens: 400,
-        system: "You are the Pacific Surfaces factory ERP assistant answering in a Telegram group. Answer ONLY from the production data provided — never invent numbers. PRESS MACHINE TOTALS are the authoritative slab counts per batch; the MIS lines are the manual hourly log and can be incomplete (hours logged without counts). For batch totals ALWAYS use the press totals. When asked about issues/discrepancies, COMPARE press totals against the MIS log: flag batches where MIS logged noticeably fewer slabs than the press made, and hours missing counts. If the question needs data not present here, say exactly what is missing instead of estimating. Be short (2-5 lines), plain text, numbers bold-free. If the data can't answer the question, say so and suggest /status, /shift, /day or the ERP dashboard.",
+        system: "You are the Pacific Surfaces factory ERP assistant answering in a Telegram group. Answer ONLY from the production data provided — never invent numbers. PRESS MACHINE TOTALS are the authoritative slab counts per batch; the LAST ~75min station lines list the individual slabs just entered at Polish QC / press / JOT — use them for any "last hour / just now / recent entries" question; the MIS lines are the manual hourly log and can be incomplete (hours logged without counts). For batch totals ALWAYS use the press totals. When asked about issues/discrepancies, COMPARE press totals against the MIS log: flag batches where MIS logged noticeably fewer slabs than the press made, and hours missing counts. If the question needs data not present here, say exactly what is missing instead of estimating. Be short (2-5 lines), plain text, numbers bold-free. If the data can't answer the question, say so and suggest /status, /shift, /day or the ERP dashboard.",
         messages: [{ role: "user", content: `Production data:\n${pack}\n\nQuestion: ${question.slice(0, 500)}` }],
       }),
     });
