@@ -8,6 +8,7 @@ import { fabTierOf } from "@/lib/fab/access";
 import { hasInventoryAccess } from "@/lib/inventory/access";
 import { consumablesTierOf } from "@/lib/consumables/access";
 import { salesTierOf } from "@/lib/sales/access";
+import { salesDutyFor } from "@/lib/sales/session";
 import { MobileNav } from "./MobileNav";
 import { ROLE_LABEL, STATION_LABEL, rankOf, ROLE_RANK } from "@/lib/rbac";
 import { BRANCH_LABEL } from "@/lib/branch";
@@ -27,7 +28,11 @@ export async function Shell({ children }: { children: ReactNode }) {
   const fabTier = fabTierOf(user) ?? "";
   const inventory = hasInventoryAccess(String(user?.role ?? ""), branch);
   const consumables = consumablesTierOf(user) !== null;
-  const intlSales = salesTierOf(user) !== null;
+  const salesTier = salesTierOf(user);
+  const intlSales = salesTier !== null;
+  const salesDuty = salesTier
+    ? await salesDutyFor(String((user as { id?: string } | undefined)?.id ?? ""), salesTier)
+    : "";
 
   return (
     <div className="flex min-h-screen">
@@ -41,7 +46,7 @@ export async function Shell({ children }: { children: ReactNode }) {
           </div>
         </div>
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
-          <Nav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} />
+          <Nav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} />
         </div>
         <div className="mt-3 shrink-0 rounded-xl border border-gray-200 bg-white p-3">
           <div className="flex items-center gap-2.5">
@@ -62,7 +67,7 @@ export async function Shell({ children }: { children: ReactNode }) {
         {/* Mobile top bar */}
         <header className="flex items-center justify-between gap-3 border-b border-gray-200/70 bg-white/70 px-5 py-2 backdrop-blur md:hidden">
           <div className="flex items-center gap-3">
-            <MobileNav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} />
+            <MobileNav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} />
             <span className="text-base font-semibold text-brand">Pacific ERP</span>
           </div>
           <form action={logout}><button className="min-h-[44px] text-sm text-gray-500">Sign out</button></form>

@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { createPortal } from "react-dom";
 import { Nav } from "./Nav";
 
-export function MobileNav({ showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false, intlSales = false }: { showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; inventory?: boolean; consumables?: boolean; intlSales?: boolean }) {
+export function MobileNav({ showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false, intlSales = false, salesDuty = "" }: { showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; inventory?: boolean; consumables?: boolean; intlSales?: boolean; salesDuty?: string }) {
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
   const path = usePathname();
@@ -51,7 +51,7 @@ export function MobileNav({ showAdmin = false, branch = "SHOP_FLOOR", role = "",
 
         {/* Navigation Links */}
         <div className="flex-1 overflow-y-auto pb-6">
-          <Nav showAdmin={showAdmin} branch={branch} role={role} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} />
+          <Nav showAdmin={showAdmin} branch={branch} role={role} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} />
         </div>
 
       </div>

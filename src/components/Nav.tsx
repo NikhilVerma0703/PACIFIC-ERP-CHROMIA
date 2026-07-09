@@ -60,7 +60,7 @@ function NavLink({ href, icon, label, path, office }: {
 }) {
   const active = office && href === "/office"
     ? SHOP_PATHS.some(p => (p === "/" ? path === "/" : path.startsWith(p)))
-    : href === "/" ? path === "/" : path.startsWith(href);
+    : href === "/" || href === "/sales" ? path === href : path.startsWith(href);
   return (
     <Link href={href}
       className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
@@ -87,9 +87,9 @@ function Section({ label, items, path }: { label: string; items: { href: string;
 
 /* Main Nav export — flat, access-filtered sections (no dropdowns) */
 export function Nav({
-  showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false, intlSales = false,
+  showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false, intlSales = false, salesDuty = "",
 }: {
-  showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; inventory?: boolean; consumables?: boolean; intlSales?: boolean;
+  showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; inventory?: boolean; consumables?: boolean; intlSales?: boolean; salesDuty?: string;
 }) {
   const path    = usePathname();
   const office  = branch === "OFFICE";
@@ -99,8 +99,25 @@ export function Nav({
   const mgmt    = fabTier === "ADMIN" || fabTier === "MANAGER";
   const supPlus = mgmt || fabTier === "SUPERVISOR";
 
+  // International Sales links, filtered by module duty (fork's SalesGroup, with
+  // the production-manager duty retired -> module admins own production orders).
+  const spAccess   = salesDuty === "SALESPERSON" || salesDuty === "REPORTING_MANAGER" || salesDuty === "SALES_ADMIN";
+  const salesAdmin = salesDuty === "SALES_ADMIN";
+  const intlSalesItems = [
+    { href: "/sales", icon: I.overview, label: "Dashboard" },
+    ...(spAccess ? [
+      { href: "/sales/clients", icon: I.users,   label: "Clients" },
+      { href: "/sales/pi",      icon: I.report,  label: "Proforma Invoices" },
+      { href: "/sales/orders",  icon: I.samples, label: "Orders" },
+    ] : [{ href: "/sales/orders", icon: I.tables, label: "All Orders" }]),
+    ...(salesDuty === "COMMERCIAL" || salesAdmin ? [{ href: "/sales/stock",    icon: I.box, label: "Stock Checks" }] : []),
+    ...(salesDuty === "ACCOUNTS"   || salesAdmin ? [{ href: "/sales/payments", icon: I.ceo, label: "Payments" }] : []),
+    ...(salesAdmin ? [{ href: "/sales/production", icon: I.factory,  label: "Production Orders" }] : []),
+    ...(spAccess   ? [{ href: "/sales/settings",   icon: I.planning, label: "Settings" }] : []),
+  ];
+
   if (branch === "INTERNATIONAL_SALES" && !isAdmin)
-    return <nav className="flex flex-col gap-1"><NavLink href="/sales" icon={I.box} label="International Sales" path={path} /></nav>;
+    return <nav className="flex flex-col gap-1">{intlSalesItems.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}</nav>;
   if (role === "STORE")
     return <nav className="flex flex-col gap-1">{STORE_TABS.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}</nav>;
   if (role === "COMMERCIAL")
@@ -165,7 +182,7 @@ export function Nav({
       {isFab  && <Section label="Fabrication" items={fabrication} path={path} />}
       {inventory && <Section label="Inventory" items={[{ href: "/inventory", icon: I.box, label: "Finished Goods" }]} path={path} />}
       {consumables && <Section label="Consumables" items={[{ href: "/consumables", icon: I.box, label: "Consumables" }]} path={path} />}
-      {intlSales && <Section label="International Sales" items={[{ href: "/sales", icon: I.box, label: "International Sales" }]} path={path} />}
+      {intlSales && <Section label="International Sales" items={intlSalesItems} path={path} />}
       <Section label="Admin" items={admin} path={path} />
     </nav>
   );
