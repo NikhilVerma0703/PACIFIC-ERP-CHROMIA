@@ -108,3 +108,30 @@ export async function dailyMessage(day: string): Promise<string> {
   if (topReason) lines.push(`Top reason: ${esc(topReason.reason)} (${fmtDur(topReason.minutes)})`);
   return lines.join("\n");
 }
+
+/** Jot defect alert: fires when a Jot entry is saved with a slab defect.
+ * Sends the entry's photo when one was attached; text-only otherwise.
+ * Strictly best-effort — never throws into the save path. */
+export async function jotDefectAlert(recordId: string, d: Record<string, unknown>): Promise<void> {
+  try {
+    const { sendTelegramPhoto } = await import("@/lib/telegram");
+    const when = new Date(Date.now() + IST).toISOString().slice(11, 16);
+    const caption = [
+      `🚨 <b>Defect at JOT — ${esc(d.slabDefect)}</b>`,
+      `Slab <b>${esc(d.slabNumber ?? "—")}</b> · Batch ${esc(d.batch ?? "—")}${d.designName ? ` · ${esc(d.designName)}` : ""}`,
+      `${d.remarks ? `“${esc(d.remarks)}” · ` : ""}by ${esc(d.operator ?? "—")} · ${when} IST`,
+    ].join("\n");
+    const photo: any[] = await db.$queryRaw`
+      SELECT data, mime, filename FROM entry_photo
+      WHERE model = 'Jot' AND record_id = ${recordId}
+      ORDER BY at DESC LIMIT 1`.catch(() => []);
+    if (photo.length && photo[0].data) {
+      await sendTelegramPhoto(caption, photo[0].data, photo[0].filename ?? "defect.jpg", photo[0].mime ?? "image/jpeg");
+    } else {
+      const { sendTelegram } = await import("@/lib/telegram");
+      await sendTelegram(caption + "\n(no photo attached)");
+    }
+  } catch (e) {
+    console.error("Jot defect alert error:", e);
+  }
+}

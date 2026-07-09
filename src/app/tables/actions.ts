@@ -363,6 +363,10 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
   catch (e) { return `Create failed: ${friendlyDbError(e)}`; }
   void createdAirtableId;
   await savePhotoFromForm(fd, model, createdId, opName); // optional photo, best-effort
+  // JOT defect -> instant Telegram alert with the entry photo (best-effort)
+  if (model === "Jot" && String(data.slabDefect ?? "").trim()) {
+    try { const { jotDefectAlert } = await import("@/lib/telegramReports"); await jotDefectAlert(createdId, data); } catch { /* never blocks the entry */ }
+  }
   revalidatePath(`/tables/${model}`);
   if (model === "PolishQc") {
     // Autolink this QC slab into finished-goods inventory (best-effort).

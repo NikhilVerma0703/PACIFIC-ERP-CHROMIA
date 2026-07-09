@@ -20,3 +20,24 @@ export async function sendTelegram(text: string): Promise<boolean> {
 }
 
 export const esc = (s: unknown) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** Send a photo (raw bytes) with caption to the group. Falls back to false on
+ * any failure — callers treat Telegram as strictly best-effort. */
+export async function sendTelegramPhoto(caption: string, data: Uint8Array, filename = "photo.jpg", mime = "image/jpeg"): Promise<boolean> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId) return false;
+  try {
+    const fd = new FormData();
+    fd.set("chat_id", chatId);
+    fd.set("caption", caption.slice(0, 1024));
+    fd.set("parse_mode", "HTML");
+    fd.set("photo", new Blob([data as BlobPart], { type: mime }), filename);
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, { method: "POST", body: fd });
+    if (!res.ok) console.error("Telegram photo failed:", res.status, await res.text().catch(() => ""));
+    return res.ok;
+  } catch (e) {
+    console.error("Telegram photo error:", e);
+    return false;
+  }
+}
