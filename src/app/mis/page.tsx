@@ -5,6 +5,7 @@ import { getDowntimeReport, fmtDur, DELAY_LABEL } from "@/lib/downtime";
 import { getDowntimeResponses } from "@/lib/downtimeResponse";
 import { canRespondDowntime } from "@/lib/rbac";
 import { DowntimeRespond } from "@/components/DowntimeRespond";
+import { getLastShiftReport } from "@/lib/misShift";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,7 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
   catch { error = "Could not read the MIS log."; }
   const respMap = r ? await getDowntimeResponses(r.incidents.map((i) => i.id)) : null;
   const canRespond = await canRespondDowntime();
+  const lastShift = await getLastShiftReport();
 
   // link to this page preserving the active filters, with overrides
   const link = (extra: Record<string, string | null>) => {
@@ -77,6 +79,30 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
       </form>
 
       {error && <Empty>{error}</Empty>}
+      {lastShift && (
+        <Card className="mb-6">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <H2>Last shift report</H2>
+            <Badge tone="brand">Shift {lastShift.shift} · {lastShift.date} · {lastShift.window}</Badge>
+          </div>
+          <div className="grid grid-cols-2 gap-x-8 gap-y-3 text-sm sm:grid-cols-3 lg:grid-cols-6">
+            <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Production incharge</div>
+              <div className="mt-0.5 font-semibold text-gray-900">{lastShift.prodIncharge ?? (lastShift.submitters.length ? lastShift.submitters.join(", ") : "—")}</div>
+              {!lastShift.prodIncharge && lastShift.submitters.length > 0 && <div className="text-[11px] text-gray-400">from who submitted the entries</div>}</div>
+            <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Maintenance incharge</div>
+              <div className="mt-0.5 font-semibold text-gray-900">{lastShift.maintIncharge ?? "—"}</div></div>
+            <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Hours logged</div>
+              <div className="mt-0.5 font-semibold text-gray-900">{lastShift.hoursLogged}/{lastShift.hoursTotal}</div></div>
+            <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Slabs pressed</div>
+              <div className="mt-0.5 font-semibold text-gray-900">{fmt(lastShift.slabs)}</div></div>
+            <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Downtime</div>
+              <div className={`mt-0.5 font-semibold ${lastShift.delayMin > 0 ? "text-amber-700" : "text-gray-900"}`}>{lastShift.delayMin > 0 ? fmtDur(lastShift.delayMin) : "none"}</div></div>
+            <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Batch / design</div>
+              <div className="mt-0.5 font-semibold text-gray-900">{[...lastShift.batches, ...lastShift.designs].slice(0, 4).join(", ") || "—"}</div></div>
+          </div>
+          {lastShift.areas.length > 0 && <p className="mt-3 text-xs text-amber-700">Problem areas: {lastShift.areas.join(", ")}</p>}
+        </Card>
+      )}
       {!error && r && (
         <div className="space-y-6">
           {r.overCap > 0 && (

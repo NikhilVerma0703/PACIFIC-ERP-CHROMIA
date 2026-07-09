@@ -157,6 +157,8 @@ const PRESET_OPTIONS: Record<string, string[]> = {
   qualityGrade: ["Not graded yet", "A", "A2", "B", "C (Reject)", "CTS", "Printing"],
   polishType: ["Polish", "Suede", "Honed", "Leathered"],
   bay: ["Bay 1", "Bay 2", "Bay 3", "Bay 4", "Bay 5"],
+  // MIS sheet: machine areas exactly as printed on the paper daily report
+  areaOfProblem: ["Silos", "Mixer", "Distributor", "Kreos", "Chessboard", "Robot", "Press", "Oven", "Rubber Line", "Cooling Tower", "Jot"],
   slabThickness: ["1.2 cm", "2 cm", "3 cm", "7 mm"],
   thickness: ["1.2 cm", "2 cm", "3 cm", "7 mm"],
 };

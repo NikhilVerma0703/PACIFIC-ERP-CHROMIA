@@ -54,7 +54,7 @@ const SECTIONS: Section[] = [
     { href: "/entry/record/ShippingInvoice", label: "Shipping & Invoice", kind: "entry", model: "ShippingInvoice" },
   ]},
   { title: "Reporting", items: [
-    { href: "/entry/record/Mis", label: "MIS shift log", kind: "entry", model: "Mis" },
+    { href: "/entry/mis", label: "MIS shift sheet", kind: "entry", model: "Mis" },
   ]},
 ];
 

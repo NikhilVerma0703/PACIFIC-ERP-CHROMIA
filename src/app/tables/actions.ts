@@ -269,6 +269,14 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
       + Number(data.breakdownDelayDurationMechanicalOrElectricalMinutes ?? 0) + Number(data.poweroutDelayDurationMinutes ?? 0);
     if (dt > 60) return `\u26a0 Total delay for this hour is ${Math.round(dt)} min \u2014 an hour can have at most 60 minutes of downtime. Reduce the delay entries before saving.`;
   }
+  // MIS: one row per hour per day — a double-tap or a second tablet must not
+  // create a duplicate (it would double-count slabs and downtime downstream).
+  if (model === "Mis" && data.hour && data.date instanceof Date && !isNaN(data.date.getTime())) {
+    const d0 = new Date(Date.UTC(data.date.getUTCFullYear(), data.date.getUTCMonth(), data.date.getUTCDate()));
+    const d1 = new Date(d0.getTime() + 864e5);
+    const dupe = await delegateOf(model).findFirst({ where: { hour: data.hour, date: { gte: d0, lt: d1 } }, select: { id: true } }).catch(() => null);
+    if (dupe) return `\u26a0 Hour ${data.hour} is already logged for this date — open it with the row's edit link instead of saving again.`;
+  }
 
   // Require a slab number on slab stations (manual or smart entry) — no blank rows.
   if (SLAB_REQUIRED.has(model) && !hasSlab(data.slabNumber)) {

@@ -8028,6 +8028,69 @@
         "column": "slab_summary",
         "airtableType": "multipleRecordLinks",
         "kind": "link"
+      },
+      "native_cycles_unloaded": {
+        "airtableName": "Cycles Unloaded (Silos)",
+        "prismaField": "cyclesUnloaded",
+        "column": "cycles_unloaded",
+        "airtableType": "number",
+        "kind": "number"
+      },
+      "native_cycles_mixed": {
+        "airtableName": "Cycles Mixed (Mixer)",
+        "prismaField": "cyclesMixed",
+        "column": "cycles_mixed",
+        "airtableType": "number",
+        "kind": "number"
+      },
+      "native_thk_at_mixer_mm": {
+        "airtableName": "Thk at Mixer (mm)",
+        "prismaField": "thkAtMixerMm",
+        "column": "thk_at_mixer_mm",
+        "airtableType": "number",
+        "kind": "number"
+      },
+      "native_thk_at_press_mm": {
+        "airtableName": "Thk at Press (mm)",
+        "prismaField": "thkAtPressMm",
+        "column": "thk_at_press_mm",
+        "airtableType": "number",
+        "kind": "number"
+      },
+      "native_slabs_per_hour_std": {
+        "airtableName": "Slabs/hr (from cycle time)",
+        "prismaField": "slabsPerHourStd",
+        "column": "slabs_per_hour_std",
+        "airtableType": "number",
+        "kind": "number"
+      },
+      "native_slabs_per_hour_actual": {
+        "airtableName": "Slabs/hr (actual)",
+        "prismaField": "slabsPerHourActual",
+        "column": "slabs_per_hour_actual",
+        "airtableType": "number",
+        "kind": "number"
+      },
+      "native_area_of_problem": {
+        "airtableName": "Area of Problem",
+        "prismaField": "areaOfProblem",
+        "column": "area_of_problem",
+        "airtableType": "multipleSelects",
+        "kind": "multiselect"
+      },
+      "native_production_incharge_name": {
+        "airtableName": "Shift Production Incharge",
+        "prismaField": "productionInchargeName",
+        "column": "production_incharge_name",
+        "airtableType": "singleLineText",
+        "kind": "scalar"
+      },
+      "native_maintenance_incharge_name": {
+        "airtableName": "Shift Maintenance Incharge",
+        "prismaField": "maintenanceInchargeName",
+        "column": "maintenance_incharge_name",
+        "airtableType": "singleLineText",
+        "kind": "scalar"
       }
     }
   },
