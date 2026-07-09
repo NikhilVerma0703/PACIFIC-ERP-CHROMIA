@@ -6,6 +6,7 @@ import { logout } from "@/app/actions";
 import { Nav } from "./Nav";
 import { fabTierOf } from "@/lib/fab/access";
 import { hasInventoryAccess } from "@/lib/inventory/access";
+import { consumablesTierOf } from "@/lib/consumables/access";
 import { MobileNav } from "./MobileNav";
 import { ROLE_LABEL, STATION_LABEL, rankOf, ROLE_RANK } from "@/lib/rbac";
 import { BRANCH_LABEL } from "@/lib/branch";
@@ -24,6 +25,7 @@ export async function Shell({ children }: { children: ReactNode }) {
   const branch = ((user as { branch?: string | null } | undefined)?.branch as string | undefined) ?? "SHOP_FLOOR";
   const fabTier = fabTierOf(user) ?? "";
   const inventory = hasInventoryAccess(String(user?.role ?? ""), branch);
+  const consumables = consumablesTierOf(user) !== null;
 
   return (
     <div className="flex min-h-screen">
@@ -37,7 +39,7 @@ export async function Shell({ children }: { children: ReactNode }) {
           </div>
         </div>
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
-          <Nav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} />
+          <Nav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} />
         </div>
         <div className="mt-3 shrink-0 rounded-xl border border-gray-200 bg-white p-3">
           <div className="flex items-center gap-2.5">
@@ -58,7 +60,7 @@ export async function Shell({ children }: { children: ReactNode }) {
         {/* Mobile top bar */}
         <header className="flex items-center justify-between gap-3 border-b border-gray-200/70 bg-white/70 px-5 py-2 backdrop-blur md:hidden">
           <div className="flex items-center gap-3">
-            <MobileNav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} />
+            <MobileNav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} />
             <span className="text-base font-semibold text-brand">Pacific ERP</span>
           </div>
           <form action={logout}><button className="min-h-[44px] text-sm text-gray-500">Sign out</button></form>
