@@ -98,6 +98,29 @@ async function dataPack(question = ""): Promise<string> {
       ? jtAct.map((r: any) => `${r.slab_number}${r.slab_defect ? `(${r.slab_defect})` : ""}`).join(" ")
       : "none"));
   } catch { /* best-effort */ }
+  // HOUR-BY-HOUR station breakdown for today + yesterday — answers any
+  // time-window question ("what was polished 8-9am", "press output yesterday
+  // afternoon") with counts and slab ranges per IST hour.
+  try {
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const db = prisma as any;
+    const days = [ymdIST(), plusDay(ymdIST(), -1)];
+    const stations: [string, string][] = [["press", "PRESS"], ["polish_qc", "POLISH QC"], ["jot", "JOT"]];
+    for (const [table, label] of stations) {
+      for (const day of days) {
+        const d0 = new Date(Date.parse(`${day}T00:00:00+05:30`));
+        const d1 = new Date(d0.getTime() + 86400000);
+        const rows: any[] = await db.$queryRawUnsafe(
+          `SELECT to_char(imported_at + interval '330 minutes', 'HH24') h,
+                  count(*)::int n, min(slab_number)::int lo, max(slab_number)::int hi
+           FROM ${table} WHERE imported_at >= $1 AND imported_at < $2 GROUP BY 1 ORDER BY 1`,
+          d0, d1,
+        ).catch(() => []);
+        if (rows.length) lines.push(`${label} BY HOUR (${day === days[0] ? "today" : "yesterday"} ${day}, IST): `
+          + rows.map((r) => `${r.h}:00→${r.n}${r.lo ? `(#${r.lo}-#${r.hi})` : ""}`).join(" "));
+      }
+    }
+  } catch { /* best-effort */ }
   // LATEST ENTRY per station (all-time) + silo stock + FG by status — the
   // broad live picture, so "last slab polished / what's in silo 201" answers.
   try {
@@ -192,7 +215,7 @@ export async function aiAnswer(question: string): Promise<string> {
       body: JSON.stringify({
         model: "claude-haiku-4-5",
         max_tokens: 400,
-        system: "You are the Pacific Surfaces factory ERP assistant answering in a Telegram group. Answer ONLY from the production data provided — never invent numbers. PRESS MACHINE TOTALS are the authoritative slab counts per batch; the LAST ~75min station lines list the individual slabs just entered at Polish QC / press / JOT, and LATEST ENTRY lines give the most recent record per station with its age — use these for any 'last hour / just now / latest / most recent' question; the MIS lines are the manual hourly log and can be incomplete (hours logged without counts). For batch totals ALWAYS use the press totals. When asked about issues/discrepancies, COMPARE press totals against the MIS log: flag batches where MIS logged noticeably fewer slabs than the press made, and hours missing counts. If the question needs data not present here, say exactly what is missing instead of estimating. Be short (2-5 lines), plain text, numbers bold-free. If the data can't answer the question, say so and suggest /status, /shift, /day or the ERP dashboard.",
+        system: "You are the Pacific Surfaces factory ERP assistant answering in a Telegram group. Answer ONLY from the production data provided — never invent numbers. PRESS MACHINE TOTALS are the authoritative slab counts per batch; the LAST ~75min station lines list the individual slabs just entered at Polish QC / press / JOT, and LATEST ENTRY lines give the most recent record per station with its age — use these for any 'last hour / just now / latest / most recent' question; the BY HOUR lines give per-IST-hour counts + slab ranges for today and yesterday — use them for any time-window question; the MIS lines are the manual hourly log and can be incomplete (hours logged without counts). For batch totals ALWAYS use the press totals. When asked about issues/discrepancies, COMPARE press totals against the MIS log: flag batches where MIS logged noticeably fewer slabs than the press made, and hours missing counts. If the question needs data not present here, say exactly what is missing instead of estimating. Be short (2-5 lines), plain text, numbers bold-free. If the data can't answer the question, say so and suggest /status, /shift, /day or the ERP dashboard.",
         messages: [{ role: "user", content: `Production data:\n${pack}\n\nQuestion: ${question.slice(0, 500)}` }],
       }),
     });
