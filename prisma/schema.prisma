@@ -1580,6 +1580,8 @@ model Mis {
   areaOfProblem                                       String[]  @default([]) @map("area_of_problem")
   productionInchargeName                              String?   @map("production_incharge_name")
   maintenanceInchargeName                             String?   @map("maintenance_incharge_name")
+  electricalInchargeName                              String?   @map("electrical_incharge_name")
+  mechanicalInchargeName                              String?   @map("mechanical_incharge_name")
   importedAt                                          DateTime  @default(now()) @map("imported_at")
   syncedAt                                            DateTime  @updatedAt @map("synced_at")
   batchKey                                            String?   @map("batch_key")

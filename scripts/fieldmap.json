@@ -8091,6 +8091,20 @@
         "column": "maintenance_incharge_name",
         "airtableType": "singleLineText",
         "kind": "scalar"
+      },
+      "native_electrical_incharge_name": {
+        "airtableName": "Electrical Incharge",
+        "prismaField": "electricalInchargeName",
+        "column": "electrical_incharge_name",
+        "airtableType": "singleLineText",
+        "kind": "scalar"
+      },
+      "native_mechanical_incharge_name": {
+        "airtableName": "Mechanical Incharge",
+        "prismaField": "mechanicalInchargeName",
+        "column": "mechanical_incharge_name",
+        "airtableType": "singleLineText",
+        "kind": "scalar"
       }
     }
   },

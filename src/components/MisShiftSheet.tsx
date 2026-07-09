@@ -11,6 +11,7 @@ import { SHIFT_HOURS, shiftOfHour } from "@/lib/misShiftHours";
 
 export interface MisRowLite {
   id: string; hour: string | null; batch: string | null; design: string | null;
+  electricalInchargeName?: string | null; mechanicalInchargeName?: string | null;
   productionType: string | null; thkAtPressMm: number | null;
   slabsPerHourStd: number | null; slabsPerHourActual: number | null;
   startingSlabNumber: number | null; endingSlabNumber: number | null; numberOfJumpedSlabs: number | null;
@@ -37,6 +38,8 @@ const plusDay = (d: string, n: number) => { const x = new Date(`${d}T12:00:00Z`)
 export interface MisPrefill {
   batch?: string; design?: string; thkPress?: string; productionType?: string;
   prodIncharge?: string; fromPress?: boolean;
+  elecIncharge?: string; mechIncharge?: string;
+  startSlab?: string; endSlab?: string; actual?: string;
 }
 
 export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName, options, prefill }: {
@@ -55,7 +58,8 @@ export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName
   const [productionType, setProductionType] = useState(prefill?.productionType ?? "");
   const [thkPress, setThkPress] = useState(prefill?.thkPress ?? "");
   const [prodIncharge, setProdIncharge] = useState(prefill?.prodIncharge ?? operatorName);
-  const [maintIncharge, setMaintIncharge] = useState("");
+  const [elecIncharge, setElecIncharge] = useState(prefill?.elecIncharge ?? "");
+  const [mechIncharge, setMechIncharge] = useState(prefill?.mechIncharge ?? "");
   const [areas, setAreas] = useState<string[]>([]);
   const [reasons, setReasons] = useState<string[]>([]);
 
@@ -75,12 +79,10 @@ export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName
   const onHour = (h: string) => {
     setHour(h);
     const s = shiftOfHour(h);
-    if (s !== shift) {
-      // moving into another shift's window -> reload that shift's rows.
-      // Picking an after-midnight hour from a day view means LAST night's C shift.
-      const anchor = s === "C" && Number(h.slice(0, 2)) < 6 ? plusDay(date, -1) : date;
-      router.push(`/entry/mis?date=${anchor}&shift=${s}&hour=${encodeURIComponent(h)}`);
-    }
+    // ALWAYS reload: the server recomputes the press/line prefill for the
+    // newly chosen hour (same shift or not).
+    const anchor = s === "C" && Number(h.slice(0, 2)) < 6 && shift !== "C" ? plusDay(date, -1) : date;
+    router.push(`/entry/mis?date=${anchor}&shift=${s}&hour=${encodeURIComponent(h)}`);
   };
 
   const save = () => {
@@ -103,7 +105,8 @@ export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName
     if (productionType) fd.set("productionType", productionType);
     if (thkPress) fd.set("thkAtPressMm", thkPress);
     if (prodIncharge) fd.set("productionInchargeName", prodIncharge);
-    if (maintIncharge) fd.set("maintenanceInchargeName", maintIncharge);
+    if (elecIncharge) fd.set("electricalInchargeName", elecIncharge);
+    if (mechIncharge) fd.set("mechanicalInchargeName", mechIncharge);
     for (const a of areas) fd.append("areaOfProblem", a);
     for (const r of reasons) fd.append("reasonForDeviation", r);
     start(async () => {
@@ -147,8 +150,10 @@ export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName
             <input value={thkPress} onChange={(e) => setThkPress(e.target.value)} type="number" step="any" min="0" className={inp} /></label>
           <label className="block"><span className={lbl}>Production Incharge</span>
             <input value={prodIncharge} onChange={(e) => setProdIncharge(e.target.value)} className={inp} /></label>
-          <label className="block"><span className={lbl}>Maintenance Incharge</span>
-            <input value={maintIncharge} onChange={(e) => setMaintIncharge(e.target.value)} className={inp} /></label>
+          <label className="block"><span className={lbl}>Electrical Incharge{prefill?.elecIncharge && elecIncharge === prefill?.elecIncharge && elecIncharge ? <span className="ml-1 font-normal text-gray-400">(from previous entry)</span> : null}</span>
+            <input value={elecIncharge} onChange={(e) => setElecIncharge(e.target.value)} className={inp} /></label>
+          <label className="block"><span className={lbl}>Mechanical Incharge{prefill?.mechIncharge && mechIncharge === prefill?.mechIncharge && mechIncharge ? <span className="ml-1 font-normal text-gray-400">(from previous entry)</span> : null}</span>
+            <input value={mechIncharge} onChange={(e) => setMechIncharge(e.target.value)} className={inp} /></label>
         </div>
       </div>
 
@@ -159,12 +164,12 @@ export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
             <label className="block"><span className={lbl}>Slabs/hr — Std. (from cycle time)</span>
               <input name="slabsPerHourStd" type="number" step="any" min="0" className={inp} /></label>
-            <label className="block"><span className={lbl}>Slabs/hr — Actual</span>
-              <input name="slabsPerHourActual" type="number" step="any" min="0" className={`${inp} font-semibold`} /></label>
-            <label className="block"><span className={lbl}>Starting slab no.</span>
-              <input name="startingSlabNumber" type="number" step="any" min="0" className={inp} /></label>
-            <label className="block"><span className={lbl}>Ending slab no.</span>
-              <input name="endingSlabNumber" type="number" step="any" min="0" className={inp} /></label>
+            <label className="block"><span className={lbl}>Slabs/hr — Actual{prefill?.actual ? <span className="ml-1 font-normal text-gray-400">(press: {prefill.actual})</span> : null}</span>
+              <input name="slabsPerHourActual" type="number" step="any" min="0" defaultValue={prefill?.actual ?? ""} className={`${inp} font-semibold`} /></label>
+            <label className="block"><span className={lbl}>Starting slab no.{prefill?.startSlab ? <span className="ml-1 font-normal text-gray-400">(from press)</span> : null}</span>
+              <input name="startingSlabNumber" type="number" step="any" min="0" defaultValue={prefill?.startSlab ?? ""} className={inp} /></label>
+            <label className="block"><span className={lbl}>Ending slab no.{prefill?.endSlab ? <span className="ml-1 font-normal text-gray-400">(from press)</span> : null}</span>
+              <input name="endingSlabNumber" type="number" step="any" min="0" defaultValue={prefill?.endSlab ?? ""} className={inp} /></label>
             <label className="block"><span className={lbl}>Jumped slabs</span>
               <input name="numberOfJumpedSlabs" type="number" step="any" min="0" className={inp} /></label>
             {CATS.map(([k, label]) => (

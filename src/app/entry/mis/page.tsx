@@ -11,7 +11,7 @@ import { SHIFT_HOURS, shiftOfHour } from "@/lib/misShiftHours";
 export const dynamic = "force-dynamic";
 const db = prisma as never as {
   mis:   { findMany: (q: unknown) => Promise<MisRowLite[]> };
-  press: { findFirst: (q: unknown) => Promise<{ batch: string | null; designName: string | null } | null> };
+  press: { findMany: (q: unknown) => Promise<{ batch: string | null; designName: string | null; slabNumber: number | null; importedAt: Date }[]> };
   kreos: { findFirst: (q: unknown) => Promise<{ slabThickness: string | null; importedAt: Date } | null> };
   distributor: { findFirst: (q: unknown) => Promise<{ slabThickness: string | null; importedAt: Date } | null> };
 };
@@ -29,7 +29,7 @@ function currentShift(): { date: string; shift: "A" | "B" | "C" } {
   return { date: h < 6 ? plusDay(ymdIST(), -1) : ymdIST(), shift: "C" };
 }
 
-const SEL = { id: true, hour: true, batch: true, design: true, productionType: true, thkAtPressMm: true,
+const SEL = { id: true, hour: true, batch: true, design: true, electricalInchargeName: true, mechanicalInchargeName: true, productionType: true, thkAtPressMm: true,
   slabsPerHourStd: true, slabsPerHourActual: true, startingSlabNumber: true, endingSlabNumber: true,
   numberOfJumpedSlabs: true, areaOfProblem: true, details: true, processDelayDurationMinutes: true,
   cleaningDelayDurationMinutes: true, breakdownDelayDurationMechanicalOrElectricalMinutes: true,
@@ -60,7 +60,8 @@ async function shiftRows(date: string, shift: "A" | "B" | "C"): Promise<MisRowLi
 const ALL_HOURS = [...SHIFT_HOURS.A, ...SHIFT_HOURS.B, ...SHIFT_HOURS.C];
 function initialHourFor(rows: MisRowLite[], shift: "A" | "B" | "C", hourParam?: string): string {
   if (hourParam && ALL_HOURS.includes(hourParam)) return hourParam;
-  const h = new Date(Date.now() + 330 * 60000).getUTCHours(); // IST hour
+  // default to the hour that JUST ENDED — that's the one being reported
+  const h = (new Date(Date.now() + 330 * 60000).getUTCHours() + 23) % 24;
   const wall = `${String(h).padStart(2, "0")} - ${String((h + 1) % 24).padStart(2, "0")}`;
   if (shiftOfHour(wall) === shift) return wall;
   const logged = new Set(rows.map((r) => r.hour));
@@ -69,19 +70,29 @@ function initialHourFor(rows: MisRowLite[], shift: "A" | "B" | "C", hourParam?: 
 
 /** Latest Press entry inside the selected date+hour window (IST), else the
  * latest press entry of that day — the batch/design running at the press. */
-async function pressPrefill(hourDate: string, hour: string): Promise<{ batch: string | null; designName: string | null } | null> {
+async function pressPrefill(hourDate: string, hour: string): Promise<{ batch: string | null; designName: string | null; startSlab: number | null; endSlab: number | null; count: number | null } | null> {
   const dayStart = Date.parse(`${hourDate}T00:00:00+05:30`);
   const h = Number(hour.slice(0, 2));
   // ERP-entered press rows have NO createdTime (Airtable-era column) — match on
   // importedAt too, else the prefill finds nothing and the incharge types by hand.
-  const sel = { select: { batch: true, designName: true }, orderBy: { importedAt: "desc" } } as const;
   const win = (a: number, z: number) => ({ OR: [
     { createdTime: { gte: new Date(a), lt: new Date(z) } },
     { AND: [{ createdTime: null }, { importedAt: { gte: new Date(a), lt: new Date(z) } }] },
   ] });
   try {
-    const inHour = await db.press.findFirst({ where: win(dayStart + h * 3600_000, dayStart + (h + 1) * 3600_000), ...sel });
-    return inHour; // hour-only: if nothing ran this hour, leave fields empty (still mandatory)
+    const rows = await db.press.findMany({
+      where: win(dayStart + h * 3600_000, dayStart + (h + 1) * 3600_000),
+      select: { batch: true, designName: true, slabNumber: true, importedAt: true },
+      orderBy: { importedAt: "desc" }, take: 500,
+    });
+    if (!rows.length) return null; // hour-only: nothing ran -> fields stay empty (still mandatory)
+    const nums = rows.map((r) => Number(r.slabNumber)).filter(Number.isFinite);
+    return {
+      batch: rows[0].batch, designName: rows[0].designName,
+      startSlab: nums.length ? Math.min(...nums) : null,
+      endSlab: nums.length ? Math.max(...nums) : null,
+      count: new Set(nums).size || null,
+    };
   } catch { return null; }
 }
 
@@ -129,6 +140,7 @@ export default async function MisSheetPage({ searchParams }: { searchParams: Pro
   const initialHour = initialHourFor(rows, shift, hourParam);
   const hourDate = shiftOfHour(initialHour) === "C" && Number(initialHour.slice(0, 2)) < 12 ? plusDay(date, 1) : date;
   const [press, line] = await Promise.all([pressPrefill(hourDate, initialHour), lineHeadPrefill(hourDate, initialHour)]);
+  const prev = rows.length ? rows[rows.length - 1] : undefined;
   const prefill: MisPrefill = {
     batch:  press?.batch ?? "",
     design: press?.designName ?? "",
@@ -136,6 +148,11 @@ export default async function MisSheetPage({ searchParams }: { searchParams: Pro
     thkPress: line?.thk ?? "",
     productionType: line?.productionType && (options.productionType ?? []).includes(line.productionType) ? line.productionType : (line?.productionType ?? ""),
     prodIncharge: operatorName,
+    elecIncharge: prev?.electricalInchargeName ?? "",
+    mechIncharge: prev?.mechanicalInchargeName ?? "",
+    startSlab: press?.startSlab != null ? String(press.startSlab) : "",
+    endSlab: press?.endSlab != null ? String(press.endSlab) : "",
+    actual: press?.count != null ? String(press.count) : "",
   };
 
   return (
