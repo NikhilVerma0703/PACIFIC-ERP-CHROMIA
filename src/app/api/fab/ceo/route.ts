@@ -110,6 +110,19 @@ export async function GET(req: Request) {
   }
 
   // ── Slab wastage ──────────────────────────────────────────────────────────
+  // Resolve pacificQcId -> PolishQc.slabNumber so we show the real QC slab
+  // number (e.g. "1350") instead of the pre-allocation fab code ("2cm_001")
+  const qcIds = projectSlabs.map(s => s.pacificQcId!).filter(Boolean);
+  const qcSlabRows = qcIds.length
+    ? await prisma.polishQc.findMany({
+        where:  { id: { in: qcIds } },
+        select: { id: true, slabNumber: true },
+      })
+    : [];
+  const qcSlabNumberMap = new Map(
+    qcSlabRows.map(q => [q.id, q.slabNumber != null ? String(q.slabNumber) : null])
+  );
+
   const wastageByProject: Record<string, { totalWaste: number; slabCount: number }> = {};
   const slabWastage: Array<{
     slabId: string; slabCode: string; pacificQcId: string; projectCode: string;
@@ -127,8 +140,10 @@ export async function GET(req: Request) {
       pieceCount += a.allocatedQuantity;
     }
     const wastePct = slabArea > 0 ? Math.max(0, ((slabArea - piecesArea) / slabArea) * 100) : 0;
+    // Use the QC slab number as the display code; fall back to fab slabCode if not resolved
+    const displayCode = qcSlabNumberMap.get(s.pacificQcId!) ?? s.slabCode;
     slabWastage.push({
-      slabId: s.id, slabCode: s.slabCode, pacificQcId: s.pacificQcId!,
+      slabId: s.id, slabCode: displayCode, pacificQcId: s.pacificQcId!,
       projectCode: s.project.projectCode,
       wastePct: Math.round(wastePct * 10) / 10, pieceCount,
       slabAreaMm2: Math.round(slabArea), piecesAreaMm2: Math.round(piecesArea),
