@@ -2,6 +2,7 @@
 // lose to downtime this week?"). We do NOT let the model touch the DB — we
 // hand it a compact pack of live production numbers and it answers from that.
 // Needs ANTHROPIC_API_KEY in env; soft-fails with a friendly message without it.
+import { prisma } from "@/lib/prisma";
 import { getDowntimeReport } from "@/lib/downtime";
 import { getLastShiftReport } from "@/lib/misShift";
 import { ymdIST, plusDay, lastCompletedHourIST, hourlyMessage } from "@/lib/telegramReports";
@@ -23,6 +24,20 @@ async function dataPack(): Promise<string> {
     if (!r) continue;
     lines.push(`${label}: slabsMade=${r.actualSlabs}, achievable=${r.achievable}, target=${r.target}, lostToDowntime=${r.lost}, downtimeMin=${r.totalMinutes}, byType=${r.byType.map((t) => `${t.label}:${t.minutes}m`).join(",")}, topReasons=${r.byReason.slice(0, 5).map((x) => `${x.reason}:${x.minutes}m`).join(",")}, designs=${r.designs.slice(0, 6).map((d) => `${d.design}:${d.slabs}`).join(",")}, unloggedBatches=${r.unloggedBatches}`);
   }
+  // GLOBAL data (not just MIS): press machine truth per batch + finished goods
+  try {
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const db = prisma as any;
+    const batches: any[] = await db.$queryRaw`
+      SELECT batch, count(DISTINCT slab_number)::int slabs, min(slab_number)::int lo, max(slab_number)::int hi, max(imported_at) last
+      FROM press
+      WHERE imported_at > now() - interval '10 days' AND batch IS NOT NULL
+      GROUP BY batch ORDER BY max(imported_at) DESC LIMIT 8`;
+    if (batches.length) lines.push("PRESS MACHINE TOTALS BY BATCH (last 10 days — the authoritative slab counts): "
+      + batches.map((b) => `${b.batch}: ${b.slabs} slabs (#${b.lo}-#${b.hi})`).join("; "));
+    const fg: any[] = await db.$queryRaw`SELECT count(*)::int n FROM fg_finished_slab WHERE status = 'AVAILABLE'`;
+    lines.push(`FINISHED GOODS: ${fg[0]?.n ?? "?"} slabs currently AVAILABLE in stock`);
+  } catch { /* pack still useful without the global block */ }
   return lines.join("\n");
 }
 
@@ -37,7 +52,7 @@ export async function aiAnswer(question: string): Promise<string> {
       body: JSON.stringify({
         model: "claude-haiku-4-5",
         max_tokens: 400,
-        system: "You are the Pacific Surfaces factory ERP assistant answering in a Telegram group. Answer ONLY from the production data provided — never invent numbers. Be short (2-5 lines), plain text, numbers bold-free. If the data can't answer the question, say so and suggest /status, /shift, /day or the ERP dashboard.",
+        system: "You are the Pacific Surfaces factory ERP assistant answering in a Telegram group. Answer ONLY from the production data provided — never invent numbers. PRESS MACHINE TOTALS are the authoritative slab counts per batch; the MIS lines are the manual hourly log and can be incomplete (hours logged without counts). For batch totals ALWAYS use the press totals. If the question needs data not present here, say exactly what is missing instead of estimating. Be short (2-5 lines), plain text, numbers bold-free. If the data can't answer the question, say so and suggest /status, /shift, /day or the ERP dashboard.",
         messages: [{ role: "user", content: `Production data:\n${pack}\n\nQuestion: ${question.slice(0, 500)}` }],
       }),
     });
