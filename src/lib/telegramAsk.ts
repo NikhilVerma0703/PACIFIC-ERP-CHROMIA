@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { getDowntimeReport } from "@/lib/downtime";
 import { getLastShiftReport } from "@/lib/misShift";
 import { ymdIST, plusDay, lastCompletedHourIST, hourlyMessage } from "@/lib/telegramReports";
+import { esc } from "@/lib/telegram";
 
 async function dataPack(): Promise<string> {
   const today = ymdIST();
@@ -74,7 +75,9 @@ export async function aiAnswer(question: string): Promise<string> {
     if (!res.ok) { console.error("aiAnswer API", res.status, await res.text().catch(() => "")); return "🤖 Couldn't reach the AI service — try again in a minute."; }
     const j = await res.json();
     const text = (j?.content ?? []).map((c: { text?: string }) => c.text ?? "").join("").trim();
-    return text || "🤖 No answer came back — try rephrasing.";
+    // Telegram parses our messages as HTML — raw <angle brackets> in the
+    // model's prose make it reject the whole message (400 "can't parse entities")
+    return text ? esc(text) : "🤖 No answer came back — try rephrasing.";
   } catch (e) {
     console.error("aiAnswer error:", e);
     return "🤖 Something went wrong answering that — the command reports still work.";
