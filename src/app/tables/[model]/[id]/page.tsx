@@ -8,6 +8,9 @@ import { RecordEditor } from "@/components/RecordEditor";
 import { canSeeModel } from "@/lib/branch";
 import { operatorTableModels } from "@/lib/stationAccess";
 import { photosForRecord } from "@/lib/entryPhoto";
+import { getSiloFormStatus, type SiloFormInfo } from "@/lib/silo";
+import { RECORD_SMART } from "@/lib/recordSmart";
+import { isManager } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
 
@@ -20,8 +23,15 @@ export default async function EditRecord({ params }: { params: Promise<{ model: 
   if (!(await canSeeModel(model))) notFound();
   const isOperator = String((_me as { role?: string } | null)?.role ?? "") === "OPERATOR";
   if (isOperator && !operatorTableModels((_me as { station?: string | null } | null)?.station).has(model)) notFound();
-  const [row, options, photos] = await Promise.all([getRow(model, id), selectOptions(model), photosForRecord(model, id)]);
+  // Mixer/Silo edits show the same live silo-stock cards as the entry forms —
+  // without this the edit page wrongly says "empty / no live data" everywhere.
+  const needsSilos = model === "MixerCycle" || !!RECORD_SMART[model]?.silo;
+  const [row, options, photos, silos] = await Promise.all([
+    getRow(model, id), selectOptions(model), photosForRecord(model, id),
+    needsSilos ? getSiloFormStatus().catch(() => [] as SiloFormInfo[]) : Promise.resolve([] as SiloFormInfo[]),
+  ]);
   if (!row) notFound();
+  const canEditBags = needsSilos ? await isManager() : false;
   const PhotoStrip = () =>
     photos.length ? (
       <div className="mb-4 flex flex-wrap gap-3">
@@ -74,7 +84,7 @@ export default async function EditRecord({ params }: { params: Promise<{ model: 
       <h1 className="mb-1 text-xl font-semibold">Edit record</h1>
       {ownRow ? <p className="mb-4 text-sm text-gray-500">Your own entry — you can correct it. Other records are view-only for you.</p> : polishQcShared ? <p className="mb-4 text-sm text-gray-500">Polish QC — any QC operator can correct this entry; the change is logged.</p> : null}
       <PhotoStrip />
-      <Card><RecordEditor model={model} id={id} fields={meta.fields} values={row} mode="edit" options={options} hideFields={HIDDEN_FORM_FIELDS[model] ?? []} operatorName={operatorName} canDelete={await isAdmin()} /></Card>
+      <Card><RecordEditor model={model} id={id} fields={meta.fields} values={row} mode="edit" options={options} hideFields={HIDDEN_FORM_FIELDS[model] ?? []} operatorName={operatorName} silos={needsSilos ? silos : undefined} canEditBags={canEditBags} canDelete={await isAdmin()} /></Card>
     </Shell>
   );
 }
