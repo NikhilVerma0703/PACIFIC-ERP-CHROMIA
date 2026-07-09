@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { currentUser, isManager } from "@/lib/rbac";
+import { currentUser, isManager, rankOf, ROLE_RANK } from "@/lib/rbac";
 import { Shell } from "@/components/Shell";
 import { Card } from "@/components/ui";
 import { tableMeta, selectOptions, HIDDEN_FORM_FIELDS } from "@/lib/tables";
@@ -33,7 +33,9 @@ export default async function SmartMixer() {
       <h1 className="mb-1 text-2xl font-semibold tracking-tight text-gray-900">Mixer Cycle — smart entry</h1>
       <p className="mb-5 max-w-2xl text-sm text-gray-500">Type the batch and press Tab: the previous cycle is cloned, the cycle number advances by one, and the same mixers are pre-selected with their grit/filler data. Edit only what changed.</p>
       <Card><SmartMixerForm fields={meta.fields} options={options} hideFields={["batch", ...(HIDDEN_FORM_FIELDS.MixerCycle ?? [])]} operatorName={operatorName} silos={silos} canEditBags={canEditBags} /></Card>
-      <ConsumablesQuickLog model="MixerCycle" dept={MODEL_DEPT.MixerCycle} items={consumableItems} />
+      {rankOf(String((_me as { role?: string } | null)?.role ?? "")) >= ROLE_RANK.INCHARGE && (
+        <ConsumablesQuickLog model="MixerCycle" dept={MODEL_DEPT.MixerCycle} items={consumableItems} />
+      )}
     </Shell>
   );
 }

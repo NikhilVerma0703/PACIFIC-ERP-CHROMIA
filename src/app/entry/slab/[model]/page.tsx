@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { currentUser } from "@/lib/rbac";
+import { currentUser, rankOf, ROLE_RANK } from "@/lib/rbac";
 import { Shell } from "@/components/Shell";
 import { Card } from "@/components/ui";
 import { tableMeta, selectOptions , HIDDEN_FORM_FIELDS} from "@/lib/tables";
@@ -25,6 +25,8 @@ export default async function SmartEntry({ params }: { params: Promise<{ model: 
   const [pf, options, slabOptions] = await Promise.all([Promise.resolve(paramFields(model)), selectOptions(model), slabMode === "dropdown" ? polishEntrySlabOptions() : Promise.resolve([] as number[])]);
   // consumables quick-log (only machines with a department mapping)
   const dept = MODEL_DEPT[model];
+  // rollout: the quick-log shows for incharge+ only (operators later)
+  const canLogConsumables = rankOf(String((_me as { role?: string } | null)?.role ?? "")) >= ROLE_RANK.INCHARGE;
   let consumableItems: ConsumableItem[] = [];
   if (dept) {
     try {
@@ -50,7 +52,7 @@ export default async function SmartEntry({ params }: { params: Promise<{ model: 
       <h1 className="mb-1 text-2xl font-semibold tracking-tight text-gray-900">{meta.tableName} — smart entry</h1>
       <p className="mb-5 max-w-2xl text-sm text-gray-500">Type the batch and press Tab: batch parameters fill in automatically and the slab number advances by one. Dropdowns use existing values; double-click a filled field to edit.</p>
       <Card><SmartSlabForm model={model} tableName={meta.tableName} fields={formFields} paramFieldSet={pf} options={options} operatorName={operatorName} batchField={meta.fields.some((f) => f.prismaField === "batch") ? "batch" : "batchNumber"} slabMode={slabMode} slabOptions={slabOptions} slabFirst={model === "PolishEntry" || model === "PolishQc"} /></Card>
-      {dept && <ConsumablesQuickLog model={model} dept={dept} items={consumableItems} />}
+      {dept && canLogConsumables && <ConsumablesQuickLog model={model} dept={dept} items={consumableItems} />}
     </Shell>
   );
 }

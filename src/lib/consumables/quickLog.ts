@@ -7,7 +7,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
 import { canUseEntryModel } from "@/lib/stationAccess";
-import { currentUser } from "@/lib/rbac";
+import { currentUser, rankOf, ROLE_RANK } from "@/lib/rbac";
 import { MODEL_DEPT } from "./dept";
 
 const db = prisma as any;
@@ -20,6 +20,8 @@ export async function logConsumables(model: string, lines: QuickLine[]): Promise
   // consumables is a production capability — fab staff are excluded (same as the dashboard gate)
   const me0 = await currentUser();
   if (String((me0 as { role?: string } | null)?.role ?? "") !== "ADMIN" && String((me0 as { branch?: string } | null)?.branch ?? "") === "FABRICATION") return "Not available for fabrication logins.";
+  // Rollout: incharge and above only for now — operators get access later.
+  if (rankOf(String((me0 as { role?: string } | null)?.role ?? "")) < ROLE_RANK.INCHARGE) return "Consumables logging is for incharges for now.";
   const clean = (Array.isArray(lines) ? lines : [])
     .map((l) => ({ itemName: String(l.itemName ?? "").trim(), quantity: Number(l.quantity), unit: String(l.unit ?? "").trim() || "PCS" }))
     .filter((l) => l.itemName && Number.isFinite(l.quantity) && l.quantity > 0);
