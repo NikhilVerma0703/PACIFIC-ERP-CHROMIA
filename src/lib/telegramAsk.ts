@@ -51,7 +51,7 @@ async function dataPack(): Promise<string> {
       SELECT batch_key, quality_grade, count(*)::int n
       FROM polish_qc
       WHERE imported_at > now() - interval '10 days' AND batch_key IS NOT NULL
-      GROUP BY 1, 2`;
+      GROUP BY 1, 2 ORDER BY max(imported_at) DESC`;
     // JOT station: defects + inspection volume per batch (last 10 days)
     const jot: any[] = await db.$queryRaw`
       SELECT batch, slab_defect, count(*)::int n
@@ -75,7 +75,7 @@ async function dataPack(): Promise<string> {
         byBatch.set(k, [...(byBatch.get(k) ?? []), `${r.quality_grade ?? "ungraded"}:${r.n}`]);
       }
       lines.push("POLISH QC GRADES BY BATCH (last 10 days — the ABC quality report): "
-        + [...byBatch.entries()].slice(0, 8).map(([b, gs]) => `${b}: ${gs.join(" ")}`).join("; "));
+        + [...byBatch.entries()].slice(0, 10).map(([b, gs]) => `${b}: ${gs.join(" ")}`).join("; "));
     }
   } catch { /* pack still useful without the global block */ }
   return lines.join("\n");
