@@ -25,7 +25,7 @@ function BranchCard({ href, title, desc, icon }: { href: string; title: string; 
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ branch?: string }> }) {
   const sp = await searchParams;
-  const branch = sp.branch === "office" ? "OFFICE" : sp.branch === "shop" ? "SHOP_FLOOR" : null;
+  const branch = sp.branch === "office" ? "OFFICE" : sp.branch === "shop" ? "SHOP_FLOOR" : sp.branch === "sales" ? "INTERNATIONAL_SALES" : null;
 
   if (branch) return <LoginForm branch={branch} />;
 
@@ -49,6 +49,12 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
           title="Office"
           desc="Finance and dispatch — shipping, invoices, reports."
           icon="M3 21h18M5 21V5a2 2 0 012-2h10a2 2 0 012 2v16M9 7h2M9 11h2M9 15h2M13 7h2M13 11h2M13 15h2"
+        />
+        <BranchCard
+          href="/login?branch=sales"
+          title="International Sales"
+          desc="Clients, PIs, orders and shipments — export sales."
+          icon="M2 12h20M12 2a15.3 15.3 0 010 20 15.3 15.3 0 010-20zM12 2a10 10 0 100 20 10 10 0 000-20z"
         />
       </div>
     </LoginScene>

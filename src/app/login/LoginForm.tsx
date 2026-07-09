@@ -7,7 +7,7 @@ import { LoginScene } from "./LoginScene";
 const inputCls =
   "mt-1.5 w-full rounded-lg border border-pacific-mid/25 bg-white/5 px-3.5 py-2.5 text-sm text-white placeholder-pacific-mid/40 transition focus:border-pacific-light/60 focus:bg-white/10 focus:outline-none";
 
-export function LoginForm({ branch }: { branch: "SHOP_FLOOR" | "OFFICE" }) {
+export function LoginForm({ branch }: { branch: "SHOP_FLOOR" | "OFFICE" | "INTERNATIONAL_SALES" }) {
   const [errorMessage, formAction, isPending] = useActionState(authenticate, undefined);
 
   return (
@@ -18,7 +18,7 @@ export function LoginForm({ branch }: { branch: "SHOP_FLOOR" | "OFFICE" }) {
           <div className="text-[11px] font-medium uppercase tracking-[0.34em] text-pacific-mid">Pacific Surfaces</div>
           <h1 className="mt-2 text-3xl font-light tracking-tight text-white">Production ERP</h1>
           <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-pacific-mid/25 bg-white/5 px-3.5 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-pacific-light">
-            {branch === "OFFICE" ? "Office" : "Shop Floor"}
+            {branch === "OFFICE" ? "Office" : branch === "INTERNATIONAL_SALES" ? "International Sales" : "Shop Floor"}
           </div>
         </div>
 
