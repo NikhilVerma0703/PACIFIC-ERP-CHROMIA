@@ -96,6 +96,33 @@ async function dataPack(question = ""): Promise<string> {
       lines.push(`ASKED BATCH ${k} (all-time detail): press ${pr[0]?.n ?? 0} slabs${pr[0]?.lo ? ` (#${pr[0].lo}-#${pr[0].hi})` : ""}; MIS logged ${mi[0]?.s ?? 0}${mi[0]?.miss ? ` (${mi[0].miss} hrs without counts)` : ""}; QC ${qc.length ? qc.map((r: any) => `${r.g ?? "ungraded"}:${r.n}`).join(" ") : "none yet"}; JOT ${jt.length ? jt.map((r: any) => `${r.d ?? "no-defect"}:${r.n}`).join(" ") : "none yet"}`);
     }
   } catch { /* best-effort */ }
+  // ASKED SLABS: 5-7 digit numbers = slab numbers -> full journey per slab
+  try {
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const db = prisma as any;
+    const slabs = [...new Set(question.match(/\b\d{5,7}\b/g) ?? [])].slice(0, 3).map(Number);
+    for (const n of slabs) {
+      const [pr, jt, qc, fg]: any[][] = await Promise.all([
+        db.$queryRaw`SELECT batch, design_name FROM press WHERE slab_number = ${n} LIMIT 1`,
+        db.$queryRaw`SELECT slab_defect, bend_mm FROM jot WHERE slab_number = ${n} ORDER BY imported_at DESC LIMIT 1`,
+        db.$queryRaw`SELECT quality_grade, repolish_status, rw_status FROM polish_qc WHERE slab_number = ${n} ORDER BY imported_at DESC LIMIT 1`,
+        db.$queryRaw`SELECT status, bay_number, design FROM fg_finished_slab WHERE slab_number = ${n} LIMIT 1`,
+      ]);
+      if (!(pr.length || jt.length || qc.length || fg.length)) continue;
+      lines.push(`ASKED SLAB ${n}: press ${pr[0] ? `${pr[0].batch ?? "?"} ${pr[0].design_name ?? ""}`.trim() : "no entry"}; JOT ${jt[0] ? (jt[0].slab_defect ?? "no defect") : "no entry"}; QC ${qc[0] ? `${qc[0].quality_grade ?? "ungraded"}${qc[0].repolish_status ? ` ${qc[0].repolish_status}` : ""}` : "no entry"}; stock ${fg[0] ? `${fg[0].status} ${fg[0].bay_number ?? ""}`.trim() : "not in finished goods"}`);
+    }
+    // ASKED DESIGNS: match question words against known design names
+    const designs: any[] = await db.$queryRaw`SELECT DISTINCT design FROM fg_finished_slab WHERE design IS NOT NULL LIMIT 300`;
+    const qLower = question.toLowerCase();
+    const hits = designs.map((d: any) => String(d.design)).filter((d) => d.length >= 4 && qLower.includes(d.toLowerCase())).slice(0, 2);
+    for (const d of hits) {
+      const [fg, pr]: any[][] = await Promise.all([
+        db.$queryRaw`SELECT status, count(*)::int n FROM fg_finished_slab WHERE design = ${d} GROUP BY 1`,
+        db.$queryRaw`SELECT count(DISTINCT slab_number)::int n FROM press WHERE design_name ILIKE ${d} AND imported_at > now() - interval '10 days'`,
+      ]);
+      lines.push(`ASKED DESIGN ${d}: stock ${fg.map((r: any) => `${r.status}:${r.n}`).join(" ") || "none"}; pressed last 10d: ${pr[0]?.n ?? 0}`);
+    }
+  } catch { /* best-effort */ }
   return lines.join("\n");
 }
 
