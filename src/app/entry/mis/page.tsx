@@ -70,13 +70,17 @@ function initialHourFor(rows: MisRowLite[], shift: "A" | "B" | "C", hourParam?: 
 async function pressPrefill(hourDate: string, hour: string): Promise<{ batch: string | null; designName: string | null } | null> {
   const dayStart = Date.parse(`${hourDate}T00:00:00+05:30`);
   const h = Number(hour.slice(0, 2));
-  const sel = { select: { batch: true, designName: true }, orderBy: { createdTime: "desc" } };
+  // ERP-entered press rows have NO createdTime (Airtable-era column) — match on
+  // importedAt too, else the prefill finds nothing and the incharge types by hand.
+  const sel = { select: { batch: true, designName: true }, orderBy: { importedAt: "desc" } } as const;
+  const win = (a: number, z: number) => ({ OR: [
+    { createdTime: { gte: new Date(a), lt: new Date(z) } },
+    { AND: [{ createdTime: null }, { importedAt: { gte: new Date(a), lt: new Date(z) } }] },
+  ] });
   try {
-    const inHour = await db.press.findFirst({
-      where: { createdTime: { gte: new Date(dayStart + h * 3600_000), lt: new Date(dayStart + (h + 1) * 3600_000) } }, ...sel });
+    const inHour = await db.press.findFirst({ where: win(dayStart + h * 3600_000, dayStart + (h + 1) * 3600_000), ...sel });
     if (inHour) return inHour;
-    return await db.press.findFirst({
-      where: { createdTime: { gte: new Date(dayStart), lt: new Date(dayStart + 24 * 3600_000) } }, ...sel });
+    return await db.press.findFirst({ where: win(dayStart, dayStart + 24 * 3600_000), ...sel });
   } catch { return null; }
 }
 
