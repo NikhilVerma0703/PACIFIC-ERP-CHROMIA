@@ -373,6 +373,23 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
   if (model === "Jot" && String(data.slabDefect ?? "").trim()) {
     try { const { jotDefectAlert } = await import("@/lib/telegramReports"); await jotDefectAlert(createdId, data); } catch { /* never blocks the entry */ }
   }
+  // Polish QC: MORE THAN 3 C-grade (reject) slabs for a batch today -> one group alert
+  if (model === "PolishQc" && String(data.qualityGrade ?? "") === "C (Reject)") {
+    try {
+      const dayStartIST = new Date(Math.floor((Date.now() + 330 * 60000) / 86400000) * 86400000 - 330 * 60000);
+      const n = await delegateOf(model).count({ where: {
+        qualityGrade: "C (Reject)",
+        importedAt: { gte: dayStartIST },
+        ...(data.batchKey ? { batchKey: data.batchKey as string } : {}),
+      } });
+      if (n === 4) { // alert once, the moment it crosses "more than 3"
+        const { sendTelegram } = await import("@/lib/telegram");
+        const { esc } = await import("@/lib/telegram");
+        await sendTelegram(`🚨 <b>Quality alert — ${n} C-grade (reject) slabs today</b>${data.batchKey ? ` · Batch <b>${esc(data.batchKey)}</b>` : ""}
+Latest: slab ${esc(data.slabNumber ?? "—")} at Polish QC. Please check the line.`);
+      }
+    } catch { /* never blocks the entry */ }
+  }
   revalidatePath(`/tables/${model}`);
   if (model === "PolishQc") {
     // Autolink this QC slab into finished-goods inventory (best-effort).
