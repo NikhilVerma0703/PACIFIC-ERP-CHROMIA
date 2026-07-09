@@ -20,6 +20,7 @@ const HELP = [
   "/shift — the running shift's report",
   "/day — today so far",
   "/yesterday — yesterday's daily report",
+  "/ask <question> — free-text (AI) answer from live data",
 ].join("\n");
 
 const plusDay = (d: string, n: number) => { const x = new Date(`${d}T12:00:00Z`); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
@@ -38,6 +39,8 @@ async function answer(cmd: string): Promise<string | null> {
   return null; // silence for normal chatter
 }
 
+const HELP_ASK = "/ask <question> — e.g. /ask how many slabs did we lose to downtime this week?";
+
 export async function POST(req: Request) {
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
   if (!secret || req.headers.get("x-telegram-bot-api-secret-token") !== secret) {
@@ -53,7 +56,14 @@ export async function POST(req: Request) {
       return Response.json({ ok: true });
     }
     const cmd = text.split(/[\s@]/)[0].toLowerCase(); // "/status@PacificERPbot" -> "/status"
-    const reply = await answer(cmd);
+    let reply: string | null;
+    if (cmd === "/ask") {
+      const q = text.replace(/^\/ask(@\S+)?\s*/i, "").trim();
+      const { aiAnswer } = await import("@/lib/telegramAsk");
+      reply = q ? await aiAnswer(q) : HELP_ASK;
+    } else {
+      reply = await answer(cmd);
+    }
     if (reply) await sendTelegram(reply);
     return Response.json({ ok: true });
   } catch (e) {
