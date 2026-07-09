@@ -28,7 +28,6 @@ const DELAYS = [
   ["breakdownDelayDurationMechanicalOrElectricalMinutes", "Mech/Elec"],
   ["poweroutDelayDurationMinutes", "Power out"],
 ] as const;
-const CATS = [["aCategory", "A cat."], ["aCategory2", "A- cat."], ["bCategory", "B cat."], ["cCategory", "C cat."]] as const;
 
 const inp = "w-full rounded-md border border-gray-300 px-2.5 py-2 text-sm";
 const lbl = "mb-1 block text-xs font-medium text-gray-600";
@@ -172,10 +171,6 @@ export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName
               <input name="endingSlabNumber" type="number" step="any" min="0" defaultValue={prefill?.endSlab ?? ""} className={inp} /></label>
             <label className="block"><span className={lbl}>Jumped slabs</span>
               <input name="numberOfJumpedSlabs" type="number" step="any" min="0" className={inp} /></label>
-            {CATS.map(([k, label]) => (
-              <label key={k} className="block"><span className={lbl}>{label}</span>
-                <input name={k} type="number" step="any" min="0" className={inp} /></label>
-            ))}
           </div>
 
           <div className="mb-3 mt-5 text-sm font-semibold text-gray-800">Problems &amp; downtime (if any)</div>
