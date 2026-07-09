@@ -177,26 +177,16 @@ export default function KPICards() {
         return (
           <div
             key={card.title}
-            className="bg-white rounded-xl border shadow-sm overflow-hidden transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md"
-            style={{
-              borderColor: isAlert ? "#fecaca" : "#e5e7eb",
-              backgroundColor: isAlert ? "#fff5f5" : "#ffffff",
-            }}
+            className={`rounded-2xl border bg-white shadow-[0_1px_2px_rgba(16,24,40,0.04)] ${isAlert ? "border-red-200 ring-1 ring-red-100" : "border-gray-200/80"}`}
           >
-            {/* Top accent bar */}
-            <div className="h-1 w-full" style={{ background: card.accent }} />
-
             <div className="p-5">
               <div className="flex items-start justify-between gap-3">
                 {/* Left: label + value + trend */}
                 <div className="min-w-0 flex-1">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 truncate">
+                  <p className="truncate text-xs font-medium uppercase tracking-wide text-gray-400">
                     {card.title}
                   </p>
-                  <p
-                    className="text-3xl font-bold mt-2 tabular-nums"
-                    style={{ color: isAlert ? "#dc2626" : "#111827" }}
-                  >
+                  <p className={`mt-1.5 text-3xl font-semibold tracking-tight tabular-nums ${isAlert ? "text-red-600" : "text-gray-900"}`}>
                     {val}
                   </p>
                   {trend !== null && card.trendLabel && (
@@ -212,14 +202,11 @@ export default function KPICards() {
                 </div>
 
                 {/* Right: icon */}
-                <div
-                  className="shrink-0 w-11 h-11 rounded-xl flex items-center justify-center"
-                  style={{ background: card.iconBg }}
-                >
+                <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${isAlert ? "bg-red-50 text-red-500" : "bg-brand/10 text-brand"}`}>
                   <svg
-                    className="w-5 h-5"
+                    className="h-5 w-5"
                     fill="none"
-                    stroke={card.iconColor}
+                    stroke="currentColor"
                     viewBox="0 0 24 24"
                     strokeWidth={1.8}
                     strokeLinecap="round"
