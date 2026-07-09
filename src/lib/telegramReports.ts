@@ -42,7 +42,7 @@ export async function hourlyMessage(bucket: string, date: string): Promise<strin
         { date: { gte: d0, lt: d1 } },
         { AND: [{ date: null }, { dateAndTime: { gte: d0, lt: d1 } }] },
       ] },
-      select: { batch: true, design: true, slabsPerHourStd: true, slabsPerHourActual: true,
+      select: { batch: true, design: true, thkAtPressMm: true, slabsPerHourStd: true, slabsPerHourActual: true,
         startingSlabNumber: true, endingSlabNumber: true, numberOfJumpedSlabs: true,
         areaOfProblem: true, reasonForDeviation: true, details: true, submittedBy: true,
         productionInchargeName: true, anyBreakdownYesNo: true,
@@ -60,9 +60,11 @@ export async function hourlyMessage(bucket: string, date: string): Promise<strin
   const delayTotal = DELAYS.reduce((a, [k]) => a + n0(r[k]), 0);
   const lines = [
     `🏭 <b>MIS ${bucket}</b> · ${date} · Shift ${shift}`,
-    `Batch <b>${esc(r.batch ?? "—")}</b>${r.design ? ` · ${esc(r.design)}` : ""}`,
+    `Batch <b>${esc(r.batch ?? "—")}</b>${r.design ? ` · ${esc(r.design)}` : ""}${r.thkAtPressMm != null ? ` · ${r.thkAtPressMm}mm` : ""}`,
     `Slabs: <b>${r.slabsPerHourActual ?? "—"}</b> actual${r.slabsPerHourStd != null ? ` (std ${r.slabsPerHourStd})` : ""}` +
-      (r.startingSlabNumber != null && r.endingSlabNumber != null ? ` · #${r.startingSlabNumber}–${r.endingSlabNumber}${n0(r.numberOfJumpedSlabs) > 0 ? ` (${n0(r.numberOfJumpedSlabs)} jumped)` : ""}` : ""),
+      (r.startingSlabNumber != null && r.endingSlabNumber != null
+        ? ` · slabs #${r.startingSlabNumber}–${r.endingSlabNumber}${n0(r.numberOfJumpedSlabs) > 0 ? ` (${n0(r.numberOfJumpedSlabs)} jumped)` : ""}`
+        : r.startingSlabNumber != null ? ` · from slab #${r.startingSlabNumber}` : ""),
   ];
   if (delayTotal > 0) {
     lines.push(`⏱ DOWNTIME <b>${Math.round(delayTotal)} min</b> — ${delayParts.join(", ")}`);
