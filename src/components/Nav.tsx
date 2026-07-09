@@ -35,6 +35,7 @@ const STORE_TABS = [
   { href: "/store/upload", label: "RM Upload",     icon: I.box    },
   { href: "/store/assign", label: "RM Assignment", icon: I.tables },
   { href: "/tables",       label: "RM Tables",     icon: I.tables },
+  { href: "/consumables",  label: "Consumables",   icon: I.box    },
 ];
 
 // Maintenance Manager is capped: Overview + the Downtime report only.
@@ -86,9 +87,9 @@ function Section({ label, items, path }: { label: string; items: { href: string;
 
 /* Main Nav export — flat, access-filtered sections (no dropdowns) */
 export function Nav({
-  showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false,
+  showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false,
 }: {
-  showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; inventory?: boolean;
+  showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; inventory?: boolean; consumables?: boolean;
 }) {
   const path    = usePathname();
   const office  = branch === "OFFICE";
@@ -161,6 +162,7 @@ export function Nav({
       {isProd && <Section label="Lookups &amp; Reports" items={reports} path={path} />}
       {isFab  && <Section label="Fabrication" items={fabrication} path={path} />}
       {inventory && <Section label="Inventory" items={[{ href: "/inventory", icon: I.box, label: "Finished Goods" }]} path={path} />}
+      {consumables && <Section label="Consumables" items={[{ href: "/consumables", icon: I.box, label: "Consumables" }]} path={path} />}
       <Section label="Admin" items={admin} path={path} />
     </nav>
   );

@@ -78,7 +78,7 @@ export default auth((req) => {
 
   if (role === "STORE") {
     // /tables is allowed but capped to RM tables (canSeeModel -> STORE_MODELS).
-    const ok = p === "/live" || p.startsWith("/store") || p.startsWith("/tables") || p.startsWith("/api");
+    const ok = p === "/live" || p.startsWith("/store") || p.startsWith("/tables") || p.startsWith("/consumables") || p.startsWith("/api");
     if (!ok) return Response.redirect(new URL("/live", nextUrl));
   }
   if (role === "OPERATOR") {
