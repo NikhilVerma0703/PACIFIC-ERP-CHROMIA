@@ -2487,3 +2487,142 @@ model SlabEvent {
   @@index([at])
   @@map("fg_slab_event")
 }
+
+// ==========================================
+// Consumables module (ported from the standalone consumables dashboard).
+// Native ERP tables — NOT generated from Airtable; preserve across regens.
+// Columns stay camelCase (module convention) so ported raw-SQL chart
+// queries only needed TABLE-name changes; tables namespaced consumable_*.
+// ==========================================
+
+model ConsumableDepartment {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+
+  productionConsumables ProductionConsumable[]
+  polishingConsumables  PolishingConsumable[]
+  consumptionEntries    ConsumptionEntry[]
+
+  @@map("consumable_department")
+}
+
+model DirectMaterial {
+  id               String               @id @default(cuid())
+  name             String
+  variant          String?
+  unit             String
+  dailyConsumption Float                @default(0)
+  status           DirectMaterialStatus @default(ACTIVE)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  @@map("consumable_direct_material")
+}
+
+enum DirectMaterialStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model ProductionConsumable {
+  id               String   @id @default(cuid())
+  name             String
+  unit             String
+  dailyConsumption Float    @default(0)
+  currentStock     Float    @default(0)
+  minStock         Float    @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  departmentId String
+  department   ConsumableDepartment @relation(fields: [departmentId], references: [id])
+
+  @@map("consumable_production")
+}
+
+model PolishingConsumable {
+  id               String   @id @default(cuid())
+  name             String
+  unit             String   @default("PCS")
+  dailyConsumption Float    @default(0)
+  currentStock     Float    @default(0)
+  minStock         Float    @default(0)
+  createdAt        DateTime @default(now())
+
+  departmentId String
+  department   ConsumableDepartment @relation(fields: [departmentId], references: [id])
+
+  @@map("consumable_polishing")
+}
+
+model InventoryStock {
+  id           String       @id @default(cuid())
+  itemName     String
+  category     ItemCategory
+  unit         String
+  currentStock Float        @default(0)
+  minStock     Float        @default(0)
+  maxStock     Float        @default(0)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  inventoryEntries   InventoryEntry[]
+  consumptionEntries ConsumptionEntry[]
+
+  @@map("consumable_inventory_stock")
+}
+
+enum ItemCategory {
+  DIRECT_MATERIAL
+  PRODUCTION_CONSUMABLE
+  POLISHING_CONSUMABLE
+}
+
+model FilmRoll {
+  id             String   @id @default(cuid())
+  rollNumber     String   @unique
+  filmType       String
+  machine        String
+  initialWeight  Float
+  layersUsed     Int      @default(0)
+  weightPerLayer Float
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("consumable_film_roll")
+}
+
+model ConsumptionEntry {
+  id       String   @id @default(cuid())
+  date     DateTime @default(now())
+  itemName String
+  quantity Float
+  unit     String
+  remarks  String?
+
+  departmentId String
+  department   ConsumableDepartment @relation(fields: [departmentId], references: [id])
+
+  inventoryStockId String?
+  inventoryStock   InventoryStock? @relation(fields: [inventoryStockId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@map("consumable_consumption_entry")
+}
+
+model InventoryEntry {
+  id       String   @id @default(cuid())
+  date     DateTime @default(now())
+  quantity Float
+  unit     String
+
+  inventoryStockId String
+  inventoryStock   InventoryStock @relation(fields: [inventoryStockId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@map("consumable_inventory_entry")
+}
