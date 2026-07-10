@@ -116,8 +116,6 @@ export function Nav({
     ...(spAccess   ? [{ href: "/sales/settings",   icon: I.planning, label: "Settings" }] : []),
   ];
 
-  if (branch === "INTERNATIONAL_SALES" && !isAdmin)
-    return <nav className="flex flex-col gap-1">{intlSalesItems.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}</nav>;
   if (role === "STORE")
     return <nav className="flex flex-col gap-1">{STORE_TABS.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}</nav>;
   if (role === "COMMERCIAL")
@@ -173,6 +171,18 @@ export function Nav({
     ...(showAdmin ? [{ href: "/admin/users", icon: I.users, label: "Users & Roles" }] : []),
     ...(isAdmin   ? [{ href: "/admin/migration", icon: I.box, label: "Airtable Sync" }] : []),
   ];
+
+  if (branch === "INTERNATIONAL_SALES") {
+    // The sales card is a clean workspace: ONLY the sales section — plus Admin
+    // for admins. Admins wanting production/fab sign in via the other cards
+    // (or the sidebar keeps them one sign-in away).
+    return (
+      <nav className="flex flex-col">
+        <Section label="International Sales" items={intlSalesItems} path={path} />
+        {isAdmin && <Section label="Admin" items={admin} path={path} />}
+      </nav>
+    );
+  }
 
   return (
     <nav className="flex flex-col">

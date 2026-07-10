@@ -150,10 +150,11 @@ export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName
           <label className="block"><span className={lbl}>Thk at Press (mm) *{prefill?.thkPress && thkPress === prefill?.thkPress ? <span className="ml-1 font-normal text-gray-400">(from line data)</span> : null}</span>
             <select value={thkPress} onChange={(e) => setThkPress(e.target.value)} className={inp}>
               <option value="">—</option>
+              <option value="12">12 (1.2 cm)</option>
               <option value="20">20 (2 cm)</option>
               <option value="30">30 (3 cm)</option>
               <option value="20 & 30">20 &amp; 30 (both this hour)</option>
-              {thkPress && !["", "20", "30", "20 & 30"].includes(thkPress) && <option value={thkPress}>{thkPress}</option>}
+              {thkPress && !["", "12", "20", "30", "20 & 30"].includes(thkPress) && <option value={thkPress}>{thkPress}</option>}
             </select></label>
           <label className="block"><span className={lbl}>Production Incharge</span>
             <input value={prodIncharge} onChange={(e) => setProdIncharge(e.target.value)} className={inp} /></label>

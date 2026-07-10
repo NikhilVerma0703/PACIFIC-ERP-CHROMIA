@@ -113,6 +113,12 @@ function buildData(model: string, fd: FormData): Record<string, unknown> {
     if (!fd.has(f.prismaField) && f.kind !== "bool") continue;
     data[f.prismaField] = coerceField(f.kind, fd.get(f.prismaField));
   }
+  // Postgres text columns reject NUL bytes (22021) — strip them from every
+  // string value (stray tablet-keyboard/clipboard artifacts must never 500 a save).
+  for (const [k, v] of Object.entries(data)) {
+    if (typeof v === "string" && v.includes("\u0000")) data[k] = v.replaceAll("\u0000", "");
+    else if (Array.isArray(v)) data[k] = v.map((x) => (typeof x === "string" ? x.replaceAll("\u0000", "") : x));
+  }
   return data;
 }
 
