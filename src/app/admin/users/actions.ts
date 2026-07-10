@@ -55,7 +55,7 @@ export async function createUser(_prev: string | undefined, fd: FormData): Promi
   if (myBranch === "INTERNATIONAL_SALES") {
     const tier = salesTierOf(me);
     const callerDuty = tier ? await salesDutyFor(String(me?.id ?? ""), tier) : "";
-    if (!(tier === "ADMIN" || callerDuty === "SALES_ADMIN" || callerDuty === "REPORTING_MANAGER"))
+    if (!(tier === "ADMIN" || callerDuty === "SALES_ADMIN")) // Sales Admin only (user directive)
       return "You don't have permission to create users.";
     // Platform admins hand out every duty; sales managers only the member duties.
     const allowedDuties = tier === "ADMIN" ? SALES_DUTIES : SALES_DUTIES.filter((d) => SALES_DUTY_TO_ROLE[d] === "SALES");

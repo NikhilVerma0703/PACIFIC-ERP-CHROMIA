@@ -182,7 +182,7 @@ export function Nav({
     return (
       <nav className="flex flex-col">
         <Section label="International Sales" items={intlSalesItems} path={path} />
-        {isAdmin && <Section label="Admin" items={admin} path={path} />}
+        {(isAdmin || salesDuty === "SALES_ADMIN") && <Section label="Admin" items={admin} path={path} />}
       </nav>
     );
   }

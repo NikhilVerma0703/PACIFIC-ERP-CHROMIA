@@ -23,7 +23,7 @@ export default async function UsersPage() {
     const me = (await currentUser()) as any;
     const tier = salesTierOf(me);
     const duty = tier ? await salesDutyFor(String(me?.id ?? ""), tier) : "";
-    if (!(tier === "ADMIN" || duty === "SALES_ADMIN" || duty === "REPORTING_MANAGER")) redirect("/sales");
+    if (!(tier === "ADMIN" || duty === "SALES_ADMIN")) redirect("/sales"); // Users & roles: Sales Admin only (user directive)
     const salesCreatable = tier === "ADMIN"
       ? ["SALES_ADMIN", "REPORTING_MANAGER", "COMMERCIAL", "ACCOUNTS", "SALESPERSON"]
       : ["COMMERCIAL", "ACCOUNTS", "SALESPERSON"];
