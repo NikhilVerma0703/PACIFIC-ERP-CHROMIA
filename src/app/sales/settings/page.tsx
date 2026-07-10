@@ -13,6 +13,7 @@ import { getMailSubjects, DEFAULT_SUBJECTS, MAIL_SUBJECT_KEYS } from "@/lib/sale
 import type { MailSubjectKey } from "@/lib/sales/mailSubjects";
 import { getMailBodies, DEFAULT_BODIES, MAIL_BODY_KEYS } from "@/lib/sales/mailBodies";
 import type { MailBodyKey } from "@/lib/sales/mailBodies";
+import { getSpMap } from "@/lib/sales/spLookup";
 
 export default async function SalesSettingsPage() {
   const session = await auth();
@@ -49,9 +50,10 @@ export default async function SalesSettingsPage() {
            WHERE role = 'ADMIN' OR sales_role IN ('SALES_ADMIN','REPORTING_MANAGER')
            ORDER BY name ASC`
         ).catch(() => [] as ManagerRow[]),
+        // managerId carries no Prisma relation (no hard FK) — the fork's
+        // `include: { manager }` throws PrismaClientValidationError; stitch below.
         db.salesManagerAssignment.findMany({
           where: { isActive: true },
-          include: { manager: { select: { id: true, name: true, email: true } } },
         }),
         db.salesConfig.findUnique({ where: { id: "global" } }).catch(() => null),
         // Clients with their SP (via orders — distinct SP-client pairs)
@@ -72,7 +74,11 @@ export default async function SalesSettingsPage() {
 
   const sps: SpRow[]                 = spsRaw as SpRow[];
   const managers: ManagerRow[]       = managersRaw as ManagerRow[];
-  const assignments: AssignmentRow[] = assignmentsRaw as AssignmentRow[];
+  const managerInfo = await getSpMap((assignmentsRaw as any[]).map((a) => a.managerId));
+  const assignments: AssignmentRow[] = (assignmentsRaw as any[]).map((a) => ({
+    ...a,
+    manager: managerInfo.get(a.managerId) ?? { id: a.managerId, name: a.managerId, email: null },
+  }));
   const factoryUsers: FactoryUser[]  = factoryUsersRaw as FactoryUser[];
 
   // ── Build hierarchy tree ──────────────────────────────────────────────────
