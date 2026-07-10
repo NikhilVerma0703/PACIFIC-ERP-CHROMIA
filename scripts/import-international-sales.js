@@ -509,7 +509,7 @@ async function main() {
     return { f, tag };
   });
   // One-shot guard (same pattern as import-consumables.js)
-  const existing = await prisma.salesClient.count().catch(() => 0);
+  const existing = await prisma.salesClient.count(); // fail CLOSED: a failed count must abort, not look empty
   if (existing > 0 && !force) {
     console.error(`Refusing to import: sales_clients already has ${existing} rows. Re-run with --force if you really mean it.`);
     process.exit(1);
