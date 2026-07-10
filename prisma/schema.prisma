@@ -2758,6 +2758,7 @@ model SalesClient {
 
   phone         String?
   address       String?
+  city          String? // 0025 — applied before this model change deployed
   country       String
   contactPerson String? @map("contact_person")
   createdById   String  @map("created_by_id") // -> users.id (no hard FK)

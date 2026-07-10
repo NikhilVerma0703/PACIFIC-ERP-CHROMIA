@@ -15,7 +15,12 @@ export async function GET(req: Request) {
   const salesRole = (session.user as any).salesRole as string | null;
 
   const url   = new URL(req.url);
-  const limit = parseInt(url.searchParams.get("limit") ?? "10");
+  // No explicit limit -> return the FULL scoped list. The old default of 10
+  // (name-ASC) hid every client past the first ten: a freshly added client
+  // "never appeared" here or in the PI form's client dropdown — reported as
+  // "clients cannot be added". Both UI callers fetch with no params.
+  const limitParam = url.searchParams.get("limit");
+  const limit = limitParam ? Math.max(1, parseInt(limitParam) || 10) : null;
   const page  = parseInt(url.searchParams.get("page")  ?? "1");
   const from  = url.searchParams.get("from");
   const to    = url.searchParams.get("to");
@@ -53,8 +58,7 @@ export async function GET(req: Request) {
       } : {}),
     },
     orderBy: { name: "asc" },
-    take: limit,
-    skip: (page - 1) * limit,
+    ...(limit ? { take: limit, skip: (page - 1) * limit } : {}),
   });
   // createdById has no Prisma relation (no hard FK) — stitch user info in
   const userMap = await getSpMap(clients.map((c: any) => c.createdById));
@@ -72,15 +76,23 @@ export async function POST(req: Request) {
   if (!salesRole) return Response.json({ error: "Forbidden" }, { status: 403 });
 
   const body = await req.json();
-  const { name, email, phone, country, address, contactPerson, ccEmails } = body;
-  if (!name) return Response.json({ error: "name required" }, { status: 400 });
+  const { name, email, phone, country, city, address, contactPerson, ccEmails } = body;
+  if (!name || !String(name).trim()) return Response.json({ error: "name required" }, { status: 400 });
 
-  const client = await db.salesClient.create({
-    data: {
-      name, email, phone, country, address, contactPerson,
-      ccEmails: Array.isArray(ccEmails) ? ccEmails.filter(Boolean) : [],
-      createdById: uid,
-    },
-  });
-  return Response.json(client, { status: 201 });
+  try {
+    const client = await db.salesClient.create({
+      data: {
+        name, email, phone, address, contactPerson,
+        city:    city ?? null,        // 0025 (nullable, applied)
+        country: country ?? "",       // NOT NULL in the DB — never let it reach Prisma undefined
+        ccEmails: Array.isArray(ccEmails) ? ccEmails.filter(Boolean) : [],
+        createdById: uid,
+      },
+    });
+    return Response.json(client, { status: 201 });
+  } catch (err: any) {
+    // Surface a real reason — the form used to show nothing actionable.
+    const msg = String(err?.message ?? "unknown error").split("\n").pop();
+    return Response.json({ error: `Could not create client: ${msg}` }, { status: 500 });
+  }
 }

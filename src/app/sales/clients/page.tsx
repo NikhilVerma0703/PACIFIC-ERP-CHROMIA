@@ -21,7 +21,7 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
   );
 }
 
-const EMPTY = { name: "", email: "", phone: "", country: "", city: "", address: "", contactPerson: "", ccEmails: [] as string[] };
+const EMPTY = { name: "", email: "", phone: "", country: "", city: "", contactPerson: "", ccEmails: [] as string[] };
 
 export default function ClientsPage() {
   const [clients, setClients] = useState<Client[]>([]);
@@ -47,7 +47,7 @@ export default function ClientsPage() {
   function openEdit(c: Client) {
     setForm({
       name: c.name, email: c.email ?? "", phone: c.phone ?? "",
-      country: c.country ?? "", city: c.city ?? "", address: "", contactPerson: c.contactPerson ?? "",
+      country: c.country ?? "", city: c.city ?? "", contactPerson: c.contactPerson ?? "",
       ccEmails: c.ccEmails ?? [],
     });
     setEditing(c); setError(""); setModal("edit");
@@ -72,18 +72,33 @@ export default function ClientsPage() {
     setSaving(true); setError("");
     const url  = modal === "edit" ? `/api/sales/clients/${editing!.id}` : "/api/sales/clients";
     const meth = modal === "edit" ? "PATCH" : "POST";
-    const r = await fetch(url, {
-      method: meth,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...form, ccEmails: form.ccEmails.filter(e => e.trim()) }),
-    });
-    setSaving(false);
-    if (!r.ok) { const d = await r.json(); setError(d.error ?? "Save failed"); return; }
+    try {
+      const r = await fetch(url, {
+        method: meth,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...form, ccEmails: form.ccEmails.filter(e => e.trim()) }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({} as { error?: string }));
+        setError(d.error ?? `Save failed (${r.status})`);
+        return;
+      }
+    } catch {
+      setError("Network error — please retry.");
+      return;
+    } finally {
+      setSaving(false);
+    }
     setModal(null); load();
   }
   async function del(id: string) {
     if (!confirm("Delete this client?")) return;
-    await fetch(`/api/sales/clients/${id}`, { method: "DELETE" });
+    const r = await fetch(`/api/sales/clients/${id}`, { method: "DELETE" });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({} as { error?: string }));
+      alert(d.error ?? "Delete failed");
+      return;
+    }
     load();
   }
 
