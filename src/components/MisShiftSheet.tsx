@@ -148,7 +148,13 @@ export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName
             <select value={productionType} onChange={(e) => setProductionType(e.target.value)} className={inp}>
               <option value="">—</option>{(options.productionType ?? []).map((o) => <option key={o}>{o}</option>)}</select></label>
           <label className="block"><span className={lbl}>Thk at Press (mm) *{prefill?.thkPress && thkPress === prefill?.thkPress ? <span className="ml-1 font-normal text-gray-400">(from line data)</span> : null}</span>
-            <input value={thkPress} onChange={(e) => setThkPress(e.target.value)} type="number" step="any" min="0" className={inp} /></label>
+            <select value={thkPress} onChange={(e) => setThkPress(e.target.value)} className={inp}>
+              <option value="">—</option>
+              <option value="20">20 (2 cm)</option>
+              <option value="30">30 (3 cm)</option>
+              <option value="20 & 30">20 &amp; 30 (both this hour)</option>
+              {thkPress && !["", "20", "30", "20 & 30"].includes(thkPress) && <option value={thkPress}>{thkPress}</option>}
+            </select></label>
           <label className="block"><span className={lbl}>Production Incharge</span>
             <input value={prodIncharge} onChange={(e) => setProdIncharge(e.target.value)} className={inp} /></label>
           <label className="block"><span className={lbl}>Electrical Incharge{prefill?.elecIncharge && elecIncharge === prefill?.elecIncharge && elecIncharge ? <span className="ml-1 font-normal text-gray-400">(from previous entry)</span> : null}</span>
