@@ -352,7 +352,14 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
   let createdId: string;
   let createdAirtableId: string;
   try {
-    const base = { airtableId: localId(model.toLowerCase()), ...data, enteredById: me?.id ?? null };
+    const base: Record<string, unknown> = { airtableId: localId(model.toLowerCase()), ...data, enteredById: me?.id ?? null };
+    // FINAL 22021 choke point: buildData's NUL sweep runs BEFORE stampOperator
+    // & co., so values stamped after it (submittedBy = login name, ids) must be
+    // swept here too — nothing carrying 0x00 may ever reach the INSERT.
+    for (const [k, v] of Object.entries(base)) {
+      if (typeof v === "string" && v.includes("\u0000")) base[k] = v.replaceAll("\u0000", "");
+      else if (Array.isArray(v)) base[k] = v.map((x) => (typeof x === "string" ? x.replaceAll("\u0000", "") : x));
+    }
     if (model === "Silo" && rmBag) {
       // Silo fill + RM-bag consumption is ONE atomic unit: if the bag can't be
       // marked consumed (or was consumed by a concurrent dump), nothing saves —
