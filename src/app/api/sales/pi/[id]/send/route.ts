@@ -3,7 +3,7 @@ import { salesAuth as auth } from "@/lib/sales/session";
 import { prisma } from "@/lib/prisma";
 import { sendMail } from "@/lib/sales/mailer";
 import { getCCList } from "@/lib/sales/mailHelpers";
-import { generatePIPdf } from "@/lib/sales/pdf/piPdf";
+import { generatePiPdfAuto } from "@/lib/sales/pdf/piPdfmake";
 import { resolveBody } from "@/lib/sales/mailBodies";
 import { piEmailHtml } from "@/lib/sales/emailTemplates";
 import { getSp } from "@/lib/sales/spLookup";
@@ -29,7 +29,10 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
 
   try {
     const [pdfBuffer, cc, customBody] = await Promise.all([
-      generatePIPdf(id),
+      // Engine/template picked per productType + availability; previously this
+      // was always the Quartz HTML template and threw on Vercel (no puppeteer),
+      // which failed the whole send.
+      generatePiPdfAuto(id),
       getCCList(pi.spId, pi.clientId),
       resolveBody("pi_body", {
         clientName:    pi.client?.name  || "Sir/Madam",

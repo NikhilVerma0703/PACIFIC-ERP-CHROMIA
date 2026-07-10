@@ -24,6 +24,18 @@ function loadPuppeteer(): any {
   }
 }
 
+/** True when the optional puppeteer dependency is installed (e.g. local
+ * Windows server). On Vercel it is absent — callers should fall back to the
+ * pdfmake engine (see piPdfmake.ts) instead of surfacing the error above. */
+export function isPuppeteerAvailable(): boolean {
+  try {
+    loadPuppeteer();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const CHROME_PATHS = [
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
   "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
