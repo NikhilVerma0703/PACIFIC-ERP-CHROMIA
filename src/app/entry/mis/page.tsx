@@ -54,6 +54,20 @@ async function shiftRows(date: string, shift: "A" | "B" | "C"): Promise<MisRowLi
 }
 
 
+/** Hours already logged on the sheet's calendar day (any shift) — powers the
+ * hour dropdown's ✓-logged ticks across shifts. 00-06 rows of `date` belong
+ * to the C shift anchored the previous evening, exactly where the dropdown
+ * navigates for those hours; the loaded shift's own rows cover its C spillover. */
+async function dayLoggedHours(date: string): Promise<string[]> {
+  try {
+    const rows = await db.mis.findMany({ where: { OR: [
+      { date: { gte: new Date(`${date}T00:00:00.000Z`), lt: new Date(`${plusDay(date, 1)}T00:00:00.000Z`) } },
+      { AND: [{ date: null }, { dateAndTime: { gte: new Date(`${date}T00:00:00.000Z`), lt: new Date(`${plusDay(date, 1)}T00:00:00.000Z`) } }] },
+    ] }, select: { id: true, hour: true } });
+    return [...new Set(rows.map((r) => r.hour).filter((h): h is string => !!h))];
+  } catch { return []; }
+}
+
 // ---- Header prefill (login + live press data) -------------------------------
 // The client component picks its initial hour with this same rule; computing it
 // here too lets us prefill from the press rows of exactly that hour window.
@@ -126,7 +140,7 @@ export default async function MisSheetPage({ searchParams }: { searchParams: Pro
   const cur = currentShift();
   const date = /^\d{4}-\d{2}-\d{2}$/.test(sp.date ?? "") ? String(sp.date) : cur.date;
   const shift = (["A", "B", "C"].includes(sp.shift ?? "") ? sp.shift : cur.shift) as "A" | "B" | "C";
-  const [rows, options, me] = await Promise.all([shiftRows(date, shift), selectOptions("Mis"), currentUser()]);
+  const [rows, options, me, loggedDay] = await Promise.all([shiftRows(date, shift), selectOptions("Mis"), currentUser(), dayLoggedHours(date)]);
   const operatorName = me?.name || me?.email || "operator";
   // design dropdown: collapse every "Trial …" variant into ONE "Trial" entry
   if (options.design?.some((d) => /^trial\b/i.test(String(d).trim()))) {
@@ -171,7 +185,7 @@ export default async function MisSheetPage({ searchParams }: { searchParams: Pro
       <Link href="/entry" className="mb-1 inline-flex items-center gap-1 text-sm text-brand hover:underline">← Data entry</Link>
       <h1 className="mb-1 text-2xl font-semibold tracking-tight text-gray-900">MIS — Daily Production &amp; Utilization</h1>
       <p className="mb-5 max-w-3xl text-sm text-gray-500">One hour per save: pick the hour (shift comes up on its own), fill what happened, Save. Logged hours appear in the table below. Delay per hour caps at 60 min.</p>
-      <MisShiftSheet key={`${date}|${shift}|${initialHour}`} rows={rows} date={date} shift={shift} hour={hourParam ?? initialHour} operatorName={operatorName} options={options} prefill={prefill} />
+      <MisShiftSheet key={`${date}|${shift}|${initialHour}`} rows={rows} loggedDay={loggedDay} date={date} shift={shift} hour={hourParam ?? initialHour} operatorName={operatorName} options={options} prefill={prefill} />
     </Shell>
   );
 }

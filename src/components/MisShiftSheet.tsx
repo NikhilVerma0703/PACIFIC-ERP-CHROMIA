@@ -41,8 +41,8 @@ export interface MisPrefill {
   startSlab?: string; endSlab?: string; actual?: string;
 }
 
-export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName, options, prefill }: {
-  rows: MisRowLite[]; date: string; shift: "A" | "B" | "C"; hour?: string;
+export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, operatorName, options, prefill }: {
+  rows: MisRowLite[]; loggedDay?: string[]; date: string; shift: "A" | "B" | "C"; hour?: string;
   operatorName: string; options: Record<string, string[]>; prefill?: MisPrefill;
 }) {
   const router = useRouter();
@@ -63,6 +63,9 @@ export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName
   const [reasons, setReasons] = useState<string[]>([]);
 
   const logged = useMemo(() => new Set(rows.map((r) => r.hour)), [rows]);
+  // ✓-logged ticks for the WHOLE day (any shift) — the same-shift `logged` set
+  // alone lost the morning's ticks the moment the sheet moved to the next shift.
+  const loggedDaySet = useMemo(() => new Set(loggedDay ?? []), [loggedDay]);
   const defaultHour = () => {
     // the just-ENDED hour — MUST mirror the server's initialHourFor rule,
     // else prefill (computed server-side) belongs to a different hour
@@ -133,7 +136,7 @@ export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName
             <input type="date" value={date} onChange={(e) => e.target.value && router.push(`/entry/mis?date=${e.target.value}&shift=${shift}&hour=${encodeURIComponent(hour)}`)} className={inp + " w-auto"} /></label>
           <label className="block"><span className={lbl}>Hour</span>
             <select value={hour} onChange={(e) => onHour(e.target.value)} className={inp + " w-auto font-medium"}>
-              {ALL_HOURS.map((h) => <option key={h} value={h}>{h}{logged.has(h) && shiftOfHour(h) === shift ? " ✓ logged" : ""}</option>)}
+              {ALL_HOURS.map((h) => <option key={h} value={h}>{h}{loggedDaySet.has(h) || (logged.has(h) && shiftOfHour(h) === shift) ? " ✓ logged" : ""}</option>)}
             </select></label>
           <div className="rounded-lg bg-brand/10 px-3 py-2 text-sm font-semibold text-brand">Shift {hShift} (auto)</div>
           <div className="rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-700">Filled by: <span className="font-semibold">{operatorName}</span></div>
