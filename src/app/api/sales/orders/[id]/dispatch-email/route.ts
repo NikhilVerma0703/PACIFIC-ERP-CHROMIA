@@ -53,7 +53,7 @@ export async function POST(
     d ? new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "---";
 
   const tableRows = [
-    ["SHIPPER",                C_val("Pacific Engineered Surfaces Pvt. Ltd.")],
+    ["SHIPPER",                "Pacific Engineered Surfaces Pvt. Ltd."],
     ["Invoice No.",            `<strong style='color:#0d9488'>${fmt(invoiceNo)}</strong>`],
     ["Dated",                  fmtDate(new Date())],
     ["PO / PI Ref",            fmt(pi?.buyerPoNo || pi?.piNumber)],
@@ -135,4 +135,3 @@ export async function POST(
   return NextResponse.json({ ok: true, sentTo: toEmail });
 }
 
-function C_val(v: string) { return v; }
