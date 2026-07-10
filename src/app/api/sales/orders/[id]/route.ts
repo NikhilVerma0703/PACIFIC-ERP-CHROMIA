@@ -85,6 +85,15 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const body = await req.json();
   const { deliveryTerms, notes, status } = body;
 
+  // Status writes obey the same duty gate as the dedicated /status route (which
+  // every UI action uses); this generic PATCH used to accept a status from any
+  // sales session, silently bypassing that gate. deliveryTerms/notes stay open.
+  if (status !== undefined) {
+    const salesRole = (session.user as any).salesRole as string | null;
+    const allowed = salesRole === "SALESPERSON" || salesRole === "SALES_ADMIN" || salesRole === "COMMERCIAL";
+    if (!allowed) return Response.json({ error: "Forbidden" }, { status: 403 });
+  }
+
   const order = await db.salesOrder.update({
     where: { id },
     data: {

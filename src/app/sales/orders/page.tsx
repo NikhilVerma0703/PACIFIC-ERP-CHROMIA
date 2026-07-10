@@ -49,7 +49,7 @@ function isDelayed(o: Order) {
   return daysInStatus(o.updatedAt) >= threshold;
 }
 
-const FILTERS = ["ALL","PENDING_PAYMENT","IN_PRODUCTION","PACKING","DISPATCHED","DELIVERED","&#x26A0; DELAYED"];
+const FILTERS = ["ALL","PENDING_PAYMENT","IN_PRODUCTION","PACKING","DISPATCHED","DELIVERED","⚠ DELAYED"];
 const FACTORY_TABS = [
   { key: "ALL",     label: "All",     color: "bg-slate-700 text-white", inactive: "bg-white text-slate-600 border border-slate-200 hover:border-slate-400" },
   { key: "QUARTZ",  label: "Quartz",  color: "bg-sky-600 text-white",   inactive: "bg-white text-sky-600 border border-sky-200 hover:border-sky-400" },
@@ -96,7 +96,7 @@ function OrdersPageInner() {
   async function load(p = 1, append = false) {
     setLoading(true);
     const params = new URLSearchParams();
-    if (filter !== "ALL" && filter !== "&#x26A0; DELAYED") params.set("status", filter);
+    if (filter !== "ALL" && filter !== "⚠ DELAYED") params.set("status", filter);
     if (factory !== "ALL") params.set("productType", factory);
     if (selectedSp !== "ALL") params.set("sp", selectedSp);
     params.set("limit", String(PAGE_SIZE));
@@ -127,7 +127,7 @@ function OrdersPageInner() {
   useEffect(() => { setPage(1); load(1, false); }, [filter, factory, selectedSp, dateFrom, dateTo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const visible = orders
-    .filter(o => filter === "&#x26A0; DELAYED" ? isDelayed(o) : true)
+    .filter(o => filter === "⚠ DELAYED" ? isDelayed(o) : true)
     .filter(o => {
       if (!searchQ) return true;
       const q = searchQ.toLowerCase();
@@ -189,9 +189,9 @@ function OrdersPageInner() {
           <button key={f} onClick={() => setFilter(f)}
             className={`px-3 py-1.5 rounded-full text-xs font-semibold transition ${
               filter === f ? "bg-brand text-white" : "bg-white text-slate-600 border border-slate-200 hover:border-brand"
-            } ${f === "&#x26A0; DELAYED" && delayedCount > 0 ? "border-red-300 text-red-600" : ""}`}>
+            } ${f === "⚠ DELAYED" && delayedCount > 0 ? "border-red-300 text-red-600" : ""}`}>
             {f.replace(/_/g, " ")}
-            {f === "&#x26A0; DELAYED" && delayedCount > 0 ? ` (${delayedCount})` : ""}
+            {f === "⚠ DELAYED" && delayedCount > 0 ? ` (${delayedCount})` : ""}
           </button>
         ))}
       </div>
@@ -246,9 +246,9 @@ function OrdersPageInner() {
                               {p.piNumber}
                             </Link>
                           ))
-                        : "&#x2014;"}
+                        : "—"}
                     </td>
-                    <td className="px-4 py-3 text-slate-500">{o.sp.name ?? "&#x2014;"}</td>
+                    <td className="px-4 py-3 text-slate-500">{o.sp.name ?? "—"}</td>
                     <td className="px-4 py-3 font-semibold text-slate-800">
                       {o.currency ?? "USD"} {(o.totalAmount ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </td>

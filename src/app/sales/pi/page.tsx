@@ -207,7 +207,7 @@ function PIListPageInner() {
                     {pi.client.name}
                     {pi.client.country && <span className="text-slate-400 font-normal"> &middot; {pi.client.country}</span>}
                   </td>
-                  <td className="px-4 py-3 text-slate-500">{pi.sp.name ?? "&#x2014;"}</td>
+                  <td className="px-4 py-3 text-slate-500">{pi.sp.name ?? "—"}</td>
                   <td className="px-4 py-3 font-semibold text-slate-800">
                     {pi.currency} {pi.totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                   </td>
