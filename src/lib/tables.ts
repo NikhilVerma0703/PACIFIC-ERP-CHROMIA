@@ -167,9 +167,19 @@ const PRESET_OPTIONS: Record<string, string[]> = {
 
 // Derive dropdown options for singleSelect / multipleSelects fields from the
 // distinct values already present in the data (the choices actually in use).
+// Options change rarely (a new value only appears when someone saves it), but
+// they were recomputed with a dozen distinct-queries on EVERY form load — slow
+// on cold Neon, and one failed query silently degraded that dropdown into a
+// free-text box. Warm-lambda cache with stale-on-miss: instant repeat loads,
+// and a DB hiccup can never take options away that a previous run had.
+const OPT_TTL_MS = 5 * 60_000;
+const _optCache = new Map<string, { at: number; data: Record<string, string[]> }>();
+
 export async function selectOptions(model: string): Promise<Record<string, string[]>> {
   const meta = tableMeta(model);
   if (!meta) return {};
+  const hit = _optCache.get(model);
+  if (hit && Date.now() - hit.at < OPT_TTL_MS) return hit.data;
   const d = delegateOf(model);
   const out: Record<string, string[]> = {};
   // One distinct-values query per select field — run them in PARALLEL batches
@@ -206,6 +216,10 @@ export async function selectOptions(model: string): Promise<Record<string, strin
   };
   for (let i = 0; i < meta.fields.length; i += BATCH)
     await Promise.all(meta.fields.slice(i, i + BATCH).map(fieldJob));
+  // Never DEGRADE: a field whose query failed this run (no values) keeps the
+  // values the previous run had — a select must not fall back to a text box.
+  if (hit) for (const [k, v] of Object.entries(hit.data)) if (!(out[k]?.length) && v.length) out[k] = v;
+  _optCache.set(model, { at: Date.now(), data: out });
   return out;
 }
 
