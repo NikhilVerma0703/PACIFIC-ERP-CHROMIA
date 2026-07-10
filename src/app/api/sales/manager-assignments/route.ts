@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { salesAuth as auth } from "@/lib/sales/session";
 import { prisma } from "@/lib/prisma";
 import { randomUUID } from "crypto";
+import { getSpMap } from "@/lib/sales/spLookup";
 
 const db = prisma as any;
 
@@ -11,14 +12,16 @@ export async function GET() {
 
   const assignments = await db.salesManagerAssignment.findMany({
     where: { isActive: true },
-    include: {
-      sp: { select: { id: true, name: true, email: true } },
-      manager: { select: { id: true, name: true, email: true } },
-    },
     orderBy: { assignedAt: "desc" },
   });
 
-  return NextResponse.json(assignments);
+  // spId/managerId carry no Prisma relation (no hard FK) — stitch users in
+  const userMap = await getSpMap(assignments.flatMap((a: any) => [a.spId, a.managerId]));
+  return NextResponse.json(assignments.map((a: any) => ({
+    ...a,
+    sp:      userMap.get(a.spId)      ?? null,
+    manager: userMap.get(a.managerId) ?? null,
+  })));
 }
 
 export async function POST(req: Request) {
@@ -47,14 +50,12 @@ export async function POST(req: Request) {
     id, spId, managerId, note ?? null, now
   );
 
-  // Fetch the created record with relations using Prisma (read is fine)
-  const assignment = await db.salesManagerAssignment.findUnique({
-    where: { id },
-    include: {
-      sp: { select: { id: true, name: true, email: true } },
-      manager: { select: { id: true, name: true, email: true } },
-    },
-  });
-
-  return NextResponse.json(assignment, { status: 201 });
+  // Fetch the created record, then stitch user info (no relations on model)
+  const assignment = await db.salesManagerAssignment.findUnique({ where: { id } });
+  const userMap = await getSpMap([spId, managerId]);
+  return NextResponse.json({
+    ...assignment,
+    sp:      userMap.get(spId)      ?? null,
+    manager: userMap.get(managerId) ?? null,
+  }, { status: 201 });
 }

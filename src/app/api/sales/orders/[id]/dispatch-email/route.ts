@@ -30,7 +30,6 @@ export async function POST(
     where: { id },
     include: {
       client: true,
-      sp: { select: { id: true, name: true, email: true } },
       proformaInvoices: {
         where: { status: "ACCEPTED" },
         take: 1,
@@ -100,10 +99,10 @@ export async function POST(
 
   // ── Send email ────────────────────────────────────────────────────────────
   const toEmail = order.client.email;
-  const cc      = await getCCList(order.sp.id, order.clientId).catch(() => [] as string[]);
+  const cc      = await getCCList(order.spId, order.clientId).catch(() => [] as string[]);
 
   await sendMail({
-    spId: order.sp.id,
+    spId: order.spId,
     to:   toEmail,
     cc,
     subject: await resolveSubject("dispatch_subject", { invoiceNo }),

@@ -3,6 +3,7 @@ import { salesAuth as auth } from "@/lib/sales/session";
 import { prisma } from "@/lib/prisma";
 import { generateOrderNumber } from "@/lib/sales/orderNumber";
 import { getAssignedSpIds } from "@/lib/sales/rmScope";
+import { getSp, getSpMap } from "@/lib/sales/spLookup";
 
 const db = prisma as any;
 
@@ -78,7 +79,6 @@ export async function GET(req: Request) {
     },
     include: {
       client:           { select: { id: true, name: true, country: true } },
-      sp:               { select: { id: true, name: true } },
       proformaInvoices: { select: { id: true, piNumber: true, currency: true, totalAmount: true, status: true } },
       productionJob:    { select: { type: true, status: true } },
     },
@@ -86,7 +86,9 @@ export async function GET(req: Request) {
     take: limit,
     skip: (page - 1) * limit,
   });
-  return Response.json(orders);
+  // spId has no Prisma relation (no hard FK) — stitch SP info in afterwards
+  const spMap = await getSpMap(orders.map((o: any) => o.spId));
+  return Response.json(orders.map((o: any) => ({ ...o, sp: spMap.get(o.spId) ?? null })));
 }
 
 export async function POST(req: Request) {
@@ -120,7 +122,6 @@ export async function POST(req: Request) {
     },
     include: {
       client:           { select: { name: true, country: true } },
-      sp:               { select: { name: true } },
       proformaInvoices: true,
     },
   });
@@ -131,5 +132,6 @@ export async function POST(req: Request) {
     data:  { orderId: order.id },
   });
 
-  return Response.json(order, { status: 201 });
+  const sp = await getSp(order.spId);
+  return Response.json({ ...order, sp }, { status: 201 });
 }

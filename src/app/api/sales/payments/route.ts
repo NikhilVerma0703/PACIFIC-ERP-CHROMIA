@@ -2,6 +2,7 @@
 import { salesAuth as auth } from "@/lib/sales/session";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
+import { getSpMap } from "@/lib/sales/spLookup";
 
 const db = prisma as any;
 
@@ -36,7 +37,6 @@ export async function GET(req: Request) {
       order: {
         include: {
           client:           { select: { name: true, country: true, id: true } },
-          sp:               { select: { name: true, email: true } },
           proformaInvoices: {
             where:   { status: { in: ["ACCEPTED", "SENT", "DRAFT", "UNDER_REVISION"] } },
             orderBy: { createdAt: "desc" },
@@ -71,9 +71,15 @@ export async function GET(req: Request) {
     }
   }
 
+  // order.spId has no Prisma relation (no hard FK) — stitch SP info in
+  const spMap = await getSpMap(divisions.map((d: any) => d.order?.spId));
+
   const now = new Date();
   const enriched = divisions.map((d: any) => ({
     ...d,
+    order: d.order
+      ? { ...d.order, sp: spMap.get(d.order.spId) ?? null }
+      : d.order,
     isOverdue:    !d.paidAt && d.dueDate && new Date(d.dueDate) < now,
     overriddenAt: overrideMap[d.id]?.overriddenAt ?? null,
     overrideNote: overrideMap[d.id]?.overrideNote ?? null,

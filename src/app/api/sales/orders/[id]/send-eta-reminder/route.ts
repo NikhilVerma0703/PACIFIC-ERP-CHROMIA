@@ -28,7 +28,6 @@ export async function POST(
     where: { id },
     include: {
       client: true,
-      sp: { select: { id: true, name: true, email: true } },
       shipmentDocs: true,
     },
   });

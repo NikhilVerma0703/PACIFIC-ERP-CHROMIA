@@ -12,6 +12,7 @@ import { getCCList } from "@/lib/sales/mailHelpers";
 import { generatePIPdf } from "@/lib/sales/pdf/piPdf";
 import { resolveBody } from "@/lib/sales/mailBodies";
 import { piEmailHtml } from "@/lib/sales/emailTemplates";
+import { getSp } from "@/lib/sales/spLookup";
 
 const db = prisma as any;
 
@@ -26,12 +27,12 @@ export async function POST(
 
   const pi = await db.proformaInvoice.findUnique({
     where: { id },
-    include: {
-      client: true,
-      sp: { select: { id: true, name: true, email: true } },
-    },
+    include: { client: true },
   });
   if (!pi) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  // spId has no Prisma relation (no hard FK) — resolve separately
+  pi.sp = await getSp(pi.spId);
 
   if (!["DRAFT", "UNDER_REVISION"].includes(pi.status)) {
     return NextResponse.json({ error: "PI must be DRAFT or UNDER_REVISION to resend" }, { status: 400 });

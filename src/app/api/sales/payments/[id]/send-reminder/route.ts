@@ -32,7 +32,6 @@ export async function POST(
       order: {
         include: {
           client: true,
-          sp: { select: { id: true, name: true, email: true } },
           proformaInvoices: {
             where: { status: "ACCEPTED" },
             take: 1,

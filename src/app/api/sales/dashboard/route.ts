@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { salesAuth as auth } from "@/lib/sales/session";
 import { prisma } from "@/lib/prisma";
+import { getSpMap } from "@/lib/sales/spLookup";
 
 export async function GET() {
   const session = await auth();
@@ -29,9 +30,9 @@ export async function GET() {
   }
 
   // Check if user is a Reporting Manager (has active SP assignments)
+  // NOTE: spId carries no Prisma relation (no hard FK) — resolve via getSpMap.
   const managedAssignments = isAllOrders ? [] : await db.salesManagerAssignment.findMany({
     where: { managerId: userId, isActive: true },
-    include: { sp: { select: { id: true, name: true, email: true } } },
   });
   const isRM = managedAssignments.length > 0;
 
@@ -149,8 +150,11 @@ export async function GET() {
 
     if (isRM) {
       // RM sees themselves as the root with their SPs as children
+      const spMap = await getSpMap(managedAssignments.map((a: any) => a.spId));
       const spNodes = await Promise.all(
-        managedAssignments.map((a: any) => spNode(a.sp))
+        managedAssignments.map((a: any) =>
+          spNode(spMap.get(a.spId) ?? { id: a.spId, name: a.spId, email: null })
+        )
       );
       // Also get RM's own order/pi counts
       const [rmOrders, rmPIs] = await Promise.all([
@@ -178,15 +182,12 @@ export async function GET() {
          ORDER BY name ASC`
       ).catch(() => []);
 
-      // All active assignments
+      // All active assignments (spId has no relation — resolve names below)
       const allAssignments = await db.salesManagerAssignment.findMany({
         where: { isActive: true },
-        select: {
-          managerId: true,
-          spId: true,
-          sp: { select: { id: true, name: true, email: true } },
-        },
+        select: { managerId: true, spId: true },
       });
+      const spMap = await getSpMap(allAssignments.map((a: any) => a.spId));
 
       // All salespersons
       const allSPs: any[] = await db.$queryRawUnsafe(
@@ -199,7 +200,9 @@ export async function GET() {
       const managerNodes = await Promise.all(
         allManagers.map(async (mgr: any) => {
           const mgrAssignments = allAssignments.filter((a: any) => a.managerId === mgr.id);
-          const spNodes = await Promise.all(mgrAssignments.map((a: any) => spNode(a.sp)));
+          const spNodes = await Promise.all(mgrAssignments.map((a: any) =>
+            spNode(spMap.get(a.spId) ?? { id: a.spId, name: a.spId, email: null })
+          ));
           const [mgrOrders, mgrPIs] = await Promise.all([
             db.salesOrder.count({ where: { spId: mgr.id } }),
             db.proformaInvoice.count({ where: { spId: mgr.id } }),

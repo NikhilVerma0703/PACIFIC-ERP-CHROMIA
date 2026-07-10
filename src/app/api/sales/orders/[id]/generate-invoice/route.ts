@@ -16,6 +16,7 @@ import { prisma }                      from "@/lib/prisma";
 import { NextResponse }                from "next/server";
 import { generateCommercialInvoicePdf } from "@/lib/sales/pdf/commercialInvoicePdf";
 import { QUARTZ_DEFAULTS, GRANITE_DEFAULTS } from "@/lib/sales/invoiceDefaults";
+import { getSp }                        from "@/lib/sales/spLookup";
 
 const db = prisma as any;
 
@@ -102,7 +103,6 @@ export async function POST(
     where: { id },
     include: {
       client:  true,
-      sp:      { select: { id: true, name: true, email: true } },
       proformaInvoices: {
         where:   { status: "ACCEPTED" },
         take:    1,
@@ -113,6 +113,9 @@ export async function POST(
   });
 
   if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
+
+  // spId has no Prisma relation (no hard FK) — resolve separately
+  const sp = await getSp(order.spId);
 
   const pi   = order.proformaInvoices?.[0];
   const ship = order.shipmentDocs;
@@ -163,7 +166,7 @@ export async function POST(
     buyerPoNo:           pi?.buyerPoNo           ?? order.buyerPoNo ?? "",
     piNumber:            pi?.piNumber            ?? "",
     piDate,
-    spName:              order.sp?.name          ?? "",
+    spName:              sp?.name                ?? "",
     consigneeDetails:    pi?.consigneeDetails    ?? "",
     notifyPartyDetails:  pi?.notifyPartyDetails  ?? "",
     buyerIfNotConsignee: pi?.buyerIfNotConsignee ?? "",
@@ -227,7 +230,7 @@ export async function POST(
   );
 
   // ── 9. Create notification for SP ──────────────────────────────────────────
-  const spId = order.sp?.id;
+  const spId = order.spId;
   if (spId) {
     const orderLabel = order.orderNumber || invoiceNo;
     await db.$queryRawUnsafe(

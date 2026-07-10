@@ -2,6 +2,7 @@
 import { salesAuth as auth } from "@/lib/sales/session";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
+import { getSpMap } from "@/lib/sales/spLookup";
 
 const db = prisma as any;
 
@@ -97,13 +98,17 @@ export async function GET(req: Request) {
   const notes = await db.salesCreditNote.findMany({
     where,
     include: {
-      order:     { select: { orderNumber: true, client: { select: { name: true, id: true } } } },
-      createdBy: { select: { name: true, email: true } },
+      order: { select: { orderNumber: true, client: { select: { name: true, id: true } } } },
     },
     orderBy: { createdAt: "desc" },
   });
 
-  return NextResponse.json(notes);
+  // createdById has no Prisma relation (no hard FK) — stitch user info in
+  const userMap = await getSpMap(notes.map((n: any) => n.createdById));
+  return NextResponse.json(notes.map((n: any) => ({
+    ...n,
+    createdBy: userMap.get(n.createdById) ?? null,
+  })));
 }
 
 export async function POST(req: Request) {

@@ -3,6 +3,7 @@ import { salesAuth as auth } from "@/lib/sales/session";
 import { prisma } from "@/lib/prisma";
 import { generatePINumber } from "@/lib/sales/orderNumber";
 import { getAssignedSpIds } from "@/lib/sales/rmScope";
+import { getSpMap } from "@/lib/sales/spLookup";
 
 const db = prisma as any;
 
@@ -78,13 +79,14 @@ export async function GET(req: Request) {
     },
     include: {
       client: { select: { id: true, name: true, country: true } },
-      sp:     { select: { id: true, name: true } },
     },
     orderBy: { createdAt: "desc" },
     take: limit,
     skip: (page - 1) * limit,
   });
-  return Response.json(pis);
+  // spId has no Prisma relation (no hard FK) — stitch SP info in afterwards
+  const spMap = await getSpMap(pis.map((p: any) => p.spId));
+  return Response.json(pis.map((p: any) => ({ ...p, sp: spMap.get(p.spId) ?? null })));
 }
 
 export async function POST(req: Request) {

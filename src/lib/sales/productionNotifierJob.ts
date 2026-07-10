@@ -5,6 +5,7 @@
  */
 import { prisma } from "@/lib/prisma";
 import { sendMail } from "@/lib/sales/mailer";
+import { getSp } from "@/lib/sales/spLookup";
 
 const db = prisma as any;
 
@@ -60,11 +61,13 @@ export async function notifyProductionManagers(orderId: string): Promise<void> {
       where: { id: orderId },
       include: {
         client: true,
-        sp: { select: { id: true, name: true, email: true } },
         proformaInvoices: { where: { status: "ACCEPTED" }, take: 1, orderBy: { acceptedAt: "desc" } },
       },
     });
     if (!order) return;
+
+    // spId has no Prisma relation (no hard FK) — resolve separately
+    order.sp = await getSp(order.spId);
 
     const managers = await db.user.findMany({
       where: { OR: [{ salesRole: "SALES_ADMIN" }, { role: "ADMIN" }] }, // PM retired -> admins
@@ -79,7 +82,7 @@ export async function notifyProductionManagers(orderId: string): Promise<void> {
     if (!emails.length) return;
 
     await sendMail({
-      spId: order.sp.id,
+      spId: order.spId,
       to:   emails[0],
       cc:   emails.slice(1).join(",") || undefined,
       subject,

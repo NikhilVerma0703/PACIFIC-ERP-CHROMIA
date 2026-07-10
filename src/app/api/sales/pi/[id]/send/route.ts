@@ -6,6 +6,7 @@ import { getCCList } from "@/lib/sales/mailHelpers";
 import { generatePIPdf } from "@/lib/sales/pdf/piPdf";
 import { resolveBody } from "@/lib/sales/mailBodies";
 import { piEmailHtml } from "@/lib/sales/emailTemplates";
+import { getSp } from "@/lib/sales/spLookup";
 import { NextResponse } from "next/server";
 
 export async function POST(_: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -17,14 +18,14 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
 
   const pi = await db.proformaInvoice.findUnique({
     where: { id },
-    include: {
-      client: true,
-      sp: { select: { id: true, name: true, email: true } },
-    },
+    include: { client: true },
   });
   if (!pi)                   return NextResponse.json({ error: "Not found" }, { status: 404 });
   if (pi.status !== "DRAFT") return NextResponse.json({ error: "Only DRAFT PIs can be sent" }, { status: 400 });
   if (!pi.client.email)      return NextResponse.json({ error: "Client has no email address" }, { status: 400 });
+
+  // spId has no Prisma relation (no hard FK) — resolve separately
+  pi.sp = await getSp(pi.spId);
 
   try {
     const [pdfBuffer, cc, customBody] = await Promise.all([

@@ -23,7 +23,6 @@ export async function sendShippingDocsEmail(orderId: string, triggeredByUserId?:
     where: { id: orderId },
     include: {
       client:           true,
-      sp:               { select: { id: true, name: true, email: true } },
       proformaInvoices: {
         where:   { status: "ACCEPTED" },
         take:    1,
@@ -122,9 +121,9 @@ export async function sendShippingDocsEmail(orderId: string, triggeredByUserId?:
   if (bankDetailsBuf) attachments.push({ filename: "Bank_Account_Details.pdf",   content: bankDetailsBuf, contentType: "application/pdf" });
 
   const toEmail = order.client.email;
-  const cc      = await getCCList(order.sp.id, order.clientId).catch(() => [] as string[]);
+  const cc      = await getCCList(order.spId, order.clientId).catch(() => [] as string[]);
   await sendMail({
-    spId:    order.sp.id,
+    spId:    order.spId,
     to:      toEmail,
     cc,
     subject: await resolveSubject("shipping_docs_subject", { invoiceNo }),

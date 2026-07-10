@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { salesAuth as auth } from "@/lib/sales/session";
 import { prisma } from "@/lib/prisma";
+import { getSpMap } from "@/lib/sales/spLookup";
 
 const db = prisma as any;
 
@@ -12,13 +13,23 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
     where: { id },
     include: {
       client:        true,
-      sp:            { select: { id: true, name: true, email: true } },
       order:         true,
       rejectionLogs: { orderBy: { rejectedAt: "desc" }, take: 5 },
-      revisions:     { orderBy: { revisionNo: "desc" }, take: 10, include: { createdBy: { select: { name: true } } } },
+      revisions:     { orderBy: { revisionNo: "desc" }, take: 10 },
     },
   });
   if (!pi) return Response.json({ error: "Not found" }, { status: 404 });
+
+  // spId/createdById carry no Prisma relation (no hard FK) — stitch users in
+  const userMap = await getSpMap([
+    pi.spId,
+    ...(pi.revisions ?? []).map((r: any) => r.createdById),
+  ]);
+  pi.sp = userMap.get(pi.spId) ?? null;
+  pi.revisions = (pi.revisions ?? []).map((r: any) => ({
+    ...r,
+    createdBy: { name: userMap.get(r.createdById)?.name ?? null },
+  }));
 
   // Attach paymentTermsData via raw SQL (graceful if column missing)
   try {

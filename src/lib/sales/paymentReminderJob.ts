@@ -9,6 +9,7 @@ import { sendMail } from "@/lib/sales/mailer";
 import { getCCList } from "@/lib/sales/mailHelpers";
 import { paymentDeadlineHtml } from "@/lib/sales/emailTemplates";
 import { createNotification } from "@/lib/sales/notifications";
+import { getSp, getSpMap } from "@/lib/sales/spLookup";
 
 const db = prisma as any;
 
@@ -70,7 +71,6 @@ export async function runPaymentDeadlineReminders(): Promise<{ processed: number
       order: {
         include: {
           client: true,
-          sp: { select: { id: true, name: true, email: true } },
           shipmentDocs: true,
           portArrival: true,
           proformaInvoices: { where: { status: "ACCEPTED" }, take: 1, orderBy: { acceptedAt: "desc" } },
@@ -78,6 +78,12 @@ export async function runPaymentDeadlineReminders(): Promise<{ processed: number
       },
     },
   });
+
+  // order.spId has no Prisma relation (no hard FK) — stitch SP info in
+  const spMap = await getSpMap(divisions.map((d: any) => d.order?.spId));
+  for (const d of divisions) {
+    if (d.order) d.order.sp = spMap.get(d.order.spId) ?? null;
+  }
 
   const extras: any[] = await db.$queryRawUnsafe(
     `SELECT id, reminders_sent, extended_due_date, overridden_at, override_note
@@ -187,7 +193,6 @@ export async function sendSingleDivisionReminder(
       order: {
         include: {
           client: true,
-          sp: { select: { id: true, name: true, email: true } },
           shipmentDocs: true,
           portArrival: true,
           proformaInvoices: { where: { status: "ACCEPTED" }, take: 1, orderBy: { acceptedAt: "desc" } },
@@ -196,6 +201,8 @@ export async function sendSingleDivisionReminder(
     },
   });
   if (!div || div.orderId !== orderId) throw new Error("Division not found");
+  // order.spId has no Prisma relation (no hard FK) — stitch SP info in
+  if (div.order) div.order.sp = await getSp(div.order.spId);
   if (div.paidAt || div.overriddenAt) throw new Error("Division already settled");
 
   const extras: any[] = await db.$queryRawUnsafe(

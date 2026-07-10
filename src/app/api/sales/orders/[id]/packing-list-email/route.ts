@@ -14,6 +14,7 @@ import { sendMail }               from "@/lib/sales/mailer";
 import { generatePackingListPdf } from "@/lib/sales/pdf/packingListPdf";
 import { resolveSubject }         from "@/lib/sales/mailSubjects";
 import { createNotification, notifyByRole } from "@/lib/sales/notifications";
+import { getSp }                  from "@/lib/sales/spLookup";
 
 const db = prisma as any;
 
@@ -45,11 +46,13 @@ export async function POST(
     where: { id },
     include: {
       client: true,
-      sp: { select: { id: true, name: true, email: true } },
       proformaInvoices: { take: 1, orderBy: { createdAt: "asc" } },
     },
   });
   if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
+
+  // spId has no Prisma relation (no hard FK) — resolve separately
+  const sp = await getSp(order.spId);
 
   if (!order.client || !order.client.email) {
     return NextResponse.json({ error: "Client has no email address" }, { status: 400 });
@@ -76,7 +79,7 @@ export async function POST(
   }
 
   const invoiceNo = order.invoiceNumber || order.orderNumber;
-  const cc = await getCCList(order.sp.id, order.clientId).catch(() => [] as string[]);
+  const cc = await getCCList(order.spId, order.clientId).catch(() => [] as string[]);
 
   const dateStr = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
   const html = "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"></head>"
@@ -91,13 +94,13 @@ export async function POST(
     + "<td style=\"padding:6px 0\">" + order.client.name + "</td></tr>"
     + "<tr><td style=\"padding:6px 12px 6px 0;font-weight:bold;white-space:nowrap\">Date:</td>"
     + "<td style=\"padding:6px 0\">" + dateStr + "</td></tr></table>"
-    + "<p style=\"margin-top:24px\">Regards,<br><strong>" + (order.sp.name || order.sp.email) + "</strong></p>"
+    + "<p style=\"margin-top:24px\">Regards,<br><strong>" + (sp?.name || sp?.email || "Pacific Group") + "</strong></p>"
     + "<p style=\"margin-top:16px;font-size:12px;color:#555;border-top:1px solid #ddd;padding-top:12px\">"
     + "Pacific Engineered Surfaces Pvt. Ltd.<br>Tel: +91-7830008181 | Email: sales@pacific-surfaces.com</p>"
     + "</body></html>";
 
   await sendMail({
-    spId: order.sp.id,
+    spId: order.spId,
     to:   order.client.email,
     cc,
     subject: await resolveSubject("packing_list_subject", { invoiceNo }),
@@ -133,7 +136,7 @@ export async function POST(
     orderId:   id,
     type:      "PACKING_LIST_SENT",
     title:     "Packing list sent -- " + (order.orderNumber || id),
-    body:      "SP " + (order.sp.name || "") + " sent packing list to " + (order.client.name || "") + ". Please review and accept/reject.",
+    body:      "SP " + (sp?.name || "") + " sent packing list to " + (order.client.name || "") + ". Please review and accept/reject.",
     actionUrl: "/sales/orders/" + id,
     actions:   [{ label: "Review", url: "/sales/orders/" + id }],
   }).catch(() => {});
@@ -162,7 +165,7 @@ export async function PATCH(
 
   const order = await db.salesOrder.findUnique({
     where:  { id },
-    select: { orderNumber: true, spId: true, sp: { select: { id: true, name: true } } },
+    select: { orderNumber: true, spId: true },
   }).catch(() => null);
 
   const now = new Date();
@@ -186,9 +189,9 @@ export async function PATCH(
       data:  { status: "PACKING" },
     }).catch(() => {});
 
-    if (order && order.sp && order.sp.id) {
+    if (order && order.spId) {
       await createNotification({
-        userId:    order.sp.id,
+        userId:    order.spId,
         orderId:   id,
         type:      "PACKING_LIST_ACCEPTED",
         title:     "Packing list approved -- " + (order.orderNumber || id),
@@ -223,9 +226,9 @@ export async function PATCH(
       },
     }).catch(() => {});
 
-    if (order && order.sp && order.sp.id) {
+    if (order && order.spId) {
       await createNotification({
-        userId:    order.sp.id,
+        userId:    order.spId,
         orderId:   id,
         type:      "PACKING_LIST_REJECTED",
         title:     "Packing list rejected -- " + (order.orderNumber || id),

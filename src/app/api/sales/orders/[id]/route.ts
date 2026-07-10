@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { salesAuth as auth } from "@/lib/sales/session";
 import { prisma } from "@/lib/prisma";
+import { getSp, getSpMap } from "@/lib/sales/spLookup";
 
 const db = prisma as any;
 
@@ -14,7 +15,6 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
     where: { id },
     include: {
       client:           true,
-      sp:               { select: { id: true, name: true, email: true } },
       proformaInvoices: { include: { rejectionLogs: { orderBy: { rejectedAt: "desc" } } } },
       paymentTerms:     true,
       paymentDivisions: { orderBy: { createdAt: "asc" } },
@@ -28,16 +28,24 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
   });
   if (!order) return Response.json({ error: "Not found" }, { status: 404 });
 
-  // Fetch logs separately so a column-type error doesn't break the whole response
+  // spId has no Prisma relation (no hard FK) — resolve separately
+  const sp = await getSp(order.spId);
+
+  // Fetch logs separately so an error doesn't break the whole response.
+  // userId has no relation either — stitch user names in afterwards.
   let logs: any[] = [];
   try {
-    logs = await db.salesOrderLog.findMany({
+    const logRows = await db.salesOrderLog.findMany({
       where: { orderId: id },
       orderBy: { createdAt: "desc" },
       take: 20,
-      include: { user: { select: { name: true } } },
     });
-  } catch { /* ignore until migrate-phase10 fixes the column type */ }
+    const userMap = await getSpMap(logRows.map((l: any) => l.userId));
+    logs = logRows.map((l: any) => ({
+      ...l,
+      user: { name: userMap.get(l.userId)?.name ?? null },
+    }));
+  } catch { /* non-fatal */ }
 
   // Supplement paymentDivisions with new columns (extended_due_date, overridden_at, override_note)
   // that are not yet in the Prisma schema
@@ -65,7 +73,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
     } catch { /* non-fatal — new columns may not exist yet */ }
   }
 
-  return Response.json({ ...order, logs });
+  return Response.json({ ...order, sp, logs });
 }
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {

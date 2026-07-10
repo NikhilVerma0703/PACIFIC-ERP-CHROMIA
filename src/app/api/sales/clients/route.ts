@@ -4,6 +4,7 @@
 import { salesAuth as auth } from "@/lib/sales/session";
 import { prisma } from "@/lib/prisma";
 import { getAssignedSpIds } from "@/lib/sales/rmScope";
+import { getSpMap } from "@/lib/sales/spLookup";
 
 const db = prisma as any;
 
@@ -51,14 +52,16 @@ export async function GET(req: Request) {
         },
       } : {}),
     },
-    include: {
-      createdBy: { select: { id: true, name: true } },
-    },
     orderBy: { name: "asc" },
     take: limit,
     skip: (page - 1) * limit,
   });
-  return Response.json(clients);
+  // createdById has no Prisma relation (no hard FK) — stitch user info in
+  const userMap = await getSpMap(clients.map((c: any) => c.createdById));
+  return Response.json(clients.map((c: any) => ({
+    ...c,
+    createdBy: userMap.get(c.createdById) ?? null,
+  })));
 }
 
 export async function POST(req: Request) {

@@ -2,6 +2,7 @@
 import { salesAuth as auth } from "@/lib/sales/session";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
+import { getSpMap } from "@/lib/sales/spLookup";
 
 const db = prisma as any;
 
@@ -22,7 +23,6 @@ export async function GET() {
       order: {
         include: {
           client: { select: { name: true, country: true } },
-          sp: { select: { name: true, email: true } },
           proformaInvoices: {
             where: { status: "ACCEPTED" },
             take: 1,
@@ -30,10 +30,17 @@ export async function GET() {
           },
         },
       },
-      checkedBy: { select: { name: true, email: true } },
     },
     orderBy: { createdAt: "desc" },
   });
 
-  return NextResponse.json(checks);
+  // spId/checkedById carry no Prisma relation (no hard FK) — stitch users in
+  const userMap = await getSpMap(
+    checks.flatMap((c: any) => [c.order?.spId, c.checkedById])
+  );
+  return NextResponse.json(checks.map((c: any) => ({
+    ...c,
+    order: c.order ? { ...c.order, sp: userMap.get(c.order.spId) ?? null } : c.order,
+    checkedBy: c.checkedById ? (userMap.get(c.checkedById) ?? null) : null,
+  })));
 }
