@@ -8054,8 +8054,8 @@
         "airtableName": "Thk at Press (mm)",
         "prismaField": "thkAtPressMm",
         "column": "thk_at_press_mm",
-        "airtableType": "number",
-        "kind": "number"
+        "airtableType": "singleLineText",
+        "kind": "scalar"
       },
       "native_slabs_per_hour_std": {
         "airtableName": "Slabs/hr (from cycle time)",

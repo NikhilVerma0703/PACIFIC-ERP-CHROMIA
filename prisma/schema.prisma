@@ -1576,7 +1576,7 @@ model Mis {
   cyclesUnloaded                                      Float?    @map("cycles_unloaded")
   cyclesMixed                                         Float?    @map("cycles_mixed")
   thkAtMixerMm                                        Float?    @map("thk_at_mixer_mm")
-  thkAtPressMm                                        Float?    @map("thk_at_press_mm")
+  thkAtPressMm                                        String?   @map("thk_at_press_mm")
   areaOfProblem                                       String[]  @default([]) @map("area_of_problem")
   productionInchargeName                              String?   @map("production_incharge_name")
   maintenanceInchargeName                             String?   @map("maintenance_incharge_name")

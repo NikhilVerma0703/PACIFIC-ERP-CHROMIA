@@ -12,7 +12,7 @@ import { SHIFT_HOURS, shiftOfHour } from "@/lib/misShiftHours";
 export interface MisRowLite {
   id: string; hour: string | null; batch: string | null; design: string | null;
   electricalInchargeName?: string | null; mechanicalInchargeName?: string | null;
-  productionType: string | null; thkAtPressMm: number | null;
+  productionType: string | null; thkAtPressMm: string | null;
   slabsPerHourStd: number | null; slabsPerHourActual: number | null;
   startingSlabNumber: number | null; endingSlabNumber: number | null; numberOfJumpedSlabs: number | null;
   areaOfProblem: string[]; details: string | null;
