@@ -14,7 +14,8 @@ export async function generateCombinedShipmentPdf(orderId: string): Promise<Buff
       where: { id: orderId },
       include: {
         client: true,
-        sp: { select: { name: true, email: true } },
+        // NOTE: spId carries no Prisma relation — the fork's `include: { sp }`
+        // threw PrismaClientValidationError (and nothing here reads order.sp).
         proformaInvoices: {
           where: { status: "ACCEPTED" },
           take: 1,

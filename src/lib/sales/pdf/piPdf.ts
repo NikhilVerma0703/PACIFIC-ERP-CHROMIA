@@ -346,7 +346,9 @@ function buildHtml(pi: any): string {
 export async function generatePIPdf(piId: string): Promise<Buffer> {
   const pi = await db.proformaInvoice.findUnique({
     where:   { id: piId },
-    include: { client: true, sp: { select: { name: true, email: true } } },
+    // NOTE: spId carries no Prisma relation — the fork's `include: { sp }`
+    // threw PrismaClientValidationError (and buildHtml never reads pi.sp).
+    include: { client: true },
   });
   if (!pi) throw new Error("PI not found");
   return htmlToPdf(buildHtml(pi));

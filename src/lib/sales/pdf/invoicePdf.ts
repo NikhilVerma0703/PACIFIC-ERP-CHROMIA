@@ -4,6 +4,7 @@
  * Layout matches PESPL reference format exactly.
  */
 import { prisma } from "@/lib/prisma";
+import { getSp } from "../spLookup";
 import { buildPdf, amountToWords, COMPANY_DEFAULTS } from "./common";
 
 type TDocumentDefinitions = any;
@@ -55,7 +56,6 @@ export async function generateInvoicePdf(orderId: string): Promise<Buffer> {
       where: { id: orderId },
       include: {
         client: true,
-        sp: { select: { name: true, email: true } },
         proformaInvoices: { where: { status: "ACCEPTED" }, take: 1, orderBy: { acceptedAt: "desc" } },
         shipmentDocs: true,
       },
@@ -63,6 +63,9 @@ export async function generateInvoicePdf(orderId: string): Promise<Buffer> {
     db.salesConfig.findUnique({ where: { id: "global" } }).catch(() => null),
   ]);
   if (!order) throw new Error("Order not found");
+  // spId carries no Prisma relation (no hard FK) — `include: { sp }` throws
+  // PrismaClientValidationError. Stitch the salesperson in via spLookup.
+  order.sp = await getSp(order.spId);
 
   const pi   = order.proformaInvoices?.[0];
   const ship = order.shipmentDocs;

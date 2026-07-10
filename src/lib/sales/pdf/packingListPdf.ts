@@ -11,7 +11,8 @@ export async function generatePackingListPdf(orderId: string): Promise<Buffer> {
       where: { id: orderId },
       include: {
         client: true,
-        sp: { select: { name: true, email: true } },
+        // NOTE: spId carries no Prisma relation — the fork's `include: { sp }`
+        // threw PrismaClientValidationError (and nothing here reads order.sp).
         shipmentDocs: true,
         proformaInvoices: { where: { status: 'ACCEPTED' }, take: 1, orderBy: { acceptedAt: 'desc' } },
       },

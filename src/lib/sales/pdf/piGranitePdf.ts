@@ -5,6 +5,7 @@
  * Layout matches PI-PG reference format exactly (PI-PG 7489).
  */
 import { prisma } from "@/lib/prisma";
+import { getSp } from "../spLookup";
 import { htmlToPdf } from "./puppeteerPdf";
 import { amountToWords } from "./common";
 
@@ -376,9 +377,12 @@ function buildHtml(pi: any): string {
 export async function generateGranitePiPdf(piId: string): Promise<Buffer> {
   const pi = await db.proformaInvoice.findUnique({
     where:   { id: piId },
-    include: { client: true, sp: { select: { name: true, email: true } } },
+    include: { client: true },
   });
   if (!pi) throw new Error("PI not found");
+  // spId carries no Prisma relation (no hard FK) — `include: { sp }` throws
+  // PrismaClientValidationError. Stitch the salesperson in via spLookup.
+  pi.sp = await getSp(pi.spId);
 
   const html = buildHtml(pi);
   return htmlToPdf(html);

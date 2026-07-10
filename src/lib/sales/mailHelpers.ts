@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
+import { getSp } from "./spLookup";
 
 /**
  * Build the CC list for any outgoing email:
@@ -12,9 +13,12 @@ export async function getCCList(spId: string, clientId?: string | null): Promise
   const db = prisma as any;
   const [sp, rmAssignment, config, client] = await Promise.all([
     db.user.findUnique({ where: { id: spId }, select: { email: true } }),
+    // managerId carries no Prisma relation (no hard FK) — `include: { manager }`
+    // threw PrismaClientValidationError, so the .catch silently dropped the RM
+    // from every CC list. Resolve the manager's email via spLookup instead.
     db.salesManagerAssignment.findFirst({
       where: { spId, isActive: true },
-      include: { manager: { select: { email: true } } },
+      select: { managerId: true },
     }).catch(() => null),
     db.salesConfig.findUnique({ where: { id: 'global' } }).catch(() => null),
     clientId
@@ -22,9 +26,13 @@ export async function getCCList(spId: string, clientId?: string | null): Promise
       : null,
   ]);
 
+  const rmEmail = rmAssignment?.managerId
+    ? (await getSp(rmAssignment.managerId))?.email ?? null
+    : null;
+
   const ccs: string[] = [...(config?.ccEmails ?? ['customs@pacific-surfaces.com', 'acreceivables@pacific-surfaces.com'])];
   if (sp?.email) ccs.push(sp.email);
-  if (rmAssignment?.manager?.email) ccs.push(rmAssignment.manager.email);
+  if (rmEmail) ccs.push(rmEmail);
   // Per-customer CC emails
   if (client?.ccEmails?.length) ccs.push(...client.ccEmails);
 
