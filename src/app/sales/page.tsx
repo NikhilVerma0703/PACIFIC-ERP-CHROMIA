@@ -105,9 +105,9 @@ export default async function SalesDashboardPage() {
               </thead>
               <tbody>
                 {data.recentOrders.map((order: any) => (
-                  <tr key={order.id} className="border-b border-slate-50 hover:bg-slate-50 transition">
+                  <tr key={order.id} className="relative border-b border-slate-50 hover:bg-slate-50 transition">
                     <td className="px-4 py-3 font-mono text-xs">
-                      <Link href={"/sales/orders/" + order.id} className="text-teal-700 hover:text-teal-900 hover:underline">
+                      <Link href={"/sales/orders/" + order.id} className="text-teal-700 hover:text-teal-900 hover:underline after:absolute after:inset-0 after:content-['']">
                         {order.orderNumber}
                       </Link>
                     </td>

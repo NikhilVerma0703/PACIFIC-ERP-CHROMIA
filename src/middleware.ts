@@ -77,7 +77,7 @@ export default auth((req) => {
   if (!isAdmin && branch === "INTERNATIONAL_SALES") {
     // International Sales staff: sales pages + API only — never production/office pages.
     if (p.startsWith("/api")) return;
-    const ok = p.startsWith("/sales") || STATIC_FILE.test(p);
+    const ok = p.startsWith("/sales") || p.startsWith("/admin/users") || STATIC_FILE.test(p); // Users&Roles reachable; its own gate keeps it SALES_ADMIN-only
     if (!ok) return Response.redirect(new URL("/sales", nextUrl));
     return;
   }
