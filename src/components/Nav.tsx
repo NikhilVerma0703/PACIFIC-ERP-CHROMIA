@@ -94,6 +94,9 @@ export function Nav({
   const path    = usePathname();
   const office  = branch === "OFFICE";
   const isAdmin = role === "ADMIN";                                  // admins span every department
+  // International Sales context is FOCUSED: whoever is signed into that
+  // branch (admins included, via the sales login card) sees only the sales
+  // section + Admin — production/fab nav stays in the other branches.
   const isFab   = isAdmin || branch === "FABRICATION";               // fabrication section
   const isProd  = isAdmin || (!office && branch !== "FABRICATION" && branch !== "INTERNATIONAL_SALES");  // production section
   const mgmt    = fabTier === "ADMIN" || fabTier === "MANAGER";

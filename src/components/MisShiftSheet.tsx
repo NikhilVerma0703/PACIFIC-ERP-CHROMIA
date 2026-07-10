@@ -151,6 +151,7 @@ export function MisShiftSheet({ rows, date, shift, hour: hourParam, operatorName
             <select value={thkPress} onChange={(e) => setThkPress(e.target.value)} className={inp}>
               <option value="">—</option>
               <option value="12">12 (1.2 cm)</option>
+              <option value="12">12 (12 mm)</option>
               <option value="20">20 (2 cm)</option>
               <option value="30">30 (3 cm)</option>
               <option value="20 & 30">20 &amp; 30 (both this hour)</option>

@@ -127,7 +127,9 @@ export async function getRow(model: string, id: string) {
 // Coerce a submitted form value to the column's type.
 export function coerceField(kind: FieldKind, raw: FormDataEntryValue | null): unknown {
   if (kind === "bool") return raw === "on" || raw === "true";
-  const s = raw == null ? "" : String(raw).trim();
+  // Postgres text can NEVER hold 0x00 — strip NULs or the whole insert dies
+  // with 22021 "invalid byte sequence for encoding UTF8" (seen on MIS saves).
+  const s = raw == null ? "" : String(raw).replace(/\u0000/g, "").trim();
   if (s === "") return kind === "multiselect" ? [] : null;
   switch (kind) {
     case "number": return Number.isFinite(parseFloat(s)) ? parseFloat(s) : null;
