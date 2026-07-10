@@ -25,20 +25,21 @@ export interface EntryAccess {
   branch: "SHOP_FLOOR" | "OFFICE";
 }
 
-export async function entryAccess(): Promise<EntryAccess> {
-  const u = await currentUser();
+function accessOf(user: unknown): EntryAccess {
+  const u = user as { role?: string; station?: string | null; branch?: string } | null | undefined;
   if (!u) return { models: [], station: null, branch: "SHOP_FLOOR" };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const role = (u as any).role as string | undefined;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const station = ((u as any).station as string | undefined) ?? null;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const branch = (((u as any).branch as string | undefined) === "OFFICE" ? "OFFICE" : "SHOP_FLOOR") as "SHOP_FLOOR" | "OFFICE";
+  const role = u.role;
+  const station = u.station ?? null;
+  const branch: "SHOP_FLOOR" | "OFFICE" = u.branch === "OFFICE" ? "OFFICE" : "SHOP_FLOOR";
   // Office branch: finance/dispatch forms only — except Sales, who is
   // summary-only and gets no entry forms at all.
   if (branch === "OFFICE") return { models: role === "SALES" || role === "COMMERCIAL" ? [] : [...OFFICE_MODELS], station, branch };
   if (rankOf(role) >= ROLE_RANK.INCHARGE) return { models: null, station, branch };
   return { models: STATION_MODELS[String(station ?? "")] ?? [], station, branch };
+}
+
+export async function entryAccess(): Promise<EntryAccess> {
+  return accessOf(await currentUser());
 }
 
 /** Forms that need a minimum role even among incharge+ users. */
@@ -48,10 +49,9 @@ export const MIN_ENTRY_RANK: Record<string, number> = {
 
 export async function canUseEntryModel(model: string): Promise<boolean> {
   const u = await currentUser();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const rank = rankOf((u as any)?.role as string | undefined);
+  const rank = rankOf((u as { role?: string } | null)?.role);
   if (MIN_ENTRY_RANK[model] && rank < MIN_ENTRY_RANK[model]) return false;
-  const { models } = await entryAccess();
+  const { models } = accessOf(u);
   if (models === null) return !OFFICE_MODELS.has(model); // shop incharge+: everything except office tables
   return models.includes(model);
 }

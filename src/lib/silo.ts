@@ -188,7 +188,13 @@ export interface SiloFormInfo {
   deficitKg?: number; // outstanding UNBACKED demand on this silo (negative deficit placeholders), if any
 }
 
+const emptyFormInfo = (s: string): SiloFormInfo =>
+  ({ siloNo: s, kind: siloKind(s), size: null, grade: null, type: null, supplier: null, sku: null, remaining: 0, bags: 0, bagNos: [], bagList: [] });
+
 export async function getSiloFormStatus(): Promise<SiloFormInfo[]> {
+  // outstanding unbacked demand (deficit placeholders) — fetched in PARALLEL
+  // with the live bags; null when the query fails (deficit info is optional).
+  const defsP = prisma.silo.findMany({ where: { airtableId: { startsWith: "deficit_" }, remainingWeight: { lt: 0 } }, select: { siloNo: true, remainingWeight: true } }).catch(() => null);
   let bags: any[] = [];
   try {
     bags = await prisma.silo.findMany({
@@ -197,14 +203,14 @@ export async function getSiloFormStatus(): Promise<SiloFormInfo[]> {
       orderBy: { siloIncrement: "asc" },
     });
   } catch {
-    return GRIT_SILOS.map((s) => ({ siloNo: s, kind: "grit" as SiloKind, size: null, grade: null, type: null, supplier: null, sku: null, remaining: 0, bags: 0, bagNos: [], bagList: [] }));
+    return GRIT_SILOS.map((s) => emptyFormInfo(s));
   }
   const by = new Map<string, SiloFormInfo>();
   for (const b of bags) {
     const s = norm(b.siloNo);
     if (!s) continue;
     const m = bagMaterial(b);
-    const info = by.get(s) ?? { siloNo: s, kind: siloKind(s), size: null, grade: null, type: null, supplier: null, sku: null, remaining: 0, bags: 0, bagNos: [], bagList: [] };
+    const info = by.get(s) ?? emptyFormInfo(s);
     info.remaining += b.remainingWeight ?? 0;
     info.bags += 1;
     if (b.invNoBagNo) info.bagNos.push(String(b.invNoBagNo));
@@ -213,17 +219,17 @@ export async function getSiloFormStatus(): Promise<SiloFormInfo[]> {
     if (b.sku) info.sku ??= b.sku;
     by.set(s, info);
   }
-  const out: SiloFormInfo[] = GRIT_SILOS.map((s) => by.get(s) ?? { siloNo: s, kind: "grit" as SiloKind, size: null, grade: null, type: null, supplier: null, sku: null, remaining: 0, bags: 0, bagNos: [], bagList: [] });
-  for (const s of FILLER_SILOS) out.push(by.get(s) ?? { siloNo: s, kind: "filler" as SiloKind, size: null, grade: null, type: null, supplier: null, sku: null, remaining: 0, bags: 0, bagNos: [], bagList: [] });
+  const out: SiloFormInfo[] = GRIT_SILOS.map((s) => by.get(s) ?? emptyFormInfo(s));
+  for (const s of FILLER_SILOS) out.push(by.get(s) ?? emptyFormInfo(s));
   for (const [s, info] of by) if (!GRIT_SILOS.includes(s) && !FILLER_SILOS.includes(s)) out.push(info);
   out.forEach((i) => (i.remaining = Math.round(i.remaining)));
   // attach each silo's outstanding unbacked demand (deficit placeholders, negative remaining)
-  try {
-    const defs = await prisma.silo.findMany({ where: { airtableId: { startsWith: "deficit_" }, remainingWeight: { lt: 0 } }, select: { siloNo: true, remainingWeight: true } });
+  const defs = await defsP;
+  if (defs) {
     const dmap = new Map<string, number>();
     for (const d of defs) { const s2 = norm(d.siloNo); if (!s2) continue; dmap.set(s2, (dmap.get(s2) ?? 0) + -(d.remainingWeight ?? 0)); }
     out.forEach((i) => { i.deficitKg = Math.round((dmap.get(i.siloNo) ?? 0) * 100) / 100; });
-  } catch { /* deficit info is optional */ }
+  }
   return out;
 }
 
@@ -243,31 +249,33 @@ export interface RmBagOption {
   label: string;     // full descriptive label
 }
 
+// first non-empty supplier value (the column may hold an array lookup)
+const supplierOf = (v: unknown): string | null => {
+  if (Array.isArray(v)) { const x = v.find((y) => y != null && y !== ""); return x == null ? null : String(x); }
+  return v == null ? null : String(v);
+};
+
+function toRmBagOption(r: any): RmBagOption {
+  const invBag = `INV: ${r.invNo ?? "-"} ; Bag: ${r.bagNo ?? "-"}`;
+  const mat = [r.size, r.grade].filter(Boolean).join(" ");
+  return {
+    id: r.airtableId, invNo: r.invNo ?? null, bagNo: r.bagNo ?? null, weight: r.bagWeight ?? null,
+    size: r.size ?? null, grade: r.grade ?? null, type: r.type ?? null, supplier: supplierOf(r.nameFromSupplierMaster),
+    invBag, label: `${invBag}${mat ? ` — ${mat}` : ""}${r.bagWeight != null ? ` (${r.bagWeight} kg)` : ""}`,
+  };
+}
+
 export async function getAvailableRmBags(): Promise<RmBagOption[]> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const db = prisma as any;
   let rows: any[] = [];
   try {
-    rows = await db.rm.findMany({
+    rows = await (prisma as any).rm.findMany({
       where: { siloIds: { isEmpty: true }, OR: [{ status: null }, { status: "Accepted" }] },
       orderBy: { date: "desc" },
       take: 1500,
       select: { airtableId: true, invNo: true, bagNo: true, bagWeight: true, size: true, grade: true, type: true, nameFromSupplierMaster: true },
     });
   } catch { rows = []; }
-  const sup = (v: unknown): string | null => {
-    if (Array.isArray(v)) { const x = v.find((y) => y != null && y !== ""); return x == null ? null : String(x); }
-    return v == null ? null : String(v);
-  };
-  return rows.map((r) => {
-    const invBag = `INV: ${r.invNo ?? "-"} ; Bag: ${r.bagNo ?? "-"}`;
-    const mat = [r.size, r.grade].filter(Boolean).join(" ");
-    return {
-      id: r.airtableId, invNo: r.invNo ?? null, bagNo: r.bagNo ?? null, weight: r.bagWeight ?? null,
-      size: r.size ?? null, grade: r.grade ?? null, type: r.type ?? null, supplier: sup(r.nameFromSupplierMaster),
-      invBag, label: `${invBag}${mat ? ` — ${mat}` : ""}${r.bagWeight != null ? ` (${r.bagWeight} kg)` : ""}`,
-    };
-  });
+  return rows.map(toRmBagOption);
 }
 
 /** Server-side search over ALL available (un-dumped, Accepted) bags — by invoice,
@@ -276,12 +284,10 @@ export async function getAvailableRmBags(): Promise<RmBagOption[]> {
 export async function searchAvailableRmBags(q: string): Promise<RmBagOption[]> {
   const term = (q ?? "").trim();
   if (!term) return [];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const db = prisma as any;
   const like = `%${term}%`;
   let rows: any[] = [];
   try {
-    rows = await db.$queryRawUnsafe(
+    rows = await (prisma as any).$queryRawUnsafe(
       `SELECT "airtableId", inv_no AS "invNo", bag_no AS "bagNo", bag_weight AS "bagWeight",
               size, grade, type, name_from_supplier_master AS "nameFromSupplierMaster"
          FROM rm
@@ -294,17 +300,5 @@ export async function searchAvailableRmBags(q: string): Promise<RmBagOption[]> {
       like,
     );
   } catch { rows = []; }
-  const sup = (v: unknown): string | null => {
-    if (Array.isArray(v)) { const x = v.find((y) => y != null && y !== ""); return x == null ? null : String(x); }
-    return v == null ? null : String(v);
-  };
-  return rows.map((r) => {
-    const invBag = `INV: ${r.invNo ?? "-"} ; Bag: ${r.bagNo ?? "-"}`;
-    const mat = [r.size, r.grade].filter(Boolean).join(" ");
-    return {
-      id: r.airtableId, invNo: r.invNo ?? null, bagNo: r.bagNo ?? null, weight: r.bagWeight ?? null,
-      size: r.size ?? null, grade: r.grade ?? null, type: r.type ?? null, supplier: sup(r.nameFromSupplierMaster),
-      invBag, label: `${invBag}${mat ? ` — ${mat}` : ""}${r.bagWeight != null ? ` (${r.bagWeight} kg)` : ""}`,
-    };
-  });
+  return rows.map(toRmBagOption);
 }

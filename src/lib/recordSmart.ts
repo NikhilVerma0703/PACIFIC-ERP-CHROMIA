@@ -79,6 +79,17 @@ function iso(v: unknown): unknown {
 
 export interface RecordDefaults { values: Record<string, unknown>; increments: Record<string, number>; }
 
+/** max(field) + 1 over the rows matching `where`, or null when the lookup
+ * fails (caller leaves the field unset). Shared by the smart-form defaults
+ * below and by server-side increment stamping in the create action. */
+export async function nextIncrementValue(model: string, field: string, where: Record<string, unknown>): Promise<number | null> {
+  try {
+    const agg = await delegateOf(model).aggregate({ where, _max: { [field]: true } });
+    const max = agg?._max?.[field];
+    return (typeof max === "number" ? Math.floor(max) : 0) + 1;
+  } catch { return null; }
+}
+
 export async function recordDefaults(model: string, key?: string): Promise<RecordDefaults> {
   const cfg = RECORD_SMART[model];
   const meta = tableMeta(model);
@@ -88,14 +99,19 @@ export async function recordDefaults(model: string, key?: string): Promise<Recor
   const k = key?.trim();
 
   // clone source: latest record matching the key (or latest overall if keyless)
-  let source: Record<string, unknown> | null = null;
-  try {
-    const where = cfg.keyField && k
-      ? (cfg.normalizeKey ? { batchKey: normalizeBatch(k) } : { [cfg.keyField]: k })
-      : cfg.keyField ? undefined : {};
-    if (where !== undefined) source = await d.findFirst({ where, orderBy: { importedAt: "desc" } });
-  } catch { /* ignore */ }
+  // — fetched in PARALLEL with the increment lookups (independent queries).
+  const where = cfg.keyField && k
+    ? (cfg.normalizeKey ? { batchKey: normalizeBatch(k) } : { [cfg.keyField]: k })
+    : cfg.keyField ? undefined : {};
+  const sourceP: Promise<Record<string, unknown> | null> = where === undefined
+    ? Promise.resolve(null)
+    : Promise.resolve().then(() => d.findFirst({ where, orderBy: { importedAt: "desc" } }) as Promise<Record<string, unknown> | null>).catch(() => null);
+  const incrementsP = Promise.all((cfg.increments ?? []).map(async (inc) => {
+    const incWhere = inc.perKey && cfg.keyField && k ? { [cfg.keyField]: k } : {};
+    return [inc.field, await nextIncrementValue(model, inc.field, incWhere)] as const;
+  }));
 
+  const source = await sourceP;
   if (source) {
     const editable = new Set(meta.fields.filter((f) => f.editable).map((f) => f.prismaField));
     for (const f of cfg.cloneFields ?? []) {
@@ -110,13 +126,6 @@ export async function recordDefaults(model: string, key?: string): Promise<Recor
     }
   }
 
-  for (const inc of cfg.increments ?? []) {
-    try {
-      const where = inc.perKey && cfg.keyField && k ? { [cfg.keyField]: k } : {};
-      const agg = await d.aggregate({ where, _max: { [inc.field]: true } });
-      const max = agg?._max?.[inc.field];
-      out.increments[inc.field] = (typeof max === "number" ? Math.floor(max) : 0) + 1;
-    } catch { /* ignore */ }
-  }
+  for (const [field, v] of await incrementsP) if (v != null) out.increments[field] = v;
   return out;
 }

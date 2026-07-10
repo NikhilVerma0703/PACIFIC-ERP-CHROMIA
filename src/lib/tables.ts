@@ -85,11 +85,11 @@ export function tableMeta(model: string): TableMeta | undefined {
 export async function listRows(model: string, page: number, pageSize = 25, batch?: string, q?: string, sort?: string, dir?: string, empty?: string) {
   const d = delegateOf(model);
   if (!d) throw new Error("unknown table");
+  const meta = tableMeta(model);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const where: any = batch ? { batchKey: batch } : {};
   const query = q?.trim();
   if (query) {
-    const meta = tableMeta(model);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const or: any[] = [];
     const asNum = parseFloat(query);
@@ -103,14 +103,13 @@ export async function listRows(model: string, page: number, pageSize = 25, batch
   // Filter rows whose given field is unset (null or empty string) -- powers the
   // "—" (ungraded / no-value) buckets on the batch charts, which can't be matched
   // by a text search because "—" is only a display placeholder.
-  if (empty) {
-    const fm = tableMeta(model)?.fields.find((x) => x.prismaField === empty);
-    if (fm) where.OR = [{ [empty]: null }, { [empty]: "" }];
+  if (empty && meta?.fields.some((x) => x.prismaField === empty)) {
+    where.OR = [{ [empty]: null }, { [empty]: "" }];
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let orderBy: any = model === "UnassignedRm" ? { createdAt: "desc" as const } : { importedAt: "desc" as const };
   if (sort) {
-    const sf = tableMeta(model)?.fields.find((x) => x.prismaField === sort);
+    const sf = meta?.fields.find((x) => x.prismaField === sort);
     if (sf && ["scalar", "number", "int", "bool", "date"].includes(sf.kind)) orderBy = { [sort]: dir === "asc" ? "asc" : "desc" };
   }
   const [rows, total] = await Promise.all([
@@ -132,8 +131,8 @@ export function coerceField(kind: FieldKind, raw: FormDataEntryValue | null): un
   const s = raw == null ? "" : String(raw).replace(/\u0000/g, "").trim();
   if (s === "") return kind === "multiselect" ? [] : null;
   switch (kind) {
-    case "number": return Number.isFinite(parseFloat(s)) ? parseFloat(s) : null;
-    case "int": return Number.isFinite(parseInt(s, 10)) ? parseInt(s, 10) : null;
+    case "number": { const n = parseFloat(s); return Number.isFinite(n) ? n : null; }
+    case "int": { const n = parseInt(s, 10); return Number.isFinite(n) ? n : null; }
     case "date": { const d = new Date(s); return isNaN(d.getTime()) ? null : d; }
     case "multiselect": return s.split(",").map((x) => x.trim()).filter(Boolean);
     default: return s;
@@ -189,7 +188,7 @@ export async function selectOptions(model: string): Promise<Record<string, strin
   const fieldJob = async (f: (typeof meta.fields)[number]) => {
     try {
       if (f.airtableType === "singleSelect" || (CURATED_TEXT_FIELDS.has(f.prismaField) && f.kind === "scalar")) {
-        const rows: any[] = await d.findMany({ where: { [f.prismaField]: { not: null } }, select: { [f.prismaField]: true }, distinct: [f.prismaField], take: 500 });
+        const rows: Record<string, unknown>[] = await d.findMany({ where: { [f.prismaField]: { not: null } }, select: { [f.prismaField]: true }, distinct: [f.prismaField], take: 500 });
         const vals = rows.map((r) => r[f.prismaField]).filter((v) => v != null && v !== "").map((v) => String(v).trim()).filter(Boolean);
         // Preset (canonical) first so its casing wins; dedupe case-insensitively so
         // "Direct ok" can't appear next to "Direct Ok". Presets guarantee the field
@@ -202,14 +201,14 @@ export async function selectOptions(model: string): Promise<Record<string, strin
         if (merged.length) out[f.prismaField] = merged;
       } else if (f.airtableType === "multipleSelects" && meta.tableMap && f.column) {
         // distinct values computed in the DB (covers the whole table, returns a handful of rows)
-        const rows: any[] = await db.$queryRawUnsafe(`SELECT DISTINCT unnest("${f.column}") AS v FROM "${meta.tableMap}" LIMIT 500`);
+        const rows: { v: unknown }[] = await db.$queryRawUnsafe(`SELECT DISTINCT unnest("${f.column}") AS v FROM "${meta.tableMap}" LIMIT 500`);
         const set = new Set<string>(PRESET_OPTIONS[f.prismaField] ?? []);
         for (const r of rows) if (r.v) set.add(String(r.v));
         if (set.size) out[f.prismaField] = [...set].sort();
       } else if (f.airtableType === "multipleSelects") {
-        const rows: any[] = await d.findMany({ select: { [f.prismaField]: true }, take: 3000 });
+        const rows: Record<string, unknown>[] = await d.findMany({ select: { [f.prismaField]: true }, take: 3000 });
         const set = new Set<string>(PRESET_OPTIONS[f.prismaField] ?? []);
-        for (const r of rows) for (const v of (r[f.prismaField] ?? [])) if (v) set.add(String(v));
+        for (const r of rows) for (const v of (r[f.prismaField] as unknown[] | null | undefined) ?? []) if (v) set.add(String(v));
         if (set.size) out[f.prismaField] = [...set].sort();
       }
     } catch { /* ignore */ }

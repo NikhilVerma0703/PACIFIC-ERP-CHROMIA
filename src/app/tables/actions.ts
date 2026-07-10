@@ -14,16 +14,25 @@ import { allocateMixerCycle } from "@/lib/automations-silo";
 import { absorbSiloDeficit, absorbTankDeficit, writeOffSiloDeficit } from "@/lib/backfill";
 import { normalizeBatch } from "@/lib/normalizeBatch";
 import { parseSlabInput } from "@/lib/slabLabel";
-import { RECORD_SMART } from "@/lib/recordSmart";
+import { RECORD_SMART, nextIncrementValue } from "@/lib/recordSmart";
 import { prisma } from "@/lib/prisma";
 import { autolinkFinishedSlabFromQc, relinkFinishedSlabAfterNumberChange } from "@/lib/inventory/finishedSlab";
 import { REQUIRED_FORM_FIELDS, REQUIRED_FIELD_LABELS } from "@/lib/requiredFields";
 import { savePhotoFromForm } from "@/lib/entryPhoto";
 
-// tx-scoped equivalents of delegateOf() for $transaction blocks
-const prismaTx = () => prisma;
+// tx-scoped equivalent of delegateOf() for $transaction blocks
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const txDelegate = (tx: any, model: string) => tx[model[0].toLowerCase() + model.slice(1)];
+
+/** Postgres text columns reject NUL bytes (22021) — strip 0x00 from every
+ * string / string-array value in place (stray tablet-keyboard/clipboard
+ * artifacts must never 500 a save). */
+function stripNuls(values: Record<string, unknown>): void {
+  for (const [k, v] of Object.entries(values)) {
+    if (typeof v === "string" && v.includes("\u0000")) values[k] = v.replaceAll("\u0000", "");
+    else if (Array.isArray(v)) values[k] = v.map((x) => (typeof x === "string" ? x.replaceAll("\u0000", "") : x));
+  }
+}
 
 /** Auto-increment counters (silo increment, bag no, resin id) server-side so
  * they are always set even when the field is not operator-editable. */
@@ -31,12 +40,9 @@ async function stampIncrements(model: string, data: Record<string, unknown>) {
   const cfg = RECORD_SMART[model];
   for (const inc of cfg?.increments ?? []) {
     if (data[inc.field] != null && data[inc.field] !== "") continue;
-    try {
-      const where = inc.perKey && cfg?.keyField && typeof data[cfg.keyField] === "string" && data[cfg.keyField] ? { [cfg.keyField]: data[cfg.keyField] } : {};
-      const agg = await delegateOf(model).aggregate({ where, _max: { [inc.field]: true } });
-      const max = agg?._max?.[inc.field];
-      data[inc.field] = (typeof max === "number" ? Math.floor(max) : 0) + 1;
-    } catch { /* field may not exist */ }
+    const where = inc.perKey && cfg?.keyField && typeof data[cfg.keyField] === "string" && data[cfg.keyField] ? { [cfg.keyField]: data[cfg.keyField] } : {};
+    const next = await nextIncrementValue(model, inc.field, where); // null when the field doesn't exist
+    if (next != null) data[inc.field] = next;
   }
   // a freshly dumped bag is untouched: remaining = full weight
   if (model === "Silo" && data.remainingWeight == null && typeof data.weight === "number") data.remainingWeight = data.weight;
@@ -88,6 +94,8 @@ function stampBatchKey(data: Record<string, unknown>) {
 // breaks counts. Enforced server-side on both create and edit (the form's
 // `required` is client-only and was being bypassed).
 const SLAB_REQUIRED = new Set(["Press", "Oven", "Jot", "Distributor", "Kreos", "PolishEntry", "PolishQc"]);
+// Slab stations where slab number + batch must be unique (double-entry guard on create).
+const SLAB_STATIONS = new Set(["Press", "Oven", "Jot", "Distributor", "Kreos"]);
 const hasSlab = (v: unknown): boolean => { if (v == null || v === "") return false; const n = typeof v === "number" ? v : Number(v); return Number.isFinite(n); };
 
 function buildData(model: string, fd: FormData): Record<string, unknown> {
@@ -113,12 +121,7 @@ function buildData(model: string, fd: FormData): Record<string, unknown> {
     if (!fd.has(f.prismaField) && f.kind !== "bool") continue;
     data[f.prismaField] = coerceField(f.kind, fd.get(f.prismaField));
   }
-  // Postgres text columns reject NUL bytes (22021) — strip them from every
-  // string value (stray tablet-keyboard/clipboard artifacts must never 500 a save).
-  for (const [k, v] of Object.entries(data)) {
-    if (typeof v === "string" && v.includes("\u0000")) data[k] = v.replaceAll("\u0000", "");
-    else if (Array.isArray(v)) data[k] = v.map((x) => (typeof x === "string" ? x.replaceAll("\u0000", "") : x));
-  }
+  stripNuls(data);
   return data;
 }
 
@@ -153,9 +156,9 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
   const id = String(fd.get("__id") || "");
   if (!model || !id) return "Missing record reference.";
   if (!(await canWriteModel(model))) return "Your branch cannot edit this table.";
+  const me = await currentUser(); // request-cached; reused by the checks and stamps below
   if (!(await canRectify())) {
     // operators may correct ONLY rows they created themselves, in their own station's tables
-    const me = await currentUser();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const isOp = String((me as any)?.role ?? "") === "OPERATOR";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -201,7 +204,7 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
     }
   }
   catch (e) { return `Save failed: ${friendlyDbError(e)}`; }
-  await savePhotoFromForm(fd, model, id, (await currentUser())?.name ?? null); // optional photo, best-effort
+  await savePhotoFromForm(fd, model, id, me?.name ?? null); // optional photo, best-effort
   // Self-heal: an edited mixer cycle re-runs FIFO allocation (already-linked
   // slots are skipped) so filling in a missing silo/buffer deducts stock.
   if (model === "MixerCycle") { try { await allocateMixerCycle(id); } catch { /* best-effort */ } }
@@ -209,7 +212,7 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
   if (model === "PolishQc") {
     await logAction({ kind: "edit", batchKey: (data.batchKey as string | undefined) ?? null, model: "PolishQc", summary: `Edited Polish QC slab ${String(data.slabNumber ?? "")}`.trim(), payload: { id, slabNumber: data.slabNumber ?? null } });
     try {
-      const by = (await currentUser())?.name ?? null;
+      const by = me?.name ?? null;
       const sn = typeof data.slabNumber === "number" ? data.slabNumber : Number((await delegateOf(model).findUnique({ where: { id }, select: { slabNumber: true } }))?.slabNumber);
       await autolinkFinishedSlabFromQc(sn, { by });
       if (qcPrevSlabNumber != null && qcPrevSlabNumber !== sn) await relinkFinishedSlabAfterNumberChange(qcPrevSlabNumber, by);
@@ -304,7 +307,6 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
 
   // ---- DOUBLE-ENTRY GUARDS (the dedupe tool exists for history; new entries are blocked up front) ----
   try {
-    const SLAB_STATIONS = new Set(["Press", "Oven", "Jot", "Distributor", "Kreos"]);
     if (SLAB_STATIONS.has(model) && data.slabNumber != null && data.batchKey) {
       const dupe = await delegateOf(model).findFirst({ where: { slabNumber: data.slabNumber, batchKey: data.batchKey }, select: { id: true, remarks: true } });
       if (dupe) {
@@ -350,22 +352,18 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
     } catch { /* ignore */ }
   }
   let createdId: string;
-  let createdAirtableId: string;
   try {
     const base: Record<string, unknown> = { airtableId: localId(model.toLowerCase()), ...data, enteredById: me?.id ?? null };
     // FINAL 22021 choke point: buildData's NUL sweep runs BEFORE stampOperator
     // & co., so values stamped after it (submittedBy = login name, ids) must be
     // swept here too — nothing carrying 0x00 may ever reach the INSERT.
-    for (const [k, v] of Object.entries(base)) {
-      if (typeof v === "string" && v.includes("\u0000")) base[k] = v.replaceAll("\u0000", "");
-      else if (Array.isArray(v)) base[k] = v.map((x) => (typeof x === "string" ? x.replaceAll("\u0000", "") : x));
-    }
+    stripNuls(base);
     if (model === "Silo" && rmBag) {
       // Silo fill + RM-bag consumption is ONE atomic unit: if the bag can't be
       // marked consumed (or was consumed by a concurrent dump), nothing saves —
       // otherwise the bag stays "available" and can be dumped twice.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const rec = await (prismaTx() as any).$transaction(async (tx: any) => {
+      const rec = await (prisma as any).$transaction(async (tx: any) => {
         const fresh = await tx.rm.findUnique({ where: { airtableId: rmBagId }, select: { siloIds: true } });
         if (!fresh) throw new Error("RM bag no longer exists — refresh and pick again.");
         if (Array.isArray(fresh.siloIds) && fresh.siloIds.length > 0) throw new Error("This bag was just dumped into a silo by someone else — refresh and pick another bag.");
@@ -373,14 +371,13 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
         await tx.rm.update({ where: { airtableId: rmBagId }, data: { siloIds: { set: [...(fresh.siloIds ?? []), created.airtableId] } } });
         return created;
       });
-      createdId = rec.id; createdAirtableId = rec.airtableId;
+      createdId = rec.id;
     } else {
       const rec = await delegateOf(model).create({ data: base });
-      createdId = rec.id; createdAirtableId = rec.airtableId;
+      createdId = rec.id;
     }
   }
   catch (e) { return `Create failed: ${friendlyDbError(e)}`; }
-  void createdAirtableId;
   await savePhotoFromForm(fd, model, createdId, opName); // optional photo, best-effort
   // JOT defect -> instant Telegram alert with the entry photo (best-effort)
   if (model === "Jot" && String(data.slabDefect ?? "").trim()) {
@@ -431,7 +428,7 @@ Latest: slab ${esc(data.slabNumber ?? "—")} at Polish QC. Please check the lin
       // Advisory-locked per silo (same key as deficit-absorb / write-off) so the
       // subtraction can't race a concurrent fill/absorb on the same silo.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      res = await (prismaTx() as any).$transaction(async (tx: any) => {
+      res = await (prisma as any).$transaction(async (tx: any) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"silo:" + siloNo}))`;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const bags: any[] = await tx.silo.findMany({ where: { siloNo, remainingWeight: { gt: 0 } }, orderBy: { siloIncrement: "asc" }, select: { id: true, airtableId: true, remainingWeight: true } });
@@ -474,7 +471,7 @@ Latest: slab ${esc(data.slabNumber ?? "—")} at Polish QC. Please check the lin
         // Storage-tank deduction is atomic (advisory-locked per tank): the lots
         // and the prep's links can never half-update.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (prismaTx() as any).$transaction(async (tx: any) => {
+        await (prisma as any).$transaction(async (tx: any) => {
           await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"storage:" + st}))`;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const lots: any[] = await tx.resinStorage.findMany({ where: { tankNo: st }, orderBy: [{ date: "asc" }, { resinId: "asc" }], select: { id: true, airtableId: true, quantityRemaining: true } });
