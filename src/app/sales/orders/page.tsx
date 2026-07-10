@@ -60,7 +60,7 @@ const PAGE_SIZE = 10;
 export default function OrdersPage() {
   // useSearchParams needs a Suspense boundary during prerender (Next 15).
   return (
-    <Suspense fallback={<div className="text-sm text-slate-400 py-12 text-center">Loading\u2026</div>}>
+    <Suspense fallback={<div className="text-sm text-slate-400 py-12 text-center">Loading…</div>}>
       <OrdersPageInner />
     </Suspense>
   );
