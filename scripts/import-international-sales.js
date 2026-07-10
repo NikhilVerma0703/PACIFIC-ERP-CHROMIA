@@ -29,7 +29,37 @@ for (const l of fs.readFileSync(path.join(__dirname, "..", ".env"), "utf8").spli
 const crypto = require("crypto");
 const XLSX = require("xlsx");
 const { PrismaClient } = require("@prisma/client");
-const prisma = new PrismaClient();
+const real = new PrismaClient();
+// Buffering facade: call sites keep upsert() semantics, but writes are collected
+// and flushed per factory as createMany(skipDuplicates) batches - one network
+// round trip per ~200 rows instead of per row. Deterministic ids keep this
+// idempotent: existing rows (e.g. an interrupted earlier run) are skipped.
+const B = {}; // modelName -> pending create rows, in FK-safe flush order
+const FLUSH_ORDER = ["salesClient", "salesOrder", "proformaInvoice",
+  "salesContainer", "salesShipmentDocs", "salesPaymentDivision", "salesOrderLog"];
+for (const m of FLUSH_ORDER) B[m] = [];
+const buffered = (m) => ({ upsert: async ({ create }) => { B[m].push(create); return create; } });
+const prisma = {
+  $queryRawUnsafe: (...a) => real.$queryRawUnsafe(...a),
+  $executeRawUnsafe: (...a) => real.$executeRawUnsafe(...a),
+  $disconnect: () => real.$disconnect(),
+  salesClient: { ...buffered("salesClient"), count: (...a) => real.salesClient.count(...a) },
+  proformaInvoice: { ...buffered("proformaInvoice"), findFirst: (...a) => real.proformaInvoice.findFirst(...a) },
+  salesOrder: buffered("salesOrder"),
+  salesContainer: buffered("salesContainer"),
+  salesShipmentDocs: buffered("salesShipmentDocs"),
+  salesPaymentDivision: buffered("salesPaymentDivision"),
+  salesOrderLog: buffered("salesOrderLog"),
+};
+async function flushBuffers(tag) {
+  for (const m of FLUSH_ORDER) {
+    const rows = B[m];
+    for (let i = 0; i < rows.length; i += 200)
+      await real[m].createMany({ data: rows.slice(i, i + 200), skipDuplicates: true });
+    if (rows.length) console.log(`  [${tag}] flushed ${rows.length} ${m} rows`);
+    B[m] = [];
+  }
+}
 
 // ---------- helpers ----------
 const sha = (s) => crypto.createHash("sha1").update(s).digest("hex").slice(0, 24);
@@ -518,6 +548,7 @@ async function main() {
   for (const { f, tag } of files) {
     console.log(`\n=== Importing ${tag} from ${f} ===`);
     await importFactory(f, tag, stats);
+    await flushBuffers(tag); // batch-write this factory before the next
   }
   // Defuse the daily payment-reminder cron for imported historical divisions:
   // mark every milestone as already sent so no customer gets auto-mailed about old balances.
