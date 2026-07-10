@@ -85,6 +85,11 @@ export default auth((req) => {
     // Staff from every other department never see International Sales.
     return Response.redirect(new URL("/", nextUrl));
   }
+  // Admins who signed in via the International Sales card land on the SALES
+  // dashboard — their nav is sales-focused; "/" is the production overview.
+  if (isAdmin && branch === "INTERNATIONAL_SALES" && p === "/") {
+    return Response.redirect(new URL("/sales", nextUrl));
+  }
   if (!isAdmin && branch !== "OFFICE" && p.startsWith("/inventory")) {
     // Finished-goods inventory is an Office (Commercial) module — shop floor never sees it.
     return Response.redirect(new URL("/", nextUrl));
