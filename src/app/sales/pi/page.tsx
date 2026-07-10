@@ -1,5 +1,6 @@
 "use client";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 type PI = {
@@ -29,9 +30,22 @@ const FACTORY_TABS = [
 const PAGE_SIZE = 10;
 
 export default function PIListPage() {
+  // useSearchParams needs a Suspense boundary during prerender (Next 15).
+  return (
+    <Suspense fallback={<div className="text-sm text-slate-400 py-12 text-center">Loading\u2026</div>}>
+      <PIListPageInner />
+    </Suspense>
+  );
+}
+
+function PIListPageInner() {
+  // Dashboard KPI cards deep-link here as /sales/pi?status=… — start on that
+  // tab when the value is one of the known filter tabs.
+  const searchParams = useSearchParams();
+  const statusParam  = searchParams.get("status");
   const [pis, setPis]               = useState<PI[]>([]);
   const [loading, setLoading]       = useState(true);
-  const [filter, setFilter]         = useState("ALL");
+  const [filter, setFilter]         = useState(statusParam && FILTERS.includes(statusParam) ? statusParam : "ALL");
   const [factory, setFactory]       = useState("ALL");
   const [spTabs, setSpTabs]         = useState<SpTab[]>([]);
   const [selectedSp, setSelectedSp] = useState("ALL");
