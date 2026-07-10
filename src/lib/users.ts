@@ -16,6 +16,9 @@ export interface UserRow {
   branch: string;
   createdAt: Date;
   createdByName: string | null;
+  // International Sales duty + factory scope (users.sales_role / sales_factory, scripts/0020)
+  salesRole: string | null;
+  salesFactory: string | null;
 }
 
 export async function listUsersRows(branch?: string | string[] | null): Promise<UserRow[]> {
@@ -37,6 +40,8 @@ export async function listUsersRows(branch?: string | string[] | null): Promise<
     branch: String(u.branch ?? "SHOP_FLOOR"),
     createdAt: u.createdAt,
     createdByName: u.createdById ? (nameById.get(u.createdById) ?? null) : null,
+    salesRole: u.salesRole ?? null,
+    salesFactory: u.salesFactory ?? null,
   }));
 }
 
@@ -47,6 +52,8 @@ export async function getUserRole(id: string): Promise<string | null> {
 
 export async function createUserRecord(input: {
   email: string; name: string | null; password: string; role: string; station: string | null; createdById: string | null; branch?: string | null;
+  // International Sales only: duty + factory scope written to users.sales_role / sales_factory
+  salesRole?: string | null; salesFactory?: string | null;
 }) {
   const passwordHash = await bcrypt.hash(input.password, 10);
   const base = {
@@ -57,8 +64,11 @@ export async function createUserRecord(input: {
     station: input.station,
     createdById: input.createdById,
   };
+  const sales = input.salesRole !== undefined || input.salesFactory !== undefined
+    ? { salesRole: input.salesRole ?? null, salesFactory: input.salesFactory ?? null }
+    : {};
   try {
-    return await db.user.create({ data: { ...base, branch: input.branch ?? "SHOP_FLOOR" } });
+    return await db.user.create({ data: { ...base, ...sales, branch: input.branch ?? "SHOP_FLOOR" } });
   } catch (e: any) {
     if (String(e?.message || "").includes("branch")) return db.user.create({ data: base }); // pre-migration fallback
     throw e;

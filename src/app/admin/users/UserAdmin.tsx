@@ -10,13 +10,25 @@ import { BRANCH_LABEL } from "@/lib/branch";
 export interface UserRow {
   id: string; email: string; name: string | null; role: string; station: string | null;
   branch?: string | null; active: boolean; createdAt: string; createdByName: string | null;
+  // International Sales only (users.sales_role / sales_factory, scripts/0020)
+  salesRole?: string | null; salesFactory?: string | null;
 }
+
+// International Sales duty labels — in sales context the Role dropdown offers
+// DUTIES (stored in users.sales_role); the platform role is derived server-side.
+const DUTY_LABEL: Record<string, string> = {
+  SALESPERSON: "Salesperson", COMMERCIAL: "Commercial", ACCOUNTS: "Accounts",
+  REPORTING_MANAGER: "Reporting Manager", SALES_ADMIN: "Sales Admin",
+};
+const FACTORY_LABEL: Record<string, string> = { QUARTZ: "Quartz", GRANITE: "Granite" };
+// Only these duties take a factory scope (mirrors the page copy + create form).
+const FACTORY_SCOPED = new Set(["COMMERCIAL", "ACCOUNTS"]);
 
 const base = "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
 
-export function UserAdmin({ users, creatable, stations, office = false, showGlobal = false, myRole = "", myId = "", branches = [] }: { users: UserRow[]; creatable: RoleName[]; stations: string[]; office?: boolean; showGlobal?: boolean; myRole?: string; myId?: string; branches?: string[] }) {
+export function UserAdmin({ users, creatable, stations, office = false, sales = false, salesCreatable = [], showGlobal = false, myRole = "", myId = "", branches = [] }: { users: UserRow[]; creatable: RoleName[]; stations: string[]; office?: boolean; sales?: boolean; salesCreatable?: string[]; showGlobal?: boolean; myRole?: string; myId?: string; branches?: string[] }) {
   const [msg, action, pending] = useActionState(createUser, undefined);
-  const [role, setRole] = useState<string>(creatable[creatable.length - 1] ?? "");
+  const [role, setRole] = useState<string>(sales ? (salesCreatable[salesCreatable.length - 1] ?? "") : (creatable[creatable.length - 1] ?? ""));
   const [globalPending, startGlobal] = useTransition();
   const [globalNote, setGlobalNote] = useState<string | null>(null);
   const router = useRouter();
@@ -26,7 +38,7 @@ export function UserAdmin({ users, creatable, stations, office = false, showGlob
       {/* Create */}
       <div className="rounded-2xl border border-gray-200 bg-white p-5">
         <h2 className="mb-1 text-sm font-semibold text-gray-800">Create a login</h2>
-        <p className="mb-4 text-xs text-gray-500">You can create: {creatable.map((r) => ROLE_LABEL[r]).join(", ") || "—"}.</p>
+        <p className="mb-4 text-xs text-gray-500">You can create: {(sales ? salesCreatable.map((r) => DUTY_LABEL[r] ?? r) : creatable.map((r) => ROLE_LABEL[r])).join(", ") || "—"}.</p>
         <form action={action} className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">Email</span>
             <input name="email" type="email" required className={base} /></label>
@@ -34,18 +46,26 @@ export function UserAdmin({ users, creatable, stations, office = false, showGlob
             <input name="name" className={base} /></label>
           <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">Temp password</span>
             <input name="password" type="text" minLength={8} required placeholder="min 8 chars" className={base} /></label>
-          <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">Role</span>
+          <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">{sales ? "Role (sales duty)" : "Role"}</span>
             <select name="role" value={role} onChange={(e) => setRole(e.target.value)} className={base}>
-              {creatable.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+              {sales
+                ? salesCreatable.map((r) => <option key={r} value={r}>{DUTY_LABEL[r] ?? r}</option>)
+                : creatable.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
             </select></label>
           {branches.length > 1 && <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">Department</span>
             <select name="branch" defaultValue={branches[0]} className={base}>
               {branches.map((b) => <option key={b} value={b}>{BRANCH_LABEL[b] ?? b}</option>)}
             </select></label>}
-          {!office && <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">Machine / station {role === "OPERATOR" ? "(required)" : "(operators only)"}</span>
+          {!office && !sales && <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">Machine / station {role === "OPERATOR" ? "(required)" : "(operators only)"}</span>
             <select name="station" disabled={role !== "OPERATOR"} className={`${base} disabled:bg-gray-50 disabled:text-gray-400`}>
               <option value="">—</option>
               {stations.map((s) => <option key={s} value={s}>{STATION_LABEL[s] ?? s}</option>)}
+            </select></label>}
+          {sales && <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">Factory scope {FACTORY_SCOPED.has(role) ? "(optional)" : "(Commercial & Accounts only)"}</span>
+            <select name="salesFactory" disabled={!FACTORY_SCOPED.has(role)} className={`${base} disabled:bg-gray-50 disabled:text-gray-400`}>
+              <option value="">— both factories</option>
+              <option value="QUARTZ">Quartz</option>
+              <option value="GRANITE">Granite</option>
             </select></label>}
           <div className="flex items-end">
             <button disabled={pending} className="w-full rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-dark disabled:opacity-60">
@@ -79,16 +99,17 @@ export function UserAdmin({ users, creatable, stations, office = false, showGlob
             <thead>
               <tr className="text-left text-gray-500">
                 <th className="py-2 pr-4">User</th>
-                <th className="py-2 pr-4">Role</th>
-                <th className="py-2 pr-4">Machine</th>
-                <th className="py-2 pr-4">Department</th>
+                <th className="py-2 pr-4">{sales ? "Duty" : "Role"}</th>
+                {!sales && <th className="py-2 pr-4">Machine</th>}
+                {sales && <th className="py-2 pr-4">Factory</th>}
+                {!sales && <th className="py-2 pr-4">Department</th>}
                 <th className="py-2 pr-4">Status</th>
                 <th className="py-2 pr-4">Created by</th>
                 <th className="py-2">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {users.map((u) => <Row key={u.id} u={u} stations={stations} myRole={myRole} myId={myId} onChange={() => router.refresh()} />)}
+              {users.map((u) => <Row key={u.id} u={u} stations={stations} sales={sales} myRole={myRole} myId={myId} onChange={() => router.refresh()} />)}
             </tbody>
           </table>
         </div>
@@ -97,7 +118,7 @@ export function UserAdmin({ users, creatable, stations, office = false, showGlob
   );
 }
 
-function Row({ u, stations, myRole, myId, onChange }: { u: UserRow; stations: string[]; myRole: string; myId: string; onChange: () => void }) {
+function Row({ u, stations, sales = false, myRole, myId, onChange }: { u: UserRow; stations: string[]; sales?: boolean; myRole: string; myId: string; onChange: () => void }) {
   const [pending, start] = useTransition();
   const [note, setNote] = useState<string | null>(null);
 
@@ -115,8 +136,8 @@ function Row({ u, stations, myRole, myId, onChange }: { u: UserRow; stations: st
         <div className="font-medium text-gray-900">{u.name || u.email}</div>
         {u.name && <div className="text-xs text-gray-400">{u.email}</div>}
       </td>
-      <td className="py-2 pr-4">{ROLE_LABEL[u.role] ?? u.role}</td>
-      <td className="py-2 pr-4">
+      <td className="py-2 pr-4">{sales && u.salesRole ? (DUTY_LABEL[u.salesRole] ?? u.salesRole) : (ROLE_LABEL[u.role] ?? u.role)}</td>
+      {!sales && <td className="py-2 pr-4">
         {u.role === "OPERATOR" ? (
           <select defaultValue={u.station ?? ""} disabled={pending}
             onChange={(e) => act(() => setStation(u.id, e.target.value || null))}
@@ -125,8 +146,9 @@ function Row({ u, stations, myRole, myId, onChange }: { u: UserRow; stations: st
             {stations.map((s) => <option key={s} value={s}>{STATION_LABEL[s] ?? s}</option>)}
           </select>
         ) : <span className="text-gray-400">—</span>}
-      </td>
-      <td className="py-2 pr-4 text-gray-600">{BRANCH_LABEL[u.branch ?? "SHOP_FLOOR"] ?? u.branch ?? "—"}</td>
+      </td>}
+      {sales && <td className="py-2 pr-4 text-gray-600">{u.salesFactory ? (FACTORY_LABEL[u.salesFactory] ?? u.salesFactory) : "—"}</td>}
+      {!sales && <td className="py-2 pr-4 text-gray-600">{BRANCH_LABEL[u.branch ?? "SHOP_FLOOR"] ?? u.branch ?? "—"}</td>}
       <td className="py-2 pr-4">{u.active ? <span className="text-green-600">Active</span> : <span className="text-gray-400">Disabled</span>}</td>
       <td className="py-2 pr-4 text-gray-500">{u.createdByName ?? "—"}</td>
       <td className="py-2">
