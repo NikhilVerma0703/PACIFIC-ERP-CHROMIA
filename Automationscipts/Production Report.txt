@@ -1,0 +1,349 @@
+// === CONFIGURATION ===
+const PRODUCTION_REPORT_TABLE = "Production Report";
+const MIXER_TABLE_NAME = "Mixer Cycle";
+const PRESS_TABLE_NAME = "Press";
+
+const MIXER = {
+    BATCH: "fldJmjLjhucI86PcP",
+    DESIGN: "fldmKYKjGbT2A6etG",
+    CREATED_TIME: "flddz7UrcUXh3IRZa",
+    IS_M1: "fldPREwmcHdqDbWkT",
+    IS_M2: "fldNhxagA5ZDQceCf",
+    IS_M3: "fldZgGE13euuJAQuK",
+    IS_M4: "fldB27e81cnSuLHrJ",
+    FILLER_BAGS_NAME: "fldqLWMZmHoMtxT0f",
+    M1_F_W: "fldUaBjg7Kd950OLY",
+    M2_F_W: "fldDH9qoTawKkbza1",
+    M3_F_W: "fldi0iiqYxHGQViOX",
+    M4_F_W: "fldGysvW3FhocwP6o",
+    M1_R_W: "fld3LAWFrmWfFRq0L", 
+    M2_R_W: "fldqP4jYBIGFlB1yf",
+    M3_R_W: "fldbsQsH7Wyl91764",
+    M4_R_W: "fld6pvTi3SKUfcRNh"
+};
+
+
+// ⚠️ PASTE YOUR SIZE/GRADE FIELD IDs HERE ⚠️
+const GRIT_MAPPING = [
+    { weight: "fldCEe8IfmMJzj0Ah", name: "fldW4gramYtBbtOIu", size: null, grade: null },
+    { weight: "fldeUPlZh1hYQVBQr", name: "fldb5FPwUEZBtxeme", size: null, grade: null },
+    { weight: "fldqPwJwvmh1ScRRV", name: "fldA08q210ylYYbkN", size: null, grade: null },
+    { weight: "fldyBkLjKw7CYcX9b", name: "fldX0B9dnUCuCDFKR", size: null, grade: null },
+    { weight: "fldFTvkIKGYINarhI", name: "fldnA8kd7IJiQ0ox9", size: null, grade: null },
+    { weight: "fldKkW2Aj915oBXeW", name: "fld1VmulSf3nher2R", size: null, grade: null },
+    { weight: "fld6WBP5BVMui8UfL", name: "fldMcJYM867Rfuz7V", size: null, grade: null },
+    { weight: "fldudMwDzSZ4QpJXm", name: "fldfUF7Pbxt98IPHM", size: null, grade: null },
+    { weight: "fldG3bFhkjU2ge8Et", name: "fldyG2731yuCu6iuC", size: null, grade: null },
+    { weight: "fldKMS0MrKEsxzDjr", name: "fldQypK6GMsPyl9vX", size: null, grade: null },
+    { weight: "fldhCRj26cJx4Uky1", name: "fldSKsDf2rA38WQU1", size: null, grade: null },
+    { weight: "fldU7XglzbFMHP6gi", name: "fldOiQ9FgRZ7YLneg", size: null, grade: null },
+    { weight: "fldpEk9pckjl9BVc4", name: "fldJbGoKnRm90OD71", size: null, grade: null },
+    { weight: "fldbnZ0D950iB5BHz", name: "fldi2n52cE3MGWxtX", size: null, grade: null },
+    { weight: "fldJAfm9iySua0w04", name: "fldoTlh5dEM0SIQze", size: null, grade: null },
+    { weight: "fldaGnDCzQuxu0I5l", name: "flddgAlIeBX8JbLlU", size: null, grade: null },
+    { weight: "fldey8NuO4RKhsZkE", name: "fldCe0rAfz4pUtYIf", size: null, grade: null },
+    { weight: "fldCtkeJSoKeuIXG8", name: "fldxS020d9OKzfHDJ", size: null, grade: null },
+    { weight: "fldW5fqcXwQTUE11B", name: "fldb6MVSC5Eu1qUux", size: null, grade: null },
+    { weight: "fldgUxR1QGe6o8jv4", name: "fldcNc5YLsTQNuJFc", size: null, grade: null }
+];
+
+const PRESS = {
+    BATCH: "fldJEcfi40pMTJnF6",
+    SLAB_NO: "fldB3TZHNUQh2eV6g",
+    DESIGN: "fldsfWA61onkL7kw4",
+    DATE: "fld4HAhDYyTPfOP5M",
+    SLAB_WEIGHT: "fldiCxsNx3VWXsmVJ"
+};
+
+// === UTILITIES ===
+function resolveName(val) {
+    if (!val) return "";
+    if (Array.isArray(val)) {
+        if (val.length === 0) return "";
+        if (val[0] && typeof val[0] === 'object' && val[0].name) return val[0].name;
+        return String(val[0]);
+    }
+    if (typeof val === 'object') return val.name || "";
+    return String(val);
+}
+
+function normalizeString(s) {
+    if (!s) return "";
+    let str = s.toString().toLowerCase().trim();
+    if (str.startsWith('c') && /^\d/.test(str.substring(1))) str = str.substring(1);
+    return str.normalize('NFKD')
+              .replace(/[\u0300-\u036f]/g, '')
+              .replace(/[^a-z0-9\s]/g, '')
+              .replace(/\s+/g, ' ')
+              .trim();
+}
+
+function similarityScore(aRaw, bRaw) {
+    const a = normalizeString(aRaw);
+    const b = normalizeString(bRaw);
+    if (!a && !b) return 0;
+    if (a === b) return 1;
+    if (a && b && (a.includes(b) || b.includes(a))) return 0.95;
+    return 0;
+}
+
+function findBestPressMatch(pressList, mixerBatchName) {
+    let bestIdx = -1;
+    let bestScore = 0;
+    let normMixer = normalizeString(mixerBatchName);
+
+    for (let i = 0; i < pressList.length; i++) {
+        const score = similarityScore(pressList[i].normalized, normMixer);
+        if (score > bestScore) {
+            bestScore = score;
+            bestIdx = i;
+        }
+    }
+    return bestScore >= 0.60 ? bestIdx : -1;
+}
+
+// === INITIALIZATION ===
+let reportTable = base.getTable(PRODUCTION_REPORT_TABLE);
+
+let allExistingRecords = await reportTable.selectRecordsAsync({
+    fields: ["Opening", "Closing"]
+});
+
+let triggerRecord = allExistingRecords.records.find(r => 
+    r.getCellValue("Opening") !== null && r.getCellValue("Closing") !== null
+);
+
+if (!triggerRecord) {
+    throw new Error("❌ Error: Please set the 'Opening' and 'Closing' dates in the first row.");
+}
+
+let openDate = new Date(triggerRecord.getCellValue("Opening")); openDate.setHours(0,0,0,0);
+let closeDate = new Date(triggerRecord.getCellValue("Closing")); closeDate.setHours(23,59,59,999);
+
+console.log(`📅 Report Range: ${openDate.toLocaleDateString()} to ${closeDate.toLocaleDateString()}`);
+
+let recordsToDelete = allExistingRecords.records.filter(r => r.id !== triggerRecord.id);
+if (recordsToDelete.length > 0) {
+    console.log(`🧹 Cleaning ${recordsToDelete.length} old report rows...`);
+    while (recordsToDelete.length > 0) {
+        await reportTable.deleteRecordsAsync(recordsToDelete.slice(0, 50));
+        recordsToDelete = recordsToDelete.slice(50);
+    }
+}
+
+// === DATA FETCHING ===
+let mixerTable = base.getTable(MIXER_TABLE_NAME);
+let pressTable = base.getTable(PRESS_TABLE_NAME);
+
+let mixerQuery = await mixerTable.selectRecordsAsync();
+let pressQuery = await pressTable.selectRecordsAsync();
+
+let batchSummary = {};
+let materialSummary = {};
+let pressList = [];
+
+// 1. SCAN PRESS RECORDS
+for (let rec of pressQuery.records) {
+    let d = rec.getCellValue(PRESS.DATE);
+    if (!d) continue;
+    let rDate = new Date(d);
+    if (rDate < openDate || rDate > closeDate) continue;
+
+    let batchRaw = resolveName(rec.getCellValue(PRESS.BATCH));
+    if (!batchRaw) continue;
+    
+    let batchName = batchRaw.trim();
+    let norm = normalizeString(batchName);
+
+    let existing = pressList.find(p => p.normalized === norm);
+    if (!existing) {
+        existing = {
+            original: batchName,
+            normalized: norm,
+            design: resolveName(rec.getCellValue(PRESS.DESIGN)) || "Unknown Design",
+            slabNumbers: new Set(),
+            slabWeight: 0, // NEW: Track weight
+            hasPressData: true
+        };
+        pressList.push(existing);
+    }
+    
+    let slabVal = resolveName(rec.getCellValue(PRESS.SLAB_NO));
+    if (slabVal) existing.slabNumbers.add(String(slabVal));
+
+    // Accumulate Slab Weight
+    let w = rec.getCellValue(PRESS.SLAB_WEIGHT) || 0;
+    existing.slabWeight += w;
+}
+
+// 2. SCAN MIXER RECORDS
+for (let rec of mixerQuery.records) {
+    let d = rec.getCellValue(MIXER.CREATED_TIME);
+    if (!d) continue;
+    let rDate = new Date(d);
+    if (rDate < openDate || rDate > closeDate) continue;
+
+    let mixerBatchRaw = resolveName(rec.getCellValue(MIXER.BATCH));
+    if (!mixerBatchRaw) continue;
+    
+    const pressIdx = findBestPressMatch(pressList, mixerBatchRaw);
+    let resolvedKey = pressIdx >= 0 ? pressList[pressIdx].original : mixerBatchRaw.trim();
+    let resolvedDesign = pressIdx >= 0 ? pressList[pressIdx].design : (resolveName(rec.getCellValue(MIXER.DESIGN)) || "Mixer Only");
+    let slabNumbersFromPress = pressIdx >= 0 ? Array.from(pressList[pressIdx].slabNumbers) : [];
+    let slabWeightFromPress = pressIdx >= 0 ? pressList[pressIdx].slabWeight : 0;
+
+    if (!batchSummary[resolvedKey]) {
+        batchSummary[resolvedKey] = {
+            design: resolvedDesign,
+            cycles: 0,
+            m1: 0, m2: 0, m3: 0, m4: 0,
+            slabNumbers: new Set(slabNumbersFromPress),
+            slabWeight: slabWeightFromPress // Initialize with Press weight
+        };
+    }
+
+    const bObj = batchSummary[resolvedKey];
+    bObj.cycles++;
+
+    // Calculate Grit Weight
+    let totalGritWeightForCycle = 0;
+    for (let g of GRIT_MAPPING) {
+        let weight = rec.getCellValue(g.weight) || 0;
+        if (weight > 0) {
+            totalGritWeightForCycle += weight;
+            
+            // Name + Size + Grade
+            let matName = resolveName(rec.getCellValue(g.name));
+            let matSize = g.size ? resolveName(rec.getCellValue(g.size)) : "";
+            let matGrade = g.grade ? resolveName(rec.getCellValue(g.grade)) : "";
+            
+            let fullMatLabel = [matName, matSize, matGrade].filter(s => s).join(" ");
+            if (!fullMatLabel) fullMatLabel = "Unlabeled Material";
+
+            materialSummary[fullMatLabel] = (materialSummary[fullMatLabel] || 0) + weight;
+        }
+    }
+    let gritSums = { m1: 0, m2: 0, m3: 0, m4: 0 };
+
+    // 2. Loop through the 20 grit fields
+    for (let i = 0; i < GRIT_MAPPING.length; i++) {
+        let g = GRIT_MAPPING[i];
+        let weight = rec.getCellValue(g.weight) || 0;
+        
+        if (weight > 0) {
+            // Assign weight to specific bucket based on its position in the list (0-19)
+            if (i >= 0 && i <= 4)       gritSums.m1 += weight; // First 5: M1
+            else if (i >= 5 && i <= 9)  gritSums.m2 += weight; // Next 5:  M2
+            else if (i >= 10 && i <= 14) gritSums.m3 += weight; // Next 5:  M3
+            else if (i >= 15 && i <= 19) gritSums.m4 += weight; // Last 5:  M4
+            
+            // Still build the Material Summary for the bottom of your report
+            let matName = resolveName(rec.getCellValue(g.name));
+            let matSize = g.size ? resolveName(rec.getCellValue(g.size)) : "";
+            let matGrade = g.grade ? resolveName(rec.getCellValue(g.grade)) : "";
+            let fullMatLabel = [matName, matSize, matGrade].filter(s => s).join(" ");
+            
+            materialSummary[fullMatLabel] = (materialSummary[fullMatLabel] || 0) + weight;
+        }
+    }
+
+
+
+    // 3. Add weights to Mixers using their SPECIFIC grit sums (not the total of all 20)
+    if (rec.getCellValue(MIXER.IS_M1)) bObj.m1 += (rec.getCellValue(MIXER.M1_F_W) || 0)+ (rec.getCellValue(MIXER.M1_R_W) || 0) + gritSums.m1;
+    if (rec.getCellValue(MIXER.IS_M2)) bObj.m2 += (rec.getCellValue(MIXER.M2_F_W) || 0)+ (rec.getCellValue(MIXER.M1_R_W) || 0) + gritSums.m2;
+    if (rec.getCellValue(MIXER.IS_M3)) bObj.m3 += (rec.getCellValue(MIXER.M3_F_W) || 0)+ (rec.getCellValue(MIXER.M1_R_W) || 0) + gritSums.m3;
+    if (rec.getCellValue(MIXER.IS_M4)) bObj.m4 += (rec.getCellValue(MIXER.M4_F_W) || 0)+ (rec.getCellValue(MIXER.M1_R_W) || 0) + gritSums.m4;
+
+    // Filler Summary
+    let fillerWeight = (rec.getCellValue(MIXER.M1_F_W) || 0) + (rec.getCellValue(MIXER.M2_F_W) || 0) +
+                       (rec.getCellValue(MIXER.M3_F_W) || 0) + (rec.getCellValue(MIXER.M4_F_W) || 0);
+    if (fillerWeight > 0) {
+        let fName = resolveName(rec.getCellValue(MIXER.FILLER_BAGS_NAME)) || "Filler Material";
+        materialSummary[fName] = (materialSummary[fName] || 0) + fillerWeight;
+    }
+}
+
+// Add Press-only records
+for (let p of pressList) {
+    if (!batchSummary[p.original]) {
+        batchSummary[p.original] = {
+            design: p.design,
+            cycles: 0, m1: 0, m2: 0, m3: 0, m4: 0,
+            slabNumbers: p.slabNumbers,
+            slabWeight: p.slabWeight
+        };
+    }
+}
+
+// === FINAL OUTPUT PREP ===
+let finalOutput = [];
+let slNo = 1; // Starting at 1 for the first batch
+let sortedBatchKeys = Object.keys(batchSummary).sort((a,b) => a.localeCompare(b, undefined, {numeric: true}));
+
+// 1. PUSH BATCH SUMMARY ROWS
+for (let key of sortedBatchKeys) {
+    let b = batchSummary[key];
+    let slabArray = Array.from(b.slabNumbers).map(Number).filter(n => !isNaN(n)).sort((x, y) => x - y);
+    
+    let missingSlabs = [];
+    if (slabArray.length > 1) {
+        let min = slabArray[0];
+        let max = slabArray[slabArray.length - 1];
+        for (let i = min; i <= max; i++) {
+            if (!slabArray.includes(i)) missingSlabs.push(i);
+        }
+    }
+
+    let totalMixerWeight = b.m1 + b.m2 + b.m3 + b.m4;
+    let totalSlabWeight = b.slabWeight || 0;
+    let wastage = totalMixerWeight > 0 ? ((totalMixerWeight - totalSlabWeight) * 100) / totalMixerWeight : 0;
+
+    finalOutput.push({
+        fields: {
+            "SL.NO.": String(slNo++),
+            "DESIGN": String(b.design),
+            "BATCH NUM": String(key),
+            "NO.OF CYCLES": String(b.cycles),
+            "M1 Weight": String(b.m1.toFixed(2)),
+            "M2 Weight": String(b.m2.toFixed(2)),
+            "M3 Weight": String(b.m3.toFixed(2)),
+            "M4 Weight": String(b.m4.toFixed(2)),
+            "SLAB NUMBERS": String(slabArray.join(", ")),
+            "MISSING SLABS": String(missingSlabs.join(", ")),
+            "TOTAL SLABS": String(slabArray.length),
+            "TOTAL SLAB WEIGHT": String(b.slabWeight.toFixed(2)),
+            "WASTAGE %": String(wastage.toFixed(2) + "%")
+        }
+    });
+}
+
+// 2. PUSH THE HEADER (This sits between Batches and Materials)
+finalOutput.push({ 
+    fields: { 
+        "SL.NO.": "---", 
+        "DESIGN": "--- MATERIAL SUMMARY ---",
+        "BATCH NUM": "TOTAL WEIGHT" 
+    } 
+});
+
+// 3. PUSH MATERIAL SUMMARY ROWS
+let sortedMaterials = Object.entries(materialSummary).sort((a,b) => a[0].localeCompare(b[0]));
+for (let [matName, matWeight] of sortedMaterials) {
+    finalOutput.push({
+        fields: {
+            "SL.NO.": "Mat.", 
+            "DESIGN": matName, 
+            "BATCH NUM": matWeight.toFixed(2) + " kg"
+        }
+    });
+}
+
+// === INSERT RECORDS ===
+console.log(`📝 Inserting ${finalOutput.length} rows...`);
+while (finalOutput.length > 0) {
+    await reportTable.createRecordsAsync(finalOutput.slice(0, 50));
+    finalOutput = finalOutput.slice(50);
+}
+
+console.log("✅ Report Generated successfully.");

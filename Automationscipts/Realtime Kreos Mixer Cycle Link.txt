@@ -1,0 +1,146 @@
+// Tables
+let kreosTable = base.getTable("Kreos");
+let mixerCycleTable = base.getTable("Mixer Cycle");
+let changeParamsTable = base.getTable("Change Parameters Kreos");
+
+// Input
+let inputConfig = input.config();
+let createdRecordId = inputConfig.recordId;
+
+// Helper to normalize batch name
+function normalize(value) {
+    if (!value) return "";
+    return String(value).toLowerCase().replace(/\s+/g, "");
+}
+
+// Get the created Kreos record
+let kreosRecord = await kreosTable.selectRecordAsync(createdRecordId);
+if (!kreosRecord) {
+    console.log("❌ Kreos record not found.");
+    return;
+}
+
+// Exit if "Last Slab?" is checked
+if (kreosRecord.getCellValue("Last Slab?")) {
+    console.log("⛔ 'Last Slab?' is checked. Skipping execution.");
+    return;
+}
+
+let currentSlabNumber = kreosRecord.getCellValue("Slab Number");
+if (currentSlabNumber == null) {
+    console.log("❌ Slab Number missing. Exiting.");
+    return;
+}
+
+// 1. Get batch name from Change Parameters Kreos using effective slab logic
+let changeParamsQuery = await changeParamsTable.selectRecordsAsync({
+    fields: [
+        "Batch", 
+        "Effective from slab number", 
+        "No. of slabs per Normal Mixer Cycle", 
+        "No. of slabs per Chessboard Mixer Cycle"
+    ]
+});
+
+let matchedChangeParam = changeParamsQuery.records
+    .filter(r => {
+        let eff = r.getCellValue("Effective from slab number");
+        return eff != null && eff <= currentSlabNumber;
+    })
+    .sort((a, b) => b.getCellValue("Effective from slab number") - a.getCellValue("Effective from slab number"))[0];
+
+if (!matchedChangeParam) {
+    console.log("❌ No matching Change Parameters record found for this slab.");
+    return;
+}
+
+let rawBatchName = matchedChangeParam.getCellValue("Batch");
+if (!rawBatchName) {
+    console.log("❌ Batch field is empty in Change Parameters record.");
+    return;
+}
+let batchName = normalize(rawBatchName);
+
+// Extract slab counts per mixer cycle
+let slabsPerNormalCycle = matchedChangeParam.getCellValue("No. of slabs per Normal Mixer Cycle") || 1;
+let slabsPerM1Cycle = matchedChangeParam.getCellValue("No. of slabs per Chessboard Mixer Cycle") || 1;
+
+console.log(`🎯 Using Batch "${rawBatchName}" [normalized: "${batchName}"]`);
+
+// 2. Get all slabs matching the batch
+let kreosQuery = await kreosTable.selectRecordsAsync({
+    fields: ["Batch", "Slab Number"]
+});
+let slabs = kreosQuery.records
+    .filter(r => normalize(r.getCellValue("Batch")) === batchName)
+    .sort((a, b) => (a.getCellValue("Slab Number") || 0) - (b.getCellValue("Slab Number") || 0));
+
+if (slabs.length === 0) {
+    console.log("⚠️ No slabs found for this batch.");
+    return;
+}
+
+// 3. Get mixer cycles for the batch
+let mixerQuery = await mixerCycleTable.selectRecordsAsync({
+    fields: ["Batch", "Cycle", "Total Mixer 1 Weight", "Total Cycle Weight"]
+});
+let mixerCycles = mixerQuery.records
+    .filter(r => normalize(r.getCellValue("Batch")) === batchName);
+
+// Separate cycles
+let normalCycles = [];
+let m1Cycles = [];
+
+for (let c of mixerCycles) {
+    let m1Weight = c.getCellValue("Total Mixer 1 Weight") || 0;
+    if (m1Weight > 0) m1Cycles.push(c);
+    if ((c.getCellValue("Total Cycle Weight") || 0) - m1Weight > 0) normalCycles.push(c);
+}
+
+// Sort cycles by cycle number
+let getCycleNum = r => r.getCellValue("Cycle") || 0;
+normalCycles.sort((a, b) => getCycleNum(a) - getCycleNum(b));
+m1Cycles.sort((a, b) => getCycleNum(a) - getCycleNum(b));
+
+// 4. Assign slabs to mixer cycles based on count
+let updates = [];
+let normIdx = 0, normCount = 0;
+let m1Idx = 0, m1Count = 0;
+
+for (let slab of slabs) {
+    let normCycleId = null;
+    if (normalCycles[normIdx]) {
+        normCycleId = normalCycles[normIdx].id;
+        normCount++;
+        if (normCount >= slabsPerNormalCycle) {
+            normIdx++;
+            normCount = 0;
+        }
+    }
+
+    let m1CycleId = null;
+    if (m1Cycles[m1Idx]) {
+        m1CycleId = m1Cycles[m1Idx].id;
+        m1Count++;
+        if (m1Count >= slabsPerM1Cycle) {
+            m1Idx++;
+            m1Count = 0;
+        }
+    }
+
+    updates.push({
+        id: slab.id,
+        fields: {
+            "Mixer Cycle": normCycleId ? [{ id: normCycleId }] : [],
+            "Chessboard Mixer Cycle": m1CycleId ? [{ id: m1CycleId }] : []
+        }
+    });
+}
+
+// 5. Push updates in batches
+while (updates.length > 0) {
+    await kreosTable.updateRecordsAsync(updates.slice(0, 50));
+    updates = updates.slice(50);
+}
+
+console.log("✅ Slabs assigned to Mixer and Chessboard Mixer cycles based on count.");

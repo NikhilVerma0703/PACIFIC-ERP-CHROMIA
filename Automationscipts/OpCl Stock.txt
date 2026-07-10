@@ -1,0 +1,205 @@
+// === CONFIGURATION ===
+const STOCK_TABLE_NAME = "Op/Cl Stock";
+const RM_TABLE_NAME = "RM";
+const USED_BAGS_TABLE_NAME = "Used Bags";
+
+// === GET TRIGGER RECORD ===
+let stockTable = base.getTable(STOCK_TABLE_NAME);
+let triggerRecord = await stockTable.selectRecordAsync(input.config().recordId);
+
+let openingDate = triggerRecord.getCellValue("Opening Date");
+let closingDate = triggerRecord.getCellValue("Closing Date");
+
+// Exit early if dates are not filled
+if (!openingDate || !closingDate) {
+    output.markdown("⏹️ Opening Date or Closing Date is missing. Exiting.");
+    return;
+}
+
+// Convert dates to Date objects
+let openDate = new Date(openingDate);
+let closeDate = new Date(closingDate);
+
+// === CLEAR OLD ENTRIES BELOW TRIGGER RECORD ===
+let allStockRecords = await stockTable.selectRecordsAsync();
+let recordsToDelete = allStockRecords.records.filter(r => r.id !== triggerRecord.id);
+
+if (recordsToDelete.length > 0) {
+    let batch;
+    while (recordsToDelete.length) {
+        batch = recordsToDelete.splice(0, 50);
+        await stockTable.deleteRecordsAsync(batch.map(r => r.id));
+    }
+}
+
+// === FETCH RM & USED BAGS RECORDS ===
+let rmTable = base.getTable(RM_TABLE_NAME);
+let usedBagsTable = base.getTable(USED_BAGS_TABLE_NAME);
+
+let rmQuery = await rmTable.selectRecordsAsync({
+    fields: ["Date", "Name (from Supplier Master)", "Type", "Size", "Grade", "Bag Weight"]
+});
+
+let usedBagsQuery = await usedBagsTable.selectRecordsAsync({
+    fields: ["Created", "Name (from Supplier Master)", "Type", "Size", "Grade", "Bag Weight"]
+});
+
+// === SUMMARY AGGREGATION OBJECT ===
+let summary = {}; // key: "Name|Type|Size|Grade"
+
+// Helper: build Product Type key
+function makeKey(name, type, size, grade) {
+    return `${name || ""} | ${type || ""} | ${size || ""} | ${grade || ""}`;
+}
+
+// === INITIALIZE SUMMARY WITH ALL RM & USED BAGS COMBINATIONS ===
+for (let rec of rmQuery.records) {
+    let name = (rec.getCellValue("Name (from Supplier Master)") || []).join(", ");
+    let type = rec.getCellValue("Type")?.name || "";
+    let size = rec.getCellValue("Size")?.name || "";
+    let grade = rec.getCellValue("Grade")?.name || "";
+    let key = makeKey(name, type, size, grade);
+
+    if (!summary[key]) summary[key] = { opening: 0, closing: 0, inward: 0, consumption: 0 };
+}
+
+for (let rec of usedBagsQuery.records) {
+    let name = (rec.getCellValue("Name (from Supplier Master)") || []).join(", ");
+    let type = rec.getCellValue("Type")?.name || "";
+    let size = rec.getCellValue("Size")?.name || "";
+    let grade = rec.getCellValue("Grade")?.name || "";
+    let key = makeKey(name, type, size, grade);
+
+    if (!summary[key]) summary[key] = { opening: 0, closing: 0, inward: 0, consumption: 0 };
+}
+
+// === CALCULATE Opening Stock ===
+// 1) RM records before Opening Date
+for (let rec of rmQuery.records) {
+    let d = rec.getCellValue("Date");
+    if (!d) continue;
+
+    let recordDate = new Date(d);
+    if (recordDate >= openDate) continue;
+
+    let name = (rec.getCellValue("Name (from Supplier Master)") || []).join(", ");
+    let type = rec.getCellValue("Type")?.name || "";
+    let size = rec.getCellValue("Size")?.name || "";
+    let grade = rec.getCellValue("Grade")?.name || "";
+    let weight = rec.getCellValue("Bag Weight") || 0;
+    let key = makeKey(name, type, size, grade);
+
+    summary[key].opening += weight;
+}
+
+// 2) Used Bags records after Opening Date
+for (let rec of usedBagsQuery.records) {
+    let d = rec.getCellValue("Created");
+    if (!d) continue;
+
+    let recordDate = new Date(d);
+    if (recordDate <= openDate) continue; // only after Opening Date
+
+    let name = (rec.getCellValue("Name (from Supplier Master)") || []).join(", ");
+    let type = rec.getCellValue("Type")?.name || "";
+    let size = rec.getCellValue("Size")?.name || "";
+    let grade = rec.getCellValue("Grade")?.name || "";
+    let weight = rec.getCellValue("Bag Weight") || 0;
+    let key = makeKey(name, type, size, grade);
+
+    summary[key].opening += weight;
+}
+
+// === CALCULATE Inward and Consumption ===
+// Inward = RM records between Opening and Closing Date
+for (let rec of rmQuery.records) {
+    let d = rec.getCellValue("Date");
+    if (!d) continue;
+
+    let recordDate = new Date(d);
+    if (recordDate < openDate || recordDate > closeDate) continue;
+
+    let name = (rec.getCellValue("Name (from Supplier Master)") || []).join(", ");
+    let type = rec.getCellValue("Type")?.name || "";
+    let size = rec.getCellValue("Size")?.name || "";
+    let grade = rec.getCellValue("Grade")?.name || "";
+    let weight = rec.getCellValue("Bag Weight") || 0;
+    let key = makeKey(name, type, size, grade);
+
+    summary[key].inward += weight;
+}
+
+// Consumption = Used Bags records between Opening and Closing Date
+for (let rec of usedBagsQuery.records) {
+    let d = rec.getCellValue("Created");
+    if (!d) continue;
+
+    let recordDate = new Date(d);
+    if (recordDate < openDate || recordDate > closeDate) continue;
+
+    let name = (rec.getCellValue("Name (from Supplier Master)") || []).join(", ");
+    let type = rec.getCellValue("Type")?.name || "";
+    let size = rec.getCellValue("Size")?.name || "";
+    let grade = rec.getCellValue("Grade")?.name || "";
+    let weight = rec.getCellValue("Bag Weight") || 0;
+    let key = makeKey(name, type, size, grade);
+
+    summary[key].consumption += weight;
+}
+
+// === CALCULATE Closing Stock ===
+// 1) RM records with Date <= Closing Date
+for (let rec of rmQuery.records) {
+    let d = rec.getCellValue("Date");
+    if (!d) continue;
+
+    let recordDate = new Date(d);
+    if (recordDate > closeDate) continue;
+
+    let name = (rec.getCellValue("Name (from Supplier Master)") || []).join(", ");
+    let type = rec.getCellValue("Type")?.name || "";
+    let size = rec.getCellValue("Size")?.name || "";
+    let grade = rec.getCellValue("Grade")?.name || "";
+    let weight = rec.getCellValue("Bag Weight") || 0;
+    let key = makeKey(name, type, size, grade);
+
+    summary[key].closing += weight;
+}
+
+// 2) Used Bags records with Date > Closing Date
+for (let rec of usedBagsQuery.records) {
+    let d = rec.getCellValue("Created");
+    if (!d) continue;
+
+    let recordDate = new Date(d);
+    if (recordDate <= closeDate) continue; // only after Closing Date
+
+    let name = (rec.getCellValue("Name (from Supplier Master)") || []).join(", ");
+    let type = rec.getCellValue("Type")?.name || "";
+    let size = rec.getCellValue("Size")?.name || "";
+    let grade = rec.getCellValue("Grade")?.name || "";
+    let weight = rec.getCellValue("Bag Weight") || 0;
+    let key = makeKey(name, type, size, grade);
+
+    summary[key].closing += weight;
+}
+
+// === SORT PRODUCT TYPES ALPHABETICALLY ===
+let sortedEntries = Object.entries(summary).sort((a, b) => a[0].localeCompare(b[0]));
+
+// === PREPARE RECORDS TO INSERT ===
+let recordsToInsert = sortedEntries.map(([key, vals]) => ({
+    fields: {
+        "Product Type": key,
+        "Opening Stock": vals.opening,
+        "Closing Stock": vals.closing,
+        "Inward": vals.inward,
+        "Consumption": vals.consumption
+    }
+}));
+
+// === BULK INSERT IN BATCHES ===
+while (recordsToInsert.length) {
+    await stockTable.createRecordsAsync(recordsToInsert.slice(0, 50));
+    recordsToInsert = recordsToInsert.slice(50);
+}

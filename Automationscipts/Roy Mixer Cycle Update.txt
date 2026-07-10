@@ -1,0 +1,71 @@
+let newRecordId = input.config().newRecordId;
+
+let table1 = base.getTable("Change Parameters Roy Mixer Cycle"); // source
+let table2 = base.getTable("Roy Mixer Cycle"); // new entries
+
+let newRecord = await table2.selectRecordAsync(newRecordId);
+let batch = newRecord.getCellValue("Batch");
+let cycle = newRecord.getCellValue("Cycle");
+
+if (!batch || cycle === null || cycle === undefined) {
+    console.log("Missing Batch or Cycle value — skipping.");
+    return;
+}
+
+// Fetch all source records
+let sourceRecords = await table1.selectRecordsAsync();
+
+// Filter candidates with same Batch and From Cycle ≤ Cycle
+let candidates = sourceRecords.records
+    .filter(r => 
+        r.getCellValue("Batch") === batch &&
+        r.getCellValue("From Cycle") !== null &&
+        r.getCellValue("From Cycle") <= cycle
+    );
+
+// Pick the one with highest From Cycle
+let latestApplicable = null;
+for (let record of candidates) {
+    if (!latestApplicable || record.getCellValue("From Cycle") > latestApplicable.getCellValue("From Cycle")) {
+        latestApplicable = record;
+    }
+}
+
+if (!latestApplicable) {
+    console.log("No matching source record with From Cycle ≤ Cycle.");
+    return;
+}
+
+// Build list of shared fields
+let targetFields = table2.fields;
+let sourceFieldNames = table1.fields.map(f => f.name);
+
+let updates = {};
+for (let field of targetFields) {
+    let name = field.name;
+    let type = field.type;
+
+    if (!sourceFieldNames.includes(name)) continue;
+
+    let current = newRecord.getCellValue(name);
+    let source = latestApplicable.getCellValue(name);
+
+    if ((current === null || current === undefined) && source !== null && source !== undefined) {
+        if (["singleSelect", "multipleSelects"].includes(type)) {
+            updates[name] = type === "multipleSelects"
+                ? source.map(option => ({ name: option.name }))
+                : { name: source.name };
+        } else if (type === "multipleRecordLinks") {
+            updates[name] = source.map(link => ({ id: link.id }));
+        } else {
+            updates[name] = source;
+        }
+    }
+}
+
+if (Object.keys(updates).length > 0) {
+    await table2.updateRecordAsync(newRecordId, updates);
+    console.log("Updated fields:", updates);
+} else {
+    console.log("No updates needed.");
+}

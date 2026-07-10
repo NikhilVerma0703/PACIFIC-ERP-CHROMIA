@@ -1,0 +1,25 @@
+# CI: type-check + unit tests on every push/PR to main.
+# Fails fast on GitHub before anyone trusts a green Vercel deploy.
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Type-check
+        run: npx tsc --noEmit
+      - name: Unit tests
+        run: npm test
+      - name: Lint (advisory)
+        run: npx next lint
+        continue-on-error: true

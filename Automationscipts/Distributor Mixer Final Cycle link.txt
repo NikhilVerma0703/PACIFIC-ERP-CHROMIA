@@ -1,0 +1,163 @@
+// Tables
+let distributorTable = base.getTable("Distributor");
+let mixerCycleTable = base.getTable("Mixer Cycle");
+let wastageTable = base.getTable("wastage");
+let changeParamsTable = base.getTable("Change Parameters Distributor");
+
+// Input
+let inputConfig = input.config();
+let createdRecordId = inputConfig.recordId;
+
+// Normalize helper — trims, lowers, removes internal spaces
+function normalize(value) {
+    if (!value) return "";
+    return String(value).toLowerCase().replace(/\s+/g, "");
+}
+
+// Fetch created Distributor record
+let distributorRecord = await distributorTable.selectRecordAsync(createdRecordId);
+if (!distributorRecord) {
+    console.log("Record not found.");
+    return;
+}
+
+// Check if it's the Last Slab
+if (!distributorRecord.getCellValue("Last Slab?")) {
+    console.log("Not the last slab. Exiting.");
+    return;
+}
+
+let currentSlabNumber = distributorRecord.getCellValue("Slab Number");
+if (currentSlabNumber == null) {
+    console.log("Slab Number missing. Exiting.");
+    return;
+}
+
+// 🔍 Find matching Batch from "Change Parameters Distributor"
+let changeRecords = await changeParamsTable.selectRecordsAsync({
+    fields: ["Effective from slab number", "Batch"]
+});
+
+let matchingRecord = changeRecords.records
+    .filter(r => {
+        let eff = r.getCellValue("Effective from slab number");
+        return eff != null && eff <= currentSlabNumber;
+    })
+    .sort((a, b) =>
+        b.getCellValue("Effective from slab number") - a.getCellValue("Effective from slab number")
+    )[0];
+
+if (!matchingRecord) {
+    console.log("No matching batch found in 'Change Parameters Distributor'. Exiting.");
+    return;
+}
+
+let rawBatch = matchingRecord.getCellValue("Batch");
+if (!rawBatch) {
+    console.log("Batch missing. Exiting.");
+    return;
+}
+
+let batchName = normalize(rawBatch);
+console.log(`🎯 Using normalized batch "${batchName}" from Change Parameters Distributor`);
+
+// Fetch all slabs for this batch (normalized match)
+let distributorQuery = await distributorTable.selectRecordsAsync({
+    fields: ["Batch", "Total Weight at Distributor", "Slab Number", "Mixer Cycle"]
+});
+
+let slabs = distributorQuery.records
+    .filter(rec => normalize(rec.getCellValue("Batch")) === batchName)
+    .map(rec => ({
+        id: rec.id,
+        weight: rec.getCellValue("Total Weight at Distributor") || 0,
+        slabNumber: rec.getCellValue("Slab Number") || 0
+    }))
+    .sort((a, b) => a.slabNumber - b.slabNumber);
+
+// Fetch all mixer cycles for this batch (normalized match)
+let mixerCycleQuery = await mixerCycleTable.selectRecordsAsync({
+    fields: ["Batch", "Total Cycle Weight", "Cycle"]
+});
+
+let cycles = mixerCycleQuery.records
+    .filter(rec => normalize(rec.getCellValue("Batch")) === batchName)
+    .map(rec => ({
+        id: rec.id,
+        cycleNumber: rec.getCellValue("Cycle") || 0,
+        totalWeight: rec.getCellValue("Total Cycle Weight") || 0
+    }))
+    .sort((a, b) => a.cycleNumber - b.cycleNumber);
+
+if (cycles.length === 0) {
+    console.log(`❌ No mixer cycles found for batch "${batchName}". Exiting.`);
+    return;
+}
+
+// Fetch wastage records for this batch (normalized match)
+let wastageQuery = await wastageTable.selectRecordsAsync({
+    fields: ["Batch", "Slab number after which material dumped", "Amount wasted"]
+});
+
+let wastages = wastageQuery.records
+    .filter(rec => normalize(rec.getCellValue("Batch")) === batchName)
+    .map(rec => ({
+        slabAfter: rec.getCellValue("Slab number after which material dumped"),
+        amount: rec.getCellValue("Amount wasted") || 0
+    }))
+    .sort((a, b) => a.slabAfter - b.slabAfter);
+
+// Calculate Wastage %
+let totalCycleWeight = cycles.reduce((sum, c) => sum + c.totalWeight, 0);
+let totalDistributorWeight = slabs.reduce((sum, s) => sum + s.weight, 0);
+let wastagePercent = (totalCycleWeight - totalDistributorWeight) / totalCycleWeight;
+
+// Adjust Mixer Cycle Weights for wastage %
+for (let cycle of cycles) {
+    cycle.adjustedWeight = cycle.totalWeight * (1 - wastagePercent);
+}
+
+// Distribute slabs to mixer cycles
+let updates = [];
+let cycleIndex = 0;
+let remainder = cycles[cycleIndex].adjustedWeight;
+let wastageIndex = 0;
+
+for (let i = 0; i < slabs.length; i++) {
+    let slab = slabs[i];
+
+    // Apply wastage if needed
+    if (
+        wastageIndex < wastages.length &&
+        slabs[i - 1] &&
+        slabs[i - 1].slabNumber === wastages[wastageIndex].slabAfter
+    ) {
+        console.log(`Applying wastage of ${wastages[wastageIndex].amount}kg after slab ${wastages[wastageIndex].slabAfter}`);
+        remainder -= wastages[wastageIndex].amount;
+        wastageIndex++;
+    }
+
+    // Move to next cycle if remainder too low
+    if (remainder < (slab.weight / 2) && cycleIndex + 1 < cycles.length) {
+        cycleIndex++;
+        remainder = cycles[cycleIndex].adjustedWeight;
+    }
+
+    // Assign Mixer Cycle
+    updates.push({
+        id: slab.id,
+        fields: {
+            "Mixer Cycle": [{ id: cycles[cycleIndex].id }]
+        }
+    });
+
+    remainder -= slab.weight;
+}
+
+// Batch update slabs
+while (updates.length > 0) {
+    await distributorTable.updateRecordsAsync(updates.slice(0, 50));
+    updates = updates.slice(50);
+}
+
+console.log(`✅ Completed mixer cycle assignment for Batch: ${batchName}`);

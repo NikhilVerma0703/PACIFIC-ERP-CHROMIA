@@ -1,0 +1,70 @@
+// Tables
+let changeTable = base.getTable("Change Parameters Distributor");
+let distributorTable = base.getTable("Distributor");
+
+// Fetch all records
+let [changeRecords, distributorRecords] = await Promise.all([
+    changeTable.selectRecordsAsync(),
+    distributorTable.selectRecordsAsync()
+]);
+
+// Build sorted change records by effective slab number
+let sortedChangeRecords = changeRecords.records
+    .filter(r => typeof r.getCellValue("Effective from slab number") === "number")
+    .sort((a, b) =>
+        b.getCellValue("Effective from slab number") - a.getCellValue("Effective from slab number")
+    );
+
+// Create a Set of distributor field names for fast lookup
+let distributorFieldNames = new Set(distributorTable.fields.map(f => f.name));
+
+// Create list of fields to copy (excluding control & skipped fields)
+let fieldsToCopy = changeTable.fields
+    .map(f => f.name)
+    .filter(name =>
+        name !== "Effective from slab number" &&
+        name !== "Effective from slab count" &&
+        name !== "Operator" &&
+        distributorFieldNames.has(name)
+    );
+
+// Loop through all distributor records
+for (let record of distributorRecords.records) {
+    let slab = record.getCellValue("Slab Number");
+    if (typeof slab !== "number") continue;
+
+    // Find best-matching change record
+    let matchedChange = sortedChangeRecords.find(change =>
+        change.getCellValue("Effective from slab number") <= slab
+    );
+    if (!matchedChange) continue;
+
+    // Prepare updates
+    let fieldsToUpdate = {};
+    for (let fieldName of fieldsToCopy) {
+        let current = record.getCellValue(fieldName);
+        let newVal = matchedChange.getCellValue(fieldName);
+
+        // FIX: Sanitize Multiple Select / Single Select values
+        // We strip the ID and color, keeping only { name: "Value" }
+        // This prevents "Choice ID does not exist" errors when copying between tables
+        if (newVal) {
+            if (Array.isArray(newVal)) {
+                // Handle Multiple Select (Array)
+                newVal = newVal.map(item => ({ name: item.name }));
+            } else if (typeof newVal === "object" && newVal.name) {
+                // Handle Single Select (Object)
+                newVal = { name: newVal.name };
+            }
+        }
+
+        if (newVal !== null && current === null) {
+            fieldsToUpdate[fieldName] = newVal;
+        }
+    }
+
+    // Update only if something changed
+    if (Object.keys(fieldsToUpdate).length > 0) {
+        await distributorTable.updateRecordAsync(record.id, fieldsToUpdate);
+    }
+}

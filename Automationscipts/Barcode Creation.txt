@@ -1,0 +1,50 @@
+let table = base.getTable("Polish Entry");
+let inputConfig = input.config();
+let recordId = inputConfig.recordId;
+
+// Fetch the record
+let record = await table.selectRecordAsync(recordId);
+if (!record) {
+    throw new Error(`❌ No record found with ID: ${recordId}`);
+}
+
+let slabNumber = record.getCellValue("Slab Number");
+if (!slabNumber) {
+    throw new Error("❌ Slab Number is missing in this record.");
+}
+
+let newSKU = String(slabNumber);
+
+// Update SKU
+await table.updateRecordAsync(recordId, {
+    "SKU": newSKU
+});
+
+console.log(`✅ SKU set to '${newSKU}' for record ${recordId}`);
+let table = base.getTable("Polish Entry");
+let inputConfig = input.config();
+let recordId = inputConfig.recordId;
+
+let record = await table.selectRecordAsync(recordId);
+if (!record) {
+    throw new Error(`❌ No record found with ID: ${recordId}`);
+}
+
+let apiLink = record.getCellValue("Barcode API Link");
+if (!apiLink || typeof apiLink !== "string" || !apiLink.startsWith("http")) {
+    throw new Error("❌ Invalid or missing Barcode API Link.");
+}
+
+let slabNumber = record.getCellValue("Slab Number") || "barcode";
+
+// Update Barcode field with image
+await table.updateRecordAsync(recordId, {
+    "Barcode": [
+        {
+            url: apiLink,
+            filename: `${slabNumber}.png`
+        }
+    ]
+});
+
+console.log(`✅ Barcode image uploaded for record ${recordId}`);
