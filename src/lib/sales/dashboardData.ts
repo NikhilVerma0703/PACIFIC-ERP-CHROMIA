@@ -68,7 +68,7 @@ export async function buildSalesDashboardData(user: DashboardUser) {
   let factoryOrderIds: string[] | null = null;
   if (isCommercialOrAccounts && salesFactory) {
     const rows: any[] = await db.$queryRawUnsafe(
-      `SELECT DISTINCT order_id FROM proforma_invoices WHERE product_type = $1 AND order_id IS NOT NULL`,
+      `SELECT DISTINCT order_id FROM proforma_invoices WHERE product_type::text = $1 AND order_id IS NOT NULL`,
       salesFactory
     ).catch(() => []);
     factoryOrderIds = rows.map((r: any) => r.order_id).filter(Boolean);
@@ -82,7 +82,7 @@ export async function buildSalesDashboardData(user: DashboardUser) {
   let factoryPiIds: string[] | null = null;
   if (isCommercialOrAccounts && salesFactory) {
     const rows: any[] = await db.$queryRawUnsafe(
-      `SELECT id FROM proforma_invoices WHERE product_type = $1`,
+      `SELECT id FROM proforma_invoices WHERE product_type::text = $1`,
       salesFactory
     ).catch(() => []);
     factoryPiIds = rows.map((r: any) => r.id).filter(Boolean);

@@ -54,11 +54,13 @@ export async function GET(req: Request) {
     spFilter = { spId: spFilter_param };
   }
 
-  // productType filter -- raw SQL to avoid text = "ProductType" enum cast mismatch
+  // productType filter -- raw SQL. The DB column is the "ProductType" enum, so
+  // the text parameter must be compared via ::text (a bare `product_type = $1`
+  // throws 42883 "operator does not exist" and the whole list 500s).
   let productTypeWhere: object = {};
   if (effectiveFactory) {
     const rows: any[] = await db.$queryRawUnsafe(
-      `SELECT id FROM proforma_invoices WHERE product_type = $1`,
+      `SELECT id FROM proforma_invoices WHERE product_type::text = $1`,
       effectiveFactory
     );
     const piIds = rows.map((r: any) => r.id).filter(Boolean);
