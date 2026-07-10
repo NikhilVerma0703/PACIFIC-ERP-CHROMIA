@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { salesAuth as auth } from "@/lib/sales/session";
 import { redirect } from "next/navigation";
+import { getSpMap } from "@/lib/sales/spLookup";
 import { prisma } from "@/lib/prisma";
 import Link from "next/link";
 import ProductionClient from "./ProductionClient";
@@ -21,7 +22,6 @@ export default async function ProductionPage() {
     where: { status: { in: ["PENDING_PRODUCTION", "IN_PRODUCTION", "PACKING"] } },
     include: {
       client:           { select: { id: true, name: true, country: true } },
-      sp:               { select: { id: true, name: true, email: true } },
       proformaInvoices: {
         where:   { status: "ACCEPTED" },
         take:    1,
@@ -31,6 +31,8 @@ export default async function ProductionPage() {
     },
     orderBy: { updatedAt: "asc" },
   });
+  const spMap = await getSpMap(orders.map((o: { spId: string | null }) => o.spId));
+  const withSp = orders.map((o: { spId: string | null }) => ({ ...o, sp: spMap.get(String(o.spId)) ?? { id: String(o.spId ?? ""), name: String(o.spId ?? "—"), email: null } }));
 
   return (
     <ProductionClient
