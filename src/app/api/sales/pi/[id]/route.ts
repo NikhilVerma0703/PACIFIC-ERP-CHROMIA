@@ -42,6 +42,54 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
   return Response.json(pi);
 }
 
+// DELETE /api/sales/pi/[id] — managers (SALES_ADMIN, REPORTING_MANAGER) may
+// delete ANY PI; a SALESPERSON only their own (spId is a plain TEXT user id —
+// compared directly, resolved elsewhere via spLookup; no relation involved).
+// A PI referenced by an order is never deleted: the caller gets a 409 telling
+// them why. Child rows (rejection logs, revisions) carry real DB FKs
+// (scripts/0019), so they are removed with the PI in one transaction.
+export async function DELETE(_: Request, { params }: { params: Promise<{ id: string }> }) {
+  const session = await auth();
+  if (!session?.user) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const uid       = (session.user as any).id as string;
+  const salesRole = (session.user as any).salesRole as string | null;
+
+  const isManager = salesRole === "SALES_ADMIN" || salesRole === "REPORTING_MANAGER";
+  if (!isManager && salesRole !== "SALESPERSON") {
+    return Response.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  const { id } = await params;
+  const pi = await db.proformaInvoice.findUnique({
+    where:  { id },
+    select: { id: true, piNumber: true, spId: true, orderId: true },
+  });
+  if (!pi) return Response.json({ error: "Not found" }, { status: 404 });
+
+  if (!isManager && pi.spId !== uid) {
+    return Response.json({ error: "You can only delete your own PIs" }, { status: 403 });
+  }
+
+  // Block when any order references this PI (pi.orderId or the order-side
+  // relation) — deleting a PI must never touch an order.
+  const linkedOrder = pi.orderId
+    ? await db.salesOrder.findUnique({ where: { id: pi.orderId }, select: { orderNumber: true } })
+    : await db.salesOrder.findFirst({ where: { proformaInvoices: { some: { id } } }, select: { orderNumber: true } });
+  if (linkedOrder) {
+    return Response.json({
+      error: `This PI is linked to order ${linkedOrder.orderNumber}. Deleting a PI never deletes an order — cancel or remove that order first.`,
+    }, { status: 409 });
+  }
+
+  await db.$transaction([
+    db.pIRejectionLog.deleteMany({ where: { piId: id } }),
+    db.pIRevision.deleteMany({ where: { piId: id } }),
+    db.proformaInvoice.delete({ where: { id } }),
+  ]);
+
+  return Response.json({ ok: true, deleted: pi.piNumber });
+}
+
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await auth();
   if (!session?.user) return Response.json({ error: "Unauthorized" }, { status: 401 });

@@ -15,7 +15,7 @@ type PI = {
   rejectionCount: number; revisionCount?: number;
   items: PIItem[];
   client: { name: string; email: string | null; country: string | null; contactPerson: string | null };
-  sp: { name: string | null; email: string };
+  sp: { id?: string; name: string | null; email: string };
   order: { id: string; orderNumber: string } | null;
   rejectionLogs: { id: string; reason: string | null; rejectedAt: string }[];
   revisions?: PIRevision[];
@@ -36,6 +36,7 @@ export default function PIDetailPage({ params }: { params: Promise<{ id: string 
   const [loading, setLoading]  = useState(true);
   const [busy, setBusy]        = useState("");
   const [msg, setMsg]          = useState("");
+  const [me, setMe]            = useState<{ id: string; salesRole: string | null } | null>(null);
 
   // Revision request panel
   const [showRevision, setShowRevision]   = useState(false);
@@ -48,7 +49,12 @@ export default function PIDetailPage({ params }: { params: Promise<{ id: string 
     if (r.ok) setPi(await r.json());
     setLoading(false);
   }
-  useEffect(() => { load(); }, [id]);
+  useEffect(() => {
+    load();
+    fetch("/api/sales/me").then(r => (r.ok ? r.json() : null))
+      .then(d => { if (d?.id) setMe({ id: d.id, salesRole: d.salesRole ?? null }); })
+      .catch(() => {});
+  }, [id]);
 
   async function action(endpoint: string, body?: object) {
     setBusy(endpoint); setMsg("");
@@ -84,6 +90,21 @@ export default function PIDetailPage({ params }: { params: Promise<{ id: string 
     router.push(`/sales/orders/${d.id}`);
   }
 
+  async function deletePi() {
+    if (!pi) return;
+    if (pi.order) {
+      setMsg(`Error: This PI is linked to order ${pi.order.orderNumber} — deleting a PI never deletes an order. Cancel or remove that order first.`);
+      return;
+    }
+    if (!confirm(`Delete PI ${pi.piNumber}?\n\nThis permanently removes the PI and its revision history and cannot be undone.`)) return;
+    setBusy("delete"); setMsg("");
+    const r = await fetch(`/api/sales/pi/${id}`, { method: "DELETE" });
+    const d = await r.json().catch(() => ({}));
+    setBusy("");
+    if (!r.ok) { setMsg(`Error: ${d.error ?? "Delete failed"}`); return; }
+    router.push("/sales/pi");
+  }
+
   async function requestRevision() {
     await action("revision", { reason: revReason, customerRemarks: revCustomer });
     setShowRevision(false);
@@ -100,6 +121,12 @@ export default function PIDetailPage({ params }: { params: Promise<{ id: string 
   const canRevision= pi.status === "SENT" || pi.status === "UNDER_REVISION";
   const canOrder   = pi.status === "ACCEPTED" && !pi.order;
   const canEdit    = pi.status === "DRAFT" || pi.status === "UNDER_REVISION";
+  // Managers may delete any PI; a salesperson only their own (server re-checks).
+  const canDelete  = !!me && (
+    me.salesRole === "SALES_ADMIN" ||
+    me.salesRole === "REPORTING_MANAGER" ||
+    (me.salesRole === "SALESPERSON" && pi.sp?.id === me.id)
+  );
   const revCount   = pi.revisionCount ?? pi.rejectionCount ?? 0;
 
   const allRevisions: PIRevision[] = pi.revisions?.length
@@ -281,6 +308,14 @@ export default function PIDetailPage({ params }: { params: Promise<{ id: string 
               className="px-4 py-2 bg-brand/10 text-brand text-sm font-semibold rounded-lg hover:bg-brand/20 transition">
               View Order {pi.order.orderNumber} →
             </Link>
+          )}
+
+          {canDelete && (
+            <button onClick={deletePi} disabled={busy === "delete"}
+              title={pi.order ? `Linked to order ${pi.order.orderNumber} — cannot be deleted` : "Permanently delete this PI"}
+              className="ml-auto px-4 py-2 bg-red-50 text-red-600 border border-red-200 text-sm font-semibold rounded-lg hover:bg-red-100 disabled:opacity-50 transition">
+              {busy === "delete" ? "Deleting…" : "Delete PI"}
+            </button>
           )}
         </div>
 
