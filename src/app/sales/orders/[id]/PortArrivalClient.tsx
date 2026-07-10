@@ -191,7 +191,7 @@ export default function PortArrivalClient({ orderId }: { orderId: string }) {
 
           <div className="flex gap-2">
             <button onClick={save} disabled={saving}
-              className="bg-teal-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-teal-700 disabled:opacity-50">
+              className="bg-brand text-white text-sm px-4 py-2 rounded-lg hover:bg-brand-dark disabled:opacity-50">
               {saving ? "Saving…" : "Save Port Arrival"}
             </button>
             <button onClick={() => { setShowForm(false); setMsg(""); }}

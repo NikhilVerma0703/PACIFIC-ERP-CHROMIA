@@ -225,7 +225,7 @@ export default function StatusFlowClient({
           <button
             onClick={() => advance(nextStatus)}
             disabled={busy}
-            className="px-4 py-2 bg-teal-600 text-white text-sm font-semibold rounded-lg hover:bg-teal-700 disabled:opacity-50 transition"
+            className="px-4 py-2 bg-brand text-white text-sm font-semibold rounded-lg hover:bg-brand-dark disabled:opacity-50 transition"
           >
             {busy ? "Updating…" : `→ Mark as ${SHORT[nextStatus]}`}
           </button>

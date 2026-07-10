@@ -428,7 +428,7 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
           )}
           {allDocsReady ? (
             <a href={`/api/sales/orders/${orderId}/combined-pdf`} target="_blank"
-              className="px-3 py-1.5 bg-teal-600 text-white text-xs font-semibold rounded-lg hover:bg-teal-700 transition">
+              className="px-3 py-1.5 bg-brand text-white text-xs font-semibold rounded-lg hover:bg-brand-dark transition">
               Combined PDF (Invoice + PL + DML)
             </a>
           ) : (
@@ -438,7 +438,7 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
                 !hasPackingList && "Packing List upload",
                 !hasMeasurementList && "Measurement List upload",
               ].filter(Boolean).join(", ")}`}
-              className="px-3 py-1.5 bg-teal-600 text-white text-xs font-semibold rounded-lg opacity-40 cursor-not-allowed select-none">
+              className="px-3 py-1.5 bg-brand text-white text-xs font-semibold rounded-lg opacity-40 cursor-not-allowed select-none">
               Combined PDF (Invoice + PL + DML)
             </span>
           )}
@@ -690,7 +690,7 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
             <button
               onClick={sendDispatchEmail}
               disabled={dispatchSending}
-              className="shrink-0 px-4 py-2 text-xs font-bold bg-teal-600 text-white rounded-lg hover:bg-teal-700 disabled:opacity-50 transition">
+              className="shrink-0 px-4 py-2 text-xs font-bold bg-brand text-white rounded-lg hover:bg-brand-dark disabled:opacity-50 transition">
               {dispatchSending ? "Sending..." : dispatchSent ? "Sent!" : "Send Dispatch Email"}
             </button>
           </div>
@@ -720,7 +720,7 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
             <button
               onClick={sendShippingDocsEmail}
               disabled={shippingSending || !docs.blNo}
-              className="shrink-0 px-4 py-2 text-xs font-bold bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 transition">
+              className="shrink-0 px-4 py-2 text-xs font-bold bg-brand text-white rounded-lg hover:bg-brand-dark disabled:opacity-50 transition">
               {shippingSending ? "Sending..." : shippingSent ? "Sent!" : "Send Shipping Docs"}
             </button>
           </div>

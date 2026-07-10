@@ -254,7 +254,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         </span>
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200 p-6 mb-4">
+      <div className="bg-white rounded-2xl border border-slate-200 p-6 mb-4">
         <div className="flex justify-between items-start mb-4">
           <div>
             <h2 className="text-lg font-bold text-slate-900">{order.orderNumber}</h2>
@@ -308,7 +308,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         </div>
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200 p-5 mb-4">
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-4">
         <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-4">Order Status</p>
         <StatusFlowClient
           orderId={order.id}
@@ -319,7 +319,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       </div>
 
       {mainPI && (
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden mb-4">
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden mb-4">
           <div className="px-5 py-3 bg-slate-50 border-b border-slate-100">
             <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Line Items</p>
           </div>
@@ -355,7 +355,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       )}
 
       {order.paymentDivisions.length > 0 && (
-        <div className="bg-white rounded-xl border border-slate-200 p-5 mb-4">
+        <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-4">
           <div className="flex items-center justify-between mb-3">
             <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Payment Schedule</p>
             <span className="text-xs text-slate-500">{paidPct}% paid - {currency} {paidAmount.toFixed(2)}</span>
@@ -411,7 +411,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                           <button
                             onClick={() => extendDivision(d.id)}
                             disabled={divBusy === d.id}
-                            className="text-xs px-2 py-1 bg-blue-600 text-white rounded font-semibold hover:bg-blue-700 disabled:opacity-50 transition"
+                            className="text-xs px-2 py-1 bg-brand text-white rounded font-semibold hover:bg-brand-dark disabled:opacity-50 transition"
                           >
                             {divBusy === d.id ? "Saving..." : "Confirm"}
                           </button>
@@ -472,7 +472,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       )}
 
       {order.productionJob && (
-        <div className="bg-white rounded-xl border border-slate-200 p-5 mb-4">
+        <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-4">
           <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-2">Production</p>
           <div className="flex items-center gap-3">
             <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full text-xs font-semibold">
@@ -487,7 +487,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       )}
 
       {order.stockCheck && (
-        <div className="bg-white rounded-xl border border-slate-200 p-5 mb-4">
+        <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-4">
           <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-2">Stock Check</p>
           <div className="flex items-center gap-3 text-sm">
             <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
@@ -501,7 +501,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       )}
 
       {/* Packing List Approval */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5 mb-4">
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-4">
         <div className="flex items-center gap-2 mb-4">
           <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">
             Packing List Approval
@@ -514,7 +514,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       </div>
 
       {/* Commercial Invoice — filled by Commercial, generates PDF */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5 mb-4">
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-4">
         <div className="flex items-center gap-2 mb-4">
           <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Commercial Invoice</p>
           <span className={`px-2 py-0.5 text-[10px] font-bold rounded-full ${
@@ -537,14 +537,14 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         />
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200 p-5 mb-4">
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-4">
         <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-4">
           Shipping Docs and Documents
         </p>
         <ShippingDocsClient orderId={order.id} piItems={(order.proformaInvoices[0]?.items as any[]) ?? []} />
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200 p-5 mb-4">
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-4">
         <div className="flex items-center justify-between mb-4">
           <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">
             Port Arrival and Delivery
@@ -560,7 +560,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         <PortArrivalClient orderId={order.id} />
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200 p-5 mb-4">
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-4">
         <div className="flex items-center justify-between mb-4">
           <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Credit Notes</p>
           <button onClick={() => { setShowCNForm(s => !s); setCNMsg(""); }}
@@ -742,7 +742,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       </div>
 
       {order.logs.length > 0 && (
-        <div className="bg-white rounded-xl border border-slate-200 p-5 mb-4">
+        <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-4">
           <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-3">Activity</p>
           <div className="space-y-2">
             {order.logs.map(log => (

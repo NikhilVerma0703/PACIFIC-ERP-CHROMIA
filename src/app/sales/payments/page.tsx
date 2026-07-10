@@ -436,7 +436,7 @@ export default function PaymentsPage() {
                             onClick={() => sendReminder(d.id)}
                             disabled={!!busy}
                             title="Send payment reminder email to client"
-                            className="px-2.5 py-1 bg-blue-600 text-white text-xs font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50 transition">
+                            className="px-2.5 py-1 bg-brand text-white text-xs font-semibold rounded-lg hover:bg-brand-dark disabled:opacity-50 transition">
                             {busy === `remind-${d.id}` ? "…" : "Send Reminder"}
                           </button>
                         )}

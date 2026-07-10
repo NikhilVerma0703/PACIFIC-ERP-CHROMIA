@@ -59,7 +59,7 @@ export default function MailBodiesClient({
             className={[
               "px-3 py-1.5 text-xs font-medium rounded-lg border transition",
               active === key
-                ? "bg-teal-600 text-white border-teal-600"
+                ? "bg-brand text-white border-brand"
                 : isModified(key)
                   ? "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100"
                   : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50",

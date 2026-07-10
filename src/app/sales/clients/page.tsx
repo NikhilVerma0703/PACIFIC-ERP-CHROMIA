@@ -100,7 +100,7 @@ export default function ClientsPage() {
           <p className="text-sm text-slate-500 mt-0.5">{clients.length} client{clients.length !== 1 ? "s" : ""}</p>
         </div>
         <button onClick={openNew}
-          className="flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-semibold rounded-lg hover:bg-teal-700 transition">
+          className="flex items-center gap-2 px-4 py-2 bg-brand text-white text-sm font-semibold rounded-lg hover:bg-brand-dark transition">
           <span className="text-lg leading-none">+</span> Add Client
         </button>
       </div>
@@ -116,7 +116,7 @@ export default function ClientsPage() {
       ) : filtered.length === 0 ? (
         <div className="text-sm text-slate-400 py-12 text-center">No clients yet. Add your first client to get started.</div>
       ) : (
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-100">
@@ -205,7 +205,7 @@ export default function ClientsPage() {
             <div className="flex justify-end gap-2 pt-2">
               <button onClick={() => setModal(null)} className="px-4 py-2 text-sm text-slate-600 hover:text-slate-900">Cancel</button>
               <button onClick={save} disabled={saving}
-                className="px-4 py-2 bg-teal-600 text-white text-sm font-semibold rounded-lg hover:bg-teal-700 disabled:opacity-50 transition">
+                className="px-4 py-2 bg-brand text-white text-sm font-semibold rounded-lg hover:bg-brand-dark disabled:opacity-50 transition">
                 {saving ? "Saving…" : "Save"}
               </button>
             </div>

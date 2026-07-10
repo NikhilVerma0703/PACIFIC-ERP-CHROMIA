@@ -300,7 +300,7 @@ export default function CommercialInvoiceClient({
         <button
           onClick={generate}
           disabled={saving || generating}
-          className="px-5 py-2 text-xs font-bold bg-teal-600 text-white rounded-lg hover:bg-teal-700 disabled:opacity-50 transition"
+          className="px-5 py-2 text-xs font-bold bg-brand text-white rounded-lg hover:bg-brand-dark disabled:opacity-50 transition"
         >
           {generating ? "Generating…" : "Generate Invoice & Combined PDF"}
         </button>

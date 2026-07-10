@@ -68,7 +68,7 @@ export default function FactoryAccessClient({ users }: { users: FactoryUser[] })
           <button
             onClick={() => save(u.id)}
             disabled={saving === u.id}
-            className="px-3 py-1.5 bg-teal-600 text-white text-xs font-semibold rounded-lg hover:bg-teal-700 disabled:opacity-50 transition"
+            className="px-3 py-1.5 bg-brand text-white text-xs font-semibold rounded-lg hover:bg-brand-dark disabled:opacity-50 transition"
           >
             {saving === u.id ? "Saving…" : "Save"}
           </button>

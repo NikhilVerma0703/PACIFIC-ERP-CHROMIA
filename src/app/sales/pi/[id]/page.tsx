@@ -145,7 +145,7 @@ export default function PIDetailPage({ params }: { params: Promise<{ id: string 
       )}
 
       {/* Header card */}
-      <div className="bg-white rounded-xl border border-slate-200 p-6 mb-4">
+      <div className="bg-white rounded-2xl border border-slate-200 p-6 mb-4">
         <div className="flex items-start justify-between mb-4">
           <div>
             <h2 className="text-lg font-bold text-slate-900">{pi.piNumber}</h2>
@@ -184,7 +184,7 @@ export default function PIDetailPage({ params }: { params: Promise<{ id: string 
       </div>
 
       {/* Items */}
-      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden mb-4">
+      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden mb-4">
         <div className="px-5 py-3 bg-slate-50 border-b border-slate-100">
           <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Line Items</p>
         </div>
@@ -224,7 +224,7 @@ export default function PIDetailPage({ params }: { params: Promise<{ id: string 
       </div>
 
       {/* Actions */}
-      <div className="bg-white rounded-xl border border-slate-200 p-4 mb-4">
+      <div className="bg-white rounded-2xl border border-slate-200 p-4 mb-4">
         <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Actions</p>
         <div className="flex flex-wrap gap-3">
           <a href={`/api/sales/pi/${id}/pdf`} target="_blank" rel="noopener noreferrer"
@@ -234,14 +234,14 @@ export default function PIDetailPage({ params }: { params: Promise<{ id: string 
 
           {canSend && (
             <button onClick={() => action("send")} disabled={busy === "send"}
-              className="px-4 py-2 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50 transition">
+              className="px-4 py-2 bg-brand text-white text-sm font-semibold rounded-lg hover:bg-brand-dark disabled:opacity-50 transition">
               {busy === "send" ? "Sending…" : "📧 Send to Client"}
             </button>
           )}
 
           {canResend && (
             <button onClick={() => action("resend")} disabled={busy === "resend"}
-              className="px-4 py-2 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50 transition">
+              className="px-4 py-2 bg-brand text-white text-sm font-semibold rounded-lg hover:bg-brand-dark disabled:opacity-50 transition">
               {busy === "resend" ? "Sending…" : "📧 Resend Revised PI"}
             </button>
           )}
@@ -269,14 +269,14 @@ export default function PIDetailPage({ params }: { params: Promise<{ id: string 
 
           {canOrder && (
             <button onClick={createOrder} disabled={busy === "order"}
-              className="px-4 py-2 bg-teal-600 text-white text-sm font-semibold rounded-lg hover:bg-teal-700 disabled:opacity-50 transition">
+              className="px-4 py-2 bg-brand text-white text-sm font-semibold rounded-lg hover:bg-brand-dark disabled:opacity-50 transition">
               {busy === "order" ? "Creating…" : "📋 Create Order"}
             </button>
           )}
 
           {pi.order && (
             <Link href={`/sales/orders/${pi.order.id}`}
-              className="px-4 py-2 bg-purple-100 text-purple-700 text-sm font-semibold rounded-lg hover:bg-purple-200 transition">
+              className="px-4 py-2 bg-brand/10 text-brand text-sm font-semibold rounded-lg hover:bg-brand/20 transition">
               View Order {pi.order.orderNumber} →
             </Link>
           )}
@@ -331,7 +331,7 @@ export default function PIDetailPage({ params }: { params: Promise<{ id: string 
 
       {/* Revision / rejection history */}
       {allRevisions.length > 0 && (
-        <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <div className="bg-white rounded-2xl border border-slate-200 p-4">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Revision History</p>
           <div className="space-y-2">
             {allRevisions.map((log, i) => (

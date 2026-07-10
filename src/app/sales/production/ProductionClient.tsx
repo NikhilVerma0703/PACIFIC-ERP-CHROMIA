@@ -158,7 +158,7 @@ function OrderCard({ order, canAct, onAction }: { order: any; canAct: boolean; o
               {order.status === "PENDING_PRODUCTION" && (
                 <button
                   onClick={() => handleBtn("IN_PROGRESS")}
-                  className="flex-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold py-2 px-3 transition"
+                  className="flex-1 rounded-lg bg-brand hover:bg-brand-dark text-white text-xs font-semibold py-2 px-3 transition"
                 >
                   ▶ Start Production
                 </button>
@@ -279,7 +279,7 @@ export default function ProductionClient({ initialOrders, isProductionManager }:
       )}
 
       {busy && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-blue-600 text-white text-sm px-4 py-2 rounded-lg shadow">
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-brand text-white text-sm px-4 py-2 rounded-lg shadow">
           Updating…
         </div>
       )}

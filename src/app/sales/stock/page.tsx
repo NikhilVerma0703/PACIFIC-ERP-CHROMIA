@@ -194,7 +194,7 @@ export default function StockChecksPage() {
                 {c.status === "PENDING" && c.order.status === "PENDING_STOCK_CHECK" && (
                   <div className="mt-3 pt-3 border-t border-slate-100 flex gap-2">
                     <button onClick={() => open(c)}
-                      className="px-3 py-1.5 bg-blue-600 text-white text-xs font-semibold rounded-lg hover:bg-blue-700 transition">
+                      className="px-3 py-1.5 bg-brand text-white text-xs font-semibold rounded-lg hover:bg-brand-dark transition">
                       Review & Update
                     </button>
                   </div>

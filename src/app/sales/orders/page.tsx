@@ -158,12 +158,12 @@ export default function OrdersPage() {
       {spTabs.length > 0 && (
         <div className="flex gap-1.5 mb-4 flex-wrap">
           <button onClick={() => { setSelectedSp("ALL"); setPage(1); }}
-            className={`px-3 py-1 rounded-full text-xs font-semibold transition ${selectedSp === "ALL" ? "bg-indigo-600 text-white" : "bg-white text-indigo-600 border border-indigo-200 hover:border-indigo-400"}`}>
+            className={`px-3 py-1 rounded-full text-xs font-semibold transition ${selectedSp === "ALL" ? "bg-brand text-white" : "bg-white text-brand border border-gray-300 hover:border-brand"}`}>
             All SPs
           </button>
           {spTabs.map(sp => (
             <button key={sp.id} onClick={() => { setSelectedSp(sp.id); setPage(1); }}
-              className={`px-3 py-1 rounded-full text-xs font-semibold transition ${selectedSp === sp.id ? "bg-indigo-600 text-white" : "bg-white text-indigo-600 border border-indigo-200 hover:border-indigo-400"}`}>
+              className={`px-3 py-1 rounded-full text-xs font-semibold transition ${selectedSp === sp.id ? "bg-brand text-white" : "bg-white text-brand border border-gray-300 hover:border-brand"}`}>
               {sp.name}
             </button>
           ))}
@@ -174,7 +174,7 @@ export default function OrdersPage() {
         {FILTERS.map(f => (
           <button key={f} onClick={() => setFilter(f)}
             className={`px-3 py-1.5 rounded-full text-xs font-semibold transition ${
-              filter === f ? "bg-teal-600 text-white" : "bg-white text-slate-600 border border-slate-200 hover:border-teal-300"
+              filter === f ? "bg-brand text-white" : "bg-white text-slate-600 border border-slate-200 hover:border-brand"
             } ${f === "&#x26A0; DELAYED" && delayedCount > 0 ? "border-red-300 text-red-600" : ""}`}>
             {f.replace(/_/g, " ")}
             {f === "&#x26A0; DELAYED" && delayedCount > 0 ? ` (${delayedCount})` : ""}
@@ -198,7 +198,7 @@ export default function OrdersPage() {
       ) : visible.length === 0 ? (
         <div className="text-sm text-slate-400 py-12 text-center">No orders found.</div>
       ) : (
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-100">

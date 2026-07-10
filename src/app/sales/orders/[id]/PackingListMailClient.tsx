@@ -104,7 +104,7 @@ export default function PackingListMailClient({ orderId }: { orderId: string }) 
           className={`px-4 py-2 text-xs font-bold rounded-lg transition disabled:opacity-50 ${
             status === "REJECTED"
               ? "bg-amber-600 text-white hover:bg-amber-700"
-              : "bg-teal-600 text-white hover:bg-teal-700"
+              : "bg-brand text-white hover:bg-brand-dark"
           }`}
         >
           {sending ? "Sending…" : status === "SENT" ? "Resend PL" : status === "REJECTED" ? "Resend Updated PL" : "Send Packing List"}
