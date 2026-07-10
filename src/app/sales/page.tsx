@@ -1,6 +1,6 @@
 import { salesAuth as auth } from "@/lib/sales/session";
 import { redirect } from "next/navigation";
-import { headers } from "next/headers";
+import { buildSalesDashboardData } from "@/lib/sales/dashboardData";
 import DashboardHierarchyTree from "./DashboardHierarchyTree";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -30,19 +30,21 @@ export default async function SalesDashboardPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
 
-  const h = await headers();
-  const cookie = h.get("cookie") ?? "";
-  const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
-
+  // Build the data in-process. The old HTTP self-fetch used
+  // NEXTAUTH_URL || localhost:3000 as its base URL — unset on Vercel, so the
+  // fetch never left the lambda and the page always fell back to
+  // "Unable to load dashboard data" (/api/sales/dashboard was never hit).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let data: any = null;
   try {
-    const res = await fetch(`${baseUrl}/api/sales/dashboard`, {
-      headers: { cookie },
-      cache: "no-store",
+    data = await buildSalesDashboardData({
+      id: session.user.id,
+      salesRole: session.user.salesRole,
+      name: session.user.name,
+      email: session.user.email,
     });
-    if (res.ok) data = await res.json();
   } catch {
-    // dashboard fetch failed silently
+    // degrade to the fallback message below
   }
 
   const userName = session.user.name ?? session.user.email ?? "User";
