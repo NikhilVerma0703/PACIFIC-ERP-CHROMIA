@@ -142,3 +142,152 @@ untouched.
 4. **createRow decomposition**: per-model post-create hooks (Jot alert, QC autolink,
    silo absorb, tank deduct) behind a small registry — biggest readability win left in
    this file, still behavior-frozen.
+
+
+## International Sales batch — 2026-07-10 (7 user-reported items, one commit each)
+
+Scope: /sales + /api/sales only. Every commit tsc-clean, tests 10/10, verified
+against the LIVE Neon DB where a claim depended on data. SP/user ids remain
+plain TEXT resolved via lib/sales/spLookup (no relation includes were added
+anywhere); all raw SQL stays parameterized ($1…).
+
+### 1. Quartz/Granite filter did nothing (f967fb9)
+`proforma_invoices.product_type` in the live DB is the `"ProductType"` enum —
+the route comments claimed TEXT, and the four raw filter queries compared
+`product_type = $1` with a text parameter → Postgres 42883 ("operator does not
+exist: ProductType = text"). Effect: clicking Quartz/Granite on the PI or
+Orders list 500'd, the client's `Array.isArray` guard turned it into an empty
+list; on the dashboard the `.catch(() => [])` around the same query silently
+collapsed Commercial/Accounts counts to `id IN ()` = zeros. Fix: compare
+`product_type::text = $1` in all four sites (api/sales/pi, api/sales/orders,
+lib/sales/dashboardData ×2) — works whether the column is enum or text.
+Verified live: 23 QUARTZ / 151 GRANITE PIs match.
+
+### 2. Part payments (5329d49)
+New nullable `sales_payment_divisions.amount_received double precision`
+(scripts/0024-payment-partial-amount.sql, APPLIED to live Neon 2026-07-10 —
+trivially additive, no approval needed per the additive-only rule; recorded
+here). Following the 0019 convention it is NOT in the Prisma model — raw SQL
+read/write only, so stale deploys can't P2022.
+- PATCH /api/sales/payments/[id] accepts `{ amountReceived }` = CUMULATIVE
+  amount received. Below the installment amount: division stays
+  PENDING/OVERDUE, paidAt stays null, balance tracked, order does NOT
+  auto-advance. At/above: identical to Mark Paid (paidAt + status PAID + the
+  existing all-advances-paid → PENDING_STOCK_CHECK hook). Gate unchanged
+  (SALES_ADMIN/ACCOUNTS). Mark Paid/Undo sync amount_received to full/NULL, so
+  Undo returns a division to cleanly-unpaid (a pre-existing partial is not
+  reconstructed — documented trade-off, no history table).
+- Payments tab: Part Pay button + modal (validates 0 < x ≤ balance, sends the
+  new cumulative total), "Received X · Bal Y" line on partially-paid rows,
+  and the Pending/Overdue/Received cards + By-Customer grouping now count
+  outstanding balances / include partial receipts instead of face amounts.
+- Order detail Payment Schedule shows "Part paid: X received · balance Y" and
+  the progress bar includes partial receipts (GET orders/[id] and GET payments
+  expose amountReceived via the existing raw-extras SELECT).
+- Order log gets PAYMENT_PARTIAL entries with amounts.
+
+### 3. Dashboard clickable (28f7cfd)
+All 8 KPI cards are now Links: orders cards → /sales/orders(?status=…), PI
+cards → /sales/pi(?status=…); Recent Orders order numbers → order detail.
+The orders/PI lists initialize their status tab from ?status= (validated
+against the page's known filter tabs) via useSearchParams, with the page
+wrapped in the Suspense boundary Next 15 requires for prerender. Visuals kept
+(only a hover affordance added). Note: the dashboard has no clients/payments
+KPI cards today, so there was nothing to wire for those two — the Pending
+Payment card deep-links to the orders list (works for every role; SALESPERSON
+has no /sales/payments access).
+
+### 4. "PDF engine not installed" on PI PDFs (7ac5991)
+Both PI templates (Quartz piPdf.ts, Granite piGranitePdf.ts) render HTML via
+puppeteer, which is deliberately not a dependency — on Vercel every PI
+download AND every PI send/resend (attachment) threw the engine error. New
+lib/sales/pdf/piPdfmake.ts renders the PI through pdfmake (already a
+dependency; powers CI/packing/stuffing docs) with the per-productType company
+block (PESPL vs PGI), and `generatePiPdfAuto()` picks the engine: puppeteer
+HTML template when installed, pdfmake when absent or when the HTML render
+fails at runtime (e.g. no Chrome). The catchable error now only surfaces with
+truly no engine. pdf/send/resend routes switched to it. Side fix: send/resend
+always used the Quartz template even for Granite PIs; via the auto function
+they now get the correct PGI layout. Verified with puppeteer absent against
+live data: IMP-PGI-P0002 (13 items) + PI-ADM-0174 render valid PDFs.
+Note: the pdfmake layout is a clean equivalent, not pixel-identical to the
+HTML reference; installing puppeteer on a server restores the exact templates
+automatically.
+
+### 5. Orders page validation (de6f14f + fixup d670ccc)
+Read list + detail + every routed action end-to-end. Broken and fixed:
+- The "Delayed" filter chip and empty PI/SP cells were plain JS strings
+  containing HTML entities (&#x26A0;, &#x2014;) — React escapes JS strings, so
+  the UI showed the raw entity text. Replaced with real characters (payments
+  page had the same bug, fixed in item 2's commit; my own new Suspense
+  fallbacks briefly reintroduced the class as JSX-text \u2026 — caught in
+  self-review, fixup d670ccc).
+- Generic PATCH /api/sales/orders/[id] accepted a `status` write from ANY
+  sales session, bypassing the duty gate + advance-paid PACKING block that the
+  dedicated /status route (used by every UI action) enforces. Status via the
+  generic PATCH now requires the same duties; deliveryTerms/notes unchanged.
+  No UI caller exists (verified by grep).
+Validated-fine (no change): SP/RM scoping via spLookup stitching, Load More
+dedupe, date filters, StatusFlow advance/cancel + ADVANCE_UNPAID 422 banner,
+stock-check → PACKING / PENDING_PRODUCTION transitions, payment-division
+extend/waive/reminder actions, credit-note lifecycle incl. apply/unapply,
+packing-list, commercial invoice, shipping docs, port arrival wiring.
+Known limitation (unchanged): the Delayed chip filters only the loaded page
+(client-side over paginated data) — a server-side delayed filter would be a
+behavior change beyond this pass.
+
+### 6. Delete PI (fa45488)
+DELETE /api/sales/pi/[id]: salesAuth (salesGate-backed) + duty check —
+SALES_ADMIN and REPORTING_MANAGER delete any PI; SALESPERSON only their own
+(pi.spId === session id, plain TEXT compare); Commercial/Accounts 403. A PI
+referenced by an order (pi.orderId or order-side relation, both checked) is
+never deleted: 409 explaining the order number and that deleting a PI never
+deletes an order. Children with real DB FKs (pi_rejection_logs, pi_revisions —
+0019) are deleted with the PI in one $transaction; verified live with a
+throwaway PI+log+revision. UI: Delete PI button on the detail page (rendered
+from /api/sales/me role + ownership, server re-checks), confirm() dialog,
+order-linked PIs get the explanation instead of a delete, success returns to
+/sales/pi.
+
+### 7. Clients "could not be added" (4343204)
+They WERE added — Vercel runtime logs (7d) show a lone 201 and zero 4xx/5xx on
+/api/sales/clients, and a live create with the exact route payload succeeds.
+Root cause: GET /api/sales/clients defaulted to limit=10 (name-ASC) and both
+UI callers (clients page, PI form client dropdown) fetch with NO params — with
+227 clients in the DB, any new client past the first ten alphabetical never
+appeared anywhere, indistinguishable from "add failed". Fix: no limit param →
+return the FULL scoped list (explicit limit/page still honoured; SP/RM/admin
+scoping untouched). Same-path repairs found while diagnosing:
+- Edit modal has no address input, but PATCH blanked address to "" on every
+  save (unconditional field spread) → PATCH now only updates fields present in
+  the body.
+- The form's City input was silently discarded (no DB column, route stripped
+  it) → added nullable sales_clients.city (scripts/0025-sales-client-city.sql,
+  APPLIED live 2026-07-10; in the Prisma model — safe because the column
+  landed before any dependent code deploys) and wired create/edit/table.
+- POST coerces the NOT NULL country ("" fallback) and returns the real
+  failure reason instead of an opaque 500; the form surfaces it (and no longer
+  dies on a non-JSON error body).
+- Client delete used to 500 silently on the PI/order FK and the row "came
+  back" on reload → 409 "This client has PIs or orders and cannot be
+  deleted.", alerted in the UI.
+
+### DB changes (all applied, all additive)
+- scripts/0024-payment-partial-amount.sql — sales_payment_divisions.amount_received
+  double precision NULL (raw-SQL-only, not in Prisma model). Applied 2026-07-10.
+- scripts/0025-sales-client-city.sql — sales_clients.city text NULL (in Prisma
+  model; column applied before code). Applied 2026-07-10.
+No SQL is awaiting approval — nothing non-trivially-additive was needed.
+
+### Deferred / not done
+- Server-side "delayed" filter for the orders list (see item 5).
+- Payments/clients KPI cards on the dashboard (none exist to wire; item 3).
+- Part-payment history (multiple receipts per division are accumulated into
+  one cumulative figure; individual receipts live only in the order log).
+- Legacy imported records store salesperson NAMES in created_by_id/sp_id
+  ("import:PGI:ABHI", …) — spLookup already degrades gracefully; a backfill to
+  real user ids would make RM/SP scoping cover imported rows, needs a mapping
+  decision from the business.
+- GET /api/sales/pi/[id] has no per-SP ownership scoping (any sales session
+  can open any PI by id) — pre-existing, left untouched in this batch; flag
+  for a dedicated pass if it should be tightened.
