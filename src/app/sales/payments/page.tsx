@@ -13,6 +13,7 @@ type Division = {
   paidAt: string | null;
   status: string;
   notes: string | null;
+  amountReceived: number | null;
   isOverdue: boolean;
   createdAt: string;
   overriddenAt: string | null;
@@ -49,6 +50,15 @@ const TYPE_COLORS: Record<string, string> = {
 type FilterTab = "ALL" | "PENDING" | "OVERDUE" | "PAID" | "BY_CUSTOMER";
 const PAGE_SIZE = 500;
 
+// Cumulative amount received against a division (paid = full amount).
+function receivedOf(d: Division): number {
+  return d.paidAt ? d.amount : (d.amountReceived ?? 0);
+}
+// What is still owed on a division.
+function balanceOf(d: Division): number {
+  return Math.max(0, d.amount - receivedOf(d));
+}
+
 export default function PaymentsPage() {
   // No SessionProvider in this app: the effective salesRole comes from
   // /api/sales/me (salesGate-backed) instead of a client session.
@@ -71,6 +81,9 @@ export default function PaymentsPage() {
   const [hasMore, setHasMore]     = useState(false);
   const [overrideModal, setOverrideModal] = useState<{ id: string; orderNum: string } | null>(null);
   const [overrideNote, setOverrideNote]   = useState("");
+  const [partModal, setPartModal] = useState<Division | null>(null);
+  const [partAmt, setPartAmt]     = useState("");
+  const [partErr, setPartErr]     = useState("");
 
   async function load(p = 1, append = false) {
     setLoading(true);
@@ -142,6 +155,29 @@ export default function PaymentsPage() {
     setTimeout(() => setMsg(""), 4000);
   }
 
+  async function recordPartPayment(d: Division) {
+    const inc = parseFloat(partAmt);
+    const balance = balanceOf(d);
+    if (!Number.isFinite(inc) || inc <= 0) { setPartErr("Enter an amount greater than 0."); return; }
+    if (inc > balance + 0.005) { setPartErr(`Amount exceeds the outstanding balance (${balance.toFixed(2)}).`); return; }
+    setBusy(`part-${d.id}`); setPartErr("");
+    const newTotal = receivedOf(d) + inc;
+    const r = await fetch(`/api/sales/payments/${d.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amountReceived: newTotal }),
+    });
+    const resp = await r.json().catch(() => ({}));
+    setBusy(null);
+    if (!r.ok) { setPartErr(resp.error ?? "Failed to record payment"); return; }
+    setPartModal(null); setPartAmt("");
+    setMsg(newTotal >= d.amount - 0.005
+      ? "Payment received in full — marked as paid."
+      : `Part payment recorded — balance ${(d.amount - newTotal).toFixed(2)}.`);
+    await load(1, false); setPage(1);
+    setTimeout(() => setMsg(""), 4000);
+  }
+
   async function markPaid(id: string, paidAt: string | null) {
     setBusy(id);
     const r = await fetch(`/api/sales/payments/${id}`, {
@@ -176,9 +212,10 @@ export default function PaymentsPage() {
     );
   });
 
-  const totalPending  = divisions.filter(d => !d.paidAt).reduce((s, d) => s + d.amount, 0);
-  const totalOverdue  = divisions.filter(d => d.isOverdue && !d.paidAt).reduce((s, d) => s + d.amount, 0);
-  const totalReceived = divisions.filter(d => !!d.paidAt).reduce((s, d) => s + d.amount, 0);
+  // Partials count toward Received; Pending/Overdue show what is still owed.
+  const totalPending  = divisions.filter(d => !d.paidAt).reduce((s, d) => s + balanceOf(d), 0);
+  const totalOverdue  = divisions.filter(d => d.isOverdue && !d.paidAt).reduce((s, d) => s + balanceOf(d), 0);
+  const totalReceived = divisions.reduce((s, d) => s + receivedOf(d), 0);
   const overdueCount  = divisions.filter(d => d.isOverdue && !d.paidAt).length;
 
   // Customer grouping for BY_CUSTOMER tab
@@ -189,10 +226,10 @@ export default function PaymentsPage() {
       const cid = d.order.client.id;
       if (!map.has(cid)) map.set(cid, { clientId: cid, clientName: d.order.client.name, country: d.order.client.country, total: 0, overdueTotal: 0, count: 0, overdueCount: 0, orders: new Set() });
       const g = map.get(cid)!;
-      g.total += d.amount;
+      g.total += balanceOf(d);
       g.count++;
       g.orders.add(d.order.id);
-      if (d.isOverdue) { g.overdueTotal += d.amount; g.overdueCount++; }
+      if (d.isOverdue) { g.overdueTotal += balanceOf(d); g.overdueCount++; }
     }
     return Array.from(map.values()).sort((a, b) => b.overdueTotal - a.overdueTotal || b.total - a.total);
   })();
@@ -314,13 +351,16 @@ export default function PaymentsPage() {
                           </div>
                           <div className="flex items-center gap-3">
                             <span className="font-semibold text-slate-700">
-                              {d.order.currency ?? "USD"} {d.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              {d.order.currency ?? "USD"} {balanceOf(d).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              {receivedOf(d) > 0 && (
+                                <span className="text-sky-600 font-normal"> of {d.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                              )}
                             </span>
                             <button
                               onClick={() => markPaid(d.id, new Date().toISOString())}
                               disabled={busy === d.id}
                               className="px-2 py-1 bg-green-600 text-white text-[10px] font-semibold rounded hover:bg-green-700 disabled:opacity-50 transition">
-                              {busy === d.id ? "&#x2026;" : "Pay"}
+                              {busy === d.id ? "\u2026" : "Pay"}
                             </button>
                           </div>
                         </div>
@@ -387,7 +427,7 @@ export default function PaymentsPage() {
                     <td className="px-4 py-3">
                       {d.dueDate ? (
                         <p className={`text-xs font-medium ${isOverdue ? "text-red-600" : "text-slate-600"}`}>
-                          {isOverdue && "&#x26A0; "}{new Date(d.dueDate).toLocaleDateString()}
+                          {isOverdue && "\u26A0 "}{new Date(d.dueDate).toLocaleDateString()}
                         </p>
                       ) : d.deadlineDays ? (
                         <p className="text-xs text-slate-400">{d.deadlineDays}d from dispatch</p>
@@ -413,6 +453,11 @@ export default function PaymentsPage() {
                           Pending
                         </span>
                       )}
+                      {!isPaid && receivedOf(d) > 0 && (
+                        <p className="text-[11px] text-sky-700 font-medium mt-1">
+                          Received {currency} {receivedOf(d).toLocaleString(undefined, { minimumFractionDigits: 2 })} · Bal {currency} {balanceOf(d).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        </p>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-1.5">
@@ -429,6 +474,15 @@ export default function PaymentsPage() {
                             disabled={!!busy}
                             className="px-2.5 py-1 border border-slate-200 text-slate-500 text-xs font-medium rounded-lg hover:bg-slate-50 disabled:opacity-50 transition">
                             {busy === d.id ? "…" : "Undo"}
+                          </button>
+                        )}
+                        {!isPaid && (
+                          <button
+                            onClick={() => { setPartModal(d); setPartAmt(""); setPartErr(""); }}
+                            disabled={!!busy}
+                            title="Record a partial amount received against this installment"
+                            className="px-2.5 py-1 bg-sky-50 text-sky-700 border border-sky-200 text-xs font-semibold rounded-lg hover:bg-sky-100 disabled:opacity-50 transition">
+                            Part Pay
                           </button>
                         )}
                         {!isPaid && d.type !== "ADVANCE" && (
@@ -473,6 +527,49 @@ export default function PaymentsPage() {
         <button onClick={loadMore} className="mt-4 w-full border rounded py-2 text-sm text-slate-600 hover:bg-slate-50">
           Load More
         </button>
+      )}
+
+      {/* Part-payment modal */}
+      {partModal && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6">
+            <h3 className="text-base font-semibold text-slate-900 mb-1">Record Part Payment</h3>
+            <p className="text-sm text-slate-500 mb-4">
+              Order <strong>{partModal.order.orderNumber}</strong> — {partModal.type.replace(/_/g, " ")} installment of{" "}
+              <strong>{partModal.order.currency ?? "USD"} {partModal.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong>.
+              {receivedOf(partModal) > 0 && (
+                <> Already received {partModal.order.currency ?? "USD"} {receivedOf(partModal).toLocaleString(undefined, { minimumFractionDigits: 2 })}.</>
+              )}
+            </p>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Amount received now</label>
+            <input
+              type="number"
+              min={0}
+              step={0.01}
+              value={partAmt}
+              onChange={e => { setPartAmt(e.target.value); setPartErr(""); }}
+              placeholder={`Outstanding balance: ${balanceOf(partModal).toFixed(2)}`}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-sky-500 mb-1"
+            />
+            <p className="text-xs text-slate-400 mb-2">
+              Less than the balance keeps this installment pending with the balance tracked; the full balance marks it paid.
+            </p>
+            {partErr && <p className="text-xs text-red-600 mb-2">{partErr}</p>}
+            <div className="flex gap-3 justify-end mt-3">
+              <button
+                onClick={() => { setPartModal(null); setPartAmt(""); setPartErr(""); }}
+                className="px-4 py-2 text-sm text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50">
+                Cancel
+              </button>
+              <button
+                onClick={() => recordPartPayment(partModal)}
+                disabled={!!busy}
+                className="px-4 py-2 text-sm font-semibold text-white bg-sky-600 rounded-lg hover:bg-sky-700 disabled:opacity-50">
+                {busy === `part-${partModal.id}` ? "\u2026" : "Record Payment"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Override modal */}

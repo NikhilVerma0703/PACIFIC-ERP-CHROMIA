@@ -51,19 +51,21 @@ export async function GET(req: Request) {
     skip: (page - 1) * limit,
   });
 
-  // Fetch override fields (added by migrate-phase17.js — not in Prisma schema)
+  // Fetch raw-SQL-only fields: override columns (migrate-phase17.js) and
+  // amount_received (scripts/0024, part payments) — none are in the Prisma schema.
   const ids: string[] = divisions.map((d: any) => d.id);
-  const overrideMap: Record<string, { overriddenAt: string | null; overrideNote: string | null }> = {};
+  const overrideMap: Record<string, { overriddenAt: string | null; overrideNote: string | null; amountReceived: number | null }> = {};
   if (ids.length) {
     try {
       const rows: any[] = await db.$queryRawUnsafe(
-        `SELECT id, overridden_at, override_note FROM sales_payment_divisions WHERE id = ANY($1::text[])`,
+        `SELECT id, overridden_at, override_note, amount_received FROM sales_payment_divisions WHERE id = ANY($1::text[])`,
         ids
       );
       for (const row of rows) {
         overrideMap[row.id] = {
           overriddenAt: row.overridden_at ? new Date(row.overridden_at).toISOString() : null,
           overrideNote: row.override_note ?? null,
+          amountReceived: row.amount_received == null ? null : Number(row.amount_received),
         };
       }
     } catch {
@@ -83,6 +85,7 @@ export async function GET(req: Request) {
     isOverdue:    !d.paidAt && d.dueDate && new Date(d.dueDate) < now,
     overriddenAt: overrideMap[d.id]?.overriddenAt ?? null,
     overrideNote: overrideMap[d.id]?.overrideNote ?? null,
+    amountReceived: overrideMap[d.id]?.amountReceived ?? null,
   }));
 
   return NextResponse.json(enriched);

@@ -54,7 +54,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
       const divIds = order.paymentDivisions.map((d: any) => d.id);
       const placeholders = divIds.map((_: any, i: number) => `$${i + 1}`).join(",");
       const extras: any[] = await db.$queryRawUnsafe(
-        `SELECT id, extended_due_date, overridden_at, override_note
+        `SELECT id, extended_due_date, overridden_at, override_note, amount_received
          FROM sales_payment_divisions
          WHERE id IN (${placeholders})`,
         ...divIds
@@ -68,6 +68,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
           extendedDueDate: ex.extended_due_date ?? null,
           overriddenAt: ex.overridden_at ?? null,
           overrideNote: ex.override_note ?? null,
+          amountReceived: ex.amount_received == null ? null : Number(ex.amount_received),
         };
       });
     } catch { /* non-fatal — new columns may not exist yet */ }

@@ -32,6 +32,7 @@ type Order = {
     extendedDueDate?: string | null;
     overriddenAt?: string | null;
     overrideNote?: string | null;
+    amountReceived?: number | null;
   }[];
   productionJob: { type: string; status: string; notes: string | null } | null;
   stockCheck: { status: string; notes: string | null } | null;
@@ -239,8 +240,10 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const currency = order.currency ?? "USD";
   const total    = order.totalAmount ?? mainPI?.totalAmount ?? 0;
 
-  const paidDivisions      = order.paymentDivisions.filter(d => d.paidAt);
-  const paidAmount         = paidDivisions.reduce((s, d) => s + d.amount, 0);
+  // Fully-paid divisions count in full; unpaid ones contribute any part payment
+  // recorded against them (amount_received, scripts/0024).
+  const paidAmount         = order.paymentDivisions.reduce(
+    (s, d) => s + (d.paidAt ? d.amount : (d.amountReceived ?? 0)), 0);
   const paidPct            = total > 0 ? Math.round((paidAmount / total) * 100) : 0;
   const totalAppliedCredit = appliedCNs.reduce((s, cn) => s + cn.amount, 0);
 
@@ -390,6 +393,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                         : d.deadlineDays ? `Due in ${d.deadlineDays}d` : d.status}
                     </span>
                   </div>
+                  {!d.paidAt && (d.amountReceived ?? 0) > 0 && (
+                    <p className="text-xs text-sky-700 font-medium mt-1">
+                      Part paid: {currency} {(d.amountReceived ?? 0).toFixed(2)} received · balance {currency} {Math.max(0, d.amount - (d.amountReceived ?? 0)).toFixed(2)}
+                    </p>
+                  )}
                   {d.extendedDueDate && (
                     <p className="text-xs text-blue-600 mt-1">
                       Extended to: {new Date(d.extendedDueDate).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}
