@@ -169,6 +169,18 @@ async function dataPack(question = ""): Promise<string> {
       lines.push(`ASKED BATCH ${k} (all-time detail): press ${pr[0]?.n ?? 0} slabs${pr[0]?.lo ? ` (#${pr[0].lo}-#${pr[0].hi})` : ""}; MIS logged ${mi[0]?.s ?? 0}${mi[0]?.miss ? ` (${mi[0].miss} hrs without counts)` : ""}; QC ${qc.length ? qc.map((r: any) => `${r.g ?? "ungraded"}:${r.n}`).join(" ") : "none yet"}; JOT ${jt.length ? jt.map((r: any) => `${r.d ?? "no-defect"}:${r.n}`).join(" ") : "none yet"}`);
     }
   } catch { /* best-effort */ }
+  // QUALITY ROOT-CAUSE: a named batch + quality-flavoured wording gets a
+  // deterministic bad-vs-good COMPARISON PACK for the FIRST such batch —
+  // the server does all the math, the model only reasons over the deltas.
+  try {
+    if (QUALITY_RE.test(question)) {
+      const key = (question.match(/\b[A-Za-z]{0,2}(\d{3,4})\b/) ?? [])[1];
+      if (key) {
+        const cmp = await qualityComparisonPack(key);
+        if (cmp) lines.push(cmp);
+      }
+    }
+  } catch { /* degrades to the existing pack */ }
   // ASKED SLABS: 5-7 digit numbers = slab numbers -> full journey per slab
   try {
     /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -204,18 +216,207 @@ async function dataPack(question = ""): Promise<string> {
   return lines.join("\n");
 }
 
+// ---- Quality root-cause comparison pack ------------------------------------
+// "/ask why did 1376 have so many rejects?" → we split the batch's slabs into
+// bad (polish QC grade C* OR a JOT defect) vs good (graded, defect-free), pull
+// every numeric per-slab parameter (press settings + JOT thickness/bend) for
+// both groups, and compute group means + relative deltas SERVER-SIDE so the
+// model reasons over verified numbers instead of doing arithmetic. Batch-level
+// context (mixer weights, distributor/kreos line settings, silo bags fed) is
+// appended as means. Any failure returns "" and the normal pack still answers.
+const QUALITY_RE = /defect|reject|qc|grade|param|why|cause|analy|compare/i;
+// Numeric column lists mirror prisma/schema.prisma (verified against
+// information_schema on the live DB); temp_c aliases the long press
+// temperature column, entry_hour_ist is derived from imported_at.
+const PRESS_NUM_COLS = ["in_time", "slab_weight", "temp_c", "no_of_vacuum_pumps", "no_of_stages", "vacuum_delay_in_seconds", "lowe_chamber_vacuum_in_mbar", "pinhole_cycle_delay", "phase_1_rev", "phase_2_rev", "phase_3_rev", "phase_4_rev", "phase_5_rev", "phase_1_pressing_time", "phase_2_pressing_time", "phase_3_pressing_time", "phase_4_pressing_time", "phase_5_pressing_time", "phase_1_acceleration_time", "phase_2_acceleration_time", "phase_3_acceleration_time", "phase_4_acceleration_time", "phase_5_acceleration_time", "phase_1_pressure", "phase_2_pressure", "phase_3_pressure", "phase_4_pressure", "phase_5_pressure", "cycle_time_sec", "entry_hour_ist"];
+const JOT_NUM_COLS = ["thickness_at_1", "thickness_at_2", "thickness_at_3", "thickness_at_4", "thickness_at_5", "thickness_at_6", "thickness_at_7", "thickness_at_8", "bend_mm"];
+const MIXER_NUM_COLS = ["loc", "m1_f_w", "m2_f_w", "m3_f_w", "m4_f_w", "m1_w1", "m1_w2", "m1_w3", "m1_w4", "m1_w5", "m2_w1", "m2_w2", "m2_w3", "m2_w4", "m2_w5", "m3_w1", "m3_w2", "m3_w3", "m3_w4", "m3_w5", "m4_w1", "m4_w2", "m4_w3", "m4_w4", "m4_w5", "m1_r_w", "m2_r_w", "m3_r_w", "m4_r_w", "total_cycle_weight"];
+const DIST_NUM_COLS = ["loading_material_p1_w", "loading_material_p2_w", "vein_dropped", "vein_remaining", "crusher_loading_belt_loading_speed", "crusher_loading_belt_unloading_speed", "roller_1_rpm", "roller_2_rpm", "lump_crusher_gap", "s1", "e1", "s2", "e2", "distributor_vein_1_batcher_rpm", "distributor_vein_2_batcher_rpm", "distributor_loading_belt_loading_speed", "distributor_loading_belt_unloading_speed", "distributor_material_unloading_speed", "distributor_fractionator_speed", "distributor_hopper_gap", "distributor_hopper_weight", "distributor_manual_roller_height", "shuttle_speed_p1", "shuttle_speed_p2"];
+const KREOS_NUM_COLS = ["slab_weight", "load_on_mobile_roller_rx_side_kg", "load_on_mobile_roller_lx_side_kg", "crusher_loading_belt_speed_in_m_min", "crusher_unloading_belt_speed_in_m_min_copy", "roller_1_rpm", "roller_2_rpm", "lump_crusher_gap", "gev_1_slot_size", "gev_1_rpm", "gev_2_slot_size", "gev_2_rpm", "gev_3_slot_size", "gev_3_rpm", "kreos_working_position_in_mm", "slab_set_weight", "lamination_speed", "belt_rotation_k1", "fixed_roller_rotation_k2", "mobile_roller_rotation_k3", "distributor_loading_belt_loading_speed", "distributor_loading_belt_unloading_speed", "chessboard_body_percentage"];
+
+type NumRow = Record<string, unknown>;
+// compact rounding so the pack stays small: 0dp ≥100, 1dp ≥10, 2dp ≥1, else 3dp
+const rnd = (x: number): string => {
+  const a = Math.abs(x);
+  const s = x.toFixed(a >= 100 ? 0 : a >= 10 ? 1 : a >= 1 ? 2 : 3);
+  return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
+};
+const asNum = (v: unknown): number | null => {
+  const x = typeof v === "number" ? v : v == null ? NaN : Number(v);
+  return Number.isFinite(x) ? x : null;
+};
+function colMeans(rows: NumRow[], cols: string[]): Map<string, { mean: number; n: number }> {
+  const out = new Map<string, { mean: number; n: number }>();
+  for (const c of cols) {
+    let s = 0, n = 0;
+    for (const r of rows) { const x = asNum(r[c]); if (x !== null) { s += x; n++; } }
+    if (n) out.set(c, { mean: s / n, n });
+  }
+  return out;
+}
+// mean-vs-mean relative difference per column; needs ≥3 values in each group
+function rankDeltas(bad: NumRow[], good: NumRow[], cols: string[]): { c: string; b: number; g: number; pct: number }[] {
+  const bm = colMeans(bad, cols), gm = colMeans(good, cols);
+  const out: { c: string; b: number; g: number; pct: number }[] = [];
+  for (const c of cols) {
+    const b = bm.get(c), g = gm.get(c);
+    if (!b || !g || b.n < 3 || g.n < 3 || Math.abs(g.mean) < 1e-9) continue;
+    const pct = ((b.mean - g.mean) / Math.abs(g.mean)) * 100;
+    if (Number.isFinite(pct)) out.push({ c, b: b.mean, g: g.mean, pct });
+  }
+  return out.sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct));
+}
+const meansLine = (rows: NumRow[], cols: string[]): string =>
+  [...colMeans(rows, cols).entries()].map(([c, m]) => `${c}=${rnd(m.mean)}`).join(" ");
+const jsonVal = (v: unknown): string => {
+  if (v == null) return "";
+  if (Array.isArray(v)) return [...new Set(v.map(String))].slice(0, 3).join("/").slice(0, 40);
+  if (typeof v === "object") return "";
+  return String(v).slice(0, 40);
+};
+
+async function qualityComparisonPack(key: string): Promise<string> {
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const db = prisma as any;
+  const badRaw: any[] = await db.$queryRaw`
+    SELECT DISTINCT slab_number::float8 s FROM (
+      SELECT slab_number FROM polish_qc WHERE batch_key = ${key} AND slab_number IS NOT NULL AND quality_grade ILIKE 'C%'
+      UNION
+      SELECT slab_number FROM jot WHERE batch_key = ${key} AND slab_number IS NOT NULL AND slab_defect IS NOT NULL
+    ) t ORDER BY 1 LIMIT 300`;
+  const badAll = badRaw.map((r) => Number(r.s));
+  const badSlabs = badAll.slice(0, 40);
+  if (!badSlabs.length) return "";
+  // good = graded slabs that are neither C-graded nor defect-flagged anywhere
+  // (NOT EXISTS over the FULL bad definition, not the capped list)
+  const goodRaw: any[] = await db.$queryRaw`
+    SELECT DISTINCT q.slab_number::float8 s FROM polish_qc q
+    WHERE q.batch_key = ${key} AND q.slab_number IS NOT NULL
+      AND q.quality_grade IS NOT NULL AND q.quality_grade NOT ILIKE 'C%' AND q.quality_grade NOT ILIKE 'Not graded%'
+      AND NOT EXISTS (SELECT 1 FROM polish_qc q2 WHERE q2.batch_key = ${key} AND q2.slab_number = q.slab_number AND q2.quality_grade ILIKE 'C%')
+      AND NOT EXISTS (SELECT 1 FROM jot j WHERE j.batch_key = ${key} AND j.slab_number = q.slab_number AND j.slab_defect IS NOT NULL)
+    ORDER BY 1`;
+  const goodAll = goodRaw.map((r) => Number(r.s));
+  let goodSlabs = goodAll;
+  if (goodSlabs.length > 40) { // deterministic even spread across the batch
+    const step = goodSlabs.length / 40;
+    goodSlabs = Array.from({ length: 40 }, (_, i) => goodSlabs[Math.floor(i * step)]);
+  }
+  if (!goodSlabs.length) return "";
+  const all = [...badSlabs, ...goodSlabs];
+  const [press, jot, qcBad, jotDef]: any[][] = await Promise.all([
+    db.$queryRaw`
+      SELECT DISTINCT ON (slab_number) slab_number::float8 s, in_time, slab_weight,
+        temperature_in_degree_celsius_note_only_at_15_00_and_3_00 temp_c,
+        no_of_vacuum_pumps, no_of_stages, vacuum_delay_in_seconds, lowe_chamber_vacuum_in_mbar, pinhole_cycle_delay,
+        phase_1_rev, phase_2_rev, phase_3_rev, phase_4_rev, phase_5_rev,
+        phase_1_pressing_time, phase_2_pressing_time, phase_3_pressing_time, phase_4_pressing_time, phase_5_pressing_time,
+        phase_1_acceleration_time, phase_2_acceleration_time, phase_3_acceleration_time, phase_4_acceleration_time, phase_5_acceleration_time,
+        phase_1_pressure, phase_2_pressure, phase_3_pressure, phase_4_pressure, phase_5_pressure,
+        cycle_time_sec, to_char(imported_at + interval '330 minutes', 'HH24')::int entry_hour_ist
+      FROM press WHERE batch_key = ${key} AND slab_number = ANY(${all}::float8[])
+      ORDER BY slab_number, imported_at DESC`,
+    db.$queryRaw`
+      SELECT slab_number::float8 s, thickness_at_1, thickness_at_2, thickness_at_3, thickness_at_4,
+        thickness_at_5, thickness_at_6, thickness_at_7, thickness_at_8, bend_mm
+      FROM jot WHERE batch_key = ${key} AND slab_number = ANY(${all}::float8[]) LIMIT 400`,
+    db.$queryRaw`
+      SELECT DISTINCT ON (slab_number) slab_number::float8 s, quality_grade
+      FROM polish_qc WHERE batch_key = ${key} AND slab_number = ANY(${badSlabs}::float8[])
+      ORDER BY slab_number, imported_at DESC`,
+    db.$queryRaw`
+      SELECT slab_number::float8 s, string_agg(DISTINCT slab_defect, '/') d
+      FROM jot WHERE batch_key = ${key} AND slab_number = ANY(${badSlabs}::float8[]) AND slab_defect IS NOT NULL GROUP BY 1`,
+  ]);
+  const badSet = new Set(badSlabs);
+  const inBad = (r: any) => badSet.has(Number(r.s));
+  const ranked = [
+    ...rankDeltas(press.filter(inBad), press.filter((r: any) => !inBad(r)), PRESS_NUM_COLS),
+    ...rankDeltas(jot.filter(inBad), jot.filter((r: any) => !inBad(r)), JOT_NUM_COLS),
+  ].sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct));
+  const suspects = ranked.filter((d) => Math.abs(d.pct) >= 2); // <2% = noise
+  const top = suspects.slice(0, 12);
+  const gradeBy = new Map(qcBad.map((r: any) => [Number(r.s), String(r.quality_grade ?? "ungraded")]));
+  const defBy = new Map(jotDef.map((r: any) => [Number(r.s), String(r.d)]));
+  const lines: string[] = [];
+  lines.push(`COMPARISON PACK BATCH ${key} (bad = polish-QC grade C or JOT defect; good = graded A/B, no defect; all math server-computed):`);
+  lines.push(`BAD SLABS (${badAll.length}${badAll.length >= 300 ? "+" : ""} total${badAll.length > 40 ? ", first 40 shown" : ""}): `
+    + badSlabs.map((n) => `${n}(${[gradeBy.get(n), defBy.get(n)].filter(Boolean).join("+") || "?"})`).join(" "));
+  lines.push(`GOOD SLABS: ${goodAll.length} total, ${goodSlabs.length} sampled for comparison`);
+  lines.push(top.length
+    ? `PARAM DELTAS (bad vs good, ranked by |relative diff|${suspects.length > 12 ? `, top 12 of ${suspects.length}` : ""}${ranked.length > suspects.length ? `; ${ranked.length - suspects.length} params within ±2% = look normal` : ""}): `
+      + top.map((d) => `${d.c}: bad avg ${rnd(d.b)} vs good avg ${rnd(d.g)} (${d.pct >= 0 ? "+" : ""}${rnd(d.pct)}%)`).join("; ")
+    : `PARAM DELTAS: none of the ${ranked.length} comparable numeric parameters differs by ≥2% between bad and good slabs`);
+  const hrs = new Map<number, number>();
+  for (const r of press.filter(inBad)) { const h = asNum(r.entry_hour_ist); if (h !== null) hrs.set(h, (hrs.get(h) ?? 0) + 1); }
+  if (hrs.size) lines.push("BAD SLAB PRESS-ENTRY HOURS (IST, count per hour — clustering hints at a time-bound cause): "
+    + [...hrs.entries()].sort((a, b) => b[1] - a[1]).map(([h, n]) => `${String(h).padStart(2, "0")}:00×${n}`).join(" "));
+  try { // batch-level context: mixer weights, line settings, silo bags fed
+    const [mixer, dist, kreos]: any[][] = await Promise.all([
+      db.$queryRaw`SELECT loc, m1_f_w, m2_f_w, m3_f_w, m4_f_w, m1_w1, m1_w2, m1_w3, m1_w4, m1_w5,
+          m2_w1, m2_w2, m2_w3, m2_w4, m2_w5, m3_w1, m3_w2, m3_w3, m3_w4, m3_w5,
+          m4_w1, m4_w2, m4_w3, m4_w4, m4_w5, m1_r_w, m2_r_w, m3_r_w, m4_r_w,
+          (total_cycle_weight#>>'{}')::float8 total_cycle_weight
+        FROM mixer_cycle WHERE batch_key = ${key} LIMIT 300`,
+      db.$queryRaw`SELECT loading_material_p1_w, loading_material_p2_w, vein_dropped, vein_remaining,
+          crusher_loading_belt_loading_speed, crusher_loading_belt_unloading_speed, roller_1_rpm, roller_2_rpm,
+          lump_crusher_gap, s1, e1, s2, e2, distributor_vein_1_batcher_rpm, distributor_vein_2_batcher_rpm,
+          distributor_loading_belt_loading_speed, distributor_loading_belt_unloading_speed, distributor_material_unloading_speed,
+          distributor_fractionator_speed, distributor_hopper_gap, distributor_hopper_weight, distributor_manual_roller_height,
+          shuttle_speed_p1, shuttle_speed_p2
+        FROM distributor WHERE batch_key = ${key} LIMIT 400`,
+      db.$queryRaw`SELECT slab_weight, load_on_mobile_roller_rx_side_kg, load_on_mobile_roller_lx_side_kg,
+          crusher_loading_belt_speed_in_m_min, crusher_unloading_belt_speed_in_m_min_copy, roller_1_rpm, roller_2_rpm,
+          lump_crusher_gap, gev_1_slot_size, gev_1_rpm, gev_2_slot_size, gev_2_rpm, gev_3_slot_size, gev_3_rpm,
+          kreos_working_position_in_mm, slab_set_weight, lamination_speed, belt_rotation_k1, fixed_roller_rotation_k2,
+          mobile_roller_rotation_k3, distributor_loading_belt_loading_speed, distributor_loading_belt_unloading_speed,
+          chessboard_body_percentage
+        FROM kreos WHERE batch_key = ${key} LIMIT 400`,
+    ]);
+    if (mixer.length) lines.push(`MIXER CYCLES (${mixer.length} rows, batch-level means): ` + meansLine(mixer, MIXER_NUM_COLS));
+    if (dist.length) lines.push(`DISTRIBUTOR (${dist.length} rows, means): ` + meansLine(dist, DIST_NUM_COLS));
+    if (kreos.length) lines.push(`KREOS (${kreos.length} rows, means): ` + meansLine(kreos, KREOS_NUM_COLS));
+  } catch { /* batch-level context is optional */ }
+  try { // silo bags consumed: mixer grit/filler id arrays -> silo rows
+    const sids: any[] = await db.$queryRaw`
+      SELECT DISTINCT unnest(m1_g1 || m1_g2 || m1_g3 || m1_g4 || m1_g5 || m2_g1 || m2_g2 || m2_g3 || m2_g4 || m2_g5
+        || m3_g1 || m3_g2 || m3_g3 || m3_g4 || m3_g5 || m4_g1 || m4_g2 || m4_g3 || m4_g4 || m4_g5 || filler_silo_id) aid
+      FROM mixer_cycle WHERE batch_key = ${key}`;
+    const aids = sids.map((r) => String(r.aid)).filter(Boolean).slice(0, 200);
+    if (aids.length) {
+      const silos: any[] = await db.$queryRaw`
+        SELECT silo_no, sku, size_from_used_bag sz, grade_from_used_bag gr, type_from_used_bag ty,
+               name_from_supplier_master_from_used_bag sup
+        FROM silo WHERE "airtableId" = ANY(${aids}) LIMIT 60`;
+      const seen = new Set<string>();
+      for (const r of silos) {
+        seen.add(`${r.silo_no ?? "?"}:${r.sku ?? "?"}` + [["sz", r.sz], ["gr", r.gr], ["ty", r.ty], ["sup", r.sup]]
+          .map(([k, v]) => { const t = jsonVal(v); return t ? ` ${k}=${t}` : ""; }).join(""));
+      }
+      if (seen.size) lines.push(`SILOS/BAGS FED INTO MIXER (${seen.size}): ` + [...seen].slice(0, 20).join("; "));
+    }
+  } catch { /* silo context is optional */ }
+  let pack = lines.join("\n");
+  if (pack.length > 9000) pack = pack.slice(0, 9000) + "…"; // hard cap ≈2.3k tokens
+  return pack;
+}
+
 export async function aiAnswer(question: string): Promise<string> {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) return "🤖 Free-text questions aren't switched on yet (no AI key configured). The command reports still work: /status /shift /day /yesterday";
   try {
     const pack = await dataPack(question);
+    // quality investigations ship a server-computed COMPARISON PACK and get a
+    // slightly longer answer budget (never beyond 600) + analysis guidance
+    const hasCmp = pack.includes("COMPARISON PACK BATCH");
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
       body: JSON.stringify({
         model: "claude-haiku-4-5",
-        max_tokens: 400,
-        system: "You are the Pacific Surfaces factory ERP assistant answering in a Telegram group. Answer ONLY from the production data provided — never invent numbers. PRESS MACHINE TOTALS are the authoritative slab counts per batch; the LAST ~75min station lines list the individual slabs just entered at Polish QC / press / JOT, and LATEST ENTRY lines give the most recent record per station with its age — use these for any 'last hour / just now / latest / most recent' question; the BY HOUR lines give per-IST-hour counts + slab ranges for today and yesterday — use them for any time-window question; the MIS lines are the manual hourly log and can be incomplete (hours logged without counts). For batch totals ALWAYS use the press totals. When asked about issues/discrepancies, COMPARE press totals against the MIS log: flag batches where MIS logged noticeably fewer slabs than the press made, and hours missing counts. If the question needs data not present here, say exactly what is missing instead of estimating. Be short (2-5 lines), plain text, numbers bold-free. If the data can't answer the question, say so and suggest /status, /shift, /day or the ERP dashboard.",
+        max_tokens: hasCmp ? 600 : 400,
+        system: "You are the Pacific Surfaces factory ERP assistant answering in a Telegram group. Answer ONLY from the production data provided — never invent numbers. PRESS MACHINE TOTALS are the authoritative slab counts per batch; the LAST ~75min station lines list the individual slabs just entered at Polish QC / press / JOT, and LATEST ENTRY lines give the most recent record per station with its age — use these for any 'last hour / just now / latest / most recent' question; the BY HOUR lines give per-IST-hour counts + slab ranges for today and yesterday — use them for any time-window question; the MIS lines are the manual hourly log and can be incomplete (hours logged without counts). For batch totals ALWAYS use the press totals. When asked about issues/discrepancies, COMPARE press totals against the MIS log: flag batches where MIS logged noticeably fewer slabs than the press made, and hours missing counts. If the question needs data not present here, say exactly what is missing instead of estimating. Be short (2-5 lines), plain text, numbers bold-free. If the data can't answer the question, say so and suggest /status, /shift, /day or the ERP dashboard."
+          + (hasCmp ? " For this quality/root-cause question a COMPARISON PACK BATCH block is included: its PARAM DELTAS were computed server-side (bad-group mean vs good-group mean, % = relative difference) — reason ONLY from those deltas and the batch context lines, never from outside knowledge of typical machine values, and do not recompute averages yourself. Structure the answer: (1) the strongest parameter suspects — the biggest |%| deltas — with their bad-vs-good numbers, plus any press-hour clustering; (2) what looks normal (the params within ±2%); (3) one plain-words caveat that these are correlations in logged data, NOT proven causes; (4) 1-2 concrete physical checks (e.g. inspect the suspect station's settings/log for the clustered hours, or the listed slabs/silo bags). Up to 10 short lines for this." : ""),
         messages: [{ role: "user", content: `Production data:\n${pack}\n\nQuestion: ${question.slice(0, 500)}` }],
       }),
     });
