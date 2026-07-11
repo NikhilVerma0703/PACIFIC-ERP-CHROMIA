@@ -291,3 +291,52 @@ No SQL is awaiting approval — nothing non-trivially-additive was needed.
 - GET /api/sales/pi/[id] has no per-SP ownership scoping (any sales session
   can open any PI by id) — pre-existing, left untouched in this batch; flag
   for a dedicated pass if it should be tightened.
+
+# Telegram /ask quality packs — slab + design subjects (2026-07-11)
+
+Scope: `src/lib/telegramAsk.ts` only. Extends the f09ba16 batch bad-vs-good
+COMPARISON PACK to two more subjects behind the same trigger words
+(defect|reject|qc|grade|param|why|cause|analy|compare): named slab numbers
+(5-7 digits, up to 3) each get "SLAB n VS ITS BATCH'S GOOD SLABS" — the slab's
+own press row + JOT thickness/bend vs the batch good-group mean (slab itself
+excluded), top 10 by |relative diff| with the ±2% floor, plus its QC
+grade/JOT defect status (works for good slabs too); a named design (matched
+against the fg catalogue) gets "DESIGN COMPARISON PACK" — its last-60-days
+press batches (cap 10) pooled through the same delta math, led by a per-batch
+bad-rate line. Batch block unchanged (live-verified, ~766 tok). Slab/design
+blocks deliberately carry no per-batch mixer/line/silo context. Refactored
+in place: badGoodPools / pressJotRows / qcGradesAndDefects / evenSample are
+shared by all three subjects; rankDeltas gained minBad (=1 for single-slab).
+Caps: subject blocks 6000 chars (~1.5k tok) each; combined quality section
+12000 chars (~3k tok) — the noted modest raise over the single-subject 9000,
+which the batch block still keeps internally.
+
+Hostile review fixes (all live-tested against Neon):
+- Design subject took the first catalogue hit: prefix design "Carrara Royal"
+  shadowed "Carrara Royale" and the block silently vanished → longest hit
+  first, falling through until a design yields data.
+- Design catalogue LIMIT 300 vs 408 live designs: later-alphabet designs
+  (e.g. Super White) could never match — also broke the pre-existing ASKED
+  DESIGNS lines → shared catalogue query, LIMIT 1000.
+- Per-batch bad-rate denominator was the 60-day-windowed press count →
+  impossible "1278: 15/13 bad" for re-imported old batches → all-time press
+  count per selected batch ("15/72").
+- Degenerate "none of the 0 comparable parameters" wording when one side has
+  <3 parameter rows → explicit too-few-rows message (batch/slab/design).
+
+Verified: tsc --noEmit clean; tests 10/10; live sizes — batch 1376 block
+2989 chars (~766 tok), slab 146816 block 895 (~229), design Carrara Royale
+block 1295 (~332); combined batch+slab+design pack 11698 chars < 12000 cap;
+nonexistent batch/slab/design degrade to the normal pack (max_tokens stays
+400); model stays claude-haiku-4-5; webhook flow untouched.
+
+Deferred:
+- Multiple named slabs from the same batch re-fetch that batch's pools (≤3
+  subjects, 2 extra round-trips worst case); a per-request cache would fix.
+- Design→batch linkage is press.design_name = catalogue name (exact,
+  case-insensitive); renamed/misspelled press design names won't pool.
+- Bad rates use pressed slabs as denominator; a batch with incomplete QC
+  coverage understates its true rate.
+- entry_hour_ist still participates in delta ranking (inherited from the
+  batch design): a lone slab pressed at an odd hour tops its list —
+  informative, but it can crowd out physical parameters at rank 1.
