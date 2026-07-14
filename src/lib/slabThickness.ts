@@ -12,6 +12,11 @@
 // line head (Distributor/Kreos) and the polish stations. This is the SAME precedence
 // the production report uses, so the report, the Telegram bot and the thickness written
 // onto auto-added rows all agree on one deciding station.
+//
+// AUTO-ADDED ROWS ARE NEVER A SOURCE. A placeholder only ever holds a COPY of a value
+// resolved from another station. Jot is priority 1, so an auto-added Jot row would
+// outrank the station it was copied FROM — and a later correction there would silently
+// lose to the stale copy. Excluding them keeps the real stations authoritative.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
@@ -29,15 +34,15 @@ async function thicknessRows(sel: { keys?: string[]; slabs?: number[] }): Promis
     : Prisma.sql`slab_number = ANY(${slabs}::float8[])`;
   try {
     return await prisma.$queryRaw<Row[]>(Prisma.sql`
-      SELECT batch_key k, slab_number::float8 s, thickness t,      1 pr FROM jot          WHERE ${where} AND slab_number IS NOT NULL AND thickness IS NOT NULL
+      SELECT batch_key k, slab_number::float8 s, thickness t,      1 pr FROM jot          WHERE ${where} AND slab_number IS NOT NULL AND thickness IS NOT NULL AND (remarks IS NULL OR remarks NOT LIKE '⚙ auto-added%')
       UNION ALL
-      SELECT batch_key,   slab_number::float8,   slab_thickness,   2    FROM distributor  WHERE ${where} AND slab_number IS NOT NULL AND slab_thickness IS NOT NULL
+      SELECT batch_key,   slab_number::float8,   slab_thickness,   2    FROM distributor  WHERE ${where} AND slab_number IS NOT NULL AND slab_thickness IS NOT NULL AND (remarks IS NULL OR remarks NOT LIKE '⚙ auto-added%')
       UNION ALL
-      SELECT batch_key,   slab_number::float8,   slab_thickness,   3    FROM kreos        WHERE ${where} AND slab_number IS NOT NULL AND slab_thickness IS NOT NULL
+      SELECT batch_key,   slab_number::float8,   slab_thickness,   3    FROM kreos        WHERE ${where} AND slab_number IS NOT NULL AND slab_thickness IS NOT NULL AND (remarks IS NULL OR remarks NOT LIKE '⚙ auto-added%')
       UNION ALL
-      SELECT batch_key,   slab_number::float8,   slab_thickness,   4    FROM polish_entry WHERE ${where} AND slab_number IS NOT NULL AND slab_thickness IS NOT NULL
+      SELECT batch_key,   slab_number::float8,   slab_thickness,   4    FROM polish_entry WHERE ${where} AND slab_number IS NOT NULL AND slab_thickness IS NOT NULL AND (remarks IS NULL OR remarks NOT LIKE '⚙ auto-added%')
       UNION ALL
-      SELECT batch_key,   slab_number::float8,   slab_thickness,   5    FROM polish_qc    WHERE ${where} AND slab_number IS NOT NULL AND slab_thickness IS NOT NULL`);
+      SELECT batch_key,   slab_number::float8,   slab_thickness,   5    FROM polish_qc    WHERE ${where} AND slab_number IS NOT NULL AND slab_thickness IS NOT NULL AND (remarks IS NULL OR remarks NOT LIKE '⚙ auto-added%')`);
   } catch (e) {
     console.error("thicknessRows failed:", e); // never break a caller, but never fail silently either
     return [];
@@ -94,15 +99,15 @@ export async function thicknessMixByBatch(keys: string[], since?: Date | null): 
           AND (${from}::timestamptz IS NULL OR (COALESCE(date, imported_at) >= ${from}::timestamptz
                AND COALESCE(date, imported_at) <= now() + interval '2 days'))
       ), src AS (
-        SELECT batch_key k, slab_number::float8 s, thickness t,      1 pr FROM jot          WHERE batch_key = ANY(${ks}::text[]) AND slab_number IS NOT NULL AND thickness IS NOT NULL
+        SELECT batch_key k, slab_number::float8 s, thickness t,      1 pr FROM jot          WHERE batch_key = ANY(${ks}::text[]) AND slab_number IS NOT NULL AND thickness IS NOT NULL AND (remarks IS NULL OR remarks NOT LIKE '⚙ auto-added%')
         UNION ALL
-        SELECT batch_key,   slab_number::float8,   slab_thickness,   2    FROM distributor  WHERE batch_key = ANY(${ks}::text[]) AND slab_number IS NOT NULL AND slab_thickness IS NOT NULL
+        SELECT batch_key,   slab_number::float8,   slab_thickness,   2    FROM distributor  WHERE batch_key = ANY(${ks}::text[]) AND slab_number IS NOT NULL AND slab_thickness IS NOT NULL AND (remarks IS NULL OR remarks NOT LIKE '⚙ auto-added%')
         UNION ALL
-        SELECT batch_key,   slab_number::float8,   slab_thickness,   3    FROM kreos        WHERE batch_key = ANY(${ks}::text[]) AND slab_number IS NOT NULL AND slab_thickness IS NOT NULL
+        SELECT batch_key,   slab_number::float8,   slab_thickness,   3    FROM kreos        WHERE batch_key = ANY(${ks}::text[]) AND slab_number IS NOT NULL AND slab_thickness IS NOT NULL AND (remarks IS NULL OR remarks NOT LIKE '⚙ auto-added%')
         UNION ALL
-        SELECT batch_key,   slab_number::float8,   slab_thickness,   4    FROM polish_entry WHERE batch_key = ANY(${ks}::text[]) AND slab_number IS NOT NULL AND slab_thickness IS NOT NULL
+        SELECT batch_key,   slab_number::float8,   slab_thickness,   4    FROM polish_entry WHERE batch_key = ANY(${ks}::text[]) AND slab_number IS NOT NULL AND slab_thickness IS NOT NULL AND (remarks IS NULL OR remarks NOT LIKE '⚙ auto-added%')
         UNION ALL
-        SELECT batch_key,   slab_number::float8,   slab_thickness,   5    FROM polish_qc    WHERE batch_key = ANY(${ks}::text[]) AND slab_number IS NOT NULL AND slab_thickness IS NOT NULL
+        SELECT batch_key,   slab_number::float8,   slab_thickness,   5    FROM polish_qc    WHERE batch_key = ANY(${ks}::text[]) AND slab_number IS NOT NULL AND slab_thickness IS NOT NULL AND (remarks IS NULL OR remarks NOT LIKE '⚙ auto-added%')
       ), best AS (
         SELECT DISTINCT ON (k, s) k, s, t FROM src ORDER BY k, s, pr
       )

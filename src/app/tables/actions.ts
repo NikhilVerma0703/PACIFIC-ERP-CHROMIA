@@ -96,6 +96,70 @@ function stampBatchKey(data: Record<string, unknown>) {
 const SLAB_REQUIRED = new Set(["Press", "Oven", "Jot", "Distributor", "Kreos", "PolishEntry", "PolishQc"]);
 // Slab stations where slab number + batch must be unique (double-entry guard on create).
 const SLAB_STATIONS = new Set(["Press", "Oven", "Jot", "Distributor", "Kreos"]);
+
+// ---- DATE SANITY -----------------------------------------------------------------
+// ROOT CAUSE of the 603 mis-dated rows (batches 1359/1360/1375 press, 1348 jot): operators
+// typed the PREVIOUS YEAR on the entry form — right month, right day, wrong year — and
+// nothing checked it. coerceField() just does `new Date(s)` and stores whatever parses, so
+// a "2025-06-26" typed on 2026-06-26 sailed straight in, and because press rows are entered
+// slab-by-slab one wrong year rode through a whole shift (208 rows in one sitting).
+// Two rules, both cheap, both server-side (the form's own validation can be bypassed):
+//   1. never more than 2 days in the future (the grace absorbs IST/UTC skew), and
+//   2. the date must sit NEAR ITS BATCH — within 21 days of the batch's LATEST real date.
+//      Deliberately anchored to the latest date, not to a min..max window: a batch that
+//      already contains a year-old typo would have a year-wide window and would happily
+//      swallow more of them (verified — that exact window ACCEPTED all 603 bad rows).
+//      Production only moves forward, so the newest real row is the honest anchor, and a
+//      year typo sits 365 days behind it. 21 days covers the longest real batch (17 days).
+//      For the first row of a brand-new batch there is nothing to compare against, so it
+//      must instead be within the last 90 days — which still catches a wrong year.
+// Auto-added placeholders are excluded from the comparison window: they are copies, not
+// evidence. Genuine historical loads go through scripts/import.ts, which does not run this.
+const DATED_STATIONS = new Set(["Press", "Oven", "Jot", "Distributor", "Kreos"]);
+const DAY_MS = 86400000;
+const istDay = (d: Date): string => new Date(d.getTime() + 330 * 60000).toISOString().slice(0, 10);
+
+async function dateSanity(model: string, data: Record<string, unknown>, batchKeyFallback?: string | null, currentDate?: Date | null): Promise<string | null> {
+  if (!DATED_STATIONS.has(model)) return null;
+  const d = data.date;
+  if (!(d instanceof Date) || isNaN(d.getTime())) return null;
+  const now = Date.now();
+  if (d.getTime() > now + 2 * DAY_MS)
+    return `\u26a0 Date ${istDay(d)} is in the future — check the year and the month, then save again.`;
+  // On an EDIT, a small correction near the row's existing date is always allowed — an old
+  // row on a long-running batch must stay correctable, and a wrong year is never "small"
+  // (365 days), so this cannot reopen the hole. Nudging a date by a day or two always works.
+  if (currentDate && Math.abs(d.getTime() - currentDate.getTime()) <= 21 * DAY_MS) return null;
+
+  const key = (typeof data.batchKey === "string" && data.batchKey) || batchKeyFallback || "";
+  if (key) {
+    let win: { hi: Date | null } | undefined;
+    try {
+      const rows = await prisma.$queryRaw<{ hi: Date | null }[]>`
+        SELECT max(date) hi FROM (
+          SELECT date, remarks FROM press        WHERE batch_key = ${key}
+          UNION ALL SELECT date, remarks FROM distributor WHERE batch_key = ${key}
+          UNION ALL SELECT date, remarks FROM kreos       WHERE batch_key = ${key}
+          UNION ALL SELECT date, remarks FROM oven        WHERE batch_key = ${key}
+          UNION ALL SELECT date, remarks FROM jot         WHERE batch_key = ${key}
+        ) t
+        WHERE date IS NOT NULL AND date <= now() + interval '2 days'
+          AND (remarks IS NULL OR remarks NOT LIKE '\u2699 auto-added%')`;
+      win = rows[0];
+    } catch { /* if the window can't be read, fall through to the 90-day rule */ }
+    if (win?.hi) {
+      const anchor = new Date(win.hi);
+      const lo = anchor.getTime() - 21 * DAY_MS;
+      const hi = anchor.getTime() + 21 * DAY_MS;
+      if (d.getTime() < lo || d.getTime() > hi)
+        return `\u26a0 Date ${istDay(d)} doesn't fit batch ${key} — the batch's latest entry is ${istDay(anchor)}. Check the YEAR (a wrong year is the usual cause), then save again.`;
+      return null;
+    }
+  }
+  if (d.getTime() < now - 90 * DAY_MS)
+    return `\u26a0 Date ${istDay(d)} is more than 90 days old — check the year, then save again.`;
+  return null;
+}
 const hasSlab = (v: unknown): boolean => { if (v == null || v === "") return false; const n = typeof v === "number" ? v : Number(v); return Number.isFinite(n); };
 
 function buildData(model: string, fd: FormData): Record<string, unknown> {
@@ -187,6 +251,15 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
   for (const rf of REQUIRED_FORM_FIELDS[model] ?? [])
     if (fd.has(rf) && !String(data[rf] ?? "").trim()) return `${REQUIRED_FIELD_LABELS[rf] ?? rf} is required.`;
   { const fbErr = fillerBufferMissing(model, data, fd); if (fbErr) return fbErr; }
+  // Date sanity on EDIT — only when the date is actually being changed. An old row whose
+  // date is legitimately months old must stay editable (its unchanged date would otherwise
+  // trip the 90-day rule), so an untouched date is never re-validated.
+  if (DATED_STATIONS.has(model) && fd.has("date") && data.date instanceof Date) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cur: any = await delegateOf(model).findUnique({ where: { id }, select: { date: true, batchKey: true } }).catch(() => null);
+    const changed = !cur?.date || new Date(cur.date).getTime() !== (data.date as Date).getTime();
+    if (changed) { const dErr = await dateSanity(model, data, cur?.batchKey ?? null, cur?.date ? new Date(cur.date) : null); if (dErr) return dErr; }
+  }
   // If this QC edit changes the slab number, the old number's inventory row must
   // be re-projected (or removed) — capture it before the update.
   let qcPrevSlabNumber: number | null = null;
@@ -271,6 +344,8 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
   stampMixerTotals(model, data);
   stampPumps(model, data);
   await stampIncrements(model, data);
+
+  { const dErr = await dateSanity(model, data); if (dErr) return dErr; }
 
   // MIS: a single hour can log at most 60 minutes of downtime — block impossible totals.
   if (model === "Mis") {
