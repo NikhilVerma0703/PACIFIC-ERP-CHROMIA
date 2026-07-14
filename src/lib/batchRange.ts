@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import { localId } from "@/lib/rbac";
 import { applyWrongBatchMove } from "@/lib/batchMismatch";
+import { thicknessBySlab } from "@/lib/slabThickness";
 
 const db = prisma as any;
 const STATION_MODELS = ["Press", "Oven", "Jot", "PolishEntry", "PolishQc"];
@@ -117,6 +118,10 @@ export async function getBatchSlabList(batchKey: string): Promise<{ slab: number
 export const AUTOFILL_PREFIX = "⚙ auto-added";
 export const AUTOFILL_REMARK = "⚙ auto-added by range rectify — parameters missing";
 const FILL_TABLE: Record<string, string> = { distributor: "distributor", kreos: "kreos", press: "press", oven: "oven", jot: "jot" };
+// Thickness column per auto-filled station. Press and Oven have NO thickness column
+// at all, so their placeholders cannot carry one; the rest inherit the slab's
+// thickness from whichever station already recorded it (see slabThickness.ts).
+const FILL_THICKNESS_COL: Record<string, string> = { distributor: "slab_thickness", kreos: "slab_thickness", jot: "thickness" };
 
 async function rawBatchFor(batchKey: string): Promise<string> {
   for (const m of ["distributor", "kreos", "press", "oven", "jot"]) {
@@ -150,14 +155,21 @@ export async function autoFillBatch(batchKey: string): Promise<{ created: number
   const lineHead = dSize === 0 && kSize === 0 ? null : dSize >= kSize ? "distributor" : "kreos";
   const stations = [...(lineHead ? [lineHead] : []), "press", "oven", "jot"];
   const raw = await rawBatchFor(batchKey);
+  // Resolved BEFORE any insert, so it only ever reads real (non-placeholder) rows:
+  // slab -> thickness, taken from any station that recorded it.
+  const thickBySlab = await thicknessBySlab({ keys: [batchKey] });
   let created = 0;
   for (const m of stations) {
     const have = present[m] ?? new Set<number>();
     const missing = [...union].filter((n) => !have.has(n));
     if (!missing.length) continue;
-    const tuples = missing.map((n) => Prisma.sql`(${localId(m)}, ${localId(m)}, ${raw}, ${batchKey}, ${n}, ${AUTOFILL_REMARK}, now(), now(), now())`);
+    const tcol = FILL_THICKNESS_COL[m];
+    const cols = `id, "airtableId", batch, batch_key, slab_number, remarks, date, imported_at, synced_at${tcol ? `, ${tcol}` : ""}`;
+    const tuples = missing.map((n) => tcol
+      ? Prisma.sql`(${localId(m)}, ${localId(m)}, ${raw}, ${batchKey}, ${n}, ${AUTOFILL_REMARK}, now(), now(), now(), ${thickBySlab.get(n) ?? null})`
+      : Prisma.sql`(${localId(m)}, ${localId(m)}, ${raw}, ${batchKey}, ${n}, ${AUTOFILL_REMARK}, now(), now(), now())`);
     try {
-      const r = await db.$executeRaw(Prisma.sql`INSERT INTO ${Prisma.raw(`"${FILL_TABLE[m]}"`)} (id, "airtableId", batch, batch_key, slab_number, remarks, date, imported_at, synced_at) VALUES ${Prisma.join(tuples)}`);
+      const r = await db.$executeRaw(Prisma.sql`INSERT INTO ${Prisma.raw(`"${FILL_TABLE[m]}"`)} (${Prisma.raw(cols)}) VALUES ${Prisma.join(tuples)}`);
       created += Number(r) || 0;
     } catch (e) { console.error(`autoFillBatch ${m} insert failed:`, e); }
   }

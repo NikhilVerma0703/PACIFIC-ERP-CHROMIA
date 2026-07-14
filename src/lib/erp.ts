@@ -4,6 +4,7 @@
 import { prisma } from "@/lib/prisma";
 import { normalizeBatch, parentBatch, isSubBatch } from "@/lib/normalizeBatch";
 import { getRangeEdits, AUTOFILL_PREFIX } from "@/lib/batchRange";
+import { thicknessMixByBatch, thicknessBySlab, mergeMix, mixBars } from "@/lib/slabThickness";
 
 /** Parse a value that may be a JSON-wrapped Airtable formula/rollup result. */
 export function num(v: unknown): number {
@@ -108,27 +109,34 @@ export async function getOverview(): Promise<OverviewData> {
   const todayStart = daysAgo(0);
 
   /* eslint-disable @typescript-eslint/no-explicit-any */
-  const [polished7d, polished30d, pressedToday, dayRows, statusRows, thickRows] = await Promise.all([
+  const [polished7d, polished30d, pressedToday, dayRows, statusRows, pressKeys] = await Promise.all([
     prisma.polishEntry.count({ where: { OR: [{ created: { gte: since7 } }, { created: null, importedAt: { gte: since7 } }] } }),
     prisma.polishEntry.count({ where: { OR: [{ created: { gte: since30 } }, { created: null, importedAt: { gte: since30 } }] } }),
     prisma.press.count({ where: { date: { gte: todayStart } } }),
     // counted in the DB — same buckets as before, ~40 rows instead of ~20k
     (prisma as any).$queryRaw`SELECT to_char(COALESCE(created, imported_at), 'YYYY-MM-DD') AS k, COUNT(*)::int AS c FROM polish_entry WHERE COALESCE(created, imported_at) >= ${since30} GROUP BY 1` as Promise<{ k: string; c: number }[]>,
     (prisma as any).$queryRaw`SELECT COALESCE(NULLIF(TRIM(polishing_status), ''), '—') AS k, COUNT(*)::int AS c FROM polish_entry WHERE COALESCE(created, imported_at) >= ${since30} GROUP BY 1` as Promise<{ k: string; c: number }[]>,
-    (prisma as any).$queryRaw`SELECT COALESCE(NULLIF(TRIM(slab_thickness), ''), '—') AS k, COUNT(*)::int AS c FROM polish_entry WHERE COALESCE(created, imported_at) >= ${since30} GROUP BY 1` as Promise<{ k: string; c: number }[]>,
+    // batches pressed in the window — the thickness split itself comes from the
+    // shared resolver below, not from any single station's column
+    (prisma as any).$queryRaw`SELECT DISTINCT batch_key AS k FROM press WHERE batch_key IS NOT NULL AND COALESCE(date, imported_at) >= ${since30} AND COALESCE(date, imported_at) <= now() + interval '2 days'` as Promise<{ k: string }[]>,
   ]);
+
+  // Thickness mix = slabs PRESSED in the last 30 days, split by the per-slab thickness
+  // the shared resolver returns (Jot -> Distributor -> Kreos -> Polish Entry -> Polish QC).
+  // It used to read polish_entry.slab_thickness raw, which (a) counted polishing
+  // throughput rather than production and (b) rendered "3cm" and "3 cm" as two bars.
+  // `since30` is passed through so a batch straddling the window contributes only the
+  // slabs actually pressed inside it.
+  const thicknessMix = mixBars(mergeMix(
+    (await thicknessMixByBatch(pressKeys.map((r) => String(r.k)), since30)).values(),
+  ));
 
   const dayMap = new Map<string, number>(dayRows.map((r) => [r.k, r.c]));
   const statusMap = new Map<string, number>(statusRows.map((r) => [r.k, r.c]));
-  const thickMap = new Map<string, number>(thickRows.map((r) => [r.k, r.c]));
   const daily = [...dayMap.entries()]
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([day, count]) => ({ day: day.slice(5), count }));
   const statusMix = [...statusMap.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 8)
-    .map(([label, count]) => ({ label, count }));
-  const thicknessMix = [...thickMap.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 8)
     .map(([label, count]) => ({ label, count }));
@@ -308,8 +316,11 @@ export interface BatchData {
   qcGrades: { label: string; count: number }[];
   thickness: { label: string; count: number }[];
   design: BatchDesign;
-  family: { parent: string; isSub: boolean; keys: string[]; members: { key: string; design: string | null; slabs: number }[] };
+  family: { parent: string; isSub: boolean; solo: boolean; mixFamilyWide: boolean; keys: string[]; members: { key: string; design: string | null; slabs: number }[] };
 }
+
+/** Scope for the batch readers: `solo` excludes the design-switch sub-batches. */
+export interface BatchScope { solo?: boolean }
 
 // Resolve the family of batch keys to roll up: a parent ("1350") gathers itself
 // plus any design-switch sub-batches ("1350-A", "1350-B"); a sub-batch stands alone.
@@ -337,15 +348,30 @@ export async function batchFamily(input: string): Promise<{ key: string; parent:
   return { key, parent, isSub, keys };
 }
 
-export async function getBatch(input: string): Promise<BatchData> {
-  const { key, parent, isSub, keys } = await batchFamily(input);
+export async function getBatch(input: string, scope?: BatchScope): Promise<BatchData> {
+  const { key, parent, isSub, keys: famKeys } = await batchFamily(input);
+  // solo = show the parent on its own, excluding its design-switch sub-batches. The
+  // family is still resolved in full so the chips can render and link back to it.
+  const solo = !!scope?.solo && !isSub && famKeys.length > 1;
+  const keys = solo ? [key] : famKeys;
   const where = { batchKey: { in: keys } };
+  const famWhere = { batchKey: { in: famKeys } };
+  // Mixer cycles are often stamped ONLY on the parent key even when the slab
+  // stations split into sub-batches — the mix for the whole run then sits on the
+  // parent. In that case a solo view cannot apportion the mix: dividing a
+  // family-wide mix weight by a parent-only slab weight invents a wastage figure
+  // (measured: 21.6% instead of the true 9.4% on one live batch). So we detect it,
+  // keep the mixer family-wide, and suppress the wastage % rather than fabricate one.
+  const subKeys = famKeys.filter((k) => k !== key);
+  const mixFamilyWide = solo && subKeys.length > 0
+    && (await prisma.mixerCycle.count({ where: { batchKey: { in: subKeys } } })) === 0;
+  const mixWhere = mixFamilyWide ? famWhere : where;
   const [design, audit, [mixer, press, polishEntryCount, qcRows, ovenCount, jotCount], famDesigns, famSlabs] = await Promise.all([
     designForBatch(key),
     slabAuditForKeys(keys),
     Promise.all([
       prisma.mixerCycle.findMany({
-        where,
+        where: mixWhere,
         select: {
           totalCycleWeight: true,
           m1W1: true, m1W2: true, m1W3: true, m1W4: true, m1W5: true, m1FW: true, m1RW: true,
@@ -358,13 +384,13 @@ export async function getBatch(input: string): Promise<BatchData> {
       prisma.polishEntry.count({ where }),
       prisma.polishQc.findMany({
         where,
-        select: { qualityGrade: true, slabThickness: true },
+        select: { qualityGrade: true },
       }),
       prisma.oven.count({ where }),
       prisma.jot.count({ where }),
     ]),
-    keys.length > 1 ? designsForBatchKeys(keys) : Promise.resolve(new Map()),
-    keys.length > 1 ? prisma.press.groupBy({ by: ["batchKey"], where, _count: { _all: true } }) : Promise.resolve([] as { batchKey: string | null; _count: { _all: number } }[]),
+    famKeys.length > 1 ? designsForBatchKeys(famKeys) : Promise.resolve(new Map()),
+    famKeys.length > 1 ? prisma.press.groupBy({ by: ["batchKey"], where: famWhere, _count: { _all: true } }) : Promise.resolve([] as { batchKey: string | null; _count: { _all: number } }[]),
   ]);
 
   const rawCycleWeight = (m: Record<string, unknown>) => {
@@ -382,17 +408,30 @@ export async function getBatch(input: string): Promise<BatchData> {
     perMixer[3] += (m.m4W1 ?? 0) + (m.m4W2 ?? 0) + (m.m4W3 ?? 0) + (m.m4W4 ?? 0) + (m.m4W5 ?? 0) + (m.m4FW ?? 0);
   }
 
-  const wastageKg = totalMixWeight - totalSlabWeight;
+  // mixFamilyWide: the mix belongs to the whole run but the slab weight is
+  // parent-only, so neither wastage figure is meaningful — report none.
+  const wastageKg = mixFamilyWide ? 0 : totalMixWeight - totalSlabWeight;
   const wastagePct =
-    totalMixWeight > 0 && totalSlabWeight > 0 ? (wastageKg / totalMixWeight) * 100 : null;
+    !mixFamilyWide && totalMixWeight > 0 && totalSlabWeight > 0 ? (wastageKg / totalMixWeight) * 100 : null;
 
   const gradeMap = new Map<string, number>();
-  const thickMap = new Map<string, number>();
   for (const q of qcRows) {
     const g = q.qualityGrade?.trim() || "—";
     gradeMap.set(g, (gradeMap.get(g) ?? 0) + 1);
-    const t = q.slabThickness?.trim() || "—";
-    thickMap.set(t, (thickMap.get(t) ?? 0) + 1);
+  }
+  // Thickness comes from the shared resolver, counted over the batch's press slabs —
+  // the same numbers the production report and the Telegram bot show. It used to be
+  // built from polish_qc rows only, using the RAW string, so a batch was split across
+  // a "3cm" and a "3 cm" bar and unpolished slabs never appeared at all.
+  let thicknessBars = mixBars(mergeMix((await thicknessMixByBatch(keys)).values()));
+  if (!thicknessBars.length) {
+    // Older batches carry station thickness but NO press rows (nothing to anchor to),
+    // and an empty card would hide data the old QC-only card did show. Count the
+    // stations' own slabs in that case — the resolver still decides each slab's value.
+    const bySlab = await thicknessBySlab({ keys });
+    const m = new Map<string, number>();
+    for (const t of bySlab.values()) m.set(t, (m.get(t) ?? 0) + 1);
+    thicknessBars = mixBars({ mix: m, noThickness: 0, total: bySlab.size });
   }
 
   const pressCount = press.length;
@@ -407,7 +446,9 @@ export async function getBatch(input: string): Promise<BatchData> {
 
   return {
     key,
-    found: mixer.length + pressCount + polishEntryCount + qcRows.length + ovenCount + jotCount > 0,
+    // In solo mode keep the page rendered even when the parent key itself holds no
+    // rows — otherwise the chip dead-ends on "no records" with no way back to the family.
+    found: solo || mixer.length + pressCount + polishEntryCount + qcRows.length + ovenCount + jotCount > 0,
     counts: {
       mixer: mixer.length,
       press: pressCount,
@@ -424,11 +465,11 @@ export async function getBatch(input: string): Promise<BatchData> {
     wastagePct,
     perMixer,
     qcGrades: [...gradeMap.entries()].map(([label, count]) => ({ label, count })),
-    thickness: [...thickMap.entries()].map(([label, count]) => ({ label, count })),
+    thickness: thicknessBars,
     design,
     family: {
-      parent, isSub, keys,
-      members: keys.map((k) => ({ key: k, design: (famDesigns as Map<string, BatchDesign>).get(k)?.primary ?? null, slabs: Number((famSlabs as { batchKey: string | null; _count: { _all: number } }[]).find((r) => r.batchKey === k)?._count?._all ?? (keys.length === 1 ? press.length : 0)) })),
+      parent, isSub, solo, mixFamilyWide, keys: famKeys,
+      members: famKeys.map((k) => ({ key: k, design: (famDesigns as Map<string, BatchDesign>).get(k)?.primary ?? null, slabs: Number((famSlabs as { batchKey: string | null; _count: { _all: number } }[]).find((r) => r.batchKey === k)?._count?._all ?? (famKeys.length === 1 ? press.length : 0)) })),
     },
   };
 }
@@ -727,8 +768,9 @@ export interface MixerCycleRow {
   lines: MixerLine[];        // per-mixer grit / filler / resin detail (for expand)
 }
 
-export async function getMixerCycles(input: string): Promise<MixerCycleRow[]> {
-  const { keys } = await batchFamily(input);
+export async function getMixerCycles(input: string, scope?: BatchScope): Promise<MixerCycleRow[]> {
+  const { key, isSub, keys: famKeys } = await batchFamily(input);
+  const keys = scope?.solo && !isSub ? [key] : famKeys;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rows: any[] = await prisma.mixerCycle.findMany({ where: { batchKey: { in: keys } }, orderBy: { cycle: "asc" } });
   return rows.map((r) => {
@@ -796,8 +838,9 @@ function jstr(v: unknown): string | null {
   const str = String(v).trim();
   return str || null;
 }
-export async function getSiloBags(input: string): Promise<SiloRow[]> {
-  const { keys } = await batchFamily(input);
+export async function getSiloBags(input: string, scope?: BatchScope): Promise<SiloRow[]> {
+  const { key, isSub, keys: famKeys } = await batchFamily(input);
+  const keys = scope?.solo && !isSub ? [key] : famKeys;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rows: any[] = await prisma.silo.findMany({
     where: { batchKey: { in: keys } },

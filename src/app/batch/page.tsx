@@ -40,18 +40,20 @@ const STATION_KEY: Record<string, string> = {
 export default async function BatchPage({
   searchParams,
 }: {
-  searchParams: Promise<{ b?: string; d?: string }>;
+  searchParams: Promise<{ b?: string; d?: string; solo?: string }>;
 }) {
-  const { b, d } = await searchParams;
+  const { b, d, solo: soloRaw } = await searchParams;
   const query = b?.trim();
   const designQuery = d?.trim();
+  // ?solo=1 — show this batch on its own, excluding its design-switch sub-batches.
+  const scope = { solo: soloRaw === "1" };
 
   let data = null;
   let matches = null;
   let error: string | null = null;
   if (query) {
     try {
-      data = await getBatch(query);
+      data = await getBatch(query, scope);
     } catch {
       error = "Could not read the database. Run the import first (see README).";
     }
@@ -77,7 +79,10 @@ export default async function BatchPage({
   let mayFix = false;
   let canManage = false;
   if (query && data?.found) {
-    try { [mixerCycles, silos, wrongBatch, mayFix, canManage] = await Promise.all([getMixerCycles(query), getSiloBags(query), detectWrongBatch(query), canRectify(), isManager()]); } catch { /* ignore */ }
+    // mixer cycles / silo bags follow the same call the totals made: when the mix is
+    // only stamped on the parent key, a solo view still shows it family-wide (labelled).
+    const mixScope = { solo: scope.solo && !data.family.mixFamilyWide };
+    try { [mixerCycles, silos, wrongBatch, mayFix, canManage] = await Promise.all([getMixerCycles(query, mixScope), getSiloBags(query, mixScope), detectWrongBatch(query), canRectify(), isManager()]); } catch { /* ignore */ }
   }
 
   // Build a drill-down href for the current batch.
@@ -177,7 +182,7 @@ export default async function BatchPage({
             )}
             {data.slabAudit.hasIssues && <Badge tone="red">⚠ Slab discrepancies</Badge>}
             {unbacked && <Badge tone="red">⚠ Unbacked RM — silo/tank fill pending, auto-links on fill</Badge>}
-            {data.wastagePct != null && (
+            {data.wastagePct != null && !data.family.mixFamilyWide && (
               <WastagePill pct={data.wastagePct} kg={data.wastageKg} mixWeight={data.totalMixWeight} slabWeight={data.totalSlabWeight} />
             )}
           </div>
@@ -190,13 +195,30 @@ export default async function BatchPage({
           )}
           {!data.family.isSub && data.family.keys.length > 1 && (
             <div className="rounded-xl border border-brand/20 bg-brand/[0.04] px-4 py-3 text-sm">
-              <div className="mb-2 font-medium text-gray-700">Batch family — the totals below include {data.family.keys.length - 1} design-switch sub-batch{data.family.keys.length - 1 === 1 ? "" : "es"}:</div>
+              <div className="mb-2 font-medium text-gray-700">
+                {data.family.solo ? (
+                  <>
+                    Showing <span className="font-semibold">{data.key}</span> only — its {data.family.keys.length - 1} design-switch sub-batch{data.family.keys.length - 1 === 1 ? " is" : "es are"} excluded from the slab totals below.{" "}
+                    {data.family.mixFamilyWide && <span className="text-gray-600">Mix weight, mixer cycles and silo bags are only logged against {data.family.parent}, so those stay family-wide and wastage % is hidden here. </span>}
+                    <Link href={`/batch?b=${encodeURIComponent(data.family.parent)}`} className="underline hover:text-brand">View the whole family →</Link>
+                  </>
+                ) : (
+                  <>Batch family — the totals below include {data.family.keys.length - 1} design-switch sub-batch{data.family.keys.length - 1 === 1 ? "" : "es"}. Click a batch to see it on its own:</>
+                )}
+              </div>
               <div className="flex flex-wrap gap-2">
-                {data.family.members.map((m) => (
-                  <Link key={m.key} href={`/batch?b=${encodeURIComponent(m.key)}`} className={`rounded-lg border px-3 py-1.5 transition hover:border-brand/40 ${m.key === data.key ? "border-brand/40 bg-white" : "border-gray-200 bg-white"}`}>
-                    <span className="font-semibold">{m.key}</span>{m.design ? <span className="text-gray-500"> · {m.design}</span> : ""}<span className="text-gray-400"> · {fmt(m.slabs)} slabs</span>
-                  </Link>
-                ))}
+                {data.family.members.map((m) => {
+                  // The parent chip opens the solo view (itself, sub-batches excluded);
+                  // a sub-batch already stands alone.
+                  const isParent = m.key === data.family.parent;
+                  const href = `/batch?b=${encodeURIComponent(m.key)}${isParent ? "&solo=1" : ""}`;
+                  const active = data.family.solo && isParent;
+                  return (
+                    <Link key={m.key} href={href} className={`rounded-lg border px-3 py-1.5 transition hover:border-brand/40 ${active ? "border-brand/40 bg-white ring-1 ring-brand/30" : "border-gray-200 bg-white"}`}>
+                      <span className="font-semibold">{m.key}</span>{m.design ? <span className="text-gray-500"> · {m.design}</span> : ""}<span className="text-gray-400"> · {fmt(m.slabs)} slabs</span>
+                    </Link>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -342,10 +364,10 @@ export default async function BatchPage({
               <Kpi label="Design" value={data.design.primary ?? "—"} sub={data.design.discrepancy ? `${data.design.designs.length} conflicting` : "single design"} />
             </Link>
             <Link href={slab("mixer")} className="block h-full rounded-xl transition hover:ring-2 hover:ring-brand/30">
-              <Kpi label="Mix weight (kg)" value={fmt(data.totalMixWeight)} sub={`${data.counts.mixer} mixer cycles`} />
+              <Kpi label="Mix weight (kg)" value={fmt(data.totalMixWeight)} sub={data.family.mixFamilyWide ? `${data.counts.mixer} mixer cycles · whole family` : `${data.counts.mixer} mixer cycles`} />
             </Link>
             <Link href={slab("press")} className="block h-full rounded-xl transition hover:ring-2 hover:ring-brand/30">
-              <Kpi label="Slab weight (kg)" value={fmt(data.totalSlabWeight)} sub={`wastage ${fmt(data.wastageKg)} kg`} />
+              <Kpi label="Slab weight (kg)" value={fmt(data.totalSlabWeight)} sub={data.family.mixFamilyWide ? "wastage n/a — mix is family-wide" : `wastage ${fmt(data.wastageKg)} kg`} />
             </Link>
           </div>
 
@@ -362,8 +384,8 @@ export default async function BatchPage({
               {data.qcGrades.length ? <HBars data={data.qcGrades} colorFor={gradeColor} links={Object.fromEntries(data.qcGrades.map((g) => [g.label, g.label === "—" ? `/tables/PolishQc?b=${encodeURIComponent(data.key)}&empty=qualityGrade` : `/tables/PolishQc?b=${encodeURIComponent(data.key)}&q=${encodeURIComponent(g.label)}`]))} /> : <Empty>No QC rows.</Empty>}
             </Card>
             <Card>
-              <H2>Thickness mix (QC)</H2>
-              {data.thickness.length ? <HBars data={data.thickness} links={Object.fromEntries(data.thickness.map((t) => [t.label, t.label === "—" ? `/tables/PolishQc?b=${encodeURIComponent(data.key)}&empty=slabThickness` : `/tables/PolishQc?b=${encodeURIComponent(data.key)}&q=${encodeURIComponent(t.label)}`]))} /> : <Empty>No QC rows.</Empty>}
+              <H2>Thickness mix</H2>
+              {data.thickness.length ? <HBars data={data.thickness} /> : <Empty>No slabs with a thickness.</Empty>}
             </Card>
           </div>
 

@@ -7,6 +7,7 @@ import { getDowntimeReport } from "@/lib/downtime";
 import { getLastShiftReport } from "@/lib/misShift";
 import { ymdIST, plusDay, lastCompletedHourIST, hourlyMessage } from "@/lib/telegramReports";
 import { esc } from "@/lib/telegram";
+import { thicknessBySlab, thicknessMixByBatch, mergeMix, mixLabel } from "@/lib/slabThickness";
 
 async function dataPack(question = ""): Promise<string> {
   const today = ymdIST();
@@ -44,6 +45,16 @@ async function dataPack(question = ""): Promise<string> {
       GROUP BY batch ORDER BY max(imported_at) DESC LIMIT 8`;
     if (misSums.length) lines.push("MIS MANUAL LOG BY BATCH (same period — compare with press to spot gaps): "
       + misSums.map((m) => `${m.batch}: logged ${m.logged ?? 0}${m.hours_without_count ? ` (+${m.hours_without_count} hrs missing counts)` : ""}`).join("; "));
+    // SLAB THICKNESS per batch (2 cm vs 3 cm). Thickness is NOT recorded at the press
+    // or the oven — it is stamped at Distributor/Kreos, the polish stations and Jot,
+    // so it is resolved per slab across all of them.
+    const tkeys: any[] = await db.$queryRaw`
+      SELECT batch_key k FROM press
+      WHERE imported_at > now() - interval '10 days' AND batch_key IS NOT NULL
+      GROUP BY 1 ORDER BY max(imported_at) DESC LIMIT 8`;
+    const mixByBatch = await thicknessMixByBatch(tkeys.map((r: any) => String(r.k)));
+    if (mixByBatch.size) lines.push("SLAB THICKNESS BY BATCH (which slabs are 2 cm vs 3 cm — batches pressed in the last 10 days; each split is counted over that batch's FULL press slab list, so it adds up to the batch's press total): "
+      + tkeys.map((r: any) => `${r.k}: ${mixLabel(mixByBatch.get(String(r.k)))}`).join("; "));
     const fg: any[] = await db.$queryRaw`SELECT count(*)::int n FROM fg_finished_slab WHERE status = 'AVAILABLE'`;
     lines.push(`FINISHED GOODS: ${fg[0]?.n ?? "?"} slabs currently AVAILABLE in stock`);
     // Polish QC grade split (the "ABC report") per batch, last 10 days
@@ -159,14 +170,17 @@ async function dataPack(question = ""): Promise<string> {
     const keys = [...new Set((question.match(/\b[A-Za-z]{0,2}(\d{3,4})\b/g) ?? []).map((t) => t.replace(/\D/g, "")))].slice(0, 3);
     for (const k of keys) {
       const like = `%${k}%`;
-      const [pr, mi, qc, jt]: any[][] = await Promise.all([
+      const [pr, mi, qc, jt, bk]: any[][] = await Promise.all([
         db.$queryRaw`SELECT count(DISTINCT slab_number)::int n, min(slab_number)::int lo, max(slab_number)::int hi FROM press WHERE batch ILIKE ${like}`,
         db.$queryRaw`SELECT sum(slabs_per_hour_actual)::float s, count(*) FILTER (WHERE slabs_per_hour_actual IS NULL)::int miss FROM mis WHERE batch ILIKE ${like}`,
         db.$queryRaw`SELECT quality_grade g, count(*)::int n FROM polish_qc WHERE batch_key = ${k} OR batch_number ILIKE ${like} GROUP BY 1`,
         db.$queryRaw`SELECT slab_defect d, count(*)::int n FROM jot WHERE batch ILIKE ${like} GROUP BY 1`,
+        db.$queryRaw`SELECT DISTINCT batch_key k FROM press WHERE batch ILIKE ${like} AND batch_key IS NOT NULL`,
       ]);
       if (!(pr[0]?.n || mi[0]?.s || qc.length || jt.length)) continue;
-      lines.push(`ASKED BATCH ${k} (all-time detail): press ${pr[0]?.n ?? 0} slabs${pr[0]?.lo ? ` (#${pr[0].lo}-#${pr[0].hi})` : ""}; MIS logged ${mi[0]?.s ?? 0}${mi[0]?.miss ? ` (${mi[0].miss} hrs without counts)` : ""}; QC ${qc.length ? qc.map((r: any) => `${r.g ?? "ungraded"}:${r.n}`).join(" ") : "none yet"}; JOT ${jt.length ? jt.map((r: any) => `${r.d ?? "no-defect"}:${r.n}`).join(" ") : "none yet"}`);
+      // thickness for the asked batch (and any design-switch sub-batch of it)
+      const merged = mergeMix((await thicknessMixByBatch(bk.map((r: any) => String(r.k)))).values());
+      lines.push(`ASKED BATCH ${k} (all-time detail): press ${pr[0]?.n ?? 0} slabs${pr[0]?.lo ? ` (#${pr[0].lo}-#${pr[0].hi})` : ""}; thickness ${mixLabel(merged)}; MIS logged ${mi[0]?.s ?? 0}${mi[0]?.miss ? ` (${mi[0].miss} hrs without counts)` : ""}; QC ${qc.length ? qc.map((r: any) => `${r.g ?? "ungraded"}:${r.n}`).join(" ") : "none yet"}; JOT ${jt.length ? jt.map((r: any) => `${r.d ?? "no-defect"}:${r.n}`).join(" ") : "none yet"}`);
     }
   } catch { /* best-effort */ }
   // Known-design matching, shared by the quality design comparison and the
@@ -213,6 +227,7 @@ async function dataPack(question = ""): Promise<string> {
     /* eslint-disable @typescript-eslint/no-explicit-any */
     const db = prisma as any;
     const slabs = [...new Set(question.match(/\b\d{5,7}\b/g) ?? [])].slice(0, 3).map(Number);
+    const thickAsked = slabs.length ? await thicknessBySlab({ slabs }) : new Map<number, string>();
     for (const n of slabs) {
       const [pr, jt, qc, fg]: any[][] = await Promise.all([
         db.$queryRaw`SELECT batch, design_name FROM press WHERE slab_number = ${n} LIMIT 1`,
@@ -222,7 +237,7 @@ async function dataPack(question = ""): Promise<string> {
       ]);
       if (!(pr.length || jt.length || qc.length || fg.length)) continue;
       const dsg = pr[0]?.design_name ?? jt[0]?.design_name ?? fg[0]?.design ?? null;
-      lines.push(`ASKED SLAB ${n}: design ${dsg ?? "unknown"}; press ${pr[0] ? `batch ${pr[0].batch ?? "?"}` : "no entry"}; JOT ${jt[0] ? (jt[0].slab_defect ?? "no defect") : "no entry"}; QC ${qc[0] ? `${qc[0].quality_grade ?? "ungraded"}${qc[0].repolish_status ? ` ${qc[0].repolish_status}` : ""}` : "no entry"}; stock ${fg[0] ? `${fg[0].status} ${fg[0].bay_number ?? ""}`.trim() : "not in finished goods"}`);
+      lines.push(`ASKED SLAB ${n}: design ${dsg ?? "unknown"}; thickness ${thickAsked.get(n) ?? "not recorded"}; press ${pr[0] ? `batch ${pr[0].batch ?? "?"}` : "no entry"}; JOT ${jt[0] ? (jt[0].slab_defect ?? "no defect") : "no entry"}; QC ${qc[0] ? `${qc[0].quality_grade ?? "ungraded"}${qc[0].repolish_status ? ` ${qc[0].repolish_status}` : ""}` : "no entry"}; stock ${fg[0] ? `${fg[0].status} ${fg[0].bay_number ?? ""}`.trim() : "not in finished goods"}`);
     }
   } catch { /* best-effort */ }
   try {
@@ -592,7 +607,7 @@ export async function aiAnswer(question: string): Promise<string> {
       body: JSON.stringify({
         model: "claude-haiku-4-5",
         max_tokens: hasCmp ? 600 : 400,
-        system: "You are the Pacific Surfaces factory ERP assistant answering in a Telegram group. Answer ONLY from the production data provided — never invent numbers. PRESS MACHINE TOTALS are the authoritative slab counts per batch; the LAST ~75min station lines list the individual slabs just entered at Polish QC / press / JOT, and LATEST ENTRY lines give the most recent record per station with its age — use these for any 'last hour / just now / latest / most recent' question; the BY HOUR lines give per-IST-hour counts + slab ranges for today and yesterday — use them for any time-window question; the MIS lines are the manual hourly log and can be incomplete (hours logged without counts). For batch totals ALWAYS use the press totals. When asked about issues/discrepancies, COMPARE press totals against the MIS log: flag batches where MIS logged noticeably fewer slabs than the press made, and hours missing counts. If the question needs data not present here, say exactly what is missing instead of estimating. Be short (2-5 lines), plain text, numbers bold-free. If the data can't answer the question, say so and suggest /status, /shift, /day or the ERP dashboard."
+        system: "You are the Pacific Surfaces factory ERP assistant answering in a Telegram group. Answer ONLY from the production data provided — never invent numbers. PRESS MACHINE TOTALS are the authoritative slab counts per batch; the LAST ~75min station lines list the individual slabs just entered at Polish QC / press / JOT, and LATEST ENTRY lines give the most recent record per station with its age — use these for any 'last hour / just now / latest / most recent' question; the BY HOUR lines give per-IST-hour counts + slab ranges for today and yesterday — use them for any time-window question; the MIS lines are the manual hourly log and can be incomplete (hours logged without counts). For batch totals ALWAYS use the press totals. For ANY thickness question (which slabs are 2 cm vs 3 cm, how many of each) use the SLAB THICKNESS BY BATCH line and the 'thickness' field on the ASKED BATCH / ASKED SLAB lines. Those splits are counted over the batch's press slabs and therefore add up to its press total ('no thickness×N' = press slabs with no thickness stamped anywhere) — thickness is recorded at Distributor/Kreos, the polish stations and Jot, never at the press or the oven, so a slab shown as 'not recorded' simply has no thickness stamped at any station: say so rather than guessing. When asked about issues/discrepancies, COMPARE press totals against the MIS log: flag batches where MIS logged noticeably fewer slabs than the press made, and hours missing counts. If the question needs data not present here, say exactly what is missing instead of estimating. Be short (2-5 lines), plain text, numbers bold-free. If the data can't answer the question, say so and suggest /status, /shift, /day or the ERP dashboard."
           + (hasCmp ? " For this quality/root-cause question one or more server-computed comparison blocks are included — COMPARISON PACK BATCH (batch bad-vs-good), SLAB n VS ITS BATCH'S GOOD SLABS (one slab's own values vs its batch's good-group average), DESIGN COMPARISON PACK (a design's recent batches pooled, led by per-batch bad rates). Their PARAM DELTAS were computed server-side (bad-group or single-slab value vs good-group mean, % = relative difference) — reason ONLY from those deltas and the context lines, never from outside knowledge of typical machine values, and do not recompute averages yourself. Structure the answer: (1) the strongest parameter suspects — the biggest |%| deltas — with their numbers, plus any press-hour clustering; if a DESIGN block's per-batch bad rates single out one batch, name it; (2) what looks normal (the params within ±2%); (3) one plain-words caveat that these are correlations in logged data, NOT proven causes; (4) 1-2 concrete physical checks (e.g. inspect the suspect station's settings/log for the clustered hours, or the listed slabs/silo bags). Up to 10 short lines for this." : ""),
         messages: [{ role: "user", content: `Production data:\n${pack}\n\nQuestion: ${question.slice(0, 500)}` }],
       }),

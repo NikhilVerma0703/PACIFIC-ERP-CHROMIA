@@ -5,7 +5,7 @@
 import { prisma } from "@/lib/prisma";
 import { normalizeBatch } from "@/lib/normalizeBatch";
 import { batchFamily } from "@/lib/erp";
-import { canonThickness } from "@/lib/thickness";
+import { thicknessBySlab as resolveThicknessBySlab } from "@/lib/slabThickness";
 
 const db = prisma as any;
 
@@ -129,21 +129,18 @@ export async function getDetailedReport(input: string): Promise<DetailedReport> 
   const slabNos = press.map((p: any) => p.slabNumber).filter((n: any) => typeof n === "number");
   const from = slabNos.length ? Math.min(...slabNos) : null;
   const to = slabNos.length ? Math.max(...slabNos) : null;
-  // thickness source: first slab station carrying slabThickness with data for this batch
-  let thicknessRows: { slabNumber: number | null; slabThickness: string | null }[] = [];
-  {
-    // all stations queried in parallel; first (in priority order) with data wins
-    const stations = ["oven", "jot", "distributor", "kreos", "polishEntry"];
-    const results = await Promise.all(stations.map((station) =>
-      db[station].findMany({ where: { batchKey: { in: keys }, slabThickness: { not: null } }, select: { slabNumber: true, slabThickness: true } }).catch(() => [] as any[])
-    ));
-    thicknessRows = results.find((rows) => rows.length) ?? [];
-  }
+  // Thickness is resolved PER SLAB by the shared resolver (Jot -> Distributor -> Kreos
+  // -> Polish Entry -> Polish QC), the same one the Telegram bot and the auto-add use,
+  // so all three agree on every slab. This replaces the old "one station wins the whole
+  // batch" rule: Jot is the measured reading and the only station that covers every
+  // slab, but its coverage is partial on some batches — leading with it under a
+  // station-wins rule would have DROPPED slabs that only the line head stamped
+  // (batch 1364: 125 slabs -> 47). Counting per distinct press slab also stops rows
+  // with no slab number, and duplicate station rows, from inflating the split.
+  const thicknessBySlab = await resolveThicknessBySlab({ keys });
   const counts = { mm12: 0, mm20: 0, mm30: 0 };
-  const thicknessBySlab = new Map<number, string>();
-  for (const r of thicknessRows) {
-    const t = canonThickness(r.slabThickness);
-    if (typeof r.slabNumber === "number") thicknessBySlab.set(r.slabNumber, t);
+  for (const n of new Set<number>(slabNos)) {
+    const t = thicknessBySlab.get(n);
     if (t === "1.2 cm") counts.mm12++;
     else if (t === "2 cm") counts.mm20++;
     else if (t === "3 cm") counts.mm30++;

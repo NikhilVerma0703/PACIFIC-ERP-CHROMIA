@@ -49,9 +49,9 @@ export default async function OverviewPage() {
                 {data.statusMix.length ? <HBars data={data.statusMix} /> : <Empty>No data.</Empty>}
               </Card>
             </Link>
-            <Link href="/records?model=PolishQc" className={cardLink}>
+            <Link href="/records?model=Press" className={cardLink}>
               <Card className="h-full">
-                <H2>Slab thickness mix</H2>
+                <H2>Pressed slabs by thickness (30d)</H2>
                 {data.thicknessMix.length ? <HBars data={data.thicknessMix} /> : <Empty>No data.</Empty>}
               </Card>
             </Link>
