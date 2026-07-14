@@ -187,16 +187,15 @@ export default async function BatchPage({
             )}
           </div>
 
-          {data.family.isSub && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
-              Sub-batch of a mid-batch design switch — part of{" "}
-              <Link href={`/batch?b=${encodeURIComponent(data.family.parent)}`} className="font-semibold underline hover:text-amber-900">{data.family.parent}</Link>. Open the parent to see the whole run rolled up.
-            </div>
-          )}
-          {!data.family.isSub && data.family.keys.length > 1 && (
+          {data.family.keys.length > 1 && (
             <div className="rounded-xl border border-brand/20 bg-brand/[0.04] px-4 py-3 text-sm">
               <div className="mb-2 font-medium text-gray-700">
-                {data.family.solo ? (
+                {data.family.isSub ? (
+                  <>
+                    Showing <span className="font-semibold">{data.key}</span> only — a design-switch sub-batch of {data.family.parent}. Everything below is this sub-batch alone.{" "}
+                    <Link href={`/batch?b=${encodeURIComponent(data.family.parent)}`} className="underline hover:text-brand">View the whole family →</Link>
+                  </>
+                ) : data.family.solo ? (
                   <>
                     Showing <span className="font-semibold">{data.key}</span> only — its {data.family.keys.length - 1} design-switch sub-batch{data.family.keys.length - 1 === 1 ? " is" : "es are"} excluded from the slab totals below.{" "}
                     {data.family.mixFamilyWide && <span className="text-gray-600">Mix weight, mixer cycles and silo bags are only logged against {data.family.parent}, so those stay family-wide and wastage % is hidden here. </span>}
@@ -212,7 +211,7 @@ export default async function BatchPage({
                   // a sub-batch already stands alone.
                   const isParent = m.key === data.family.parent;
                   const href = `/batch?b=${encodeURIComponent(m.key)}${isParent ? "&solo=1" : ""}`;
-                  const active = data.family.solo && isParent;
+                  const active = m.key === data.key && (isParent ? data.family.solo : data.family.isSub);
                   return (
                     <Link key={m.key} href={href} className={`rounded-lg border px-3 py-1.5 transition hover:border-brand/40 ${active ? "border-brand/40 bg-white ring-1 ring-brand/30" : "border-gray-200 bg-white"}`}>
                       <span className="font-semibold">{m.key}</span>{m.design ? <span className="text-gray-500"> · {m.design}</span> : ""}<span className="text-gray-400"> · {fmt(m.slabs)} slabs</span>

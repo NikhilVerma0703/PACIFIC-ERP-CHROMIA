@@ -213,7 +213,7 @@ export interface SlabAudit {
 
 const AUDIT_STATIONS: string[] = ["Press", "Distributor", "Kreos", "Oven", "Jot", "Polish Entry", "Polish QC"];
 
-async function slabAuditForKeys(keys: string[]): Promise<SlabAudit> {
+async function slabAuditForKeys(keys: string[], foreign: Set<number> = new Set()): Promise<SlabAudit> {
   const where = { batchKey: { in: keys } };
   const rowsByStation = await Promise.all([
     prisma.press.findMany({ where, select: { slabNumber: true, remarks: true } }),
@@ -238,16 +238,20 @@ async function slabAuditForKeys(keys: string[]): Promise<SlabAudit> {
 
   const union = new Set<number>();
   const autoByStation: Set<number>[] = [];
-  const counts = rowsByStation.map((rows) => {
+  const foreignRows: { label: string; count: number }[] = []; // rows stamped with OUR key whose slab belongs to a sibling
+  const counts = rowsByStation.map((rows, i) => {
     const m = new Map<number, number>();
     const auto = new Set<number>();
+    let fgn = 0;
     for (const r of rows) {
       const n = r.slabNumber;
       if (n == null || !Number.isFinite(n)) continue;
+      if (foreign.has(n)) { fgn++; continue; } // this slab belongs to a sibling sub-batch
       m.set(n, (m.get(n) ?? 0) + 1);
       union.add(n);
       if (String((r as { remarks?: string | null }).remarks ?? "").startsWith(AUTOFILL_PREFIX)) auto.add(n);
     }
+    if (fgn) foreignRows.push({ label: AUDIT_STATIONS[i], count: fgn });
     autoByStation.push(auto);
     return m;
   });
@@ -266,7 +270,7 @@ async function slabAuditForKeys(keys: string[]): Promise<SlabAudit> {
     const min = Math.min(...intSlabs);
     const max = Math.max(...intSlabs);
     range = { min, max };
-    for (let i = min; i <= max; i++) if (!union.has(i) && !skippedSet.has(i)) globalMissing.push(i);
+    for (let i = min; i <= max; i++) if (!union.has(i) && !skippedSet.has(i) && !foreign.has(i)) globalMissing.push(i);
   }
 
   const stations: StationAudit[] = AUDIT_STATIONS.map((label, i) => {
@@ -288,6 +292,8 @@ async function slabAuditForKeys(keys: string[]): Promise<SlabAudit> {
   const REQUIRED = ["Press", "Oven", "Jot", "Polish Entry", "Polish QC"];
   const notes: string[] = [];
   for (const r of REQUIRED) if ((sizeByLabel.get(r) ?? 0) === 0) notes.push(`No ${r} records — expected in every batch.`);
+  for (const f of foreignRows)
+    notes.push(`${f.count} ${f.label} row(s) are stamped with this batch but their slab numbers belong to a design-switch sub-batch — they are excluded here; re-stamp them at the station (or use Rectify) so the batch reads clean.`);
   const dHas = (sizeByLabel.get("Distributor") ?? 0) > 0;
   const kHas = (sizeByLabel.get("Kreos") ?? 0) > 0;
   const pressHas = (sizeByLabel.get("Press") ?? 0) > 0;
@@ -354,8 +360,11 @@ export async function getBatch(input: string, scope?: BatchScope): Promise<Batch
   // family is still resolved in full so the chips can render and link back to it.
   const solo = !!scope?.solo && !isSub && famKeys.length > 1;
   const keys = solo ? [key] : famKeys;
+  // A sub-batch stands alone for DATA, but its page should still show the family bar (the
+  // chips + the way back), so the family is resolved for display only.
+  const dispKeys = isSub ? (await batchFamily(parent)).keys : famKeys;
   const where = { batchKey: { in: keys } };
-  const famWhere = { batchKey: { in: famKeys } };
+  const famWhere = { batchKey: { in: dispKeys } };
   // Mixer cycles are often stamped ONLY on the parent key even when the slab
   // stations split into sub-batches — the mix for the whole run then sits on the
   // parent. In that case a solo view cannot apportion the mix: dividing a
@@ -363,12 +372,29 @@ export async function getBatch(input: string, scope?: BatchScope): Promise<Batch
   // (measured: 21.6% instead of the true 9.4% on one live batch). So we detect it,
   // keep the mixer family-wide, and suppress the wastage % rather than fabricate one.
   const subKeys = famKeys.filter((k) => k !== key);
+  // Ownership of a slab is decided by press + the line head, NOT by whichever station
+  // typed the batch on its form. In a solo view the sibling sub-batch's slabs are simply
+  // not ours — even when a station mis-stamped a row with our key. Without this, 43 Polish
+  // Entry rows carrying 1376-A's slabs stretched 1376's range to 147757 and invented "391
+  // missing from every station".
+  let foreign = new Set<number>();
+  if (solo && subKeys.length) {
+    try {
+      const rows = await prisma.$queryRaw<{ s: number }[]>`
+        SELECT DISTINCT slab_number::float8 s FROM (
+          SELECT slab_number, batch_key FROM press       WHERE batch_key = ANY(${subKeys}::text[])
+          UNION ALL SELECT slab_number, batch_key FROM distributor WHERE batch_key = ANY(${subKeys}::text[])
+          UNION ALL SELECT slab_number, batch_key FROM kreos       WHERE batch_key = ANY(${subKeys}::text[])
+        ) t WHERE slab_number IS NOT NULL`;
+      foreign = new Set(rows.map((r) => Number(r.s)));
+    } catch (e) { console.error("solo-view slab ownership lookup failed:", e); /* audit degrades to the old behaviour */ }
+  }
   const mixFamilyWide = solo && subKeys.length > 0
     && (await prisma.mixerCycle.count({ where: { batchKey: { in: subKeys } } })) === 0;
   const mixWhere = mixFamilyWide ? famWhere : where;
   const [design, audit, [mixer, press, polishEntryCount, qcRows, ovenCount, jotCount], famDesigns, famSlabs] = await Promise.all([
     designForBatch(key),
-    slabAuditForKeys(keys),
+    slabAuditForKeys(keys, foreign),
     Promise.all([
       prisma.mixerCycle.findMany({
         where: mixWhere,
@@ -389,8 +415,8 @@ export async function getBatch(input: string, scope?: BatchScope): Promise<Batch
       prisma.oven.count({ where }),
       prisma.jot.count({ where }),
     ]),
-    famKeys.length > 1 ? designsForBatchKeys(famKeys) : Promise.resolve(new Map()),
-    famKeys.length > 1 ? prisma.press.groupBy({ by: ["batchKey"], where: famWhere, _count: { _all: true } }) : Promise.resolve([] as { batchKey: string | null; _count: { _all: number } }[]),
+    dispKeys.length > 1 ? designsForBatchKeys(dispKeys) : Promise.resolve(new Map()),
+    dispKeys.length > 1 ? prisma.press.groupBy({ by: ["batchKey"], where: famWhere, _count: { _all: true } }) : Promise.resolve([] as { batchKey: string | null; _count: { _all: number } }[]),
   ]);
 
   const rawCycleWeight = (m: Record<string, unknown>) => {
@@ -468,8 +494,8 @@ export async function getBatch(input: string, scope?: BatchScope): Promise<Batch
     thickness: thicknessBars,
     design,
     family: {
-      parent, isSub, solo, mixFamilyWide, keys: famKeys,
-      members: famKeys.map((k) => ({ key: k, design: (famDesigns as Map<string, BatchDesign>).get(k)?.primary ?? null, slabs: Number((famSlabs as { batchKey: string | null; _count: { _all: number } }[]).find((r) => r.batchKey === k)?._count?._all ?? (famKeys.length === 1 ? press.length : 0)) })),
+      parent, isSub, solo, mixFamilyWide, keys: dispKeys,
+      members: dispKeys.map((k) => ({ key: k, design: (famDesigns as Map<string, BatchDesign>).get(k)?.primary ?? null, slabs: Number((famSlabs as { batchKey: string | null; _count: { _all: number } }[]).find((r) => r.batchKey === k)?._count?._all ?? (dispKeys.length === 1 ? press.length : 0)) })),
     },
   };
 }
