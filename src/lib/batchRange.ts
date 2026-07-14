@@ -130,10 +130,59 @@ async function rawBatchFor(batchKey: string): Promise<string> {
   return batchKey;
 }
 
+// The date columns hold IST wall-clock (see lib/downtime.ts), so a bare `new Date()` —
+// like the SQL now() this replaced — writes UTC into an IST-naive column and slides the
+// row 5h30m back. Only ever used as the last-resort fallback.
+const istNow = (): Date => new Date(Date.now() + 330 * 60000);
+// A row mis-dated 2030 must never become a batch's date: same +2-day grace the
+// dashboard and recent-batches queries already use.
+const notFuture = () => ({ lte: new Date(Date.now() + 2 * 86400000) });
+// Placeholders are never a date SOURCE — only real operator/imported rows are. Otherwise
+// a batch rectified before this fix (its placeholders carry the old rectify date) would
+// have that wrong date copied forward by the next rectify. `remarks IS NULL` has to be
+// spelled out: SQL `NOT (remarks LIKE ...)` is UNKNOWN for a null and would drop those rows.
+const notAutoAdded = () => ({ OR: [{ remarks: null }, { remarks: { not: { startsWith: AUTOFILL_PREFIX } } }] });
+
+/** Production dates for a batch, resolved PER SLAB.
+ *
+ * A placeholder must carry the date of the slab it stands in for, not the date it was
+ * rectified — otherwise rectifying a batch that ran weeks ago makes its slabs look like
+ * they were produced today, and they land in every "last N days" window (Pressed today,
+ * the dashboard's 30-day thickness card, Recent Batches, the downtime/daily reports).
+ *
+ * Per slab, not per batch: 104 of 192 press batches span more than one calendar day, so
+ * the batch's max date would file day-1 slabs under day 2. A slab is missing at THIS
+ * station precisely because it exists at another one — so its own date is there to copy,
+ * in station-priority order. `fallback` (the batch's own latest date, else IST now) is
+ * used only for a slab with no dated row anywhere. */
+async function batchDates(batchKey: string, station: string): Promise<{ bySlab: Map<number, Date>; fallback: Date }> {
+  const order = [station, ...["press", "distributor", "kreos", "oven", "jot"].filter((m) => m !== station)];
+  const bySlab = new Map<number, Date>();
+  let fallback: Date | null = null;
+  for (const m of order) {
+    let rows: any[] = [];
+    try {
+      rows = await db[m].findMany({
+        where: { batchKey, date: { not: null, ...notFuture() }, ...notAutoAdded() },
+        select: { slabNumber: true, date: true },
+      });
+    } catch { continue; } // station not migrated — try the next
+    for (const r of rows) {
+      const n = r.slabNumber;
+      const d = r.date ? new Date(r.date) : null;
+      if (!d) continue;
+      if (!fallback || d > fallback) fallback = d;            // batch's latest real date
+      if (n != null && Number.isFinite(n) && !bySlab.has(n)) bySlab.set(n, d); // first station wins
+    }
+  }
+  return { bySlab, fallback: fallback ?? istNow() };
+}
+
 /** After a confirm/rectify: create placeholder rows (parameters null, flagged in
  * `remarks`) for every canonical slab missing at the PRODUCTION stations only —
  * the active line head (Distributor or Kreos), Press, Oven, Jot. Polish stations
- * are never auto-filled. Rows are dated now() so they count in date metrics.
+ * are never auto-filled. Each row inherits the DATE of the slab it stands in for (see
+ * batchDates), never the rectify date, so it lands in the same date buckets as that slab.
  * Idempotent: only fills slabs not already present. */
 export async function autoFillBatch(batchKey: string): Promise<{ created: number }> {
   if (!batchKey) return { created: 0 };
@@ -163,11 +212,21 @@ export async function autoFillBatch(batchKey: string): Promise<{ created: number
     const have = present[m] ?? new Set<number>();
     const missing = [...union].filter((n) => !have.has(n));
     if (!missing.length) continue;
+    const { bySlab, fallback } = await batchDates(batchKey, m); // the SLAB's date, NOT the rectify date
     const tcol = FILL_THICKNESS_COL[m];
-    const cols = `id, "airtableId", batch, batch_key, slab_number, remarks, date, imported_at, synced_at${tcol ? `, ${tcol}` : ""}`;
-    const tuples = missing.map((n) => tcol
-      ? Prisma.sql`(${localId(m)}, ${localId(m)}, ${raw}, ${batchKey}, ${n}, ${AUTOFILL_REMARK}, now(), now(), now(), ${thickBySlab.get(n) ?? null})`
-      : Prisma.sql`(${localId(m)}, ${localId(m)}, ${raw}, ${batchKey}, ${n}, ${AUTOFILL_REMARK}, now(), now(), now())`);
+    // created_time too: the hourly Telegram press count buckets on created_time (falling
+    // back to imported_at), so a placeholder left with a NULL created_time would still be
+    // counted as "pressed this hour" and fire a bogus MIS-mismatch alert. Oven has no
+    // created_time column; the other four do.
+    const ccol = m === "oven" ? "" : ", created_time";
+    const cols = `id, "airtableId", batch, batch_key, slab_number, remarks, date, imported_at, synced_at${ccol}${tcol ? `, ${tcol}` : ""}`;
+    const tuples = missing.map((n) => {
+      const when = bySlab.get(n) ?? fallback;
+      const head = Prisma.sql`${localId(m)}, ${localId(m)}, ${raw}, ${batchKey}, ${n}, ${AUTOFILL_REMARK}, ${when}, now(), now()`;
+      const ct = ccol ? Prisma.sql`, ${when}` : Prisma.empty;
+      const th = tcol ? Prisma.sql`, ${thickBySlab.get(n) ?? null}` : Prisma.empty;
+      return Prisma.sql`(${head}${ct}${th})`;
+    });
     try {
       const r = await db.$executeRaw(Prisma.sql`INSERT INTO ${Prisma.raw(`"${FILL_TABLE[m]}"`)} (${Prisma.raw(cols)}) VALUES ${Prisma.join(tuples)}`);
       created += Number(r) || 0;
