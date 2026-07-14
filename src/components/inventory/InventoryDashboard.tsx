@@ -62,7 +62,11 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
   const [f, setF] = useState({ ...EMPTY });
 
   // dispatch move/assign
-  const [sel, setSel] = useState<Set<number>>(new Set());
+  // Selection is a Map (slab number -> the slab row), not a Set of numbers: the picked slabs
+  // must survive the next search, so we keep their data with them. A search no longer clears
+  // it — you can search, pick, search again, pick more, then act on the whole basket.
+  const [sel, setSel] = useState<Map<number, Slab>>(new Map());
+  const clearSel = () => setSel(new Map());
   const [mv, setMv] = useState({ bay: "", frame: "", clearBay: false, clearFrame: false });
   const [moving, setMoving] = useState(false);
   const [moveMsg, setMoveMsg] = useState<string | null>(null);
@@ -104,7 +108,8 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
 
   const run = (filters: typeof EMPTY) => {
     setLoading(true);
-    setSel(new Set());
+    // NOTE: the selection is deliberately NOT cleared here — it is cleared only after an
+    // action succeeds (applyMove / applyStatus) or when the user clears it themselves.
     kpiFilters.current = { ...filters };
     loadKpi();
     const p = new URLSearchParams();
@@ -112,7 +117,19 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
     if (showPendingRef.current) p.set("pending", "1");
     fetch(`/api/inventory?${p.toString()}`)
       .then((r) => (r.ok ? r.json() : []))
-      .then((d) => setRows(Array.isArray(d) ? d : []))
+      .then((d) => {
+        const list: Slab[] = Array.isArray(d) ? d : [];
+        setRows(list);
+        // keep the basket honest: refresh the data of any selected slab that this search
+        // returned (its bay/status may have moved on). Selected slabs NOT in these results
+        // stay in the basket untouched.
+        setSel((s) => {
+          if (s.size === 0) return s;
+          const c = new Map(s);
+          for (const r of list) if (c.has(r.slabNumber)) c.set(r.slabNumber, r);
+          return c;
+        });
+      })
       .catch(() => setRows([]))
       .finally(() => setLoading(false));
   };
@@ -187,12 +204,22 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
     } catch { /* noop */ }
   };
 
-  const toggle = (n: number) => setSel((s) => { const c = new Set(s); if (c.has(n)) c.delete(n); else c.add(n); return c; });
-  const toggleAll = () => setSel((s) => (s.size === rows.length ? new Set<number>() : new Set(rows.map((r) => r.slabNumber))));
+  const toggle = (r: Slab) => setSel((s) => { const c = new Map(s); if (c.has(r.slabNumber)) c.delete(r.slabNumber); else c.set(r.slabNumber, r); return c; });
+  const allShownSelected = rows.length > 0 && rows.every((r) => sel.has(r.slabNumber));
+  // header checkbox acts on THIS result page only — it never drops slabs picked in an earlier search
+  const toggleAll = () => setSel((s) => {
+    const c = new Map(s);
+    if (allShownSelected) for (const r of rows) c.delete(r.slabNumber);
+    else for (const r of rows) c.set(r.slabNumber, r);
+    return c;
+  });
+  const selList = [...sel.values()].sort((a, b) => a.slabNumber - b.slabNumber);
+  const MAX_ACTION_SLABS = 500;             // every action route caps at 500
+  const tooMany = sel.size > MAX_ACTION_SLABS;
 
   const applyMove = async () => {
     if (sel.size === 0) return;
-    const payload: Record<string, unknown> = { slabs: [...sel] };
+    const payload: Record<string, unknown> = { slabs: [...sel.keys()] };
     if (mv.clearBay) payload.bay = null; else if (mv.bay.trim()) payload.bay = mv.bay.trim();
     if (mv.clearFrame) payload.frame = null; else if (mv.frame.trim()) payload.frame = mv.frame.trim();
     if (payload.bay === undefined && payload.frame === undefined) { setMoveMsg("Enter a bay and/or frame (or tick a clear box)."); return; }
@@ -204,6 +231,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
       else {
         setMoveMsg(`Updated ${d.updated} slab(s)` + (d.unchanged ? `, ${d.unchanged} unchanged` : "") + (d.missing?.length ? `, ${d.missing.length} not in inventory (${d.missing.slice(0, 5).join(", ")}${d.missing.length > 5 ? "…" : ""})` : "") + ".");
         setMv({ bay: "", frame: "", clearBay: false, clearFrame: false });
+        clearSel();
         run(f);
       }
     } catch { setMoveMsg("Move failed."); }
@@ -219,7 +247,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
       setStBusy(true); setMoveMsg(null);
       try {
         const body = new FormData();
-        body.set("slabs", JSON.stringify([...sel]));
+        body.set("slabs", JSON.stringify([...sel.keys()]));
         body.set("pi", st.pi.trim());
         body.set("customer", st.customer.trim());
         if (invFile) body.set("invoice", invFile);
@@ -229,6 +257,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
         else {
           setMoveMsg(`Dispatched ${d.updated} slab(s)` + (d.skipped?.length ? `; ${d.skipped.length} skipped` : "") + (d.invoiceId ? " · invoice attached" : "") + ".");
           setSt({ action: "", pi: "", customer: "", expiryDays: "" }); setInvFile(null);
+          clearSel();
           run(f); loadKpi();
         }
       } catch { setMoveMsg("Dispatch failed."); }
@@ -237,7 +266,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
     }
     setStBusy(true); setMoveMsg(null);
     try {
-      const payload: Record<string, unknown> = { slabs: [...sel], action: st.action };
+      const payload: Record<string, unknown> = { slabs: [...sel.keys()], action: st.action };
       if (st.pi.trim()) payload.pi = st.pi.trim();
       if (st.customer.trim()) payload.customer = st.customer.trim();
       if (admin && st.expiryDays.trim()) payload.expiryDays = Number(st.expiryDays);
@@ -249,6 +278,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
           (d.skipped?.length ? `; ${d.skipped.length} skipped (${d.skipped.slice(0, 3).map((x: any) => `#${x.slab}: ${x.reason}`).join("; ")}${d.skipped.length > 3 ? "…" : ""})` : "") +
           (d.missing?.length ? `; ${d.missing.length} not in inventory` : "") + ".");
         setSt({ action: "", pi: "", customer: "", expiryDays: "" });
+        clearSel();
         run(f); loadKpi();
       }
     } catch { setMoveMsg("Action failed."); }
@@ -351,7 +381,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
         {viewAsControl}
         {admin && !slabsOnly && (
           <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800" title="Admin only — include stock that is still awaiting approval in every list and card">
-            <input type="checkbox" checked={showPending} onChange={(e) => { setShowPending(e.target.checked); showPendingRef.current = e.target.checked; run(f); }} />
+            <input type="checkbox" checked={showPending} onChange={(e) => { setShowPending(e.target.checked); showPendingRef.current = e.target.checked; if (!e.target.checked) clearSel(); run(f); }} />
             Show unapproved stock
           </label>
         )}
@@ -527,6 +557,45 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
             </div>
           </form>
 
+          {/* The basket: every slab picked so far, in its OWN table outside the results table.
+              It survives a new search, so you can gather slabs across several searches before
+              acting. Nothing here changes the results table below — until an action is applied. */}
+          {sel.size > 0 && (
+            <div className="overflow-x-auto rounded-xl border border-brand/30 bg-white">
+              <div className="flex items-center justify-between border-b border-brand/20 bg-brand/5 px-3 py-2">
+                <div className="text-sm font-medium text-gray-900">Selected slabs · {sel.size}</div>
+                <button onClick={clearSel} className="text-xs text-gray-500 underline hover:text-gray-800">Clear all</button>
+              </div>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-100 text-left text-gray-500">
+                    <th className="px-3 py-2">Slab #</th><th className="px-3 py-2">Design</th><th className="px-3 py-2">Batch</th>
+                    <th className="px-3 py-2">Thk</th><th className="px-3 py-2">Grade</th><th className="px-3 py-2">Bay</th>
+                    <th className="px-3 py-2">Status</th><th className="px-3 py-2"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selList.map((r) => (
+                    <tr key={`sel-${r.slabNumber}`} className="border-t border-gray-50 hover:bg-gray-50/50">
+                      <td className="px-3 py-2 font-medium text-gray-900">
+                        <button className="hover:text-brand hover:underline" title="View slab details" onClick={() => openDetail(r.slabNumber)}>{displaySlab(r.slabNumber, r.barcode)}</button>
+                      </td>
+                      <td className="px-3 py-2">{r.design ?? "—"}</td>
+                      <td className="px-3 py-2">{displayBatch(r.batchNumber)}</td>
+                      <td className="px-3 py-2">{r.slabThickness ?? "—"}</td>
+                      <td className="px-3 py-2">{r.grade ?? "—"}</td>
+                      <td className="px-3 py-2">{r.bayNumber ?? "—"}</td>
+                      <td className="px-3 py-2"><span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">{r.status}</span></td>
+                      <td className="px-3 py-2 text-right">
+                        <button onClick={() => toggle(r)} title="Remove from selection" className="rounded-md border border-gray-200 px-2 py-0.5 text-xs text-gray-500 hover:border-red-300 hover:text-red-600">Remove</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
           {sel.size > 0 && (
             <div className="rounded-xl border border-brand/30 bg-brand/5 p-4">
               <div className="flex flex-wrap items-end gap-3">
@@ -543,8 +612,8 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
                 </div>
                 <label className="flex items-center gap-1.5 pb-2 text-xs text-gray-600"><input type="checkbox" checked={mv.clearBay} onChange={(e) => setMv({ ...mv, clearBay: e.target.checked, bay: "" })} /> Clear bay</label>
                 <label className="flex items-center gap-1.5 pb-2 text-xs text-gray-600"><input type="checkbox" checked={mv.clearFrame} onChange={(e) => setMv({ ...mv, clearFrame: e.target.checked, frame: "" })} /> Clear frame</label>
-                <button onClick={applyMove} disabled={moving} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark disabled:opacity-50">{moving ? "Applying…" : "Apply"}</button></>}
-                <button onClick={() => setSel(new Set())} className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">Deselect</button>
+                <button onClick={applyMove} disabled={moving || tooMany} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark disabled:opacity-50">{moving ? "Applying…" : "Apply"}</button></>}
+                <button onClick={clearSel} className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">Deselect all</button>
               </div>
               <div className="mt-3 flex flex-wrap items-end gap-3 border-t border-brand/10 pt-3">
                 {slabsOnly ? (
@@ -582,9 +651,10 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
                     <input className={inputCls} placeholder="7" value={st.expiryDays} onChange={(e) => setSt({ ...st, expiryDays: e.target.value })} />
                   </div>
                 )}
-                <button onClick={applyStatus} disabled={stBusy || (!slabsOnly && !st.action)} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark disabled:opacity-50">{stBusy ? "Applying…" : slabsOnly ? "Mark Dispatched" : "Apply status"}</button>
+                <button onClick={applyStatus} disabled={stBusy || tooMany || (!slabsOnly && !st.action)} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark disabled:opacity-50">{stBusy ? "Applying…" : slabsOnly ? "Mark Dispatched" : "Apply status"}</button>
                 {st.action === "reserve" && !admin && <p className="pb-2 text-xs text-gray-400">7-day hold (Admin can change)</p>}
               </div>
+              {tooMany && <p className="mt-2 text-xs font-medium text-red-600">{sel.size} slabs selected — actions are limited to {MAX_ACTION_SLABS} at a time. Remove some from the selection above.</p>}
               <p className="mt-2 text-xs text-gray-500">Blank field = unchanged. Reservations auto-release after the hold lapses. Every change is logged to the audit trail.</p>
             </div>
           )}
@@ -594,7 +664,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 text-left text-gray-500">
-                  <th className="px-3 py-2"><input type="checkbox" checked={rows.length > 0 && sel.size === rows.length} onChange={toggleAll} /></th>
+                  <th className="px-3 py-2"><input type="checkbox" title="Select every slab in these results" checked={allShownSelected} onChange={toggleAll} /></th>
                   <th className={thSort} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("slabNumber", e.shiftKey)}>Slab #{slabArrow("slabNumber")}</th><th className={thSort} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("design", e.shiftKey)}>Design{slabArrow("design")}</th><th className={thSort} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("batchNumber", e.shiftKey)}>Batch{slabArrow("batchNumber")}</th>
                   <th className={thSort} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("slabThickness", e.shiftKey)}>Thk{slabArrow("slabThickness")}</th><th className={thSort} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("grade", e.shiftKey)}>Grade{slabArrow("grade")}</th><th className="px-3 py-2">Quality Issue</th><th className={thSort} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("polishType", e.shiftKey)}>Polish{slabArrow("polishType")}</th>
                   <th className={thSort} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("bayNumber", e.shiftKey)}>Bay{slabArrow("bayNumber")}</th><th className={thSort} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("frameNumber", e.shiftKey)}>Frame{slabArrow("frameNumber")}</th><th className={`${thSort} text-right`} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("sqft", e.shiftKey)}>Sqft{slabArrow("sqft")}</th><th className={`${thSort} text-right`} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("ageDays", e.shiftKey)}>Age{slabArrow("ageDays")}</th><th className={thSort} title="Sort · Shift+Click adds a level" onClick={(e) => slabSort("status", e.shiftKey)}>Status{slabArrow("status")}</th>
@@ -607,8 +677,8 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
                   <tr><td colSpan={13} className="px-3 py-10 text-center text-gray-400">No slabs match the current filters.</td></tr>
                 ) : (
                   displayRows.map((r) => (
-                    <tr key={r.id} className="border-t border-gray-50 hover:bg-gray-50/50">
-                      <td className="px-3 py-2"><input type="checkbox" checked={sel.has(r.slabNumber)} onChange={() => toggle(r.slabNumber)} /></td>
+                    <tr key={r.id} className={`border-t border-gray-50 ${sel.has(r.slabNumber) ? "bg-brand/5 hover:bg-brand/10" : "hover:bg-gray-50/50"}`}>
+                      <td className="px-3 py-2"><input type="checkbox" checked={sel.has(r.slabNumber)} onChange={() => toggle(r)} /></td>
                       <td className="px-3 py-2 font-medium text-gray-900">
                         <button className="hover:text-brand hover:underline" title="View slab details" onClick={() => openDetail(r.slabNumber)}>{displaySlab(r.slabNumber, r.barcode)}</button>
                       </td>
