@@ -239,9 +239,9 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
             {/* Sub-filter: narrow the log to one delay type (preserves the date/batch view) */}
             <div className="mb-3 flex flex-wrap items-center gap-1.5">
               <span className="mr-1 text-xs font-medium uppercase tracking-wider text-gray-400">Type</span>
-              <Link href={link({ type: null })} className={`rounded-full border px-3 py-1 text-xs font-medium transition ${!r.typeFilter ? "border-brand bg-brand text-white" : "border-gray-200 text-gray-600 hover:bg-gray-50"}`}>All</Link>
+              <Link href={link({ type: null })} scroll={false} className={`rounded-full border px-3 py-1 text-xs font-medium transition ${!r.typeFilter ? "border-brand bg-brand text-white" : "border-gray-200 text-gray-600 hover:bg-gray-50"}`}>All</Link>
               {DELAY_FIELDS.map((d) => (
-                <Link key={d.key} href={link({ type: d.key })} className={`rounded-full border px-3 py-1 text-xs font-medium transition ${r.typeFilter === d.key ? "border-brand bg-brand text-white" : "border-gray-200 text-gray-600 hover:bg-gray-50"}`}>{d.label}</Link>
+                <Link key={d.key} href={link({ type: d.key })} scroll={false} className={`rounded-full border px-3 py-1 text-xs font-medium transition ${r.typeFilter === d.key ? "border-brand bg-brand text-white" : "border-gray-200 text-gray-600 hover:bg-gray-50"}`}>{d.label}</Link>
               ))}
             </div>
             {r.incidents.length === 0 ? <p className="text-sm text-gray-400">No incidents logged in this range.</p> : (
