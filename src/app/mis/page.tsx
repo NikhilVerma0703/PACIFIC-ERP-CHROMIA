@@ -49,6 +49,15 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
     { label: "This month", f: mStart, t: today },
   ];
   const presetHref = (f: string, t: string) => { const q = new URLSearchParams(); q.set("from", f); q.set("to", t); if (batch) q.set("b", batch); return `/mis?${q.toString()}`; };
+  // Excel export of the breakdown log — SAME filters as the current view (incl. any type filter)
+  const exportHref = (() => {
+    const q = new URLSearchParams();
+    if (from) q.set("from", from);
+    if (to) q.set("to", to);
+    if (batch) q.set("b", batch);
+    if (r?.typeFilter) q.set("type", r.typeFilter);
+    return `/api/mis/export?${q.toString()}`;
+  })();
 
   const maxReason = r ? Math.max(1, ...r.byReason.map((x) => x.minutes)) : 1;
   const maxTrend = r ? Math.max(1, ...r.trend.map((x) => x.minutes)) : 1;
@@ -221,7 +230,12 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
           <Card>
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <H2>Breakdown &amp; deviation log · {r.incidents.length}</H2>
-              {r.typeFilter && <span className="text-sm text-gray-600">Filtered: <Badge tone="brand">{DELAY_LABEL[r.typeFilter]}</Badge> <Link href={link({})} className="ml-2 text-brand hover:underline">show all</Link></span>}
+              <div className="flex items-center gap-3">
+                {r.typeFilter && <span className="text-sm text-gray-600">Filtered: <Badge tone="brand">{DELAY_LABEL[r.typeFilter]}</Badge> <Link href={link({})} className="ml-2 text-brand hover:underline">show all</Link></span>}
+                {r.incidents.length > 0 && (
+                  <a href={exportHref} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">↓ Download (Excel)</a>
+                )}
+              </div>
             </div>
             {r.incidents.length === 0 ? <p className="text-sm text-gray-400">No incidents logged in this range.</p> : (
               <div className="overflow-x-auto">
