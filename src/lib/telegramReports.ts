@@ -105,7 +105,8 @@ export async function shiftMessage(anchor: string, shift: "A" | "B" | "C"): Prom
   ];
   if (r.batches.length || r.designs.length) lines.push(`Batch/design: ${esc([...r.batches, ...r.designs].slice(0, 6).join(", "))}`);
   if (r.areas.length) lines.push(`Problem areas: ${esc(r.areas.join(", "))}`);
-  lines.push(`Incharge: ${esc(r.prodIncharge ?? (r.submitters.join(", ") || "—"))}${r.maintIncharge ? ` · Maint: ${esc(r.maintIncharge)}` : ""}`);
+  const maint = [r.elecIncharge ? `elec ${r.elecIncharge}` : null, r.mechIncharge ? `mech ${r.mechIncharge}` : null].filter(Boolean).join(", ");
+  lines.push(`Incharge: ${esc(r.prodIncharge ?? (r.submitters.join(", ") || "—"))}${maint ? ` · Maint: ${esc(maint)}` : ""}`);
   if (r.hoursLogged < r.hoursTotal) lines.push(`⚠️ ${r.hoursTotal - r.hoursLogged} hour(s) missing from the log`);
   return lines.join("\n");
 }

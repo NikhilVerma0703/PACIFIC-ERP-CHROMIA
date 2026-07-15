@@ -227,7 +227,10 @@ export async function selectOptions(model: string): Promise<Record<string, strin
 export const HIDDEN_FORM_FIELDS: Record<string, string[]> = {
   MixerCycle: ["slabSegregation", "gritFillerResinCalculation", "slabSummary3", "slabSummary4", "inventoryTransactions", "productionReport"],
   Silo: ["slabSummary", "slabSummary2", "slabSummary3", "usedBagsCopy", "inventoryTransactions", "rmNotFound", "remainingWeight"],
-  Mis: ["rcaNo"],
+  // maintenanceInchargeName is a dead legacy column (only 11 of ~5,900 rows ever filled) —
+  // maintenance staff are captured as Electrical + Mechanical Incharge instead, so hide the
+  // duplicate field from every MIS form. The column is kept (old rows) but no longer offered.
+  Mis: ["rcaNo", "maintenanceInchargeName"],
   // the "Date" field carries date+time, so separate In Times are redundant;
   // Out Time exists only at the Oven (cooking time = out − in).
   Press: ["inTime", "automationLog", "productionReport", "noOfVacuumPumps"], // count derives from Vacuum Pumps

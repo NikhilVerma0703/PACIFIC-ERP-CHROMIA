@@ -100,6 +100,11 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
     if (!design.trim()) { setErr("Design / product is required"); return; }
     if (!productionType.trim()) { setErr("Production type is required — pick it before saving"); return; }
     if (!thkPress.trim()) { setErr("Thk at Press (mm) is required"); return; }
+    // Std slab/hr is mandatory only when Actual is filled (non-zero): you can't log real
+    // output without the standard it's measured against. When Actual is blank/0, Std stays optional.
+    const actualSph = Number(fd.get("slabsPerHourActual") ?? 0) || 0;
+    const stdSph = Number(fd.get("slabsPerHourStd") ?? 0) || 0;
+    if (actualSph !== 0 && stdSph <= 0) { setErr("Std slab/hr is required once Actual is entered — add it before saving"); return; }
     if (logged.has(hour)) { setErr(`Hour ${hour} is already logged — use its edit link below`); return; }
     fd.set("__model", "Mis");
     fd.set("hour", hour);
@@ -173,7 +178,7 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
         <div className="mb-3 text-sm font-semibold text-gray-800">Hour {hour} — production</div>
         <form ref={formRef}>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-            <label className="block"><span className={lbl}>Slabs/hr — Std. (from cycle time)</span>
+            <label className="block"><span className={lbl}>Slabs/hr — Std. (from cycle time) <span className="font-normal text-gray-400">(required if Actual is filled)</span></span>
               <input name="slabsPerHourStd" type="number" step="any" min="0" className={inp} /></label>
             <label className="block"><span className={lbl}>Slabs/hr — Actual{prefill?.actual ? <span className="ml-1 font-normal text-gray-400">(press: {prefill.actual})</span> : null}</span>
               <input name="slabsPerHourActual" type="number" step="any" min="0" defaultValue={prefill?.actual ?? ""} className={`${inp} font-semibold`} /></label>

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { Card, H2, Kpi, Empty, Badge, fmt } from "@/components/ui";
-import { getDowntimeReport, fmtDur, DELAY_LABEL } from "@/lib/downtime";
+import { getDowntimeReport, fmtDur, DELAY_FIELDS } from "@/lib/downtime";
 import { getDowntimeResponses } from "@/lib/downtimeResponse";
 import { canRespondDowntime } from "@/lib/rbac";
 import { DowntimeRespond } from "@/components/DowntimeRespond";
@@ -98,8 +98,10 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
             <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Production incharge</div>
               <div className="mt-0.5 font-semibold text-gray-900">{lastShift.prodIncharge ?? (lastShift.submitters.length ? lastShift.submitters.join(", ") : "—")}</div>
               {!lastShift.prodIncharge && lastShift.submitters.length > 0 && <div className="text-[11px] text-gray-400">from who submitted the entries</div>}</div>
-            <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Maintenance incharge</div>
-              <div className="mt-0.5 font-semibold text-gray-900">{lastShift.maintIncharge ?? "—"}</div></div>
+            <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Electrical incharge</div>
+              <div className="mt-0.5 font-semibold text-gray-900">{lastShift.elecIncharge ?? "—"}</div></div>
+            <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Mechanical incharge</div>
+              <div className="mt-0.5 font-semibold text-gray-900">{lastShift.mechIncharge ?? "—"}</div></div>
             <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Hours logged</div>
               <div className="mt-0.5 font-semibold text-gray-900">{lastShift.hoursLogged}/{lastShift.hoursTotal}</div></div>
             <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Slabs pressed</div>
@@ -230,12 +232,17 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
           <Card>
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <H2>Breakdown &amp; deviation log · {r.incidents.length}</H2>
-              <div className="flex items-center gap-3">
-                {r.typeFilter && <span className="text-sm text-gray-600">Filtered: <Badge tone="brand">{DELAY_LABEL[r.typeFilter]}</Badge> <Link href={link({})} className="ml-2 text-brand hover:underline">show all</Link></span>}
-                {r.incidents.length > 0 && (
-                  <a href={exportHref} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">↓ Download (Excel)</a>
-                )}
-              </div>
+              {r.incidents.length > 0 && (
+                <a href={exportHref} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">↓ Download (Excel)</a>
+              )}
+            </div>
+            {/* Sub-filter: narrow the log to one delay type (preserves the date/batch view) */}
+            <div className="mb-3 flex flex-wrap items-center gap-1.5">
+              <span className="mr-1 text-xs font-medium uppercase tracking-wider text-gray-400">Type</span>
+              <Link href={link({ type: null })} className={`rounded-full border px-3 py-1 text-xs font-medium transition ${!r.typeFilter ? "border-brand bg-brand text-white" : "border-gray-200 text-gray-600 hover:bg-gray-50"}`}>All</Link>
+              {DELAY_FIELDS.map((d) => (
+                <Link key={d.key} href={link({ type: d.key })} className={`rounded-full border px-3 py-1 text-xs font-medium transition ${r.typeFilter === d.key ? "border-brand bg-brand text-white" : "border-gray-200 text-gray-600 hover:bg-gray-50"}`}>{d.label}</Link>
+              ))}
             </div>
             {r.incidents.length === 0 ? <p className="text-sm text-gray-400">No incidents logged in this range.</p> : (
               <div className="overflow-x-auto">

@@ -10,7 +10,7 @@ const db = prisma as any;
 
 export interface LastShiftReport {
   shift: "A" | "B" | "C"; date: string; window: string;
-  prodIncharge: string | null; maintIncharge: string | null; submitters: string[];
+  prodIncharge: string | null; elecIncharge: string | null; mechIncharge: string | null; submitters: string[];
   hoursLogged: number; hoursTotal: number; slabs: number; delayMin: number;
   batches: string[]; designs: string[]; areas: string[];
 }
@@ -56,7 +56,7 @@ export async function getShiftReport(anchor: string, shift: "A" | "B" | "C"): Pr
       : dayWhere(anchor, hours);
     const rows: any[] = await db.mis.findMany({ where, select: {
       hour: true, batch: true, design: true, submittedBy: true,
-      productionInchargeName: true, maintenanceInchargeName: true,
+      productionInchargeName: true, electricalInchargeName: true, mechanicalInchargeName: true,
       slabsPerHourActual: true, startingSlabNumber: true, endingSlabNumber: true, numberOfJumpedSlabs: true,
       areaOfProblem: true, processDelayDurationMinutes: true, cleaningDelayDurationMinutes: true,
       breakdownDelayDurationMechanicalOrElectricalMinutes: true, poweroutDelayDurationMinutes: true,
@@ -76,7 +76,8 @@ export async function getShiftReport(anchor: string, shift: "A" | "B" | "C"): Pr
     return {
       shift, date: anchor, window: WINDOW[shift],
       prodIncharge: uniq(rows.map((r) => r.productionInchargeName))[0] ?? null,
-      maintIncharge: uniq(rows.map((r) => r.maintenanceInchargeName))[0] ?? null,
+      elecIncharge: uniq(rows.map((r) => r.electricalInchargeName))[0] ?? null,
+      mechIncharge: uniq(rows.map((r) => r.mechanicalInchargeName))[0] ?? null,
       submitters: uniq(rows.map((r) => r.submittedBy)),
       hoursLogged: uniq(rows.map((r) => r.hour)).length, hoursTotal: hours.length,
       slabs: Math.round(slabs), delayMin: Math.round(delayMin),
