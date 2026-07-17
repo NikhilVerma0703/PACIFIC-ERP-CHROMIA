@@ -37,6 +37,7 @@ export interface IncidentRow {
   id: string; date: string | null; hour: string | null; batch: string | null;
   minutes: number; over: boolean; typeKeys: string[]; types: string[]; reasons: string[];
   details: string | null; rca: string | null; action: string | null; spares: string | null;
+  elecIncharge: string | null; mechIncharge: string | null;
 }
 export interface DowntimeReport {
   from: string; to: string; batch: string | null; typeFilter: string | null;
@@ -66,7 +67,7 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   const typeFilter = DELAY_FIELDS.some((d) => d.key === opts.type) ? opts.type! : null;
 
   const misWhere: any = batch ? { batchKey: batch } : { date: { gte: from, lte: toEnd } };
-  const sel: any = { id: true, date: true, hour: true, batch: true, batchKey: true, productionType: true, reasonForDeviation: true, details: true, rcaNo: true, actionTaken: true, sparesUsed: true, anyBreakdownYesNo: true };
+  const sel: any = { id: true, date: true, hour: true, batch: true, batchKey: true, productionType: true, reasonForDeviation: true, details: true, rcaNo: true, actionTaken: true, sparesUsed: true, anyBreakdownYesNo: true, electricalInchargeName: true, mechanicalInchargeName: true };
   for (const d of DELAY_FIELDS) sel[d.col] = true;
   const pressWhere: any = batch ? { batchKey: batch } : { date: { gte: from, lte: toEnd } };
 
@@ -119,6 +120,7 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
         id: r.id, date: day, hour: r.hour ?? null, batch: r.batch ?? r.batchKey ?? null,
         minutes: r0(rowMin), over: rowMin > 60, typeKeys, types, reasons,
         details: r.details ?? null, rca: r.rcaNo ?? null, action: r.actionTaken ?? null, spares: r.sparesUsed ?? null,
+        elecIncharge: r.electricalInchargeName ?? null, mechIncharge: r.mechanicalInchargeName ?? null,
       });
     }
   }

@@ -25,7 +25,7 @@ export async function GET(request: Request) {
     const r = await getDowntimeReport({ from, to, batch, type });
     const resp = await getDowntimeResponses(r.incidents.map((i) => i.id));
 
-    const header = ["Date", "Hour", "Batch", "Down (min)", "Down", "Over 60m", "Type(s)", "Reason(s)", "Details", "RCA", "Action", "Spares", "Maint. status", "Maint. note", "Responded by", "Responded at"];
+    const header = ["Date", "Hour", "Batch", "Down (min)", "Down", "Over 60m", "Type(s)", "Reason(s)", "Details", "RCA", "Action", "Spares", "Electrical incharge", "Mechanical incharge", "Maint. status", "Maint. note", "Responded by", "Responded at"];
     const data: (string | number)[][] = [header];
     for (const i of r.incidents) {
       const m = resp.get(i.id);
@@ -34,12 +34,13 @@ export async function GET(request: Request) {
         i.minutes || 0, i.minutes > 0 ? fmtDur(i.minutes) : "", i.over ? "YES" : "",
         i.types.join(", "), i.reasons.join(", "),
         i.details ?? "", i.rca ?? "", i.action ?? "", i.spares ?? "",
+        i.elecIncharge ?? "", i.mechIncharge ?? "",
         m?.status ?? "", m?.note ?? "", m?.by ?? "", m?.at ?? "",
       ]);
     }
 
     const ws = XLSX.utils.aoa_to_sheet(data);
-    ws["!cols"] = [{ wch: 11 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 8 }, { wch: 22 }, { wch: 30 }, { wch: 40 }, { wch: 8 }, { wch: 24 }, { wch: 16 }, { wch: 13 }, { wch: 30 }, { wch: 16 }, { wch: 16 }];
+    ws["!cols"] = [{ wch: 11 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 8 }, { wch: 22 }, { wch: 30 }, { wch: 40 }, { wch: 8 }, { wch: 24 }, { wch: 16 }, { wch: 18 }, { wch: 18 }, { wch: 13 }, { wch: 30 }, { wch: 16 }, { wch: 16 }];
     ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: data.length - 1, c: header.length - 1 } }) };
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Downtime log");

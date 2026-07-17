@@ -22,6 +22,9 @@ export interface MisRowLite {
 
 const ALL_HOURS = [...SHIFT_HOURS.A, ...SHIFT_HOURS.B, ...SHIFT_HOURS.C];
 const AREAS = ["Silos", "Mixer", "Distributor", "Kreos", "Chessboard", "Robot", "Press", "Oven", "Rubber Line", "Cooling Tower", "Jot"];
+// Fixed incharge rosters — multi-select (a shift can have more than one person).
+const ELEC_INCHARGE = ["Guna", "Sundar", "Kumar", "Ramarasan"];
+const MECH_INCHARGE = ["Mohan", "Manikya", "Narayanan", "Joseph", "Arun"];
 const DELAYS = [
   ["processDelayDurationMinutes", "Operational"],
   ["cleaningDelayDurationMinutes", "Cleaning"],
@@ -57,8 +60,15 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
   const [productionType, setProductionType] = useState(prefill?.productionType ?? "");
   const [thkPress, setThkPress] = useState(prefill?.thkPress ?? "");
   const [prodIncharge, setProdIncharge] = useState(prefill?.prodIncharge ?? operatorName);
-  const [elecIncharge, setElecIncharge] = useState(prefill?.elecIncharge ?? "");
-  const [mechIncharge, setMechIncharge] = useState(prefill?.mechIncharge ?? "");
+  // Multi-select: stored comma-joined in the existing text column, so the DB takes the
+  // multi-pick as-is (no schema change) and the shift report / Telegram show it verbatim.
+  // Parse the comma-joined prefill AND keep only names in the current roster — a legacy
+  // value that isn't a roster option (e.g. an old free-text "Sundar") has no chip to show
+  // or clear, so carrying it invisibly would silently pollute the next save.
+  const parseNames = (s: string | undefined, roster: string[]) =>
+    (s ?? "").split(",").map((x) => x.trim()).filter((x) => roster.includes(x));
+  const [elecIncharge, setElecIncharge] = useState<string[]>(parseNames(prefill?.elecIncharge, ELEC_INCHARGE));
+  const [mechIncharge, setMechIncharge] = useState<string[]>(parseNames(prefill?.mechIncharge, MECH_INCHARGE));
   const [areas, setAreas] = useState<string[]>([]);
   const [reasons, setReasons] = useState<string[]>([]);
 
@@ -114,8 +124,8 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
     if (productionType) fd.set("productionType", productionType);
     if (thkPress) fd.set("thkAtPressMm", thkPress);
     if (prodIncharge) fd.set("productionInchargeName", prodIncharge);
-    if (elecIncharge) fd.set("electricalInchargeName", elecIncharge);
-    if (mechIncharge) fd.set("mechanicalInchargeName", mechIncharge);
+    if (elecIncharge.length) fd.set("electricalInchargeName", elecIncharge.join(", "));
+    if (mechIncharge.length) fd.set("mechanicalInchargeName", mechIncharge.join(", "));
     for (const a of areas) fd.append("areaOfProblem", a);
     for (const r of reasons) fd.append("reasonForDeviation", r);
     start(async () => {
@@ -166,10 +176,20 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
             </select></label>
           <label className="block"><span className={lbl}>Production Incharge</span>
             <input value={prodIncharge} onChange={(e) => setProdIncharge(e.target.value)} className={inp} /></label>
-          <label className="block"><span className={lbl}>Electrical Incharge{prefill?.elecIncharge && elecIncharge === prefill?.elecIncharge && elecIncharge ? <span className="ml-1 font-normal text-gray-400">(from previous entry)</span> : null}</span>
-            <input value={elecIncharge} onChange={(e) => setElecIncharge(e.target.value)} className={inp} /></label>
-          <label className="block"><span className={lbl}>Mechanical Incharge{prefill?.mechIncharge && mechIncharge === prefill?.mechIncharge && mechIncharge ? <span className="ml-1 font-normal text-gray-400">(from previous entry)</span> : null}</span>
-            <input value={mechIncharge} onChange={(e) => setMechIncharge(e.target.value)} className={inp} /></label>
+          <label className="block"><span className={lbl}>Electrical Incharge <span className="font-normal text-gray-400">(select one or more)</span></span>
+            <div className="flex flex-wrap gap-1.5">
+              {ELEC_INCHARGE.map((n) => (
+                <button key={n} type="button" onClick={() => setElecIncharge((p) => p.includes(n) ? p.filter((x) => x !== n) : [...p, n])}
+                  className={`rounded-full border px-2.5 py-1 text-xs ${elecIncharge.includes(n) ? "border-brand bg-brand/10 font-medium text-brand" : "border-gray-200 text-gray-500"}`}>{n}</button>
+              ))}
+            </div></label>
+          <label className="block"><span className={lbl}>Mechanical Incharge <span className="font-normal text-gray-400">(select one or more)</span></span>
+            <div className="flex flex-wrap gap-1.5">
+              {MECH_INCHARGE.map((n) => (
+                <button key={n} type="button" onClick={() => setMechIncharge((p) => p.includes(n) ? p.filter((x) => x !== n) : [...p, n])}
+                  className={`rounded-full border px-2.5 py-1 text-xs ${mechIncharge.includes(n) ? "border-brand bg-brand/10 font-medium text-brand" : "border-gray-200 text-gray-500"}`}>{n}</button>
+              ))}
+            </div></label>
         </div>
       </div>
 

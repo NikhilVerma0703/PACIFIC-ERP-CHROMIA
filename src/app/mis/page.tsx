@@ -249,7 +249,7 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
                 <table className="w-full text-sm">
                   <thead><tr className="text-left text-gray-500">
                     <th className="py-2 pr-3">Date</th><th className="py-2 pr-3">Hour</th><th className="py-2 pr-3">Batch</th>
-                    <th className="py-2 pr-3">Down</th><th className="py-2 pr-3">Type</th><th className="py-2 pr-3">Reason(s)</th><th className="py-2 pr-3">Details / RCA / action</th><th className="py-2">Maintenance response</th>
+                    <th className="py-2 pr-3">Down</th><th className="py-2 pr-3">Type</th><th className="py-2 pr-3">Reason(s)</th><th className="py-2 pr-3">Details / RCA / action</th><th className="py-2 pr-3">Electrical incharge</th><th className="py-2 pr-3">Mechanical incharge</th><th className="py-2">Maintenance response</th>
                   </tr></thead>
                   <tbody>
                     {r.incidents.map((i, k) => (
@@ -261,6 +261,8 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
                         <td className="py-2 pr-3 text-gray-600">{i.types.join(", ") || "—"}</td>
                         <td className="py-2 pr-3 text-gray-600">{i.reasons.join(", ") || "—"}</td>
                         <td className="py-2 pr-3 text-gray-600">{[i.details, i.rca ? `RCA ${i.rca}` : null, i.action, i.spares ? `spares: ${i.spares}` : null].filter(Boolean).join(" · ") || "—"}</td>
+                        <td className="py-2 pr-3 whitespace-nowrap text-gray-700">{i.elecIncharge || "—"}</td>
+                        <td className="py-2 pr-3 whitespace-nowrap text-gray-700">{i.mechIncharge || "—"}</td>
                         <td className="py-2 align-top"><DowntimeRespond misId={i.id} canRespond={canRespond} status={respMap?.get(i.id)?.status ?? null} note={respMap?.get(i.id)?.note ?? null} by={respMap?.get(i.id)?.by ?? null} at={respMap?.get(i.id)?.at ?? null} /></td>
                       </tr>
                     ))}
