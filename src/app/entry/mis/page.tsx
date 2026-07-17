@@ -54,17 +54,29 @@ async function shiftRows(date: string, shift: "A" | "B" | "C"): Promise<MisRowLi
 }
 
 
-/** Hours already logged on the sheet's calendar day (any shift) — powers the
- * hour dropdown's ✓-logged ticks across shifts. 00-06 rows of `date` belong
- * to the C shift anchored the previous evening, exactly where the dropdown
- * navigates for those hours; the loaded shift's own rows cover its C spillover. */
-async function dayLoggedHours(date: string): Promise<string[]> {
+/** Hours already logged, powering the hour dropdown's ✓-logged ticks. Each dropdown
+ * hour maps to a calendar day *in the loaded shift's context*: on the C shift the
+ * 00-06 slots sit past midnight on `date + 1`, so their tick must be read from THAT
+ * day — otherwise last night's 00-06 rows would mark tonight's (still-empty) hours as
+ * logged. A and B keep every hour on `date`. The window spans both days and a per-row
+ * check keeps only hours logged on the exact day each maps to. */
+async function dayLoggedHours(date: string, shift: "A" | "B" | "C"): Promise<string[]> {
+  const next = plusDay(date, 1);
+  const wantDay = (h: string) => (shift === "C" && Number(h.slice(0, 2)) < 6 ? next : date);
+  const dayKey = (d: Date | null): string | null => (d ? new Date(d).toISOString().slice(0, 10) : null);
   try {
+    const lo = new Date(`${date}T00:00:00.000Z`);
+    const hi = new Date(`${plusDay(next, 1)}T00:00:00.000Z`);
     const rows = await db.mis.findMany({ where: { OR: [
-      { date: { gte: new Date(`${date}T00:00:00.000Z`), lt: new Date(`${plusDay(date, 1)}T00:00:00.000Z`) } },
-      { AND: [{ date: null }, { dateAndTime: { gte: new Date(`${date}T00:00:00.000Z`), lt: new Date(`${plusDay(date, 1)}T00:00:00.000Z`) } }] },
-    ] }, select: { id: true, hour: true } });
-    return [...new Set(rows.map((r) => r.hour).filter((h): h is string => !!h))];
+      { date: { gte: lo, lt: hi } },
+      { AND: [{ date: null }, { dateAndTime: { gte: lo, lt: hi } }] },
+    ] }, select: { hour: true, date: true, dateAndTime: true } });
+    const set = new Set<string>();
+    for (const r of rows) {
+      if (!r.hour) continue;
+      if (dayKey(r.date ?? r.dateAndTime) === wantDay(r.hour)) set.add(r.hour);
+    }
+    return [...set];
   } catch { return []; }
 }
 
@@ -140,7 +152,7 @@ export default async function MisSheetPage({ searchParams }: { searchParams: Pro
   const cur = currentShift();
   const date = /^\d{4}-\d{2}-\d{2}$/.test(sp.date ?? "") ? String(sp.date) : cur.date;
   const shift = (["A", "B", "C"].includes(sp.shift ?? "") ? sp.shift : cur.shift) as "A" | "B" | "C";
-  const [rows, options, me, loggedDay] = await Promise.all([shiftRows(date, shift), selectOptions("Mis"), currentUser(), dayLoggedHours(date)]);
+  const [rows, options, me, loggedDay] = await Promise.all([shiftRows(date, shift), selectOptions("Mis"), currentUser(), dayLoggedHours(date, shift)]);
   const operatorName = me?.name || me?.email || "operator";
   // design dropdown: collapse every "Trial …" variant into ONE "Trial" entry
   if (options.design?.some((d) => /^trial\b/i.test(String(d).trim()))) {
