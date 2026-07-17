@@ -54,15 +54,16 @@ async function shiftRows(date: string, shift: "A" | "B" | "C"): Promise<MisRowLi
 }
 
 
-/** Hours already logged, powering the hour dropdown's ✓-logged ticks. Each dropdown
- * hour maps to a calendar day *in the loaded shift's context*: on the C shift the
- * 00-06 slots sit past midnight on `date + 1`, so their tick must be read from THAT
- * day — otherwise last night's 00-06 rows would mark tonight's (still-empty) hours as
- * logged. A and B keep every hour on `date`. The window spans both days and a per-row
- * check keeps only hours logged on the exact day each maps to. */
-async function dayLoggedHours(date: string, shift: "A" | "B" | "C"): Promise<string[]> {
+/** Hours already logged, powering the hour dropdown's ✓-logged ticks. The sheet is one
+ * production day (06:00 `date` → 06:00 `date + 1`): hours 06–23 belong to `date`, and the
+ * 00–06 slots are the tail of the SAME production day, past midnight on `date + 1` — so
+ * their tick is read from that day, NOT from last night's already-logged 00–06 on `date`.
+ * This mirrors where the hour dropdown navigates (see onHour), so a "logged" tick always
+ * lands on the exact hour it marks. The window spans both days; a per-row check keeps only
+ * hours logged on the day each maps to. */
+async function dayLoggedHours(date: string): Promise<string[]> {
   const next = plusDay(date, 1);
-  const wantDay = (h: string) => (shift === "C" && Number(h.slice(0, 2)) < 6 ? next : date);
+  const wantDay = (h: string) => (Number(h.slice(0, 2)) < 6 ? next : date);
   const dayKey = (d: Date | null): string | null => (d ? new Date(d).toISOString().slice(0, 10) : null);
   try {
     const lo = new Date(`${date}T00:00:00.000Z`);
@@ -155,7 +156,7 @@ export default async function MisSheetPage({ searchParams }: { searchParams: Pro
   const cur = currentShift();
   const date = /^\d{4}-\d{2}-\d{2}$/.test(sp.date ?? "") ? String(sp.date) : cur.date;
   const shift = (["A", "B", "C"].includes(sp.shift ?? "") ? sp.shift : cur.shift) as "A" | "B" | "C";
-  const [rows, options, me, loggedDay] = await Promise.all([shiftRows(date, shift), selectOptions("Mis"), currentUser(), dayLoggedHours(date, shift)]);
+  const [rows, options, me, loggedDay] = await Promise.all([shiftRows(date, shift), selectOptions("Mis"), currentUser(), dayLoggedHours(date)]);
   const operatorName = me?.name || me?.email || "operator";
   // design dropdown: collapse every "Trial …" variant into ONE "Trial" entry
   if (options.design?.some((d) => /^trial\b/i.test(String(d).trim()))) {

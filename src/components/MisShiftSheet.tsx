@@ -93,10 +93,11 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
   const onHour = (h: string) => {
     setHour(h);
     const s = shiftOfHour(h);
-    // ALWAYS reload: the server recomputes the press/line prefill for the
-    // newly chosen hour (same shift or not).
-    const anchor = s === "C" && Number(h.slice(0, 2)) < 6 && shift !== "C" ? plusDay(date, -1) : date;
-    router.push(`/entry/mis?date=${anchor}&shift=${s}&hour=${encodeURIComponent(h)}`);
+    // ALWAYS reload: the server recomputes the press/line prefill for the newly
+    // chosen hour. The sheet is a production day (06:00 date → 06:00 date+1), so a
+    // 00–06 (C) hour picked from a day shift is THIS day's COMING night — keep `date`
+    // (shiftRows maps the C 00–06 slots to date+1) instead of jumping back a day.
+    router.push(`/entry/mis?date=${date}&shift=${s}&hour=${encodeURIComponent(h)}`);
   };
 
   const save = () => {
