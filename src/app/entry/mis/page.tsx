@@ -67,10 +67,13 @@ async function dayLoggedHours(date: string, shift: "A" | "B" | "C"): Promise<str
   try {
     const lo = new Date(`${date}T00:00:00.000Z`);
     const hi = new Date(`${plusDay(next, 1)}T00:00:00.000Z`);
-    const rows = await db.mis.findMany({ where: { OR: [
+    // db facade types mis.findMany as MisRowLite[] (no date fields); this query selects
+    // them, so cast to the shape actually returned. Same cast style as the `db` facade above.
+    const rows = (await db.mis.findMany({ where: { OR: [
       { date: { gte: lo, lt: hi } },
       { AND: [{ date: null }, { dateAndTime: { gte: lo, lt: hi } }] },
-    ] }, select: { hour: true, date: true, dateAndTime: true } });
+    ] }, select: { hour: true, date: true, dateAndTime: true } })) as unknown as
+      { hour: string | null; date: Date | null; dateAndTime: Date | null }[];
     const set = new Set<string>();
     for (const r of rows) {
       if (!r.hour) continue;
