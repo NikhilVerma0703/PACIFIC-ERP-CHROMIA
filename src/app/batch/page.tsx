@@ -10,7 +10,7 @@ import { getBatch, searchBatchesByDesign, getMixerCycles, getSiloBags } from "@/
 import { UndoLastButton } from "./UndoLastButton";
 import { getLastUndoable } from "./undo";
 import { recentActions } from "@/lib/actionLog";
-import { detectWrongBatch } from "@/lib/batchMismatch";
+import { detectWrongBatch, type WrongBatchGroup } from "@/lib/batchMismatch";
 import { detectSharedMixRun } from "@/lib/mixerSharing";
 import { thicknessMixByBatch, type BatchMix } from "@/lib/slabThickness";
 import { WrongBatchFix } from "@/components/WrongBatchFix";
@@ -105,6 +105,14 @@ export default async function BatchPage({
     if (m.noThickness) parts.push(`no thk ${fmt(m.noThickness)}`);
     return parts.join(" · ");
   };
+
+  // Wrong-batch groups whose counterpart is the CONFIRMED-alternating partner are
+  // switch-boundary smear (expected from the constant switching) — shown calm, below the
+  // shared-mix notice. Everything else keeps the red alarm.
+  const partnerKeys = new Set(sharedMix?.partners ?? []);
+  const isBoundary = (g: WrongBatchGroup) => partnerKeys.has(g.direction === "foreign" ? g.toBatchKey : (normalizeBatch(g.fromBatch) ?? ""));
+  const alertGroups = (wrongBatch?.groups ?? []).filter((g) => !isBoundary(g));
+  const boundaryGroups = (wrongBatch?.groups ?? []).filter(isBoundary);
 
   // Build a drill-down href for the current batch.
   const slab = (station: string, only?: string) =>
@@ -245,7 +253,10 @@ export default async function BatchPage({
           )}
 
           {data.slabAudit.range && (
-            <RangeControls batch={query ?? ""} batchKey={data.key} min={data.slabAudit.range.min} max={data.slabAudit.range.max} missing={data.slabAudit.globalMissing.length} confirmed={data.slabAudit.confirmed} />
+            // Batches WITHOUT sub-batches have no family chip bar, so their 2cm/3cm split
+            // shows here on the range card instead (same resolver, already computed).
+            <RangeControls batch={query ?? ""} batchKey={data.key} min={data.slabAudit.range.min} max={data.slabAudit.range.max} missing={data.slabAudit.globalMissing.length} confirmed={data.slabAudit.confirmed}
+              thickness={data.family.keys.length <= 1 ? data.thickness.map((x) => `${x.label === "not recorded" ? "no thk" : x.label} ${fmt(x.count)}`).join(" · ") || undefined : undefined} />
           )}
 
           {data.design.discrepancy && (
@@ -271,12 +282,16 @@ export default async function BatchPage({
           )}
 
           {/* Wrong-batch entries: station rows that disagree with the line head */}
-          {wrongBatch && wrongBatch.groups.length > 0 && (
-            <WrongBatchFix groups={wrongBatch.groups} mayEdit={mayFix} viewedBatch={query ?? ""} />
+          {alertGroups.length > 0 && (
+            <WrongBatchFix groups={alertGroups} mayEdit={mayFix} viewedBatch={query ?? ""} />
           )}
 
           {/* One mixer run feeding several line batches — evidence only, needs confirming */}
           {sharedMix && <SharedMixNotice r={sharedMix} />}
+
+          {boundaryGroups.length > 0 && (
+            <WrongBatchFix groups={boundaryGroups} mayEdit={mayFix} viewedBatch={query ?? ""} expectedWith={sharedMix?.partners.join(", ") ?? ""} />
+          )}
 
           {/* Slab-level audit: duplicates and missing slabs per station (clickable) */}
           {data.slabAudit.stations.length > 0 && (

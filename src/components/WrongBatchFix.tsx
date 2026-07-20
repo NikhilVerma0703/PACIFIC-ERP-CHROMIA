@@ -87,8 +87,28 @@ function GroupCard({ g, mayEdit, viewedBatch }: { g: WrongBatchGroup; mayEdit: b
   );
 }
 
-export function WrongBatchFix({ groups, mayEdit, viewedBatch }: { groups: WrongBatchGroup[]; mayEdit: boolean; viewedBatch: string }) {
+export function WrongBatchFix({ groups, mayEdit, viewedBatch, expectedWith }: { groups: WrongBatchGroup[]; mayEdit: boolean; viewedBatch: string; expectedWith?: string }) {
   if (!groups.length) return null;
+  const cards = (
+    <div className="space-y-2">
+      {groups.map((g, i) => <GroupCard key={`${g.model}-${g.toBatchKey}-${g.direction}-${i}`} g={g} mayEdit={mayEdit} viewedBatch={viewedBatch} />)}
+    </div>
+  );
+  // `expectedWith` = this batch provably alternated with that partner on ONE mixer run, so
+  // label disagreements with it are switch-boundary smear (stations flip the batch a few
+  // slabs later than the line head) — expected from the operation, not an alarm.
+  if (expectedWith) {
+    return (
+      <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-4">
+        <div className="mb-1 text-sm font-semibold text-amber-800">Switch-boundary label differences with {expectedWith} — expected while alternating</div>
+        <p className="mb-3 max-w-3xl text-xs text-amber-800/80">
+          These batches alternated on one line, so stations naturally switch the batch label a few slabs later than the line head does.
+          The line head still decides each slab&apos;s true batch — review and move these when convenient; nothing here is urgent.
+        </p>
+        {cards}
+      </div>
+    );
+  }
   return (
     <div className="rounded-xl border border-red-200 bg-red-50 p-4">
       <div className="mb-1 text-sm font-semibold text-red-800">⚠ Wrong-batch entries detected</div>
@@ -97,9 +117,7 @@ export function WrongBatchFix({ groups, mayEdit, viewedBatch }: { groups: WrongB
         The rows below disagree with the line head — usually an operator typed the wrong batch. Click a row to review the slabs and
         move some or all of them; only the batch on the station record changes.
       </p>
-      <div className="space-y-2">
-        {groups.map((g, i) => <GroupCard key={`${g.model}-${g.toBatchKey}-${g.direction}-${i}`} g={g} mayEdit={mayEdit} viewedBatch={viewedBatch} />)}
-      </div>
+      {cards}
     </div>
   );
 }

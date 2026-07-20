@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui";
 import { confirmRangeAction } from "@/app/batch/rangeActions";
 
-export function RangeControls({ batch, batchKey, min, max, missing, confirmed }: { batch: string; batchKey: string; min: number; max: number; missing: number; confirmed: { by: string | null; at: string } | null }) {
+export function RangeControls({ batch, batchKey, min, max, missing, confirmed, thickness }: { batch: string; batchKey: string; min: number; max: number; missing: number; confirmed: { by: string | null; at: string } | null; thickness?: string }) {
   const [pending, start] = useTransition();
   const router = useRouter();
   return (
@@ -17,6 +17,12 @@ export function RangeControls({ batch, batchKey, min, max, missing, confirmed }:
           <div className="mt-1 text-lg font-semibold text-gray-900">Slabs {min} – {max}</div>
           <div className="text-xs text-gray-500">{max - min + 1} expected{missing ? ` · ${missing} missing from every station` : ""}</div>
         </div>
+        {thickness && (
+          <div className="text-center">
+            <div className="text-xs font-semibold uppercase tracking-wider text-gray-400">Thickness</div>
+            <div className="mt-1 text-sm font-medium text-gray-800">{thickness}</div>
+          </div>
+        )}
         <div className="flex items-center gap-2">
           {confirmed ? (
             <span className="rounded-md bg-green-50 px-3 py-1.5 text-xs font-medium text-green-700">✓ Confirmed{confirmed.by ? ` by ${confirmed.by}` : ""}{confirmed.at ? ` · ${confirmed.at}` : ""}</span>
