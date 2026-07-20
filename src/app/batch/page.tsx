@@ -12,6 +12,7 @@ import { getLastUndoable } from "./undo";
 import { recentActions } from "@/lib/actionLog";
 import { detectWrongBatch } from "@/lib/batchMismatch";
 import { detectSharedMixRun } from "@/lib/mixerSharing";
+import { thicknessMixByBatch, type BatchMix } from "@/lib/slabThickness";
 import { WrongBatchFix } from "@/components/WrongBatchFix";
 import { SlabMismatchPill } from "./SlabMismatchPill";
 import { MixerSection } from "./MixerSection";
@@ -79,18 +80,35 @@ export default async function BatchPage({
   if (query) { try { unbacked = await batchHasUnbacked(normalizeBatch(query) ?? ""); } catch { /* ignore */ } }
   let wrongBatch: Awaited<ReturnType<typeof detectWrongBatch>> | null = null;
   let sharedMix: Awaited<ReturnType<typeof detectSharedMixRun>> = null;
+  // Per-batch 2cm/3cm split for the family chips. Same resolver the production report and
+  // the Telegram bot use, counted over each batch's PRESS slabs — so it adds up to the
+  // slab count already shown on the chip.
+  let thickByBatch = new Map<string, BatchMix>();
   let mayFix = false;
   let canManage = false;
   if (query && data?.found) {
     // mixer cycles / silo bags follow the same call the totals made: when the mix is
     // only stamped on the parent key, a solo view still shows it family-wide (labelled).
     const mixScope = { solo: scope.solo && !data.family.mixFamilyWide };
+    if (data.family.keys.length > 1) {
+      try { thickByBatch = await thicknessMixByBatch(data.family.keys); } catch { /* chips degrade to slab count only */ }
+    }
     try { [mixerCycles, silos, wrongBatch, mayFix, canManage, sharedMix] = await Promise.all([getMixerCycles(query, mixScope), getSiloBags(query, mixScope), detectWrongBatch(query), canRectify(), isManager(), detectSharedMixRun(query, data.family)]); } catch { /* ignore */ }
   }
 
+  // "2 cm 589 · 3 cm 69" for a family chip — biggest first, unrecorded slabs shown last so
+  // the parts always add up to the chip's slab count.
+  const thickMix = (key: string): string => {
+    const m = thickByBatch.get(key);
+    if (!m || !m.total) return "";
+    const parts = [...m.mix.entries()].sort((a, b) => b[1] - a[1]).map(([t, n]) => `${t} ${fmt(n)}`);
+    if (m.noThickness) parts.push(`no thk ${fmt(m.noThickness)}`);
+    return parts.join(" · ");
+  };
+
   // Build a drill-down href for the current batch.
   const slab = (station: string, only?: string) =>
-    `/batch/slabs?b=${encodeURIComponent(query ?? "")}&station=${station}${only ? `&only=${only}` : ""}`;
+    `/batch/slabs?b=${encodeURIComponent(query ?? "")}&station=${station}${only ? `&only=${only}` : ""}${scope.solo ? "&solo=1" : ""}`;
 
   return (
     <Shell>
@@ -218,6 +236,7 @@ export default async function BatchPage({
                   return (
                     <Link key={m.key} href={href} className={`rounded-lg border px-3 py-1.5 transition hover:border-brand/40 ${active ? "border-brand/40 bg-white ring-1 ring-brand/30" : "border-gray-200 bg-white"}`}>
                       <span className="font-semibold">{m.key}</span>{m.design ? <span className="text-gray-500"> · {m.design}</span> : ""}<span className="text-gray-400"> · {fmt(m.slabs)} slabs</span>
+                      {thickMix(m.key) && <span className="text-gray-500"> · {thickMix(m.key)}</span>}
                     </Link>
                   );
                 })}

@@ -38,13 +38,15 @@ function cell(v: unknown, kind?: "date" | "num" | "duration"): string {
 export default async function SlabsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ b?: string; station?: string; only?: string }>;
+  searchParams: Promise<{ b?: string; station?: string; only?: string; solo?: string }>;
 }) {
-  const { b, station: stationRaw, only } = await searchParams;
+  const { b, station: stationRaw, only, solo } = await searchParams;
   const batch = b?.trim();
   const station = (STATIONS.includes(stationRaw as SlabStation) ? stationRaw : "press") as SlabStation;
   const missingMode = only === "missing";
   const dupMode = only === "dup";
+  // mirror the scope the batch page was showing, so the drill-down searches the same set
+  const scope = { solo: solo === "1" };
 
   let lastAct = null;
   if (batch) { try { lastAct = await getLastUndoable(batch); } catch { /* action_log not migrated yet */ } }
@@ -114,7 +116,7 @@ export default async function SlabsPage({
           </Card>
         );
       } else {
-        const list = await getStationSlabs(batch, station, dupMode);
+        const list = await getStationSlabs(batch, station, dupMode, scope);
         const dupSet = new Set(list.dupSlabs);
         body = list.rows.length === 0 ? (
           <Empty>No {list.label} records for batch {list.key}{dupMode ? " entered more than once" : ""}.</Empty>

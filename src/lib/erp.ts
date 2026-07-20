@@ -708,15 +708,21 @@ function stationDelegate(station: SlabStation) {
   }
 }
 
-export async function getStationSlabs(input: string, station: SlabStation, onlyDup = false): Promise<StationSlabList> {
-  const key = normalizeBatch(input);
+export async function getStationSlabs(input: string, station: SlabStation, onlyDup = false, scope?: BatchScope): Promise<StationSlabList> {
+  // Family-scoped like getMixerCycles/getSiloBags: the batch page's duplicate counts are
+  // rolled up over the family (a parent plus its design-switch sub-batches), so the
+  // drill-down has to search the SAME set — otherwise clicking "147583x2" on 1376 lands
+  // on a page that filters 1376 alone, finds nothing (the duplicate is 1376-A's) and
+  // says "none", contradicting the number that linked there.
+  const { key, isSub, keys: famKeys } = await batchFamily(input);
+  const keys = scope?.solo && !isSub ? [key] : famKeys;
   const spec = STATION_SPEC[station];
   const MODEL: Record<SlabStation, string> = { press: "Press", distributor: "Distributor", kreos: "Kreos", oven: "Oven", jot: "Jot", polishEntry: "PolishEntry", polishQc: "PolishQc", mixer: "MixerCycle" };
   const select: Record<string, boolean> = { id: true };
   for (const c of spec.columns) select[c.key] = true;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rows: any[] = await (stationDelegate(station) as any).findMany({
-    where: { batchKey: key },
+    where: { batchKey: { in: keys } },
     select,
     orderBy: { [spec.order]: "asc" },
   });
