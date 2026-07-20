@@ -11,9 +11,11 @@ import { UndoLastButton } from "./UndoLastButton";
 import { getLastUndoable } from "./undo";
 import { recentActions } from "@/lib/actionLog";
 import { detectWrongBatch } from "@/lib/batchMismatch";
+import { detectSharedMixRun } from "@/lib/mixerSharing";
 import { WrongBatchFix } from "@/components/WrongBatchFix";
 import { SlabMismatchPill } from "./SlabMismatchPill";
 import { MixerSection } from "./MixerSection";
+import { SharedMixNotice } from "./SharedMixNotice";
 import { canRectify, isManager } from "@/lib/rbac";
 import { getQcParamSummary } from "@/lib/stationParams";
 import { slabLabel } from "@/lib/slabLabel";
@@ -76,13 +78,14 @@ export default async function BatchPage({
   let unbacked = false;
   if (query) { try { unbacked = await batchHasUnbacked(normalizeBatch(query) ?? ""); } catch { /* ignore */ } }
   let wrongBatch: Awaited<ReturnType<typeof detectWrongBatch>> | null = null;
+  let sharedMix: Awaited<ReturnType<typeof detectSharedMixRun>> = null;
   let mayFix = false;
   let canManage = false;
   if (query && data?.found) {
     // mixer cycles / silo bags follow the same call the totals made: when the mix is
     // only stamped on the parent key, a solo view still shows it family-wide (labelled).
     const mixScope = { solo: scope.solo && !data.family.mixFamilyWide };
-    try { [mixerCycles, silos, wrongBatch, mayFix, canManage] = await Promise.all([getMixerCycles(query, mixScope), getSiloBags(query, mixScope), detectWrongBatch(query), canRectify(), isManager()]); } catch { /* ignore */ }
+    try { [mixerCycles, silos, wrongBatch, mayFix, canManage, sharedMix] = await Promise.all([getMixerCycles(query, mixScope), getSiloBags(query, mixScope), detectWrongBatch(query), canRectify(), isManager(), detectSharedMixRun(query, data.family)]); } catch { /* ignore */ }
   }
 
   // Build a drill-down href for the current batch.
@@ -252,6 +255,9 @@ export default async function BatchPage({
           {wrongBatch && wrongBatch.groups.length > 0 && (
             <WrongBatchFix groups={wrongBatch.groups} mayEdit={mayFix} viewedBatch={query ?? ""} />
           )}
+
+          {/* One mixer run feeding several line batches — evidence only, needs confirming */}
+          {sharedMix && <SharedMixNotice r={sharedMix} />}
 
           {/* Slab-level audit: duplicates and missing slabs per station (clickable) */}
           {data.slabAudit.stations.length > 0 && (
