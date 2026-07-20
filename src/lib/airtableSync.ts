@@ -121,6 +121,15 @@ export async function setSource(model: string, source: "AIRTABLE" | "ERP", by = 
 // ---------- sync ----------
 export interface SyncResult { model: string; ok: boolean; upserted: number; skipped?: string; error?: string; }
 
+/** Columns the ERP owns even while the table is still Airtable-sourced. The
+ *  confirm-and-split (lib/mixerFifo) writes mixerCycleIds on the line-head tables,
+ *  so a re-synced Airtable edit must never overwrite them. They still flow in on
+ *  CREATE — a first-time mirror keeps its historical Airtable links. */
+const ERP_OWNED_FIELDS: Record<string, string[]> = {
+  Distributor: ["mixerCycleIds"],
+  Kreos: ["mixerCycleIds"],
+};
+
 /** Incremental (or full) one-table sync. Upsert-only; respects the ERP flag. */
 export async function syncModel(model: string, opts: { full?: boolean } = {}): Promise<SyncResult> {
   const tableId = tableIdOf(model);
@@ -142,7 +151,9 @@ export async function syncModel(model: string, opts: { full?: boolean } = {}): P
       const page = await fetchPage(tableId, offset, { filterByFormula: filter });
       for (const rec of page.records) {
         const data = toRow(rec, def);
-        await delegate(model).upsert({ where: { airtableId: rec.id }, create: { airtableId: rec.id, ...data }, update: data });
+        const update = { ...data };
+        for (const f of ERP_OWNED_FIELDS[model] ?? []) delete update[f];
+        await delegate(model).upsert({ where: { airtableId: rec.id }, create: { airtableId: rec.id, ...data }, update });
         upserted++;
       }
       offset = page.offset;
