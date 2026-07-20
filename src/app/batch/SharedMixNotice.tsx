@@ -17,7 +17,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-export function SharedMixNotice({ r, mayFix = false, batch = "" }: { r: SharedMixReport; mayFix?: boolean; batch?: string }) {
+export function SharedMixNotice({ r, mayFix = false, batch = "", split = false }: { r: SharedMixReport; mayFix?: boolean; batch?: string; split?: boolean }) {
   const others = r.partners.join(", ");
   const all = r.partners.length === 1 ? "both" : `all ${r.partners.length + 1}`;
   const preview = r.runs.slice(0, 10).map((x) => `${x.batch}×${x.n}`).join(" · ");
@@ -43,7 +43,9 @@ export function SharedMixNotice({ r, mayFix = false, batch = "" }: { r: SharedMi
         {r.ownCycles === 0
           ? <>This batch has no mixer cycles of its own — the material is all stamped to {others}.</>
           : <>{r.ownCycles} {r.ownCycles === 1 ? "cycle is" : "cycles are"} stamped to this batch{r.partnerCycles === 0 ? <>, while {others} {r.partners.length === 1 ? "has" : "have"} none at all</> : null}.</>}{" "}
-        Either way the wastage below cannot be read for these batches separately.
+        {split
+          ? <>The split has been confirmed, so the wastage on this page now reads from it — per batch, by slab-mass share of each shared cycle.</>
+          : <>Either way the wastage below cannot be read for these batches separately.</>}
       </p>
 
       <div className="grid gap-3 sm:grid-cols-3">

@@ -12,6 +12,7 @@ import { getLastUndoable } from "./undo";
 import { recentActions } from "@/lib/actionLog";
 import { detectWrongBatch, type WrongBatchGroup } from "@/lib/batchMismatch";
 import { detectSharedMixRun } from "@/lib/mixerSharing";
+import { confirmedSplitAllocation } from "@/lib/mixerFifo";
 import { thicknessMixByBatch, type BatchMix } from "@/lib/slabThickness";
 import { WrongBatchFix } from "@/components/WrongBatchFix";
 import { SlabMismatchPill } from "./SlabMismatchPill";
@@ -80,6 +81,7 @@ export default async function BatchPage({
   if (query) { try { unbacked = await batchHasUnbacked(normalizeBatch(query) ?? ""); } catch { /* ignore */ } }
   let wrongBatch: Awaited<ReturnType<typeof detectWrongBatch>> | null = null;
   let sharedMix: Awaited<ReturnType<typeof detectSharedMixRun>> = null;
+  let split: Awaited<ReturnType<typeof confirmedSplitAllocation>> = null;
   // Per-batch 2cm/3cm split for the family chips. Same resolver the production report and
   // the Telegram bot use, counted over each batch's PRESS slabs — so it adds up to the
   // slab count already shown on the chip.
@@ -93,7 +95,7 @@ export default async function BatchPage({
     if (data.family.keys.length > 1) {
       try { thickByBatch = await thicknessMixByBatch(data.family.keys); } catch { /* chips degrade to slab count only */ }
     }
-    try { [mixerCycles, silos, wrongBatch, mayFix, canManage, sharedMix] = await Promise.all([getMixerCycles(query, mixScope), getSiloBags(query, mixScope), detectWrongBatch(query), canRectify(), isManager(), detectSharedMixRun(query, data.family)]); } catch { /* ignore */ }
+    try { [mixerCycles, silos, wrongBatch, mayFix, canManage, sharedMix, split] = await Promise.all([getMixerCycles(query, mixScope), getSiloBags(query, mixScope), detectWrongBatch(query), canRectify(), isManager(), detectSharedMixRun(query, data.family), confirmedSplitAllocation(query)]); } catch { /* ignore */ }
   }
 
   // "2 cm 589 · 3 cm 69" for a family chip — biggest first, unrecorded slabs shown last so
@@ -211,10 +213,24 @@ export default async function BatchPage({
             )}
             {data.slabAudit.hasIssues && <Badge tone="red">⚠ Slab discrepancies</Badge>}
             {unbacked && <Badge tone="red">⚠ Unbacked RM — silo/tank fill pending, auto-links on fill</Badge>}
-            {data.wastagePct != null && !data.family.mixFamilyWide && (
+            {split && split.wastagePct != null ? (
+              <WastagePill pct={split.wastagePct} kg={split.wastageKg} mixWeight={split.allocKg} slabWeight={split.slabKg} />
+            ) : (data.wastagePct != null && !data.family.mixFamilyWide && (
               <WastagePill pct={data.wastagePct} kg={data.wastageKg} mixWeight={data.totalMixWeight} slabWeight={data.totalSlabWeight} />
-            )}
+            ))}
           </div>
+
+          {/* A confirmed split makes per-batch material knowable again: each shared cycle's
+              kg divided by slab-mass share. Reads only what the confirm wrote; Undo removes
+              the links and this line (and the figures above) fall back on their own. */}
+          {split && (
+            <p className="text-xs text-gray-500">
+              Mix weight and wastage are this batch&apos;s share of the <b>confirmed shared-mix split</b> with{" "}
+              {split.group.slice(1).join(", ")} ({split.cycles} shared cycles
+              {split.perBatch.length > 1 ? `; ${split.perBatch.map((b) => `${b.key} ${b.wastagePct == null ? "n/a" : b.wastagePct.toFixed(1) + "%"}`).join(" · ")}` : ""}) —{" "}
+              <a href="#rect-history" className="underline decoration-dotted underline-offset-2 hover:text-brand">rectification history</a> has the confirm and its Undo.
+            </p>
+          )}
 
           {data.family.keys.length > 1 && (
             <div className="rounded-xl border border-brand/20 bg-brand/[0.04] px-4 py-3 text-sm">
@@ -287,7 +303,7 @@ export default async function BatchPage({
           )}
 
           {/* One mixer run feeding several line batches — evidence only, needs confirming */}
-          {sharedMix && <SharedMixNotice r={sharedMix} mayFix={mayFix} batch={query ?? ""} />}
+          {sharedMix && <SharedMixNotice r={sharedMix} mayFix={mayFix} batch={query ?? ""} split={!!split} />}
 
           {boundaryGroups.length > 0 && (
             <WrongBatchFix groups={boundaryGroups} mayEdit={mayFix} viewedBatch={query ?? ""} expectedWith={sharedMix?.partners.join(", ") ?? ""} />
@@ -403,10 +419,10 @@ export default async function BatchPage({
               <Kpi label="Design" value={data.design.primary ?? "—"} sub={data.design.discrepancy ? `${data.design.designs.length} conflicting` : "single design"} />
             </Link>
             <Link href={slab("mixer")} className="block h-full rounded-xl transition hover:ring-2 hover:ring-brand/30">
-              <Kpi label="Mix weight (kg)" value={fmt(data.totalMixWeight)} sub={data.family.mixFamilyWide ? `${data.counts.mixer} mixer cycles · whole family` : `${data.counts.mixer} mixer cycles`} />
+              <Kpi label="Mix weight (kg)" value={fmt(split ? split.allocKg : data.totalMixWeight)} sub={split ? `share of ${split.cycles} shared cycles — confirmed split` : data.family.mixFamilyWide ? `${data.counts.mixer} mixer cycles · whole family` : `${data.counts.mixer} mixer cycles`} />
             </Link>
             <Link href={slab("press")} className="block h-full rounded-xl transition hover:ring-2 hover:ring-brand/30">
-              <Kpi label="Slab weight (kg)" value={fmt(data.totalSlabWeight)} sub={data.family.mixFamilyWide ? "wastage n/a — mix is family-wide" : `wastage ${fmt(data.wastageKg)} kg`} />
+              <Kpi label="Slab weight (kg)" value={fmt(data.totalSlabWeight)} sub={split ? `wastage ${fmt(split.wastageKg)} kg — from confirmed split` : data.family.mixFamilyWide ? "wastage n/a — mix is family-wide" : `wastage ${fmt(data.wastageKg)} kg`} />
             </Link>
           </div>
 
@@ -432,6 +448,7 @@ export default async function BatchPage({
 
 
           {history.length > 0 && (
+            <div id="rect-history">
             <Card>
               <H2>Rectification history · {history.length}</H2>
               <p className="mb-3 text-sm text-gray-600">Who changed what on this batch, and when.</p>
@@ -458,6 +475,7 @@ export default async function BatchPage({
                 </table>
               </div>
             </Card>
+            </div>
           )}
         </div>
       )}

@@ -270,3 +270,179 @@ export async function applyMixSplit(batchRaw: string, expected: MixSplitFingerpr
       `${p.outliers ? ` · ${p.outliers} slab(s) left unlinked (far outside the run's slab numbers — check them)` : ""}.`,
   };
 }
+
+// ---------------------------------------------------------------------------
+// READ SIDE — per-batch material from a CONFIRMED split.
+//
+// Once the links exist, each batch's material is knowable again: every cycle's
+// kg is divided across the batches by their slab-MASS share of that cycle (the
+// same press-weight-with-median rule the split itself used), and a batch's mix
+// weight is the sum of its shares. Nothing here writes; it only reads what the
+// confirm wrote, and it stays silent — the page keeps today's behaviour —
+// unless ALL of these hold:
+//   · the viewed batch's line-head rows are well-covered by links (≥ COVERAGE_MIN),
+//   · so is every other batch drawing from the same cycles (a half-linked run
+//     would make the shares lie),
+//   · at least two batches share the cycles (a solo-linked batch's label-scoped
+//     figure is already right),
+//   · a not-undone mixLink action exists for the group — 198 mirrored rows
+//     still carry mixer_cycle values from the old Airtable link assigner, and
+//     those are NOT a confirmed split, so links alone are not provenance.
+// Undo removes the links → coverage collapses → the page falls back by itself.
+
+const COVERAGE_MIN = 0.8;
+
+export interface SplitBatchFigures { key: string; allocKg: number; slabKg: number; wastagePct: number | null }
+export interface SplitAllocation {
+  /** viewed batch first, then its partners */
+  group: string[];
+  /** linked cycles feeding the group */
+  cycles: number;
+  /** linked-row coverage of the viewed batch's line-head rows */
+  coverage: number;
+  confirmedAt: string | null;
+  confirmedBy: string | null;
+  /** figures for the VIEWED batch (perBatch[0]) */
+  allocKg: number;
+  slabKg: number;
+  wastageKg: number;
+  wastagePct: number | null;
+  perBatch: SplitBatchFigures[];
+}
+
+/** The viewed batch's allocated material under a confirmed split, or null when
+ *  there is no (whole, provenanced) split — the caller then shows today's view. */
+export async function confirmedSplitAllocation(batchRaw: string): Promise<SplitAllocation | null> {
+  try {
+    const key = normalizeBatch(batchRaw);
+    if (!key) return null;
+
+    // 1) the viewed batch's line-head rows and their links
+    const sel = { select: { slabNumber: true, batchKey: true, mixerCycleIds: true } };
+    const [ownD, ownK] = await Promise.all([
+      db.distributor.findMany({ where: { batchKey: key, slabNumber: { not: null } }, ...sel }) as Promise<any[]>,
+      db.kreos.findMany({ where: { batchKey: key, slabNumber: { not: null } }, ...sel }) as Promise<any[]>,
+    ]);
+    const own = [...ownD, ...ownK];
+    if (!own.length) return null;
+    const linkedOwn = own.filter((r) => ((r.mixerCycleIds ?? []) as string[]).length > 0);
+    const coverage = linkedOwn.length / own.length;
+    if (coverage < COVERAGE_MIN) return null;
+    const aids = [...new Set(linkedOwn.flatMap((r) => (r.mixerCycleIds ?? []) as string[]))];
+    if (!aids.length) return null;
+
+    // 2) everyone drawing from these cycles, whatever label their rows carry
+    const [grpD, grpK] = await Promise.all([
+      db.distributor.findMany({ where: { mixerCycleIds: { hasSome: aids }, slabNumber: { not: null } }, ...sel }) as Promise<any[]>,
+      db.kreos.findMany({ where: { mixerCycleIds: { hasSome: aids }, slabNumber: { not: null } }, ...sel }) as Promise<any[]>,
+    ]);
+    const rows = [...grpD, ...grpK];
+    const groupKeys = [...new Set(rows.map((r) => String(r.batchKey ?? "")).filter(Boolean))];
+    if (!groupKeys.includes(key) || groupKeys.length < 2) return null;
+
+    // 3) every member must be as well-covered as the viewed batch
+    const [totD, totK] = await Promise.all([
+      db.distributor.groupBy({ by: ["batchKey"], where: { batchKey: { in: groupKeys }, slabNumber: { not: null } }, _count: { _all: true } }) as Promise<any[]>,
+      db.kreos.groupBy({ by: ["batchKey"], where: { batchKey: { in: groupKeys }, slabNumber: { not: null } }, _count: { _all: true } }) as Promise<any[]>,
+    ]);
+    const totalBy = new Map<string, number>();
+    for (const t of [...totD, ...totK]) totalBy.set(String(t.batchKey), (totalBy.get(String(t.batchKey)) ?? 0) + Number(t._count?._all ?? 0));
+    const linkedBy = new Map<string, number>();
+    for (const r of rows) { const b = String(r.batchKey); linkedBy.set(b, (linkedBy.get(b) ?? 0) + 1); }
+    for (const b of groupKeys) {
+      const t = totalBy.get(b) ?? 0;
+      if (!t || (linkedBy.get(b) ?? 0) / t < COVERAGE_MIN) return null;
+    }
+
+    // 4) provenance: a confirmed, not-undone split — legacy Airtable links don't count
+    const act: any = await db.actionLog.findFirst({
+      where: { kind: "mixLink", undone: false, batchKey: { in: groupKeys } },
+      orderBy: { createdAt: "desc" },
+      select: { createdAt: true, actor: true },
+    });
+    if (!act) return null;
+
+    // 5) the cycles' kg, weighed exactly as the evidence panel and the split weighed them
+    const cyc: any[] = await db.mixerCycle.findMany({ where: { airtableId: { in: aids } }, select: { ...W_SELECT, airtableId: true } });
+    const kgByAid = new Map<string, number>(cyc.map((c) => [String(c.airtableId), cycleKg(c)]));
+
+    // 6) slab masses: press weight by slab number, median fallback — the same rule the
+    // split used. NOTE the out-side attribution: a slab's kg belongs to its LINE-HEAD
+    // batch, not to whatever label its press row carries. On an interleaved run the
+    // press labels are exactly what's scrambled (the boundary notes on the page exist
+    // for that), and mixing press-label "out" with line-head "in" produces impossible
+    // figures (a batch reading more kg out than in). Both sides of the wastage here are
+    // line-head-attributed, so they can be compared.
+    const pressRows: any[] = await db.press.findMany({
+      where: { batchKey: { in: groupKeys }, slabNumber: { not: null } },
+      select: { slabNumber: true, slabWeight: true },
+      orderBy: [{ slabNumber: "asc" }, { id: "asc" }],
+    });
+    const wBySlab = new Map<number, number>();
+    for (const p of pressRows) {
+      const n = Number(p.slabNumber), w = Number(p.slabWeight ?? 0);
+      if (w > 0 && !wBySlab.has(n)) wBySlab.set(n, w);
+    }
+
+    // 7) physical slabs -> (batch, cycles); a slab whose rows disagree on the batch is
+    // the wrong-batch panel's problem and is left out of the shares.
+    const slabMap = new Map<number, { batches: Set<string>; aids: Set<string> }>();
+    for (const r of rows) {
+      const n = Number(r.slabNumber);
+      const e = slabMap.get(n) ?? { batches: new Set<string>(), aids: new Set<string>() };
+      e.batches.add(String(r.batchKey));
+      for (const a of (r.mixerCycleIds ?? []) as string[]) if (aids.includes(a)) e.aids.add(a);
+      slabMap.set(n, e);
+    }
+    const linkedSlabs = [...slabMap.keys()];
+    const matched = linkedSlabs.filter((n) => wBySlab.has(n));
+    if (!matched.length) return null;
+    const sortedW = matched.map((n) => wBySlab.get(n) as number).sort((a, b) => a - b);
+    const medianKg = sortedW[Math.floor(sortedW.length / 2)];
+
+    const cycleTot = new Map<string, number>();
+    const cycleShare = new Map<string, Map<string, number>>();
+    const outBy = new Map<string, number>();
+    for (const [n, e] of slabMap) {
+      if (e.batches.size !== 1 || !e.aids.size) continue;
+      const b = [...e.batches][0];
+      const w = wBySlab.get(n) ?? medianKg;
+      outBy.set(b, (outBy.get(b) ?? 0) + w);
+      const m = w / e.aids.size;
+      for (const a of e.aids) {
+        cycleTot.set(a, (cycleTot.get(a) ?? 0) + m);
+        const byB = cycleShare.get(a) ?? new Map<string, number>();
+        byB.set(b, (byB.get(b) ?? 0) + m);
+        cycleShare.set(a, byB);
+      }
+    }
+    const allocBy = new Map<string, number>();
+    for (const [a, tot] of cycleTot) {
+      if (tot <= 0) continue;
+      const kg = kgByAid.get(a) ?? 0;
+      for (const [b, m] of cycleShare.get(a) ?? []) allocBy.set(b, (allocBy.get(b) ?? 0) + kg * (m / tot));
+    }
+
+    const fig = (b: string): SplitBatchFigures => {
+      const a = allocBy.get(b) ?? 0, o = outBy.get(b) ?? 0;
+      return { key: b, allocKg: a, slabKg: o, wastagePct: a > 0 && o > 0 ? ((a - o) / a) * 100 : null };
+    };
+    const perBatch = [key, ...groupKeys.filter((b) => b !== key).sort()].map(fig);
+    const mine = perBatch[0];
+    return {
+      group: perBatch.map((x) => x.key),
+      cycles: cyc.length,
+      coverage,
+      confirmedAt: act.createdAt ? new Date(act.createdAt).toISOString() : null,
+      confirmedBy: act.actor ?? null,
+      allocKg: mine.allocKg,
+      slabKg: mine.slabKg,
+      wastageKg: mine.allocKg - mine.slabKg,
+      wastagePct: mine.wastagePct,
+      perBatch,
+    };
+  } catch (e) {
+    console.error("confirmedSplitAllocation failed:", e); // never break the batch page
+    return null;
+  }
+}
