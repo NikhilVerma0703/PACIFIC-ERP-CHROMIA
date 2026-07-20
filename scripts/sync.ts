@@ -62,6 +62,14 @@ function toRow(rec: { id: string; fields: Record<string, unknown> }, def: TableD
   return row;
 }
 
+// Same rule as src/lib/airtableSync.ts (keep in sync): mixerCycleIds on the line-head
+// tables is ERP-owned — the confirm-and-split writes it, so no Airtable re-sync may
+// overwrite it. Still flows in on CREATE (a first-time mirror keeps historical links).
+const ERP_OWNED_FIELDS: Record<string, string[]> = {
+  Distributor: ["mixerCycleIds"],
+  Kreos: ["mixerCycleIds"],
+};
+
 async function syncTable(tableId: string, def: TableDef) {
   let offset: string | undefined;
   let upserted = 0;
@@ -69,10 +77,12 @@ async function syncTable(tableId: string, def: TableDef) {
     const page = await fetchPage(tableId, offset);
     for (const rec of page.records) {
       const data = toRow(rec, def);
+      const update = { ...data };
+      for (const f of ERP_OWNED_FIELDS[def.model] ?? []) delete update[f];
       await delegate(def.model).upsert({
         where: { airtableId: rec.id },
         create: { airtableId: rec.id, ...data },
-        update: data,
+        update,
       });
       upserted++;
     }

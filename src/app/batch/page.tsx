@@ -101,6 +101,11 @@ export default async function BatchPage({
     try { [mixerCycles, silos, wrongBatch, mayFix, canManage, sharedMix, split, rmPending] = await Promise.all([getMixerCycles(query, mixScope), getSiloBags(query, mixScope), detectWrongBatch(query), canRectify(), isManager(), detectSharedMixRun(query, data.family), confirmedSplitAllocation(query), pendingRmAllocation(query)]); } catch { /* ignore */ }
   }
 
+  // The split view takes over ONLY when its own figure is computable — one provenance
+  // everywhere. Half-switched pages (allocated Mix KPI beside a label-scoped pill)
+  // would be worse than either view alone.
+  const splitView = split && split.wastagePct != null ? split : null;
+
   // "2 cm 589 · 3 cm 69" for a family chip — biggest first, unrecorded slabs shown last so
   // the parts always add up to the chip's slab count.
   const thickMix = (key: string): string => {
@@ -217,8 +222,8 @@ export default async function BatchPage({
             {data.slabAudit.hasIssues && <Badge tone="red">⚠ Slab discrepancies</Badge>}
             {unbacked && <Badge tone="red">⚠ Unbacked RM — silo/tank fill pending, auto-links on fill</Badge>}
             {rmPending > 0 && <Badge tone="amber">⚠ {rmPending} cycle(s) with grit/filler not yet deducted — re-linking now</Badge>}
-            {split && split.wastagePct != null ? (
-              <WastagePill pct={split.wastagePct} kg={split.wastageKg} mixWeight={split.allocKg} slabWeight={split.slabKg} />
+            {splitView ? (
+              <WastagePill pct={splitView.wastagePct as number} kg={splitView.wastageKg} mixWeight={splitView.allocKg} slabWeight={splitView.slabKg} />
             ) : (data.wastagePct != null && !data.family.mixFamilyWide && (
               <WastagePill pct={data.wastagePct} kg={data.wastageKg} mixWeight={data.totalMixWeight} slabWeight={data.totalSlabWeight} />
             ))}
@@ -231,11 +236,11 @@ export default async function BatchPage({
           {/* A confirmed split makes per-batch material knowable again: each shared cycle's
               kg divided by slab-mass share. Reads only what the confirm wrote; Undo removes
               the links and this line (and the figures above) fall back on their own. */}
-          {split && (
+          {splitView && (
             <p className="text-xs text-gray-500">
               Mix weight and wastage are this batch&apos;s share of the <b>confirmed shared-mix split</b> with{" "}
-              {split.group.slice(1).join(", ")} ({split.cycles} shared cycles
-              {split.perBatch.length > 1 ? `; ${split.perBatch.map((b) => `${b.key} ${b.wastagePct == null ? "n/a" : b.wastagePct.toFixed(1) + "%"}`).join(" · ")}` : ""}) —{" "}
+              {splitView.group.slice(1).join(", ")} ({splitView.cycles} shared cycles · {Math.round(splitView.coverage * 100)}% of this batch&apos;s line-head rows linked
+              {splitView.perBatch.length > 1 ? `; ${splitView.perBatch.map((b) => `${b.key} ${b.wastagePct == null ? "n/a" : b.wastagePct.toFixed(1) + "%"}`).join(" · ")}` : ""}) —{" "}
               <a href="#rect-history" className="underline decoration-dotted underline-offset-2 hover:text-brand">rectification history</a> has the confirm and its Undo.
             </p>
           )}
@@ -311,7 +316,7 @@ export default async function BatchPage({
           )}
 
           {/* One mixer run feeding several line batches — evidence only, needs confirming */}
-          {sharedMix && <SharedMixNotice r={sharedMix} mayFix={mayFix} batch={query ?? ""} split={!!split} />}
+          {sharedMix && <SharedMixNotice r={sharedMix} mayFix={mayFix} batch={query ?? ""} split={!!splitView} />}
 
           {boundaryGroups.length > 0 && (
             <WrongBatchFix groups={boundaryGroups} mayEdit={mayFix} viewedBatch={query ?? ""} expectedWith={sharedMix?.partners.join(", ") ?? ""} />
@@ -427,10 +432,10 @@ export default async function BatchPage({
               <Kpi label="Design" value={data.design.primary ?? "—"} sub={data.design.discrepancy ? `${data.design.designs.length} conflicting` : "single design"} />
             </Link>
             <Link href={slab("mixer")} className="block h-full rounded-xl transition hover:ring-2 hover:ring-brand/30">
-              <Kpi label="Mix weight (kg)" value={fmt(split ? split.allocKg : data.totalMixWeight)} sub={split ? `share of ${split.cycles} shared cycles — confirmed split` : data.family.mixFamilyWide ? `${data.counts.mixer} mixer cycles · whole family` : `${data.counts.mixer} mixer cycles`} />
+              <Kpi label="Mix weight (kg)" value={fmt(splitView ? splitView.allocKg : data.totalMixWeight)} sub={splitView ? `share of ${splitView.cycles} shared cycles — confirmed split` : data.family.mixFamilyWide ? `${data.counts.mixer} mixer cycles · whole family` : `${data.counts.mixer} mixer cycles`} />
             </Link>
             <Link href={slab("press")} className="block h-full rounded-xl transition hover:ring-2 hover:ring-brand/30">
-              <Kpi label="Slab weight (kg)" value={fmt(data.totalSlabWeight)} sub={split ? `wastage ${fmt(split.wastageKg)} kg — from confirmed split` : data.family.mixFamilyWide ? "wastage n/a — mix is family-wide" : `wastage ${fmt(data.wastageKg)} kg`} />
+              <Kpi label="Slab weight (kg)" value={fmt(data.totalSlabWeight)} sub={splitView ? `press-label total · wastage ${fmt(splitView.wastageKg)} kg from confirmed split` : data.family.mixFamilyWide ? "wastage n/a — mix is family-wide" : `wastage ${fmt(data.wastageKg)} kg`} />
             </Link>
           </div>
 

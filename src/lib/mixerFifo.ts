@@ -354,16 +354,29 @@ export async function confirmedSplitAllocation(batchRaw: string): Promise<SplitA
       if (!t || (linkedBy.get(b) ?? 0) / t < COVERAGE_MIN) return null;
     }
 
-    // 4) provenance: a confirmed, not-undone split — legacy Airtable links don't count
-    const act: any = await db.actionLog.findFirst({
+    // 4) provenance: a confirmed, not-undone split FOR THIS GROUP. Matching on batchKey
+    // alone would let an unrelated split logged under a member batch bless figures built
+    // from legacy Airtable links — the entry's own recorded group must equal ours.
+    const acts: any[] = await db.actionLog.findMany({
       where: { kind: "mixLink", undone: false, batchKey: { in: groupKeys } },
       orderBy: { createdAt: "desc" },
-      select: { createdAt: true, actor: true },
+      take: 10,
+      select: { createdAt: true, actor: true, payload: true },
     });
+    const sameSet = (a: unknown): boolean => {
+      if (!Array.isArray(a)) return false;
+      const g = a.map(String);
+      return g.length === groupKeys.length && groupKeys.every((k) => g.includes(k));
+    };
+    const act = acts.find((e) => sameSet(e.payload?.group));
     if (!act) return null;
 
-    // 5) the cycles' kg, weighed exactly as the evidence panel and the split weighed them
+    // 5) the cycles' kg, weighed exactly as the evidence panel and the split weighed them.
+    // Every linked cycle must still exist: a dangling link (deleted cycle row) would
+    // allocate 0 kg while its slabs still weigh in, silently deflating the figure —
+    // even below zero. That state needs eyes, not arithmetic.
     const cyc: any[] = await db.mixerCycle.findMany({ where: { airtableId: { in: aids } }, select: { ...W_SELECT, airtableId: true } });
+    if (cyc.length !== aids.length) return null;
     const kgByAid = new Map<string, number>(cyc.map((c) => [String(c.airtableId), cycleKg(c)]));
 
     // 6) slab masses: press weight by slab number, median fallback — the same rule the
