@@ -71,12 +71,14 @@ export interface SharedMixReport {
 }
 
 // Same weight rule the batch page uses (erp.ts), so the kg here are built the same way.
-const W_SELECT: Record<string, boolean> = (() => {
+// Exported for lib/mixerFifo — the confirm-and-split must weigh cycles EXACTLY as the
+// evidence panel did, or the split would apportion a different total than was confirmed.
+export const W_SELECT: Record<string, boolean> = (() => {
   const o: Record<string, boolean> = { batchKey: true, totalCycleWeight: true, mixerStartTime: true, mixerEndTime: true };
   for (let x = 1; x <= 4; x++) { for (let g = 1; g <= 5; g++) o[`m${x}W${g}`] = true; o[`m${x}FW`] = true; o[`m${x}RW`] = true; }
   return o;
 })();
-function cycleKg(m: Record<string, unknown>): number {
+export function cycleKg(m: Record<string, unknown>): number {
   const t = num(m.totalCycleWeight);
   if (t) return t;
   let s = 0;

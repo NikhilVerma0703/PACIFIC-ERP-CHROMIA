@@ -287,7 +287,7 @@ export default async function BatchPage({
           )}
 
           {/* One mixer run feeding several line batches — evidence only, needs confirming */}
-          {sharedMix && <SharedMixNotice r={sharedMix} />}
+          {sharedMix && <SharedMixNotice r={sharedMix} mayFix={mayFix} batch={query ?? ""} />}
 
           {boundaryGroups.length > 0 && (
             <WrongBatchFix groups={boundaryGroups} mayEdit={mayFix} viewedBatch={query ?? ""} expectedWith={sharedMix?.partners.join(", ") ?? ""} />

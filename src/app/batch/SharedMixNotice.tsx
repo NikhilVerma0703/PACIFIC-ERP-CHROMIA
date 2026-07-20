@@ -3,6 +3,7 @@
 // re-allocated until the production manager confirms, the same way a design fix works.
 // Every sentence here must be backed by something the detector actually computed.
 import type { SharedMixReport } from "@/lib/mixerSharing";
+import { ConfirmMixSplit } from "./ConfirmMixSplit";
 
 const kg = (n: number) => Math.round(n).toLocaleString("en-IN");
 const pc = (n: number | null) => (n == null ? "not computable" : `${n.toFixed(1)}%`);
@@ -16,7 +17,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-export function SharedMixNotice({ r }: { r: SharedMixReport }) {
+export function SharedMixNotice({ r, mayFix = false, batch = "" }: { r: SharedMixReport; mayFix?: boolean; batch?: string }) {
   const others = r.partners.join(", ");
   const all = r.partners.length === 1 ? "both" : `all ${r.partners.length + 1}`;
   const preview = r.runs.slice(0, 10).map((x) => `${x.batch}×${x.n}`).join(" · ");
@@ -78,6 +79,10 @@ export function SharedMixNotice({ r }: { r: SharedMixReport }) {
         <b>Nothing has been changed.</b> Confirm with the production manager that these batches came off one mix
         before the cycles are split across them — the same check you do for a design.
       </p>
+
+      {/* The split itself is only offered on strong evidence, to people who may rectify.
+          It re-derives everything server-side — this component just carries the batch. */}
+      {r.confident && mayFix && batch && <ConfirmMixSplit batch={batch} />}
     </div>
   );
 }

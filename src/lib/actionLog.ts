@@ -8,7 +8,7 @@ import { autolinkFinishedSlabFromQc } from "@/lib/inventory/finishedSlab";
 
 const log = () => (prisma as any).actionLog;
 
-export type ActionKind = "create" | "delete" | "designApply" | "rangeConfirm" | "rangeAdd" | "rangeRemove" | "edit";
+export type ActionKind = "create" | "delete" | "designApply" | "rangeConfirm" | "rangeAdd" | "rangeRemove" | "edit" | "mixLink";
 
 export interface LogInput {
   kind: ActionKind;
@@ -38,6 +38,23 @@ export async function logAction(input: LogInput): Promise<void> {
   } catch {
     /* logging is best-effort */
   }
+}
+
+/** Like logAction but inside the CALLER'S transaction, and NOT best-effort: a write
+ *  that promises to be undoable must not outlive its undo trail, so if this entry
+ *  can't be created the whole transaction rolls back with it. */
+export async function logActionTx(tx: any, input: LogInput): Promise<void> {
+  const u = await currentUser();
+  await tx.actionLog.create({
+    data: {
+      kind: input.kind,
+      summary: input.summary,
+      batchKey: input.batchKey ?? null,
+      model: input.model ?? null,
+      payload: input.payload,
+      actor: (u as any)?.email ?? (u as any)?.name ?? null,
+    },
+  });
 }
 
 export interface UndoableInfo { id: string; summary: string; kind: string; createdAt: string; actor: string | null }
@@ -96,6 +113,22 @@ async function reverse(row: any): Promise<void> {
     }
     for (const g of groups.values()) {
       await delegateOf(g.model).updateMany({ where: { id: { in: g.ids } }, data: { [g.field]: g.old } });
+    }
+  } else if (row.kind === "mixLink") {
+    // payload: { entries: [{ model, id, old: string[] }] } -> restore the prior cycle links.
+    // NOTE: any kind not in undoLastAction's notIn list reaches here, and an unmatched kind
+    // would silently "undo" nothing while still being marked undone — so a new reversible
+    // kind MUST get a branch. Grouped by identical prior value (almost always []), so a
+    // whole split reverses in a couple of updateMany calls.
+    const groups = new Map<string, { model: string; old: string[]; ids: string[] }>();
+    for (const e of (p.entries ?? [])) {
+      const old: string[] = Array.isArray(e.old) ? e.old : [];
+      const k = `${e.model}::${JSON.stringify(old)}`;
+      if (!groups.has(k)) groups.set(k, { model: e.model, old, ids: [] });
+      groups.get(k)!.ids.push(e.id);
+    }
+    for (const g of groups.values()) {
+      await delegateOf(g.model).updateMany({ where: { id: { in: g.ids } }, data: { mixerCycleIds: g.old } });
     }
   }
 }
