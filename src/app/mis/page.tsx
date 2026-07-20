@@ -23,7 +23,11 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
   try { r = await getDowntimeReport({ from, to, batch: batch || undefined, type: sp.type }); }
   catch { error = "Could not read the MIS log."; }
   const respMap = r ? await getDowntimeResponses(r.incidents.map((i) => i.id)) : null;
-  const canRespond = await canRespondDowntime();
+  // null with incidents present = the LOOKUP failed (not "nobody responded"). Show the
+  // saved-response column as unknown and disable responding for this load — a fresh save
+  // against an unseen earlier response would overwrite it blind.
+  const respFailed = !!r && r.incidents.length > 0 && respMap === null;
+  const canRespond = (await canRespondDowntime()) && !respFailed;
   const lastShift = await getLastShiftReport();
 
   // link to this page preserving the active filters, with overrides
@@ -236,6 +240,11 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
                 <a href={exportHref} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">↓ Download (Excel)</a>
               )}
             </div>
+            {respFailed && (
+              <p className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                ⚠ Saved maintenance responses could not be loaded just now — the column below is <b>unknown</b>, not empty. Reload the page; responding is disabled meanwhile so an earlier response can&apos;t be overwritten unseen.
+              </p>
+            )}
             {/* Sub-filter: narrow the log to one delay type (preserves the date/batch view) */}
             <div className="mb-3 flex flex-wrap items-center gap-1.5">
               <span className="mr-1 text-xs font-medium uppercase tracking-wider text-gray-400">Type</span>

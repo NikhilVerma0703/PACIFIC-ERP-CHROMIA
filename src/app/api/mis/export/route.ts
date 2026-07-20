@@ -5,7 +5,7 @@
 // Audience = whoever can see the /mis page: every production-side role + Maintenance + Admin.
 // Commercial and Sales are redirected away from /mis by middleware but can still reach /api,
 // so they are excluded explicitly here.
-import { getDowntimeReport, fmtDur } from "@/lib/downtime";
+import { getDowntimeReport, fmtDur, DELAY_FIELDS, DELAY_LABEL } from "@/lib/downtime";
 import { getDowntimeResponses } from "@/lib/downtimeResponse";
 import { currentRole } from "@/lib/rbac";
 import * as XLSX from "xlsx";
@@ -24,15 +24,28 @@ export async function GET(request: Request) {
 
     const r = await getDowntimeReport({ from, to, batch, type });
     const resp = await getDowntimeResponses(r.incidents.map((i) => i.id));
+    // null = the response lookup failed. Refuse rather than export a file whose
+    // "Maint." columns read as "nobody responded" — that file outlives the glitch.
+    if (resp === null) return Response.json({ error: "Could not load the maintenance responses — try the download again." }, { status: 503 });
 
+    // Same per-type view the page shows: under a type filter, minutes/reasons are THAT
+    // type's share (the row set is already filtered); in the All view a multi-type row
+    // spells out each type's duration. The file must match the screen it came from.
     const header = ["Date", "Hour", "Batch", "Down (min)", "Down", "Over 60m", "Type(s)", "Reason(s)", "Details", "RCA", "Action", "Spares", "Electrical incharge", "Mechanical incharge", "Maint. status", "Maint. note", "Responded by", "Responded at"];
     const data: (string | number)[][] = [header];
     for (const i of r.incidents) {
       const m = resp.get(i.id);
+      const mins = r.typeFilter ? (i.minutesByType[r.typeFilter] ?? 0) : i.minutes;
+      const types = r.typeFilter
+        ? (DELAY_LABEL[r.typeFilter] ?? "")
+        : Object.keys(i.minutesByType).length > 1
+          ? DELAY_FIELDS.filter((d) => i.minutesByType[d.key]).map((d) => `${d.label} ${fmtDur(i.minutesByType[d.key])}`).join(" · ")
+          : i.types.join(", ");
+      const reasons = (r.typeFilter ? (i.reasonsByType[r.typeFilter] ?? []) : i.reasons).join(", ");
       data.push([
         i.date ?? "", i.hour ?? "", i.batch ?? "",
-        i.minutes || 0, i.minutes > 0 ? fmtDur(i.minutes) : "", i.over ? "YES" : "",
-        i.types.join(", "), i.reasons.join(", "),
+        mins || 0, mins > 0 ? fmtDur(mins) : "", i.over ? "YES" : "",
+        types, reasons,
         i.details ?? "", i.rca ?? "", i.action ?? "", i.spares ?? "",
         i.elecIncharge ?? "", i.mechIncharge ?? "",
         m?.status ?? "", m?.note ?? "", m?.by ?? "", m?.at ?? "",

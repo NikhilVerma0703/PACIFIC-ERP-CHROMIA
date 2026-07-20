@@ -14,8 +14,13 @@ export type DowntimeStatus = (typeof DOWNTIME_STATUSES)[number];
 
 export interface DowntimeResp { status: string; note: string | null; by: string | null; at: string | null; }
 
-/** Responses keyed by MIS row id, for the given incident ids. */
-export async function getDowntimeResponses(misIds: string[]): Promise<Map<string, DowntimeResp>> {
+/** Responses keyed by MIS row id, for the given incident ids.
+ *  Returns NULL when the lookup itself failed (transient DB error): a silent empty map
+ *  here renders every saved response as "not responded" — and because the respond form
+ *  then offers a fresh save, one flaky read can get a Resolved+note upserted over with a
+ *  blank Pending. Callers must treat null as "unknown", not "none". A missing table
+ *  (fresh deploy, migration not run) still reads as genuinely empty — feature off. */
+export async function getDowntimeResponses(misIds: string[]): Promise<Map<string, DowntimeResp> | null> {
   const out = new Map<string, DowntimeResp>();
   const ids = [...new Set(misIds.filter(Boolean))];
   if (!ids.length) return out;
@@ -31,7 +36,11 @@ export async function getDowntimeResponses(misIds: string[]): Promise<Map<string
         at: r.updated_at ? new Date(r.updated_at).toISOString().slice(0, 16).replace("T", " ") : null,
       });
     }
-  } catch { /* downtime_response table not created yet */ }
+  } catch (e) {
+    if (/does not exist/i.test(String((e as Error)?.message ?? e))) return out; // table not created yet
+    console.error("getDowntimeResponses failed:", e);
+    return null;
+  }
   return out;
 }
 
