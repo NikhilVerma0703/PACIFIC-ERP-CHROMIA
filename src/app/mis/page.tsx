@@ -257,9 +257,13 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
                         <td className="py-2 pr-3 whitespace-nowrap text-gray-500">{i.date ?? "—"}</td>
                         <td className="py-2 pr-3 whitespace-nowrap text-gray-500">{i.hour ?? "—"}</td>
                         <td className="py-2 pr-3 whitespace-nowrap text-gray-700">{i.batch ? <Link href={`/batch?b=${encodeURIComponent(i.batch)}`} className="text-brand hover:underline">{i.batch}</Link> : "—"}</td>
-                        <td className={`py-2 pr-3 whitespace-nowrap font-medium ${i.over ? "text-red-600" : "text-gray-900"}`} title={i.over ? "Over 60 min in one hour — entry error" : undefined}>{i.minutes > 0 ? fmtDur(i.minutes) : "—"}{i.over ? " ⚠" : ""}</td>
-                        <td className="py-2 pr-3 text-gray-600">{i.types.join(", ") || "—"}</td>
-                        <td className="py-2 pr-3 text-gray-600">{i.reasons.join(", ") || "—"}</td>
+                        <td className={`py-2 pr-3 whitespace-nowrap font-medium ${i.over ? "text-red-600" : "text-gray-900"}`} title={i.over ? "Over 60 min in one hour — entry error" : undefined}>{(() => { const m = r.typeFilter ? i.minutesByType[r.typeFilter] ?? 0 : i.minutes; return m > 0 ? fmtDur(m) : "—"; })()}{i.over ? " ⚠" : ""}</td>
+                        <td className="py-2 pr-3 text-gray-600">{r.typeFilter
+                          ? (DELAY_FIELDS.find((d) => d.key === r.typeFilter)?.label ?? "—")
+                          : Object.keys(i.minutesByType).length > 1
+                            ? DELAY_FIELDS.filter((d) => i.minutesByType[d.key]).map((d) => `${d.label} ${fmtDur(i.minutesByType[d.key])}`).join(" · ")
+                            : i.types.join(", ") || "—"}</td>
+                        <td className="py-2 pr-3 text-gray-600">{(r.typeFilter ? i.reasonsByType[r.typeFilter] ?? [] : i.reasons).join(", ") || "—"}</td>
                         <td className="py-2 pr-3 text-gray-600">{[i.details, i.rca ? `RCA ${i.rca}` : null, i.action, i.spares ? `spares: ${i.spares}` : null].filter(Boolean).join(" · ") || "—"}</td>
                         <td className="py-2 pr-3 whitespace-nowrap text-gray-700">{i.elecIncharge || "—"}</td>
                         <td className="py-2 pr-3 whitespace-nowrap text-gray-700">{i.mechIncharge || "—"}</td>

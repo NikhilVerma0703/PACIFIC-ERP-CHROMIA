@@ -38,6 +38,7 @@ export interface IncidentRow {
   minutes: number; over: boolean; typeKeys: string[]; types: string[]; reasons: string[];
   details: string | null; rca: string | null; action: string | null; spares: string | null;
   elecIncharge: string | null; mechIncharge: string | null;
+  minutesByType: Record<string, number>; reasonsByType: Record<string, string[]>;
 }
 export interface DowntimeReport {
   from: string; to: string; batch: string | null; typeFilter: string | null;
@@ -51,6 +52,16 @@ export interface DowntimeReport {
 
 const r0 = (n: number) => Math.round(n);
 const dayKey = (d: any) => new Date(d).toISOString().slice(0, 10);
+// Reasons are one multiselect, not tagged to a delay type — classify by keyword so a
+// type-filtered row can show only ITS reasons (e.g. breakdown: the machine failures,
+// not MATERIAL DELAY). Unmatched reasons fall to "process".
+export const classifyReason = (r: string): string => {
+  const u = r.toUpperCase();
+  if (u.includes("CLEANING")) return "cleaning";
+  if (u.includes("POWER SHUTDOWN") || u.includes("POWER OUT")) return "powerout";
+  if (u.includes("ELECTRICAL") || u.includes("MECHANICAL") || u.includes("FAULT ALARM") || u.includes("HMI") || u.includes("BELT DAMAGE")) return "breakdown";
+  return "process";
+};
 const isRobo = (t: unknown) => String(t ?? "").trim().toLowerCase() === "robo";
 
 export async function getDowntimeReport(opts: { from?: string; to?: string; batch?: string; type?: string }): Promise<DowntimeReport> {
@@ -92,9 +103,10 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
     if (day) { const e = dayRobo.get(day) ?? { robo: 0, other: 0 }; if (isRobo(r.productionType)) e.robo++; else e.other++; dayRobo.set(day, e); }
 
     let rowMin = 0; const typeKeys: string[] = []; const types: string[] = [];
+    const minutesByType: Record<string, number> = {};
     DELAY_FIELDS.forEach((d, i) => {
       const v = Number(r[d.col] ?? 0);
-      if (v > 0) { byType[i].minutes += v; byType[i].incidents++; rowMin += v; typeKeys.push(d.key); types.push(d.label); }
+      if (v > 0) { byType[i].minutes += v; byType[i].incidents++; rowMin += v; typeKeys.push(d.key); types.push(d.label); minutesByType[d.key] = r0(v); }
     });
     const cleanMin = Number(r.cleaningDelayDurationMinutes ?? 0) || 0;
     const otherMin = Math.max(0, rowMin - cleanMin);
@@ -108,6 +120,8 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
     const reasons: string[] = Array.isArray(r.reasonForDeviation)
       ? r.reasonForDeviation.filter((x: any) => x && String(x).toUpperCase() !== "NO DEVIATION")
       : [];
+    const reasonsByType: Record<string, string[]> = {};
+    for (const reason of reasons) (reasonsByType[classifyReason(reason)] ??= []).push(reason);
     for (const reason of reasons) {
       const e = reasonMap.get(reason) ?? { reason, incidents: 0, minutes: 0 };
       e.incidents++; e.minutes += rowMin; reasonMap.set(reason, e);
@@ -122,6 +136,7 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
         minutes: r0(rowMin), over: rowMin > 60, typeKeys, types, reasons,
         details: r.details ?? null, rca: r.rcaNo ?? null, action: r.actionTaken ?? null, spares: r.sparesUsed ?? null,
         elecIncharge: r.electricalInchargeName ?? null, mechIncharge: r.mechanicalInchargeName ?? null,
+        minutesByType, reasonsByType,
       });
     }
   }
