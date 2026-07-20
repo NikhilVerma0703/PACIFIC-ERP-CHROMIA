@@ -44,6 +44,7 @@ export interface DowntimeReport {
   rows: number; hoursLogged: number; totalMinutes: number; overCap: number;
   byType: DelayType[]; byReason: ReasonRow[]; trend: TrendPoint[]; byHour: HourRow[]; incidents: IncidentRow[];
   actualSlabs: number; target: number; achievable: number; lost: number; designs: DesignRow[];
+  misFallbackSlabs: number; misFallbackDays: number; // days with MIS hours but no press rows yet (entry lag)
   daysCounted: number; productiveHours: number; roboHours: number; normalHours: number;
   pressBatches: number; misBatches: number; unloggedBatches: number; unloggedBatchList: string[];
 }
@@ -67,7 +68,7 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   const typeFilter = DELAY_FIELDS.some((d) => d.key === opts.type) ? opts.type! : null;
 
   const misWhere: any = batch ? { batchKey: batch } : { date: { gte: from, lte: toEnd } };
-  const sel: any = { id: true, date: true, hour: true, batch: true, batchKey: true, productionType: true, reasonForDeviation: true, details: true, rcaNo: true, actionTaken: true, sparesUsed: true, anyBreakdownYesNo: true, electricalInchargeName: true, mechanicalInchargeName: true };
+  const sel: any = { id: true, date: true, hour: true, batch: true, batchKey: true, productionType: true, slabsPerHourActual: true, design: true, reasonForDeviation: true, details: true, rcaNo: true, actionTaken: true, sparesUsed: true, anyBreakdownYesNo: true, electricalInchargeName: true, mechanicalInchargeName: true };
   for (const d of DELAY_FIELDS) sel[d.col] = true;
   const pressWhere: any = batch ? { batchKey: batch } : { date: { gte: from, lte: toEnd } };
 
@@ -140,8 +141,37 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
     if (!designMap.has(dn)) designMap.set(dn, new Set());
     designMap.get(dn)!.add(n);
   }
-  const actualSlabs = slabSet.size;
-  const designs = [...designMap.entries()].map(([design, set]) => ({ design, slabs: set.size })).sort((a, b) => b.slabs - a.slabs);
+  // ---- MIS fallback for days press hasn't been entered yet ----
+  // Press entry lags production by ~a day (measured avg ~8h, max ~4 days), so an
+  // in-progress "Today" has NO press rows dated in-range: actual reads 0 and "lost"
+  // claims the whole day. For days that have MIS hours but no press rows, use the
+  // operator-typed MIS hourly actuals as a provisional figure — the card says so —
+  // and the day switches to the press count automatically once entries land.
+  // Skipped in batch-filter mode, where MIS spans days press legitimately lacks.
+  let misFallbackSlabs = 0;
+  const misFallbackDaySet = new Set<string>();
+  const misDesign = new Map<string, number>();
+  if (!batch) {
+    for (const r of rows) {
+      if (!r.date) continue;
+      const day = dayKey(r.date);
+      if (pressDaySet.has(day)) continue;
+      const n = Number(r.slabsPerHourActual ?? 0) || 0;
+      if (n <= 0) continue;
+      misFallbackSlabs += n;
+      misFallbackDaySet.add(day);
+      const dn = (r.design ?? "").toString().trim() || "—";
+      misDesign.set(dn, (misDesign.get(dn) ?? 0) + n);
+    }
+  }
+  misFallbackSlabs = r0(misFallbackSlabs);
+  const actualSlabs = slabSet.size + misFallbackSlabs;
+  const designs = [...designMap.entries()].map(([design, set]) => ({ design, slabs: set.size }));
+  for (const [design, slabs] of misDesign) {
+    const e = designs.find((d) => d.design === design);
+    if (e) e.slabs += r0(slabs); else designs.push({ design, slabs: r0(slabs) });
+  }
+  designs.sort((a, b) => b.slabs - a.slabs);
 
   // ---- capacity target + achievable ----
   // Rate is PER HOUR by what ran (robo 12/hr, else 24/hr), so a day that switches
@@ -202,6 +232,7 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
     rows: rows.length, hoursLogged, totalMinutes: r0(totalMinutes), overCap,
     byType, byReason, trend, byHour, incidents: shown.slice(0, 300),
     actualSlabs, target, achievable, lost, designs, daysCounted, productiveHours, roboHours, normalHours,
+    misFallbackSlabs, misFallbackDays: misFallbackDaySet.size,
     pressBatches: pressBatchSet.size, misBatches: misBatchSet.size, unloggedBatches: unloggedBatchList.length, unloggedBatchList: unloggedBatchList.slice(0, 60),
   };
 }

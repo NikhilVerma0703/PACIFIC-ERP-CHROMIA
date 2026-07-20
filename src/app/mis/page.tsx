@@ -130,7 +130,7 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
           <div>
             <H2>Output</H2>
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-              <Kpi label="Slabs made (actual)" value={fmt(r.actualSlabs)} sub="distinct slabs pressed" />
+              <Kpi label="Slabs made (actual)" value={fmt(r.actualSlabs)} sub={r.misFallbackSlabs > 0 ? `incl. ${fmt(r.misFallbackSlabs)} from MIS hourly log — press entry pending` : "distinct slabs pressed"} />
               <Kpi label="Achievable" value={fmt(r.achievable)} sub="target − downtime" />
               <Kpi label="Target" value={fmt(r.target)} sub={`24/12 per hr × ${r.productiveHours}h productive`} />
               <Kpi label="Lost to downtime" value={fmt(r.lost)} sub="achievable - actual" className={r.lost > 0 ? "ring-1 ring-amber-300" : ""} />
