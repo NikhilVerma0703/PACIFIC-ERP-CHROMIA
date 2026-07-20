@@ -37,7 +37,11 @@ export async function getDowntimeResponses(misIds: string[]): Promise<Map<string
       });
     }
   } catch (e) {
-    if (/does not exist/i.test(String((e as Error)?.message ?? e))) return out; // table not created yet
+    // Only a MISSING TABLE reads as feature-off; a broader match (e.g. a dropped column)
+    // would masquerade schema drift as "nobody responded" and reopen the blind-overwrite
+    // hazard this null exists to close.
+    const msg = String((e as Error)?.message ?? e);
+    if ((e as any)?.meta?.code === "42P01" || /relation "(?:public\.)?downtime_response" does not exist/i.test(msg)) return out;
     console.error("getDowntimeResponses failed:", e);
     return null;
   }

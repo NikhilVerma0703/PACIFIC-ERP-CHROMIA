@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { Card, H2, Kpi, Empty, Badge, fmt } from "@/components/ui";
-import { getDowntimeReport, fmtDur, DELAY_FIELDS } from "@/lib/downtime";
+import { getDowntimeReport, fmtDur } from "@/lib/downtime";
 import { getDowntimeResponses } from "@/lib/downtimeResponse";
 import { canRespondDowntime } from "@/lib/rbac";
-import { DowntimeRespond } from "@/components/DowntimeRespond";
+import { DowntimeLogCard } from "./DowntimeLogCard";
 import { getLastShiftReport } from "@/lib/misShift";
 
 export const dynamic = "force-dynamic";
@@ -28,6 +28,9 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
   // against an unseen earlier response would overwrite it blind.
   const respFailed = !!r && r.incidents.length > 0 && respMap === null;
   const canRespond = (await canRespondDowntime()) && !respFailed;
+  // Map -> plain object: props crossing into the client log card must be serializable.
+  const responses: Record<string, import("@/lib/downtimeResponse").DowntimeResp> = {};
+  if (respMap) for (const [k, v] of respMap) responses[k] = v;
   const lastShift = await getLastShiftReport();
 
   // link to this page preserving the active filters, with overrides
@@ -53,15 +56,7 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
     { label: "This month", f: mStart, t: today },
   ];
   const presetHref = (f: string, t: string) => { const q = new URLSearchParams(); q.set("from", f); q.set("to", t); if (batch) q.set("b", batch); return `/mis?${q.toString()}`; };
-  // Excel export of the breakdown log — SAME filters as the current view (incl. any type filter)
-  const exportHref = (() => {
-    const q = new URLSearchParams();
-    if (from) q.set("from", from);
-    if (to) q.set("to", to);
-    if (batch) q.set("b", batch);
-    if (r?.typeFilter) q.set("type", r.typeFilter);
-    return `/api/mis/export?${q.toString()}`;
-  })();
+  // (The Excel export link lives in DowntimeLogCard now, so it follows the client-side type filter.)
 
   const maxReason = r ? Math.max(1, ...r.byReason.map((x) => x.minutes)) : 1;
   const maxTrend = r ? Math.max(1, ...r.trend.map((x) => x.minutes)) : 1;
@@ -233,57 +228,17 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
             )}
           </Card>
 
-          <Card>
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <H2>Breakdown &amp; deviation log · {r.incidents.length}</H2>
-              {r.incidents.length > 0 && (
-                <a href={exportHref} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">↓ Download (Excel)</a>
-              )}
-            </div>
-            {respFailed && (
-              <p className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                ⚠ Saved maintenance responses could not be loaded just now — the column below is <b>unknown</b>, not empty. Reload the page; responding is disabled meanwhile so an earlier response can&apos;t be overwritten unseen.
-              </p>
-            )}
-            {/* Sub-filter: narrow the log to one delay type (preserves the date/batch view) */}
-            <div className="mb-3 flex flex-wrap items-center gap-1.5">
-              <span className="mr-1 text-xs font-medium uppercase tracking-wider text-gray-400">Type</span>
-              <Link href={link({ type: null })} scroll={false} className={`rounded-full border px-3 py-1 text-xs font-medium transition ${!r.typeFilter ? "border-brand bg-brand text-white" : "border-gray-200 text-gray-600 hover:bg-gray-50"}`}>All</Link>
-              {DELAY_FIELDS.map((d) => (
-                <Link key={d.key} href={link({ type: d.key })} scroll={false} className={`rounded-full border px-3 py-1 text-xs font-medium transition ${r.typeFilter === d.key ? "border-brand bg-brand text-white" : "border-gray-200 text-gray-600 hover:bg-gray-50"}`}>{d.label}</Link>
-              ))}
-            </div>
-            {r.incidents.length === 0 ? <p className="text-sm text-gray-400">No incidents logged in this range.</p> : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead><tr className="text-left text-gray-500">
-                    <th className="py-2 pr-3">Date</th><th className="py-2 pr-3">Hour</th><th className="py-2 pr-3">Batch</th>
-                    <th className="py-2 pr-3">Down</th><th className="py-2 pr-3">Type</th><th className="py-2 pr-3">Reason(s)</th><th className="py-2 pr-3">Details / RCA / action</th><th className="py-2 pr-3">Electrical incharge</th><th className="py-2 pr-3">Mechanical incharge</th><th className="py-2">Maintenance response</th>
-                  </tr></thead>
-                  <tbody>
-                    {r.incidents.map((i, k) => (
-                      <tr key={k} className="border-t border-gray-100 align-top">
-                        <td className="py-2 pr-3 whitespace-nowrap text-gray-500">{i.date ?? "—"}</td>
-                        <td className="py-2 pr-3 whitespace-nowrap text-gray-500">{i.hour ?? "—"}</td>
-                        <td className="py-2 pr-3 whitespace-nowrap text-gray-700">{i.batch ? <Link href={`/batch?b=${encodeURIComponent(i.batch)}`} className="text-brand hover:underline">{i.batch}</Link> : "—"}</td>
-                        <td className={`py-2 pr-3 whitespace-nowrap font-medium ${i.over ? "text-red-600" : "text-gray-900"}`} title={i.over ? "Over 60 min in one hour — entry error" : undefined}>{(() => { const m = r.typeFilter ? i.minutesByType[r.typeFilter] ?? 0 : i.minutes; return m > 0 ? fmtDur(m) : "—"; })()}{i.over ? " ⚠" : ""}</td>
-                        <td className="py-2 pr-3 text-gray-600">{r.typeFilter
-                          ? (DELAY_FIELDS.find((d) => d.key === r.typeFilter)?.label ?? "—")
-                          : Object.keys(i.minutesByType).length > 1
-                            ? DELAY_FIELDS.filter((d) => i.minutesByType[d.key]).map((d) => `${d.label} ${fmtDur(i.minutesByType[d.key])}`).join(" · ")
-                            : i.types.join(", ") || "—"}</td>
-                        <td className="py-2 pr-3 text-gray-600">{(r.typeFilter ? i.reasonsByType[r.typeFilter] ?? [] : i.reasons).join(", ") || "—"}</td>
-                        <td className="py-2 pr-3 text-gray-600">{[i.details, i.rca ? `RCA ${i.rca}` : null, i.action, i.spares ? `spares: ${i.spares}` : null].filter(Boolean).join(" · ") || "—"}</td>
-                        <td className="py-2 pr-3 whitespace-nowrap text-gray-700">{i.elecIncharge || "—"}</td>
-                        <td className="py-2 pr-3 whitespace-nowrap text-gray-700">{i.mechIncharge || "—"}</td>
-                        <td className="py-2 align-top"><DowntimeRespond misId={i.id} canRespond={canRespond} status={respMap?.get(i.id)?.status ?? null} note={respMap?.get(i.id)?.note ?? null} by={respMap?.get(i.id)?.by ?? null} at={respMap?.get(i.id)?.at ?? null} /></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Card>
+          {/* Type filtering happens inside the card, client-side — a chip click must not
+              navigate (the searchParams change re-keys the segment, the root loading
+              skeleton swaps in, and the collapse throws the scroll to the top). */}
+          <DowntimeLogCard
+            incidents={r.incidents}
+            initialType={r.typeFilter}
+            from={from} to={to} batch={batch}
+            canRespond={canRespond}
+            respFailed={respFailed}
+            responses={responses}
+          />
         </div>
       )}
     </Shell>

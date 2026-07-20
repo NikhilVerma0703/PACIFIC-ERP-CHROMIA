@@ -20,13 +20,10 @@ export const ROBO_RATE = 12;         // slabs/hr (robo)
 export const HOURS_PER_DAY = 21;     // 24h - 3h planned cleaning
 export const CLEAN_BASELINE_MIN = (24 - HOURS_PER_DAY) * 60; // 180 min/day "free" cleaning
 
-export const DELAY_FIELDS = [
-  { key: "process", label: "Process delay", col: "processDelayDurationMinutes" },
-  { key: "cleaning", label: "Cleaning", col: "cleaningDelayDurationMinutes" },
-  { key: "breakdown", label: "Breakdown (mech/elec)", col: "breakdownDelayDurationMechanicalOrElectricalMinutes" },
-  { key: "powerout", label: "Power-out", col: "poweroutDelayDurationMinutes" },
-] as const;
-export const DELAY_LABEL: Record<string, string> = Object.fromEntries(DELAY_FIELDS.map((d) => [d.key, d.label]));
+// Constants/formatters live in downtimeShared (client-importable); re-exported here
+// so the existing server-side importers keep their import path.
+export { DELAY_FIELDS, DELAY_LABEL, fmtDur } from "@/lib/downtimeShared";
+import { DELAY_FIELDS } from "@/lib/downtimeShared";
 
 export interface DelayType { key: string; label: string; minutes: number; incidents: number; }
 export interface ReasonRow { reason: string; incidents: number; minutes: number; }
@@ -240,7 +237,11 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   const trend = [...trendMap.entries()].map(([day, m]) => ({ day, minutes: r0(m) })).sort((a, b) => a.day.localeCompare(b.day));
   const hourNum = (h: string) => { const m = h.match(/\d+/); return m ? parseInt(m[0], 10) : 99; };
   const byHour = [...hourMap.entries()].map(([hour, v]) => ({ hour, minutes: r0(v.minutes), incidents: v.incidents })).sort((a, b) => hourNum(a.hour) - hourNum(b.hour));
-  const shown = (typeFilter ? incidents.filter((i) => i.typeKeys.includes(typeFilter)) : incidents).sort((a, b) => (a.date ?? "").localeCompare(b.date ?? "") || hourNum(a.hour ?? "") - hourNum(b.hour ?? ""));
+  // Incidents are returned UNFILTERED by type: the log card filters client-side (a chip
+  // click must not navigate — a searchParams change re-keys the page segment, the root
+  // loading skeleton swaps in and the collapse throws the scroll to the top). The Excel
+  // export applies typeFilter itself, server-side, to match whatever view requested it.
+  const shown = incidents.sort((a, b) => (a.date ?? "").localeCompare(b.date ?? "") || hourNum(a.hour ?? "") - hourNum(b.hour ?? ""));
 
   return {
     from: fromStr, to: toStr, batch, typeFilter,
@@ -250,11 +251,4 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
     misFallbackSlabs, misFallbackDays: misFallbackDaySet.size,
     pressBatches: pressBatchSet.size, misBatches: misBatchSet.size, unloggedBatches: unloggedBatchList.length, unloggedBatchList: unloggedBatchList.slice(0, 60),
   };
-}
-
-/** "750 min" -> "12h 30m" */
-export function fmtDur(min: number): string {
-  const m = Math.max(0, Math.round(min));
-  const h = Math.floor(m / 60), mm = m % 60;
-  return h > 0 ? `${h}h ${mm}m` : `${mm}m`;
 }

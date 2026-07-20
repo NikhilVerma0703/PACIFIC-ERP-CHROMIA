@@ -33,7 +33,9 @@ export async function GET(request: Request) {
     // spells out each type's duration. The file must match the screen it came from.
     const header = ["Date", "Hour", "Batch", "Down (min)", "Down", "Over 60m", "Type(s)", "Reason(s)", "Details", "RCA", "Action", "Spares", "Electrical incharge", "Mechanical incharge", "Maint. status", "Maint. note", "Responded by", "Responded at"];
     const data: (string | number)[][] = [header];
-    for (const i of r.incidents) {
+    // incidents arrive unfiltered (the page filters client-side); apply the view's type here
+    const incidents = r.typeFilter ? r.incidents.filter((i) => i.typeKeys.includes(r.typeFilter as string)) : r.incidents;
+    for (const i of incidents) {
       const m = resp.get(i.id);
       const mins = r.typeFilter ? (i.minutesByType[r.typeFilter] ?? 0) : i.minutes;
       const types = r.typeFilter
