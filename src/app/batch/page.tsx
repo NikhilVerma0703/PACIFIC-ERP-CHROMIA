@@ -13,6 +13,8 @@ import { recentActions } from "@/lib/actionLog";
 import { detectWrongBatch, type WrongBatchGroup } from "@/lib/batchMismatch";
 import { detectSharedMixRun } from "@/lib/mixerSharing";
 import { confirmedSplitAllocation } from "@/lib/mixerFifo";
+import { pendingRmAllocation } from "@/app/batch/rmHealActions";
+import { AutoHealRm } from "./AutoHealRm";
 import { thicknessMixByBatch, type BatchMix } from "@/lib/slabThickness";
 import { WrongBatchFix } from "@/components/WrongBatchFix";
 import { SlabMismatchPill } from "./SlabMismatchPill";
@@ -82,6 +84,7 @@ export default async function BatchPage({
   let wrongBatch: Awaited<ReturnType<typeof detectWrongBatch>> | null = null;
   let sharedMix: Awaited<ReturnType<typeof detectSharedMixRun>> = null;
   let split: Awaited<ReturnType<typeof confirmedSplitAllocation>> = null;
+  let rmPending = 0;
   // Per-batch 2cm/3cm split for the family chips. Same resolver the production report and
   // the Telegram bot use, counted over each batch's PRESS slabs — so it adds up to the
   // slab count already shown on the chip.
@@ -95,7 +98,7 @@ export default async function BatchPage({
     if (data.family.keys.length > 1) {
       try { thickByBatch = await thicknessMixByBatch(data.family.keys); } catch { /* chips degrade to slab count only */ }
     }
-    try { [mixerCycles, silos, wrongBatch, mayFix, canManage, sharedMix, split] = await Promise.all([getMixerCycles(query, mixScope), getSiloBags(query, mixScope), detectWrongBatch(query), canRectify(), isManager(), detectSharedMixRun(query, data.family), confirmedSplitAllocation(query)]); } catch { /* ignore */ }
+    try { [mixerCycles, silos, wrongBatch, mayFix, canManage, sharedMix, split, rmPending] = await Promise.all([getMixerCycles(query, mixScope), getSiloBags(query, mixScope), detectWrongBatch(query), canRectify(), isManager(), detectSharedMixRun(query, data.family), confirmedSplitAllocation(query), pendingRmAllocation(query)]); } catch { /* ignore */ }
   }
 
   // "2 cm 589 · 3 cm 69" for a family chip — biggest first, unrecorded slabs shown last so
@@ -213,12 +216,17 @@ export default async function BatchPage({
             )}
             {data.slabAudit.hasIssues && <Badge tone="red">⚠ Slab discrepancies</Badge>}
             {unbacked && <Badge tone="red">⚠ Unbacked RM — silo/tank fill pending, auto-links on fill</Badge>}
+            {rmPending > 0 && <Badge tone="amber">⚠ {rmPending} cycle(s) with grit/filler not yet deducted — re-linking now</Badge>}
             {split && split.wastagePct != null ? (
               <WastagePill pct={split.wastagePct} kg={split.wastageKg} mixWeight={split.allocKg} slabWeight={split.slabKg} />
             ) : (data.wastagePct != null && !data.family.mixFamilyWide && (
               <WastagePill pct={data.wastagePct} kg={data.wastageKg} mixWeight={data.totalMixWeight} slabWeight={data.totalSlabWeight} />
             ))}
           </div>
+
+          {/* The batch report saw its own cycles with undeducted grit/filler: heal exactly
+              those, automatically — the Live Status sweep stays the global admin backstop. */}
+          {rmPending > 0 && <AutoHealRm batch={query ?? ""} pending={rmPending} />}
 
           {/* A confirmed split makes per-batch material knowable again: each shared cycle's
               kg divided by slab-mass share. Reads only what the confirm wrote; Undo removes
