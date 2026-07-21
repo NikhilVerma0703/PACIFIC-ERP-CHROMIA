@@ -221,7 +221,7 @@ export default async function BatchPage({
             )}
             {data.slabAudit.hasIssues && <Badge tone="red">⚠ Slab discrepancies</Badge>}
             {unbacked && <Badge tone="red">⚠ Unbacked RM — silo/tank fill pending, auto-links on fill</Badge>}
-            {rmPending > 0 && <Badge tone="amber">⚠ {rmPending} cycle(s) with grit/filler not yet deducted — re-linking now</Badge>}
+            {rmPending > 0 && <Badge tone="amber">⚠ {rmPending} cycle(s) with grit/filler not yet deducted — {mayFix ? "re-linking now" : "an incharge can re-link this"}</Badge>}
             {splitView ? (
               <WastagePill pct={splitView.wastagePct as number} kg={splitView.wastageKg} mixWeight={splitView.allocKg} slabWeight={splitView.slabKg} />
             ) : (data.wastagePct != null && !data.family.mixFamilyWide && (
@@ -230,8 +230,10 @@ export default async function BatchPage({
           </div>
 
           {/* The batch report saw its own cycles with undeducted grit/filler: heal exactly
-              those, automatically — the Live Status sweep stays the global admin backstop. */}
-          {rmPending > 0 && <AutoHealRm batch={query ?? ""} pending={rmPending} />}
+              those, automatically — the Live Status sweep stays the global admin backstop.
+              Only for someone who can actually rectify: healBatchRm now refuses anyone else,
+              so rendering it for a viewer would just announce a heal and then refuse it. */}
+          {rmPending > 0 && mayFix && <AutoHealRm batch={query ?? ""} pending={rmPending} />}
 
           {/* A confirmed split makes per-batch material knowable again: each shared cycle's
               kg divided by slab-mass share. Reads only what the confirm wrote; Undo removes

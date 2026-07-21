@@ -35,7 +35,7 @@ export default async function DesignFixPage({
   return (
     <Shell>
       <BackButton fallback={backHref} />
-      <h1 className="mb-4 text-xl font-semibold">Reconcile design — Batch {fix?.key ?? batch}</h1>
+      <h1 className="mb-4 text-xl font-semibold">Reconcile design — Batch {fix?.key || batch}</h1>
       {error ? (
         <Empty>{error}</Empty>
       ) : fix && fix.designs.length === 0 ? (
