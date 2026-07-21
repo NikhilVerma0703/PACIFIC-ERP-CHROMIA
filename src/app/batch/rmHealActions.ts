@@ -10,6 +10,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
+import { canRectify } from "@/lib/rbac";
+import { currentBranchName } from "@/lib/branch";
 import { currentUser } from "@/lib/rbac";
 import { batchFamily } from "@/lib/erp";
 import { allocateMixerCycle } from "@/lib/automations-silo";
@@ -38,11 +40,15 @@ export async function pendingRmAllocation(batch: string): Promise<number> {
 
 export interface BatchRmHealResult { ok: boolean; healed: number; message: string }
 
-/** Heal THIS family's pending cycles (oldest first). Fired automatically by the
- *  batch report; any signed-in viewer may trigger it — the same allocator already
- *  runs ungated on every cycle create/edit, this only catches the ones it missed. */
+/** Heal THIS family's pending cycles (oldest first). Fired automatically by the batch
+ *  report, so it is a WRITE with no click behind it: it moves silo stock, re-links
+ *  mixer cycles and can create deficit bags. It therefore carries the SAME two gates as
+ *  every sibling rectify action — incharge and above, Shop Floor branch only. A viewer
+ *  who cannot rectify simply sees the pending count; nothing is mutated for them. */
 export async function healBatchRm(batch: string): Promise<BatchRmHealResult> {
   if (!(await currentUser())) return { ok: false, healed: 0, message: "Sign in to re-link RM." };
+  if (!(await canRectify())) return { ok: false, healed: 0, message: "Only incharge and above can re-link RM." };
+  if ((await currentBranchName()) !== "SHOP_FLOOR") return { ok: false, healed: 0, message: "RM is re-linked from the Shop Floor branch." };
   try {
     const { keys } = await batchFamily(batch);
     if (!keys.length) return { ok: false, healed: 0, message: "Not a batch number." };
