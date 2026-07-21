@@ -1,0 +1,30 @@
+# Line endings.
+#
+# The repository stores LF for every text file. Working-tree endings stay
+# native (CRLF on Windows) via core.eol=native, so day-to-day editing is
+# unchanged -- this only stops line-ending-only churn reaching the index.
+
+* text=auto
+
+# Endings that must not follow the platform.
+# .sh with CRLF breaks the shebang; .bat with LF breaks labels and goto.
+*.sh    text eol=lf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# Binaries. Git auto-detects these, but say so explicitly so no heuristic
+# can ever rewrite their bytes.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.webp  binary
+*.pdf   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.xlsx  binary
+*.xls   binary
+*.docx  binary
