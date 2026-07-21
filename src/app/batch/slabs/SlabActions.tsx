@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { rectifyDuplicates, addAllMissing, deleteSlabRow, markSkipped, unmarkSkipped } from "./actions";
 
@@ -8,10 +8,34 @@ type FixStation = "press" | "distributor" | "kreos" | "oven" | "jot" | "polishEn
 
 const btn = "rounded-md px-3 py-1.5 text-sm font-medium transition disabled:opacity-50";
 
-export function RectifyButton({ batch, station }: { batch: string; station: FixStation }) {
+// `may` mirrors, at the call site, the gates the action behind each button applies.
+//
+//  The four buttons here (rectify / add-all / skip / un-skip) back actions that check
+//  canRectify() AND the Shop Floor branch. Note that is NOT true of every export in
+//  ./actions.ts: deleteSlabRow and removeBlankSlabRows take the branch too but gate rank
+//  on isManager() not canRectify(), and getAddSlabForm carries the rank check with no
+//  branch check at all — so do not reuse
+//  `mayRectifyHere` for those without checking what they actually require.
+//
+//  Why it matters: FINANCE and ACCOUNTS are rank 2 in the OFFICE branch and middleware
+//  never caps them on /batch, so they passed the rank test, saw these buttons and were
+//  refused on click.
+//
+//  Where a hidden control would otherwise leave no trace, the caller says once who can
+//  act — the header buttons swap themselves for that line (Refused, below), while the
+//  per-row ones return null and the page carries a single note instead of repeating a
+//  refusal on every row. Defaults true: today page.tsx is the only caller, so the
+//  default is what a future caller inherits if it forgets, and the safer inherit here
+//  is the visible control plus the action's own refusal, not a silently missing button.
+function Refused({ children }: { children: ReactNode }) {
+  return <span className="text-xs text-gray-500">{children}</span>;
+}
+
+export function RectifyButton({ batch, station, may = true }: { batch: string; station: FixStation; may?: boolean }) {
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<string | null>(null);
   const router = useRouter();
+  if (!may) return <Refused>An incharge on the Shop Floor branch can rectify duplicates.</Refused>;
   return (
     <div className="flex flex-wrap items-center gap-3">
       <button
@@ -33,10 +57,11 @@ export function RectifyButton({ batch, station }: { batch: string; station: FixS
   );
 }
 
-export function AddAllMissingButton({ batch, station }: { batch: string; station: FixStation }) {
+export function AddAllMissingButton({ batch, station, may = true }: { batch: string; station: FixStation; may?: boolean }) {
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<string | null>(null);
   const router = useRouter();
+  if (!may) return <Refused>An incharge on the Shop Floor branch can add these.</Refused>;
   return (
     <div className="flex flex-wrap items-center gap-3">
       <button
@@ -83,10 +108,11 @@ export function DeleteRowButton({ model, id, batch, slabLabel }: { model: string
   );
 }
 
-export function MarkSkippedButton({ batch, slab }: { batch: string; slab: number }) {
+export function MarkSkippedButton({ batch, slab, may = true }: { batch: string; slab: number; may?: boolean }) {
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<string | null>(null);
   const router = useRouter();
+  if (!may) return null; // the page carries one note for the whole table, not one per row
   return (
     <span className="inline-flex items-center gap-2">
       <button
@@ -104,9 +130,10 @@ export function MarkSkippedButton({ batch, slab }: { batch: string; slab: number
   );
 }
 
-export function UnskipButton({ batch, slab }: { batch: string; slab: number }) {
+export function UnskipButton({ batch, slab, may = true }: { batch: string; slab: number; may?: boolean }) {
   const [pending, start] = useTransition();
   const router = useRouter();
+  if (!may) return null; // the page note covers this; a chip on each slab would be noise
   return (
     <button
       disabled={pending}
