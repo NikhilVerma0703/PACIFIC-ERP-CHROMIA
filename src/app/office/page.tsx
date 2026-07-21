@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { Shell } from "@/components/Shell";
 import { Card } from "@/components/ui";
 import { currentBranchName } from "@/lib/branch";
+import { currentRole } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +13,7 @@ const ICON = {
   batch: "M11 19a8 8 0 100-16 8 8 0 000 16zm10 2l-4.35-4.35",
   tables: "M4 5h16v14H4zM4 10h16M10 5v14",
   report: "M7 3h7l5 5v13H7zM14 3v5h5M9 13h6M9 17h6",
+  slab: "M4 7l8-4 8 4-8 4-8-4zm0 5l8 4 8-4M4 17l8 4 8-4",
 };
 
 const CARDS = [
@@ -19,11 +21,19 @@ const CARDS = [
   { href: "/live", label: "Live Status", desc: "Machines, silos, running mixer cycle, RM stock", icon: ICON.live },
   { href: "/batch", label: "Batch Lookup", desc: "Full trace of any batch — slabs, designs, cycles", icon: ICON.batch },
   { href: "/tables", label: "Tables", desc: "Browse production tables (view only)", icon: ICON.tables },
+  { href: "/slab", label: "Slab Lookup", desc: "Trace a single slab across every station", icon: ICON.slab },
   { href: "/report", label: "Production Report", desc: "Generate the report for any batch", icon: ICON.report },
 ];
 
+// Commercial gets the read-only lookups only — no Live Status, no Tables. Mirrors the
+// middleware allow-list, so a hidden card is never the only thing standing in the way.
+// Overview is deliberately excluded: every tile on it links to /records, which stays
+// blocked for Commercial, so the page would be a dead end.
+const COMMERCIAL_CARDS = new Set(["/batch", "/slab", "/report"]);
+
 export default async function OfficeShopFloor() {
   if ((await currentBranchName()) !== "OFFICE") redirect("/");
+  const cards = (await currentRole()) === "COMMERCIAL" ? CARDS.filter((c) => COMMERCIAL_CARDS.has(c.href)) : CARDS;
   return (
     <Shell>
       <div className="mb-6">
@@ -31,7 +41,7 @@ export default async function OfficeShopFloor() {
         <p className="mt-1 max-w-2xl text-sm text-gray-500">Production data, viewable from the Office branch. All of it is read-only — rectification happens on the shop floor.</p>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {CARDS.map((c) => (
+        {cards.map((c) => (
           <Link key={c.href} href={c.href}>
             <Card hover className="flex items-center gap-3 py-4">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">

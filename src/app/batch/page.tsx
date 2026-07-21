@@ -292,7 +292,7 @@ export default async function BatchPage({
             <Card>
               <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                 <H2>⚠ Multiple design names in this batch</H2>
-                <Link href={`/batch/design?b=${encodeURIComponent(query ?? "")}`} className="rounded-md bg-brand px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-dark">Reconcile design →</Link>
+                {mayFix && <Link href={`/batch/design?b=${encodeURIComponent(query ?? "")}`} className="rounded-md bg-brand px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-dark">Reconcile design →</Link>}
               </div>
               <p className="mb-3 text-sm text-gray-600">
                 This batch has more than one design stamped on its records — pick the correct one to apply across the batch.

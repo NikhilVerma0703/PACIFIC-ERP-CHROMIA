@@ -26,7 +26,8 @@ export interface DesignFix {
 }
 
 export async function getDesignFix(batch: string): Promise<DesignFix> {
-  if (!(await canRectify())) return { batch, normalized: "", options: [], counts: {}, total: 0 } as unknown as DesignFix;
+  // Well-formed refusal: the page reads .designs, so a degenerate object crashed it.
+  if (!(await canRectify())) return { batch, key: "", designs: [], primary: null, bySource: {} };
   const key = normalizeBatch(batch);
   const d = await designForBatch(key);
   return { batch, key, designs: d.designs, primary: d.primary, bySource: d.bySource };

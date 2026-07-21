@@ -106,8 +106,15 @@ export default auth((req) => {
     if (!ok) return Response.redirect(new URL("/entry", nextUrl));
   }
   if (role === "COMMERCIAL") {
-    // Commercial: the finished-goods slabs table only.
-    const ok = p.startsWith("/inventory") || p.startsWith("/api");
+    // Commercial: finished-goods slabs, plus READ-ONLY production lookups from the
+    // Office branch's Shop Floor tab (batch, slab, report). Live Status and Tables stay
+    // blocked. Middleware is NOT the boundary here — server actions POST to these same
+    // routes, so each action gates itself on canRectify() (rank >= INCHARGE), which
+    // COMMERCIAL (rank 1) fails. Exact-or-subpath so a future /reports or /batches
+    // cannot be opened by accident.
+    const under = (base: string) => p === base || p.startsWith(base + "/");
+    const ok = p.startsWith("/api") || under("/inventory")
+      || under("/office") || under("/batch") || under("/slab") || under("/report");
     if (!ok) return Response.redirect(new URL("/inventory", nextUrl));
   }
   if (role === "SALES") {
