@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { canRectify, currentUser } from "@/lib/rbac";
+import { currentBranchName } from "@/lib/branch";
 import { confirmRange, addSlab, removeSlabFromBatch, autoFillBatch, type RemoveResult } from "@/lib/batchRange";
 import { logAction } from "@/lib/actionLog";
 
@@ -9,6 +10,7 @@ const who = async () => { const me = await currentUser(); return me?.name || me?
 
 export async function confirmRangeAction(batchKey: string): Promise<{ ok?: boolean; error?: string }> {
   if (!(await canRectify())) return { error: "Only incharge and above can confirm the range." };
+  if ((await currentBranchName()) !== "SHOP_FLOOR") return { error: "Production data can only be rectified from the Shop Floor branch." };
   await confirmRange(batchKey, await who());
   const cf = await autoFillBatch(batchKey);
   await logAction({ kind: "rangeConfirm", batchKey, model: "range", summary: `Confirmed slab range${cf.created ? ` · auto-filled ${cf.created} placeholder slab(s)` : ""}`, payload: { created: cf.created } });
@@ -18,6 +20,7 @@ export async function confirmRangeAction(batchKey: string): Promise<{ ok?: boole
 
 export async function addSlabAction(batchKey: string, slab: number): Promise<{ ok?: boolean; message?: string; error?: string }> {
   if (!(await canRectify())) return { error: "Only incharge and above can edit the range." };
+  if ((await currentBranchName()) !== "SHOP_FLOOR") return { error: "Production data can only be edited from the Shop Floor branch." };
   if (!Number.isFinite(slab)) return { error: "Enter a valid slab number." };
   await addSlab(batchKey, slab, await who());
   const af = await autoFillBatch(batchKey);
@@ -28,6 +31,7 @@ export async function addSlabAction(batchKey: string, slab: number): Promise<{ o
 
 export async function removeSlabAction(batchKey: string, slab: number, added: number[]): Promise<RemoveResult> {
   if (!(await canRectify())) return { error: "Only incharge and above can edit the range." };
+  if ((await currentBranchName()) !== "SHOP_FLOOR") return { error: "Production data can only be edited from the Shop Floor branch." };
   const r = await removeSlabFromBatch(batchKey, slab, added);
   if (r.ok) await logAction({ kind: "rangeRemove", batchKey, model: "range", summary: r.message ?? `Removed slab ${slab} from the range`, payload: { slab } });
   revalidatePath("/batch"); revalidatePath("/batch/range");
