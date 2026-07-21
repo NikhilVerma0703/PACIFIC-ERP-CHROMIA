@@ -112,12 +112,14 @@ export default async function BatchPage({
   // would be worse than either view alone.
   const splitView = split && split.wastagePct != null ? split : null;
 
-  // The RM heal is a WRITE, and healBatchRm gates it on incharge-and-above AND the Shop
-  // Floor branch. canRectify() alone is not that gate: Office FINANCE/ACCOUNTS are rank
-  // INCHARGE, so they pass it, and would have been shown a heal that the action then
-  // refuses ("RM is re-linked from the Shop Floor branch"). Mirror BOTH gates here so an
-  // Office viewer sees the pending count and nothing fires.
-  const mayHealRm = mayFix && branch === "SHOP_FLOOR";
+  // EVERY rectify control on this page drives a WRITE gated on incharge-and-above AND the
+  // Shop Floor branch — RM heal, undo, blank-row removal, range edits, mix split, design
+  // reconcile, wrong-batch moves. canRectify() alone is not that gate: Office
+  // FINANCE/ACCOUNTS are rank INCHARGE, so they pass it and would be offered work the
+  // action then refuses ("Production data can only be rectified from the Shop Floor
+  // branch"). Mirror BOTH gates once, here, and gate every control on it. Where a control
+  // is withheld the count or status behind it still renders, naming who can act.
+  const mayRectifyHere = mayFix && branch === "SHOP_FLOOR";
 
   // "2 cm 589 · 3 cm 69" for a family chip — biggest first, unrecorded slabs shown last so
   // the parts always add up to the chip's slab count.
@@ -221,20 +223,20 @@ export default async function BatchPage({
 
       {!error && data && data.found && (
         <div className="space-y-6">
-          {lastAct && <UndoLastButton batch={query} label={lastAct.summary} by={lastAct.actor} at={lastAct.createdAt} />}
+          {lastAct && <UndoLastButton batch={query} label={lastAct.summary} by={lastAct.actor} at={lastAct.createdAt} mayUndo={mayRectifyHere} />}
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-xl font-semibold">Batch {data.key}</h1>
             {data.design.primary && !data.design.discrepancy && (
               <Badge tone="brand">Design: {data.design.primary}</Badge>
             )}
             {data.design.discrepancy && <Badge tone="red">⚠ Design mismatch</Badge>}
-            {data.slabsProduced.discrepancy && <SlabMismatchPill batch={query ?? ""} blankTotal={data.slabAudit.blankTotal} canManage={canManage} />}
+            {data.slabsProduced.discrepancy && <SlabMismatchPill batch={query ?? ""} blankTotal={data.slabAudit.blankTotal} canManage={canManage && mayRectifyHere} />}
             {!data.slabAudit.hasIssues && data.slabAudit.stations.length > 0 && (
               <Badge tone="green">✓ Slabs reconciled</Badge>
             )}
             {data.slabAudit.hasIssues && <Badge tone="red">⚠ Slab discrepancies</Badge>}
             {unbacked && <Badge tone="red">⚠ Unbacked RM — silo/tank fill pending, auto-links on fill</Badge>}
-            {rmPending > 0 && <Badge tone="amber">⚠ {rmPending} cycle(s) with grit/filler not yet deducted — {mayHealRm ? "re-linking now" : "an incharge can re-link this"}</Badge>}
+            {rmPending > 0 && <Badge tone="amber">⚠ {rmPending} cycle(s) with grit/filler not yet deducted — {mayRectifyHere ? "re-linking now" : "an incharge can re-link this"}</Badge>}
             {splitView ? (
               <WastagePill pct={splitView.wastagePct as number} kg={splitView.wastageKg} mixWeight={splitView.allocKg} slabWeight={splitView.slabKg} />
             ) : (data.wastagePct != null && !data.family.mixFamilyWide && (
@@ -246,8 +248,8 @@ export default async function BatchPage({
               those, automatically — the Live Status sweep stays the global admin backstop.
               Only for someone who can actually rectify FROM THIS BRANCH: healBatchRm refuses
               anyone else on both counts, so rendering it for an Office incharge would just
-              announce a heal and then refuse it. Mirrors both of its gates — see mayHealRm. */}
-          {rmPending > 0 && mayHealRm && <AutoHealRm batch={query ?? ""} pending={rmPending} />}
+              announce a heal and then refuse it. Mirrors both of its gates — see mayRectifyHere. */}
+          {rmPending > 0 && mayRectifyHere && <AutoHealRm batch={query ?? ""} pending={rmPending} />}
 
           {/* A confirmed split makes per-batch material knowable again: each shared cycle's
               kg divided by slab-mass share. Reads only what the confirm wrote; Undo removes
@@ -300,7 +302,7 @@ export default async function BatchPage({
           {data.slabAudit.range && (
             // Batches WITHOUT sub-batches have no family chip bar, so their 2cm/3cm split
             // shows here on the range card instead (same resolver, already computed).
-            <RangeControls batch={query ?? ""} batchKey={data.key} min={data.slabAudit.range.min} max={data.slabAudit.range.max} missing={data.slabAudit.globalMissing.length} confirmed={data.slabAudit.confirmed}
+            <RangeControls batch={query ?? ""} batchKey={data.key} min={data.slabAudit.range.min} max={data.slabAudit.range.max} missing={data.slabAudit.globalMissing.length} confirmed={data.slabAudit.confirmed} mayEdit={mayRectifyHere}
               thickness={data.family.keys.length <= 1 ? data.thickness.map((x) => `${x.label === "not recorded" ? "no thk" : x.label} ${fmt(x.count)}`).join(" · ") || undefined : undefined} />
           )}
 
@@ -308,7 +310,12 @@ export default async function BatchPage({
             <Card>
               <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                 <H2>⚠ Multiple design names in this batch</H2>
-                {mayFix && <Link href={`/batch/design?b=${encodeURIComponent(query ?? "")}`} className="rounded-md bg-brand px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-dark">Reconcile design →</Link>}
+                {/* Worst case of the whole set: getDesignFix is rank-only, so an Office
+                    incharge got a working form, picked a design, and was refused only on
+                    submit. The link is gated here AND the page guards itself. */}
+                {mayRectifyHere
+                  ? <Link href={`/batch/design?b=${encodeURIComponent(query ?? "")}`} className="rounded-md bg-brand px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-dark">Reconcile design →</Link>
+                  : <span className="text-xs text-gray-500">An incharge on the Shop Floor branch can reconcile this.</span>}
               </div>
               <p className="mb-3 text-sm text-gray-600">
                 This batch has more than one design stamped on its records — pick the correct one to apply across the batch.
@@ -328,14 +335,14 @@ export default async function BatchPage({
 
           {/* Wrong-batch entries: station rows that disagree with the line head */}
           {alertGroups.length > 0 && (
-            <WrongBatchFix groups={alertGroups} mayEdit={mayFix} viewedBatch={query ?? ""} />
+            <WrongBatchFix groups={alertGroups} mayEdit={mayRectifyHere} viewedBatch={query ?? ""} />
           )}
 
           {/* One mixer run feeding several line batches — evidence only, needs confirming */}
-          {sharedMix && <SharedMixNotice r={sharedMix} mayFix={mayFix} batch={query ?? ""} split={!!splitView} />}
+          {sharedMix && <SharedMixNotice r={sharedMix} mayFix={mayRectifyHere} batch={query ?? ""} split={!!splitView} />}
 
           {boundaryGroups.length > 0 && (
-            <WrongBatchFix groups={boundaryGroups} mayEdit={mayFix} viewedBatch={query ?? ""} expectedWith={sharedMix?.partners.join(", ") ?? ""} />
+            <WrongBatchFix groups={boundaryGroups} mayEdit={mayRectifyHere} viewedBatch={query ?? ""} expectedWith={sharedMix?.partners.join(", ") ?? ""} />
           )}
 
           {/* Slab-level audit: duplicates and missing slabs per station (clickable) */}

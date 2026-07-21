@@ -82,9 +82,13 @@ export function SharedMixNotice({ r, mayFix = false, batch = "", split = false }
         before the cycles are split across them — the same check you do for a design.
       </p>
 
-      {/* The split itself is only offered on strong evidence, to people who may rectify.
-          It re-derives everything server-side — this component just carries the batch. */}
-      {r.confident && mayFix && batch && <ConfirmMixSplit batch={batch} />}
+      {/* The split itself is only offered on strong evidence, to people who may rectify
+          FROM THIS BRANCH — mixSplitActions gates on rank AND Shop Floor, so offering it
+          to an Office incharge would just announce a confirm the action then refuses. The
+          evidence above is unconditional; only the button is conditional. */}
+      {r.confident && batch && (mayFix
+        ? <ConfirmMixSplit batch={batch} />
+        : <p className="text-xs text-amber-900/80">The evidence is strong enough to act on — an incharge on the Shop Floor branch can confirm the split.</p>)}
     </div>
   );
 }

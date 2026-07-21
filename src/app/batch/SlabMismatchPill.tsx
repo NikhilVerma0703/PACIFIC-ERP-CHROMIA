@@ -13,8 +13,15 @@ export function SlabMismatchPill({ batch, blankTotal, canManage }: { batch: stri
   const [msg, setMsg] = useState<string | null>(null);
   const router = useRouter();
 
+  // Not actionable for this user — but the blank-row count is the diagnosis, so it is
+  // still reported along with who can clear it. Hiding the number hides the finding.
   if (!(blankTotal > 0 && canManage)) {
-    return <span className={pill}>⚠ Slab count mismatch</span>;
+    return (
+      <span className={pill}>
+        ⚠ Slab count mismatch
+        {blankTotal > 0 && ` · ${blankTotal} blank row${blankTotal === 1 ? "" : "s"} — a production manager on the Shop Floor branch can remove ${blankTotal === 1 ? "it" : "them"}`}
+      </span>
+    );
   }
 
   const run = () => {

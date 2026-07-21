@@ -80,7 +80,7 @@ function GroupCard({ g, mayEdit, viewedBatch }: { g: WrongBatchGroup; mayEdit: b
             </div>
           )}
           {msg && <div className="mt-2 text-xs font-medium text-red-800">{msg}</div>}
-          {!mayEdit && g.rows.length > 0 && <div className="mt-2 text-xs text-gray-400">Only incharge and above can move slabs between batches.</div>}
+          {!mayEdit && g.rows.length > 0 && <div className="mt-2 text-xs text-gray-400">Only an incharge on the Shop Floor branch can move slabs between batches.</div>}
         </div>
       )}
     </div>

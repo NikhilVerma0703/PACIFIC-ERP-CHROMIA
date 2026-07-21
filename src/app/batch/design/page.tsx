@@ -1,6 +1,8 @@
 import { Shell } from "@/components/Shell";
 import { Card, H2, Empty } from "@/components/ui";
 import { BackButton } from "@/components/BackButton";
+import { canRectify } from "@/lib/rbac";
+import { currentBranchName } from "@/lib/branch";
 import { getDesignFix } from "./actions";
 import { DesignFixForm } from "./DesignFixForm";
 
@@ -20,6 +22,18 @@ export default async function DesignFixPage({
       <Shell>
         <BackButton fallback="/batch" />
         <Empty>No batch specified.</Empty>
+      </Shell>
+    );
+  }
+
+  // applyDesignFix carries rank AND branch gates (actions.ts). Guard the page with the
+  // same pair: reaching this URL directly used to hand out a fully working form that only
+  // refused on submit, after the user had already chosen a design.
+  if (!(await canRectify()) || (await currentBranchName()) !== "SHOP_FLOOR") {
+    return (
+      <Shell>
+        <BackButton fallback={backHref} />
+        <Empty>Design reconcile is available to an incharge on the Shop Floor branch.</Empty>
       </Shell>
     );
   }

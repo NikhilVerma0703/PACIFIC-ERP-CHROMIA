@@ -10,7 +10,10 @@ function ago(iso?: string | null): string {
   return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
-export function UndoLastButton({ batch, label, by, at }: { batch?: string; label: string; by?: string | null; at?: string | null }) {
+// `mayUndo` mirrors undoLast's own gates (incharge-and-above AND the Shop Floor branch,
+// undo.ts:11-12). When false the bar still reports what was last done and by whom — only
+// the button is swapped for who can reverse it, so nothing is silently taken away.
+export function UndoLastButton({ batch, label, by, at, mayUndo = true }: { batch?: string; label: string; by?: string | null; at?: string | null; mayUndo?: boolean }) {
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<string | null>(null);
   const router = useRouter();
@@ -22,6 +25,9 @@ export function UndoLastButton({ batch, label, by, at }: { batch?: string; label
       </span>
       <div className="flex items-center gap-3">
         {msg && <span className="text-sm text-gray-700">{msg}</span>}
+        {!mayUndo ? (
+          <span className="text-xs text-amber-800">An incharge on the Shop Floor branch can undo this.</span>
+        ) : (
         <button
           onClick={() => start(async () => { const r = await undoLast(batch); setMsg(r.message); router.refresh(); })}
           disabled={pending}
@@ -29,6 +35,7 @@ export function UndoLastButton({ batch, label, by, at }: { batch?: string; label
         >
           {pending ? "Undoing…" : "Undo last action"}
         </button>
+        )}
       </div>
     </div>
   );
