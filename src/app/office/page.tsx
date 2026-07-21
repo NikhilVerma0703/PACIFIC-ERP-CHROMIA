@@ -29,11 +29,20 @@ const CARDS = [
 // Production Report. Mirrors the middleware allow-list, so a hidden card is never the
 // only thing standing in the way. Overview is deliberately excluded: every tile on it
 // links to /records, which stays blocked for Commercial, so the page would be a dead end.
-const COMMERCIAL_CARDS = new Set(["/batch", "/slab"]);
+//
+// Batch Lookup is a DIFFERENT page for them, not a filtered-out one: /batch renders
+// machine parameters and RM composition, so Commercial gets /office/batch-lookup,
+// which projects an explicit allowlist. /batch is blocked for them in middleware —
+// this card set is the signpost, never the boundary. Their cards are listed in full
+// rather than filtered from CARDS, so the two hrefs cannot silently converge.
+const COMMERCIAL_CARDS = [
+  { href: "/office/batch-lookup", label: "Batch Lookup", desc: "Design, thickness, quality and slab counts", icon: ICON.batch },
+  { href: "/slab", label: "Slab Lookup", desc: "Trace a single slab across every station", icon: ICON.slab },
+];
 
 export default async function OfficeShopFloor() {
   if ((await currentBranchName()) !== "OFFICE") redirect("/");
-  const cards = (await currentRole()) === "COMMERCIAL" ? CARDS.filter((c) => COMMERCIAL_CARDS.has(c.href)) : CARDS;
+  const cards = (await currentRole()) === "COMMERCIAL" ? COMMERCIAL_CARDS : CARDS;
   return (
     <Shell>
       <div className="mb-6">

@@ -107,15 +107,31 @@ export default auth((req) => {
   }
   if (role === "COMMERCIAL") {
     // Commercial: finished-goods slabs, plus READ-ONLY production lookups from the
-    // Office branch's Shop Floor tab (batch, slab). Live Status, Tables and the
-    // Production Report stay blocked — /report is gated here, not merely unlinked from
-    // the Shop Floor card grid. Middleware is NOT the boundary for what IS granted:
-    // server actions POST to those same routes, so each action gates itself on
-    // canRectify() (rank >= INCHARGE), which COMMERCIAL (rank 1) fails. Exact-or-subpath
-    // so a future /reports or /batches cannot be opened by accident.
+    // Office branch's Shop Floor tab (slab, and the Office-side batch view). Live
+    // Status, Tables and the Production Report stay blocked — /report is gated here,
+    // not merely unlinked from the Shop Floor card grid.
+    //
+    // The /batch subtree is blocked for the same reason and by the same rule.
+    // /batch renders MixerSection (silo numbers, bag and invoice numbers, suppliers,
+    // grades, per-cycle grit/filler/resin kg) and /batch/slabs renders
+    // StationParamLog (every machine setting per station plus the mid-batch change
+    // timeline) and MixerCycleFlags. None of that was ever gated on role, because
+    // the pages grew that detail after the route was granted. Gating it
+    // block-by-block would be opt-OUT — the next block added leaks until someone
+    // remembers — so Commercial gets /office/batch-lookup instead, which projects an
+    // explicit allowlist and is already covered by under("/office").
+    //
+    // Middleware is NOT the boundary for what IS granted: server actions POST to
+    // those same routes, so the actions gate themselves on canRectify()
+    // (rank >= INCHARGE), which COMMERCIAL (rank 1) fails. One exception worth
+    // knowing: pendingRmAllocation (rmHealActions.ts) carries no gate and returns a
+    // count to any signed-in caller — blocking the route is what keeps it away from
+    // Commercial, so do not treat the action gates as complete on their own.
+    // under() is exact-or-subpath so a future /reports or /batches cannot be opened
+    // by accident; note the /api clause above is a bare prefix and is not.
     const under = (base: string) => p === base || p.startsWith(base + "/");
     const ok = p.startsWith("/api") || under("/inventory")
-      || under("/office") || under("/batch") || under("/slab");
+      || under("/office") || under("/slab");
     if (!ok) return Response.redirect(new URL("/inventory", nextUrl));
   }
   if (role === "SALES") {
