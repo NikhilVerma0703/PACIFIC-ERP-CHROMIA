@@ -2,7 +2,9 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Shell } from "@/components/Shell";
 import { Card, H2, Kpi, Empty, Badge, fmt } from "@/components/ui";
+import { HBars, gradeColor } from "@/components/charts";
 import { getBatch, type BatchData } from "@/lib/erp";
+import { getBatchQcSlabs, type BatchQcSlab } from "@/lib/batchQcList";
 import { currentBranchName } from "@/lib/branch";
 import { displayBatch } from "@/lib/batchDisplay";
 import { slabLabel } from "@/lib/slabLabel";
@@ -26,8 +28,16 @@ export const dynamic = "force-dynamic";
  * way -- widen this projection deliberately, never render `data` directly.
  *
  * Deliberately excluded, and why:
- *   totalMixWeight, wastageKg, wastagePct, perMixer, counts.mixer
- *     -- RM and yield. Commercial has no RM card anywhere in the app.
+ *   totalMixWeight, wastageKg, wastagePct, perMixer, counts.mixer, totalSlabWeight
+ *     -- RM consumption and yield. /batch shows these as the Mix weight, Slab
+ *        weight and Per-mixer weight cards; they are omitted here on purpose,
+ *        not by oversight. Mix weight together with wastage reveals material
+ *        cost per slab and yield efficiency, and Commercial has no RM card
+ *        anywhere in the app.
+ *   slabsProduced.discrepancy
+ *     -- the "mismatch" flag /batch appends to its Slabs-produced sub-line. It is
+ *        a rectification signal, same class as slabAudit below, so this page's
+ *        sub-line stops after Jot. Do not widen the projection to restore it.
  *   slabAudit.stations, .globalMissing, .notes, .blankRows, .hasIssues, .added, .skipped
  *     -- rectification signals. Commercial cannot rectify (rank 1 fails
  *        canRectify()), so these are noise they cannot act on.
@@ -45,9 +55,13 @@ interface CommercialBatchView {
   perStation: { label: string; count: number }[];
   range: { min: number; max: number } | null;
   family: { key: string; design: string | null; slabs: number }[];
+  /** Per-slab QC rows. Not from BatchData -- getBatch() aggregates polish_qc into
+   *  grade counts and keeps no slab numbers -- so this arrives from the separate
+   *  narrow reader in lib/batchQcList.ts, which is itself a closed shape. */
+  qcSlabs: BatchQcSlab[];
 }
 
-function project(data: BatchData): CommercialBatchView {
+function project(data: BatchData, qcSlabs: BatchQcSlab[]): CommercialBatchView {
   return {
     key: data.key,
     design: data.design.primary,
@@ -66,8 +80,29 @@ function project(data: BatchData): CommercialBatchView {
     ],
     range: data.slabAudit.range,
     family: data.family.members.map((m) => ({ key: m.key, design: m.design, slabs: m.slabs })),
+    qcSlabs,
   };
 }
+
+function stageCount(perStation: CommercialBatchView["perStation"], label: string): number {
+  return perStation.find((s) => s.label === label)?.count ?? 0;
+}
+
+// Finished-goods status, rendered as-is from fg_finished_slab.status.
+const STATUS_LABEL: Record<string, string> = {
+  AVAILABLE: "Available",
+  RESERVED: "Reserved",
+  PACKED: "Packed",
+  DISPATCHED: "Dispatched",
+  RETURNED: "Returned",
+};
+const STATUS_TONE: Record<string, "brand" | "green" | "amber" | "red"> = {
+  AVAILABLE: "brand",
+  RESERVED: "amber",
+  PACKED: "amber",
+  DISPATCHED: "green",
+  RETURNED: "red",
+};
 
 export default async function OfficeBatchLookup({
   searchParams,
@@ -84,15 +119,45 @@ export default async function OfficeBatchLookup({
   let view: CommercialBatchView | null = null;
   let found = false;
   let error: string | null = null;
+  let qcListFailed = false;
   if (query) {
     try {
       const data = await getBatch(query);
       found = data.found;
-      if (data.found) view = project(data);
-    } catch {
+      // Only fetch the per-slab list once the batch is known to exist, and only for a
+      // batch we are actually going to render. Its failure is caught separately: the
+      // list is an addition to this page, so losing it must not cost the cards too.
+      if (data.found) {
+        let qcSlabs: BatchQcSlab[] = [];
+        try {
+          qcSlabs = await getBatchQcSlabs(query);
+        } catch (e) {
+          // Never break the page, but never fail silently either: the UI reports this
+          // and the server trace is the only way to find out why.
+          console.error("batch-lookup: getBatchQcSlabs failed", e);
+          qcListFailed = true;
+        }
+        view = project(data, qcSlabs);
+      }
+    } catch (e) {
+      console.error("batch-lookup: getBatch failed", e);
       error = "Could not read the database.";
     }
   }
+
+  // Keyed by slab, not by row: a slab QC'd twice holds two rows, and counting rows would
+  // report it as two dispatched slabs. Measured on the live DB (2026-07-21) there are
+  // real duplicates, so this is not hypothetical.
+  const statusBySlab = new Map<number, string | null>();
+  if (view) for (const s of view.qcSlabs) statusBySlab.set(s.slab, s.status);
+  const distinctSlabs = statusBySlab.size;
+  const dispatched = [...statusBySlab.values()].filter((v) => v === "DISPATCHED").length;
+  // fg_finished_slab is a stock LEDGER, not a history of every slab ever QC'd -- it holds
+  // ~19% of QC'd slab numbers, and the gap is spread across the whole batch range rather
+  // than sitting behind a date cutoff (measured: batches at >90% coverage span 845-1387,
+  // batches at <10% span 370-1364). Count it so the column can explain itself instead of
+  // looking broken, but do NOT explain it as a cutoff -- that is not what the data shows.
+  const noLedger = [...statusBySlab.values()].filter((v) => v === null).length;
 
   return (
     <Shell>
@@ -123,10 +188,24 @@ export default async function OfficeBatchLookup({
 
       {view && (
         <>
-          <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {/* Mirrors the /batch KPI grid, minus the three RM/yield cards (Mix weight,
+              Slab weight, Per-mixer weight). None of the cards below is a link: /batch,
+              /batch/slabs and /tables are all blocked for COMMERCIAL in middleware, so
+              the drill-downs /batch wraps around these same Kpis would only bounce. */}
+          <div className="mb-6 grid grid-cols-2 items-stretch gap-4 sm:grid-cols-3 lg:grid-cols-6">
             <Kpi label="Batch" value={displayBatch(view.key)} />
-            <Kpi label="Design" value={view.design ?? "—"} />
-            <Kpi label="Slabs" value={fmt(view.slabs)} />
+            <Kpi
+              label="Design"
+              value={view.design ?? "—"}
+              sub={view.designDiscrepancy ? `${view.designs.length} conflicting` : "single design"}
+            />
+            <Kpi
+              label="Slabs produced"
+              value={fmt(view.slabs)}
+              sub={`Press ${fmt(stageCount(view.perStation, "Press"))} · Oven ${fmt(stageCount(view.perStation, "Oven"))} · Jot ${fmt(stageCount(view.perStation, "Jot"))}`}
+            />
+            <Kpi label="Polish entries" value={fmt(stageCount(view.perStation, "Polish Entry"))} />
+            <Kpi label="Polish QC" value={fmt(stageCount(view.perStation, "Polish QC"))} />
             <Kpi
               label="Slab range"
               value={view.range ? `${slabLabel(view.range.min)}–${slabLabel(view.range.max)}` : "—"}
@@ -153,54 +232,103 @@ export default async function OfficeBatchLookup({
             </div>
           )}
 
-          {view.qcGrades.length > 0 && (
+          <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <Card>
+              <H2>QC grade distribution</H2>
+              {/* No `links` prop: /batch sends these bars to /tables/PolishQc, which is
+                  blocked for COMMERCIAL by middleware AND by canSeeModel. */}
+              {view.qcGrades.length ? (
+                <HBars data={view.qcGrades} colorFor={gradeColor} />
+              ) : (
+                <Empty>No QC rows.</Empty>
+              )}
+            </Card>
+            <Card>
+              <H2>Thickness mix</H2>
+              {view.thickness.length ? (
+                <HBars data={view.thickness} />
+              ) : (
+                <Empty>No slabs with a thickness.</Empty>
+              )}
+            </Card>
+          </div>
+
+          {/* Gated on the Polish QC count OR a non-empty list: the KPI alone would drop the
+              card if a QC row landed between the two reads, and the list alone would drop it
+              for a batch whose QC rows carry no slab number. */}
+          {(stageCount(view.perStation, "Polish QC") > 0 || view.qcSlabs.length > 0 || qcListFailed) && (
             <Card className="mb-6">
-              <H2>Quality</H2>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {view.qcGrades.map((g) => (
-                  <span key={g.label} className="rounded-lg bg-gray-100 px-3 py-1.5 text-sm text-gray-700">
-                    {g.label} · <span className="font-medium">{fmt(g.count)}</span>
-                  </span>
-                ))}
-              </div>
+              <H2>QC slabs</H2>
+              {qcListFailed ? (
+                // The counts below are derived from the list, so on a failed read they are
+                // NOT merely unaffected -- they would all read zero. Replace them outright
+                // rather than print zeros next to a non-zero Polish QC card.
+                <p className="text-sm text-amber-700">
+                  The per-slab QC list could not be read just now. The Polish QC count above is
+                  unaffected — reload to try again.
+                </p>
+              ) : (
+                <>
+                  <p className="mb-3 text-sm text-gray-600">
+                    {fmt(distinctSlabs)} slab{distinctSlabs === 1 ? "" : "s"} with a QC record
+                    {view.qcSlabs.length !== distinctSlabs
+                      ? ` · ${fmt(view.qcSlabs.length)} QC rows (some slabs were QC'd more than once)`
+                      : ""}
+                    {" · "}
+                    {fmt(dispatched)} dispatched
+                    {noLedger > 0 ? ` · ${fmt(noLedger)} not in the finished-goods ledger` : ""}.
+                    Status is the live finished-goods record; dispatching is done from Inventory,
+                    which records the PI, customer and invoice.
+                    {noLedger > distinctSlabs / 2 && (
+                      <> The ledger covers slabs tracked as finished stock, which is a subset of
+                      everything ever produced — coverage of older batches is partial.</>
+                    )}
+                  </p>
+                  {view.qcSlabs.length === 0 ? (
+                    <Empty>No QC rows with a slab number.</Empty>
+                  ) : (
+                    <div className="max-h-[32rem] overflow-y-auto">
+                      <table className="w-full text-sm">
+                        <thead className="sticky top-0 bg-white">
+                          <tr className="text-left text-gray-500">
+                            <th className="py-2 pr-4">Slab #</th>
+                            <th className="py-2 pr-4">Grade</th>
+                            <th className="py-2 pr-4">Thickness</th>
+                            <th className="py-2">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {/* A slab QC'd twice appears twice — rows are 1:1 with polish_qc, minus
+                              rows carrying no slab number. Those are dropped: a row with no slab
+                              is not a slab, and surfacing the count would re-expose
+                              slabAudit.blankRows, a rectification signal this projection excludes
+                              on purpose. It is why the caption counts what this list shows rather
+                              than claiming to equal the Polish QC card (live DB, 2026-07-21: one
+                              such row exists, on batch 1346). */}
+                          {view.qcSlabs.map((s, i) => (
+                            <tr key={`${s.slab}-${i}`} className="border-t border-gray-100">
+                              <td className="py-2 pr-4 font-medium text-gray-900">{slabLabel(s.slab)}</td>
+                              <td className="py-2 pr-4">{s.grade ?? "—"}</td>
+                              <td className="py-2 pr-4">{s.thickness ?? "—"}</td>
+                              <td className="py-2">
+                                {s.status ? (
+                                  <Badge tone={STATUS_TONE[s.status] ?? "brand"}>
+                                    {STATUS_LABEL[s.status] ?? s.status}
+                                  </Badge>
+                                ) : (
+                                  <span className="text-gray-400">not in ledger</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
+              )}
             </Card>
           )}
-
-          {view.thickness.length > 0 && (
-            <Card className="mb-6">
-              <H2>Thickness</H2>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {view.thickness.map((t) => (
-                  <span key={t.label} className="rounded-lg bg-gray-100 px-3 py-1.5 text-sm text-gray-700">
-                    {t.label} · <span className="font-medium">{fmt(t.count)}</span>
-                  </span>
-                ))}
-              </div>
-            </Card>
-          )}
-
-          <Card className="mb-6">
-            <H2>Progress</H2>
-            <p className="mb-3 text-sm text-gray-600">Slabs recorded at each stage.</p>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-gray-500">
-                    <th className="py-2 pr-4">Stage</th>
-                    <th className="py-2">Slabs</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {view.perStation.map((s) => (
-                    <tr key={s.label} className="border-t border-gray-100">
-                      <td className="py-2 pr-4">{s.label}</td>
-                      <td className="py-2">{fmt(s.count)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Card>
 
           {view.family.length > 1 && (
             <Card>
