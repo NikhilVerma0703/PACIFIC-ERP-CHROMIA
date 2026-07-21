@@ -21,6 +21,7 @@ import { SlabMismatchPill } from "./SlabMismatchPill";
 import { MixerSection } from "./MixerSection";
 import { SharedMixNotice } from "./SharedMixNotice";
 import { canRectify, isManager } from "@/lib/rbac";
+import { currentBranchName, type BranchName } from "@/lib/branch";
 import { getQcParamSummary } from "@/lib/stationParams";
 import { slabLabel } from "@/lib/slabLabel";
 
@@ -91,6 +92,11 @@ export default async function BatchPage({
   let thickByBatch = new Map<string, BatchMix>();
   let mayFix = false;
   let canManage = false;
+  // Rectify actions carry TWO gates (rank AND branch); this page needs the branch as
+  // well as the rank so it never offers an action the action itself would refuse.
+  // Defaults to "" so a failed read fails closed rather than assuming Shop Floor.
+  // Typed (not plain string) so a typo in the branch literal below is a compile error.
+  let branch: BranchName | "" = "";
   if (query && data?.found) {
     // mixer cycles / silo bags follow the same call the totals made: when the mix is
     // only stamped on the parent key, a solo view still shows it family-wide (labelled).
@@ -98,13 +104,20 @@ export default async function BatchPage({
     if (data.family.keys.length > 1) {
       try { thickByBatch = await thicknessMixByBatch(data.family.keys); } catch { /* chips degrade to slab count only */ }
     }
-    try { [mixerCycles, silos, wrongBatch, mayFix, canManage, sharedMix, split, rmPending] = await Promise.all([getMixerCycles(query, mixScope), getSiloBags(query, mixScope), detectWrongBatch(query), canRectify(), isManager(), detectSharedMixRun(query, data.family), confirmedSplitAllocation(query), pendingRmAllocation(query)]); } catch { /* ignore */ }
+    try { [mixerCycles, silos, wrongBatch, mayFix, canManage, branch, sharedMix, split, rmPending] = await Promise.all([getMixerCycles(query, mixScope), getSiloBags(query, mixScope), detectWrongBatch(query), canRectify(), isManager(), currentBranchName(), detectSharedMixRun(query, data.family), confirmedSplitAllocation(query), pendingRmAllocation(query)]); } catch { /* ignore */ }
   }
 
   // The split view takes over ONLY when its own figure is computable — one provenance
   // everywhere. Half-switched pages (allocated Mix KPI beside a label-scoped pill)
   // would be worse than either view alone.
   const splitView = split && split.wastagePct != null ? split : null;
+
+  // The RM heal is a WRITE, and healBatchRm gates it on incharge-and-above AND the Shop
+  // Floor branch. canRectify() alone is not that gate: Office FINANCE/ACCOUNTS are rank
+  // INCHARGE, so they pass it, and would have been shown a heal that the action then
+  // refuses ("RM is re-linked from the Shop Floor branch"). Mirror BOTH gates here so an
+  // Office viewer sees the pending count and nothing fires.
+  const mayHealRm = mayFix && branch === "SHOP_FLOOR";
 
   // "2 cm 589 · 3 cm 69" for a family chip — biggest first, unrecorded slabs shown last so
   // the parts always add up to the chip's slab count.
@@ -221,7 +234,7 @@ export default async function BatchPage({
             )}
             {data.slabAudit.hasIssues && <Badge tone="red">⚠ Slab discrepancies</Badge>}
             {unbacked && <Badge tone="red">⚠ Unbacked RM — silo/tank fill pending, auto-links on fill</Badge>}
-            {rmPending > 0 && <Badge tone="amber">⚠ {rmPending} cycle(s) with grit/filler not yet deducted — {mayFix ? "re-linking now" : "an incharge can re-link this"}</Badge>}
+            {rmPending > 0 && <Badge tone="amber">⚠ {rmPending} cycle(s) with grit/filler not yet deducted — {mayHealRm ? "re-linking now" : "an incharge can re-link this"}</Badge>}
             {splitView ? (
               <WastagePill pct={splitView.wastagePct as number} kg={splitView.wastageKg} mixWeight={splitView.allocKg} slabWeight={splitView.slabKg} />
             ) : (data.wastagePct != null && !data.family.mixFamilyWide && (
@@ -231,9 +244,10 @@ export default async function BatchPage({
 
           {/* The batch report saw its own cycles with undeducted grit/filler: heal exactly
               those, automatically — the Live Status sweep stays the global admin backstop.
-              Only for someone who can actually rectify: healBatchRm now refuses anyone else,
-              so rendering it for a viewer would just announce a heal and then refuse it. */}
-          {rmPending > 0 && mayFix && <AutoHealRm batch={query ?? ""} pending={rmPending} />}
+              Only for someone who can actually rectify FROM THIS BRANCH: healBatchRm refuses
+              anyone else on both counts, so rendering it for an Office incharge would just
+              announce a heal and then refuse it. Mirrors both of its gates — see mayHealRm. */}
+          {rmPending > 0 && mayHealRm && <AutoHealRm batch={query ?? ""} pending={rmPending} />}
 
           {/* A confirmed split makes per-batch material knowable again: each shared cycle's
               kg divided by slab-mass share. Reads only what the confirm wrote; Undo removes
