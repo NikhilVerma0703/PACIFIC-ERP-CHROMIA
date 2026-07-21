@@ -2,12 +2,15 @@
 
 import { revalidatePath } from "next/cache";
 import { canRectify, currentUser, isManager } from "@/lib/rbac";
+import { currentBranchName } from "@/lib/branch";
 import { writeOffSiloDeficit, openSiloDeficit } from "@/lib/backfill";
 import { isCorrectableSilo } from "@/lib/siloClass";
 import { previewCorrection, applyCorrection, type Op, type CorrectionDiff } from "@/lib/siloCorrection";
 
 export async function previewSiloCorrection(siloNo: string, op: Op): Promise<{ diff?: CorrectionDiff; error?: string }> {
   if (!(await canRectify())) return { error: "Only incharge and above can correct the silo timeline." };
+  // Rank check stays FIRST: branchOf() falls through to SHOP_FLOOR for a null user, so the branch check is fail-open alone.
+  if ((await currentBranchName()) !== "SHOP_FLOOR") return { error: "Production data can only be rectified from the Shop Floor branch." };
   if (!isCorrectableSilo(siloNo)) return { error: "This silo isn't a grit/filler silo." };
   try { return { diff: await previewCorrection(siloNo, op) }; }
   catch (e) { return { error: `Preview failed: ${(e as Error).message}` }; }
@@ -15,6 +18,8 @@ export async function previewSiloCorrection(siloNo: string, op: Op): Promise<{ d
 
 export async function applySiloCorrection(siloNo: string, op: Op): Promise<{ ok?: boolean; message?: string; error?: string }> {
   if (!(await canRectify())) return { error: "Only incharge and above can correct the silo timeline." };
+  // Rank check stays FIRST: branchOf() falls through to SHOP_FLOOR for a null user, so the branch check is fail-open alone.
+  if ((await currentBranchName()) !== "SHOP_FLOOR") return { error: "Production data can only be rectified from the Shop Floor branch." };
   if (!isCorrectableSilo(siloNo)) return { error: "This silo isn't a grit/filler silo." };
   try { const r = await applyCorrection(siloNo, op); revalidatePath(`/silo/${siloNo}`); revalidatePath("/live"); return { ok: r.ok, message: r.message }; }
   catch (e) { return { error: `Apply failed: ${(e as Error).message}` }; }
@@ -24,6 +29,8 @@ export async function applySiloCorrection(siloNo: string, op: Op): Promise<{ ok?
  * after the deficit has sat without any backfill activity for the drought window. */
 export async function writeOffSilo(siloNo: string): Promise<{ ok?: boolean; message?: string; error?: string }> {
   if (!(await isManager())) return { error: "Only the production manager and above can write off a deficit." };
+  // Rank check stays FIRST: branchOf() falls through to SHOP_FLOOR for a null user, so the branch check is fail-open alone.
+  if ((await currentBranchName()) !== "SHOP_FLOOR") return { error: "Production data can only be edited from the Shop Floor branch." };
   const open = await openSiloDeficit(siloNo);
   if (!open) return { error: "No open deficit on this silo." };
   try {
