@@ -107,14 +107,15 @@ export default auth((req) => {
   }
   if (role === "COMMERCIAL") {
     // Commercial: finished-goods slabs, plus READ-ONLY production lookups from the
-    // Office branch's Shop Floor tab (batch, slab, report). Live Status and Tables stay
-    // blocked. Middleware is NOT the boundary here — server actions POST to these same
-    // routes, so each action gates itself on canRectify() (rank >= INCHARGE), which
-    // COMMERCIAL (rank 1) fails. Exact-or-subpath so a future /reports or /batches
-    // cannot be opened by accident.
+    // Office branch's Shop Floor tab (batch, slab). Live Status, Tables and the
+    // Production Report stay blocked — /report is gated here, not merely unlinked from
+    // the Shop Floor card grid. Middleware is NOT the boundary for what IS granted:
+    // server actions POST to those same routes, so each action gates itself on
+    // canRectify() (rank >= INCHARGE), which COMMERCIAL (rank 1) fails. Exact-or-subpath
+    // so a future /reports or /batches cannot be opened by accident.
     const under = (base: string) => p === base || p.startsWith(base + "/");
     const ok = p.startsWith("/api") || under("/inventory")
-      || under("/office") || under("/batch") || under("/slab") || under("/report");
+      || under("/office") || under("/batch") || under("/slab");
     if (!ok) return Response.redirect(new URL("/inventory", nextUrl));
   }
   if (role === "SALES") {

@@ -1,23 +1,48 @@
 import { Shell } from "@/components/Shell";
 import { Card, Empty, Badge } from "@/components/ui";
-import { getSlabReport } from "@/lib/slabReport";
+import { getSlabReport, type StationStop } from "@/lib/slabReport";
+import { currentRole } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
+
+/** The station line every role sees: date, operator, and the short summary fields —
+ *  design, thickness, status/quality and the slab's own weight. Machine/dosing readings
+ *  are filtered out of `fields` upstream for a basic read (BASIC_SKIP_FIELDS). */
+function StationSummary({ st }: { st: StationStop }) {
+  return (
+    <>
+      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-green-100 text-[11px] text-green-700">✓</span>
+      <span className="w-28 shrink-0 text-sm font-medium text-gray-800">{st.label}</span>
+      {st.date && <span className="text-xs text-gray-500">{st.date}</span>}
+      {st.operator && <span className="text-xs text-gray-500">· {st.operator}</span>}
+      {st.wrongBatch && <span className="rounded bg-red-100 px-1.5 py-0.5 text-[11px] font-medium text-red-700">⚠ wrong batch — entered {st.wrongBatch.entered}, belongs to {st.wrongBatch.lineHead} (fix in Batch Lookup)</span>}
+      {st.fields.map((f, i) => <span key={i} className="text-xs text-gray-600"><span className="text-gray-400">{f.label}:</span> {f.value}</span>)}
+    </>
+  );
+}
 
 export default async function SlabLookup({ searchParams }: { searchParams: Promise<{ s?: string }> }) {
   const { s } = await searchParams;
   const query = s?.trim();
+  // Commercial is a read-only finished-goods role: basic slab details only — no machine
+  // settings / recipe, no RM. `basic` is passed into the report so none of it is even
+  // fetched (see slabReport.ts), rather than fetched and then hidden here.
+  const basic = (await currentRole()) === "COMMERCIAL";
   let r = null;
   let error: string | null = null;
   if (query) {
-    try { r = await getSlabReport(query); } catch { error = "Could not read the database."; }
+    try { r = await getSlabReport(query, { basic }); } catch { error = "Could not read the database."; }
   }
 
   return (
     <Shell>
       <div className="mb-5">
         <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Slab Lookup</h1>
-        <p className="mt-1 max-w-2xl text-sm text-gray-500">Trace one slab end-to-end — its RM composition (FIFO, yield-adjusted), total weight, and its journey from the line through polishing. Click any station to see every parameter set for this slab.</p>
+        <p className="mt-1 max-w-2xl text-sm text-gray-500">
+          {basic
+            ? <>Trace one slab end-to-end — its batch, design, thickness and weight, and its journey from the line through polishing.</>
+            : <>Trace one slab end-to-end — its RM composition (FIFO, yield-adjusted), total weight, and its journey from the line through polishing. Click any station to see every parameter set for this slab.</>}
+        </p>
       </div>
 
       <form method="GET" className="mb-6 flex gap-2">
@@ -46,6 +71,9 @@ export default async function SlabLookup({ searchParams }: { searchParams: Promi
             {r.closeReason && <p className="mt-2 text-xs text-gray-400">{r.closeReason}</p>}
           </Card>
 
+          {/* RM composition — not shown to Commercial, and not fetched for them either:
+              getSlabReport({ basic }) returns before any material query runs. */}
+          {!basic && (
           <Card>
             <div className="mb-1 text-sm font-semibold text-gray-800">RM composition — what went into this slab</div>
             <p className="mb-3 text-xs text-gray-400">
@@ -76,6 +104,7 @@ export default async function SlabLookup({ searchParams }: { searchParams: Promi
               </div>
             ) : <Empty>{r.rmNote ?? "No RM consumption recorded for this batch’s cycles yet."}</Empty>}
           </Card>
+          )}
 
           <Card>
             <div className="mb-3 text-sm font-semibold text-gray-800">Journey — RM → Silo → Mixer → line → polishing</div>
@@ -83,31 +112,36 @@ export default async function SlabLookup({ searchParams }: { searchParams: Promi
               {r.journey.map((st) => (
                 st.present ? (
                   <li key={st.key} className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-                    <details className="group">
-                      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 hover:bg-gray-50">
-                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-green-100 text-[11px] text-green-700">✓</span>
-                        <span className="w-28 shrink-0 text-sm font-medium text-gray-800">{st.label}</span>
-                        {st.date && <span className="text-xs text-gray-500">{st.date}</span>}
-                        {st.operator && <span className="text-xs text-gray-500">· {st.operator}</span>}
-                        {st.wrongBatch && <span className="rounded bg-red-100 px-1.5 py-0.5 text-[11px] font-medium text-red-700">⚠ wrong batch — entered {st.wrongBatch.entered}, belongs to {st.wrongBatch.lineHead} (fix in Batch Lookup)</span>}
-                        {st.fields.map((f, i) => <span key={i} className="text-xs text-gray-600"><span className="text-gray-400">{f.label}:</span> {f.value}</span>)}
-                        <span className="ml-auto text-xs font-medium text-brand group-open:hidden">View parameters ▾</span>
-                        <span className="ml-auto hidden text-xs font-medium text-gray-400 group-open:inline">Hide ▴</span>
-                      </summary>
-                      <div className="border-t border-gray-100 bg-gray-50/50 px-3 py-3">
-                        {st.allFields.length ? (
-                          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-4">
-                            {st.allFields.map((f, i) => (
-                              <div key={i}>
-                                <dt className="text-[11px] uppercase tracking-wide text-gray-400">{f.label}</dt>
-                                <dd className="text-sm text-gray-800">{f.value}</dd>
-                              </div>
-                            ))}
-                          </dl>
-                        ) : <p className="text-xs text-gray-400">No additional parameters recorded for this slab at {st.label}.</p>}
-                        {st.recordId && <a href={`/tables/${st.model}/${st.recordId}`} className="mt-3 inline-block text-xs font-medium text-brand hover:underline">Open full record →</a>}
+                    {basic ? (
+                      // No expander for Commercial: there are no parameters on the payload
+                      // to open, and the per-record drill-down goes to /tables, which is
+                      // blocked for them by middleware AND by canSeeModel (branch.ts:69) —
+                      // so the link would only bounce them to /inventory.
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2">
+                        <StationSummary st={st} />
                       </div>
-                    </details>
+                    ) : (
+                      <details className="group">
+                        <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 hover:bg-gray-50">
+                          <StationSummary st={st} />
+                          <span className="ml-auto text-xs font-medium text-brand group-open:hidden">View parameters ▾</span>
+                          <span className="ml-auto hidden text-xs font-medium text-gray-400 group-open:inline">Hide ▴</span>
+                        </summary>
+                        <div className="border-t border-gray-100 bg-gray-50/50 px-3 py-3">
+                          {st.allFields.length ? (
+                            <dl className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-4">
+                              {st.allFields.map((f, i) => (
+                                <div key={i}>
+                                  <dt className="text-[11px] uppercase tracking-wide text-gray-400">{f.label}</dt>
+                                  <dd className="text-sm text-gray-800">{f.value}</dd>
+                                </div>
+                              ))}
+                            </dl>
+                          ) : <p className="text-xs text-gray-400">No additional parameters recorded for this slab at {st.label}.</p>}
+                          {st.recordId && <a href={`/tables/${st.model}/${st.recordId}`} className="mt-3 inline-block text-xs font-medium text-brand hover:underline">Open full record →</a>}
+                        </div>
+                      </details>
+                    )}
                   </li>
                 ) : (
                   <li key={st.key} className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-dashed border-gray-200 bg-gray-50/50 px-3 py-2">

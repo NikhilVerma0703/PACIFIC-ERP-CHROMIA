@@ -19,6 +19,12 @@ export async function authenticate(
         role === "LINE_MANAGER" ? "/fab/projects" :
         role === "INCHARGE"     ? "/fab/supervisor" :
                                   "/fab/session";   // OPERATOR -> pick machine
+    } else if (user && String(user.role) === "COMMERCIAL") {
+      // Commercial's home is Finished Goods. Sending them to "/" only for middleware to
+      // bounce it to /inventory means the router never initiated that hop, so the client
+      // still reports "/" as the path — which is what highlighted the wrong nav tab on
+      // the Finished Goods page. Land them on the real route in the first place.
+      redirectTo = "/inventory";
     }
   } catch { /* non-critical */ }
   try {

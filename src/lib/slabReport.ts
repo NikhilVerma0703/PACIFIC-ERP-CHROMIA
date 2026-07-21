@@ -83,6 +83,11 @@ export interface SlabReport {
   unbacked: boolean;      // some RM was drawn from a silo/tank not yet filled digitally
 }
 
+// Summary fields that are machine/dosing readings rather than slab identity. A basic
+// read is limited to date, operator, design, thickness, status/quality and the slab's
+// own weight, so these are dropped from it.
+const BASIC_SKIP_FIELDS = new Set(["distributorHopperWeight"]);
+
 // Journey stations in line order, with the fields to surface per stop.
 const STATIONS: { key: string; model: string; label: string; date: string; op: string; fields: [string, string][] }[] = [
   { key: "distributor", model: "Distributor", label: "Distributor", date: "date", op: "operator", fields: [["designName", "Design"], ["slabThickness", "Thickness"], ["distributorHopperWeight", "Hopper kg"]] },
@@ -101,7 +106,25 @@ function val(row: any, f: string): string | null {
   return lookup(v);
 }
 
-export async function getSlabReport(input: string | number): Promise<SlabReport> {
+/** Human-readable explanation of the provisional/final state. Shared by the full and
+ *  the basic read — the close state is the same question either way. */
+function closeReasonFor(batchClosed: boolean, lineHeadMovedOn: boolean, pendingPress: number): string {
+  if (batchClosed) return "Batch closed — a later batch has opened at the line head (Distributor / Kreos) and every slab in this batch has a Press weight, so neither the slab set nor the yield can change. This composition is final.";
+  if (lineHeadMovedOn) return `Almost final — the line head has moved to a newer batch, but ${pendingPress} slab(s) in this batch still have no Press weight. The material identity is settled; the yield finalizes once those slabs are weighed.`;
+  return "Batch still running — it is the most recent batch at the line head (Distributor / Kreos). More slabs can still be added; it finalizes once the next batch opens at the line head and all slabs are weighed.";
+}
+
+export interface SlabReportOptions {
+  /** Basic details only — the station journey summary plus the slab header. No machine
+   *  parameters, no per-record links, no RM composition. None of it is FETCHED either:
+   *  allParams() is skipped and the function returns before the mixer-cycle, silo-bag,
+   *  resin-tank and FIFO-allocation queries run, so there is no parameter or material
+   *  data on the returned payload for the caller to have to strip. */
+  basic?: boolean;
+}
+
+export async function getSlabReport(input: string | number, opts: SlabReportOptions = {}): Promise<SlabReport> {
+  const basic = opts.basic === true;
   const slabNumber = typeof input === "number" ? input : parseFloat(String(input).replace(/[^\d.]/g, ""));
   const empty: SlabReport = { found: false, slabNumber, batch: null, design: null, thickness: null, slabWeight: null, journey: [], rm: [], rmTotal: 0, wastagePct: null, provisional: false, batchClosed: false, closeReason: null, rmNote: null , unbacked: false };
   if (!Number.isFinite(slabNumber)) return empty;
@@ -130,9 +153,11 @@ export async function getSlabReport(input: string | number): Promise<SlabReport>
       key: st.key, label: st.label, model: st.model, present: !!row, wrongBatch: null,
       date: row ? dstr(row[st.date] ?? row.createdTime ?? row.date) : null,
       operator: row ? (lookup(row[st.op]) ?? lookup(row.operator)) : null,
-      fields: row ? st.fields.map(([f, l]) => ({ label: l, value: val(row, f) ?? "—" })).filter((x) => x.value !== "—") : [],
-      allFields: row ? allParams(st.model, row) : [],
-      recordId: row?.id ?? null,
+      fields: row ? st.fields.filter(([f]) => !(basic && BASIC_SKIP_FIELDS.has(f))).map(([f, l]) => ({ label: l, value: val(row, f) ?? "—" })).filter((x) => x.value !== "—") : [],
+      // Machine settings / recipe and the full-record link are the two things a basic
+      // read must not carry — neither is built, so neither is serialised to the client.
+      allFields: row && !basic ? allParams(st.model, row) : [],
+      recordId: basic ? null : (row?.id ?? null),
     });
   }
 
@@ -148,7 +173,7 @@ export async function getSlabReport(input: string | number): Promise<SlabReport>
   }
 
   if (!journey.some((j) => j.present)) return { ...empty, batch: batchKey };
-  if (!batchKey) return { ...empty, found: true, journey, slabWeight, design, thickness, rmNote: "This slab has no batch recorded — it can’t be linked to any mixer cycle." };
+  if (!batchKey) return { ...empty, found: true, journey, slabWeight, design, thickness, rmNote: basic ? null : "This slab has no batch recorded — it can’t be linked to any mixer cycle." };
 
   // ---- batch close (airtight) — two conditions must BOTH hold:
   //  (a) the line head (Distributor / Kreos) has moved on to a newer batch, so
@@ -166,6 +191,41 @@ export async function getSlabReport(input: string | number): Promise<SlabReport>
     }
     if (originBatch && originBatch !== batchKey) lineHeadMovedOn = true;
   } catch { /* ignore */ }
+
+  // ---- batch slabs, this slab's weight, and the close state. None of this reads the
+  // RM stream, so it is computed BEFORE it: a basic read still needs the slab's own
+  // weight and the final/provisional badge, and nothing else. ----
+  const slabs: any[] = await db.press.findMany({ where: { batchKey, slabNumber: { not: null } }, select: { slabNumber: true, slabWeight: true }, orderBy: { slabNumber: "asc" } });
+
+  // every slab created at the line head for this batch (the full slab set)
+  const lineHeadNums = new Set<number>();
+  try {
+    for (const m of ["distributor", "kreos"]) {
+      const rows: any[] = await db[m].findMany({ where: { batchKey, slabNumber: { not: null } }, select: { slabNumber: true } });
+      for (const r of rows) if (typeof r.slabNumber === "number") lineHeadNums.add(r.slabNumber);
+    }
+  } catch { /* ignore */ }
+  const weighed = new Set<number>(slabs.filter((s) => s.slabWeight != null).map((s) => s.slabNumber));
+  // slabs still awaiting a Press weight (these would still move the yield)
+  const pendingPress = lineHeadNums.size
+    ? [...lineHeadNums].filter((n) => !weighed.has(n)).length
+    : slabs.filter((s) => s.slabWeight == null).length;
+  const batchClosed = lineHeadMovedOn && pendingPress === 0;
+  const totalSlabW = slabs.reduce((a, s) => a + (s.slabWeight ?? 0), 0);
+  const myW = slabWeight ?? slabs.find((s) => s.slabNumber === slabNumber)?.slabWeight ?? 0;
+
+  // A basic read stops HERE — everything below is RM: mixer cycles, silo bags, resin
+  // tanks, FIFO allocation, yield and wastage. Returning before those queries is what
+  // makes "no RM data for Commercial" a property of the fetch, not of the markup.
+  if (basic) {
+    return {
+      found: true, slabNumber, batch: batchKey, design, thickness, slabWeight: myW || slabWeight,
+      journey, rm: [], rmTotal: 0, wastagePct: null,
+      provisional: !batchClosed, batchClosed,
+      closeReason: closeReasonFor(batchClosed, lineHeadMovedOn, pendingPress),
+      rmNote: null, unbacked: false,
+    };
+  }
 
   // ---- batch RM consumption stream (FIFO order: cycle → slot → bags) ----
   const cycleSel: Record<string, boolean> = { id: true, cycle: true, fillerSiloIdIds: true, fillerSiloBuffer: true };
@@ -256,24 +316,7 @@ export async function getSlabReport(input: string | number): Promise<SlabReport>
     cycIdx++;
   }
 
-  // ---- batch slabs in FIFO order + yield ----
-  const slabs: any[] = await db.press.findMany({ where: { batchKey, slabNumber: { not: null } }, select: { slabNumber: true, slabWeight: true }, orderBy: { slabNumber: "asc" } });
-
-  // every slab created at the line head for this batch (the full slab set)
-  const lineHeadNums = new Set<number>();
-  try {
-    for (const m of ["distributor", "kreos"]) {
-      const rows: any[] = await db[m].findMany({ where: { batchKey, slabNumber: { not: null } }, select: { slabNumber: true } });
-      for (const r of rows) if (typeof r.slabNumber === "number") lineHeadNums.add(r.slabNumber);
-    }
-  } catch { /* ignore */ }
-  const weighed = new Set<number>(slabs.filter((s) => s.slabWeight != null).map((s) => s.slabNumber));
-  // slabs still awaiting a Press weight (these would still move the yield)
-  const pendingPress = lineHeadNums.size
-    ? [...lineHeadNums].filter((n) => !weighed.has(n)).length
-    : slabs.filter((s) => s.slabWeight == null).length;
-  const batchClosed = lineHeadMovedOn && pendingPress === 0;
-  const totalSlabW = slabs.reduce((a, s) => a + (s.slabWeight ?? 0), 0);
+  // ---- yield: the RM stream measured against the batch's slab weight ----
   const totalRm = stream.reduce((a, s) => a + s.kg, 0);
   const yieldF = totalRm > 0 && totalSlabW > 0 ? Math.min(1, totalSlabW / totalRm) : 1;
   const wastagePct = totalRm > 0 && totalSlabW > 0 ? Math.round((1 - yieldF) * 1000) / 10 : null;
@@ -284,7 +327,6 @@ export async function getSlabReport(input: string | number): Promise<SlabReport>
     if (s.slabNumber === slabNumber) break;
     before += (s.slabWeight ?? 0);
   }
-  const myW = slabWeight ?? slabs.find((s) => s.slabNumber === slabNumber)?.slabWeight ?? 0;
   const winStart = before, winEnd = before + myW;
 
   // Slice the stream CYCLE BY CYCLE (FIFO across cycles), but BLENDED within
@@ -319,14 +361,7 @@ export async function getSlabReport(input: string | number): Promise<SlabReport>
 
   // provisional until the batch is closed (line head moved on AND all slabs weighed)
   const provisional = !batchClosed;
-  let closeReason: string;
-  if (batchClosed) {
-    closeReason = "Batch closed — a later batch has opened at the line head (Distributor / Kreos) and every slab in this batch has a Press weight, so neither the slab set nor the yield can change. This composition is final.";
-  } else if (lineHeadMovedOn) {
-    closeReason = `Almost final — the line head has moved to a newer batch, but ${pendingPress} slab(s) in this batch still have no Press weight. The material identity is settled; the yield finalizes once those slabs are weighed.`;
-  } else {
-    closeReason = "Batch still running — it is the most recent batch at the line head (Distributor / Kreos). More slabs can still be added; it finalizes once the next batch opens at the line head and all slabs are weighed.";
-  }
+  const closeReason = closeReasonFor(batchClosed, lineHeadMovedOn, pendingPress);
   let rmNote: string | null = null;
   if (cycles.length === 0) rmNote = `No mixer cycles found for batch ${batchKey}. The batch may not have been entered at the mixer, or was entered under a different number.`;
   else if (totalRm === 0) rmNote = `Batch ${batchKey} has ${cycles.length} mixer cycle(s) but none are linked to silo bags yet — RM allocation may be pending.`;

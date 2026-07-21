@@ -25,11 +25,11 @@ const CARDS = [
   { href: "/report", label: "Production Report", desc: "Generate the report for any batch", icon: ICON.report },
 ];
 
-// Commercial gets the read-only lookups only — no Live Status, no Tables. Mirrors the
-// middleware allow-list, so a hidden card is never the only thing standing in the way.
-// Overview is deliberately excluded: every tile on it links to /records, which stays
-// blocked for Commercial, so the page would be a dead end.
-const COMMERCIAL_CARDS = new Set(["/batch", "/slab", "/report"]);
+// Commercial gets the read-only lookups only — no Live Status, no Tables, no
+// Production Report. Mirrors the middleware allow-list, so a hidden card is never the
+// only thing standing in the way. Overview is deliberately excluded: every tile on it
+// links to /records, which stays blocked for Commercial, so the page would be a dead end.
+const COMMERCIAL_CARDS = new Set(["/batch", "/slab"]);
 
 export default async function OfficeShopFloor() {
   if ((await currentBranchName()) !== "OFFICE") redirect("/");
