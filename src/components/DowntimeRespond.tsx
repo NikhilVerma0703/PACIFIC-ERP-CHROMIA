@@ -154,7 +154,7 @@ export function DowntimeRespond({ misId, canRespond, status, note, by, at, dispT
               )}
             </div>
             <div className="mt-1 text-[10px] text-amber-700">
-              Recorded next to production&apos;s figure — it does not change their entry.
+              Recorded next to production&apos;s figure.
               {dDirty && dispMinutes != null && dMin.trim() === "" && " Saving now withdraws the dispute."}
             </div>
           </div>
