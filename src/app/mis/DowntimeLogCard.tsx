@@ -15,13 +15,15 @@ import type { IncidentRow } from "@/lib/downtime";
 import type { DowntimeResp } from "@/lib/downtimeResponse";
 import { DowntimeRespond } from "@/components/DowntimeRespond";
 
-export function DowntimeLogCard({ incidents, initialType, from, to, batch, canRespond, respFailed, responses }: {
+export function DowntimeLogCard({ incidents, initialType, from, to, batch, canRespond, respFailed, responses, photos }: {
   incidents: IncidentRow[];
   initialType: string | null;
   from: string; to: string; batch: string;
   canRespond: boolean;
   respFailed: boolean;
   responses: Record<string, DowntimeResp>;
+  /** Response photos per MIS row id, served by /api/photo under its own gate. */
+  photos: Record<string, { id: string; filename: string }[]>;
 }) {
   const [type, setType] = useState<string | null>(initialType);
   const shown = type ? incidents.filter((i) => i.typeKeys.includes(type)) : incidents;
@@ -77,7 +79,16 @@ export function DowntimeLogCard({ incidents, initialType, from, to, batch, canRe
                   <td className="py-2 pr-3 whitespace-nowrap text-gray-500">{i.date ?? "—"}</td>
                   <td className="py-2 pr-3 whitespace-nowrap text-gray-500">{i.hour ?? "—"}</td>
                   <td className="py-2 pr-3 whitespace-nowrap text-gray-700">{i.batch ? <Link href={`/batch?b=${encodeURIComponent(i.batch)}`} className="text-brand hover:underline">{i.batch}</Link> : "—"}</td>
-                  <td className={`py-2 pr-3 whitespace-nowrap font-medium ${i.over ? "text-red-600" : "text-gray-900"}`} title={i.over ? `This hour logs ${fmtDur(i.minutes)} across all types — more than 60 min in one hour, an entry error` : undefined}>{(() => { const m = type ? i.minutesByType[type] ?? 0 : i.minutes; return m > 0 ? fmtDur(m) : "—"; })()}{i.over ? " ⚠" : ""}</td>
+                  <td className={`py-2 pr-3 whitespace-nowrap font-medium ${i.over ? "text-red-600" : "text-gray-900"}`} title={i.over ? `This hour logs ${fmtDur(i.minutes)} across all types — more than 60 min in one hour, an entry error` : undefined}>{(() => { const m = type ? i.minutesByType[type] ?? 0 : i.minutes; return m > 0 ? fmtDur(m) : "—"; })()}{i.over ? " ⚠" : ""}{(() => {
+                    // Amber dot: maintenance disputes one of this row's durations and the
+                    // figures still differ. Independent of the active type filter — the
+                    // disagreement belongs to the row. Green handled in the response cell.
+                    const r = responses[i.id];
+                    if (!r || r.dispMinutes == null) return null;
+                    const cur = i.minutesByType[r.dispType ?? ""] ?? 0;
+                    if (Math.round(cur) === Math.round(r.dispMinutes)) return null;
+                    return <span className="text-amber-600" title={`Maintenance says ${fmtDur(r.dispMinutes)} — see the response column`}> ●</span>;
+                  })()}</td>
                   <td className="py-2 pr-3 text-gray-600">{type
                     ? (DELAY_FIELDS.find((d) => d.key === type)?.label ?? "—")
                     : Object.keys(i.minutesByType).length > 1
@@ -87,7 +98,12 @@ export function DowntimeLogCard({ incidents, initialType, from, to, batch, canRe
                   <td className="py-2 pr-3 text-gray-600">{[i.details, i.rca ? `RCA ${i.rca}` : null, i.action, i.spares ? `spares: ${i.spares}` : null].filter(Boolean).join(" · ") || "—"}</td>
                   <td className="py-2 pr-3 whitespace-nowrap text-gray-700">{i.elecIncharge || "—"}</td>
                   <td className="py-2 pr-3 whitespace-nowrap text-gray-700">{i.mechIncharge || "—"}</td>
-                  <td className="py-2 align-top"><DowntimeRespond misId={i.id} canRespond={canRespond} status={responses[i.id]?.status ?? null} note={responses[i.id]?.note ?? null} by={responses[i.id]?.by ?? null} at={responses[i.id]?.at ?? null} /></td>
+                  <td className="py-2 align-top"><DowntimeRespond misId={i.id} canRespond={canRespond}
+                    status={responses[i.id]?.status ?? null} note={responses[i.id]?.note ?? null}
+                    by={responses[i.id]?.by ?? null} at={responses[i.id]?.at ?? null}
+                    dispType={responses[i.id]?.dispType ?? null} dispMinutes={responses[i.id]?.dispMinutes ?? null}
+                    dispBy={responses[i.id]?.dispBy ?? null} dispAt={responses[i.id]?.dispAt ?? null}
+                    minutesByType={i.minutesByType} photos={photos[i.id] ?? []} /></td>
                 </tr>
               ))}
             </tbody>

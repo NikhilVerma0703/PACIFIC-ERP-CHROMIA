@@ -7,6 +7,7 @@
 // so they are excluded explicitly here.
 import { getDowntimeReport, fmtDur, DELAY_FIELDS, DELAY_LABEL } from "@/lib/downtime";
 import { getDowntimeResponses } from "@/lib/downtimeResponse";
+import { photosForRecords } from "@/lib/entryPhoto";
 import { currentRole } from "@/lib/rbac";
 import * as XLSX from "xlsx";
 
@@ -31,7 +32,8 @@ export async function GET(request: Request) {
     // Same per-type view the page shows: under a type filter, minutes/reasons are THAT
     // type's share (the row set is already filtered); in the All view a multi-type row
     // spells out each type's duration. The file must match the screen it came from.
-    const header = ["Date", "Hour", "Batch", "Down (min)", "Down", "Over 60m", "Type(s)", "Reason(s)", "Details", "RCA", "Action", "Spares", "Electrical incharge", "Mechanical incharge", "Maint. status", "Maint. note", "Responded by", "Responded at"];
+    const photoMap = await photosForRecords("Mis", r.incidents.map((i) => i.id));
+    const header = ["Date", "Hour", "Batch", "Down (min)", "Down", "Over 60m", "Type(s)", "Reason(s)", "Details", "RCA", "Action", "Spares", "Electrical incharge", "Mechanical incharge", "Maint. status", "Maint. note", "Responded by", "Responded at", "Maint. disputes", "Disputed by", "Photos"];
     const data: (string | number)[][] = [header];
     // incidents arrive unfiltered (the page filters client-side); apply the view's type here
     const incidents = r.typeFilter ? r.incidents.filter((i) => i.typeKeys.includes(r.typeFilter as string)) : r.incidents;
@@ -51,11 +53,20 @@ export async function GET(request: Request) {
         i.details ?? "", i.rca ?? "", i.action ?? "", i.spares ?? "",
         i.elecIncharge ?? "", i.mechIncharge ?? "",
         m?.status ?? "", m?.note ?? "", m?.by ?? "", m?.at ?? "",
+        // The dispute, phrased exactly as the page shows it: maintenance's figure beside
+        // the logged one — or "agreed" once production's correction matches it.
+        m?.dispMinutes != null
+          ? (Math.round(i.minutesByType[m.dispType ?? ""] ?? 0) === Math.round(m.dispMinutes)
+              ? `agreed — ${DELAY_LABEL[m.dispType ?? ""] ?? m.dispType ?? "?"} ${fmtDur(m.dispMinutes)}`
+              : `${DELAY_LABEL[m.dispType ?? ""] ?? m.dispType ?? "?"} ${fmtDur(m.dispMinutes)} (logged ${fmtDur(i.minutesByType[m.dispType ?? ""] ?? 0)})`)
+          : "",
+        m?.dispMinutes != null ? (m?.dispBy ?? "") : "",
+        (photoMap.get(i.id)?.length ?? 0) || "",
       ]);
     }
 
     const ws = XLSX.utils.aoa_to_sheet(data);
-    ws["!cols"] = [{ wch: 11 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 8 }, { wch: 22 }, { wch: 30 }, { wch: 40 }, { wch: 8 }, { wch: 24 }, { wch: 16 }, { wch: 18 }, { wch: 18 }, { wch: 13 }, { wch: 30 }, { wch: 16 }, { wch: 16 }];
+    ws["!cols"] = [{ wch: 11 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 8 }, { wch: 22 }, { wch: 30 }, { wch: 40 }, { wch: 8 }, { wch: 24 }, { wch: 16 }, { wch: 18 }, { wch: 18 }, { wch: 13 }, { wch: 30 }, { wch: 16 }, { wch: 16 }, { wch: 34 }, { wch: 16 }, { wch: 7 }];
     ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: data.length - 1, c: header.length - 1 } }) };
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Downtime log");

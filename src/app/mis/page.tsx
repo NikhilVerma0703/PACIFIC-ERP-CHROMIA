@@ -3,6 +3,7 @@ import { Shell } from "@/components/Shell";
 import { Card, H2, Kpi, Empty, Badge, fmt } from "@/components/ui";
 import { getDowntimeReport, fmtDur } from "@/lib/downtime";
 import { getDowntimeResponses } from "@/lib/downtimeResponse";
+import { photosForRecords } from "@/lib/entryPhoto";
 import { canRespondDowntime } from "@/lib/rbac";
 import { DowntimeLogCard } from "./DowntimeLogCard";
 import { getLastShiftReport } from "@/lib/misShift";
@@ -31,6 +32,11 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
   // Map -> plain object: props crossing into the client log card must be serializable.
   const responses: Record<string, import("@/lib/downtimeResponse").DowntimeResp> = {};
   if (respMap) for (const [k, v] of respMap) responses[k] = v;
+  // Response photos, one query for the whole log (best-effort — an empty map just means
+  // no 📷 chips). Stored against the MIS row in entry_photo, served by /api/photo.
+  const photoMap = r ? await photosForRecords("Mis", r.incidents.map((i) => i.id)) : new Map<string, { id: string; filename: string }[]>();
+  const photos: Record<string, { id: string; filename: string }[]> = {};
+  for (const [k, v] of photoMap) photos[k] = v;
   const lastShift = await getLastShiftReport();
 
   // link to this page preserving the active filters, with overrides
@@ -238,6 +244,7 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
             canRespond={canRespond}
             respFailed={respFailed}
             responses={responses}
+            photos={photos}
           />
         </div>
       )}
