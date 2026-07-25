@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { slabLabel } from "@/lib/slabLabel";
 import { displayBatch } from "@/lib/batchDisplay";
+import { NONE } from "@/lib/inventory/filterValues";
 import { StockByDesign } from "./StockByDesign";
 
 interface Kpi {
@@ -25,10 +26,26 @@ interface SlabEvent {
   source: string | null; at: string;
 }
 
+// SlabStatus is a Prisma enum — a fixed set, so it stays hardcoded.
 const STATUSES = ["", "AVAILABLE", "RESERVED", "PACKED", "DISPATCHED", "RETURNED"];
-const GRADES = ["", "A", "A2", "B", "C", "CTS", "Printing", "Trial"];
-const THICKNESSES = ["", "1.2 cm", "2 cm", "3 cm", "7 mm", "8 mm", "10 mm"];
+
+// Grade, thickness and bay are free-text columns and are NOT hardcoded any more: the old
+// lists had drifted from the data, and because buildInventoryWhere matches thickness
+// exactly, the 287 slabs recorded as "3 cm to 2 cm" / "2 cm to 1 cm" / "2cm to 8mm" could
+// not be reached by that filter at all, while it offered "7 mm", which no slab has. The
+// real values come from /api/inventory/filters; these remain only as the fallback for a
+// failed fetch, so the row still works offline.
+const FALLBACK_GRADES = ["A", "A2", "B", "C", "Trial"];
+// Only reached if the fetch fails. Mirrors the list this replaced, minus "7 mm" (no slab
+// has it) — dropping "8 mm"/"10 mm" here would make 32 slabs unfilterable in the degraded
+// path, which the old list handled.
+const FALLBACK_THICKNESSES = ["1.2 cm", "2 cm", "3 cm", "8 mm", "10 mm"];
+// The canonical bays. Still used as-is by the bay-ASSIGNMENT control, which must offer
+// every bay that exists on the floor, not only the ones that happen to hold stock today.
 const BAYS = ["Bay 1", "Bay 2", "Bay 3", "Bay 4", "Bay 5"];
+
+interface FilterOpts { thicknesses: string[]; grades: string[]; bays: string[]; pis: string[]; customers: string[]; designs: string[] }
+const NO_OPTS: FilterOpts = { thicknesses: [], grades: [], bays: [], pis: [], customers: [], designs: [] };
 const ACTIONS = [
   { value: "", label: "Change status…" },
   { value: "reserve", label: "Reserve (PI hold)" },
@@ -37,7 +54,7 @@ const ACTIONS = [
   { value: "return", label: "Mark Returned (un-dispatch)" },
   { value: "release", label: "Release to Available" },
 ];
-const EMPTY = { design: "", batch: "", thickness: "", grade: "", slab: "", bay: "", status: "", rw: "" };
+const EMPTY = { design: "", batch: "", thickness: "", grade: "", slab: "", bay: "", status: "", rw: "", pi: "", customer: "" };
 
 // Legacy no-number slabs (imported as 9,000,000+n) display by their NB label.
 const displaySlab = (n: number, barcode?: string | null) =>
@@ -60,6 +77,8 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
   const [sSorts, setSSorts] = useState<{ k: keyof Slab; d: 1 | -1 }[]>([]);
   const [loading, setLoading] = useState(true);
   const [f, setF] = useState({ ...EMPTY });
+  const [opts, setOpts] = useState<FilterOpts>(NO_OPTS);
+  const [optsFailed, setOptsFailed] = useState(false);
 
   // dispatch move/assign
   // Selection is a Map (slab number -> the slab row), not a Set of numbers: the picked slabs
@@ -134,6 +153,14 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
       .finally(() => setLoading(false));
   };
   useEffect(() => { run(EMPTY); }, []);
+  useEffect(() => {
+    // Fetch once. Values change only when stock does, and a stale option simply returns
+    // no rows — so this is deliberately not refetched after every search.
+    fetch("/api/inventory/filters")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d && !d.error) setOpts({ ...NO_OPTS, ...d }); else setOptsFailed(true); })
+      .catch(() => setOptsFailed(true));
+  }, []);
 
   const loadEvents = (slab: string) => {
     setEvLoading(true);
@@ -530,13 +557,60 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
       ) : (
         <>
           <form className="rounded-xl border border-gray-200 bg-white p-4" onSubmit={(e) => { e.preventDefault(); run(f); }}>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
-              <input className={inputCls} placeholder="Colour / design" value={f.design} onChange={(e) => setF({ ...f, design: e.target.value })} />
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+              {/* Free text: the term is matched alias-aware server-side, so partial text is
+                  the point. The list offers CANONICAL names only — the raw column holds 414
+                  values but 274 of them are merged-away variants that buildInventoryWhere
+                  explicitly excludes, so offering those would suggest 274 dead searches. */}
+              <input className={inputCls} placeholder="Colour / design" list="inv-designs" value={f.design} onChange={(e) => setF({ ...f, design: e.target.value })} />
+              <datalist id="inv-designs">{opts.designs.map((d) => <option key={d} value={d} />)}</datalist>
+
               <input className={inputCls} placeholder="Batch" value={f.batch} onChange={(e) => setF({ ...f, batch: e.target.value })} />
               <input className={inputCls} placeholder="Slab # / barcode" value={f.slab} onChange={(e) => setF({ ...f, slab: e.target.value })} />
-              <select className={inputCls} value={f.bay} onChange={(e) => { const n = { ...f, bay: e.target.value }; setF(n); run(n); }}>{["", ...BAYS].map((b) => <option key={b} value={b}>{b || "Any bay"}</option>)}</select>
-              <select className={inputCls} value={f.grade} onChange={(e) => { const n = { ...f, grade: e.target.value }; setF(n); run(n); }}>{GRADES.map((g) => <option key={g} value={g}>{g || "Any grade"}</option>)}</select>
-              <select className={inputCls} value={f.thickness} onChange={(e) => { const n = { ...f, thickness: e.target.value }; setF(n); run(n); }}>{THICKNESSES.map((t) => <option key={t} value={t}>{t || "Any thickness"}</option>)}</select>
+
+              {/* PI and customer: new. Both were already visible per slab in the detail
+                  panel, but there was no way to ask "everything on PI 1416" — the question
+                  a Commercial login exists to answer. */}
+              <select className={inputCls} value={f.pi} onChange={(e) => { const n = { ...f, pi: e.target.value }; setF(n); run(n); }}>
+                <option value="">{optsFailed ? "PI list unavailable" : "Any PI"}</option>
+                {opts.pis.map((v) => <option key={v} value={v}>PI {v}</option>)}
+                <option value={NONE}>— no PI —</option>
+              </select>
+              <select className={inputCls} value={f.customer} onChange={(e) => { const n = { ...f, customer: e.target.value }; setF(n); run(n); }}>
+                <option value="">{optsFailed ? "Customer list unavailable" : "Any customer"}</option>
+                {opts.customers.map((v) => <option key={v} value={v}>{v}</option>)}
+                <option value={NONE}>— no customer —</option>
+              </select>
+
+              <select className={inputCls} value={f.bay} onChange={(e) => { const n = { ...f, bay: e.target.value }; setF(n); run(n); }}>
+                <option value="">Any bay</option>
+                {(opts.bays.length ? opts.bays : BAYS).map((b) => <option key={b} value={b}>{b}</option>)}
+                <option value={NONE}>— no bay —</option>
+              </select>
+              <select className={inputCls} value={f.grade} onChange={(e) => { const n = { ...f, grade: e.target.value }; setF(n); run(n); }}>
+                <option value="">Any grade</option>
+                {(() => {
+                  const list = opts.grades.length ? opts.grades : FALLBACK_GRADES;
+                  // The KPI cards can set a grade that no slab currently has (CTS,
+                  // Printing). Without an option for it the select would fall back to
+                  // showing "Any grade" while the results ARE filtered — so keep it.
+                  const all = f.grade && f.grade !== NONE && !list.includes(f.grade) ? [...list, f.grade] : list;
+                  return all.map((g) => <option key={g} value={g}>{g}</option>);
+                })()}
+                <option value={NONE}>— not graded —</option>
+              </select>
+              <select className={inputCls} value={f.thickness} onChange={(e) => { const n = { ...f, thickness: e.target.value }; setF(n); run(n); }}>
+                <option value="">Any thickness</option>
+                {(() => {
+                  const list = opts.thicknesses.length ? opts.thicknesses : FALLBACK_THICKNESSES;
+                  // Same guard as grade: onOpenSlabs can set a thickness the fallback list
+                  // lacks ("3 cm to 2 cm"), and without an option the select would read
+                  // "Any thickness" while the results ARE filtered.
+                  const all = f.thickness && f.thickness !== NONE && !list.includes(f.thickness) ? [...list, f.thickness] : list;
+                  return all.map((t) => <option key={t} value={t}>{t}</option>);
+                })()}
+                <option value={NONE}>— not set —</option>
+              </select>
               <select className={inputCls} value={f.status} onChange={(e) => { const n = { ...f, status: e.target.value }; setF(n); run(n); }}>{STATUSES.map((s) => <option key={s} value={s}>{s || "Any status"}</option>)}</select>
             </div>
             {f.rw === "1" && (

@@ -3,6 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
 import { normalizeBatch } from "@/lib/normalizeBatch";
+import { NONE, customerKey } from "@/lib/inventory/filterValues";
 
 const db = prisma as any;
 
@@ -29,10 +30,39 @@ export async function buildInventoryWhere(searchParams: URLSearchParams): Promis
     ];
   }
   if (q("batch")) where.batchKey = normalizeBatch(q("batch"));
-  if (q("thickness")) where.slabThickness = q("thickness");
-  if (q("grade")) where.grade = q("grade");
-  if (q("bay")) where.bayNumber = { contains: q("bay"), mode: "insensitive" };
+  // NONE asks for rows where the column is NULL — 922 slabs have no grade and 3,525 no
+  // bay, and there was previously no way to filter for either. Empty string still means
+  // "any", so this cannot be reached by leaving a filter blank. No row currently holds
+  // the literal "__none__", though nothing on the write side rejects it: the slab edit
+  // route takes free text for grade, bay and thickness.
+  if (q("thickness")) where.slabThickness = q("thickness") === NONE ? null : q("thickness");
+  if (q("grade")) where.grade = q("grade") === NONE ? null : q("grade");
+  if (q("bay")) where.bayNumber = q("bay") === NONE ? null : { contains: q("bay"), mode: "insensitive" };
   if (q("status")) where.status = q("status");
+  // PI is exact: it is picked from values already in the column. Customer is NOT exact —
+  // see below. Neither field is new information: the slab list API applies no `select`,
+  // so both are already on every row it returns.
+  if (q("pi")) where.reservedForPi = q("pi") === NONE ? null : q("pi");
+  if (q("customer")) {
+    const term = q("customer");
+    if (term === NONE) where.customer = null;
+    else {
+      // Match every spelling that folds to the same customer, not the raw string — see
+      // customerKey. Same shape as the design clause above, which resolves variants
+      // through DesignAlias for exactly this reason.
+      const rows: any[] = await db.finishedSlab
+        .findMany({ distinct: ["customer"], select: { customer: true }, where: { customer: { not: null } } })
+        .catch(() => []);
+      const key = customerKey(term);
+      const spellings = rows
+        .map((r) => r.customer)
+        .filter((c: unknown): c is string => typeof c === "string" && customerKey(c) === key);
+      // `in` whenever anything folds to this key -- NOT only when several do. The option
+      // label is cleaned for display, so it is not necessarily an exact column value; a
+      // customer stored once as "Heda Granites," would match nothing on an exact compare.
+      where.customer = spellings.length ? { in: spellings } : term;
+    }
+  }
   if (q("rw") === "1") where.rwStatus = "RW Required and ongoing";
   if (q("slab")) {
     const n = Number(q("slab"));
