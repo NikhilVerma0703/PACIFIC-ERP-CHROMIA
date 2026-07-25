@@ -8,9 +8,10 @@
 -- reason across both in every report and filter. Only one value is affected, and no
 -- trimmed twin exists yet, so this is a pure rename - nothing collapses together.
 --
--- Root cause is scripts/sync.ts, which copied Airtable multiselect values verbatim
--- (v.map(String), no trim). That is fixed in the same commit; without it the next sync
--- would write the untrimmed value straight back.
+-- Root cause was the Airtable importers, which copied multiselect values verbatim
+-- (v.map(String), no trim). Fixed in the same commit. The sync engine and its CLI were
+-- removed entirely on 2026-07-25; scripts/import.ts is the last remaining copy and
+-- carries the trim.
 --
 -- array_replace, not a general trim: it rewrites the element in place, so array ORDER is
 -- preserved. Idempotent - re-running matches nothing once applied.

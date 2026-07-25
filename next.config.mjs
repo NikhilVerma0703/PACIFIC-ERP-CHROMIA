@@ -13,7 +13,7 @@ const nextConfig = {
   serverExternalPackages: ["pdfmake", "puppeteer"],
   // pin the tracing root so the stray lockfile in the user folder is ignored
   outputFileTracingRoot: __dirname,
-  // fieldmap.json is read at runtime by the table layer + Airtable sync
+  // fieldmap.json is read at runtime by the table layer and the automations modules
   outputFileTracingIncludes: { "/**": ["./scripts/fieldmap.json"] },
 };
 

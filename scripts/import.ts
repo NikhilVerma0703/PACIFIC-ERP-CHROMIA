@@ -63,8 +63,8 @@ function coerce(kind: string, v: unknown): unknown {
     // DIFFERENT string, and option lists are built from the DISTINCT values in the column
     // (lib/tables.ts), so it renders as a second identical-looking chip and splits the
     // same value across both. Empty strings dropped for the same reason; record IDs never
-    // contain whitespace, so `link` is unaffected. Keep scripts/sync.ts, scripts/import.ts
-    // and this file in step — they are three copies of one rule.
+    // contain whitespace, so `link` is unaffected. This was one of three copies of the
+    // rule; the sync engine and its CLI were removed 2026-07-25, leaving this one.
     case "multiselect": case "link": return (Array.isArray(v) ? v.map(String) : [String(v)]).map((x) => x.trim()).filter(Boolean);
     case "json": return v;
     default: return String(v);

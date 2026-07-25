@@ -178,7 +178,6 @@ export function Nav({
   ];
   const admin = [
     ...(showAdmin ? [{ href: "/admin/users", icon: I.users, label: "Users & Roles" }] : []),
-    ...(isAdmin   ? [{ href: "/admin/migration", icon: I.box, label: "Airtable Sync" }] : []),
   ];
 
   if (branch === "INTERNATIONAL_SALES") {

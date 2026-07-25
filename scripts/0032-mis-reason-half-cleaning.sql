@@ -20,11 +20,13 @@
 -- array_replace, not a general trim: it rewrites the element in place, so array ORDER is
 -- preserved. Idempotent - re-running matches nothing once applied.
 --
--- CAVEAT worth knowing: mis is still an Airtable-mirrored table
--- (sync_state.Mis.source = 'AIRTABLE') and reason_for_deviation is not in
--- ERP_OWNED_FIELDS, so a sync would overwrite these rows from Airtable and undo this.
--- Sync is dormant today (last_sync_at is null on every model, no cron on /api/sync). To
--- make it durable, change the option in Airtable too, or cut Mis over to source 'ERP'.
+-- DURABILITY: when this was written, mis was still an Airtable-mirrored table and a sync
+-- would have overwritten these rows and undone the relabel. The whole sync feature was
+-- removed later the same day, so nothing pulls from Airtable any more and this is now
+-- permanent -- with ONE exception: scripts/import.ts, the original one-off importer, is
+-- still present and still deletes and re-pulls every 'rec%'-origin row. Its cutover guard
+-- reads sync_state.source = 'ERP', and every row is 'AIRTABLE', so the guard never fires.
+-- Do not run npm run import unless that has been dealt with.
 
 UPDATE mis
    SET reason_for_deviation = array_replace(reason_for_deviation, 'INTERMEDIATE CLEANING', 'HALF CLEANING/ INTERMEDIATE CLEANING')

@@ -21,12 +21,11 @@ export default auth((req) => {
     return Response.redirect(url, 308);
   }
 
-  // 2) public paths: login, auth endpoints, cron sync (has its own secret), static assets
+  // 2) public paths: login, auth endpoints, cron endpoints (each has its own secret), static assets
   const p = nextUrl.pathname;
   const isPublic =
     p === "/login" ||
     p.startsWith("/api/auth") ||
-    p.startsWith("/api/sync") ||
     p.startsWith("/api/telegram/report") ||   // cron-only: gated by CRON_SECRET inside
     p.startsWith("/api/telegram/webhook") ||  // Telegram-only: gated by webhook secret inside
     p.startsWith("/api/sales/cron") ||        // cron-only: gated by CRON_SECRET inside

@@ -1,5 +1,6 @@
-// Telegram reporting cron. Called hourly (GitHub Actions) with the same
-// Bearer CRON_SECRET as /api/sync. AUTO mode (no ?kind): sends the hourly
+// Telegram reporting cron. Called hourly by Vercel Cron (vercel.json, :40 UTC =
+// :10 IST), authenticated with Bearer CRON_SECRET. The GitHub workflow of the same
+// name is a manual test button only. AUTO mode (no ?kind): sends the hourly
 // MIS message; when the completed hour closes a shift (14/22/06 IST) it also
 // sends that shift's report; at 07:00 IST it also sends yesterday's daily.
 // Manual testing: ?kind=hourly|shift|daily (&date=YYYY-MM-DD&hour=HH - HH).

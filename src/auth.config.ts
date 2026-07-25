@@ -13,7 +13,6 @@ export const authConfig = {
       const isPublic =
         nextUrl.pathname === "/login" ||
         nextUrl.pathname.startsWith("/api/auth") ||
-        nextUrl.pathname.startsWith("/api/sync") ||
         /\.(png|jpg|jpeg|svg|webp|ico|webmanifest|txt|xml)$/.test(nextUrl.pathname);
       if (isPublic) return true;
       if (!isLoggedIn) return false;
