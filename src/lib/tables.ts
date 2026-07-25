@@ -139,6 +139,39 @@ export function coerceField(kind: FieldKind, raw: FormDataEntryValue | null): un
   }
 }
 
+/** Option values a field must STOP offering, without touching the rows that already
+ *  hold them. The MIS "Reason for deviation" list is not authored anywhere — it is the
+ *  set of distinct values present in the data — so retiring a reason means excluding it
+ *  here, not deleting it from history.
+ *
+ *  History is deliberately left intact: 270 MIS rows carry the five retired reasons, and
+ *  223 of those classify as "breakdown" in the downtime report. The keywords in
+ *  classifyReason (lib/downtime.ts) MUST therefore keep matching FAULT ALARM, HMI and
+ *  BELT DAMAGE even though nobody can pick them again — remove those and past reports
+ *  silently re-bucket as "process".
+ *
+ *  Matched case-insensitively and trimmed, because the data is hand-entered. */
+const RETIRED_OPTIONS: Record<string, string[]> = {
+  reasonForDeviation: [
+    "BELT DAMAGE",
+    "ELECTRICAL - SUPPLY ISSUE",
+    "FAULT ALARM",
+    "HMI ISSUE",
+    "MECHANICAL - BELT ISSUE",
+    // Renamed, not dropped -> "Liquid / Powder issue at Robos" (scripts/0030 relabels
+    // the 37 rows that used the old wording).
+    "Pigment Issue (Liquid or Powder pigment)",
+  ],
+};
+const _retired = new Map<string, Set<string>>(
+  Object.entries(RETIRED_OPTIONS).map(([k, v]) => [k, new Set(v.map((x) => x.trim().toLowerCase()))])
+);
+/** Drop retired values from a computed option list. */
+const liveOptions = (field: string, vals: string[]): string[] => {
+  const gone = _retired.get(field);
+  return gone ? vals.filter((v) => !gone.has(String(v).trim().toLowerCase())) : vals;
+};
+
 // Options that must ALWAYS be offered, regardless of what's in the data yet.
 const PRESET_OPTIONS: Record<string, string[]> = {
   distributorVein1GevSlot: ["7mm", "9mm", "11mm"],
@@ -158,6 +191,9 @@ const PRESET_OPTIONS: Record<string, string[]> = {
   qualityGrade: ["Not graded yet", "A", "A2", "B", "C (Reject)", "CTS", "Printing"],
   polishType: ["Polish", "Suede", "Honed", "Leathered"],
   bay: ["Bay 1", "Bay 2", "Bay 3", "Bay 4", "Bay 5"],
+  // MIS "Reason for deviation": the list is otherwise whatever the data contains, so a
+  // renamed reason needs a preset to appear at all before the first row uses it.
+  reasonForDeviation: ["Liquid / Powder issue at Robos"],
   // MIS sheet: machine areas exactly as printed on the paper daily report
   areaOfProblem: ["Silos", "Mixer", "Distributor", "Kreos", "Chessboard", "Robot", "Press", "Oven", "Rubber Line", "Cooling Tower", "Jot"],
   slabThickness: ["1.2 cm", "2 cm", "3 cm", "7 mm"],
@@ -197,19 +233,21 @@ export async function selectOptions(model: string): Promise<Record<string, strin
         const seen = new Set(preset.map((x) => x.toLowerCase()));
         const extras: string[] = [];
         for (const v of vals) { const k = v.toLowerCase(); if (!seen.has(k)) { seen.add(k); extras.push(v); } }
-        const merged = [...preset, ...extras.sort()]; // preset in authored order, extras sorted after
+        const merged = liveOptions(f.prismaField, [...preset, ...extras.sort()]); // preset in authored order, extras sorted after
         if (merged.length) out[f.prismaField] = merged;
       } else if (f.airtableType === "multipleSelects" && meta.tableMap && f.column) {
         // distinct values computed in the DB (covers the whole table, returns a handful of rows)
         const rows: { v: unknown }[] = await db.$queryRawUnsafe(`SELECT DISTINCT unnest("${f.column}") AS v FROM "${meta.tableMap}" LIMIT 500`);
         const set = new Set<string>(PRESET_OPTIONS[f.prismaField] ?? []);
         for (const r of rows) if (r.v) set.add(String(r.v));
-        if (set.size) out[f.prismaField] = [...set].sort();
+        const vals = liveOptions(f.prismaField, [...set].sort());
+        if (vals.length) out[f.prismaField] = vals;
       } else if (f.airtableType === "multipleSelects") {
         const rows: Record<string, unknown>[] = await d.findMany({ select: { [f.prismaField]: true }, take: 3000 });
         const set = new Set<string>(PRESET_OPTIONS[f.prismaField] ?? []);
         for (const r of rows) for (const v of (r[f.prismaField] as unknown[] | null | undefined) ?? []) if (v) set.add(String(v));
-        if (set.size) out[f.prismaField] = [...set].sort();
+        const vals = liveOptions(f.prismaField, [...set].sort());
+        if (vals.length) out[f.prismaField] = vals;
       }
     } catch { /* ignore */ }
   };
@@ -217,7 +255,8 @@ export async function selectOptions(model: string): Promise<Record<string, strin
     await Promise.all(meta.fields.slice(i, i + BATCH).map(fieldJob));
   // Never DEGRADE: a field whose query failed this run (no values) keeps the
   // values the previous run had — a select must not fall back to a text box.
-  if (hit) for (const [k, v] of Object.entries(hit.data)) if (!(out[k]?.length) && v.length) out[k] = v;
+  // (filtered again: a cache entry written before a value was retired would resurrect it)
+  if (hit) for (const [k, v] of Object.entries(hit.data)) if (!(out[k]?.length) && v.length) out[k] = liveOptions(k, v);
   _optCache.set(model, { at: Date.now(), data: out });
   return out;
 }

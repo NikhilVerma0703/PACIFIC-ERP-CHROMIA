@@ -141,7 +141,13 @@ export function FieldInput({ f, value, opts, operatorName, label, required = fal
     input = <select name={f.prismaField} defaultValue={cur} required={required} className={base}><option value="">—</option>{[...extra, ...opts].map((o) => <option key={o} value={o}>{o}</option>)}</select>;
   } else if (f.airtableType === "multipleSelects" && opts && opts.length) {
     const arr = Array.isArray(value) ? value.map(String) : [];
-    input = <div className="flex max-h-32 flex-wrap gap-1.5 overflow-auto rounded-lg border border-gray-200 p-2">{opts.map((o) => <label key={o} className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-xs hover:bg-gray-50"><input type="checkbox" name={f.prismaField} value={o} defaultChecked={arr.includes(o)} className="h-3.5 w-3.5 rounded border-gray-300 text-brand" />{o}</label>)}</div>;
+    // Mirror the singleSelect branch above: a value this row ALREADY holds must stay
+    // rendered even when it is no longer offered, or it silently disappears on save —
+    // the checkbox is never drawn, so the browser never submits it. Reasons retired from
+    // the MIS list (lib/tables.ts RETIRED_OPTIONS) are exactly this case: 270 rows hold
+    // one, and editing any of them for an unrelated reason would have erased it.
+    const extra = arr.filter((v) => !opts.includes(v));
+    input = <div className="flex max-h-32 flex-wrap gap-1.5 overflow-auto rounded-lg border border-gray-200 p-2">{[...extra, ...opts].map((o) => <label key={o} className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-xs hover:bg-gray-50"><input type="checkbox" name={f.prismaField} value={o} defaultChecked={arr.includes(o)} className="h-3.5 w-3.5 rounded border-gray-300 text-brand" />{o}</label>)}</div>;
   } else if (f.kind === "bool") {
     input = <label className="inline-flex cursor-pointer items-center gap-2"><input name={f.prismaField} type="checkbox" defaultChecked={value === true} className="h-4 w-4 rounded border-gray-300 text-brand focus:ring-brand/30" /><span className="text-sm text-gray-500">Yes</span></label>;
   } else if (f.kind === "date") {
