@@ -35,7 +35,13 @@ function coerce(kind: string, v: unknown): unknown {
     case "number": case "int": { const n = typeof v === "number" ? v : parseFloat(String(v)); return Number.isFinite(n) ? (kind === "int" ? Math.trunc(n) : n) : undefined; }
     case "bool": return v === true || v === "true";
     case "date": { const d = new Date(String(v)); return isNaN(d.getTime()) ? undefined : d; }
-    case "multiselect": case "link": return Array.isArray(v) ? v.map(String) : [String(v)];
+    // Trimmed: an Airtable option with a stray trailing space ("MATERIAL DELAY ") is a
+    // DIFFERENT string, and option lists are built from the DISTINCT values in the column
+    // (lib/tables.ts), so it renders as a second identical-looking chip and splits the
+    // same value across both. Empty strings dropped for the same reason; record IDs never
+    // contain whitespace, so `link` is unaffected. Keep scripts/sync.ts, scripts/import.ts
+    // and this file in step — they are three copies of one rule.
+    case "multiselect": case "link": return (Array.isArray(v) ? v.map(String) : [String(v)]).map((x) => x.trim()).filter(Boolean);
     default: return v;
   }
 }

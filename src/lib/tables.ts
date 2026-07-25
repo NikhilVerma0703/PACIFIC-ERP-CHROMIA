@@ -239,13 +239,16 @@ export async function selectOptions(model: string): Promise<Record<string, strin
         // distinct values computed in the DB (covers the whole table, returns a handful of rows)
         const rows: { v: unknown }[] = await db.$queryRawUnsafe(`SELECT DISTINCT unnest("${f.column}") AS v FROM "${meta.tableMap}" LIMIT 500`);
         const set = new Set<string>(PRESET_OPTIONS[f.prismaField] ?? []);
-        for (const r of rows) if (r.v) set.add(String(r.v));
+        // Trimmed like the singleSelect branch above: a value differing only by stray
+        // whitespace is a different string, so it would render as a second, identical-
+        // looking chip and split the same reason across both.
+        for (const r of rows) if (r.v) { const t = String(r.v).trim(); if (t) set.add(t); }
         const vals = liveOptions(f.prismaField, [...set].sort());
         if (vals.length) out[f.prismaField] = vals;
       } else if (f.airtableType === "multipleSelects") {
         const rows: Record<string, unknown>[] = await d.findMany({ select: { [f.prismaField]: true }, take: 3000 });
         const set = new Set<string>(PRESET_OPTIONS[f.prismaField] ?? []);
-        for (const r of rows) for (const v of (r[f.prismaField] as unknown[] | null | undefined) ?? []) if (v) set.add(String(v));
+        for (const r of rows) for (const v of (r[f.prismaField] as unknown[] | null | undefined) ?? []) if (v) { const t = String(v).trim(); if (t) set.add(t); }
         const vals = liveOptions(f.prismaField, [...set].sort());
         if (vals.length) out[f.prismaField] = vals;
       }

@@ -146,8 +146,17 @@ export function FieldInput({ f, value, opts, operatorName, label, required = fal
     // the checkbox is never drawn, so the browser never submits it. Reasons retired from
     // the MIS list (lib/tables.ts RETIRED_OPTIONS) are exactly this case: 270 rows hold
     // one, and editing any of them for an unrelated reason would have erased it.
-    const extra = arr.filter((v) => !opts.includes(v));
-    input = <div className="flex max-h-32 flex-wrap gap-1.5 overflow-auto rounded-lg border border-gray-200 p-2">{[...extra, ...opts].map((o) => <label key={o} className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-xs hover:bg-gray-50"><input type="checkbox" name={f.prismaField} value={o} defaultChecked={arr.includes(o)} className="h-3.5 w-3.5 rounded border-gray-300 text-brand" />{o}</label>)}</div>;
+    //
+    // Compared TRIMMED on both sides, because selectOptions trims the values it offers
+    // while the stored value may still carry whitespace from an older Airtable import
+    // (live: oven.slab_defect "Cavity " on 119 rows, 12 inventory.design values). A raw
+    // comparison would render BOTH "Cavity " and "Cavity" — two identical-looking chips,
+    // the very split the trim exists to remove. Matching trimmed shows one, already
+    // ticked, and saving writes the clean value, so the row self-heals on edit.
+    const norm = (v: string) => v.trim();
+    const extra = arr.filter((v) => !opts.some((o) => norm(o) === norm(v)));
+    const checked = (o: string) => arr.some((v) => norm(v) === norm(o));
+    input = <div className="flex max-h-32 flex-wrap gap-1.5 overflow-auto rounded-lg border border-gray-200 p-2">{[...extra, ...opts].map((o) => <label key={o} className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-xs hover:bg-gray-50"><input type="checkbox" name={f.prismaField} value={o} defaultChecked={checked(o)} className="h-3.5 w-3.5 rounded border-gray-300 text-brand" />{o}</label>)}</div>;
   } else if (f.kind === "bool") {
     input = <label className="inline-flex cursor-pointer items-center gap-2"><input name={f.prismaField} type="checkbox" defaultChecked={value === true} className="h-4 w-4 rounded border-gray-300 text-brand focus:ring-brand/30" /><span className="text-sm text-gray-500">Yes</span></label>;
   } else if (f.kind === "date") {

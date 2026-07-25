@@ -44,7 +44,19 @@ function coerce(kind: string, v: unknown): unknown {
     case "number": case "int": { const n = typeof v === "number" ? v : parseFloat(String(v)); return Number.isFinite(n) ? (kind === "int" ? Math.trunc(n) : n) : undefined; }
     case "bool": return v === true || v === "true";
     case "date": { const d = new Date(String(v)); return isNaN(d.getTime()) ? undefined : d; }
-    case "multiselect": case "link": return Array.isArray(v) ? v.map(String) : [String(v)];
+    // Trimmed: an Airtable option with a stray trailing space ("MATERIAL DELAY ") is a
+    // DIFFERENT string, and option lists are built from the DISTINCT values in the column
+    // (lib/tables.ts), so it renders as a second identical-looking chip and splits the
+    // same value across both. Empty strings dropped for the same reason; record IDs never
+    // contain whitespace, so `link` is unaffected. Keep src/lib/airtableSync.ts,
+    // scripts/import.ts and this file in step — they are three copies of one rule.
+    //
+    // scripts/0031 cleaned the MIS column this had already split. Other columns are still
+    // dirty on purpose: oven.slab_defect ("Cavity ", 119 rows) is a pure rename, but three
+    // inventory.design values have trimmed TWINS, so cleaning that column would MERGE
+    // stock rows rather than rename them — a decision for the owner, not a migration to
+    // slip in. RecordEditor compares trimmed, so neither renders a duplicate chip.
+    case "multiselect": case "link": return (Array.isArray(v) ? v.map(String) : [String(v)]).map((x) => x.trim()).filter(Boolean);
     default: return v;
   }
 }
