@@ -137,7 +137,7 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
               <Kpi label="Slabs made (actual)" value={fmt(r.actualSlabs)} sub={r.misFallbackSlabs > 0 ? `incl. ${fmt(r.misFallbackSlabs)} from MIS hourly log — press entry pending` : "distinct slabs pressed"} />
               <Kpi label="Achievable" value={fmt(r.achievable)} sub="target − downtime" />
-              <Kpi label="Target" value={fmt(r.target)} sub={`24/12 per hr × ${r.productiveHours}h productive`} />
+              <Kpi label="Target" value={fmt(r.target)} sub={r.stdRate != null ? `${r.productiveHours}h productive · Std on ${fmt(r.stdHours)}/${fmt(r.ratedHours)} h` : `24/12 per hr × ${r.productiveHours}h productive`} />
               <Kpi label="Lost to downtime" value={fmt(r.lost)} sub="achievable - actual" className={r.lost > 0 ? "ring-1 ring-amber-300" : ""} />
               <Kpi label="Designs made" value={fmt(r.designs.length)} sub={r.designs.length === 0 ? "distinct designs" : r.designs.length <= 2 ? r.designs.map((d) => d.design).join(", ") : `${fmt(r.designs.length)} distinct designs`} />
             </div>
@@ -153,7 +153,7 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
                 ))}
               </div>
               {r.lost > 0 && <p className="mt-2 text-xs text-amber-700">~{fmt(r.lost)} slab(s) lost to downtime (achievable - actual). Total downtime {fmtDur(r.totalMinutes)}.</p>}
-              <p className="mt-2 text-[11px] text-gray-400">Target = capacity: 21 productive h/day (3 h cleaning) at the rate that ran each hour - 24 slabs/hr normal, 12/hr robo - over {fmt(r.daysCounted)} day(s) = {r.productiveHours} productive h (the in-progress day is prorated to hours elapsed) (this period: {fmt(r.roboHours)} robo hr @ 12, {fmt(r.normalHours)} normal hr @ 24). Achievable subtracts unplanned downtime + cleaning beyond 3 h/day. Lost = Achievable - Actual. {fmt(r.pressBatches - r.unloggedBatches)} of {fmt(r.pressBatches)} pressed batches have MIS entries.</p>
+              <p className="mt-2 text-[11px] text-gray-400">Target = capacity: 21 productive h/day (3 h cleaning) over {fmt(r.daysCounted)} day(s) = {r.productiveHours} productive h (the in-progress day is prorated to hours elapsed), at the Slabs/hr Std entered on the MIS form{r.stdRate != null ? <> — each day rated on the Std entered THAT day, so no single rate multiplies out to the total. {fmt(r.stdHours)} of {fmt(r.ratedHours)} logged rows carry a Std (mean <b>{r.stdRate}/hr</b>); a day with none — Std entry began 9 Jul 2026 — falls back to 24/hr normal · 12/hr robo, as does a day with no MIS rows at all</> : <> — no row in this range carries a Std, so the 24/hr normal · 12/hr robo blend was used throughout</>}. Achievable subtracts unplanned downtime + cleaning beyond 3 h/day. Lost = Achievable - Actual. {fmt(r.pressBatches - r.unloggedBatches)} of {fmt(r.pressBatches)} pressed batches have MIS entries.</p>
             </Card>
           </div>
 
@@ -239,6 +239,8 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
               skeleton swaps in, and the collapse throws the scroll to the top). */}
           <DowntimeLogCard
             incidents={r.incidents}
+            incidentsTotal={r.incidentsTotal}
+            typeTotals={Object.fromEntries(r.byType.map((t) => [t.key, t.incidents]))}
             initialType={r.typeFilter}
             from={from} to={to} batch={batch}
             canRespond={canRespond}

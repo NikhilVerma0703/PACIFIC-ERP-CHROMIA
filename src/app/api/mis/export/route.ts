@@ -23,7 +23,9 @@ export async function GET(request: Request) {
     const batch = sp.get("b")?.trim() || undefined;
     const type = sp.get("type")?.trim() || undefined;
 
-    const r = await getDowntimeReport({ from, to, batch, type });
+    // allIncidents: the file must hold every row in the range. Without it the report caps
+    // at 300 and the download silently disagreed with the KPI cards above it.
+    const r = await getDowntimeReport({ from, to, batch, type, allIncidents: true });
     const resp = await getDowntimeResponses(r.incidents.map((i) => i.id));
     // null = the response lookup failed. Refuse rather than export a file whose
     // "Maint." columns read as "nobody responded" — that file outlives the glitch.

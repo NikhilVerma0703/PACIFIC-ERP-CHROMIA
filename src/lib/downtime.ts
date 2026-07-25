@@ -2,8 +2,9 @@
 // capacity-based target.
 //   - Downtime by type (process/cleaning/breakdown/power-out), reason, day, hour;
 //     incident/RCA log; impossible (>60 min/hr) flag.
-//   - Target = 24 slabs/hr x 21 productive hrs/day (24h - 3h planned cleaning) x days.
-//     The rate blends PER HOUR by what ran (robo hours @ 12/hr, else 24/hr).
+//   - Target = rate x 21 productive hrs/day (24h - 3h planned cleaning) x days, where the
+//     rate for a day is the mean "Slabs/hr Std" operators entered THAT DAY. A day with no
+//     Std falls back to the older blend of robo hours @ 12/hr, else 24/hr.
 //   - Achievable = Target - lost output, where "lost" = unplanned downtime
 //     (process+breakdown+power-out) PLUS cleaning beyond the 3 h/day baseline
 //     (multiple SKU changes => extra cleaning => fewer productive hours).
@@ -40,6 +41,17 @@ export interface IncidentRow {
 export interface DowntimeReport {
   from: string; to: string; batch: string | null; typeFilter: string | null;
   rows: number; hoursLogged: number; totalMinutes: number; overCap: number;
+  /** Incident rows the range holds, UNFILTERED. `incidents` is capped for the page
+   *  payload, so a caller showing an unfiltered count must use this rather than
+   *  incidents.length. Under a type filter it is the wrong denominator — the true
+   *  per-type count is byType[i].incidents, which is aggregated over every row. */
+  incidentsTotal: number;
+  /** Slabs/hr the target was built from: the mean Std operators entered, or null when the
+   *  range carries none (then the old robo/normal blend was used). Shown on the page so
+   *  the figure can always be traced to a number somebody typed. */
+  stdRate: number | null;
+  stdHours: number;   // hours in the range that carried a Std
+  ratedHours: number; // hours in the range at all (stdHours/ratedHours = coverage)
   byType: DelayType[]; byReason: ReasonRow[]; trend: TrendPoint[]; byHour: HourRow[]; incidents: IncidentRow[];
   actualSlabs: number; target: number; achievable: number; lost: number; designs: DesignRow[];
   misFallbackSlabs: number; misFallbackDays: number; // days with MIS hours but no press rows yet (entry lag)
@@ -61,7 +73,7 @@ export const classifyReason = (r: string): string => {
 };
 const isRobo = (t: unknown) => String(t ?? "").trim().toLowerCase() === "robo";
 
-export async function getDowntimeReport(opts: { from?: string; to?: string; batch?: string; type?: string }): Promise<DowntimeReport> {
+export async function getDowntimeReport(opts: { from?: string; to?: string; batch?: string; type?: string; allIncidents?: boolean }): Promise<DowntimeReport> {
   // DB dates are naive IST (IST wall-clock stored as UTC). Build the window in IST
   // and cap the upper bound at "now", so "Today" runs 12am IST -> now (not the whole
   // calendar day, and never future-logged hours).
@@ -76,7 +88,7 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   const typeFilter = DELAY_FIELDS.some((d) => d.key === opts.type) ? opts.type! : null;
 
   const misWhere: any = batch ? { batchKey: batch } : { date: { gte: from, lte: toEnd } };
-  const sel: any = { id: true, date: true, hour: true, batch: true, batchKey: true, productionType: true, slabsPerHourActual: true, design: true, reasonForDeviation: true, details: true, rcaNo: true, actionTaken: true, sparesUsed: true, anyBreakdownYesNo: true, electricalInchargeName: true, mechanicalInchargeName: true };
+  const sel: any = { id: true, date: true, hour: true, batch: true, batchKey: true, productionType: true, slabsPerHourActual: true, slabsPerHourStd: true, design: true, reasonForDeviation: true, details: true, rcaNo: true, actionTaken: true, sparesUsed: true, anyBreakdownYesNo: true, electricalInchargeName: true, mechanicalInchargeName: true };
   for (const d of DELAY_FIELDS) sel[d.col] = true;
   const pressWhere: any = batch ? { batchKey: batch } : { date: { gte: from, lte: toEnd } };
 
@@ -92,12 +104,23 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   const otherByDay = new Map<string, number>();        // process+breakdown+power-out per day
   const hourMap = new Map<string, { minutes: number; incidents: number }>();
   const dayRobo = new Map<string, { robo: number; other: number }>();
+  // Std entered on the MIS form, per day and overall. Nobody entered one before
+  // 2026-07-09; since then it is filled on roughly half the hours. The per-day mean rates
+  // that day (capacity block below); the overall mean is used only by batch mode and to
+  // report coverage on the page.
+  const dayStd = new Map<string, { sum: number; n: number }>();
+  let stdSum = 0, stdN = 0;
   const incidents: IncidentRow[] = [];
   let totalMinutes = 0, hoursLogged = 0, overCap = 0, cleanTotal = 0, otherTotal = 0;
 
   for (const r of rows) {
     const day = r.date ? dayKey(r.date) : null;
     if (day) { const e = dayRobo.get(day) ?? { robo: 0, other: 0 }; if (isRobo(r.productionType)) e.robo++; else e.other++; dayRobo.set(day, e); }
+    const std = Number(r.slabsPerHourStd ?? 0);
+    if (Number.isFinite(std) && std > 0) {
+      stdSum += std; stdN++;
+      if (day) { const e = dayStd.get(day) ?? { sum: 0, n: 0 }; e.sum += std; e.n++; dayStd.set(day, e); }
+    }
 
     let rowMin = 0; const typeKeys: string[] = []; const types: string[] = [];
     const minutesByType: Record<string, number> = {};
@@ -186,11 +209,38 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   designs.sort((a, b) => b.slabs - a.slabs);
 
   // ---- capacity target + achievable ----
-  // Rate is PER HOUR by what ran (robo 12/hr, else 24/hr), so a day that switches
-  // SKU/design blends; applied to 21 productive hrs/day. downtimeCost (slabs) =
-  // unplanned downtime + cleaning beyond the 3 h/day baseline, at that day's rate.
-  // Achievable = target - downtimeCost; reported Lost = Achievable - Actual.
-  const blendRate = (robo: number, other: number) => (robo + other > 0 ? (robo * ROBO_RATE + other * NORMAL_RATE) / (robo + other) : NORMAL_RATE);
+  // The rate is the "Slabs/hr Std" operators enter on the MIS form. It used to be
+  // hardcoded (24/hr normal, 12/hr robo) and ignored the entered Std entirely. Measured
+  // on 2026-07-01..25: the old blend came out at 20.5/hr against a recorded mean of
+  // 14.1/hr, so target fell 10,673 -> 7,713 (1.38x) when this changed. "Lost to downtime"
+  // moves far more, because it is a RESIDUAL (achievable - actual): 3,845 -> 1,537 on
+  // that range, and 2,568 -> 259 over the Std era alone. Expect that figure to look very
+  // different, and do not compare it across 9 July.
+  //
+  // A day is rated by the mean of ITS OWN filled hours; the blank ones ride along on it.
+  // A day with no Std at all falls back to the old robo/normal blend -- deliberately NOT
+  // to the range mean. Nobody entered a Std before 2026-07-09, and borrowing July's
+  // average to rate March would both invent a standard for months nobody measured and
+  // make a month's target shift depending on what else the selected range happened to
+  // include. So in the DATE-RANGE view a given day rates the same in every view, and a
+  // range spanning 9 July openly mixes the two bases.
+  //
+  // BATCH mode is different and knowingly so: it has no per-day loop, so it applies one
+  // batch-wide mean to every hour of the batch, including days that recorded no Std. A
+  // batch straddling 9 July will therefore rate its pre-Std days differently here than
+  // the date-range view does. Splitting batch mode by day would be the fix if that ever
+  // matters.
+  //
+  // Everything else is unchanged: 21 productive hrs/day, cleaning beyond the 3 h/day
+  // baseline charged as downtime, Achievable = target - downtimeCost, Lost = Achievable
+  // - Actual.
+  const fallbackRate = (robo: number, other: number) => (robo + other > 0 ? (robo * ROBO_RATE + other * NORMAL_RATE) / (robo + other) : NORMAL_RATE);
+  const rangeStd = stdN > 0 ? stdSum / stdN : null;
+  /** Rate for a day: the mean Std entered ON THAT DAY, else the old robo/normal blend. */
+  const rateFor = (day: string | null, robo: number, other: number) => {
+    if (day) { const e = dayStd.get(day); if (e && e.n > 0) return e.sum / e.n; }
+    return fallbackRate(robo, other);
+  };
   let target = 0, downtimeCost = 0, roboHours = 0, normalHours = 0, daysCounted = 0, productiveHours = 0;
   // For an in-progress "Today", prorate productive hours + cleaning baseline to the
   // fraction of the day elapsed (IST), so a full-day target isn't set against a part-day actual.
@@ -199,7 +249,8 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   if (batch) {
     const roboR = rows.filter((r) => isRobo(r.productionType)).length;
     const normR = rows.length - roboR;
-    const rate = blendRate(roboR, normR);
+    // Batch mode has no per-day loop: use the Std entered on this batch's own hours.
+    const rate = rangeStd ?? fallbackRate(roboR, normR);
     daysCounted = pressDaySet.size || 1;
     target = rate * HOURS_PER_DAY * daysCounted;
     const lostMin = otherTotal + Math.max(0, cleanTotal - CLEAN_BASELINE_MIN * daysCounted);
@@ -210,7 +261,7 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
       const day = dayKey(d);
       const e = dayRobo.get(day);
       const robo = e?.robo ?? 0, other = e?.other ?? 0;
-      const rate = blendRate(robo, other);
+      const rate = rateFor(day, robo, other);
       const frac = day === todayKey ? elapsedFrac : 1; // prorate the in-progress day
       roboHours += robo; normalHours += other;
       daysCounted++;
@@ -246,7 +297,13 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   return {
     from: fromStr, to: toStr, batch, typeFilter,
     rows: rows.length, hoursLogged, totalMinutes: r0(totalMinutes), overCap,
-    byType, byReason, trend, byHour, incidents: shown.slice(0, 300),
+    byType, byReason, trend, byHour,
+    // The page caps the list to keep its payload sane; the export asks for all of them,
+    // because a downloaded file that silently stops at 300 rows is worse than a big one.
+    incidents: opts.allIncidents ? shown : shown.slice(0, 300),
+    incidentsTotal: shown.length,
+    stdRate: rangeStd != null ? Math.round(rangeStd * 10) / 10 : null,
+    stdHours: stdN, ratedHours: rows.length,
     actualSlabs, target, achievable, lost, designs, daysCounted, productiveHours, roboHours, normalHours,
     misFallbackSlabs, misFallbackDays: misFallbackDaySet.size,
     pressBatches: pressBatchSet.size, misBatches: misBatchSet.size, unloggedBatches: unloggedBatchList.length, unloggedBatchList: unloggedBatchList.slice(0, 60),

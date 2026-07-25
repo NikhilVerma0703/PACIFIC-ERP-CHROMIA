@@ -15,8 +15,16 @@ import type { IncidentRow } from "@/lib/downtime";
 import type { DowntimeResp } from "@/lib/downtimeResponse";
 import { DowntimeRespond } from "@/components/DowntimeRespond";
 
-export function DowntimeLogCard({ incidents, initialType, from, to, batch, canRespond, respFailed, responses, photos }: {
+export function DowntimeLogCard({ incidents, incidentsTotal, initialType, from, to, batch, canRespond, respFailed, responses, photos }: {
   incidents: IncidentRow[];
+  /** Rows in the range, which may exceed `incidents` — that list is capped for payload
+   *  size. The KPI cards above are aggregated over ALL of them, so the difference has to
+   *  be stated or the log looks like it is contradicting them. */
+  incidentsTotal: number;
+  /** True per-type incident counts over the WHOLE range (report byType). Needed because
+   *  a type-filtered view filters the already-capped list, so its own length is not the
+   *  real count — that view was the one still contradicting the KPI tile above it. */
+  typeTotals: Record<string, number>;
   initialType: string | null;
   from: string; to: string; batch: string;
   canRespond: boolean;
@@ -49,6 +57,19 @@ export function DowntimeLogCard({ incidents, initialType, from, to, batch, canRe
     <Card>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <H2>Breakdown &amp; deviation log · {shown.length}</H2>
+        {(() => {
+          // Compare against the RIGHT denominator: the whole range unfiltered, or that
+          // type's true count when a chip is active. Both come from figures aggregated
+          // over every row, never from the capped list.
+          const realTotal = type ? (typeTotals[type] ?? shown.length) : incidentsTotal;
+          if (realTotal <= shown.length) return null;
+          return (
+            <span className="text-xs text-amber-700">
+              showing the oldest {shown.length} of {realTotal} — the totals above cover all
+              {" "}{realTotal}; download for the full list
+            </span>
+          );
+        })()}
         {shown.length > 0 && (
           <a href={exportHref} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">↓ Download (Excel)</a>
         )}
