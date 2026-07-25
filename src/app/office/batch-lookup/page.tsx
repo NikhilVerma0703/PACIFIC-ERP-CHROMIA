@@ -5,6 +5,7 @@ import { Card, H2, Kpi, Empty, Badge, fmt } from "@/components/ui";
 import { HBars, gradeColor } from "@/components/charts";
 import { getBatch, type BatchData } from "@/lib/erp";
 import { getBatchQcSlabs, type BatchQcSlab } from "@/lib/batchQcList";
+import { QcSlabsTable } from "./QcSlabsTable";
 import { currentBranchName } from "@/lib/branch";
 import { displayBatch } from "@/lib/batchDisplay";
 import { slabLabel } from "@/lib/slabLabel";
@@ -87,22 +88,6 @@ function project(data: BatchData, qcSlabs: BatchQcSlab[]): CommercialBatchView {
 function stageCount(perStation: CommercialBatchView["perStation"], label: string): number {
   return perStation.find((s) => s.label === label)?.count ?? 0;
 }
-
-// Finished-goods status, rendered as-is from fg_finished_slab.status.
-const STATUS_LABEL: Record<string, string> = {
-  AVAILABLE: "Available",
-  RESERVED: "Reserved",
-  PACKED: "Packed",
-  DISPATCHED: "Dispatched",
-  RETURNED: "Returned",
-};
-const STATUS_TONE: Record<string, "brand" | "green" | "amber" | "red"> = {
-  AVAILABLE: "brand",
-  RESERVED: "amber",
-  PACKED: "amber",
-  DISPATCHED: "green",
-  RETURNED: "red",
-};
 
 export default async function OfficeBatchLookup({
   searchParams,
@@ -287,43 +272,10 @@ export default async function OfficeBatchLookup({
                   {view.qcSlabs.length === 0 ? (
                     <Empty>No QC rows with a slab number.</Empty>
                   ) : (
-                    <div className="max-h-[32rem] overflow-y-auto">
-                      <table className="w-full text-sm">
-                        <thead className="sticky top-0 bg-white">
-                          <tr className="text-left text-gray-500">
-                            <th className="py-2 pr-4">Slab #</th>
-                            <th className="py-2 pr-4">Grade</th>
-                            <th className="py-2 pr-4">Thickness</th>
-                            <th className="py-2">Status</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {/* A slab QC'd twice appears twice — rows are 1:1 with polish_qc, minus
-                              rows carrying no slab number. Those are dropped: a row with no slab
-                              is not a slab, and surfacing the count would re-expose
-                              slabAudit.blankRows, a rectification signal this projection excludes
-                              on purpose. It is why the caption counts what this list shows rather
-                              than claiming to equal the Polish QC card (live DB, 2026-07-21: one
-                              such row exists, on batch 1346). */}
-                          {view.qcSlabs.map((s, i) => (
-                            <tr key={`${s.slab}-${i}`} className="border-t border-gray-100">
-                              <td className="py-2 pr-4 font-medium text-gray-900">{slabLabel(s.slab)}</td>
-                              <td className="py-2 pr-4">{s.grade ?? "—"}</td>
-                              <td className="py-2 pr-4">{s.thickness ?? "—"}</td>
-                              <td className="py-2">
-                                {s.status ? (
-                                  <Badge tone={STATUS_TONE[s.status] ?? "brand"}>
-                                    {STATUS_LABEL[s.status] ?? s.status}
-                                  </Badge>
-                                ) : (
-                                  <span className="text-gray-400">not in ledger</span>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                    // Filtering lives in the client component: every row is already in this
+                    // payload, so it is pure state — no navigation, no round trip. It receives
+                    // BatchQcSlab[], the closed shape projected above, and nothing else.
+                    <QcSlabsTable rows={view.qcSlabs} />
                   )}
                 </>
               )}
