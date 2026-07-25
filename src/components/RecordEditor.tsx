@@ -144,7 +144,7 @@ export function FieldInput({ f, value, opts, operatorName, label, required = fal
     // Mirror the singleSelect branch above: a value this row ALREADY holds must stay
     // rendered even when it is no longer offered, or it silently disappears on save —
     // the checkbox is never drawn, so the browser never submits it. Reasons retired from
-    // the MIS list (lib/tables.ts RETIRED_OPTIONS) are exactly this case: 270 rows hold
+    // the MIS list (lib/tables.ts RETIRED_OPTIONS) are exactly this case: 728 rows hold
     // one, and editing any of them for an unrelated reason would have erased it.
     //
     // Compared TRIMMED on both sides, because selectOptions trims the values it offers

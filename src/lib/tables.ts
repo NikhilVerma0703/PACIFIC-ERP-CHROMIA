@@ -144,11 +144,11 @@ export function coerceField(kind: FieldKind, raw: FormDataEntryValue | null): un
  *  set of distinct values present in the data — so retiring a reason means excluding it
  *  here, not deleting it from history.
  *
- *  History is deliberately left intact: 270 MIS rows carry the five retired reasons, and
- *  223 of those classify as "breakdown" in the downtime report. The keywords in
- *  classifyReason (lib/downtime.ts) MUST therefore keep matching FAULT ALARM, HMI and
- *  BELT DAMAGE even though nobody can pick them again — remove those and past reports
- *  silently re-bucket as "process".
+ *  History is deliberately left intact: 728 MIS rows carry one of the retired values
+ *  (measured 2026-07-25), 269 of them one of the five machine faults, which all classify
+ *  as "breakdown" in the downtime report. The keywords in classifyReason (lib/downtime.ts)
+ *  MUST therefore keep matching FAULT ALARM, HMI and BELT DAMAGE even though nobody can
+ *  pick them again — remove those and past reports silently re-bucket as "process".
  *
  *  Matched case-insensitively and trimmed, because the data is hand-entered. */
 const RETIRED_OPTIONS: Record<string, string[]> = {
@@ -161,6 +161,16 @@ const RETIRED_OPTIONS: Record<string, string[]> = {
     // Renamed, not dropped -> "Liquid / Powder issue at Robos" (scripts/0030 relabels
     // the 37 rows that used the old wording).
     "Pigment Issue (Liquid or Powder pigment)",
+    // Split in two on 2026-07-25: operators now choose RAW MATERIAL DELAY or MATERIAL
+    // DELAY FROM MIXER deliberately. The 469 rows that used the ambiguous old value keep
+    // it rather than being reassigned: 170 of them do name the mixer in details or area
+    // of problem, but 293 say nothing either way, so any rule would be inventing the
+    // split for most of the history. Left for the owner to reclassify if ever needed.
+    "MATERIAL DELAY",
+    // Relabelled by scripts/0032 -> "HALF CLEANING/ INTERMEDIATE CLEANING", so no row
+    // holds it any more. Listed anyway: mis is still an Airtable-mirrored table, and if
+    // that base keeps the old option a re-sync would put it back on the form.
+    "INTERMEDIATE CLEANING",
   ],
 };
 const _retired = new Map<string, Set<string>>(
@@ -191,9 +201,25 @@ const PRESET_OPTIONS: Record<string, string[]> = {
   qualityGrade: ["Not graded yet", "A", "A2", "B", "C (Reject)", "CTS", "Printing"],
   polishType: ["Polish", "Suede", "Honed", "Leathered"],
   bay: ["Bay 1", "Bay 2", "Bay 3", "Bay 4", "Bay 5"],
-  // MIS "Reason for deviation": the list is otherwise whatever the data contains, so a
-  // renamed reason needs a preset to appear at all before the first row uses it.
-  reasonForDeviation: ["Liquid / Powder issue at Robos"],
+  // MIS "Reason for deviation". The list is otherwise whatever the data contains, so a
+  // new or renamed reason needs a preset to appear at all before the first row uses it.
+  // UPPERCASE to match the reasons already in the column; the multipleSelects option
+  // builder does NOT fold case (unlike the singleSelect one), so "Full cleaning" beside
+  // "FULL CLEANING" would render as two identical-looking chips.
+  reasonForDeviation: [
+    "DESIGN CHANGE OVER/ ORDER CODE CHANGE",
+    "DRY CLEANING",
+    "FULL CLEANING",
+    "HALF CLEANING/ INTERMEDIATE CLEANING",
+    "MATERIAL DELAY FROM MIXER",
+    "MOULD DELAY",
+    "PIGMENT DELAY (NON ROBO)",
+    "RAW MATERIAL DELAY",
+    "SHADE VARIATION/ CRACKS",
+    // Kept from before: a liquid/powder FAULT at the robos, distinct from waiting on
+    // pigment (which is PIGMENT DELAY (NON ROBO)).
+    "Liquid / Powder issue at Robos",
+  ],
   // MIS sheet: machine areas exactly as printed on the paper daily report
   areaOfProblem: ["Silos", "Mixer", "Distributor", "Kreos", "Chessboard", "Robot", "Press", "Oven", "Rubber Line", "Cooling Tower", "Jot"],
   slabThickness: ["1.2 cm", "2 cm", "3 cm", "7 mm"],
