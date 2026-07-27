@@ -15,7 +15,7 @@ const optText = z.preprocess(
   z.string().nullable()
 );
 const bodySchema = z.object({
-  action: z.enum(["reserve", "release", "pack", "dispatch", "return"]),
+  action: z.enum(["reserve", "release", "pack", "dispatch", "return", "cts", "uncts"]),
   slabs: z.array(z.coerce.number().finite().positive())
     .min(1, "No slabs selected")
     .max(MAX_SLABS, `Max ${MAX_SLABS} slabs per action`)
@@ -28,14 +28,27 @@ const bodySchema = z.object({
 export async function POST(request: Request) {
   const g = await inventoryGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (SLABS_ONLY_ROLES.has(String((g.user as any)?.role ?? ""))) return Response.json({ error: "Not available for this login" }, { status: 403 });
   try {
     const raw = await request.json().catch(() => null);
     const parsed = bodySchema.safeParse(raw);
     if (!parsed.success) return Response.json({ error: parsed.error.issues[0]?.message ?? "Invalid request" }, { status: 400 });
     const body: any = parsed.data;
     const action = body.action;
+    // SLABS_ONLY (Commercial) is refused every lifecycle action EXCEPT cts and its inverse
+    // uncts. Dispatching is theirs to do, but only through /api/inventory/dispatch, which
+    // requires the PI, customer and invoice file this route does not ask for -- letting
+    // them dispatch here would be a way around that. Marking cut-to-size records no sale,
+    // so it needs none of it.
+    //
+    // uncts is admitted for a specific reason: CTS is not in dispatch.from, so a slab that
+    // enters it can only leave via release -- which Commercial is refused, and which would
+    // also let them clear other people's PI holds. A role that can enter a state must be
+    // able to leave it, so it gets the narrow inverse instead of the broad action.
+    //
+    // Checked AFTER parsing so the action is known, and before anything is written.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (SLABS_ONLY_ROLES.has(String((g.user as any)?.role ?? "")) && action !== "cts" && action !== "uncts")
+      return Response.json({ error: "Not available for this login" }, { status: 403 });
     let slabs: number[] = body.slabs;
     if (!(await isAdminCheck())) {
       const unapproved = new Set(await getUnapprovedSlabNumbers(true));

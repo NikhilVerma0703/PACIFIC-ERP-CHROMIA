@@ -42,3 +42,31 @@ test("returned slabs can re-enter the cycle", () => {
 test("default reservation hold is 7 days", () => {
   assert.equal(DEFAULT_RESERVATION_DAYS, 7);
 });
+
+test("CTS is a dead end with exactly one way out", () => {
+  // The invariant the whole design rests on. CTS is deliberately NOT dispatchable -- a
+  // slab being cut does not ship as a full slab -- which makes the exit load-bearing.
+  // Commercial can apply cts but is refused `release`, so if uncts ever disappears they
+  // could strand stock in a state only Finance can clear.
+  assert.equal(TRANSITIONS.cts.to, "CTS");
+  assert.ok(!TRANSITIONS.dispatch.from.includes("CTS"), "a slab being cut is not shipped whole");
+  assert.deepEqual(TRANSITIONS.uncts.from, ["CTS"], "uncts applies to CTS and nothing else");
+  assert.equal(TRANSITIONS.uncts.to, "AVAILABLE");
+  assert.ok(TRANSITIONS.release.from.includes("CTS"), "Finance/Admin can release it too");
+});
+
+test("CTS cannot be reached from a shipped or returned slab", () => {
+  assert.ok(!TRANSITIONS.cts.from.includes("DISPATCHED"), "a dispatched slab is gone; CTS would put it back on the books");
+  assert.ok(!TRANSITIONS.cts.from.includes("RETURNED"), "a returned slab is released first");
+  assert.deepEqual(TRANSITIONS.cts.from, TRANSITIONS.dispatch.from, "cts mirrors dispatch's entry points");
+});
+
+test("every action lands on a real SlabStatus", () => {
+  // The enum in prisma/schema.prisma. A typo here writes a value Postgres rejects at
+  // runtime with 22P02, which no typecheck would catch -- TRANSITIONS values are strings.
+  const STATUSES = ["AVAILABLE", "RESERVED", "PACKED", "DISPATCHED", "RETURNED", "CTS"];
+  for (const [action, t] of Object.entries(TRANSITIONS)) {
+    assert.ok(STATUSES.includes(t.to), `${action} lands on a real status (${t.to})`);
+    for (const f of t.from) assert.ok(STATUSES.includes(f), `${action} accepts a real status (${f})`);
+  }
+});

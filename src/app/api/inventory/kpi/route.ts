@@ -37,6 +37,10 @@ export async function GET(request: Request) {
       cts: g_("CTS"), printing: g_("Printing"),
       thk12cm: t_("1.2 cm"), thk2cm: t_("2 cm"), thk3cm: t_("3 cm"),
       available: s_("AVAILABLE"), reserved: s_("RESERVED"), packed: s_("PACKED"), dispatched: s_("DISPATCHED"), returned: s_("RETURNED"),
+      // ctsStatus, not `cts`: this endpoint already returns `cts` for the CTS GRADE
+      // (g_("CTS"), a few lines up). Two different things share the name in the domain;
+      // they must not share it in the payload.
+      ctsStatus: s_("CTS"),
       pendingPolish, pendingRw,
     });
   } catch (e) {

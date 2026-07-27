@@ -9,7 +9,7 @@ import { StockByDesign } from "./StockByDesign";
 interface Kpi {
   total: number; gradeA: number; gradeA2: number; gradeB: number; gradeC: number;
   cts: number; printing: number; available: number; reserved: number; packed: number;
-  dispatched: number; returned: number; pendingPolish: number; pendingRw: number;
+  dispatched: number; returned: number; ctsStatus: number; pendingPolish: number; pendingRw: number;
   thk12cm: number; thk2cm: number; thk3cm: number;
 }
 interface Slab {
@@ -27,7 +27,7 @@ interface SlabEvent {
 }
 
 // SlabStatus is a Prisma enum — a fixed set, so it stays hardcoded.
-const STATUSES = ["", "AVAILABLE", "RESERVED", "PACKED", "DISPATCHED", "RETURNED"];
+const STATUSES = ["", "AVAILABLE", "RESERVED", "PACKED", "DISPATCHED", "RETURNED", "CTS"];
 
 // Grade, thickness and bay are free-text columns and are NOT hardcoded any more: the old
 // lists had drifted from the data, and because buildInventoryWhere matches thickness
@@ -52,6 +52,8 @@ const ACTIONS = [
   { value: "pack", label: "Mark Packed" },
   { value: "dispatch", label: "Mark Dispatched" },
   { value: "return", label: "Mark Returned (un-dispatch)" },
+  { value: "cts", label: "Mark CTS (cut to size)" },
+  { value: "uncts", label: "Undo CTS (back to Available)" },
   { value: "release", label: "Release to Available" },
 ];
 const EMPTY = { design: "", batch: "", thickness: "", grade: "", slab: "", bay: "", status: "", rw: "", pi: "", customer: "" };
@@ -265,8 +267,15 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
     finally { setMoving(false); }
   };
 
+  // Commercial's dispatch is the only one of their two actions that records a sale, so
+  // it alone asks for a PI, customer and invoice. CTS asks for none of them.
+  const commercialDispatch = slabsOnly && st.action !== "cts" && st.action !== "uncts";
+
   const applyStatus = async () => {
-    const action = slabsOnly ? "dispatch" : st.action;
+    // Commercial used to be hardwired to dispatch. It may now also mark cut-to-size, so
+    // the choice comes from the dropdown when they have made one; dispatch stays the
+    // default so the existing one-click flow is unchanged.
+    const action = slabsOnly ? (st.action === "cts" || st.action === "uncts" ? st.action : "dispatch") : st.action;
     if (sel.size === 0 || !action) return;
     if (action === "dispatch" && (invFile || slabsOnly)) {
       if (slabsOnly && !invFile) { setMoveMsg("Attach the invoice file."); return; }
@@ -293,7 +302,10 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
     }
     setStBusy(true); setMoveMsg(null);
     try {
-      const payload: Record<string, unknown> = { slabs: [...sel.keys()], action: st.action };
+      // `action`, not st.action: for Commercial the two differ whenever the dropdown is
+      // left at its default, and posting the raw state would send "" instead of the
+      // resolved action.
+      const payload: Record<string, unknown> = { slabs: [...sel.keys()], action };
       if (st.pi.trim()) payload.pi = st.pi.trim();
       if (st.customer.trim()) payload.customer = st.customer.trim();
       if (admin && st.expiryDays.trim()) payload.expiryDays = Number(st.expiryDays);
@@ -430,6 +442,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
               {card("Reserved", kpi.reserved, "text-amber-600", { status: "RESERVED" })}
               {card("Packed", kpi.packed, "text-amber-600", { status: "PACKED" })}
               {card("Returned", kpi.returned, "text-sky-600", { status: "RETURNED" })}
+              {card("Cut to size", kpi.ctsStatus, "text-amber-600", { status: "CTS" })}
             </div>
           </div>
           <div>
@@ -691,7 +704,17 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
               </div>
               <div className="mt-3 flex flex-wrap items-end gap-3 border-t border-brand/10 pt-3">
                 {slabsOnly ? (
-                  <div className="pb-2 text-sm font-semibold text-gray-900">Mark Dispatched</div>
+                  // Commercial has exactly two actions. Dispatch is the default so the
+                  // existing flow is unchanged; CTS records no sale, so it asks for no PI,
+                  // customer or invoice (see the conditions on those fields below).
+                  <div className="w-56">
+                    <label className="mb-1 block text-xs font-medium text-gray-500">Action</label>
+                    <select className={inputCls} value={st.action === "cts" || st.action === "uncts" ? st.action : "dispatch"} onChange={(e) => setSt({ ...st, action: e.target.value })}>
+                      <option value="dispatch">Mark Dispatched</option>
+                      <option value="cts">Mark CTS (cut to size)</option>
+                      <option value="uncts">Undo CTS (back to Available)</option>
+                    </select>
+                  </div>
                 ) : (
                 <div className="w-56">
                   <label className="mb-1 block text-xs font-medium text-gray-500">Status action</label>
@@ -700,21 +723,21 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
                   </select>
                 </div>
                 )}
-                {(slabsOnly || st.action === "reserve" || st.action === "dispatch") && (
+                {(commercialDispatch || (!slabsOnly && (st.action === "reserve" || st.action === "dispatch"))) && (
                   <div className="w-40">
                     <label className="mb-1 block text-xs font-medium text-gray-500">PI no.</label>
                     <input className={inputCls} placeholder="PI" value={st.pi} onChange={(e) => setSt({ ...st, pi: e.target.value })} />
                   </div>
                 )}
-                {(slabsOnly || st.action === "reserve" || st.action === "dispatch") && (
+                {(commercialDispatch || (!slabsOnly && (st.action === "reserve" || st.action === "dispatch"))) && (
                   <div className="w-44">
                     <label className="mb-1 block text-xs font-medium text-gray-500">Customer</label>
                     <input className={inputCls} placeholder="Customer" value={st.customer} onChange={(e) => setSt({ ...st, customer: e.target.value })} />
                   </div>
                 )}
-                {(slabsOnly || (admin && st.action === "dispatch")) && (
+                {(commercialDispatch || (admin && st.action === "dispatch")) && (
                   <div className="w-60">
-                    <label className="mb-1 block text-xs font-medium text-gray-500">Invoice (PDF/image){slabsOnly ? "" : " — optional"}</label>
+                    <label className="mb-1 block text-xs font-medium text-gray-500">Invoice (PDF/image){commercialDispatch ? "" : " — optional"}</label>
                     <input type="file" accept="application/pdf,image/*" className="block w-full text-xs text-gray-600 file:mr-2 file:rounded-lg file:border-0 file:bg-brand/10 file:px-3 file:py-2 file:text-xs file:font-medium file:text-brand"
                       onChange={(e) => setInvFile(e.target.files?.[0] ?? null)} />
                   </div>
@@ -725,7 +748,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
                     <input className={inputCls} placeholder="7" value={st.expiryDays} onChange={(e) => setSt({ ...st, expiryDays: e.target.value })} />
                   </div>
                 )}
-                <button onClick={applyStatus} disabled={stBusy || tooMany || (!slabsOnly && !st.action)} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark disabled:opacity-50">{stBusy ? "Applying…" : slabsOnly ? "Mark Dispatched" : "Apply status"}</button>
+                <button onClick={applyStatus} disabled={stBusy || tooMany || (!slabsOnly && !st.action)} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark disabled:opacity-50">{stBusy ? "Applying…" : slabsOnly ? (st.action === "cts" ? "Mark CTS" : st.action === "uncts" ? "Undo CTS" : "Mark Dispatched") : "Apply status"}</button>
                 {st.action === "reserve" && !admin && <p className="pb-2 text-xs text-gray-400">7-day hold (Admin can change)</p>}
               </div>
               {tooMany && <p className="mt-2 text-xs font-medium text-red-600">{sel.size} slabs selected — actions are limited to {MAX_ACTION_SLABS} at a time. Remove some from the selection above.</p>}

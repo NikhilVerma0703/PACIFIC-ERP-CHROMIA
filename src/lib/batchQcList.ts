@@ -36,7 +36,7 @@ export interface BatchQcSlab {
    *  batch's PRESS slabs, this list counts its polish_qc rows -- different slab sets. */
   thickness: string | null;
   /** Live finished-goods status (AVAILABLE / RESERVED / PACKED / DISPATCHED /
-   *  RETURNED), or null when the slab has no finished-goods record yet.
+   *  RETURNED / CTS), or null when the slab has no finished-goods record yet.
    *
    *  Deliberately NOT polish_qc.dispatch_status: that column is Airtable-synced
    *  legacy data and goes stale. fg_finished_slab.status is what /inventory reads

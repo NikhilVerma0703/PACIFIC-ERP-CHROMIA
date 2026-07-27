@@ -2414,6 +2414,7 @@ enum SlabStatus {
   PACKED
   DISPATCHED
   RETURNED
+  CTS // cut to size - committed to cutting, still physically in stock
 }
 
 enum SlabSource {

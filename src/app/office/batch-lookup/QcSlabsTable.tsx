@@ -12,6 +12,7 @@ const STATUS_LABEL: Record<string, string> = {
   PACKED: "Packed",
   DISPATCHED: "Dispatched",
   RETURNED: "Returned",
+  CTS: "Cut to size",
 };
 const STATUS_TONE: Record<string, "brand" | "green" | "amber" | "red"> = {
   AVAILABLE: "brand",
@@ -19,6 +20,9 @@ const STATUS_TONE: Record<string, "brand" | "green" | "amber" | "red"> = {
   PACKED: "amber",
   DISPATCHED: "green",
   RETURNED: "red",
+  // brand, not amber: amber is already PACKED/RESERVED, and two identical badges for
+  // different states is exactly the kind of thing nobody notices until it misleads.
+  CTS: "brand",
 };
 
 /** Shared "blank" sentinel for the three dropdowns — no grade, no thickness, or no
