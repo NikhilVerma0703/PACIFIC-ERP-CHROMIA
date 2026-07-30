@@ -12,6 +12,7 @@
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
+    "db:seed:robo": "tsx prisma/seed-robo.ts",
     "gen:schema": "python3 scripts/gen-schema.py scripts/airtable-schema.json prisma/schema.prisma scripts/fieldmap.json && prisma format",
     "import": "tsx scripts/import.ts"
   },

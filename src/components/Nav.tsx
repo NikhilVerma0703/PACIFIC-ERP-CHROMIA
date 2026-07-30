@@ -133,6 +133,9 @@ export function Nav({
     return <nav className="flex flex-col gap-1"><NavLink href="/inventory" icon={I.box} label="Finished Goods" path={path} /></nav>;
   if (role === "MAINTENANCE")
     return <nav className="flex flex-col gap-1">{MAINTENANCE_TABS.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}</nav>;
+  if (role === "ROBO")
+    // robo line operator — the robo entry form is their whole ERP
+    return <nav className="flex flex-col gap-1"><NavLink href="/robo" icon={I.factory} label="Robo Entry" path={path} /></nav>;
   if (role === "OPERATOR" && branch !== "FABRICATION")
     return (
       <nav className="flex flex-col gap-1">

@@ -1,0 +1,9 @@
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+export async function GET(req: NextRequest) {
+  const code = req.nextUrl.searchParams.get("code")?.toUpperCase();
+  if (!code) return NextResponse.json({ error: "code required" }, { status: 400 });
+  const dc = await prisma.roboDelayCode.findUnique({ where: { code } });
+  if (!dc) return NextResponse.json({ error: "not found" }, { status: 404 });
+  return NextResponse.json(dc);
+}

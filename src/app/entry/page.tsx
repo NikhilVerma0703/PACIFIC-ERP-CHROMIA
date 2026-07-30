@@ -35,6 +35,9 @@ const SECTIONS: Section[] = [
   { title: "Kreos", items: [
     { href: "/entry/slab/Kreos", label: "Kreos slab entry", kind: "entry", model: "Kreos" },
   ]},
+  { title: "Robo", items: [
+    { href: "/robo", label: "Robo entry (batch + slab)", kind: "entry", model: "Robo" },
+  ]},
   { title: "Jot", items: [
     { href: "/entry/slab/Jot", label: "Jot entry", kind: "entry", model: "Jot" },
   ]},
@@ -76,11 +79,16 @@ const RM_STORE_ITEMS: Item[] = [
 export default async function EntryIndex() {
   const { models, station, branch } = await entryAccess();
   const rmStore = branch === "SHOP_FLOOR" && (await canManageRm());
-  const myRank = rankOf(await currentRole());
+  const myRole = await currentRole();
+  const myRank = rankOf(myRole);
   const rankOk = (m: string) => !MIN_ENTRY_RANK[m] || myRank >= MIN_ENTRY_RANK[m];
+  // The Robo card mirrors middleware: only the dedicated ROBO role (whose whole
+  // nav is the robo form anyway) and admins may open /robo — hide it from
+  // everyone else so the grid never shows a dead link.
+  const roboOk = (m: string) => m !== "Robo" || myRole === "ADMIN" || myRole === "ROBO";
   const sections = (models === null
-    ? SECTIONS.map((sec) => ({ ...sec, items: sec.items.filter((it) => !OFFICE_MODELS.has(it.model) && rankOk(it.model)) }))
-    : SECTIONS.map((sec) => ({ ...sec, items: sec.items.filter((it) => models.includes(it.model) && rankOk(it.model)) }))
+    ? SECTIONS.map((sec) => ({ ...sec, items: sec.items.filter((it) => !OFFICE_MODELS.has(it.model) && rankOk(it.model) && roboOk(it.model)) }))
+    : SECTIONS.map((sec) => ({ ...sec, items: sec.items.filter((it) => models.includes(it.model) && rankOk(it.model) && roboOk(it.model)) }))
   ).filter((sec) => sec.items.length > 0);
   return (
     <Shell>

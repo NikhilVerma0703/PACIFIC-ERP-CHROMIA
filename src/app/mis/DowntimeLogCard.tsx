@@ -15,7 +15,7 @@ import type { IncidentRow } from "@/lib/downtime";
 import type { DowntimeResp } from "@/lib/downtimeResponse";
 import { DowntimeRespond } from "@/components/DowntimeRespond";
 
-export function DowntimeLogCard({ incidents, incidentsTotal, initialType, from, to, batch, canRespond, respFailed, responses, photos }: {
+export function DowntimeLogCard({ incidents, incidentsTotal, typeTotals, initialType, from, to, batch, canRespond, respFailed, responses, photos }: {
   incidents: IncidentRow[];
   /** Rows in the range, which may exceed `incidents` — that list is capped for payload
    *  size. The KPI cards above are aggregated over ALL of them, so the difference has to

@@ -47,6 +47,19 @@ export default auth((req) => {
   const isAdmin = role === "ADMIN";
   const fabPath = p.startsWith("/fab") || p === "/cutting";
 
+  // ---- Robo module: only the dedicated shop-floor ROBO role (and admins, who
+  // span every dept) may use the robo forms and APIs. This must run BEFORE the
+  // branch blocks below — their generic `/api` allowances would otherwise let
+  // other departments reach Robo data. The ROBO role itself is capped to this
+  // module further down. ----
+  if (p.startsWith("/robo") || p.startsWith("/api/robo")) {
+    if (!isAdmin && role !== "ROBO") {
+      return p.startsWith("/api")
+        ? new Response("Forbidden", { status: 403 })
+        : Response.redirect(new URL("/", nextUrl));
+    }
+  }
+
   if (!isAdmin && branch === "FABRICATION") {
     // Fabrication staff: fab pages + Overview + API only — never production pages.
     if (p.startsWith("/api")) return;
@@ -143,6 +156,11 @@ export default auth((req) => {
     // downtime response, which is a server action on /mis)
     const ok = p === "/" || p.startsWith("/mis") || p.startsWith("/api");
     if (!ok) return Response.redirect(new URL("/", nextUrl));
+  }
+  if (role === "ROBO") {
+    // robo line operator: the robo entry form and its APIs — nothing else
+    const ok = p.startsWith("/robo") || p.startsWith("/api");
+    if (!ok) return Response.redirect(new URL("/robo", nextUrl));
   }
 });
 

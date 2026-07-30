@@ -29,6 +29,7 @@ enum Role {
   COMMERCIAL
   STORE
   MAINTENANCE
+  ROBO
 }
 
 enum Station {
@@ -51,28 +52,27 @@ enum Branch {
   INTERNATIONAL_SALES
 }
 
-
 model User {
-  id             String   @id @default(cuid())
-  email          String   @unique
-  name           String?
-  passwordHash   String
-  sessionVersion Int      @default(1) @map("session_version") // bump -> all of this user's devices are logged out
-  role         Role     @default(OPERATOR)
-  station      Station?
-  branch       Branch   @default(SHOP_FLOOR)
-  active       Boolean  @default(true)
+  id                 String              @id @default(cuid())
+  email              String              @unique
+  name               String?
+  passwordHash       String
+  sessionVersion     Int                 @default(1) @map("session_version") // bump -> all of this user's devices are logged out
+  role               Role                @default(OPERATOR)
+  station            Station?
+  branch             Branch              @default(SHOP_FLOOR)
+  active             Boolean             @default(true)
   // International Sales duty + factory scope (text on purpose: the fork's
   // SalesRole enum is retired — PRODUCTION_MANAGER duties belong to ADMIN).
   // Columns arrive via scripts/0020-sales-user-columns.sql (user-applied).
-  salesRole    String?  @map("sales_role")
-  salesFactory String?  @map("sales_factory")
-  createdById      String?
-  createdBy        User?             @relation("UserCreator", fields: [createdById], references: [id])
-  createdUsers     User[]            @relation("UserCreator")
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
-  cuttingEntries   CuttingEntry[]
+  salesRole          String?             @map("sales_role")
+  salesFactory       String?             @map("sales_factory")
+  createdById        String?
+  createdBy          User?               @relation("UserCreator", fields: [createdById], references: [id])
+  createdUsers       User[]              @relation("UserCreator")
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  cuttingEntries     CuttingEntry[]
   fabMachineSessions FabMachineSession[]
   fabSlabJobs        FabSlabJob[]
   fabOperations      FabOperation[]
@@ -185,6 +185,7 @@ model DailyResinTank {
   syncedAt                    DateTime  @updatedAt @map("synced_at")
 
   enteredById String? @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
+
   @@map("daily_resin_tank")
 }
 
@@ -230,9 +231,9 @@ model Rm {
   importedAt             DateTime  @default(now()) @map("imported_at")
   syncedAt               DateTime  @updatedAt @map("synced_at")
 
-  unassignedRmId         String?   @map("unassigned_rm")
-  assignedBy             String?   @map("assigned_by")
-  assignedAt             DateTime? @map("assigned_at")
+  unassignedRmId String?   @map("unassigned_rm")
+  assignedBy     String?   @map("assigned_by")
+  assignedAt     DateTime? @map("assigned_at")
 
   @@map("rm")
 }
@@ -241,14 +242,14 @@ model Rm {
 // Incharge from Excel. Bags are carved out of this into the Rm table via the
 // RM Assignment form, which deducts remainingKg.
 model UnassignedRm {
-  id          String   @id @default(cuid())
-  invNo       String   @map("inv_no")
-  type        String   @default("") @map("type")
-  size        String   @default("") @map("size")
-  grade       String   @default("") @map("grade")
-  supplier    String?  @map("supplier")
-  totalKg     Float    @default(0) @map("total_kg")
-  remainingKg Float    @default(0) @map("remaining_kg")
+  id               String    @id @default(cuid())
+  invNo            String    @map("inv_no")
+  type             String    @default("") @map("type")
+  size             String    @default("") @map("size")
+  grade            String    @default("") @map("grade")
+  supplier         String?   @map("supplier")
+  totalKg          Float     @default(0) @map("total_kg")
+  remainingKg      Float     @default(0) @map("remaining_kg")
   // mirrored from the RM table (non-bag fields)
   date             DateTime? @map("date")
   status           String?   @map("status")
@@ -262,9 +263,9 @@ model UnassignedRm {
   colourB          Float?    @map("colour_b")
   consumablesIssue String?   @map("consumables_issue")
   remarks          String?   @map("remarks")
-  uploadedBy  String?  @map("uploaded_by")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  uploadedBy       String?   @map("uploaded_by")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
 
   @@unique([invNo, type, size, grade])
   @@map("unassigned_rm")
@@ -374,9 +375,9 @@ model Silo {
   importedAt                        DateTime  @default(now()) @map("imported_at")
   syncedAt                          DateTime  @updatedAt @map("synced_at")
   batchKey                          String?   @map("batch_key")
+  enteredById                       String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
-  enteredById String? @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
   @@map("silo")
 }
 
@@ -517,9 +518,9 @@ model MixerCycle {
   importedAt                                    DateTime  @default(now()) @map("imported_at")
   syncedAt                                      DateTime  @updatedAt @map("synced_at")
   batchKey                                      String?   @map("batch_key")
+  enteredById                                   String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
-  enteredById String? @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
   @@map("mixer_cycle")
 }
 
@@ -535,6 +536,7 @@ model SiloEmptyingLog {
   syncedAt        DateTime  @updatedAt @map("synced_at")
 
   enteredById String? @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
+
   @@map("silo_emptying_log")
 }
 
@@ -562,9 +564,9 @@ model PolishEntry {
   importedAt      DateTime  @default(now()) @map("imported_at")
   syncedAt        DateTime  @updatedAt @map("synced_at")
   batchKey        String?   @map("batch_key")
+  enteredById     String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
-  enteredById String? @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
   @@map("polish_entry")
 }
 
@@ -618,9 +620,9 @@ model PolishQc {
   importedAt          DateTime  @default(now()) @map("imported_at")
   syncedAt            DateTime  @updatedAt @map("synced_at")
   batchKey            String?   @map("batch_key")
+  enteredById         String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
-  enteredById String? @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
   @@map("polish_qc")
 }
 
@@ -678,9 +680,9 @@ model Distributor {
   importedAt                           DateTime  @default(now()) @map("imported_at")
   syncedAt                             DateTime  @updatedAt @map("synced_at")
   batchKey                             String?   @map("batch_key")
+  enteredById                          String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
-  enteredById String? @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
   @@map("distributor")
 }
 
@@ -884,9 +886,9 @@ model Kreos {
   importedAt                              DateTime  @default(now()) @map("imported_at")
   syncedAt                                DateTime  @updatedAt @map("synced_at")
   batchKey                                String?   @map("batch_key")
+  enteredById                             String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
-  enteredById String? @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
   @@map("kreos")
 }
 
@@ -984,10 +986,10 @@ model Press {
   importedAt                                     DateTime  @default(now()) @map("imported_at")
   syncedAt                                       DateTime  @updatedAt @map("synced_at")
   batchKey                                       String?   @map("batch_key")
+  enteredById                                    String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
+  vacuumPumps                                    String?   @map("vacuum_pumps") // which pumps ran, e.g. "1,2,4" (count auto-fills noOfVacuumPumps)
 
   @@index([batchKey])
-  enteredById String? @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
-  vacuumPumps String? @map("vacuum_pumps") // which pumps ran, e.g. "1,2,4" (count auto-fills noOfVacuumPumps)
   @@map("press")
 }
 
@@ -1059,9 +1061,9 @@ model Oven {
   importedAt     DateTime  @default(now()) @map("imported_at")
   syncedAt       DateTime  @updatedAt @map("synced_at")
   batchKey       String?   @map("batch_key")
+  enteredById    String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
-  enteredById String? @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
   @@map("oven")
 }
 
@@ -1211,9 +1213,9 @@ model Jot {
   importedAt     DateTime  @default(now()) @map("imported_at")
   syncedAt       DateTime  @updatedAt @map("synced_at")
   batchKey       String?   @map("batch_key")
+  enteredById    String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
-  enteredById String? @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
   @@map("jot")
 }
 
@@ -1585,9 +1587,9 @@ model Mis {
   importedAt                                          DateTime  @default(now()) @map("imported_at")
   syncedAt                                            DateTime  @updatedAt @map("synced_at")
   batchKey                                            String?   @map("batch_key")
+  enteredById                                         String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
-  enteredById String? @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
   @@map("mis")
 }
 
@@ -1840,9 +1842,9 @@ model ShippingInvoice {
   importedAt          DateTime  @default(now()) @map("imported_at")
   syncedAt            DateTime  @updatedAt @map("synced_at")
   batchKey            String?   @map("batch_key")
+  enteredById         String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
-  enteredById String? @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
   @@map("shipping_invoice")
 }
 
@@ -1999,15 +2001,15 @@ model SyncState {
   id             String    @id @default(cuid())
   model          String    @unique
   source         String    @default("AIRTABLE") // "AIRTABLE" | "ERP"
-  cursor         DateTime? @map("cursor")        // sync watermark (last-modified filter)
+  cursor         DateTime? @map("cursor") // sync watermark (last-modified filter)
   lastSyncAt     DateTime? @map("last_sync_at")
   lastCount      Int       @default(0) @map("last_count")
-  lastChangeAt   DateTime? @map("last_change_at")    // last time Airtable actually had changes
-  airtableTotal  Int?      @map("airtable_total")    // record count from the parity check
-  countCheckedAt DateTime? @map("count_checked_at")  // when parity was last verified
+  lastChangeAt   DateTime? @map("last_change_at") // last time Airtable actually had changes
+  airtableTotal  Int?      @map("airtable_total") // record count from the parity check
+  countCheckedAt DateTime? @map("count_checked_at") // when parity was last verified
   autoCutover    Boolean   @default(true) @map("auto_cutover")
   cutoverAt      DateTime? @map("cutover_at")
-  cutoverBy      String?   @map("cutover_by")        // "auto" | user name
+  cutoverBy      String?   @map("cutover_by") // "auto" | user name
 
   @@map("sync_state")
 }
@@ -2148,17 +2150,17 @@ model FabProject {
 }
 
 model FabDrawing {
-  id            String         @id @default(cuid())
-  drawingNumber String         @map("drawing_number")
-  unitType      String?        @map("unit_type")
+  id            String           @id @default(cuid())
+  drawingNumber String           @map("drawing_number")
+  unitType      String?          @map("unit_type")
   units         Int?
-  areaName      String?        @map("area_name")
-  projectId     String         @map("project_id")
-  project       FabProject     @relation(fields: [projectId], references: [id])
-  defaultSlabId String?        @map("default_slab_id")
-  defaultSlab   FabSlab?       @relation("DrawingDefaultSlab", fields: [defaultSlabId], references: [id])
+  areaName      String?          @map("area_name")
+  projectId     String           @map("project_id")
+  project       FabProject       @relation(fields: [projectId], references: [id])
+  defaultSlabId String?          @map("default_slab_id")
+  defaultSlab   FabSlab?         @relation("DrawingDefaultSlab", fields: [defaultSlabId], references: [id])
   remarks       String?
-  createdAt     DateTime       @default(now()) @map("created_at")
+  createdAt     DateTime         @default(now()) @map("created_at")
   pieces        FabPiece[]
   requirements  FabRequirement[]
 
@@ -2166,25 +2168,25 @@ model FabDrawing {
 }
 
 model FabSlab {
-  id                     String                    @id @default(cuid())
-  slabCode               String                    @map("slab_code")
+  id                     String                     @id @default(cuid())
+  slabCode               String                     @map("slab_code")
   colour                 String?
   material               String?
   thickness              Float?
   length                 Float?
   width                  Float?
-  totalArea              Float?                    @map("total_area")
-  reservedArea           Float?                    @default(0) @map("reserved_area")
-  availableArea          Float?                    @map("available_area")
-  pacificQcId            String?                   @map("pacific_qc_id")
-  projectId              String                    @map("project_id")
-  project                FabProject                @relation(fields: [projectId], references: [id])
-  createdAt              DateTime                  @default(now()) @map("created_at")
+  totalArea              Float?                     @map("total_area")
+  reservedArea           Float?                     @default(0) @map("reserved_area")
+  availableArea          Float?                     @map("available_area")
+  pacificQcId            String?                    @map("pacific_qc_id")
+  projectId              String                     @map("project_id")
+  project                FabProject                 @relation(fields: [projectId], references: [id])
+  createdAt              DateTime                   @default(now()) @map("created_at")
   pieces                 FabPiece[]
   slabJobs               FabSlabJob[]
   allocations            FabSlabAllocation[]
   requirementAllocations FabRequirementAllocation[]
-  assignedDrawings       FabDrawing[]              @relation("DrawingDefaultSlab")
+  assignedDrawings       FabDrawing[]               @relation("DrawingDefaultSlab")
   residuals              FabResidualBag[]
 
   @@map("fab_slab")
@@ -2428,10 +2430,10 @@ model FinishedSlab {
 
   // ---- QC-owned: overwritten each time the slab passes QC ----
   design         String?   @map("design")
-  grade          String?   @map("grade")           // A / A2 / B / C / CTS / Printing (exclusive)
+  grade          String?   @map("grade") // A / A2 / B / C / CTS / Printing (exclusive)
   slabThickness  String?   @map("slab_thickness")
   qualityIssue   String[]  @default([]) @map("quality_issue") // mirrored from PolishQc each QC pass
-  polishType     String?   @map("polish_type")     // Polish / Suede / Honed / Leathered
+  polishType     String?   @map("polish_type") // Polish / Suede / Honed / Leathered
   rwStatus       String?   @map("rw_status")
   repolishStatus String?   @map("repolish_status")
   batchNumber    String?   @map("batch_number")
@@ -2440,7 +2442,7 @@ model FinishedSlab {
   qcInspector    String?   @map("qc_inspector")
   lastQcAt       DateTime? @map("last_qc_at")
   lengthIn       Float?    @default(137) @map("length_in") // default full slab 137" x 79"
-  widthIn        Float?    @default(79)  @map("width_in")  // sqft = L*W/144, sqm = sqft*0.092903 (derived)
+  widthIn        Float?    @default(79) @map("width_in") // sqft = L*W/144, sqm = sqft*0.092903 (derived)
 
   // ---- Location: Bay set at QC, Frame set by Dispatch (cleared on re-QC) ----
   bayNumber   String? @map("bay_number")
@@ -2456,9 +2458,9 @@ model FinishedSlab {
 
   // ---- Provenance / stock-age ----
   source      SlabSource @default(QC_AUTOLINK) @map("source")
-  firstSeenAt DateTime   @default(now())       @map("first_seen_at")
-  createdAt   DateTime   @default(now())       @map("created_at")
-  updatedAt   DateTime   @updatedAt            @map("updated_at")
+  firstSeenAt DateTime   @default(now()) @map("first_seen_at")
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
 
   events SlabEvent[]
 
@@ -2484,7 +2486,7 @@ model SlabEvent {
   id         String       @id @default(cuid())
   slabNumber Float        @map("slab_number")
   slab       FinishedSlab @relation(fields: [slabNumber], references: [slabNumber])
-  kind       String       @map("kind")   // created | qc_update | location | status | reserve | pack | dispatch | return | flagged_non_integer
+  kind       String       @map("kind") // created | qc_update | location | status | reserve | pack | dispatch | return | flagged_non_integer
   field      String?      @map("field")
   oldValue   String?      @map("old_value")
   newValue   String?      @map("new_value")
@@ -2635,7 +2637,6 @@ model InventoryEntry {
 
   @@map("consumable_inventory_entry")
 }
-
 
 // ============================================================================
 // International Sales module (ported from Shalman's fork). Native ERP tables —
@@ -3191,4 +3192,164 @@ model SalesCreditNote {
   order SalesOrder @relation(fields: [orderId], references: [id])
 
   @@map("sales_credit_notes")
+}
+
+// ============================================================================
+// ROBO MODULE — Robo production line (merged from ROBO_MODULE standalone app).
+// Models are Robo-prefixed to keep them clearly namespaced from the Airtable-
+// generated tables above. Hand-maintained; NOT touched by gen-schema.py.
+// ============================================================================
+
+model RoboMachine {
+  id            String                 @id @default(cuid())
+  name          String                 @unique
+  type          String
+  isActive      Boolean                @default(true)
+  createdAt     DateTime               @default(now())
+  recipeEntries RoboBatchRecipeEntry[]
+  delayLogs     RoboDelayLog[]
+}
+
+model RoboDesign {
+  id           String            @id @default(cuid())
+  name         String            @unique
+  seriesName   String?
+  createdAt    DateTime          @default(now())
+  programs     RoboProgram[]
+  batchRecipes RoboBatchRecipe[]
+}
+
+model RoboProgram {
+  id           String            @id @default(cuid())
+  name         String            @unique
+  designId     String
+  design       RoboDesign        @relation(fields: [designId], references: [id])
+  createdAt    DateTime          @default(now())
+  batchRecipes RoboBatchRecipe[]
+}
+
+model RoboTool {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+}
+
+model RoboLiquid {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+}
+
+model RoboPowder {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+}
+
+model RoboOperator {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+model RoboDelayCode {
+  id              String         @id @default(cuid())
+  code            String         @unique
+  description     String
+  category        String
+  isRobotSpecific Boolean        @default(false)
+  createdAt       DateTime       @default(now())
+  delayLogs       RoboDelayLog[]
+}
+
+model RoboShift {
+  id                String                 @id @default(cuid())
+  date              String
+  shiftNumber       Int
+  startTime         String
+  endTime           String?
+  status            String                 @default("ACTIVE")
+  operatorName      String                 @default("")
+  notes             String?
+  // Fixed cycle times for Roycuts (set once per shift — applies to all slabs)
+  roycut1CycleTime  Int?
+  roycut2CycleTime  Int?
+  roycut3CycleTime  Int?
+  createdAt         DateTime               @default(now())
+  batchRecipes      RoboBatchRecipe[]
+  productionRecords RoboProductionRecord[]
+  delayLogs         RoboDelayLog[]
+}
+
+model RoboBatchRecipe {
+  id                String                 @id @default(cuid())
+  shiftId           String
+  shift             RoboShift              @relation(fields: [shiftId], references: [id])
+  designId          String?
+  design            RoboDesign?            @relation(fields: [designId], references: [id])
+  programId         String?
+  program           RoboProgram?           @relation(fields: [programId], references: [id])
+  designName        String                 @default("")
+  programName       String                 @default("")
+  targetSlabs       Int?
+  thickness         Float?
+  notes             String?
+  createdAt         DateTime               @default(now())
+  entries           RoboBatchRecipeEntry[]
+  productionRecords RoboProductionRecord[]
+}
+
+model RoboBatchRecipeEntry {
+  id              String          @id @default(cuid())
+  batchRecipeId   String
+  batchRecipe     RoboBatchRecipe @relation(fields: [batchRecipeId], references: [id])
+  machineId       String
+  machine         RoboMachine     @relation(fields: [machineId], references: [id])
+  programName     String? // Program name for this specific machine
+  toolName        String?
+  liquidName      String?
+  powderName      String?
+  rollerHeight    String?
+  targetCycleTime Int? // Target cycle time in seconds (fixed for production run)
+  notes           String?
+
+  @@unique([batchRecipeId, machineId])
+}
+
+model RoboProductionRecord {
+  id               String           @id @default(cuid())
+  serialNumber     Int?
+  slabNumber       String
+  shiftId          String
+  shift            RoboShift        @relation(fields: [shiftId], references: [id])
+  batchRecipeId    String?
+  batchRecipe      RoboBatchRecipe? @relation(fields: [batchRecipeId], references: [id])
+  inTime           String?
+  outTime          String?
+  roymixCycleTime  Int? // RoyMix cycle time in seconds (varies per slab)
+  roymixBodyWeight Float? // RoyMix body weight in kg (recorded per slab)
+  thickness        Float?
+  status           String           @default("COMPLETED")
+  remarks          String?
+  createdAt        DateTime         @default(now())
+  delayLogs        RoboDelayLog[]
+}
+
+model RoboDelayLog {
+  id                 String                @id @default(cuid())
+  shiftId            String
+  shift              RoboShift             @relation(fields: [shiftId], references: [id])
+  productionRecordId String?
+  productionRecord   RoboProductionRecord? @relation(fields: [productionRecordId], references: [id])
+  machineId          String?
+  machine            RoboMachine?          @relation(fields: [machineId], references: [id])
+  machineName        String?
+  delayCodeId        String
+  delayCode          RoboDelayCode         @relation(fields: [delayCodeId], references: [id])
+  durationMinutes    Int
+  startTime          String?
+  endTime            String?
+  remarks            String?
+  createdAt          DateTime              @default(now())
 }
