@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="card" style="max-width:660px">
+  <h1>Upload bills</h1>
+  <div class="sub">Choose who is being reimbursed, then add all of their bills.</div>
+
+  <form method="post" action="/upload" enctype="multipart/form-data">
+
+    <!-- STEP 1: PERSON -->
+    <div style="border:2px solid var(--accent);border-radius:9px;padding:15px;margin-bottom:16px;
+                background:var(--accent-bg)">
+      <label style="color:var(--accent)">Step 1 &nbsp;·&nbsp; Who is being reimbursed?</label>
+      <input list="people-list" name="person" value="{{ person }}" required autocomplete="off"
+             placeholder="Start typing a name" style="font-size:16px" autofocus>
+      <datalist id="people-list">
+        {% for p in people %}<option value="{{ p }}">{% endfor %}
+      </datalist>
+      {% if people %}
+        <div class="muted" style="margin-top:6px">
+          {{ people|length }} name{{ '' if people|length == 1 else 's' }} from the Tally group
+          "{{ cfg.tally.people_group }}".
+        </div>
+      {% else %}
+        <div class="muted" style="margin-top:6px">
+          Tally is not reachable, so there is no list yet — type the name exactly as it
+          appears in Tally. Names you use here will be remembered.
+        </div>
+      {% endif %}
+    </div>
+
+    <!-- STEP 2: BILLS -->
+    <div class="field">
+      <label>Step 2 &nbsp;·&nbsp; Their bills</label>
+      <input type="file" name="files" multiple required
+             accept=".pdf,.jpg,.jpeg,.png,.webp,.tiff">
+      <div class="muted" style="margin-top:5px">
+        Select as many as you like — they all get filed against the person above.
+        Multi-page PDFs are split automatically.
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Your name</label>
+      <input name="user" value="clerk" required>
+    </div>
+
+    <div class="field" style="background:var(--warn-bg);border:1px solid #f0dcb0;
+         border-radius:8px;padding:12px">
+      <label style="margin-bottom:8px">Are these handwritten?</label>
+      <label style="display:flex;gap:9px;align-items:flex-start;text-transform:none;
+             font-weight:400;font-size:14px;color:var(--ink);letter-spacing:0">
+        <input type="checkbox" name="handwritten" value="1" style="width:auto;margin-top:3px">
+        <span>Yes — skip OCR and let me type the details.
+          <span class="muted">OCR reads printed text only. On handwriting it produces
+          confident nonsense, so ticking this saves you correcting it.</span></span>
+      </label>
+    </div>
+
+    <button class="btn" type="submit" id="go">Upload and read</button>
+    <span id="busy" class="muted" style="display:none;margin-left:10px">
+      <span class="spin"></span> Uploading…
+    </span>
+  </form>
+
+  <script>
+  // Immediate feedback. Splitting a 20-page PDF takes a moment even though no
+  // OCR happens here, and a button that does nothing when clicked gets clicked
+  // again - which would upload everything twice.
+  document.querySelector('form').addEventListener('submit', function () {
+    const b = document.getElementById('go');
+    b.disabled = true;
+    b.textContent = 'Uploading…';
+    document.getElementById('busy').style.display = 'inline';
+  });
+  </script>
+  <style>
+  .spin{display:inline-block;width:11px;height:11px;
+    border:2px solid var(--accent);border-right-color:transparent;border-radius:50%;
+    animation:sp .7s linear infinite;vertical-align:-1px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  </style>
+
+  <div class="note info" style="margin-top:20px">
+    <b>Getting a good photo matters more than anything else here.</b>
+    <ul>
+      <li>Lay the bill flat — smooth out folds and curl</li>
+      <li>Dark, plain surface so the edges stand out</li>
+      <li>Bright, even light; don't cast your own shadow</li>
+      <li>Phone directly above, not at an angle</li>
+      <li>Fill the frame, keep fingers off the text</li>
+      <li>Tap to focus before shooting</li>
+    </ul>
+  </div>
+</div>
+{% endblock %}

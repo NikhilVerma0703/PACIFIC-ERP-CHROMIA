@@ -149,6 +149,7 @@ export function Nav({
       <nav className="flex flex-col gap-1">
         <NavLink href="/office" icon={I.factory} label="Shop Floor" path={path} office />
         <NavLink href="/entry"  icon={I.entry}   label="Data Entry" path={path} />
+        {(role === "FINANCE" || role === "ACCOUNTS" || showAdmin) && <NavLink href="/office/finance" icon={I.report} label="Bill Automation" path={path} />}
         {inventory && <NavLink href="/inventory" icon={I.box} label="Finished Goods" path={path} />}
         {showAdmin && <NavLink href="/admin/users" icon={I.users} label="Users & Roles" path={path} />}
       </nav>

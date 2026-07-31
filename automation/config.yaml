@@ -1,0 +1,273 @@
+# Finance Agent 01 - configuration
+#
+# Every accuracy and safety decision in the system is a value in this file.
+# Nothing here requires a code change to adjust.
+
+app:
+  name: "Finance Agent - Reimbursements"
+  host: "0.0.0.0"
+  port: 8080
+  # Built-in web pages (no login of their own). Set false once the ERP is the
+  # front end: the engine then serves ONLY the key-protected /api/v1, so nobody
+  # on the LAN can confirm bills or post to Tally by browsing to this port.
+  ui_enabled: true
+  data_dir: "data"
+  upload_dir: "data/uploads"
+  db_path: "data/finance.db"
+
+# --------------------------------------------------------------------------
+# REST API - how the Next.js ERP talks to this engine
+# --------------------------------------------------------------------------
+# The ERP owns login and the screens; this engine owns the files, the OCR, the
+# learning tables and the Tally XML. Endpoints live under /api/v1.
+api:
+  # Shared secret, sent as the X-API-Key header by the Next.js SERVER.
+  # Never expose it to browser JavaScript - it is a server-to-server key.
+  # Generate one with:  python -c "import secrets;print(secrets.token_urlsafe(32))"
+  # With no key set the engine REFUSES every API request (503) rather than
+  # serving accounting writes anonymously. For local development, set
+  # allow_unauthenticated: true below - deliberately, not by omission.
+  key: ""
+  allow_unauthenticated: true
+
+  # The ERP forwards the logged-in user's name as X-User, and it is recorded
+  # against every confirmation, override and export. That is what makes the
+  # audit trail say "SHALMAN approved this" instead of "the system did".
+  # Nothing to configure - documented here so it is not a surprise.
+
+tally:
+  # Must match the company name in Tally EXACTLY, including the suffixes Tally
+  # appends. Copy it from the Tally title bar. For PESPL the title bar reads:
+  #   Pacific Engineered Surfaces Pvt Ltd- FAB - (from 1-Apr-21) - (from 1-Apr-22) - (from 1-Apr-23)
+  # Usually only the base name is needed; if posting fails with "no company",
+  # paste the full string from the title bar instead.
+  # EXACT string from your own voucher export - Tally matches this literally,
+  # including the "(from ...)" suffixes it appends. Taken verbatim from
+  # data/SAMPLE_VOUCHER.xml so the import cannot fail on company mismatch.
+  company: "Pacific Engineered Surfaces Pvt Ltd- FAB - (from 1-Apr-21) - (from 1-Apr-22) - (from 1-Apr-23)"
+
+  # GST identity, verified from your voucher export. Stamped on each voucher so
+  # an imported entry behaves exactly like one typed by hand.
+  company_gstin: "33AALCP2750N1Z3"
+  gst_registration: "Tamil Nadu Registration"
+  gst_state: "Tamil Nadu"
+
+  host: "localhost"
+  # The PESPL Tally box runs its gateway on 9005, not Tally's default 9000.
+  # Confirm in Tally at F1 > Settings > Connectivity if posting starts failing.
+  port: 9005
+
+  # file - write .xml to export_dir for an accountant to import manually
+  # http - POST straight to Tally's gateway
+  # Start on "file". Move to "http" once the confirm-rate justifies it.
+  mode: "file"
+  export_dir: "data/tally_export"
+
+  # Journal: Dr expense / Cr person. Books the payable; your existing payment
+  #          run settles it later against the bank. This matches how PESPL
+  #          already handles reimbursements.
+  # Payment: Dr expense / Cr cash_ledger. Use only if reimbursing immediately.
+  voucher_type: "Journal"
+  cash_ledger: "Cash"          # only used when voucher_type is Payment
+
+  # BATCH EXPORT voucher type. DELIBERATELY Tally's standard "Journal", not a
+  # custom type: reimbursements today and payments later both use the voucher
+  # type PESPL already uses for that transaction, so nothing new appears in the
+  # chart of accounts and no one has to learn a house convention.
+  #
+  # The trade-off that decision makes, stated plainly: a custom type could carry
+  # PREVENTDUPLICATE=Yes, which makes Tally itself REJECT a second import of the
+  # same file. On the standard Journal it cannot, and Tally will happily create
+  # duplicates - proven on live data, where five imports of one test file
+  # produced ten vouchers without a single complaint.
+  #
+  # So duplicate control lives ENTIRELY on our side. Two layers, both required:
+  #   1. dedupe.enabled below - stops the same BILL being claimed twice.
+  #   2. the export guard - a bill that has been exported once is marked, and
+  #      re-exporting it warns loudly. See app/export_batch.py.
+  # Voucher numbers are unique per bill (REIMB/26-27/00042), so a duplicate is
+  # at least trivially findable in Tally after the fact.
+  batch_voucher_type: "Journal"
+  create_voucher_type: false
+  voucher_type_parent: "Journal"
+
+  # Later, when reimbursements are paid rather than accrued, this becomes the
+  # voucher type for the payment run. Tally's standard "Payment", same reasoning.
+  payment_voucher_type: "Payment"
+
+  # Voucher number format: <prefix>/<FY>/<bill id>, e.g. REIMB/26-27/00042.
+  # The bill id makes every Tally line traceable back to the scanned image.
+  voucher_no_prefix: "REIMB"
+
+  # Tally group holding the staff who can be reimbursed. The people dropdown is
+  # populated from the ledgers under this group, which guarantees a posted
+  # voucher can never fail on an unknown name.
+  # VERIFIED from your All Masters export: VIJAY KIRAN GAUTARAJ and 334 other
+  # staff/claimant ledgers sit under this group, NOT plain "Sundry Creditors"
+  # (which holds only 33 names, mostly trade creditors).
+  people_group: "SUNDRY CRS FOR SUNDRY EXPENSES"
+
+  # Groups that brand-new masters are created under in the batch export.
+  # Both verified to exist in your chart of accounts.
+  new_ledger_parent: "ADMINISTRATION EXPENSES"     # new expense heads
+  new_person_parent: "SUNDRY CRS FOR SUNDRY EXPENSES"  # new claimants
+
+ocr:
+  # tesseract - offline, free, bundled
+  # paddle    - offline, better on skewed receipts, needs: pip install paddleocr paddlepaddle
+  # cloud     - implement CloudEngine.run() first; the only option that reads handwriting
+  engine: "tesseract"
+  fallback: null
+
+  # Path to tesseract.exe. Leave null to auto-detect - the Windows installer
+  # does not add Tesseract to PATH, so the usual install locations are checked
+  # automatically. Only set this if you installed somewhere unusual.
+  tesseract_cmd: null
+  lang: "eng"
+  psm: 6
+
+  # OCR each preprocessing variant and keep the best-scoring result. Costs
+  # ~2 extra seconds per page and is the single biggest accuracy gain available
+  # without leaving Tesseract - no one variant wins across bill types.
+  try_variants: true
+  variants: ["grayscale", "adaptive", "otsu"]
+
+  # 200 DPI is the sweet spot. Tesseract wants ~300 DPI of TEXT, which 200 DPI
+  # of page plus the upscale below already gives. Rendering at 300 made each
+  # page take 15-22s with no measurable accuracy gain.
+  pdf_dpi: 200
+  # Working height fed to OCR. Pages smaller than this are upscaled, larger
+  # ones are downscaled - without the cap, a 600 DPI scan is OCR'd at full size
+  # three times over and takes the better part of a minute.
+  target_height: 2200
+  max_height: 2600
+  crop_document: true
+
+quality:
+  # Pre-OCR image checks. Loose on purpose - real filtering happens after OCR,
+  # where the evidence is much stronger.
+  blur_min: 18.0
+  contrast_min: 12.0
+  brightness_min: 30.0
+  brightness_max: 248.0
+  min_width: 450
+  min_height: 450
+
+  # Post-OCR checks.
+  conf_reupload: 45.0
+  conf_poor: 62.0
+  plaus_reupload: 0.40
+  plaus_poor: 0.55
+  min_words: 8
+
+  # Handwriting needs BOTH signals to trip. Measured on real bills, stroke
+  # variation alone cannot separate handwriting from a badly photographed
+  # printed receipt - see app/ocr/quality.py for the calibration data.
+  hw_stroke_variation: 1.00
+  hw_plausibility: 0.30
+
+classify:
+  # These are read by the classifier - changing them here changes behaviour.
+  weights:
+    memory: 0.42      # vendor -> ledger history. Highest because it is fact, not guess.
+    person: 0.14      # which ledgers THIS claimant's bills go to. Known before
+                      # the bill is even read. Kept low on purpose: a person's
+                      # habit should narrow the field, never override the bill.
+    fuzzy: 0.18       # rapidfuzz token-set ratio
+    tfidf: 0.16       # word-level TF-IDF cosine
+    ngram: 0.10       # char 3-5 gram cosine, the OCR-noise backstop
+  bands:
+    high: 0.85        # pre-filled, one-click confirm
+    medium: 0.60      # pre-filled, alternatives shown
+    low: 0.35         # nothing pre-filled, clerk must choose
+  top_k: 5
+
+  # Confirmations of the same vendor -> ledger pair before memory short-circuits.
+  memory_trust_count: 3
+  # A correction multiplies the old mapping's weight by this. Without decay a
+  # wrong mapping learned early competes forever.
+  correction_decay: 0.55
+
+  # Ledger natures a reimbursement may be coded to.
+  allowed_natures: ["expense", "asset"]
+
+dedupe:
+  # MASTER SWITCH.
+  # false = every duplicate check is skipped, so the same file can be uploaded
+  #         over and over. Useful while tuning OCR; a banner appears in the UI
+  #         so nobody forgets it is off.
+  # TURN THIS BACK ON BEFORE GOING LIVE - a duplicate reaching Tally becomes a
+  # duplicate payment.
+  enabled: false
+
+  business_key_threshold: 0.72
+  phash_max_distance: 8
+  amount_tolerance: 1.0
+  date_tolerance_days: 1
+
+agent:
+  # ------------------------------------------------------------------------
+  # The autonomous parts. Everything here works with zero external services.
+  # ------------------------------------------------------------------------
+
+  # WATCH FOLDER. Drop bills into  data/inbox/<PERSON NAME>/  and they are
+  # picked up, split, read and classified with no one touching the dashboard.
+  # The subfolder name IS the claimant, so a scan-to-folder MFP or a shared
+  # drive mapping makes the whole intake hands-free. Processed files move to
+  # data/inbox/_done/, failures to data/inbox/_failed/.
+  watch_enabled: true
+  watch_dir: "data/inbox"
+  poll_seconds: 5
+
+  # AUTO-APPROVAL. Skip the confirm click - but only when every guard passes:
+  #   - the vendor->ledger mapping is trusted (memory_trust_count confirms)
+  #   - the suggestion is in the "high" band
+  #   - the amount was read confidently (or verified by arithmetic)
+  #   - no duplicate warnings
+  #   - amount <= auto_approve_max_amount
+  # Auto-approved bills are marked, listed, and still editable before posting.
+  # Posting to Tally always remains a human action.
+  auto_approve: true
+  auto_approve_max_amount: 5000
+
+  # AUTO-POSTING, file mode only. For auto-approved bills the agent also
+  # writes the Tally voucher XML into tally.export_dir itself, so a trusted
+  # repeat bill goes scan -> XML with zero clicks. This is safe precisely
+  # because file mode is human-in-the-loop at the Tally end: nothing reaches
+  # the books until an accountant imports the file. Over HTTP the agent NEVER
+  # posts on its own, whatever this flag says.
+  auto_post_file_mode: true
+
+  # OCR RESCUE. When a page fails the quality gate, retry with different
+  # page-segmentation modes and without the document crop before asking a
+  # human for a re-upload. Costs a few seconds, only on failures.
+  rescue_pass: true
+
+  # ANOMALY SENTINEL. A claim more than anomaly_factor x this person's median
+  # confirmed claim is flagged for a human and never auto-approved. Needs at
+  # least anomaly_min_history confirmed claims before it judges anyone.
+  anomaly_factor: 3.0
+  anomaly_min_history: 5
+
+  # VARIANT SELF-TUNING. Once one OCR preprocessing variant has won >= 90% of
+  # a large sample, stop running the losers - except on every 10th bill, which
+  # still runs the full set so the statistics keep being earned rather than
+  # self-fulfilling. Re-evaluated continuously; reversible by itself.
+  variant_autotune: true
+  autotune_min_sample: 200
+  autotune_dominance: 0.90
+  explore_every: 10
+
+  # SELF-MAINTENANCE. Once an hour the agent probes Tally's gateway; if it
+  # answers, ledgers and people are synced automatically - the day you switch
+  # the gateway on, the dropdowns fill themselves. Once a day it writes a
+  # digest of what it did, retries files from _failed once, and compacts the
+  # database.
+  maintenance_minutes: 60
+
+posting:
+  # Auto-posting without human review is OFF and should stay off until the
+  # confirm-rate on a vendor is sustained above ~98%. Enable per-vendor rather
+  # than globally.
+  require_review: true
+  require_approval_to_post: true

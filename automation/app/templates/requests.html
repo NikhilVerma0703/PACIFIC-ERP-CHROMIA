@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="card">
+  <h1>Ledger requests</h1>
+  <div class="sub">New expense heads a clerk asked for. Approving creates the ledger in Tally.</div>
+  {% if not rows %}
+    <p class="muted">No requests.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Name</th><th>Under</th><th>Why</th><th>By</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td><b>{{ r['name'] }}</b></td>
+        <td class="muted">{{ r['parent'] }}</td>
+        <td class="muted">{{ r['reason'] }}</td>
+        <td class="muted">{{ r['created_by'] }}</td>
+        <td><span class="pill {{ 'ok' if r['status']=='approved' else 'warn' }}">{{ r['status'] }}</span></td>
+        <td style="text-align:right">
+          {% if r['status'] == 'pending' %}
+          <form method="post" action="/requests/{{ r['id'] }}/approve" style="display:inline">
+            <button class="btn ghost" type="submit">Approve &amp; create in Tally</button>
+          </form>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endblock %}

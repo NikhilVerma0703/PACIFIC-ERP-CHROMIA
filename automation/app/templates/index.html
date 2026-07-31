@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block body %}
+{% set labels = {'review':('warn','Needs review'),'approved':('info','Ready to post'),
+                 'posted':('ok','Posted'),'needs_reupload':('bad','Re-upload needed'),
+                 'manual_entry':('warn','Manual entry'),'duplicate':('bad','Duplicate'),
+                 'rejected':('grey','Rejected'),'queued':('grey','Waiting'),
+                 'processing':('info','Reading…'),'error':('bad','Failed')} %}
+
+<div class="card">
+  <h1>Reimbursement queue</h1>
+  <div class="sub">Upload a bill, check the three fields, post to Tally.</div>
+  <div>
+    <div class="stat"><b>{{ counts.get('review',0) + counts.get('manual_entry',0) }}</b><span>Awaiting review</span></div>
+    <div class="stat"><b>{{ counts.get('approved',0) }}</b><span>Ready to post</span></div>
+    <div class="stat"><b>{{ counts.get('posted',0) }}</b><span>Posted</span></div>
+    <div class="stat"><b>{{ counts.get('needs_reupload',0) }}</b><span>Re-upload</span></div>
+    {% if confirm_rate is not none %}
+    <div class="stat"><b>{{ '%.0f'|format(confirm_rate) }}%</b><span>Accepted unchanged</span></div>
+    {% endif %}
+  </div>
+  {% if total_bills and total_bills < 50 %}
+  <div class="note info" style="margin-top:16px">
+    <b>Still learning.</b> The system has seen {{ total_bills }} bill{{ '' if total_bills == 1 else 's' }}.
+    Accuracy climbs sharply once it has a few hundred - it learns which ledger each
+    vendor belongs to every time you confirm one. Expect to correct a lot early on.
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <div style="display:flex;align-items:center;margin-bottom:14px;gap:8px;flex-wrap:wrap">
+    <h2 style="margin:0">Bills</h2>
+    <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">
+      <a class="btn ghost" href="/">All</a>
+      {% for st,(cls,txt) in labels.items() %}
+        {% if counts.get(st) %}
+        <a class="btn ghost" href="/?status={{ st }}" {% if filter==st %}style="border-color:var(--accent);color:var(--accent)"{% endif %}>{{ txt }} ({{ counts[st] }})</a>
+        {% endif %}
+      {% endfor %}
+      <a class="btn" href="/upload">Upload bill</a>
+    </div>
+  </div>
+
+  {% if not bills %}
+    <p class="muted">No bills yet. <a href="/upload">Upload the first one.</a></p>
+  {% else %}
+  <table>
+    <thead><tr>
+      <th>#</th><th>File</th><th>Person</th><th>Ledger</th>
+      <th style="text-align:right">Amount</th><th>Date</th><th>Status</th><th></th>
+    </tr></thead>
+    <tbody>
+    {% for b in bills %}
+      {% set cls,txt = labels.get(b['status'], ('grey', b['status'])) %}
+      <tr>
+        <td class="muted">{{ b['id'] }}</td>
+        <td><a class="row" href="/bill/{{ b['id'] }}">{{ b['filename'][:42] }}</a>
+            {% if b['vendor_name'] %}<div class="muted">{{ b['vendor_name'][:34] }}</div>{% endif %}</td>
+        <td>{{ b['person'] or '—' }}</td>
+        <td>{{ b['ledger'] or '—' }}</td>
+        <td style="text-align:right" class="mono">
+          {% if b['net_amount'] %}{{ '{:,.2f}'.format(b['net_amount']) }}{% else %}—{% endif %}</td>
+        <td class="muted">{{ b['invoice_date'] or '—' }}</td>
+        <td><span class="pill {{ cls }}">{{ txt }}</span></td>
+        <td style="text-align:right"><a class="btn ghost" href="/bill/{{ b['id'] }}">Open</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="card">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+    <h1 style="margin:0">Reading bills for {{ person }}</h1>
+    <span class="muted" id="counter"></span>
+    <a class="btn ghost" style="margin-left:auto"
+       href="/upload?person={{ person|urlencode }}">Add more</a>
+  </div>
+  <div class="sub" style="margin-bottom:14px">
+    Each page is a separate bill with its own ledger and amount.
+  </div>
+
+  <div id="bar-wrap" style="height:7px;background:#eef0f2;border-radius:99px;overflow:hidden">
+    <div id="bar" style="height:100%;width:0;background:var(--accent);
+         border-radius:99px;transition:width .35s ease"></div>
+  </div>
+  <div id="summary" style="margin-top:14px"></div>
+</div>
+
+<div class="card">
+  <table>
+    <thead><tr>
+      <th style="width:52px">Page</th><th>Vendor</th><th>Suggested ledger</th>
+      <th style="text-align:right">Amount</th><th>Date</th><th>Status</th><th></th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+
+<script>
+const BATCH = {{ batch_id|tojson }};
+const money = v => v == null ? '—'
+  : '₹' + Number(v).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
+
+const LABEL = {
+  queued:      ['grey', 'Waiting'],
+  processing:  ['info', 'Reading…'],
+  review:      ['warn', 'Check it'],
+  approved:    ['info', 'Ready to post'],
+  posted:      ['ok',   'Posted'],
+  needs_reupload: ['bad',  'Re-upload'],
+  manual_entry:['warn', 'Type manually'],
+  duplicate:   ['bad',  'Already uploaded'],
+  error:       ['bad',  'Failed'],
+  rejected:    ['grey', 'Rejected'],
+};
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g,
+    m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+function render(data) {
+  document.getElementById('rows').innerHTML = data.rows.map(r => {
+    const [cls, txt] = LABEL[r.status] || ['grey', r.status];
+    const busy = r.status === 'processing';
+    const waiting = r.status === 'queued';
+
+    let ledger = '<span class="muted">—</span>';
+    if (r.ledger) {
+      const lc = r.ledger_band === 'high' ? 'ok'
+               : r.ledger_band === 'medium' ? 'warn' : 'grey';
+      ledger = escapeHtml(r.ledger) +
+        (r.ledger_score != null ? ` <span class="pill ${lc}">${r.ledger_score}%</span>` : '');
+    }
+
+    // Say WHY a page needs attention right here, so a stack can be triaged
+    // without opening every one.
+    const note = r.reason
+      ? `<div class="muted" style="color:var(--warn)">${escapeHtml(r.reason)}</div>` : '';
+
+    return `<tr${busy ? ' style="background:#f5f8ff"' : ''}>
+      <td class="muted">${r.page_no}</td>
+      <td>${busy || waiting
+            ? '<span class="muted">' + (busy ? 'reading…' : 'waiting') + '</span>'
+            : '<a class="row" href="/bill/' + r.id + '">' +
+              escapeHtml(r.vendor || 'Unknown vendor') + '</a>'}${note}</td>
+      <td>${ledger}</td>
+      <td style="text-align:right" class="mono">${money(r.amount)}</td>
+      <td class="muted">${r.date || '—'}</td>
+      <td><span class="pill ${cls}">${txt}</span>${busy ? ' <span class="spin"></span>' : ''}</td>
+      <td style="text-align:right">${busy || waiting ? ''
+          : '<a class="btn ghost" href="/bill/' + r.id + '">Open</a>'}</td>
+    </tr>`;
+  }).join('');
+
+  const pct = data.total ? Math.round(100 * data.done / data.total) : 0;
+  document.getElementById('bar').style.width = pct + '%';
+  document.getElementById('counter').textContent =
+    data.finished ? `${data.total} bill${data.total === 1 ? '' : 's'}`
+                  : `${data.done} of ${data.total} read…`;
+
+  if (data.finished) {
+    document.getElementById('bar-wrap').style.display = 'none';
+    const needs = data.rows.filter(r =>
+      ['needs_reupload','manual_entry','duplicate','error'].includes(r.status)).length;
+    const ready = data.rows.filter(r => r.status === 'review').length;
+    const first = data.rows.find(r => r.status === 'review') || data.rows[0];
+    document.getElementById('summary').innerHTML = `
+      <div class="stat"><b>${ready}</b><span>Ready to check</span></div>
+      <div class="stat"><b>${needs}</b><span>Need attention</span></div>
+      <div class="stat"><b>${money(data.sum)}</b><span>Total read</span></div>
+      <div style="margin-top:14px;display:flex;gap:9px">
+        ${first ? '<a class="btn" href="/bill/' + first.id + '">Start checking</a>' : ''}
+        <a class="btn sec" href="/">Queue</a>
+      </div>`;
+  }
+  return data.finished;
+}
+
+// Poll while work is outstanding. OCR takes a few seconds per page, so rows
+// fill in one by one rather than the clerk staring at a frozen screen.
+async function tick() {
+  try {
+    const data = await (await fetch('/api/batch/' + BATCH)).json();
+    if (render(data)) return;
+  } catch (e) { /* transient - keep polling */ }
+  setTimeout(tick, 1200);
+}
+tick();
+</script>
+
+<style>
+.spin{display:inline-block;width:11px;height:11px;margin-left:5px;
+  border:2px solid var(--accent);border-right-color:transparent;border-radius:50%;
+  animation:sp .7s linear infinite;vertical-align:-1px}
+@keyframes sp{to{transform:rotate(360deg)}}
+</style>
+{% endblock %}

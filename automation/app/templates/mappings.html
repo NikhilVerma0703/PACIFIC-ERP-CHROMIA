@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="card">
+  <h1>Learned mappings</h1>
+  <div class="sub">
+    Everything the system has worked out on its own. All of it is visible and all of it
+    can be deleted — a learning system you cannot inspect or correct is a liability.
+  </div>
+  {% if not rows %}
+    <p class="muted">Nothing learned yet. Confirm some bills and mappings will appear here.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Vendor</th><th>Ledger</th><th>Times</th><th>Last seen</th><th>Trusted</th><th></th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td class="mono">{{ r.vendor_key }}</td>
+        <td>{{ r.ledger }}</td>
+        <td>{{ r.count }}</td>
+        <td class="muted">{{ (r.last_seen or '')[:10] or '—' }}</td>
+        <td>{% if r.count >= cfg.classify.memory_trust_count %}
+            <span class="pill ok">Auto-fills</span>
+            {% else %}<span class="pill grey">{{ cfg.classify.memory_trust_count - r.count }} more needed</span>{% endif %}</td>
+        <td style="text-align:right">
+          <form method="post" action="/mappings/forget" style="display:inline">
+            <input type="hidden" name="vendor_key" value="{{ r.vendor_key }}">
+            <input type="hidden" name="ledger" value="{{ r.ledger }}">
+            <button class="btn ghost" type="submit">Forget</button>
+          </form></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Corrections</h2>
+  <div class="sub">
+    Where a clerk overrode the suggestion. This is both the training signal and the audit
+    trail — review it monthly to spot vendors that are systematically mis-mapped.
+  </div>
+  {% if not corrections %}
+    <p class="muted">No corrections yet.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>When</th><th>Vendor</th><th>Suggested</th><th>Chosen</th><th>By</th></tr></thead>
+    <tbody>
+    {% for c in corrections %}
+      <tr><td class="muted">{{ (c['created_at'] or '')[:16] or '—' }}</td>
+          <td class="mono">{{ c['vendor_key'] }}</td>
+          <td class="muted">{{ c['suggested'] }}</td>
+          <td><b>{{ c['chosen'] }}</b></td>
+          <td class="muted">{{ c['created_by'] }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endblock %}

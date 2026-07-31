@@ -1,0 +1,370 @@
+{% extends "base.html" %}
+{% block body %}
+{% set conf = (ex['confidence'] if ex else 0) or 0 %}
+
+<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:14px;flex-wrap:wrap">
+  <h1 style="margin:0">Bill #{{ bill['id'] }}</h1>
+  <span class="muted">{{ bill['filename'] }}</span>
+  <span class="pill {{ 'ok' if bill['status'] in ('posted','approved') else 'warn' }}">{{ bill['status'] }}</span>
+  <a class="btn ghost" style="margin-left:auto" href="/">Back to queue</a>
+</div>
+
+{% if bill['auto_approved'] %}
+<div class="note ok">
+  <b>Auto-approved by the agent.</b> This vendor's mapping is trusted, the amount was
+  verified, and no duplicate was flagged — so the confirm step was skipped. You can still
+  change anything below before posting; posting always needs a person.
+</div>
+{% endif %}
+{% if request.query_params.get('confirmed') %}
+<div class="note ok"><b>Saved.</b> The system has learned this mapping and will suggest it next time.</div>
+{% endif %}
+
+{% for d in dupes %}
+<div class="note bad">
+  <b>Possible duplicate.</b> {{ d['detail'] }}
+  <form method="post" action="/bill/{{ bill['id'] }}/override-duplicate"
+        style="display:flex;gap:8px;margin-top:10px;align-items:center">
+    <input name="reason" placeholder="Why is this not a duplicate? (required)" required style="flex:1">
+    <button class="btn sec" type="submit">Override</button>
+  </form>
+  <div class="muted" style="margin-top:6px">
+    Genuine same-amount, same-day bills do happen. Overrides are logged with your reason.
+  </div>
+</div>
+{% endfor %}
+
+{% if bill['status'] == 'needs_reupload' %}
+<div class="note bad">
+  <b>This image could not be read reliably.</b>
+  <ul>{% for r in quality.get('reasons', []) %}<li>{{ r }}</li>{% endfor %}</ul>
+  <div style="margin-top:10px"><b>To get a better photo:</b></div>
+  <ul>
+    <li>Lay the bill flat and smooth out folds</li>
+    <li>Place it on a dark, plain surface</li>
+    <li>Use bright, even light and avoid your shadow</li>
+    <li>Hold the phone directly above, fill the frame, keep fingers off the text</li>
+  </ul>
+  <div style="margin-top:10px">
+    <a class="btn" href="/upload">Upload a better photo</a>
+    <span class="muted">or enter the details manually below</span>
+  </div>
+</div>
+{% elif bill['status'] == 'manual_entry' %}
+<div class="note warn">
+  <b>Handwritten bill — manual entry.</b>
+  OCR reads printed text only; on handwriting it produces confident nonsense, which is
+  worse than nothing. Please type the three fields below.
+</div>
+{% elif quality.get('reasons') %}
+<div class="note warn">
+  <b>Partly readable — please check every field.</b>
+  <ul>{% for r in quality.get('reasons', []) %}<li>{{ r }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.05fr);gap:16px;align-items:start">
+
+  <!-- ============ LEFT: the bill ============ -->
+  <div class="card">
+    <h2>The bill</h2>
+    <img src="/bill-image/{{ bill['id'] }}" alt="bill"
+         style="width:100%;border:1px solid var(--line);border-radius:8px">
+    {% if siblings %}
+    <div class="muted" style="margin-top:10px">
+      Page {{ bill['page_no'] }} of {{ siblings|length }} from
+      <span class="mono">{{ (bill['source_file'] or '').split('_')[-1] }}</span> —
+      each page is a separate bill:
+    </div>
+    <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:7px">
+      {% for s in siblings %}
+        <a class="btn ghost" href="/bill/{{ s['id'] }}"
+           style="{% if s['id'] == bill['id'] %}border-color:var(--accent);color:var(--accent);font-weight:600{% endif %}"
+           >{{ s['page_no'] }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <details style="margin-top:6px">
+      <summary class="muted" style="cursor:pointer">What the OCR read
+        {% if bill['ocr_confidence'] %}({{ '%.0f'|format(bill['ocr_confidence']) }}% confidence,
+        {{ bill['ocr_variant'] }}){% endif %}</summary>
+      <pre class="mono" style="white-space:pre-wrap;background:#fafbfc;border:1px solid var(--line);
+           border-radius:7px;padding:11px;max-height:340px;overflow:auto;margin-top:9px">{{ bill['ocr_text'] or '(nothing)' }}</pre>
+    </details>
+  </div>
+
+  <!-- ============ RIGHT: the three fields ============ -->
+  <div>
+  <div class="card">
+    <h2>Reimbursement</h2>
+    <div class="sub" style="margin-bottom:16px">
+      Only these go to Tally: the expense ledger, who to pay back, and how much.
+    </div>
+
+    <form method="post" action="/bill/{{ bill['id'] }}/{{ 'manual' if bill['status'] in ('needs_reupload','manual_entry') else 'confirm' }}">
+
+      <!-- PERSON (chosen at upload) -->
+      <div class="field">
+        <label>Person to reimburse</label>
+        <input list="people-list" name="person" value="{{ person }}"
+               placeholder="Start typing a name" required autocomplete="off">
+        <datalist id="people-list">
+          {% for p in people %}<option value="{{ p }}">{% endfor %}
+        </datalist>
+        <div class="muted" style="margin-top:4px">
+          {% if bill['person'] %}Chosen at upload. Change it here if it was wrong.
+          {% else %}Type the name exactly as it appears in Tally.{% endif %}
+        </div>
+      </div>
+
+      <!-- ===================== LEDGER =====================
+           The most likely ledger is ALWAYS pre-selected, whatever its
+           confidence. Leaving the field blank on a low-confidence guess just
+           made the clerk do the work twice: read the suggestion, then retype
+           it. Pre-filling and saying how sure we are is faster, and the
+           confidence badge plus the amber note carry the warning.
+
+           Alternatives are collapsed behind "Change" so the normal case is one
+           glance and one click on Save.
+      -->
+      {% set top = suggestions[0] if suggestions else None %}
+      {% set chosen = (ex['ledger'] if ex and ex['ledger'] else (top['ledger'] if top else '')) %}
+      {% set open_editor = not chosen %}
+
+      <div class="field">
+        <label>Expense ledger</label>
+
+        <!-- The single source of truth for what gets submitted. Hidden while
+             the picked view is showing; the value travels either way. -->
+        <input list="ledger-list" name="ledger" id="ledger-input" required
+               autocomplete="off" value="{{ chosen }}"
+               placeholder="Search {{ ledgers|length }} ledgers"
+               style="{{ '' if open_editor else 'display:none' }}">
+        <datalist id="ledger-list">
+          {% for l in ledgers %}<option value="{{ l }}">{% endfor %}
+        </datalist>
+
+        {% if not open_editor %}
+        {% set cls = 'ok' if top and top['band']=='high' else ('warn' if top and top['band']=='medium' else 'grey') %}
+        <div id="ledger-picked"
+             style="display:flex;align-items:flex-start;gap:10px;padding:11px 12px;
+                    border:1px solid var(--line);border-radius:8px;
+                    background:{{ '#f7fcf9' if top and top['band']=='high' else '#fff' }}">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:15.5px" id="ledger-text">{{ chosen }}</div>
+            {% if top and top['ledger'] == chosen and top['reasons'] %}
+              <div class="muted" style="margin-top:3px">{{ top['reasons']|join(' · ') }}</div>
+            {% elif ex and ex['ledger'] %}
+              <div class="muted" style="margin-top:3px">Confirmed earlier</div>
+            {% endif %}
+          </div>
+          {% if top and top['ledger'] == chosen %}
+            <span class="pill {{ cls }}" style="flex:none">{{ '%.0f'|format(top['score']*100) }}%</span>
+          {% endif %}
+          <button type="button" class="btn ghost" style="flex:none" onclick="openLedgerChange()">Change</button>
+        </div>
+        {% endif %}
+
+        {% if top and top['band'] in ('low','none') and not (ex and ex['ledger']) %}
+        <div class="note warn" style="margin-top:9px;margin-bottom:0">
+          This is the best match but confidence is low — please check it, or
+          <a href="#" onclick="openLedgerChange();return false;">see the alternatives</a>.
+        </div>
+        {% endif %}
+      </div>
+
+      <!-- Alternatives: hidden until Change is clicked -->
+      <div id="ledger-alts" style="{{ '' if open_editor else 'display:none' }};margin:-4px 0 16px">
+        {% if suggestions|length > 1 %}
+        <div class="muted" style="margin-bottom:7px">Other likely ledgers</div>
+        {% for s in suggestions %}
+          {% if s['ledger'] != chosen %}
+          {% set cls = 'ok' if s['band']=='high' else ('warn' if s['band']=='medium' else 'grey') %}
+          <button type="button" class="ledger-alt"
+                  data-ledger="{{ s['ledger'] }}"
+                  style="display:flex;width:100%;text-align:left;align-items:flex-start;gap:9px;
+                         padding:8px 10px;border:1px solid var(--line);border-radius:7px;
+                         margin-bottom:6px;background:#fff;cursor:pointer;font:inherit">
+            <span style="flex:1;min-width:0">
+              <span style="font-weight:550">{{ s['ledger'] }}</span>
+              <span class="muted" style="display:block">{{ s['reasons']|join(' · ') }}</span>
+            </span>
+            <span class="pill {{ cls }}" style="flex:none">{{ '%.0f'|format(s['score']*100) }}%</span>
+          </button>
+          {% endif %}
+        {% endfor %}
+        {% endif %}
+        <div class="muted" style="margin-top:6px">
+          Not listed? Type any of the {{ ledgers|length }} ledgers in the box above, or
+          <a href="#new-ledger">request a new one</a>.
+        </div>
+      </div>
+
+      {% if not suggestions %}
+      <div class="note warn">
+        No ledger could be suggested — choose one above, or
+        <a href="#new-ledger">request a new one</a>.
+      </div>
+      {% endif %}
+
+      <script>
+      function openLedgerChange() {
+        const picked = document.getElementById('ledger-picked');
+        const input  = document.getElementById('ledger-input');
+        const alts   = document.getElementById('ledger-alts');
+        if (picked) picked.style.display = 'none';
+        if (alts) alts.style.display = '';
+        input.style.display = '';
+        input.focus();
+        input.select();
+      }
+      // Clicking an alternative fills the field and collapses back, so choosing
+      // a different ledger is still a single click.
+      document.querySelectorAll('.ledger-alt').forEach(function (b) {
+        b.addEventListener('click', function () {
+          const input = document.getElementById('ledger-input');
+          input.value = b.dataset.ledger;
+          const text = document.getElementById('ledger-text');
+          if (text) {
+            text.textContent = b.dataset.ledger;
+            document.getElementById('ledger-picked').style.display = 'flex';
+            document.getElementById('ledger-alts').style.display = 'none';
+            input.style.display = 'none';
+          }
+        });
+      });
+      </script>
+
+      <!-- AMOUNT + DATE -->
+      <div class="grid2">
+        <div class="field">
+          <label>Amount (₹)</label>
+          <input name="amount" type="number" step="0.01" min="0.01" required
+                 value="{{ '%.2f'|format(ex['net_amount']) if ex and ex['net_amount'] else '' }}">
+          {% if fields.get('net_amount', {}).get('method') == 'arithmetic_promoted' %}
+            <div class="muted" style="margin-top:4px">Confirmed by adding the tax lines.</div>
+          {% elif fields.get('net_amount', {}).get('method') == 'fuel_triangulated' %}
+            <div class="muted" style="margin-top:4px;color:var(--ok)">
+              Fuel bill — confirmed by rate × litres.</div>
+          {% elif fields.get('net_amount', {}).get('method') == 'largest_amount_fallback' %}
+            <div class="muted" style="margin-top:4px;color:var(--warn)">
+              No total label found — this is the largest number on the bill. Check it.</div>
+          {% elif not (ex and ex['net_amount']) %}
+            <div class="muted" style="margin-top:4px;color:var(--warn)">
+              Could not be read reliably — please type it from the bill.</div>
+          {% endif %}
+        </div>
+        <div class="field">
+          <label>Date</label>
+          <input name="voucher_date" type="date"
+                 value="{{ ex['invoice_date'] if ex and ex['invoice_date'] else today }}">
+        </div>
+      </div>
+
+      {% if bill['status'] in ('needs_reupload','manual_entry') %}
+        <input type="hidden" name="vendor_name" value="{{ ex['vendor_name'] if ex else '' }}">
+      {% endif %}
+
+      <div style="display:flex;gap:9px;margin-top:6px">
+        <button class="btn" type="submit">Save</button>
+        <a class="btn sec" href="/">Later</a>
+      </div>
+    </form>
+  </div>
+
+  <!-- POST -->
+  <div class="card">
+    <h2>Post to Tally</h2>
+    {% if voucher %}
+      <div class="note {{ 'ok' if voucher['status'] in ('posted','generated') else 'bad' }}">
+        <b>{{ voucher['status']|capitalize }}.</b>
+        {{ (voucher['tally_response'] or '').split('\n')[0] }}
+      </div>
+      <details><summary class="muted" style="cursor:pointer">Voucher XML</summary>
+        <pre class="mono" style="white-space:pre-wrap;background:#fafbfc;border:1px solid var(--line);
+             border-radius:7px;padding:11px;max-height:300px;overflow:auto;margin-top:8px">{{ voucher['xml'] }}</pre>
+      </details>
+    {% endif %}
+
+    {% if bill['status'] == 'approved' %}
+      <p class="muted" style="margin-top:0">
+        Creates a <b>{{ cfg.tally.voucher_type }}</b> voucher:
+        debit <b>{{ ex['ledger'] }}</b>, credit <b>{{ ex['person'] }}</b>
+        for <b>₹{{ '{:,.2f}'.format(ex['net_amount'] or 0) }}</b>.
+        {% if cfg.tally.mode == 'file' %}
+          Mode is <b>file</b> — the XML is written to <span class="mono">{{ cfg.tally.export_dir }}</span>
+          for an accountant to import. Nothing reaches the books automatically.
+        {% else %}
+          Mode is <b>http</b> — this posts straight into Tally.
+        {% endif %}
+      </p>
+      <form method="post" action="/bill/{{ bill['id'] }}/post">
+        <button class="btn" type="submit" {% if dupes %}disabled title="Resolve the duplicate warning first"{% endif %}>
+          {{ 'Generate Tally XML' if cfg.tally.mode == 'file' else 'Post to Tally' }}
+        </button>
+        {% if cfg.tally.mode == 'http' %}
+        <label style="display:inline-flex;gap:6px;align-items:center;margin-left:10px;
+               text-transform:none;font-weight:400;font-size:13px;color:var(--muted)">
+          <input type="checkbox" name="force" value="1" style="width:auto">
+          post anyway (skip the check against Tally's day book)
+        </label>
+        {% endif %}
+      </form>
+    {% elif bill['status'] != 'posted' %}
+      <p class="muted" style="margin:0">Save the three fields above first.</p>
+    {% endif %}
+  </div>
+
+  <!-- EXTRAS -->
+  <div class="card">
+    <h2>What else was read</h2>
+    <div class="sub" style="margin-bottom:12px">
+      Kept for duplicate detection and learning. None of it is sent to Tally.
+    </div>
+    <table>
+      {% for k,label in [('vendor_name','Vendor'),('vendor_gstin','GSTIN'),
+                         ('invoice_no','Invoice no'),('taxable_value','Taxable'),
+                         ('cgst','CGST'),('sgst','SGST'),('igst','IGST')] %}
+        {% set f = fields.get(k) %}
+        {% if f and f.get('value') is not none %}
+        <tr><td class="muted" style="width:110px">{{ label }}</td>
+            <td class="mono">{{ f['value'] }}</td>
+            <td style="width:64px;text-align:right">
+              <span class="pill {{ 'ok' if f['confidence']>0.8 else ('warn' if f['confidence']>0.5 else 'grey') }}">
+                {{ '%.0f'|format(f['confidence']*100) }}%</span></td></tr>
+        {% endif %}
+      {% endfor %}
+    </table>
+    {% if fields.get('notes') %}
+      <div class="note info" style="margin-top:12px">
+        <ul style="margin:0 0 0 16px">{% for n in fields['notes'] %}<li>{{ n }}</li>{% endfor %}</ul>
+      </div>
+    {% endif %}
+  </div>
+
+  <!-- NEW LEDGER -->
+  <div class="card" id="new-ledger">
+    <h2>Request a new ledger</h2>
+    <div class="sub" style="margin-bottom:12px">
+      Goes to an approver. On approval the ledger is created in Tally.
+    </div>
+    <form method="post" action="/ledger-request">
+      <input type="hidden" name="bill_id" value="{{ bill['id'] }}">
+      <div class="grid2">
+        <div class="field"><label>Ledger name</label><input name="name" required></div>
+        <div class="field"><label>Under group</label>
+          <input name="parent" value="{{ cfg.tally.new_ledger_parent }}"></div>
+      </div>
+      <div class="field"><label>Why</label><input name="reason" placeholder="What kind of expense is this?"></div>
+      <button class="btn sec" type="submit">Submit request</button>
+    </form>
+  </div>
+
+  <div style="text-align:right">
+    <form method="post" action="/bill/{{ bill['id'] }}/reject" style="display:inline">
+      <button class="btn danger" type="submit">Reject this bill</button>
+    </form>
+  </div>
+  </div>
+</div>
+{% endblock %}

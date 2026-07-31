@@ -60,6 +60,19 @@ export default auth((req) => {
     }
   }
 
+  // ---- Bill automation (finance engine): Office Finance/Accounts and admins
+  // only. Runs before the branch blocks below for the same reason as the robo
+  // gate — their generic `/api` allowances must not leak it, and Commercial's
+  // `/office` allowance must not include it. ----
+  if (p.startsWith("/office/finance") || p.startsWith("/api/office/finance")) {
+    const finOk = isAdmin || (branch === "OFFICE" && (role === "FINANCE" || role === "ACCOUNTS"));
+    if (!finOk) {
+      return p.startsWith("/api")
+        ? new Response("Forbidden", { status: 403 })
+        : Response.redirect(new URL("/", nextUrl));
+    }
+  }
+
   if (!isAdmin && branch === "FABRICATION") {
     // Fabrication staff: fab pages + Overview + API only — never production pages.
     if (p.startsWith("/api")) return;
