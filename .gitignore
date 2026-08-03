@@ -35,3 +35,6 @@ yarn-error.log*
 
 .vercel
 .env*
+
+# codegraph index (local, rebuildable with `codegraph init`)
+/.codegraph/
