@@ -44,6 +44,7 @@ DESIGN NOTES
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import threading
@@ -83,7 +84,10 @@ def require_key(x_api_key: str | None = Header(default=None),
     a generic name is still better than a rejected request, and the ERP can be
     fixed to send the header without the engine going down.
     """
-    expected = (ctx("cfg").get("api", {}) or {}).get("key") or ""
+    # config.yaml is tracked in git, so the real key is supplied out of band via
+    # the environment; the config value stays "" in the repo. Env wins when set.
+    expected = os.environ.get("FINANCE_ENGINE_KEY") or (
+        ctx("cfg").get("api", {}) or {}).get("key") or ""
     if not expected:
         # FAIL CLOSED. This used to skip the whole check when no key was
         # configured - and config.yaml ships with key: "" - so as delivered

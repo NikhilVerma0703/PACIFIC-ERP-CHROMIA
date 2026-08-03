@@ -5,12 +5,16 @@
 
 app:
   name: "Finance Agent - Reimbursements"
-  host: "0.0.0.0"
+  # Loopback only. The ERP is the sole front end and reaches this either from the
+  # same machine (local dev) or via the Cloudflare Tunnel, which itself connects
+  # to localhost and makes only outbound connections. Binding 0.0.0.0 published
+  # the whole accounting API to every host on the office LAN.
+  host: "127.0.0.1"
   port: 8080
   # Built-in web pages (no login of their own). Set false once the ERP is the
   # front end: the engine then serves ONLY the key-protected /api/v1, so nobody
   # on the LAN can confirm bills or post to Tally by browsing to this port.
-  ui_enabled: true
+  ui_enabled: false
   data_dir: "data"
   upload_dir: "data/uploads"
   db_path: "data/finance.db"
@@ -27,8 +31,13 @@ api:
   # With no key set the engine REFUSES every API request (503) rather than
   # serving accounting writes anonymously. For local development, set
   # allow_unauthenticated: true below - deliberately, not by omission.
+  # Supply the real key via the FINANCE_ENGINE_KEY environment variable, which
+  # takes precedence over this value. This file is tracked in git, so the secret
+  # must never be written here.
   key: ""
-  allow_unauthenticated: true
+  # Was true as delivered, which cancelled the fail-closed guard below and served
+  # every accounting write anonymously. Turn it on only for a throwaway local run.
+  allow_unauthenticated: false
 
   # The ERP forwards the logged-in user's name as X-User, and it is recorded
   # against every confirmation, override and export. That is what makes the

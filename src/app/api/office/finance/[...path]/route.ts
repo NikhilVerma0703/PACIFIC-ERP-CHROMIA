@@ -35,6 +35,12 @@ async function proxy(req: NextRequest, { params }: { params: Promise<{ path: str
   if (!path?.length || !ALLOWED.has(path[0])) {
     return NextResponse.json({ error: "Unknown engine route" }, { status: 404 });
   }
+  // Every segment, not just the first. encodeURIComponent leaves ".." intact and
+  // fetch resolves it, so "bills/../../admin" would otherwise escape /api/v1/ and
+  // reach the engine's unauthenticated Jinja routes.
+  if (!path.every((s) => /^[A-Za-z0-9._-]+$/.test(s) && s !== "." && s !== "..")) {
+    return NextResponse.json({ error: "Unknown engine route" }, { status: 404 });
+  }
 
   const url = `${BASE}/api/v1/${path.map(encodeURIComponent).join("/")}${req.nextUrl.search}`;
   const headers: Record<string, string> = { "X-API-Key": KEY, "X-User": user };

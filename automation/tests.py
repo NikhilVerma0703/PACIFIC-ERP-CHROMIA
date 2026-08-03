@@ -385,6 +385,10 @@ def main() -> int:
         from fastapi.testclient import TestClient
         import app.main as m
 
+        # These cases exercise the built-in Jinja pages, so they need the UI on.
+        # config.yaml ships ui_enabled: false (the ERP is the only front end and
+        # those pages have no login), and _ui_gate would otherwise 404 them all.
+        m.UI_ENABLED = True
         m.CFG["app"]["upload_dir"] = str(TMP / "uploads")
         m.CFG["tally"]["export_dir"] = str(TMP / "xml")
         m.pipeline.upload_dir = TMP / "uploads"
@@ -1364,6 +1368,25 @@ def main() -> int:
         check("the approved, clean bill still goes", 9402 in going)
     except Exception as exc:            # noqa: BLE001
         check("export eligibility gate runs", False, exc)
+
+    # 6a. The SHIPPED config must be locked down. The cases below inject their own
+    # config, so they passed green while automation/config.yaml was delivered with
+    # allow_unauthenticated: true - which cancelled the 503 guard and served every
+    # accounting write anonymously. Assert against the real file, not a fixture.
+    try:
+        import yaml as _yaml
+        _shipped = _yaml.safe_load(
+            (Path(__file__).parent / "config.yaml").read_text(encoding="utf-8"))
+        check("shipped config does not allow unauthenticated API access",
+              not (_shipped.get("api", {}) or {}).get("allow_unauthenticated"))
+        check("shipped config does not carry a real key (env supplies it)",
+              not (_shipped.get("api", {}) or {}).get("key"))
+        check("shipped config keeps the loginless built-in UI off",
+              not (_shipped.get("app", {}) or {}).get("ui_enabled"))
+        check("shipped config binds loopback, not the whole LAN",
+              (_shipped.get("app", {}) or {}).get("host") in ("127.0.0.1", "localhost"))
+    except Exception as exc:                # noqa: BLE001
+        check("shipped config is locked down", False, exc)
 
     # 6. With no key configured the API must refuse, not serve anonymously.
     try:
