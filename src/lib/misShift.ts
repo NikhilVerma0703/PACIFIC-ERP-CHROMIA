@@ -16,8 +16,11 @@ export interface LastShiftReport {
   batches: string[]; designs: string[]; areas: string[];
   /** QC'd in the same window. Polish is downstream of the press, so these are
    *  not the same slabs that were pressed this shift — they are two separate
-   *  throughput numbers for the same eight hours. */
+   *  throughput numbers for the same eight hours, and usually a different batch
+   *  entirely. Hence the separate design/batch here: the card's `batches` and
+   *  `designs` above describe what was PRESSED and say nothing about polish. */
   polished: number; gradeA: number; gradeB: number; gradeC: number;
+  lastPolishedDesign: string | null; lastPolishedBatch: string | null;
 }
 
 const ymd = (d: Date | string | null) => (d ? new Date(d).toISOString().slice(0, 10) : null);
@@ -107,6 +110,7 @@ export async function getShiftReport(anchor: string, shift: "A" | "B" | "C"): Pr
     // try/catch so a QC-side problem degrades these four numbers to zero rather
     // than losing the whole press report.
     let polished = 0, gradeA = 0, gradeB = 0, gradeC = 0;
+    let lastPolishedDesign: string | null = null, lastPolishedBatch: string | null = null;
     try {
       const { start, end } = shiftRange(anchor, shift);
       // createdTime is the Airtable-era field and stopped being filled in June
@@ -118,7 +122,7 @@ export async function getShiftReport(anchor: string, shift: "A" | "B" | "C"): Pr
           { createdTime: { gte: start, lt: end } },
           { AND: [{ createdTime: null }, { importedAt: { gte: start, lt: end } }] },
         ] },
-        select: { qualityGrade: true },
+        select: { qualityGrade: true, design: true, batchNumber: true, createdTime: true, importedAt: true },
       });
       polished = qc.length;
       for (const q of qc) {
@@ -127,6 +131,13 @@ export async function getShiftReport(anchor: string, shift: "A" | "B" | "C"): Pr
         else if (g === "B") gradeB++;
         else if (g === "C") gradeC++;
       }
+      // What was on the polish line most recently. Sorted here rather than in the
+      // query because the effective timestamp is createdTime-or-importedAt, which
+      // Prisma cannot order by; the set is one shift's worth, so this is cheap.
+      const stamp = (q: any) => new Date(q.createdTime ?? q.importedAt).getTime();
+      const newest = qc.filter((q) => q.createdTime || q.importedAt).sort((a, b) => stamp(b) - stamp(a))[0];
+      lastPolishedDesign = String(newest?.design ?? "").trim() || null;
+      lastPolishedBatch = String(newest?.batchNumber ?? "").trim() || null;
     } catch { /* leave the counts at zero */ }
 
     return {
@@ -139,7 +150,7 @@ export async function getShiftReport(anchor: string, shift: "A" | "B" | "C"): Pr
       slabs: Math.round(slabs), delayMin: Math.round(delayMin),
       batches: uniq(rows.map((r) => r.batch)), designs: uniq(rows.map((r) => r.design)),
       areas: uniq(rows.flatMap((r) => r.areaOfProblem ?? [])),
-      polished, gradeA, gradeB, gradeC,
+      polished, gradeA, gradeB, gradeC, lastPolishedDesign, lastPolishedBatch,
     };
   } catch { return null; }
 }
