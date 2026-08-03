@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import os
+import re
 import sqlite3
 import sys
 
@@ -28,6 +29,16 @@ except ImportError:
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.join(BASE, "data", "finance.db")
+
+# openpyxl refuses these outright (IllegalCharacterError), and Tesseract does emit
+# them - \x0c in particular, on multi-column receipts. app/tally.py strips the same
+# ranges before building XML; without it one bad byte kills the whole export.
+_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def clean(v):
+    """Strip control characters openpyxl will not accept. Non-strings pass through."""
+    return _ILLEGAL.sub("", v) if isinstance(v, str) else v
 
 FIELDS = [
     ("vendor_name", "Vendor"), ("vendor_gstin", "Vendor GSTIN"),
@@ -76,18 +87,19 @@ def main() -> int:
     ws.append(head)
     for r in rows:
         conf = r["ocr_confidence"]
-        ws.append([
+        ws.append([clean(v) for v in ([
             r["id"], os.path.basename(r["source_file"] or ""), r["page_no"], r["person"],
             r["status"], r["quality_verdict"],
             round(conf, 1) if conf is not None else None,
             f'{r["ocr_engine"] or ""}/{r["ocr_variant"] or ""}'.strip("/"),
             r["created_at"],
-        ] + [r[f"x_{c}"] for c, _ in picked])
+        ] + [r[f"x_{c}"] for c, _ in picked])])
 
     w2 = wb.create_sheet("OCR text")
     w2.append(["Bill ID", "Source file", "Page", "OCR text"])
     for r in rows:
-        w2.append([r["id"], os.path.basename(r["source_file"] or ""), r["page_no"], r["ocr_text"] or ""])
+        w2.append([r["id"], clean(os.path.basename(r["source_file"] or "")),
+                   r["page_no"], clean(r["ocr_text"] or "")])
     w2.column_dimensions["D"].width = 120
     for row in w2.iter_rows(min_row=2, min_col=4, max_col=4):
         for cell in row:
@@ -99,9 +111,14 @@ def main() -> int:
         w3.append(ecol + ["XML on disk?"])
         xdir = os.path.join(BASE, "data", "tally_export")
         for e in conn.execute("SELECT * FROM exports ORDER BY id"):
-            vals = [e[c] for c in ecol]
-            fn = next((str(v) for v in vals if isinstance(v, str) and v.endswith(".xml")), None)
-            w3.append(vals + [("yes" if fn and os.path.exists(os.path.join(xdir, fn)) else "")])
+            # api.py writes the batch to <ref>.xml, and ref carries no extension -
+            # matching on a value ending in .xml never hits.
+            ref = e["ref"] if "ref" in ecol else None
+            on_disk = bool(ref) and os.path.exists(os.path.join(xdir, f"{ref}.xml"))
+            # the xml column holds the whole document; a cell tops out at 32767 chars
+            vals = [("<%d chars>" % len(e[c])) if c == "xml" and isinstance(e[c], str)
+                    else clean(e[c]) for c in ecol]
+            w3.append(vals + ["yes" if on_disk else "no"])
     else:
         w3.append(["no exports table"])
 

@@ -57,7 +57,16 @@ the same machine, and nothing is exposed to the LAN or the internet.
    FINANCE_ENGINE_KEY="<the same key>"
    ```
 
-6. **Node dependencies**: `npm install` in the repo root.
+6. **Turn duplicate detection back on.** `config.yaml` ships `dedupe.enabled: false`
+   — it is off for OCR tuning. Its own comment is blunt about why this matters:
+   *"TURN THIS BACK ON BEFORE GOING LIVE — a duplicate reaching Tally becomes a
+   duplicate payment."* Set it to `true` before the first real batch.
+
+   While you are there, note `agent.watch_enabled: true` — the engine watches
+   `data/inbox/` and ingests anything dropped into a folder named after a person,
+   with no upload step. Set it to `false` if you do not want that.
+
+7. **Node dependencies**: `npm install` in the repo root.
 
 ### Daily run
 
@@ -83,9 +92,12 @@ Simplest reliable option on Windows is Task Scheduler, one task per service:
 
 - Trigger: **At log on** (or At startup, with "Run whether user is logged on or not")
 - Action for the engine: program `python`, arguments `run.py`, start-in `<repo>\automation`
-- Action for the ERP: program `npm`, arguments `run start`, start-in `<repo>`
+- Action for the ERP: program `cmd.exe`, arguments `/c npm run start`, start-in `<repo>`
   (run `npm run build` once first — `start` serves the production build and is
-  much lighter than `dev`)
+  much lighter than `dev`).
+  **Must be `cmd.exe`, not `npm`.** There is no `npm.exe` — only `npm.cmd` — and
+  Task Scheduler's Program field only ever appends `.exe`, so a bare `npm` fails
+  with 0x2 at every boot and the ERP silently never comes up.
 - Tick **Restart the task if it fails**
 
 Confirm afterwards:
@@ -178,8 +190,8 @@ With `FINANCE_ENGINE_KEY` set and `python run.py` running:
 # every bill the engine knows, as JSON
 curl.exe -H "X-API-Key: $env:FINANCE_ENGINE_KEY" http://127.0.0.1:8080/api/v1/bills > bills.json
 
-# a batch's Tally XML
-curl.exe -H "X-API-Key: $env:FINANCE_ENGINE_KEY" http://127.0.0.1:8080/api/v1/export/<ref> > voucher.xml
+# a batch's Tally XML - note /exports/<ref>/download, not /export/<ref>
+curl.exe -H "X-API-Key: $env:FINANCE_ENGINE_KEY" http://127.0.0.1:8080/api/v1/exports/<ref>/download > voucher.xml
 ```
 
 Everything also lives on disk under `automation/data/`:

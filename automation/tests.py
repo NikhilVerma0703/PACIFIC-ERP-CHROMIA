@@ -24,6 +24,12 @@ sys.path.insert(0, str(BASE))
 TMP = Path(tempfile.mkdtemp(prefix="finance_agent_tests_"))
 os.environ["FINANCE_AGENT_DB"] = str(TMP / "test.db")
 
+# require_key reads FINANCE_ENGINE_KEY ahead of api.key, so a real key in the
+# environment beats the one the API cases inject through CFG and every request
+# 401s. The deploy runbook sets that variable with setx, which persists - so
+# without this the suite fails permanently on exactly the machine that runs it.
+os.environ.pop("FINANCE_ENGINE_KEY", None)
+
 FAILURES: list[str] = []
 SECTION = ""
 

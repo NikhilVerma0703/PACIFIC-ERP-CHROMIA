@@ -39,11 +39,14 @@ Next.js ERP's. Do not put it in `config.yaml`: that file is tracked in git.
 
 ```ts
 // lib/finance-engine.ts  — server-side only
-const BASE = process.env.FINANCE_ENGINE_URL!;   // http://10.0.0.5:8080/api/v1
+// Origin only - no /api/v1. The ERP proxy appends it, so including it here
+// produces /api/v1/api/v1/... and every call 404s.
+const BASE = process.env.FINANCE_ENGINE_URL!;   // http://10.0.0.5:8080
 const KEY  = process.env.FINANCE_ENGINE_KEY!;
 
+// path is the engine route without the prefix, e.g. engine("/bills", user)
 export async function engine(path: string, user: string, init: RequestInit = {}) {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${BASE}/api/v1${path}`, {
     ...init,
     headers: {
       "X-API-Key": KEY,

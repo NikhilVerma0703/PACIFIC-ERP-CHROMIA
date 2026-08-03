@@ -39,7 +39,7 @@ The XML import was verified against **live PESPL data** on the AIOCLOUD Tally se
 That last row is what makes a 100-bill batch safe, and it was the single biggest unknown
 in the project.
 
-**277 automated checks pass** (`python tests.py`), covering OCR, extraction, classification,
+**299 automated checks pass** (`python tests.py`), covering OCR, extraction, classification,
 learning, duplicate detection, thread safety, the Tally XML, and the full REST API contract.
 
 ## Architecture
@@ -88,7 +88,7 @@ pip install -r requirements.txt
 # Tesseract OCR must be installed separately (Windows installer does not add it to PATH;
 # the app auto-detects the usual locations)
 python run.py                    # http://localhost:8080
-python tests.py                  # 277 checks
+python tests.py                  # 299 checks
 ```
 
 Every accuracy and safety decision is a value in **`config.yaml`** — nothing requires a
@@ -112,7 +112,7 @@ from their All Masters export).
 | `app/ocr/` | 954 | Tesseract engine, preprocessing variants, quality gate |
 | `app/dedupe.py` | 277 | three-layer duplicate detection |
 | `app/master_xml.py` | 168 | parses Tally's All Masters export (2,538 ledgers) |
-| `tests.py` | 1,295 | 277 checks |
+| `tests.py` | 1,295 | 299 checks |
 | `import_history.py` | 417 | bootstraps learning from years of past Tally vouchers |
 
 Docs: **`API.md`** (ERP integration) · **`README.md`** (how it works and why) ·

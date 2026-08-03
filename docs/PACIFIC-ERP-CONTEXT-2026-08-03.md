@@ -239,7 +239,7 @@ destructuring — a **pre-existing** break in `HEAD` that stopped every build.
 
 ### Finance engine — 11 confirmed by adversarial review
 These were found by reviewing the merged code against the money paths. Every one is
-now fixed **and covered by a regression check** (suite went 277 → 296).
+now fixed **and covered by a regression check** (the suite stands at 299).
 
 | # | Defect | Why it mattered |
 |---|---|---|
@@ -335,7 +335,7 @@ npx prisma generate             # stop the dev server first (DLL lock)
 # Finance engine (from automation/)
 pip install -r requirements.txt
 python run.py                   # preflights Tesseract + ledger master, then serves :8080
-python tests.py                 # 296 checks, all must pass
+python tests.py                 # 299 checks, all must pass
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8080   # skip preflight
 
 # Safety check before any commit touching automation/
