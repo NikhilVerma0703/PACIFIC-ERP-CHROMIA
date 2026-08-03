@@ -6,7 +6,7 @@ import { getDowntimeResponses } from "@/lib/downtimeResponse";
 import { photosForRecords } from "@/lib/entryPhoto";
 import { canRespondDowntime } from "@/lib/rbac";
 import { DowntimeLogCard } from "./DowntimeLogCard";
-import { getLastShiftReport, getCurrentShiftReport, currentShiftAnchor } from "@/lib/misShift";
+import { getLastShiftReport, getCurrentShiftReport, getPreviousShiftReport, currentShiftAnchor } from "@/lib/misShift";
 import { SHIFT_WINDOW } from "@/lib/misShiftHours";
 
 export const dynamic = "force-dynamic";
@@ -82,12 +82,24 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
   const photoMap = r ? await photosForRecords("Mis", r.incidents.map((i) => i.id)) : new Map<string, { id: string; filename: string }[]>();
   const photos: Record<string, { id: string; filename: string }[]> = {};
   for (const [k, v] of photoMap) photos[k] = v;
-  const lastShift = await getLastShiftReport();
-  const currentShift = await getCurrentShiftReport();
+  // Both cards are keyed off the CLOCK, not off which shift logged most
+  // recently — for most of any shift the newest MIS row belongs to the running
+  // shift, so recency would label the shift in progress "last shift report"
+  // and there would be nothing left to show as current.
   const nowShift = currentShiftAnchor();
-  // don't repeat the same shift twice: the running shift IS the last one to
-  // report until the next shift logs its first row
-  const showCurrent = !(lastShift && lastShift.shift === nowShift.shift && lastShift.date === nowShift.anchor);
+  const [currentShift, prevShift] = await Promise.all([
+    getCurrentShiftReport(),
+    getPreviousShiftReport(),
+  ]);
+  // Normally the shift immediately before this one. If it logged nothing (plant
+  // idle, missed entries) fall back to the most recent shift that did report,
+  // which is what this card showed before — but never the running shift, or it
+  // would appear twice.
+  let lastShift = prevShift;
+  if (!lastShift) {
+    const logged = await getLastShiftReport();
+    if (logged && !(logged.shift === nowShift.shift && logged.date === nowShift.anchor)) lastShift = logged;
+  }
 
   // link to this page preserving the active filters, with overrides
   const link = (extra: Record<string, string | null>) => {
@@ -143,8 +155,8 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
       </form>
 
       {error && <Empty>{error}</Empty>}
-      {showCurrent && currentShift && <ShiftCard s={currentShift} title="Current shift" live />}
-      {showCurrent && !currentShift && (
+      {currentShift && <ShiftCard s={currentShift} title="Current shift" live />}
+      {!currentShift && (
         <Card className="mb-6">
           <div className="flex flex-wrap items-center gap-2">
             <H2>Current shift</H2>

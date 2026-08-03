@@ -149,3 +149,18 @@ export async function getCurrentShiftReport(): Promise<LastShiftReport | null> {
   const { anchor, shift } = currentShiftAnchor();
   return await getShiftReport(anchor, shift);
 }
+
+/** The shift instance immediately before the given one. C rolls back a day. */
+export function previousShift(cur: { anchor: string; shift: "A" | "B" | "C" }): { anchor: string; shift: "A" | "B" | "C" } {
+  if (cur.shift === "C") return { anchor: cur.anchor, shift: "B" };
+  if (cur.shift === "B") return { anchor: cur.anchor, shift: "A" };
+  return { anchor: plusDay(cur.anchor, -1), shift: "C" };
+}
+
+/** The shift instance before the one running now — the genuinely last COMPLETED
+ *  shift. Deliberately not "whichever shift logged most recently": that is the
+ *  running shift for most of every shift, which is a different thing. */
+export async function getPreviousShiftReport(): Promise<LastShiftReport | null> {
+  const { anchor, shift } = previousShift(currentShiftAnchor());
+  return await getShiftReport(anchor, shift);
+}
