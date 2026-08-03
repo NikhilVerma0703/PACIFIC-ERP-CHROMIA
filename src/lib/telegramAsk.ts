@@ -4,7 +4,7 @@
 // Needs ANTHROPIC_API_KEY in env; soft-fails with a friendly message without it.
 import { prisma } from "@/lib/prisma";
 import { getDowntimeReport } from "@/lib/downtime";
-import { getLastShiftReport } from "@/lib/misShift";
+import { getLastShiftReport, getShiftReport, currentShiftAnchor } from "@/lib/misShift";
 import { ymdIST, plusDay, lastCompletedHourIST, hourlyMessage } from "@/lib/telegramReports";
 import { esc } from "@/lib/telegram";
 import { thicknessBySlab, thicknessMixByBatch, mergeMix, mixLabel } from "@/lib/slabThickness";
@@ -182,6 +182,49 @@ async function dataPack(question = ""): Promise<string> {
       const merged = mergeMix((await thicknessMixByBatch(bk.map((r: any) => String(r.k)))).values());
       lines.push(`ASKED BATCH ${k} (all-time detail): press ${pr[0]?.n ?? 0} slabs${pr[0]?.lo ? ` (#${pr[0].lo}-#${pr[0].hi})` : ""}; thickness ${mixLabel(merged)}; MIS logged ${mi[0]?.s ?? 0}${mi[0]?.miss ? ` (${mi[0].miss} hrs without counts)` : ""}; QC ${qc.length ? qc.map((r: any) => `${r.g ?? "ungraded"}:${r.n}`).join(" ") : "none yet"}; JOT ${jt.length ? jt.map((r: any) => `${r.d ?? "no-defect"}:${r.n}`).join(" ") : "none yet"}`);
     }
+  } catch { /* best-effort */ }
+  // COMMERCIAL / DOWNSTREAM: what shipped, what is on hold, and what is sitting
+  // in stock by design. The pack was production-only before this, so anything
+  // about dispatch or stock depth got "no data".
+  try {
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const db = prisma as any;
+    const [disp, byDesign, holds]: any[][] = await Promise.all([
+      db.$queryRaw`
+        SELECT to_char(at + interval '330 minutes', 'YYYY-MM-DD') d, count(*)::int n,
+               count(DISTINCT slab_number)::int slabs
+        FROM fg_slab_event WHERE kind = 'dispatch' AND at > now() - interval '7 days'
+        GROUP BY 1 ORDER BY 1 DESC`,
+      db.$queryRaw`
+        SELECT design, count(*)::int n FROM fg_finished_slab
+        WHERE status <> 'DISPATCHED' AND design IS NOT NULL
+        GROUP BY 1 ORDER BY 2 DESC LIMIT 12`,
+      db.$queryRaw`
+        SELECT reserved_for_pi pi, customer, count(*)::int n FROM fg_finished_slab
+        WHERE status IN ('RESERVED','PACKED') AND reserved_for_pi IS NOT NULL
+        GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 10`,
+    ]);
+    if (disp.length) lines.push("DISPATCHED PER DAY (last 7 days, IST): "
+      + disp.map((r: any) => `${r.d}:${r.slabs}`).join(" "));
+    if (byDesign.length) lines.push("STOCK ON HAND BY DESIGN (not dispatched, top 12): "
+      + byDesign.map((r: any) => `${r.design}:${r.n}`).join("; "));
+    if (holds.length) lines.push("RESERVED/PACKED AGAINST A PI (open commitments): "
+      + holds.map((r: any) => `PI ${r.pi}${r.customer ? ` ${r.customer}` : ""}: ${r.n}`).join("; "));
+  } catch { /* best-effort */ }
+  // SHIFT COMPARISON — answers "which shift did better", "how is C doing vs A",
+  // without the reader running /shift three times. Anchored on the RUNNING
+  // shift's own start date, not the IST calendar date: a C shift after midnight
+  // started yesterday, so keying off today would show three empty shifts for
+  // the whole of the small hours.
+  try {
+    const { anchor } = currentShiftAnchor();
+    const shifts = await Promise.all((["A", "B", "C"] as const).map((s) =>
+      getShiftReport(anchor, s).catch(() => null)));
+    const parts = shifts.filter(Boolean).map((r) => {
+      const x = r as NonNullable<typeof r>;
+      return `${x.shift}: pressed ${x.slabs}, polished ${x.polished} (A${x.gradeA}/B${x.gradeB}/C${x.gradeC}), ${x.hoursLogged}/${x.hoursTotal} hrs logged, downtime ${x.delayMin}min${x.prodIncharge ? `, incharge ${x.prodIncharge}` : ""}`;
+    });
+    if (parts.length) lines.push(`SHIFTS THIS PRODUCTION DAY (started ${anchor}, IST): ` + parts.join(" | "));
   } catch { /* best-effort */ }
   // Known-design matching, shared by the quality design comparison and the
   // ASKED DESIGNS stock lines below (one catalogue query instead of two).
@@ -592,32 +635,125 @@ async function designComparisonPack(design: string): Promise<string> {
   return pack;
 }
 
+// Telegram parses our messages as HTML and rejects the WHOLE message with
+// 400 "can't parse entities" on any tag it doesn't know — so we never pass the
+// model's text through as markup. Everything is escaped first, then a small
+// fixed set of conversions is applied to the already-escaped text. That order
+// makes a parse failure structurally impossible: the only tags that can reach
+// Telegram are the ones written here.
+const BULLET = "•";
+function formatForTelegram(raw: string): string {
+  const lines = esc(raw)
+    .split("\n")
+    .map((line) => {
+      let s = line.trimEnd();
+      // "- x" / "* x" / "1. x" -> bullet. The model is asked for these, but it
+      // also reaches for markdown on its own; normalise both.
+      s = s.replace(/^\s*[-*]\s+/, `${BULLET} `);
+      s = s.replace(/^\s*(\d{1,2})[.)]\s+/, `$1. `);
+      // "## Heading" -> bold line
+      s = s.replace(/^\s*#{1,6}\s*(.+)$/, "<b>$1</b>");
+      return s;
+    });
+  return lines
+    .join("\n")
+    // **bold** and __bold__ -> <b>. Applied after escaping, so the asterisks
+    // are literal text by now and cannot interact with any real markup.
+    .replace(/\*\*([^\n*]{1,200}?)\*\*/g, "<b>$1</b>")
+    .replace(/__([^\n_]{1,200}?)__/g, "<b>$1</b>")
+    // `code` -> <code>
+    .replace(/`([^\n`]{1,200}?)`/g, "<code>$1</code>")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+    .slice(0, 3900); // Telegram caps at 4096; leave room for the header
+}
+
+// ---- The answering model ---------------------------------------------------
+// Sonnet 5 rather than Haiku: the pack is a large labelled document and most
+// real questions need it read carefully (cross-referencing press vs MIS, or
+// reasoning over the server-computed deltas) rather than looked up. Sonnet is
+// ~3x Haiku per token, which is the "little more per prompt" this was asked to
+// cost. Sampling parameters are not accepted on this model, so tone is steered
+// entirely by the prompt below.
+const ASK_MODEL = "claude-sonnet-5";
+
+const ANSWER_STYLE = [
+  "HOW TO WRITE THE ANSWER",
+  "- Lead with the direct answer in ONE line. The reader is on a phone in a factory.",
+  "- Then supporting detail as bullets, one fact per line, starting with \"- \".",
+  "- Put the number first in a bullet, then what it is: \"- 112 slabs pressed (shift A)\".",
+  "- Wrap the key figure of each bullet in **double asterisks** and nothing else. Never bold a whole line.",
+  "- No headings, no tables, no nested bullets, no markdown links. Plain lines only.",
+  "- 6 bullets maximum for a normal question. If more seems needed, you are answering a question that was not asked.",
+  "- Never restate the question, never open with \"Based on the data\" or \"Here is\".",
+  "- Round sensibly: whole slabs, whole minutes, one decimal for percentages.",
+  "- Name the source when it matters: say \"press\" or \"MIS log\" so the reader knows which number they are getting.",
+  "",
+  "WHEN YOU CANNOT ANSWER",
+  "- Say exactly which figure is missing, in one line. Do not estimate, do not hedge with maybes.",
+  "- Then point at what would have it: /status, /shift, /day, or the ERP dashboard.",
+].join("\n");
+
+const DATA_RULES = [
+  "READING THE DATA PACK",
+  "- PRESS MACHINE TOTALS are the authoritative slab count per batch. For any batch total, use press — never MIS.",
+  "- MIS lines are the manual hourly log and are often incomplete (hours logged with no count). Treat MIS as what was written down, press as what happened.",
+  "- Asked about problems or discrepancies? Compare the two: name batches where MIS logged materially fewer slabs than press recorded, and the hours missing counts.",
+  "- LAST ~75min and LATEST ENTRY lines answer anything phrased as latest / just now / last hour / most recent.",
+  "- BY HOUR lines answer any time-window question for today and yesterday (times are IST).",
+  "- Thickness (2 cm vs 3 cm) comes only from SLAB THICKNESS BY BATCH and the thickness field on ASKED BATCH / ASKED SLAB. It is stamped at Distributor/Kreos, the polish stations and Jot — never at the press or the oven. A slab shown as 'not recorded' simply has no thickness stamped anywhere: say that plainly rather than guessing.",
+  "- Every number you give must appear in the pack or be a difference between two numbers in it. Never carry in outside knowledge of what a normal machine setting looks like.",
+].join("\n");
+
+const ANALYSIS_RULES = [
+  "",
+  "QUALITY / ROOT-CAUSE QUESTIONS",
+  "This question shipped one or more server-computed comparison blocks: COMPARISON PACK BATCH (a batch's bad vs good slabs), SLAB n VS ITS BATCH'S GOOD SLABS (one slab against its batch's good-group mean), DESIGN COMPARISON PACK (a design's recent batches pooled, led by per-batch bad rates).",
+  "PARAM DELTAS in those blocks were already calculated on the server (% = relative difference from the good-group mean). Reason from them; never recompute an average yourself.",
+  "Answer in this order, still as bullets:",
+  "1. The strongest suspects — biggest |%| deltas — each with both numbers. Mention press-hour clustering if present. If a design block's bad rates single out one batch, name that batch.",
+  "2. What looks normal (the parameters within ±2%), in one line.",
+  "3. One line, plain words: these are correlations in logged data, not proven causes.",
+  "4. One or two concrete physical checks someone can actually go and do — a station to inspect for the clustered hours, specific slabs to pull, silo bags to trace.",
+  "Up to 12 bullets for this kind of question.",
+].join("\n");
+
 export async function aiAnswer(question: string): Promise<string> {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) return "🤖 Free-text questions aren't switched on yet (no AI key configured). The command reports still work: /status /shift /day /yesterday";
   try {
     const pack = await dataPack(question);
-    // quality investigations ship server-computed comparison blocks (batch /
-    // slab / design subjects) and get a slightly longer answer budget (never
-    // beyond 600) + analysis guidance
+    // Quality investigations carry server-computed comparison blocks and need
+    // real reasoning over them, so they get thinking, more effort and a bigger
+    // answer budget. Everything else runs thinking-off for chat latency — the
+    // group is waiting on the reply.
     const hasCmp = /COMPARISON PACK BATCH|DESIGN COMPARISON PACK|VS ITS BATCH'S GOOD SLABS/.test(pack);
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
       body: JSON.stringify({
-        model: "claude-haiku-4-5",
-        max_tokens: hasCmp ? 600 : 400,
-        system: "You are the Pacific Surfaces factory ERP assistant answering in a Telegram group. Answer ONLY from the production data provided — never invent numbers. PRESS MACHINE TOTALS are the authoritative slab counts per batch; the LAST ~75min station lines list the individual slabs just entered at Polish QC / press / JOT, and LATEST ENTRY lines give the most recent record per station with its age — use these for any 'last hour / just now / latest / most recent' question; the BY HOUR lines give per-IST-hour counts + slab ranges for today and yesterday — use them for any time-window question; the MIS lines are the manual hourly log and can be incomplete (hours logged without counts). For batch totals ALWAYS use the press totals. For ANY thickness question (which slabs are 2 cm vs 3 cm, how many of each) use the SLAB THICKNESS BY BATCH line and the 'thickness' field on the ASKED BATCH / ASKED SLAB lines. Those splits are counted over the batch's press slabs and therefore add up to its press total ('no thickness×N' = press slabs with no thickness stamped anywhere) — thickness is recorded at Distributor/Kreos, the polish stations and Jot, never at the press or the oven, so a slab shown as 'not recorded' simply has no thickness stamped at any station: say so rather than guessing. When asked about issues/discrepancies, COMPARE press totals against the MIS log: flag batches where MIS logged noticeably fewer slabs than the press made, and hours missing counts. If the question needs data not present here, say exactly what is missing instead of estimating. Be short (2-5 lines), plain text, numbers bold-free. If the data can't answer the question, say so and suggest /status, /shift, /day or the ERP dashboard."
-          + (hasCmp ? " For this quality/root-cause question one or more server-computed comparison blocks are included — COMPARISON PACK BATCH (batch bad-vs-good), SLAB n VS ITS BATCH'S GOOD SLABS (one slab's own values vs its batch's good-group average), DESIGN COMPARISON PACK (a design's recent batches pooled, led by per-batch bad rates). Their PARAM DELTAS were computed server-side (bad-group or single-slab value vs good-group mean, % = relative difference) — reason ONLY from those deltas and the context lines, never from outside knowledge of typical machine values, and do not recompute averages yourself. Structure the answer: (1) the strongest parameter suspects — the biggest |%| deltas — with their numbers, plus any press-hour clustering; if a DESIGN block's per-batch bad rates single out one batch, name it; (2) what looks normal (the params within ±2%); (3) one plain-words caveat that these are correlations in logged data, NOT proven causes; (4) 1-2 concrete physical checks (e.g. inspect the suspect station's settings/log for the clustered hours, or the listed slabs/silo bags). Up to 10 short lines for this." : ""),
+        model: ASK_MODEL,
+        // max_tokens caps thinking + text together, so the comparison path needs
+        // real headroom or the answer truncates mid-bullet.
+        max_tokens: hasCmp ? 4000 : 1200,
+        thinking: hasCmp ? { type: "adaptive" } : { type: "disabled" },
+        output_config: { effort: hasCmp ? "high" : "medium" },
+        system:
+          "You are the Pacific Surfaces factory ERP assistant, answering questions in the plant's Telegram group. "
+          + "The people reading you are production, quality and office staff — not engineers. "
+          + "Answer ONLY from the production data provided. Never invent a number.\n\n"
+          + DATA_RULES + "\n\n" + ANSWER_STYLE + (hasCmp ? "\n" + ANALYSIS_RULES : ""),
         messages: [{ role: "user", content: `Production data:\n${pack}\n\nQuestion: ${question.slice(0, 500)}` }],
       }),
     });
     if (!res.ok) { console.error("aiAnswer API", res.status, await res.text().catch(() => "")); return "🤖 Couldn't reach the AI service — try again in a minute."; }
     const j = await res.json();
-    const text = (j?.content ?? []).map((c: { text?: string }) => c.text ?? "").join("").trim();
-    // Telegram parses our messages as HTML — raw <angle brackets> in the
-    // model's prose make it reject the whole message (400 "can't parse entities")
-    return text ? esc(text) : "🤖 No answer came back — try rephrasing.";
+    // Thinking blocks come back alongside text on the comparison path — take
+    // only the text, or the reply leads with reasoning.
+    const text = (j?.content ?? [])
+      .filter((c: { type?: string }) => c?.type === "text")
+      .map((c: { text?: string }) => c.text ?? "").join("").trim();
+    return text ? formatForTelegram(text) : "🤖 No answer came back — try rephrasing.";
   } catch (e) {
     console.error("aiAnswer error:", e);
     return "🤖 Something went wrong answering that — the command reports still work.";
