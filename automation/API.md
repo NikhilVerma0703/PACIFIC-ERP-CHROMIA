@@ -20,7 +20,7 @@ The ERP stores **nothing** about bills. It holds bill ids and renders what the e
 Every request needs two headers, sent from your **server** (never the browser — the key must not reach client-side JS):
 
 ```
-X-API-Key: <api.key from config.yaml>
+X-API-Key: <the engine's FINANCE_ENGINE_KEY>
 X-User:    <the logged-in ERP username>
 ```
 
@@ -32,7 +32,8 @@ Generate a key:
 python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-Put it in `config.yaml` under `api.key`, and in your Next.js env as `FINANCE_ENGINE_KEY`.
+Set it as `FINANCE_ENGINE_KEY` in **both** environments — the engine's and the
+Next.js ERP's. Do not put it in `config.yaml`: that file is tracked in git.
 
 ### Suggested wrapper
 

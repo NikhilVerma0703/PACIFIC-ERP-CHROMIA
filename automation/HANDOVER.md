@@ -181,7 +181,8 @@ they post as **Purchase**, not Journal. Don't route them here.
 ## Recommended first steps for the ERP team
 
 1. `python tests.py` — confirms the environment is sound before touching anything.
-2. Generate an API key, set `api.key` in `config.yaml`, hit `/api/v1/health`.
+2. Generate an API key, export it as `FINANCE_ENGINE_KEY` (not into `config.yaml`,
+   which is tracked in git), hit `/api/v1/health`.
 3. Read `API.md` and build the screens against the running engine.
 4. Run `python import_history.py --file "Journal Register (FY2024-26).xlsx"` — this teaches
    the classifier from years of PESPL's own vouchers, so it starts out knowing who claims

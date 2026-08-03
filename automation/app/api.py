@@ -96,9 +96,10 @@ def require_key(x_api_key: str | None = Header(default=None),
         # api.allow_unauthenticated, never by forgetting to set a key.
         if not (ctx("cfg").get("api", {}) or {}).get("allow_unauthenticated"):
             raise HTTPException(
-                503, "This engine has no api.key configured. Set one in "
-                     "config.yaml (or api.allow_unauthenticated: true for "
-                     "local development).")
+                503, "This engine has no API key configured. Set the "
+                     "FINANCE_ENGINE_KEY environment variable (config.yaml is "
+                     "tracked in git, so the secret must not go there), or set "
+                     "api.allow_unauthenticated: true for local development.")
         return (x_user or "").strip() or "erp"
     if not x_api_key:
         raise HTTPException(401, "X-API-Key header is missing")

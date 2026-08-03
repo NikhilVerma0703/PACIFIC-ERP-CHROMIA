@@ -206,7 +206,7 @@ Added to `.env.local` (and needed in Vercel for production):
 
 ```bash
 FINANCE_ENGINE_URL="http://localhost:8080"   # where the engine is reachable FROM the ERP server
-FINANCE_ENGINE_KEY=""                        # must equal api.key in automation/config.yaml
+FINANCE_ENGINE_KEY=""                        # must equal FINANCE_ENGINE_KEY in the engine's env
 ```
 
 Generate the key with:
@@ -300,9 +300,11 @@ because all would produce *silently wrong* data rather than visible errors:
 1. **Decide where the engine runs.** Needs Tally access and local disk — assumed to be
    the office PC. Confirm whether it is reachable from Vercel; if not, a **Cloudflare
    Tunnel** is the recommended answer (no inbound firewall changes).
-2. **Set `FINANCE_ENGINE_URL` and `FINANCE_ENGINE_KEY` in Vercel**, matching
-   `api.key` in `automation/config.yaml`.
-3. **Set `app.ui_enabled: false`** on the production machine. See §8.
+2. **Set `FINANCE_ENGINE_URL` and `FINANCE_ENGINE_KEY` in Vercel**, matching the
+   `FINANCE_ENGINE_KEY` set in the engine's own environment. Do not put the key in
+   `automation/config.yaml` — that file is tracked in git.
+3. ~~Set `app.ui_enabled: false`~~ — **done**, along with `app.host: 127.0.0.1` and
+   `api.allow_unauthenticated: false`. These now ship locked down; see §8.
 4. **Install Tesseract** on the engine machine: `winget install UB-Mannheim.TesseractOCR`.
    (Was installed on the dev box — v5.4.0 — but that box no longer has the repo.)
 5. **Place a current `MASTER.xml`** (Tally → All Masters export) in `automation/data/`.

@@ -20,19 +20,26 @@ Start with `python run.py` — it preflights all of the above and prints what's 
 ## Wiring it to the ERP
 
 1. Generate a key: `python -c "import secrets; print(secrets.token_urlsafe(32))"`
-2. Put it in `config.yaml` → `api.key`
+2. **Set it as `FINANCE_ENGINE_KEY` in the engine's environment — never in
+   `config.yaml`.** That file is tracked in git; a key written there gets
+   committed. The engine reads the env var first and `api.key` only as a
+   fallback, so leave `api.key: ""` as shipped.
 3. Set the same value in the ERP's environment (Vercel → Project → Env):
    - `FINANCE_ENGINE_KEY` — the key
    - `FINANCE_ENGINE_URL` — where this engine is reachable *from the ERP servers*
-4. **Set `app.ui_enabled: false` in config.yaml.** The engine's built-in pages have
-   no login; with the flag off only the key-protected `/api/v1` exists, so nobody
-   on the LAN can confirm bills or post to Tally by browsing to port 8080.
+4. `app.ui_enabled` and `app.host` already ship locked down (`false` and
+   `127.0.0.1`). Leave them. The built-in pages have no login of their own, and
+   loopback binding keeps the engine off the office LAN entirely.
 
 Because the ERP runs on Vercel (cloud), the engine must be reachable from the
 internet. A **Cloudflare Tunnel** on the office PC is the recommended way — no
 inbound firewall holes, and the tunnel hostname becomes `FINANCE_ENGINE_URL`.
-For local ERP development, `http://localhost:8080` with an empty key works and
-the engine warns about the missing key on every start.
+The tunnel dials out from localhost, so it works with the loopback binding.
+
+For local development, set `FINANCE_ENGINE_KEY` in your shell and point the ERP
+at `http://localhost:8080`. An empty key no longer "just works" — the engine
+returns 503 on every request unless you also set `api.allow_unauthenticated:
+true`, which is the deliberate local-only escape hatch.
 
 ## Day-to-day
 

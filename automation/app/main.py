@@ -180,11 +180,14 @@ api_mod.CTX.update({
 })
 app.include_router(api_mod.router)
 
-if not (CFG.get("api", {}) or {}).get("key"):
+if not (os.environ.get("FINANCE_ENGINE_KEY") or (CFG.get("api", {}) or {}).get("key")):
     # Said out loud, every start. An unauthenticated service that writes
     # accounting data is not something anyone should discover by accident.
-    print("[!] api.key is empty in config.yaml - the REST API is UNAUTHENTICATED. "
-          "Set a key before the ERP talks to it over anything but localhost.")
+    # Checks the env var too: it is the supported way to supply the key
+    # (config.yaml is tracked in git), and warning at someone who did it
+    # correctly only pushes them into committing the secret to silence this.
+    print("[!] No API key: FINANCE_ENGINE_KEY is unset and api.key is empty. "
+          "Set FINANCE_ENGINE_KEY before the ERP talks to this engine.")
 
 
 # --------------------------------------------------------------------------
