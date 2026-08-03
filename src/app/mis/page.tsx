@@ -6,11 +6,56 @@ import { getDowntimeResponses } from "@/lib/downtimeResponse";
 import { photosForRecords } from "@/lib/entryPhoto";
 import { canRespondDowntime } from "@/lib/rbac";
 import { DowntimeLogCard } from "./DowntimeLogCard";
-import { getLastShiftReport } from "@/lib/misShift";
+import { getLastShiftReport, getCurrentShiftReport, currentShiftAnchor } from "@/lib/misShift";
+import { SHIFT_WINDOW } from "@/lib/misShiftHours";
 
 export const dynamic = "force-dynamic";
 
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
+
+const F = ({ label, children }: { label: string; children: React.ReactNode }) => (
+  <div>
+    <div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">{label}</div>
+    <div className="mt-0.5 font-semibold text-gray-900">{children}</div>
+  </div>
+);
+
+function ShiftCard({ s, title, live = false }: {
+  s: Awaited<ReturnType<typeof getLastShiftReport>> & object; title: string; live?: boolean;
+}) {
+  const graded = s.gradeA + s.gradeB + s.gradeC;
+  return (
+    <Card className="mb-6">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <H2>{title}</H2>
+        <Badge tone="brand">Shift {s.shift} · {s.date} · {s.window}</Badge>
+        {live && <Badge tone="amber">in progress · {s.hoursLogged}/{s.hoursTotal} hrs logged</Badge>}
+      </div>
+      <div className="grid grid-cols-2 gap-x-8 gap-y-3 text-sm sm:grid-cols-3 lg:grid-cols-6">
+        <F label="Production incharge">
+          {s.prodIncharge ?? (s.submitters.length ? s.submitters.join(", ") : "—")}
+          {!s.prodIncharge && s.submitters.length > 0 && <div className="text-[11px] font-normal text-gray-400">from who submitted the entries</div>}
+        </F>
+        <F label="Electrical incharge">{s.elecIncharge ?? "—"}</F>
+        <F label="Mechanical incharge">{s.mechIncharge ?? "—"}</F>
+        <F label="Hours logged">{s.hoursLogged}/{s.hoursTotal}</F>
+        <F label="Slabs pressed">{fmt(s.slabs)}</F>
+        <F label="Slabs polished">{fmt(s.polished)}</F>
+        <F label="Grade A">{fmt(s.gradeA)}</F>
+        <F label="Grade B">{fmt(s.gradeB)}</F>
+        <F label="Grade C">{fmt(s.gradeC)}</F>
+        <F label="Downtime">
+          <span className={s.delayMin > 0 ? "text-amber-700" : ""}>{s.delayMin > 0 ? fmtDur(s.delayMin) : "none"}</span>
+        </F>
+        <F label="Batch / design">{[...s.batches, ...s.designs].slice(0, 4).join(", ") || "—"}</F>
+      </div>
+      {s.polished > 0 && graded < s.polished && (
+        <p className="mt-3 text-xs text-gray-400">{fmt(s.polished - graded)} of {fmt(s.polished)} polished slabs are ungraded or graded A2/CTS/Printing.</p>
+      )}
+      {s.areas.length > 0 && <p className="mt-3 text-xs text-amber-700">Problem areas: {s.areas.join(", ")}</p>}
+    </Card>
+  );
+}
 
 export default async function MisPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string; b?: string; type?: string }> }) {
   const sp = await searchParams;
@@ -38,6 +83,11 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
   const photos: Record<string, { id: string; filename: string }[]> = {};
   for (const [k, v] of photoMap) photos[k] = v;
   const lastShift = await getLastShiftReport();
+  const currentShift = await getCurrentShiftReport();
+  const nowShift = currentShiftAnchor();
+  // don't repeat the same shift twice: the running shift IS the last one to
+  // report until the next shift logs its first row
+  const showCurrent = !(lastShift && lastShift.shift === nowShift.shift && lastShift.date === nowShift.anchor);
 
   // link to this page preserving the active filters, with overrides
   const link = (extra: Record<string, string | null>) => {
@@ -93,32 +143,18 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
       </form>
 
       {error && <Empty>{error}</Empty>}
-      {lastShift && (
+      {showCurrent && currentShift && <ShiftCard s={currentShift} title="Current shift" live />}
+      {showCurrent && !currentShift && (
         <Card className="mb-6">
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <H2>Last shift report</H2>
-            <Badge tone="brand">Shift {lastShift.shift} · {lastShift.date} · {lastShift.window}</Badge>
+          <div className="flex flex-wrap items-center gap-2">
+            <H2>Current shift</H2>
+            <Badge tone="brand">Shift {nowShift.shift} · {nowShift.anchor} · {SHIFT_WINDOW[nowShift.shift]}</Badge>
+            <Badge tone="amber">no entries logged yet</Badge>
           </div>
-          <div className="grid grid-cols-2 gap-x-8 gap-y-3 text-sm sm:grid-cols-3 lg:grid-cols-6">
-            <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Production incharge</div>
-              <div className="mt-0.5 font-semibold text-gray-900">{lastShift.prodIncharge ?? (lastShift.submitters.length ? lastShift.submitters.join(", ") : "—")}</div>
-              {!lastShift.prodIncharge && lastShift.submitters.length > 0 && <div className="text-[11px] text-gray-400">from who submitted the entries</div>}</div>
-            <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Electrical incharge</div>
-              <div className="mt-0.5 font-semibold text-gray-900">{lastShift.elecIncharge ?? "—"}</div></div>
-            <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Mechanical incharge</div>
-              <div className="mt-0.5 font-semibold text-gray-900">{lastShift.mechIncharge ?? "—"}</div></div>
-            <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Hours logged</div>
-              <div className="mt-0.5 font-semibold text-gray-900">{lastShift.hoursLogged}/{lastShift.hoursTotal}</div></div>
-            <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Slabs pressed</div>
-              <div className="mt-0.5 font-semibold text-gray-900">{fmt(lastShift.slabs)}</div></div>
-            <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Downtime</div>
-              <div className={`mt-0.5 font-semibold ${lastShift.delayMin > 0 ? "text-amber-700" : "text-gray-900"}`}>{lastShift.delayMin > 0 ? fmtDur(lastShift.delayMin) : "none"}</div></div>
-            <div><div className="text-[11px] font-medium uppercase tracking-wider text-gray-400">Batch / design</div>
-              <div className="mt-0.5 font-semibold text-gray-900">{[...lastShift.batches, ...lastShift.designs].slice(0, 4).join(", ") || "—"}</div></div>
-          </div>
-          {lastShift.areas.length > 0 && <p className="mt-3 text-xs text-amber-700">Problem areas: {lastShift.areas.join(", ")}</p>}
+          <p className="mt-2 text-xs text-gray-500">Figures appear here as the shift logs its hourly MIS entries.</p>
         </Card>
       )}
+      {lastShift && <ShiftCard s={lastShift} title="Last shift report" />}
       {!error && r && (
         <div className="space-y-6">
           {r.overCap > 0 && (
