@@ -12,7 +12,12 @@ import { hourlyMessage, shiftMessage, dailyMessage, lastCompletedHourIST, ymdIST
 import { shiftOfHour } from "@/lib/misShiftHours";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 30;
+// /ask builds a large pack (several seconds of queries) and then calls a model
+// that thinks on quality questions. At 30s a slow one was killed by the platform
+// OUTSIDE the try/catch, so the group got silence and Telegram retried the
+// webhook. 60 is the ceiling on Vercel's Hobby plan and is plenty; aiAnswer
+// aborts its own model call well before this and answers with a friendly line.
+export const maxDuration = 60;
 
 const HELP = [
   "🤖 <b>Pacific ERP bot</b> — ask me:",

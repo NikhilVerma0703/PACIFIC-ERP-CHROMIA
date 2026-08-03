@@ -189,7 +189,7 @@ async function dataPack(question = ""): Promise<string> {
   try {
     /* eslint-disable @typescript-eslint/no-explicit-any */
     const db = prisma as any;
-    const [disp, byDesign, holds]: any[][] = await Promise.all([
+    const [disp, byDesign]: any[][] = await Promise.all([
       db.$queryRaw`
         SELECT to_char(at + interval '330 minutes', 'YYYY-MM-DD') d, count(*)::int n,
                count(DISTINCT slab_number)::int slabs
@@ -199,17 +199,15 @@ async function dataPack(question = ""): Promise<string> {
         SELECT design, count(*)::int n FROM fg_finished_slab
         WHERE status <> 'DISPATCHED' AND design IS NOT NULL
         GROUP BY 1 ORDER BY 2 DESC LIMIT 12`,
-      db.$queryRaw`
-        SELECT reserved_for_pi pi, customer, count(*)::int n FROM fg_finished_slab
-        WHERE status IN ('RESERVED','PACKED') AND reserved_for_pi IS NOT NULL
-        GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 10`,
     ]);
+    // No "open PI commitments" line: RESERVED and PACKED are never used in this
+    // database (16,930 slabs are 13,307 AVAILABLE + 3,623 DISPATCHED, and
+    // reserved_at is set on none of them), so that query could only ever return
+    // nothing. Slabs go straight from available to dispatched here.
     if (disp.length) lines.push("DISPATCHED PER DAY (last 7 days, IST): "
       + disp.map((r: any) => `${r.d}:${r.slabs}`).join(" "));
     if (byDesign.length) lines.push("STOCK ON HAND BY DESIGN (not dispatched, top 12): "
       + byDesign.map((r: any) => `${r.design}:${r.n}`).join("; "));
-    if (holds.length) lines.push("RESERVED/PACKED AGAINST A PI (open commitments): "
-      + holds.map((r: any) => `PI ${r.pi}${r.customer ? ` ${r.customer}` : ""}: ${r.n}`).join("; "));
   } catch { /* best-effort */ }
   // SHIFT COMPARISON — answers "which shift did better", "how is C doing vs A",
   // without the reader running /shift three times. Anchored on the RUNNING
@@ -728,14 +726,21 @@ export async function aiAnswer(question: string): Promise<string> {
     // answer budget. Everything else runs thinking-off for chat latency — the
     // group is waiting on the reply.
     const hasCmp = /COMPARISON PACK BATCH|DESIGN COMPARISON PACK|VS ITS BATCH'S GOOD SLABS/.test(pack);
+    // The route's maxDuration is 60s. Give up on the model well before that so
+    // the catch below can still send a reply — a platform timeout would kill the
+    // function outright and the group would just get silence.
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 40_000);
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
+      signal: abort.signal,
       headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
       body: JSON.stringify({
         model: ASK_MODEL,
-        // max_tokens caps thinking + text together, so the comparison path needs
-        // real headroom or the answer truncates mid-bullet.
-        max_tokens: hasCmp ? 4000 : 1200,
+        // max_tokens caps thinking AND text together, so a tight ceiling on the
+        // thinking path truncates the answer mid-bullet. Unused budget is never
+        // billed, so the headroom is free.
+        max_tokens: hasCmp ? 10000 : 1200,
         thinking: hasCmp ? { type: "adaptive" } : { type: "disabled" },
         output_config: { effort: hasCmp ? "high" : "medium" },
         system:
@@ -745,7 +750,7 @@ export async function aiAnswer(question: string): Promise<string> {
           + DATA_RULES + "\n\n" + ANSWER_STYLE + (hasCmp ? "\n" + ANALYSIS_RULES : ""),
         messages: [{ role: "user", content: `Production data:\n${pack}\n\nQuestion: ${question.slice(0, 500)}` }],
       }),
-    });
+    }).finally(() => clearTimeout(timer));
     if (!res.ok) { console.error("aiAnswer API", res.status, await res.text().catch(() => "")); return "🤖 Couldn't reach the AI service — try again in a minute."; }
     const j = await res.json();
     // Thinking blocks come back alongside text on the comparison path — take
@@ -756,6 +761,8 @@ export async function aiAnswer(question: string): Promise<string> {
     return text ? formatForTelegram(text) : "🤖 No answer came back — try rephrasing.";
   } catch (e) {
     console.error("aiAnswer error:", e);
+    if ((e as { name?: string })?.name === "AbortError")
+      return "🤖 That one took too long to work out. Try asking it more narrowly — name the batch, slab or day you mean.";
     return "🤖 Something went wrong answering that — the command reports still work.";
   }
 }
