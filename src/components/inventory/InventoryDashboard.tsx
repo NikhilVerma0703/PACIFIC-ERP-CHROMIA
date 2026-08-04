@@ -5,6 +5,7 @@ import { slabLabel } from "@/lib/slabLabel";
 import { displayBatch } from "@/lib/batchDisplay";
 import { NONE } from "@/lib/inventory/filterValues";
 import { StockByDesign } from "./StockByDesign";
+import { PolishingReport } from "./PolishingReport";
 
 interface Kpi {
   total: number; gradeA: number; gradeA2: number; gradeB: number; gradeC: number;
@@ -431,6 +432,8 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
           {admin && <button className={tabCls(view === "designs")} onClick={() => { setView("designs"); loadDesigns(); }}>Designs</button>}
         </div>}
       </div>
+
+      <PolishingReport />
 
       {!slabsOnly && kpi && (
         <div className="space-y-4">

@@ -7,6 +7,7 @@
 import { useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { createRow } from "@/app/tables/actions";
+import { lastMisEntryForBatch } from "@/app/entry/mis/actions";
 import { SHIFT_HOURS, shiftOfHour } from "@/lib/misShiftHours";
 
 export interface MisRowLite {
@@ -71,6 +72,40 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
   const [mechIncharge, setMechIncharge] = useState<string[]>(parseNames(prefill?.mechIncharge, MECH_INCHARGE));
   const [areas, setAreas] = useState<string[]>([]);
   const [reasons, setReasons] = useState<string[]>([]);
+  // Starting slab is state (not just a defaultValue) so entering the batch can
+  // fill it from that batch's last entry. form.reset() cannot clear a controlled
+  // input, so save() restores it to the prefill explicitly.
+  const [startSlab, setStartSlab] = useState(prefill?.startSlab ?? "");
+  // What the last carry actually filled — each hint is shown only for the field
+  // that was really set, so "(last entry + 1)" never sits over an untouched box.
+  const [carried, setCarried] = useState<{ batch: string; design: boolean; slab: boolean } | null>(null);
+  const lookedUp = useRef<string>("");
+  // Rising id: only the newest lookup may write. Two quick blurs otherwise let a
+  // slow first response land last and overwrite the batch actually on screen.
+  const carrySeq = useRef(0);
+
+  /** Entering a batch carries its design forward and starts the slab count where
+   * the previous hour of that batch ended. Both stay editable. */
+  const carryFromBatch = async () => {
+    const b = batch.trim();
+    if (!b || b === lookedUp.current) return;
+    lookedUp.current = b;
+    const seq = ++carrySeq.current;
+    try {
+      // Same IST-pinned stamp the save uses, so the carry continues from the
+      // hour before THIS one rather than from whatever was logged most recently.
+      const c = await lastMisEntryForBatch(b, `${hourDate}T${hour.slice(0, 2)}:00:00+05:30`);
+      if (seq !== carrySeq.current) return; // a newer batch was entered meanwhile
+      if (!c || (!c.design && c.nextStartSlab == null)) { setCarried(null); return; }
+      if (c.design) setDesign(c.design);
+      if (c.nextStartSlab != null) setStartSlab(String(c.nextStartSlab));
+      setCarried({ batch: b, design: !!c.design, slab: c.nextStartSlab != null });
+    } catch {
+      // a failed lookup leaves what was typed — and must stay retryable, so the
+      // batch is released rather than remembered as "already looked up"
+      if (seq === carrySeq.current) { lookedUp.current = ""; setCarried(null); }
+    }
+  };
 
   const logged = useMemo(() => new Set(rows.map((r) => r.hour)), [rows]);
   // ✓-logged ticks for the WHOLE day (any shift) — the same-shift `logged` set
@@ -116,6 +151,12 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
     const actualSph = Number(fd.get("slabsPerHourActual") ?? 0) || 0;
     const stdSph = Number(fd.get("slabsPerHourStd") ?? 0) || 0;
     if (actualSph !== 0 && stdSph <= 0) { setErr("Std slab/hr is required once Actual is entered — add it before saving"); return; }
+    // The start can be carried from the batch's last hour while the end still
+    // holds an older press prefill, which reads as a backwards range. Caught
+    // here rather than saved, because the pair drives the slab count downstream.
+    const sSlab = Number(fd.get("startingSlabNumber") ?? 0) || 0;
+    const eSlab = Number(fd.get("endingSlabNumber") ?? 0) || 0;
+    if (sSlab > 0 && eSlab > 0 && eSlab < sSlab) { setErr(`Ending slab ${eSlab} is before the starting slab ${sSlab} — check the range`); return; }
     if (logged.has(hour)) { setErr(`Hour ${hour} is already logged — use its edit link below`); return; }
     fd.set("__model", "Mis");
     fd.set("hour", hour);
@@ -135,6 +176,8 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
       else {
         setErr(null); setOk(`Hour ${hour} saved ✓`);
         form.reset(); setAreas([]); setReasons([]);
+        setStartSlab(prefill?.startSlab ?? ""); // controlled — reset() cannot clear it
+        setCarried(null);                       // its hints no longer describe the reset fields
         router.refresh();
       }
     });
@@ -159,8 +202,10 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
         </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
           <label className="block"><span className={lbl}>Batch *{prefill?.fromPress && batch === prefill?.batch && batch ? <span className="ml-1 font-normal text-gray-400">(from press data)</span> : null}</span>
-            <input value={batch} onChange={(e) => setBatch(e.target.value)} placeholder="e.g. 1375" className={inp} /></label>
-          <label className="block"><span className={lbl}>Design / product *{prefill?.fromPress && design === prefill?.design && design ? <span className="ml-1 font-normal text-gray-400">(from press data)</span> : null}</span>
+            <input value={batch} onChange={(e) => setBatch(e.target.value)} onBlur={carryFromBatch}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); carryFromBatch(); } }}
+              placeholder="e.g. 1375" className={inp} /></label>
+          <label className="block"><span className={lbl}>Design / product *{carried?.design && carried.batch === batch.trim() ? <span className="ml-1 font-normal text-gray-400">(from batch {carried.batch})</span> : prefill?.fromPress && design === prefill?.design && design ? <span className="ml-1 font-normal text-gray-400">(from press data)</span> : null}</span>
             <input value={design} onChange={(e) => setDesign(e.target.value)} list="mis-designs" className={inp} />
             <datalist id="mis-designs">{(options.design ?? []).map((o) => <option key={o} value={o} />)}</datalist></label>
           <label className="block"><span className={lbl}>Production type *{prefill?.productionType && productionType === prefill?.productionType ? <span className="ml-1 font-normal text-gray-400">(from line data)</span> : null}</span>
@@ -203,8 +248,8 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
               <input name="slabsPerHourStd" type="number" step="any" min="0" className={inp} /></label>
             <label className="block"><span className={lbl}>Slabs/hr — Actual{prefill?.actual ? <span className="ml-1 font-normal text-gray-400">(press: {prefill.actual})</span> : null}</span>
               <input name="slabsPerHourActual" type="number" step="any" min="0" defaultValue={prefill?.actual ?? ""} className={`${inp} font-semibold`} /></label>
-            <label className="block"><span className={lbl}>Starting slab no.{prefill?.startSlab ? <span className="ml-1 font-normal text-gray-400">(from press)</span> : null}</span>
-              <input name="startingSlabNumber" type="number" step="any" min="0" defaultValue={prefill?.startSlab ?? ""} className={inp} /></label>
+            <label className="block"><span className={lbl}>Starting slab no.{carried?.slab && carried.batch === batch.trim() ? <span className="ml-1 font-normal text-gray-400">(last entry + 1)</span> : prefill?.startSlab ? <span className="ml-1 font-normal text-gray-400">(from press)</span> : null}</span>
+              <input name="startingSlabNumber" type="number" step="any" min="0" value={startSlab} onChange={(e) => setStartSlab(e.target.value)} className={inp} /></label>
             <label className="block"><span className={lbl}>Ending slab no.{prefill?.endSlab ? <span className="ml-1 font-normal text-gray-400">(from press)</span> : null}</span>
               <input name="endingSlabNumber" type="number" step="any" min="0" defaultValue={prefill?.endSlab ?? ""} className={inp} /></label>
             <label className="block"><span className={lbl}>Jumped slabs</span>
