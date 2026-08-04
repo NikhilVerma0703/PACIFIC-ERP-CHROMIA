@@ -116,6 +116,17 @@ tally:
   # (which holds only 33 names, mostly trade creditors).
   people_group: "SUNDRY CRS FOR SUNDRY EXPENSES"
 
+  # Restrict the claimant dropdown to just these names, in this exact spelling.
+  # Leave the list empty to offer every ledger under people_group instead
+  # (608 of them today), which is the old behaviour.
+  #
+  # A name that is NOT already a ledger in Tally will be CREATED under
+  # new_person_parent by the first export that uses it. That is legitimate for a
+  # genuinely new claimant, but a typo becomes a real ledger in the live chart of
+  # accounts, so: the engine prints any unknown names on startup, and the export
+  # preview lists every ledger it is about to create before anyone imports it.
+  people: []
+
   # Groups that brand-new masters are created under in the batch export.
   # Both verified to exist in your chart of accounts.
   new_ledger_parent: "ADMINISTRATION EXPENSES"     # new expense heads

@@ -1296,6 +1296,31 @@ def main() -> int:
     # ------------------------------------------------- hardening regressions
     # One check per defect found in the pre-merge review. Each of these passed
     # silently before the fix and would have cost real money.
+    # ---------------------------------------------------- claimant allowlist
+    section("Claimant allowlist (tally.people)")
+    try:
+        import app.main as pm
+        real_people = pm.CFG["tally"].get("people")
+        try:
+            # Configured -> that list wins outright, trimmed, de-duplicated and
+            # sorted; the 608 Tally creditors are not offered.
+            pm.CFG["tally"]["people"] = [
+                "VARUN MUNDRA", "  SHALMAN  ", "VARUN MUNDRA", "", "   ", "aarti k",
+            ]
+            got = pm.people_list()
+            check("allowlist replaces the Tally group", got == ["aarti k", "SHALMAN", "VARUN MUNDRA"], got)
+            check("blank entries are dropped", "" not in got and "   " not in got)
+            check("duplicates collapse", got.count("VARUN MUNDRA") == 1)
+            check("spelling is preserved exactly", "SHALMAN" in got and "aarti k" in got)
+            # Empty -> the old behaviour, whatever Tally/the master offers.
+            pm.CFG["tally"]["people"] = []
+            check("empty list falls back to the Tally group",
+                  len(pm.people_list()) > 3)
+        finally:
+            pm.CFG["tally"]["people"] = real_people
+    except ImportError:
+        print("  SKIP")
+
     section("Hardening regressions (pre-ERP-merge review)")
     from xml.dom import minidom
     from datetime import date as _date

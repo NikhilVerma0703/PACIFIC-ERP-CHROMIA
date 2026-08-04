@@ -139,13 +139,27 @@ def resume_queued() -> None:
 # --------------------------------------------------------------------------
 # People
 # --------------------------------------------------------------------------
+def configured_people() -> list[str]:
+    """The tally.people allowlist, trimmed and de-duplicated, order preserved."""
+    raw = (CFG.get("tally", {}) or {}).get("people") or []
+    return list(dict.fromkeys(str(n).strip() for n in raw if str(n).strip()))
+
+
 def people_list() -> list[str]:
     """Staff who can be reimbursed.
 
-    Sourced from Tally when reachable so a posted voucher can never fail on an
-    unknown ledger name. Falls back to whoever has been used before, so the
-    dashboard still works when Tally is closed - which it often is.
+    An explicit tally.people list wins outright: most companies reimburse a
+    handful of people, and picking them out of 608 Tally creditors is the
+    slowest part of filing a stack of bills.
+
+    With no list, sourced from Tally when reachable so a posted voucher can
+    never fail on an unknown ledger name. Falls back to whoever has been used
+    before, so the dashboard still works when Tally is closed - which it often
+    is.
     """
+    allow = configured_people()
+    if allow:
+        return sorted(allow, key=str.casefold)
     try:
         live = tally.fetch_people(CFG["tally"]["company"],
                                  CFG["tally"]["people_group"],
@@ -179,6 +193,21 @@ api_mod.CTX.update({
     "ledger_names": _ledger_names, "known_ledgers": _known_ledgers,
 })
 app.include_router(api_mod.router)
+
+# Say out loud which configured claimants Tally does not already know. Each one
+# will be CREATED as a ledger by the first export that uses it, so a typo here
+# becomes a real account in the live chart of accounts.
+_ALLOW = configured_people()
+if _ALLOW:
+    _known = {(l.name or "").strip().casefold() for l in LEDGERS}
+    _unknown = [n for n in _ALLOW if n.casefold() not in _known]
+    print(f"[ok] Claimant list: {len(_ALLOW)} name(s) from config.yaml, "
+          f"{len(_ALLOW) - len(_unknown)} already in Tally")
+    if _unknown:
+        print("[!] Not ledgers in Tally yet - the first export using one will CREATE it "
+              f"under {CFG['tally'].get('new_person_parent')!r}:")
+        for _n in _unknown:
+            print(f"      {_n}")
 
 if not (os.environ.get("FINANCE_ENGINE_KEY") or (CFG.get("api", {}) or {}).get("key")):
     # Said out loud, every start. An unauthenticated service that writes
