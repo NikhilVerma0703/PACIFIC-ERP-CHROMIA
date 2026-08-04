@@ -12,14 +12,21 @@ export function PolishingReport() {
   const today = ymdIST();
   const [from, setFrom] = useState(ymdIST(Date.now() - 29 * 86400_000));
   const [to, setTo] = useState(today);
+  // A batch spans days, so naming one asks for the WHOLE batch and the dates
+  // stop applying — spelling that out beats a range that quietly clips it.
+  const [batch, setBatch] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const byBatch = batch.trim() !== "";
 
   const download = async () => {
-    if (from > to) { setErr("The start date is after the end date."); return; }
+    if (!byBatch && from > to) { setErr("The start date is after the end date."); return; }
     setErr(null); setBusy(true);
     try {
-      const res = await fetch(`/api/inventory/polishing-report?from=${from}&to=${to}`, { cache: "no-store" });
+      const qs = byBatch
+        ? `b=${encodeURIComponent(batch.trim())}`
+        : `from=${from}&to=${to}`;
+      const res = await fetch(`/api/inventory/polishing-report?${qs}`, { cache: "no-store" });
       if (!res.ok) {
         // The route answers with JSON on every failure, so the message is the
         // real reason rather than a browser download of an error page.
@@ -31,7 +38,9 @@ export function PolishingReport() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `polishing-report-${from}_to_${to}.xlsx`;
+      a.download = byBatch
+        ? `polishing-report-batch-${batch.trim().replace(/[^\w.-]/g, "")}.xlsx`
+        : `polishing-report-${from}_to_${to}.xlsx`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -48,20 +57,34 @@ export function PolishingReport() {
       <div className="flex flex-wrap items-end gap-3">
         <div>
           <h2 className="text-sm font-semibold text-gray-900">Polishing report</h2>
-          <p className="mt-0.5 text-xs text-gray-500">Every polish entry in the range, with its QC grade and outcome.</p>
+          <p className="mt-0.5 text-xs text-gray-500">
+            {byBatch
+              ? `Every polish entry of batch ${batch.trim()}, whatever days it ran.`
+              : "Every polish entry in the range, with its grade and QC outcome."}
+          </p>
         </div>
         <label className="block">
           <span className="mb-1 block text-xs font-medium text-gray-600">Start date</span>
-          <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} className={inp} />
+          <input type="date" value={from} max={to} disabled={byBatch}
+            onChange={(e) => setFrom(e.target.value)} className={inp} />
         </label>
         <label className="block">
           <span className="mb-1 block text-xs font-medium text-gray-600">End date</span>
-          <input type="date" value={to} min={from} max={today} onChange={(e) => setTo(e.target.value)} className={inp} />
+          <input type="date" value={to} min={from} max={today} disabled={byBatch}
+            onChange={(e) => setTo(e.target.value)} className={inp} />
+        </label>
+        <span className="pb-2 text-xs font-medium text-gray-400">or</span>
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-gray-600">Batch</span>
+          <input value={batch} onChange={(e) => setBatch(e.target.value)} placeholder="e.g. 1397"
+            className={`${inp} w-32`} />
         </label>
         <button type="button" onClick={download} disabled={busy}
           className="min-h-[42px] rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-white transition hover:bg-brand-dark disabled:opacity-60">
           {busy ? "Preparing…" : "↓ Download (Excel)"}
         </button>
+        {byBatch && <button type="button" onClick={() => setBatch("")}
+          className="pb-2 text-xs text-gray-400 hover:text-gray-600 hover:underline">clear batch, use dates</button>}
         {err && <span className="text-sm text-red-600">{err}</span>}
       </div>
     </div>
