@@ -117,9 +117,10 @@ export async function GET(request: Request) {
       // "Grade" is the canonical A/A2/B/C the rest of Finished Goods filters on;
       // "QC grade" further right keeps QC's raw wording ("C (Reject)", "Not
       // graded yet"), so the two never have to be reconciled by the reader.
-      "Date & time", "Slab #", "Batch", "Design", "Grade", "Thickness", "Polish side", "Calliberator",
-      "Polishing status", "Thk 1 (mm)", "Thk 2 (mm)", "Thk 3 (mm)", "Thk 4 (mm)", "SKU", "Remarks",
-      "QC grade", "Inspector", "RW status", "Repolish", "Quality issues", "Polish type",
+      "Date & time", "Slab #", "Batch", "Design", "Grade", "Quality issues", "Thickness",
+      "Polish side", "Calliberator", "Polishing status",
+      "Thk 1 (mm)", "Thk 2 (mm)", "Thk 3 (mm)", "Thk 4 (mm)", "SKU", "Remarks",
+      "QC grade", "Inspector", "RW status", "Repolish", "Polish type",
       "Bay", "Dispatch status", "QC date",
     ];
     const data: (string | number)[][] = [header];
@@ -133,6 +134,7 @@ export async function GET(request: Request) {
         e.batchNumber ? displayBatch(e.batchNumber) : "",
         e.design ?? "",
         canonicalGrade(q?.qualityGrade) ?? "",
+        (q?.qualityIssue ?? []).join(", "),
         e.slabThickness ?? "",
         e.polishSide ?? "",
         e.calliberator ?? "",
@@ -144,7 +146,6 @@ export async function GET(request: Request) {
         q?.inspector ?? "",
         q?.rwStatus ?? "",
         q?.repolishStatus ?? "",
-        (q?.qualityIssue ?? []).join(", "),
         q?.polishType ?? "",
         q?.bay ?? "",
         q?.dispatchStatus ?? "",
@@ -153,9 +154,11 @@ export async function GET(request: Request) {
     }
 
     const ws = XLSX.utils.aoa_to_sheet(data);
-    ws["!cols"] = [{ wch: 16 }, { wch: 10 }, { wch: 10 }, { wch: 22 }, { wch: 8 }, { wch: 11 }, { wch: 12 }, { wch: 16 },
-      { wch: 15 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 16 }, { wch: 28 },
-      { wch: 9 }, { wch: 16 }, { wch: 12 }, { wch: 11 }, { wch: 28 }, { wch: 14 }, { wch: 9 }, { wch: 15 }, { wch: 16 }];
+    // Widths follow the header order above, one per column.
+    ws["!cols"] = [{ wch: 16 }, { wch: 10 }, { wch: 10 }, { wch: 22 }, { wch: 8 }, { wch: 34 }, { wch: 11 },
+      { wch: 12 }, { wch: 16 }, { wch: 15 },
+      { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 16 }, { wch: 28 },
+      { wch: 9 }, { wch: 16 }, { wch: 12 }, { wch: 11 }, { wch: 14 }, { wch: 9 }, { wch: 15 }, { wch: 16 }];
     ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: data.length - 1, c: header.length - 1 } }) };
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Polishing report");
