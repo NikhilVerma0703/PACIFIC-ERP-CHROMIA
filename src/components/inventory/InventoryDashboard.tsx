@@ -70,7 +70,9 @@ const fmtAt = (iso: string) => {
 
 export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: roleSummaryOnly = false, slabsOnly: roleSlabsOnly = false }: { admin?: boolean; summaryOnly?: boolean; slabsOnly?: boolean }) {
   // ADMIN preview: view the module exactly as a Sales or Commercial login would
-  const [viewAs, setViewAs] = useState<"admin" | "sales" | "commercial">("admin");
+  // Admin-only preview of the module as each role that can reach it sees it.
+  // "office" is Finance/Accounts: everything except the admin-only controls.
+  const [viewAs, setViewAs] = useState<"admin" | "office" | "sales" | "commercial">("admin");
   const admin = isRealAdmin && viewAs === "admin";
   const summaryOnly = roleSummaryOnly || (isRealAdmin && viewAs === "sales");
   const slabsOnly = roleSlabsOnly || (isRealAdmin && viewAs === "commercial");
@@ -365,14 +367,22 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
         className="rounded-lg border border-gray-300 px-2 py-1 text-xs"
         value={viewAs}
         onChange={(e) => {
-          const v = e.target.value as "admin" | "sales" | "commercial";
+          const v = e.target.value as "admin" | "office" | "sales" | "commercial";
           setViewAs(v);
           showPendingRef.current = showPending && v === "admin";
+          // Land on the view that role actually opens on. Commercial has no
+          // tabs at all, so previewing it while parked on "Stock by Design" or
+          // "Designs" showed a screen they can never reach.
+          if (v !== "admin") setView("slabs");
           kpiFilters.current = { ...EMPTY };
           run(EMPTY); setF({ ...EMPTY });
         }}
       >
         <option value="admin">Admin</option>
+        {/* Finance and Accounts reach this module too, and see materially less
+            than Admin — no approvals, no Designs tab, no Excel export. Without
+            an option for them the preview could not show that screen at all. */}
+        <option value="office">Finance / Accounts</option>
         <option value="sales">Sales</option>
         <option value="commercial">Commercial</option>
       </select>
@@ -481,7 +491,11 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
       {view === "summary" ? (
         <StockByDesign
           canApprove={admin}
-          showPending={showPending}
+          // AND admin: the strip that shows unapproved stock is already gated on
+          // canApprove, but the fetch behind it is not — so while previewing
+          // another role this still pulled ?pending=1 and folded unapproved
+          // stock into totals that role can never see.
+          showPending={showPending && admin}
           onFilters={(sf) => { kpiFilters.current = { ...EMPTY, design: sf.design, thickness: sf.thickness, batch: sf.batch }; loadKpi(); }}
           onOpenSlabs={admin ? (sel) => { const next = { ...EMPTY, design: sel.design ?? "", thickness: sel.thickness ?? "", batch: sel.batch ?? "" }; setView("slabs"); setF(next); run(next); } : undefined}
         />
