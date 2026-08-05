@@ -1,17 +1,33 @@
-// Shift scoring — production up to Jot, on the only two axes that describe how
-// good a shift was: QUANTITY (how many slabs) and QUALITY (how close to the
-// ideal thickness they came).
+// Shift scoring — production, on the only two axes that describe how good a
+// shift was: QUANTITY (how many slabs it pressed) and QUALITY (what QC finally
+// graded those same slabs).
 //
 // WHY THESE TWO AND NOTHING ELSE
 // Downtime, OEE and uptime are not separate measures of goodness — they are
 // explanations of why quantity was what it was. Scoring them alongside quantity
-// pays twice for one thing. Quality is judged at JOT because that is the first
-// measurement after the line: it is production's own work, before polishing can
-// improve or spoil it, and it is a MEASURED number rather than a judged one.
+// pays twice for one thing.
+//
+// WHY QUALITY COMES FROM QC, AND WHY IT FOLLOWS THE SLAB
+// Quality is the QC grade of the slabs THIS SHIFT PRESSED, traced by slab
+// number — not the grades recorded during the shift's own hours. Polishing runs
+// days behind the press, so grading by clock window would score whatever
+// polishing happened to finish that night, which is a different shift's work
+// entirely. Tracing the slab is the only way the number answers "how good was
+// what WE made".
+//
+// It replaced Jot thickness because coverage decides whether a metric is fair:
+// QC grades reach ~89% of pressed slabs, Jot thickness ~20%. A shift measured on
+// a fifth of its output is not being judged on the same basis as one measured on
+// most of it. Thickness is still reported, as information, but is not scored.
 //
 // THE TWO FACTORS MULTIPLY, THEY DO NOT ADD.
 // 10,000 bad slabs is worth nothing and 100 perfect slabs is a hobby. Adding
 // lets a shift buy a bad axis with a good one; multiplying does not.
+//
+// LAG: a slab pressed near the end of a period may not be graded yet. Such
+// slabs are excluded from quality (never counted as bad), and `ungraded` is
+// reported so a thin, early-looking score is visibly incomplete rather than
+// quietly wrong.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
 import { canonThickness } from "@/lib/thickness";
@@ -61,23 +77,59 @@ export function shiftRange(anchor: string, shift: ShiftLetter) {
   return { start, end: new Date(start.getTime() + 8 * 3600_000) };
 }
 
+/** Grade -> quality credit. A is the saleable target, B is usable but worth
+ *  less, C is a reject and earns nothing. Anything else (CTS, Printing,
+ *  "Not graded yet") is not a verdict on production and is excluded entirely
+ *  rather than scored as zero. */
+/** The grade share every shift already clears. Quality is scored on the distance
+ *  ABOVE this, not from zero.
+ *
+ *  WHY. Raw grade share does not discriminate: in July every shift landed
+ *  between 93.6% and 98.0%, so the quality factor was ~0.95 for everyone and the
+ *  ranking collapsed into pure quantity — the second axis was decorative. C
+ *  grades are only ~3% of output, so there is simply not much room below 100%.
+ *  Rescaling against a 90% floor turns that 4-point spread into a 44-point one
+ *  (93.6% -> 36%, 98.0% -> 80%), so quality decides places again. A shift below
+ *  the floor scores zero on quality and therefore zero points, which is the
+ *  intended cliff. */
+export const QUALITY_FLOOR = 0.9;
+
+/** Raw grade share -> scored quality, stretched against the floor. */
+export function scaleQuality(raw: number | null): number | null {
+  if (raw == null) return null;
+  return Math.max(0, Math.min(1, (raw - QUALITY_FLOOR) / (1 - QUALITY_FLOOR)));
+}
+
+export function gradeCredit(grade: string | null | undefined): number | null {
+  const g = String(grade ?? "").trim().toUpperCase();
+  if (!g || g.startsWith("NOT GRADED")) return null;
+  if (g.startsWith("A")) return 1;      // A and A2
+  if (g.startsWith("B")) return 0.5;
+  if (g.startsWith("C")) return 0;      // "C" / "C (Reject)"
+  return null;
+}
+
 export interface ShiftScore {
   anchor: string;
   shift: ShiftLetter;
-  /** Slabs measured at Jot in this shift's window — the quantity axis. */
+  /** Slabs this shift PRESSED — the quantity axis. */
   quantity: number;
-  /** 0–1. Mean per-slab closeness to the ideal thickness — the quality axis. */
+  /** 0–1 SCORED quality: the raw grade share stretched above QUALITY_FLOOR. */
   quality: number | null;
-  /** Slabs that carried BOTH a class and a usable reading, i.e. the ones the
-   *  quality number is actually built from. */
-  measured: number;
-  /** Readings thrown out as impossible. Surfaced so a shift can see WHY its
-   *  measured count is lower than its quantity. */
-  discarded: number;
-  /** quantity x quality. Null quality (nothing measured) scores 0, not the
-   *  quantity — an unmeasured shift must never outrank a measured one. */
+  /** The unstretched grade share (A=1, B=0.5, C=0), for reporting. */
+  rawQuality: number | null;
+  /** How many of the shift's slabs QC has graded — what quality is built from. */
+  graded: number;
+  /** Pressed but not yet graded. Excluded from quality, never counted as bad. */
+  ungraded: number;
+  gradeA: number;
+  gradeB: number;
+  gradeC: number;
+  /** quantity x quality. No grades yet scores 0, not the quantity — an
+   *  unmeasured shift must never outrank a measured one. */
   points: number;
-  /** Mean measured thickness, for the report. */
+  /** Mean measured thickness at Jot for this shift's slabs. Reported only;
+   *  it does not enter the score. */
   avgMm: number | null;
   /** People named on this shift's MIS rows — they share the score. */
   people: string[];
@@ -93,57 +145,126 @@ export function slabQuality(measuredMm: number, ideal: number, tol = TOLERANCE_M
 export async function scoreShift(anchor: string, shift: ShiftLetter): Promise<ShiftScore> {
   const { start, end } = shiftRange(anchor, shift);
   const empty: ShiftScore = {
-    anchor, shift, quantity: 0, quality: null, measured: 0, discarded: 0,
-    points: 0, avgMm: null, people: [],
+    anchor, shift, quantity: 0, quality: null, rawQuality: null, graded: 0, ungraded: 0,
+    gradeA: 0, gradeB: 0, gradeC: 0, points: 0, avgMm: null, people: [],
   };
   try {
-    const rows: any[] = await (prisma as any).jot.findMany({
+    // What this shift made.
+    const pressed: any[] = await (prisma as any).press.findMany({
       where: {
+        slabNumber: { not: null },
         OR: [
           { createdTime: { gte: start, lt: end } },
-          { AND: [{ createdTime: null }, { date: { gte: start, lt: end } }] },
+          { AND: [{ createdTime: null }, { importedAt: { gte: start, lt: end } }] },
         ],
       },
-      select: {
-        thickness: true,
-        thicknessAt1: true, thicknessAt2: true, thicknessAt3: true, thicknessAt4: true,
-        thicknessAt5: true, thicknessAt6: true, thicknessAt7: true, thicknessAt8: true,
-      },
+      select: { slabNumber: true },
     });
+    const slabs = [...new Set(pressed.map((r) => Number(r.slabNumber)).filter(Number.isFinite))];
+    if (!slabs.length) return { ...empty, people: await peopleOnShift(anchor, shift) };
 
-    let qSum = 0, measured = 0, discarded = 0, mmSum = 0;
-    for (const r of rows) {
-      const ideal = IDEAL_MM[canonThickness(r.thickness) ?? ""];
-      if (!ideal) continue; // no declared class -> no ideal to judge against
-      const pts = [r.thicknessAt1, r.thicknessAt2, r.thicknessAt3, r.thicknessAt4,
-                   r.thicknessAt5, r.thicknessAt6, r.thicknessAt7, r.thicknessAt8]
-        .map(Number)
-        .filter((n) => Number.isFinite(n) && n > 0);
-      if (!pts.length) continue;
-      const good = pts.filter((n) => n >= MIN_PLAUSIBLE_MM && n <= MAX_PLAUSIBLE_MM);
-      discarded += pts.length - good.length;
-      if (!good.length) continue;
-      const mean = good.reduce((a, b) => a + b, 0) / good.length;
-      qSum += slabQuality(mean, ideal);
-      mmSum += mean;
-      measured += 1;
+    // How QC finally graded those same slabs. Chunked: Postgres caps a
+    // statement at 32767 bind parameters and a busy shift can press hundreds,
+    // but a month of shifts scored in one page would exceed it unguarded.
+    const CHUNK = 5000;
+    const qc: any[] = [];
+    for (let i = 0; i < slabs.length; i += CHUNK) {
+      qc.push(...await (prisma as any).polishQc.findMany({
+        where: { slabNumber: { in: slabs.slice(i, i + CHUNK) } },
+        select: { slabNumber: true, qualityGrade: true, createdTime: true, importedAt: true },
+      }));
+    }
+    // Newest verdict per slab — a re-graded slab reports its latest outcome.
+    const stamp = (q: any) => new Date(q.createdTime ?? q.importedAt ?? 0).getTime();
+    qc.sort((a, b) => stamp(b) - stamp(a));
+    const latest = new Map<number, any>();
+    for (const q of qc) if (q.slabNumber != null && !latest.has(Number(q.slabNumber))) latest.set(Number(q.slabNumber), q);
+
+    let credit = 0, graded = 0, a = 0, b = 0, c = 0;
+    for (const sn of slabs) {
+      const g = latest.get(sn)?.qualityGrade;
+      const cr = gradeCredit(g);
+      if (cr == null) continue;      // ungraded / CTS / Printing — not a verdict
+      graded += 1; credit += cr;
+      const u = String(g).trim().toUpperCase();
+      if (u.startsWith("A")) a += 1; else if (u.startsWith("B")) b += 1; else c += 1;
     }
 
-    const quality = measured ? qSum / measured : null;
-    const people = await peopleOnShift(anchor, shift);
+    // Raw share kept for the report; the SCORED quality is stretched above the floor.
+    const rawQuality = graded ? credit / graded : null;
+    const quality = scaleQuality(rawQuality);
+    const [people, avgMm] = await Promise.all([
+      peopleOnShift(anchor, shift),
+      avgThicknessFor(slabs),
+    ]);
     return {
       anchor, shift,
-      quantity: rows.length,
+      quantity: slabs.length,
       quality,
-      measured,
-      discarded,
-      avgMm: measured ? Math.round((mmSum / measured) * 100) / 100 : null,
-      points: Math.round(rows.length * (quality ?? 0)),
+      rawQuality,
+      graded,
+      ungraded: slabs.length - graded,
+      gradeA: a, gradeB: b, gradeC: c,
+      avgMm,
+      points: Math.round(slabs.length * (quality ?? 0)),
       people,
     };
   } catch {
     return empty;
   }
+}
+
+/** Mean measured thickness at Jot for a set of slabs — reported, not scored.
+ *  Impossible readings (the data holds a 3.3 mm and a 267 mm) are dropped so a
+ *  single typo cannot move a shift's headline number. */
+async function avgThicknessFor(slabs: number[]): Promise<number | null> {
+  if (!slabs.length) return null;
+  try {
+    const rows: any[] = [];
+    for (let i = 0; i < slabs.length; i += 5000) {
+      rows.push(...await (prisma as any).jot.findMany({
+        where: { slabNumber: { in: slabs.slice(i, i + 5000) }, thicknessAt1: { not: null } },
+        select: {
+          thicknessAt1: true, thicknessAt2: true, thicknessAt3: true, thicknessAt4: true,
+          thicknessAt5: true, thicknessAt6: true, thicknessAt7: true, thicknessAt8: true,
+        },
+      }));
+    }
+    let sum = 0, n = 0;
+    for (const r of rows) {
+      const pts = [r.thicknessAt1, r.thicknessAt2, r.thicknessAt3, r.thicknessAt4,
+                   r.thicknessAt5, r.thicknessAt6, r.thicknessAt7, r.thicknessAt8]
+        .map(Number)
+        .filter((x) => Number.isFinite(x) && x >= MIN_PLAUSIBLE_MM && x <= MAX_PLAUSIBLE_MM);
+      if (!pts.length) continue;
+      sum += pts.reduce((x, y) => x + y, 0) / pts.length;
+      n += 1;
+    }
+    return n ? Math.round((sum / n) * 100) / 100 : null;
+  } catch { return null; }
+}
+
+/** One spelling per person.
+ *
+ *  Names are free text on the MIS form, so the same person arrives in several
+ *  forms and the board showed them as separate people with separate scores —
+ *  "SURESH" appeared beside "Suresh" with 1 shift against his 187 rows. Case and
+ *  spacing are folded here; genuine misspellings (Sundhar for Sundar, Josep for
+ *  Joseph) still need the alias map below, because no rule can safely guess
+ *  that two different spellings are the same human. */
+const PERSON_ALIAS: Record<string, string> = {
+  // lower-cased variant -> canonical spelling
+  sundhar: "Sundar",
+  josep: "Joseph",
+};
+
+export function canonPerson(raw: unknown): string {
+  const t = String(raw ?? "").trim().replace(/\s+/g, " ");
+  if (!t) return "";
+  const key = t.toLowerCase();
+  if (PERSON_ALIAS[key]) return PERSON_ALIAS[key];
+  // Title Case so "SURESH" and "suresh" land on the same display name.
+  return t.replace(/\S+/g, (w) => w[0].toUpperCase() + w.slice(1).toLowerCase());
 }
 
 /** Who was named on this shift — the closest thing to a roster the ERP holds.
@@ -170,11 +291,14 @@ async function peopleOnShift(anchor: string, shift: ShiftLetter): Promise<string
       for (const v of [r.productionInchargeName, r.electricalInchargeName, r.mechanicalInchargeName]) {
         // multi-select incharges are stored comma-joined in one text column
         for (const name of String(v ?? "").split(",")) {
-          const n = name.trim();
+          const n = canonPerson(name);
           if (n) set.add(n);
         }
       }
-      if (!r.productionInchargeName && r.submittedBy) set.add(String(r.submittedBy).trim());
+      if (!r.productionInchargeName && r.submittedBy) {
+        const n = canonPerson(r.submittedBy);
+        if (n) set.add(n);
+      }
     }
     return [...set].filter(Boolean).sort();
   } catch {
@@ -198,7 +322,7 @@ export interface ScoreboardData {
   to: string;
   shifts: ShiftScore[];
   people: PersonScore[];
-  totals: { quantity: number; points: number; measured: number; discarded: number; quality: number | null };
+  totals: { quantity: number; points: number; graded: number; ungraded: number; quality: number | null };
 }
 
 /** Every shift instance between two IST dates, scored, plus the per-person roll-up. */
@@ -226,7 +350,7 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
       e.shifts += 1;
       e.quantity += s.quantity;
       e.points += s.points;
-      if (s.quality != null) { e.qNum += s.quality * s.measured; e.qDen += s.measured; }
+      if (s.quality != null) { e.qNum += s.quality * s.graded; e.qDen += s.graded; }
       byPerson.set(p, e);
     }
   }
@@ -242,17 +366,17 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
     }))
     .sort((a, b) => b.points - a.points);
 
-  const measured = shifts.reduce((a, s) => a + s.measured, 0);
-  const qNum = shifts.reduce((a, s) => a + (s.quality ?? 0) * s.measured, 0);
+  const graded = shifts.reduce((a, s) => a + s.graded, 0);
+  const qNum = shifts.reduce((a, s) => a + (s.quality ?? 0) * s.graded, 0);
   return {
     from, to, shifts,
     people,
     totals: {
       quantity: shifts.reduce((a, s) => a + s.quantity, 0),
       points: shifts.reduce((a, s) => a + s.points, 0),
-      measured,
-      discarded: shifts.reduce((a, s) => a + s.discarded, 0),
-      quality: measured ? qNum / measured : null,
+      graded,
+      ungraded: shifts.reduce((a, s) => a + s.ungraded, 0),
+      quality: graded ? qNum / graded : null,
     },
   };
 }

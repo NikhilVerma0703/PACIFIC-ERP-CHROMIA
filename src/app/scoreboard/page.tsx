@@ -4,7 +4,7 @@ import { Shell } from "@/components/Shell";
 import { Card, H2, Kpi, Empty, Badge, fmt } from "@/components/ui";
 import { ShiftCard, F } from "@/components/ShiftCard";
 import { getShiftReport } from "@/lib/misShift";
-import { scoreRange, IDEAL_MM, TOLERANCE_MM, type ShiftScore } from "@/lib/shiftScore";
+import { scoreRange, type ShiftScore } from "@/lib/shiftScore";
 import { isAdmin } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
@@ -43,14 +43,14 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
 
   const scoreLine = (s: ShiftScore) => (
     <div className="mt-3 grid grid-cols-2 gap-x-8 gap-y-3 border-t border-gray-100 pt-3 text-sm sm:grid-cols-3 lg:grid-cols-6">
-      <F label="Jotted (quantity)">{fmt(s.quantity)}</F>
+      <F label="Pressed (quantity)">{fmt(s.quantity)}</F>
       <F label="Quality">
         <span className={s.quality == null ? "text-gray-400" : s.quality >= 0.7 ? "text-green-700" : s.quality >= 0.4 ? "text-amber-700" : "text-red-600"}>
           {pct(s.quality)}
         </span>
       </F>
-      <F label="Avg thickness">{s.avgMm != null ? `${s.avgMm} mm` : "—"}</F>
-      <F label="Measured / discarded">{fmt(s.measured)}{s.discarded ? ` / ${fmt(s.discarded)}` : ""}</F>
+      <F label="A / B / C">{fmt(s.gradeA)} / {fmt(s.gradeB)} / {fmt(s.gradeC)}</F>
+      <F label="Graded / awaiting QC">{fmt(s.graded)}{s.ungraded ? ` / ${fmt(s.ungraded)}` : ""}</F>
       <F label="Points"><span className="text-brand">{fmt(s.points)}</span></F>
       <F label="Team">{s.people.length ? s.people.join(", ") : "—"}</F>
     </div>
@@ -60,10 +60,11 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
     <Shell>
       <h1 className="mb-1 text-2xl font-semibold tracking-tight text-gray-900">Shift scoreboard</h1>
       <p className="mb-5 max-w-3xl text-sm text-gray-500">
-        Production up to Jot, scored on the only two things that say how good a shift was: <b>quantity</b> (slabs
-        measured at Jot) and <b>quality</b> (how close those slabs came to the ideal thickness). The two are
-        multiplied, never added — a shift cannot buy a bad axis with a good one. Everyone named on a shift shares
-        that shift&rsquo;s score, because production is a team result.
+        Scored on the only two things that say how good a shift was: <b>quantity</b> (slabs it pressed) and
+        <b>quality</b> (what QC finally graded those same slabs — A 100%, B 50%, C 0%). Quality follows the slab,
+        not the clock: polishing runs days behind the press, so grading by window would score another shift&rsquo;s
+        work. The two are multiplied, never added — a shift cannot buy a bad axis with a good one. Everyone named
+        on a shift shares that shift&rsquo;s score, because production is a team result.
       </p>
 
       <div className="mb-3 flex flex-wrap gap-2">
@@ -84,21 +85,20 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
         <>
           <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
             <Kpi label="Shifts scored" value={fmt(data.shifts.length)} />
-            <Kpi label="Slabs at Jot" value={fmt(data.totals.quantity)} />
-            <Kpi label="Quality" value={pct(data.totals.quality)} sub={`ideal ${IDEAL_MM["3 cm"]} mm for 3 cm · zero at ±${TOLERANCE_MM} mm`} />
+            <Kpi label="Slabs pressed" value={fmt(data.totals.quantity)} />
+            <Kpi label="Quality (QC)" value={pct(data.totals.quality)} sub="A = 100% · B = 50% · C = 0%" />
             <Kpi label="Total points" value={fmt(data.totals.points)} />
-            <Kpi label="Slabs measured" value={fmt(data.totals.measured)} sub={data.totals.quantity ? `${Math.round(data.totals.measured / data.totals.quantity * 100)}% of jotted` : undefined} />
+            <Kpi label="Graded by QC" value={fmt(data.totals.graded)} sub={data.totals.quantity ? `${Math.round(data.totals.graded / data.totals.quantity * 100)}% of pressed` : undefined} />
           </div>
 
-          {data.totals.quantity > 0 && data.totals.measured / data.totals.quantity < 0.9 && (
+          {data.totals.quantity > 0 && data.totals.graded / data.totals.quantity < 0.75 && (
             <Card className="mb-6 border-amber-300 bg-amber-50">
               <p className="text-sm text-amber-900">
-                <b>Not payable yet.</b> Only {fmt(data.totals.measured)} of {fmt(data.totals.quantity)} slabs
-                ({Math.round(data.totals.measured / data.totals.quantity * 100)}%) carry both a thickness class and a
-                usable reading at Jot, so the quality score describes a fraction of the work. A shift that measures
-                few slabs is not being judged on the same basis as one that measures most of them. Make the Jot
-                thickness readings mandatory and let this reach ~95% before any money is attached.
-                {data.totals.discarded > 0 && <> {fmt(data.totals.discarded)} reading(s) in this range were impossible values and were discarded.</>}
+                <b>Incomplete — QC has not caught up.</b> Only {fmt(data.totals.graded)} of {fmt(data.totals.quantity)} slabs
+                ({Math.round(data.totals.graded / data.totals.quantity * 100)}%) pressed in this range have been graded.
+                Polishing runs days behind the press, so a range ending today will always look thin. Score a month
+                only once QC has worked through it — {fmt(data.totals.ungraded)} slab(s) here are still awaiting a grade
+                and are excluded from quality rather than counted as bad.
               </p>
             </Card>
           )}
