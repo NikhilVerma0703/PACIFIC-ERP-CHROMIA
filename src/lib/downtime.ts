@@ -243,9 +243,17 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   };
   let target = 0, downtimeCost = 0, roboHours = 0, normalHours = 0, daysCounted = 0, productiveHours = 0;
   // For an in-progress "Today", prorate productive hours + cleaning baseline to the
-  // fraction of the day elapsed (IST), so a full-day target isn't set against a part-day actual.
+  // part of the day elapsed (IST), so a full-day target isn't set against a part-day actual.
+  //
+  // WHOLE COMPLETED HOURS, not the raw clock fraction. MIS is one row per FINISHED
+  // hour, so `actual` can only ever cover completed hours. Accruing target across
+  // the hour currently in progress charged up to a full hour of target against
+  // production that cannot have been reported yet, so the same shift read worse at
+  // :55 than at :05 and the number moved with the clock rather than the line.
   const todayKey = istNow.toISOString().slice(0, 10);
-  const elapsedFrac = Math.min(1, Math.max(0, (istNow.getTime() - new Date(`${todayKey}T00:00:00.000Z`).getTime()) / 864e5));
+  const elapsedHours = Math.floor(
+    (istNow.getTime() - new Date(`${todayKey}T00:00:00.000Z`).getTime()) / 3600e3);
+  const elapsedFrac = Math.min(1, Math.max(0, elapsedHours / 24));
   if (batch) {
     const roboR = rows.filter((r) => isRobo(r.productionType)).length;
     const normR = rows.length - roboR;
