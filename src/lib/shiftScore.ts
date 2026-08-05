@@ -18,8 +18,16 @@
 // on 19 of 6,013 rows so the fallback did the work — importedAt, which lands on
 // average 9.4 h after the slab was pressed and therefore inside a later shift.
 //
-// Press timestamps remain the fallback for hours where no range was entered, so
-// a shift that produced but skipped the range boxes is not scored at zero.
+// THERE IS NO TIMESTAMP FALLBACK. An hour with no slab range claims nothing.
+// Press timestamps were tried and are not fit for it: the same 79 slabs are
+// stamped ~19 h apart by MIS and press, and the oven stamps them BEFORE the
+// press that feeds it. The stations agree on WHAT was made and disagree on
+// WHEN, so a declared range is the only trustworthy claim. Scoring an
+// undeclared hour off those clocks would credit the wrong shift.
+//
+// A slab claimed by two shifts is dropped from BOTH. Paying it twice is wrong,
+// and picking a winner would be arbitrary — it is surfaced instead so the entry
+// gets corrected.
 //
 // WHY QUALITY COMES FROM QC, AND WHY IT FOLLOWS THE SLAB
 // Quality is the QC grade of the slabs THIS SHIFT PRESSED, traced by slab
@@ -155,6 +163,9 @@ export interface ShiftScore {
    *  is unambiguously electrical. */
   breakdownMin: number;
   poweroutMin: number;
+  /** Slabs this shift claimed that ANOTHER shift also claimed. Dropped from
+   *  both scores and reported so the entry gets corrected. */
+  contested: number;
   /** People named on this shift's MIS rows — they share the score. Kept per
    *  ROLE: a production incharge runs the shift, whereas electrical and
    *  mechanical cover the plant and are often named on several shifts at once,
@@ -169,12 +180,36 @@ export function slabQuality(measuredMm: number, ideal: number, tol = TOLERANCE_M
   return Math.max(0, 1 - dev / tol);
 }
 
-/** Score one shift instance. */
-export async function scoreShift(anchor: string, shift: ShiftLetter): Promise<ShiftScore> {
+/** The slabs a shift's own MIS rows declare. Cheap enough to run for a whole
+ *  range before scoring, which is how double-claims are found. */
+export async function claimedSlabs(anchor: string, shift: ShiftLetter): Promise<number[]> {
+  const { start, end } = shiftRange(anchor, shift);
+  try {
+    const mis: any[] = await (prisma as any).mis.findMany({
+      where: {
+        OR: [
+          { dateAndTime: { gte: start, lt: end } },
+          { AND: [{ dateAndTime: null }, { date: { gte: start, lt: end } }] },
+        ],
+      },
+      select: { startingSlabNumber: true, endingSlabNumber: true },
+    });
+    const out = new Set<number>();
+    for (const r of mis) {
+      const a = Number(r.startingSlabNumber), b = Number(r.endingSlabNumber);
+      if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b < a || b - a > 500) continue;
+      for (let n = a; n <= b; n++) out.add(n);
+    }
+    return [...out];
+  } catch { return []; }
+}
+
+/** Score one shift instance. `exclude` holds slabs another shift also claimed. */
+export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: Set<number>): Promise<ShiftScore> {
   const { start, end } = shiftRange(anchor, shift);
   const empty: ShiftScore = {
     anchor, shift, quantity: 0, quality: null, rawQuality: null, graded: 0, ungraded: 0,
-    gradeA: 0, gradeB: 0, gradeC: 0, points: 0, avgMm: null, breakdownMin: 0, poweroutMin: 0,
+    gradeA: 0, gradeB: 0, gradeC: 0, points: 0, avgMm: null, breakdownMin: 0, poweroutMin: 0, contested: 0,
     people: [], crew: { production: [], electrical: [], mechanical: [] },
   };
   try {
@@ -197,35 +232,26 @@ export async function scoreShift(anchor: string, shift: ShiftLetter): Promise<Sh
     const breakdownMin = mis.reduce((a, r) => a + n(r.breakdownDelayDurationMechanicalOrElectricalMinutes), 0);
     const poweroutMin = mis.reduce((a, r) => a + n(r.poweroutDelayDurationMinutes), 0);
     const declared = new Set<number>();
-    let declaredHours = 0;
     for (const r of mis) {
       const a = Number(r.startingSlabNumber), b = Number(r.endingSlabNumber);
       if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b < a) continue;
       // A typo'd range must not swallow the month; an hour cannot make 2,000.
       if (b - a > 500) continue;
-      declaredHours += 1;
-      for (let n = a; n <= b; n++) declared.add(n);
+      for (let n = a; n <= b; n++) if (!exclude?.has(n)) declared.add(n);
     }
-
-    // 2) Only where nothing was declared, fall back to the press clock, so an
-    //    hour logged without the range boxes still counts something.
-    let slabs = [...declared];
-    if (!declaredHours) {
-      const pressed: any[] = await (prisma as any).press.findMany({
-        where: {
-          slabNumber: { not: null },
-          OR: [
-            { date: { gte: start, lt: end } },
-            { AND: [{ date: null }, { createdTime: { gte: start, lt: end } }] },
-          ],
-        },
-        select: { slabNumber: true },
-      });
-      slabs = [...new Set(pressed.map((r) => Number(r.slabNumber)).filter(Number.isFinite))];
-    }
+    const contested = exclude
+      ? mis.reduce((acc, r) => {
+          const a = Number(r.startingSlabNumber), b = Number(r.endingSlabNumber);
+          if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b < a || b - a > 500) return acc;
+          let c = 0;
+          for (let n = a; n <= b; n++) if (exclude.has(n)) c++;
+          return acc + c;
+        }, 0)
+      : 0;
+    const slabs = [...declared];
     if (!slabs.length) {
       const crew0 = await crewOnShift(anchor, shift);
-      return { ...empty, breakdownMin, poweroutMin, crew: crew0,
+      return { ...empty, breakdownMin, poweroutMin, contested, crew: crew0,
         people: [...new Set([...crew0.production, ...crew0.electrical, ...crew0.mechanical])].sort() };
     }
 
@@ -274,7 +300,7 @@ export async function scoreShift(anchor: string, shift: ShiftLetter): Promise<Sh
       gradeA: a, gradeB: b, gradeC: c,
       avgMm,
       points: Math.round(graded * (quality ?? 0)),
-      breakdownMin, poweroutMin,
+      breakdownMin, poweroutMin, contested,
       people, crew,
     };
   } catch {
@@ -414,7 +440,7 @@ export interface ScoreboardData {
   /** Ranked separately per role — see ShiftScore.crew for why. */
   byRole: Record<CrewRole, PersonScore[]>;
   people: PersonScore[];
-  totals: { quantity: number; points: number; graded: number; ungraded: number; quality: number | null };
+  totals: { quantity: number; points: number; graded: number; ungraded: number; quality: number | null; contested: number };
 }
 
 /** Every shift instance between two IST dates, scored, plus the per-person roll-up. */
@@ -424,17 +450,23 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
   const letters: ShiftLetter[] = ["A", "B", "C"];
   const now = new Date();
 
+  // Pass 1 — what each shift CLAIMS, so a slab claimed by two shifts can be
+  // dropped from both rather than paid twice.
+  const instances = days.flatMap((d) => letters.map((l) => ({ d, l })))
+    .filter(({ d, l }) => shiftRange(d, l).start <= now);
+  const claims = await Promise.all(instances.map(async ({ d, l }) => ({ d, l, slabs: await claimedSlabs(d, l) })));
+  const seenBy = new Map<number, number>();
+  for (const c of claims) for (const n of c.slabs) seenBy.set(n, (seenBy.get(n) ?? 0) + 1);
+  const contestedSet = new Set([...seenBy.entries()].filter(([, n]) => n > 1).map(([s2]) => s2));
+
+  // Pass 2 — score with those slabs excluded.
   const scored = await Promise.all(
-    days.flatMap((d) => letters.map(async (l) => {
-      // skip shifts that have not started yet
-      if (shiftRange(d, l).start > now) return null;
-      return scoreShift(d, l);
-    })),
+    instances.map(({ d, l }) => scoreShift(d, l, contestedSet)),
   );
   // Keep a shift that recorded a TEAM even if it pressed nothing: dropping it
   // erased those people from the board entirely, which read as "they did not
   // work" rather than "they worked and produced nothing".
-  const shifts = scored.filter((s): s is ShiftScore => s !== null && (s.quantity > 0 || s.people.length > 0));
+  const shifts = scored.filter((s) => s.quantity > 0 || s.people.length > 0);
 
   // Each person on a shift carries that shift's whole score: production is a
   // team result, so the team shares one number rather than splitting it.
@@ -519,6 +551,7 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
       graded,
       ungraded: shifts.reduce((a, s) => a + s.ungraded, 0),
       quality: graded ? qNum / graded : null,
+      contested: shifts.reduce((a, s) => a + s.contested, 0),
     },
   };
 }

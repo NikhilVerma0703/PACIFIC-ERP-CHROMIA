@@ -125,7 +125,10 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
         </span>
       </F>
       <F label="A / B / C">{fmt(s.gradeA)} / {fmt(s.gradeB)} / {fmt(s.gradeC)}</F>
-      <F label="Graded / awaiting QC">{fmt(s.graded)}{s.ungraded ? ` / ${fmt(s.ungraded)}` : ""}</F>
+      <F label="Graded / awaiting QC">
+        {fmt(s.graded)}{s.ungraded ? ` / ${fmt(s.ungraded)}` : ""}
+        {s.contested > 0 && <div className="text-[11px] font-normal text-red-600">{fmt(s.contested)} disputed with another shift</div>}
+      </F>
       <F label="Points"><span className="text-brand">{fmt(s.points)}</span></F>
       <F label="Team">{s.crew.production.join(", ") || "—"}{s.crew.electrical.length || s.crew.mechanical.length ? <div className="text-[11px] font-normal text-gray-400">E: {s.crew.electrical.join(", ") || "—"} · M: {s.crew.mechanical.join(", ") || "—"}</div> : null}</F>
     </div>
@@ -140,6 +143,8 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
         not the clock: polishing runs days behind the press, so grading by window would score another shift&rsquo;s
         work. The two are multiplied, never added — a shift cannot buy a bad axis with a good one. Everyone named
         on a shift shares that shift&rsquo;s score, because production is a team result.
+        {" "}A shift owns the slabs <b>its own MIS rows declare</b>: an hour with no starting and ending slab number
+        claims nothing, and a slab two shifts both claim counts for neither.
       </p>
 
       <div className="mb-3 flex flex-wrap gap-2">
@@ -165,6 +170,17 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
             <Kpi label="Total points" value={fmt(data.totals.points)} />
             <Kpi label="Graded by QC" value={fmt(data.totals.graded)} sub={data.totals.quantity ? `${Math.round(data.totals.graded / data.totals.quantity * 100)}% of pressed` : undefined} />
           </div>
+
+          {data.totals.contested > 0 && (
+            <Card className="mb-6 border-red-300 bg-red-50">
+              <p className="text-sm text-red-900">
+                <b>{fmt(data.totals.contested)} slab claim(s) are disputed.</b> Two shifts entered MIS ranges
+                covering the same slab, so it cannot belong to both. Those slabs are excluded from
+                <b> both</b> scores — paying twice would be wrong, and choosing a winner would be arbitrary.
+                Correct the starting/ending slab numbers on the hours concerned and the points return by themselves.
+              </p>
+            </Card>
+          )}
 
           {data.totals.quantity > 0 && data.totals.graded / data.totals.quantity < 0.75 && (
             <Card className="mb-6 border-amber-300 bg-amber-50">
