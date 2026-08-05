@@ -222,6 +222,40 @@ export function canonPerson(raw: unknown): string {
   return t.replace(/\S+/g, (w) => w[0].toUpperCase() + w.slice(1).toLowerCase());
 }
 
+// --------------------------------------------------------------------------
+// How the pool is split
+// --------------------------------------------------------------------------
+// TWO POOLS, NOT ONE PRODUCT.
+//
+// The old score was volume x a quality share measured from 90%. Multiply that
+// out and it is exactly:
+//
+//     points = A - 4B - 9C
+//
+// One more Grade-A slab is worth +1. One more C is worth -9. So the most
+// profitable thing a shift could do was NOT ENTER the slabs it thought had come
+// out badly - nine times more profitable than pressing a good one. The scheme
+// was paying for concealment while the notice on the wall told the floor to
+// record everything.
+//
+// The fix is to stop multiplying. Volume is paid on GOOD SLABS (A = 1, B = 0.5,
+// C = 0), where adding a bad slab is worth exactly zero - never negative - so
+// there is nothing to gain by hiding it. Quality is paid from its own pool, so
+// it still decides real money without ever making a slab worth less than
+// nothing.
+export const POOL_VOLUME = 0.7;
+export const POOL_QUALITY = 0.3;
+
+/** Shifts before a per-shift RATE is trusted at face value.
+ *
+ *  Both pools are shared on rates, which is what the plant asked for: 3 shifts
+ *  making 300 good slabs should beat 10 making 500. But a rate from one shift
+ *  is not evidence - a single good night would otherwise take the largest slice
+ *  of the month from people who worked twenty. Below this, the share is scaled
+ *  down in proportion; at or above it, the rate counts in full. */
+export const CREDIBLE_SHIFTS = 5;
+export const credibility = (shifts: number) => Math.min(1, Math.max(0, shifts) / CREDIBLE_SHIFTS);
+
 /** Shifts a person must have worked before they can be RANKED.
  *  Set to 1 by decision: everyone who worked at all is placed, however few
  *  shifts they did. The per-shift rate is the measure, and a short month should

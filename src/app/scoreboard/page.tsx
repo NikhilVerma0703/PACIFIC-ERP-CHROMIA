@@ -5,7 +5,11 @@ import { Card, H2, Kpi, Empty, Badge, fmt } from "@/components/ui";
 import { fmtDur } from "@/lib/downtime";
 import { ShiftCard, F } from "@/components/ShiftCard";
 import { getShiftReport } from "@/lib/misShift";
-import { scoreRange, scoreStations, QUALITY_FLOOR, MIN_ROWS_TO_RANK_STATION, type ShiftScore, type PersonScore, type StationBoard } from "@/lib/shiftScore";
+import {
+  scoreRange, scoreStations, QUALITY_FLOOR, MIN_ROWS_TO_RANK_STATION,
+  POOL_VOLUME, POOL_QUALITY, CREDIBLE_SHIFTS,
+  type ShiftScore, type PersonScore, type StationBoard, type FlaggedRow,
+} from "@/lib/shiftScore";
 import { isAdmin } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
@@ -67,6 +71,27 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
   const href = (f: string, t: string) => `/scoreboard?from=${f}&to=${t}`;
 
 
+  // The banners name the exact MIS hours to fix and link to them. A bare count
+  // ("18 slab claims are disputed") is not actionable — it tells an admin there
+  // is a problem and leaves them to find it across a month of hours.
+  const rowLinks = (rows: FlaggedRow[]) => rows.length === 0 ? null : (
+    <div className="mt-3 flex flex-wrap gap-2">
+      {rows.map((f) => (
+        <Link
+          key={f.id}
+          href={`/tables/Mis/${f.id}`}
+          className="rounded-md border border-red-300 bg-white px-2.5 py-1.5 text-xs text-red-900 transition hover:border-red-500 hover:bg-red-100"
+        >
+          <span className="font-semibold">{f.date ?? f.anchor}</span>
+          <span className="text-red-500"> · shift {f.shift} · {f.hour ?? "hour ?"}</span>
+          {f.start != null && f.end != null && <span className="text-red-500"> · slabs {f.start}–{f.end}</span>}
+          {f.reason === "disputed" && f.slabs > 0 && <span className="font-semibold"> · {f.slabs} disputed</span>}
+          {f.incharge && <span className="text-red-400"> · {f.incharge}</span>}
+        </Link>
+      ))}
+    </div>
+  );
+
   const uptimeBoard = (rows: PersonScore[], empty: string) => rows.length === 0 ? <Empty>{empty}</Empty> : (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
@@ -112,8 +137,8 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
                 only the scored figure made a good month look like a bad one. */}
             <th className="py-2 pr-4">{basis === "polish" ? "Finished OK" : "QC grade"}</th>
             <th className="py-2 pr-4">Score</th>
-            <th className="py-2 pr-4">Points</th>
-            <th className="py-2 pr-4">Per shift</th>
+            <th className="py-2 pr-4">Good slabs</th>
+            <th className="py-2 pr-4">Per {unit === "Days" ? "day" : "shift"}</th>
             <th className="py-2">Share</th>
           </tr>
         </thead>
@@ -155,7 +180,7 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
         {s.contested > 0 && <div className="text-[11px] font-normal text-red-600">{fmt(s.contested)} disputed with another shift</div>}
         {s.wideRows > 0 && <div className="text-[11px] font-normal text-red-600">{fmt(s.wideRows)} hour(s) ignored — slab range too wide to be real</div>}
       </F>
-      <F label="Points"><span className="text-brand">{fmt(s.points)}</span></F>
+      <F label="Good slabs"><span className="text-brand">{fmt(s.points)}</span></F>
       <F label="Team">{s.crew.production.join(", ") || "—"}{s.crew.electrical.length || s.crew.mechanical.length ? <div className="text-[11px] font-normal text-gray-400">E: {s.crew.electrical.join(", ") || "—"} · M: {s.crew.mechanical.join(", ") || "—"}</div> : null}</F>
     </div>
   );
@@ -164,13 +189,21 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
     <Shell>
       <h1 className="mb-1 text-2xl font-semibold tracking-tight text-gray-900">Shift scoreboard</h1>
       <p className="mb-5 max-w-3xl text-sm text-gray-500">
-        Scored on the only two things that say how good a shift was: <b>quantity</b> (slabs it pressed) and
-        <b>quality</b> (what QC finally graded those same slabs — A 100%, B 50%, C 0%). Quality follows the slab,
-        not the clock: polishing runs days behind the press, so grading by window would score another shift&rsquo;s
-        work. The two are multiplied, never added — a shift cannot buy a bad axis with a good one. Everyone named
-        on a shift shares that shift&rsquo;s score, because production is a team result.
-        {" "}A shift owns the slabs <b>its own MIS rows declare</b>: an hour with no starting and ending slab number
-        claims nothing, and a slab two shifts both claim counts for neither.
+        Scored on the only two things that say how good a shift was: <b>quantity</b> and <b>quality</b>. Quality
+        follows the slab, not the clock — polishing runs days behind the press, so grading by window would score
+        another shift&rsquo;s work. Everyone named on a shift shares that shift&rsquo;s score, because production is a
+        team result. A shift owns the slabs <b>its own MIS rows declare</b>: an hour with no starting and ending slab
+        number claims nothing, and a slab two shifts both claim counts for neither.
+      </p>
+      <p className="mb-5 max-w-3xl rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+        <b>The pool splits {Math.round(POOL_VOLUME * 100)} / {Math.round(POOL_QUALITY * 100)}</b> — it is not one
+        number multiplied. {Math.round(POOL_VOLUME * 100)}% follows <b>good slabs</b> (A = 1, B = 0.5, C = 0)
+        and {Math.round(POOL_QUALITY * 100)}% follows the <b>quality score</b>.
+        {" "}Multiplying them, as this page used to, works out to exactly <code>A &minus; 4B &minus; 9C</code>: one
+        more Grade-A slab was worth <b>+1</b> and one more reject <b>&minus;9</b>, so the most profitable thing a
+        shift could do was leave its bad slabs out of MIS. A bad slab is now worth zero — never less — so there is
+        nothing to gain by hiding one. Both halves are per-shift rates, scaled down below {CREDIBLE_SHIFTS} shifts
+        so one good night cannot take the month.
       </p>
 
       <div className="mb-3 flex flex-wrap gap-2">
@@ -202,7 +235,7 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
             <Kpi label="Slabs pressed" value={fmt(data.totals.quantity)} />
             <Kpi label="QC grade share" value={pct(data.totals.rawQuality)} sub="A = 100% · B = 50% · C = 0%" />
             <Kpi label="Quality score" value={pct(data.totals.quality)} sub={`the grade share above, measured from ${Math.round(QUALITY_FLOOR * 100)}%`} />
-            <Kpi label="Total points" value={fmt(data.totals.points)} sub={`${fmt(data.totals.graded)} graded · ${fmt(data.totals.ungraded)} awaiting QC`} />
+            <Kpi label="Good slabs" value={fmt(data.totals.points)} sub={`${fmt(data.totals.graded)} graded · ${fmt(data.totals.ungraded)} awaiting QC`} />
           </div>
 
           {data.requestedTo && (
@@ -215,12 +248,18 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
             </Card>
           )}
 
-          {data.totals.unattributed > 0 && (
+          {(data.totals.unattributed + data.totals.unattributedElectrical + data.totals.unattributedMechanical) > 0 && (
             <Card className="mb-6 border-red-300 bg-red-50">
               <p className="text-sm text-red-900">
-                <b>{fmt(data.totals.unattributed)} shift(s) named no production incharge.</b> Their slabs are in the
-                plant total but on nobody&rsquo;s row, so every other person&rsquo;s <b>Share</b> below is larger than the
-                work behind it. Fill in the incharge on those hours before this is used for a payout.
+                <b>Shifts that named nobody:</b>{" "}
+                {[
+                  data.totals.unattributed ? `${fmt(data.totals.unattributed)} with no production incharge` : null,
+                  data.totals.unattributedElectrical ? `${fmt(data.totals.unattributedElectrical)} with no electrical` : null,
+                  data.totals.unattributedMechanical ? `${fmt(data.totals.unattributedMechanical)} with no mechanical` : null,
+                ].filter(Boolean).join(" · ")}.
+                {" "}Their work is in the plant total but on nobody&rsquo;s row, so every other person&rsquo;s
+                {" "}<b>Share</b> in that role is larger than the work behind it — which means not filling the field
+                in is worth money to everyone who did. Fill those hours in before this drives a payout.
               </p>
             </Card>
           )}
@@ -232,6 +271,7 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
                 real hour is 2 to 20 slabs. The shift that typed them is scored as if those hours produced nothing,
                 so its points are understated until the starting/ending numbers are corrected.
               </p>
+              {rowLinks(data.flagged.filter((f) => f.reason === "wide"))}
             </Card>
           )}
 
@@ -241,8 +281,9 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
                 <b>{fmt(data.totals.contested)} slab claim(s) are disputed.</b> Two shifts entered MIS ranges
                 covering the same slab, so it cannot belong to both. Those slabs are excluded from
                 <b> both</b> scores — paying twice would be wrong, and choosing a winner would be arbitrary.
-                Correct the starting/ending slab numbers on the hours concerned and the points return by themselves.
+                Correct the starting/ending slab numbers on the hours below and the points return by themselves.
               </p>
+              {rowLinks(data.flagged.filter((f) => f.reason === "disputed"))}
             </Card>
           )}
 
@@ -269,11 +310,12 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
                   {role === "production" ? (
                     <>
                       Runs the shift and carries its full score. This is the ranking the shift incentive is built on.
-                      Ranked on <b>points per shift</b>, not the total — 3 shifts making 300 good slabs beats 10
-                      making 500, however many shifts each person worked. <b>QC grade</b> is the real share
-                      (A 100% · B 50% · C 0%); <b>Score</b> is that share measured from {Math.round(QUALITY_FLOOR * 100)}%,
-                      which is what multiplies into the points. <b>Share</b> is the slice of this role&rsquo;s
-                      per-shift points; payroll applies it to each person&rsquo;s own salary.
+                      Measured per shift, not on the total — 3 shifts making 300 good slabs beats 10 making 500.
+                      {" "}<b>QC grade</b> is the real share (A 100% · B 50% · C 0%); <b>Score</b> is that share
+                      measured from {Math.round(QUALITY_FLOOR * 100)}%. <b>Share</b> combines
+                      both: {Math.round(POOL_VOLUME * 100)}% from good slabs per shift
+                      and {Math.round(POOL_QUALITY * 100)}% from the score. Payroll applies it to each
+                      person&rsquo;s own salary.
                     </>
                   ) : (
                     <>
@@ -303,9 +345,10 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
                 counting them in both would score the same shifts twice. Someone with fewer
                 than {MIN_ROWS_TO_RANK_STATION} rows at a machine is shown but not ranked: that is cover for an hour,
                 not the job this board compares.
-                {" "}Unlike the incharge tables, <b>Share here is the slice of total points, not a per-day rate</b> —
-                station rows carry the time they were typed, not worked (278 Kreos rows share three timestamps
-                inside 65 minutes), so any rate built on them is fiction. <b>Days</b> is shown for context only.
+                {" "}The same {Math.round(POOL_VOLUME * 100)}/{Math.round(POOL_QUALITY * 100)} split applies, but the
+                volume half is the <b>total</b>, not a per-day rate: station rows carry the time they were typed, not
+                worked (278 Kreos rows share three timestamps inside 65 minutes), so any rate built on them is
+                fiction. <b>Days</b> is shown for context only.
               </p>
               {stations.filter((st) => st.operators.length > 0).map((st) => (
                 <Card key={st.key} className="mb-6">

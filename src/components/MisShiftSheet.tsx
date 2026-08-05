@@ -26,6 +26,11 @@ const AREAS = ["Silos", "Mixer", "Distributor", "Kreos", "Chessboard", "Robot", 
 // Fixed incharge rosters — multi-select (a shift can have more than one person).
 const ELEC_INCHARGE = ["Guna", "Sundar", "Kumar", "Ramarasan"];
 const MECH_INCHARGE = ["Mohan", "Manikya", "Narayanan", "Joseph", "Arun"];
+// Production incharge stays typeable — a new man must be enterable on the night
+// he starts — but the roster is offered as suggestions so the usual four land on
+// ONE spelling. The scoreboard pays this name, and "SURESH" beside "Suresh" was
+// two people with two scores until the scorer started folding case.
+const PROD_INCHARGE = ["Suresh", "Pradhap", "Appalaraju", "Sivaiha"];
 const DELAYS = [
   ["processDelayDurationMinutes", "Operational"],
   ["cleaningDelayDurationMinutes", "Cleaning"],
@@ -157,6 +162,12 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
     const sSlab = Number(fd.get("startingSlabNumber") ?? 0) || 0;
     const eSlab = Number(fd.get("endingSlabNumber") ?? 0) || 0;
     if (sSlab > 0 && eSlab > 0 && eSlab < sSlab) { setErr(`Ending slab ${eSlab} is before the starting slab ${sSlab} — check the range`); return; }
+    // The line's widest real hour is 35 slabs. Above 60 it is a digit slip, and
+    // the scoreboard throws the whole hour away rather than let one typo swallow
+    // a month — so it is caught here, while the hour is still fresh. The server
+    // repeats this check; this copy just saves a round trip.
+    if (sSlab > 0 && eSlab > 0 && eSlab - sSlab >= 60) { setErr(`Slabs ${sSlab}-${eSlab} is ${eSlab - sSlab + 1} slabs in one hour — check the range`); return; }
+    if (!prodIncharge.trim()) { setErr("Production Incharge is required — the shift score is paid to this name"); return; }
     if (logged.has(hour)) { setErr(`Hour ${hour} is already logged — use its edit link below`); return; }
     fd.set("__model", "Mis");
     fd.set("hour", hour);
@@ -220,8 +231,9 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
               <option value="20 & 30">20 &amp; 30 (both this hour)</option>
               {thkPress && !["", "12", "20", "30", "20 & 30"].includes(thkPress) && <option value={thkPress}>{thkPress}</option>}
             </select></label>
-          <label className="block"><span className={lbl}>Production Incharge</span>
-            <input value={prodIncharge} onChange={(e) => setProdIncharge(e.target.value)} className={inp} /></label>
+          <label className="block"><span className={lbl}>Production Incharge <span className="font-normal text-red-500">*</span></span>
+            <input value={prodIncharge} onChange={(e) => setProdIncharge(e.target.value)} list="mis-prod-incharge" required className={inp} />
+            <datalist id="mis-prod-incharge">{PROD_INCHARGE.map((n) => <option key={n} value={n} />)}</datalist></label>
           <label className="block"><span className={lbl}>Electrical Incharge <span className="font-normal text-gray-400">(select one or more)</span></span>
             <div className="flex flex-wrap gap-1.5">
               {ELEC_INCHARGE.map((n) => (

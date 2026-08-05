@@ -18,6 +18,7 @@ import { RECORD_SMART, nextIncrementValue } from "@/lib/recordSmart";
 import { prisma } from "@/lib/prisma";
 import { autolinkFinishedSlabFromQc, relinkFinishedSlabAfterNumberChange } from "@/lib/inventory/finishedSlab";
 import { REQUIRED_FORM_FIELDS, REQUIRED_FIELD_LABELS } from "@/lib/requiredFields";
+import { MAX_SLABS_PER_HOUR } from "@/lib/shiftScoreMath";
 import { savePhotoFromForm } from "@/lib/entryPhoto";
 
 // tx-scoped equivalent of delegateOf() for $transaction blocks
@@ -118,6 +119,53 @@ const SLAB_STATIONS = new Set(["Press", "Oven", "Jot", "Distributor", "Kreos"]);
 const DATED_STATIONS = new Set(["Press", "Oven", "Jot", "Distributor", "Kreos"]);
 const DAY_MS = 86400000;
 const istDay = (d: Date): string => new Date(d.getTime() + 330 * 60000).toISOString().slice(0, 10);
+
+/**
+ * MIS slab range — refuse a typo, and refuse to claim another hour's slabs.
+ *
+ * The shift scoreboard pays on these two numbers: a shift owns the slabs its own
+ * MIS rows declare. So a range that is wrong here moves money, and a range that
+ * overlaps another shift's takes it from them — the scoreboard drops a slab both
+ * shifts claim, so ONE typo costs BOTH crews the whole overlap. That happened on
+ * 2026-07-17: an hour typed 148551-148662 instead of ~148551-148562 and took 100
+ * slabs off a shift that had already declared them.
+ *
+ * Catching it here means the person who typed it fixes it while they still
+ * remember the hour, instead of an admin reading a red banner at payroll.
+ *
+ * `selfId` is the row being edited, so an edit does not collide with itself.
+ */
+async function misSlabRangeError(model: string, data: Record<string, unknown>, selfId: string | null): Promise<string | null> {
+  if (model !== "Mis") return null;
+  const a = Number(data.startingSlabNumber ?? NaN), b = Number(data.endingSlabNumber ?? NaN);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0) return null;
+  if (b < a) return `⚠ Ending slab ${b} is before the starting slab ${a} — check the range.`;
+  if (b - a >= MAX_SLABS_PER_HOUR) {
+    return `⚠ Slabs ${a}-${b} is ${b - a + 1} slabs in one hour. The line's widest real hour is 35, so this is a typo — the scoreboard will ignore the whole hour. Check the starting and ending slab number.`;
+  }
+  // Any other MIS row whose range overlaps this one. Rows with an impossible
+  // width are skipped: they are already-known typos and would match everything.
+  let clash: { id: string; date: Date | null; hour: string | null; productionInchargeName: string | null; startingSlabNumber: number | null; endingSlabNumber: number | null } | null = null;
+  try {
+    const rows = await delegateOf(model).findMany({
+      where: {
+        startingSlabNumber: { lte: b, gte: a - MAX_SLABS_PER_HOUR },
+        endingSlabNumber: { gte: a },
+        ...(selfId ? { NOT: { id: selfId } } : {}),
+      },
+      select: { id: true, date: true, hour: true, productionInchargeName: true, startingSlabNumber: true, endingSlabNumber: true },
+      take: 20,
+    });
+    clash = rows.find((r: { startingSlabNumber: number | null; endingSlabNumber: number | null }) => {
+      const s = Number(r.startingSlabNumber), e = Number(r.endingSlabNumber);
+      return Number.isFinite(s) && Number.isFinite(e) && e >= s && e - s < MAX_SLABS_PER_HOUR && s <= b && e >= a;
+    }) ?? null;
+  } catch { return null; }   // never block an entry because the check itself failed
+  if (!clash) return null;
+  const when = clash.date ? istDay(new Date(clash.date)) : "another day";
+  const who = clash.productionInchargeName ? ` by ${clash.productionInchargeName}` : "";
+  return `⚠ Slabs ${a}-${b} overlap ${clash.startingSlabNumber}-${clash.endingSlabNumber}, already logged on ${when} hour ${clash.hour ?? "?"}${who}. Two hours cannot both make the same slab, and the scoreboard gives a disputed slab to neither shift — check the range before saving.`;
+}
 
 async function dateSanity(model: string, data: Record<string, unknown>, batchKeyFallback?: string | null, currentDate?: Date | null): Promise<string | null> {
   if (!DATED_STATIONS.has(model)) return null;
@@ -251,6 +299,33 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
   for (const rf of REQUIRED_FORM_FIELDS[model] ?? [])
     if (fd.has(rf) && !String(data[rf] ?? "").trim()) return `${REQUIRED_FIELD_LABELS[rf] ?? rf} is required.`;
   { const fbErr = fillerBufferMissing(model, data, fd); if (fbErr) return fbErr; }
+  // MIS on EDIT carries the same two money guards as the create path. The slab
+  // range and the delay minutes are BOTH editable here, so enforcing them only
+  // on create left the front door locked and the back door open: an incharge
+  // could save a clean row and then widen its range over another shift's slabs,
+  // or set an old hour's breakdown to 480 minutes and buy perfect uptime.
+  if (model === "Mis" && (fd.has("startingSlabNumber") || fd.has("endingSlabNumber"))) {
+    const cur = await delegateOf(model).findUnique({ where: { id }, select: { startingSlabNumber: true, endingSlabNumber: true } }).catch(() => null);
+    const merged = {
+      startingSlabNumber: fd.has("startingSlabNumber") ? data.startingSlabNumber : cur?.startingSlabNumber,
+      endingSlabNumber: fd.has("endingSlabNumber") ? data.endingSlabNumber : cur?.endingSlabNumber,
+    };
+    const sErr = await misSlabRangeError(model, merged, id);
+    if (sErr) return sErr;
+  }
+  if (model === "Mis") {
+    const DELAY_FIELDS = ["processDelayDurationMinutes", "cleaningDelayDurationMinutes",
+      "breakdownDelayDurationMechanicalOrElectricalMinutes", "poweroutDelayDurationMinutes"] as const;
+    if (DELAY_FIELDS.some((k) => fd.has(k))) {
+      const cur = await delegateOf(model).findUnique({
+        where: { id },
+        select: Object.fromEntries(DELAY_FIELDS.map((k) => [k, true])),
+      }).catch(() => null);
+      const dt = DELAY_FIELDS.reduce((a, k) =>
+        a + Number((fd.has(k) ? data[k] : (cur as Record<string, unknown> | null)?.[k]) ?? 0), 0);
+      if (dt > 60) return `⚠ Total delay for this hour is ${Math.round(dt)} min — an hour can have at most 60 minutes of downtime. Reduce the delay entries before saving.`;
+    }
+  }
   // Date sanity on EDIT — only when the date is actually being changed. An old row whose
   // date is legitimately months old must stay editable (its unchanged date would otherwise
   // trip the 90-day rule), so an untouched date is never re-validated.
@@ -370,6 +445,7 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
     ] }, select: { id: true } }).catch(() => null);
     if (dupe) return `\u26a0 Hour ${data.hour} is already logged for this date — open it with the row's edit link instead of saving again.`;
   }
+  { const sErr = await misSlabRangeError(model, data, null); if (sErr) return sErr; }
 
   // Require a slab number on slab stations (manual or smart entry) — no blank rows.
   if (SLAB_REQUIRED.has(model) && !hasSlab(data.slabNumber)) {

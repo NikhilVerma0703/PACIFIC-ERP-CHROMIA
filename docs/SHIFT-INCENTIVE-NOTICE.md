@@ -22,38 +22,49 @@ count as one shift. You win together.
 ## How the score is calculated
 
 Your score is built from **two things only** — how much you made, and how good it was.
+The money is **split between them**:
 
 ```
-        SCORE  =  QUANTITY  ×  QUALITY
+        70%  of the money  →  GOOD SLABS you made
+        30%  of the money  →  QUALITY of what you made
 ```
 
-They are **multiplied**, not added. This matters:
+Both halves are counted **per shift**, not as a monthly total. Three shifts making 300
+good slabs beats ten shifts making 500 — you are measured on how you work, not on how
+often you are rostered.
 
-- 1,000 slabs made badly → low score
-- 100 slabs made perfectly → low score
-- **Many slabs made well → high score**
+You cannot win on one alone. The biggest producer with poor quality loses the whole
+quality half; the most careful shift that makes very little loses most of the larger
+half. **You need both.**
 
-You cannot make up bad quality by producing more, and you cannot make up low production
-by being careful with a few slabs. You need both.
+### 1. GOOD SLABS — 70% of the money
 
-### 1. QUANTITY — how many slabs
+The slabs **your own MIS entry claims** — the starting and ending slab number you enter
+each hour. Those slabs are yours. An hour with no slab numbers entered claims nothing.
 
-The slabs **your own MIS entry claims** — the starting and ending slab number you enter each hour.
-Those slabs are yours. An hour with no slab numbers entered claims nothing.
-
-### 2. QUALITY — what QC grades those same slabs
-
-Quality follows **your** slabs — the ones your MIS entry claimed. We look at the grade QC finally gave them — not whatever was being polished during your hours, which is
-someone else's work.
+Each one counts by the grade QC finally gives it:
 
 | QC grade | Counts as |
 |---|---|
-| **A** (and A2) | **100%** |
-| B | 50% |
-| C (reject) | **0%** |
+| **A** (and A2) | **1 good slab** |
+| B | half a good slab |
+| C (reject) | **nothing** |
 
-Your grade share is then scored against a **90% minimum standard** — you are paid for how
-far **above** 90% you get:
+**A reject costs you nothing beyond itself.** It is worth zero — never a minus. So there
+is never any reason to leave a slab out of MIS: hiding a bad one gains you nothing, and
+loses you the good ones on the same line.
+
+A slab still waiting to be polished is **not** counted against you — it simply waits
+until QC grades it, and your score rises when it does.
+
+### 2. QUALITY — 30% of the money
+
+The share of **your** slabs that came out Grade A. Quality follows the slab, not the
+clock: we look at what QC gave the slabs your MIS entry claimed, not at whatever was
+being polished during your hours — that is someone else's work.
+
+Your grade share is scored against a **90% minimum standard** — you are paid for how far
+**above** 90% you get:
 
 | Your grade share | Quality score |
 |---|---|
@@ -62,8 +73,8 @@ far **above** 90% you get:
 | 98% | 80% |
 | 100% | **100%** |
 
-A slab still waiting to be polished is **not** counted against you — it simply waits until
-QC grades it.
+The whole plant already runs between 93% and 98%, so this is where places are won and
+lost. Two points of grade share is worth twenty points of quality score.
 
 ---
 
@@ -71,17 +82,17 @@ QC grades it.
 
 Real numbers from our line, not examples:
 
-| Shift | Slabs pressed | Grade share | **Points** |
-|---|---|---|---|
-| Shift C | 2,042 | 94.7% | **1,336** |
-| Shift A | 1,690 | 96.2% | **1,075** |
-| Shift B | 1,839 | 94.6% | **1,026** |
+| Shift | Slabs pressed | Grade share | **Good slabs** | **Per shift** |
+|---|---|---|---|---|
+| Shift C | 2,021 | 95.4% | **1,488** | **51** |
+| Shift B | 1,731 | 95.0% | **1,342** | **48** |
+| Shift A | 1,638 | 95.6% | **1,228** | **44** |
 
-> **Look at Shift A and Shift B.** Shift A pressed **149 fewer slabs** than Shift B — and
-> still **beat it**, 1,075 points to 1,026, because a higher share of A's slabs came out
-> Grade A.
+> Three shifts, 29 · 28 · 28 nights, and **seven slabs a shift** between first and last.
+> That is how close this is — and grade share separates them by barely half a point.
 >
-> **Making more is not enough. It has to be right.**
+> **The month is won by a few slabs an hour and a few grades a night.** Both halves are
+> in reach of every shift.
 
 ---
 
@@ -143,15 +154,19 @@ back.
 
 ## How the money is decided
 
-1. At the end of the month, every shift's score is totalled.
-2. Shifts are **ranked** by score.
-3. Each rank carries an incentive **percentage of salary**.
+1. At the end of the month, each shift's **good slabs per shift** and **quality score**
+   are worked out.
+2. The pool is split **70% on good slabs, 30% on quality**, and each shift takes its
+   share of both.
+3. That combined share becomes an incentive **percentage of salary**.
 4. Everyone on that shift receives that percentage **of their own salary**.
 
 **Conditions**
 
-- A shift must meet the **minimum quality standard** to take first place — the highest
-  quantity alone does not win.
+- A shift below the **90% minimum quality standard** takes nothing from the quality half —
+  the highest quantity alone does not win.
+- Fewer than **5 shifts** in the month and your rate is scaled down in proportion. One
+  good night is not a month's work.
 - **Safety comes first.** Any lost-time accident in the shift means no incentive for that
   month, regardless of score.
 - Scores and rankings are **published every month** and can be checked. If you believe a

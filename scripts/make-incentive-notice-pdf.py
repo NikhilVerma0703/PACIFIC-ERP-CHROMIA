@@ -34,8 +34,8 @@ S = {
     "warn": ParagraphStyle("w", parent=ss["Normal"], fontSize=9.2, leading=12.6,
                            textColor=AMBER, spaceAfter=3),
     "formula": ParagraphStyle("f", parent=ss["Normal"], fontName="Helvetica-Bold",
-                              fontSize=14, leading=18, alignment=TA_CENTER,
-                              textColor=DARK, spaceBefore=5, spaceAfter=5),
+                              fontSize=12.5, leading=15, alignment=TA_CENTER,
+                              textColor=DARK, spaceBefore=4, spaceAfter=4),
     "quote": ParagraphStyle("q", parent=ss["Normal"], fontSize=9, leading=12.4,
                             leftIndent=9, textColor=colors.HexColor("#374151")),
     "foot": ParagraphStyle("fo", parent=ss["Normal"], fontSize=7.6, leading=9.5,
@@ -72,7 +72,7 @@ def band(text, bg, border, style):
         ("BACKGROUND", (0, 0), (-1, -1), bg),
         ("BOX", (0, 0), (-1, -1), 0.8, border),
         ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
     ]))
     return t
 
@@ -111,27 +111,26 @@ A(band("<b>Production is a team game.</b> One person cannot win this alone, and 
        colors.HexColor("#f0f7f8"), BRAND, S["b"]))
 
 A(Paragraph("How the score is calculated", S["h"]))
-A(Paragraph("Your score is built from <b>two things only</b> - how much you made, and how good it was.", S["b"]))
-A(Paragraph("EACH SHIFT:&nbsp;&nbsp; POINTS  =  QUANTITY  &times;  QUALITY", S["formula"]))
-A(Paragraph("They are <b>multiplied, not added</b> - 1,000 slabs made badly scores low, and so do 100 made "
-            "perfectly. You cannot make up bad quality with volume, or low volume by being careful with a few "
-            "slabs. <b>You need both.</b>", S["b"]))
-A(Spacer(1, 3))
-A(Paragraph("YOUR RANK:&nbsp;&nbsp; TOTAL POINTS  &divide;  SHIFTS WORKED", S["formula"]))
-A(band("<b>You are ranked on your average per shift, not your total.</b> Working more shifts does not win by "
-       "itself - 3 shifts making 300 good slabs (100 a shift) beats 10 shifts making 500 (50 a shift).<br/>"
-       "Everyone who worked is ranked, however many shifts they did.",
+A(Paragraph("Your score is built from <b>two things only</b> - how much you made, and how good it was. "
+            "The money is <b>split between them</b>.", S["b"]))
+A(Paragraph("70%  GOOD SLABS YOU MADE&nbsp;&nbsp;&nbsp;+&nbsp;&nbsp;&nbsp;30%  QUALITY OF WHAT YOU MADE", S["formula"]))
+A(Paragraph("A big producer with poor quality loses the whole quality half; a careful shift that makes very "
+            "little loses most of the larger half. <b>You need both.</b>", S["b"]))
+A(Paragraph("BOTH HALVES ARE COUNTED&nbsp;&nbsp; PER SHIFT,  NOT PER MONTH", S["formula"]))
+A(band("<b>You are measured on your average per shift, not your total.</b> 3 shifts making 300 good slabs "
+       "(100 a shift) beats 10 shifts making 500 (50 a shift). Below 5 shifts in the month your rate is "
+       "scaled down in proportion - one good night is not a month.",
        colors.HexColor("#f0f7f8"), BRAND, S["quote"]))
 
-A(Paragraph("1. QUANTITY - how many slabs", S["h"]))
-A(Paragraph("The slabs <b>your own MIS entry claims</b> - the starting and ending slab number you enter each hour. Those slabs are yours. An hour with no slab numbers entered claims nothing.", S["b"]))
+A(Paragraph("1. GOOD SLABS - 70% of the money", S["h"]))
+A(Paragraph("The slabs <b>your own MIS entry claims</b> - the starting and ending slab number you enter each hour. Those slabs are yours, and each counts by the grade QC finally gives it. An hour with no slab numbers entered claims nothing.", S["b"]))
 
-A(Paragraph("2. QUALITY - what QC grades those same slabs", S["h"]))
-A(Paragraph("Quality follows <b>your</b> slabs - the ones your MIS entry claimed. We look at the grade QC finally gave them, not whatever was polished during your hours, which is someone else's work.", S["b"]))
+A(Paragraph("2. QUALITY - 30% of the money", S["h"]))
+A(Paragraph("The share of <b>your</b> slabs that came out Grade A. Quality follows the slab, not the clock: we look at what QC gave the slabs your MIS entry claimed, not whatever was polished during your hours - that is someone else's work.", S["b"]))
 gradeT = tbl([["QC grade", "Counts as"],
-       ["A  (and A2)", "100%"],
-       ["B", "50%"],
-       ["C  (reject)", "0%"]], [30 * mm, 24 * mm], align_right=[1])
+       ["A  (and A2)", "1 good slab"],
+       ["B", "half a slab"],
+       ["C  (reject)", "nothing"]], [30 * mm, 28 * mm], align_right=[1])
 floorT = tbl([["Your grade share", "Quality score"],
        ["90% or below", "0%"],
        ["95%", "50%"],
@@ -142,23 +141,25 @@ qpair.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
 A(qpair)
 A(Spacer(1, 4))
 A(Paragraph("Your grade share is scored against a <b>90% minimum standard</b> - you are paid for how far "
-            "<b>above</b> 90% you get.", S["b"]))
-A(Paragraph("A slab still waiting to be polished is <b>not</b> counted against you - it simply waits until QC "
-            "grades it.", S["b"]))
+            "<b>above</b> 90% you get. The plant already runs between 93% and 98%, so this is where places "
+            "are won and lost.", S["b"]))
+A(band("<b>A reject costs you nothing beyond itself</b> - it is worth zero, never a minus. There is no reason "
+       "to leave a slab out of MIS: hiding a bad one gains nothing and loses the good ones on the same line. "
+       "A slab still waiting to be polished is <b>not</b> counted against you - your score rises when QC "
+       "grades it.",
+       colors.HexColor("#f0f7f8"), BRAND, S["quote"]))
 
 A(Paragraph("Our own figures - July 2026", S["h"]))
 A(Paragraph("Real numbers from our line, not examples:", S["b"]))
-A(tbl([["Production incharge", "Shifts", "Slabs", "Points", "PER SHIFT"],
-       ["Suresh", "33", "2,236", "1,581", "48"],
-       ["Pradhap", "29", "1,830", "1,145", "39"],
-       ["Appalaraju", "19", "1,270", "726", "38"],
-       ["Sivaiha", "20", "1,022", "663", "33"]],
-      [42 * mm, 20 * mm, 24 * mm, 24 * mm, 26 * mm], align_right=[1, 2, 3, 4]))
+A(tbl([["Shift", "Nights", "Slabs pressed", "Grade share", "Good slabs", "PER SHIFT"],
+       ["Shift C", "29", "2,021", "95.4%", "1,488", "51"],
+       ["Shift B", "28", "1,731", "95.0%", "1,342", "48"],
+       ["Shift A", "28", "1,638", "95.6%", "1,228", "44"]],
+      [24 * mm, 18 * mm, 27 * mm, 24 * mm, 24 * mm, 23 * mm], align_right=[1, 2, 3, 4, 5]))
 A(Spacer(1, 5))
-A(Spacer(1, 5))
-A(band("<b>Look at Appalaraju and Sivaiha.</b> Sivaiha worked <b>one more shift</b> and still finished behind - "
-       "38 points a shift against 33 - because Appalaraju&apos;s shifts each did more, and did it better.<br/>"
-       "<b>It is not how many shifts you work. It is what each shift does.</b>",
+A(band("Three shifts, near enough the same nights, <b>seven slabs a shift</b> between first and last, and "
+       "grade share separating them by half a point.<br/>"
+       "<b>The month is won by a few slabs an hour and a few grades a night.</b>",
        colors.HexColor("#f9fafb"), LINE, S["quote"]))
 
 A(PageBreak())
@@ -191,7 +192,7 @@ A(KeepTogether(bullets([
     "Log the <b>reason and minutes</b> for any stoppage - the electrical and mechanical incharges are scored on it.",
 ], bullet="•")))
 A(Spacer(1, 3))
-A(Paragraph("Points are counted once QC has graded the slab, so a shift&apos;s score keeps rising as polishing "
+A(Paragraph("Good slabs are counted once QC has graded them, so a shift&apos;s score keeps rising as polishing "
             "catches up with it.", S["b"]))
 
 A(Paragraph("The prize depends on what the PLANT makes", S["h"]))
@@ -235,7 +236,7 @@ A(Paragraph("Questions: speak to your Production Incharge.", S["foot"]))
 
 doc = BaseDocTemplate(OUT, pagesize=A4, title="Shift Production Incentive",
                       author="Pacific Surfaces", leftMargin=20 * mm, rightMargin=20 * mm,
-                      topMargin=15 * mm, bottomMargin=18 * mm)
+                      topMargin=14 * mm, bottomMargin=14 * mm)
 frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="f")
 doc.addPageTemplates([PageTemplate(id="all", frames=[frame], onPage=footer)])
 doc.build(story)

@@ -42,9 +42,17 @@
 // a fifth of its output is not being judged on the same basis as one measured on
 // most of it. Thickness is still reported, as information, but is not scored.
 //
-// THE TWO FACTORS MULTIPLY, THEY DO NOT ADD.
-// 10,000 bad slabs is worth nothing and 100 perfect slabs is a hobby. Adding
-// lets a shift buy a bad axis with a good one; multiplying does not.
+// THE TWO AXES SPLIT THE POOL — THEY NO LONGER MULTIPLY.
+// They used to. Volume x a quality share measured from 90% multiplies out to
+// exactly `A - 4B - 9C`, so one more Grade-A slab was worth +1 and one more C
+// was worth -9. The most profitable move available to a shift was to leave its
+// bad slabs out of MIS, nine times more profitable than pressing a good one —
+// while the notice on the wall told the floor to record everything.
+//
+// So the pool is split instead: 70% follows GOOD SLABS (A = 1, B = 0.5, C = 0)
+// and 30% follows the quality score. A bad slab is now worth exactly zero,
+// never less, so there is nothing to gain by hiding it — and quality still
+// decides real money rather than being decorative. See POOL_VOLUME.
 //
 // LAG: a slab pressed near the end of a period may not be graded yet. Such
 // slabs are excluded from quality (never counted as bad), and `ungraded` is
@@ -56,10 +64,29 @@ export * from "@/lib/shiftScoreMath";
 import {
   IDEAL_MM, TOLERANCE_MM, MIN_PLAUSIBLE_MM, MAX_PLAUSIBLE_MM, MAX_SLABS_PER_HOUR,
   IST_MIN, NOT_OPERATORS, MIN_ROWS_TO_RANK_STATION, MIN_SHIFTS_TO_RANK,
+  POOL_VOLUME, POOL_QUALITY, credibility,
   shiftRange, shiftKeyOf, canonPerson, gradeCredit, polishCredit,
   scaleQuality, scalePolish, scaleUptime, plusDay, type ShiftLetter,
 } from "@/lib/shiftScoreMath";
 
+
+/** One MIS row that needs a human to correct it, with everything the banner
+ *  needs to name it and link to it. */
+export interface FlaggedRow {
+  id: string;
+  anchor: string;
+  shift: ShiftLetter;
+  date: string | null;
+  hour: string | null;
+  incharge: string | null;
+  start: number | null;
+  end: number | null;
+  /** "disputed" — some of its slabs are claimed by another shift too.
+   *  "wide" — its range is too wide to be real, so the hour scores nothing. */
+  reason: "disputed" | "wide";
+  /** How many of this row's slabs are disputed (0 for a wide row). */
+  slabs: number;
+}
 
 export interface ShiftScore {
   anchor: string;
@@ -77,12 +104,15 @@ export interface ShiftScore {
   gradeA: number;
   gradeB: number;
   gradeC: number;
-  /** GRADED x quality — not pressed x quality.
+  /** GOOD SLABS: A = 1, B = 0.5, C = 0. The volume axis, and 70% of the pool.
    *
-   *  Scoring the pressed count meant every slab QC had not reached yet silently
-   *  inherited the graded slabs' quality, so a shift was paid for work nobody
-   *  had checked. Points are now only earned once a slab has been polished and
-   *  graded, and a shift's score keeps rising as QC works through its slabs. */
+   *  Adding a bad slab is worth exactly zero here, never negative, so there is
+   *  no reason to leave one out. That is the whole point — the previous
+   *  `graded x stretched quality` reduced to A - 4B - 9C and made hiding a
+   *  reject nine times more profitable than pressing a good slab.
+   *
+   *  Only GRADED slabs count. A slab QC has not reached yet earns nothing yet
+   *  and is not held against anyone; the figure rises as QC works through. */
   points: number;
   /** Mean measured thickness at Jot for this shift's slabs. Reported only;
    *  it does not enter the score. */
@@ -103,6 +133,10 @@ export interface ShiftScore {
    *  MAX_SLABS_PER_HOUR) and were therefore ignored. Surfaced so a typo shows
    *  up as a typo instead of as a shift that quietly produced nothing. */
   wideRows: number;
+  /** The actual MIS rows behind `contested` and `wideRows`, so the banner can
+   *  link straight to the hour that needs correcting instead of leaving an
+   *  admin to hunt for it. `/tables/Mis/{id}` is the edit page. */
+  flagged: FlaggedRow[];
   /** People named on this shift's MIS rows — they share the score. Kept per
    *  ROLE: a production incharge runs the shift, whereas electrical and
    *  mechanical cover the plant and are often named on several shifts at once,
@@ -131,7 +165,10 @@ export async function claimedSlabs(anchor: string, shift: ShiftLetter): Promise<
   const out = new Set<number>();
   for (const r of mis) {
     const a = Number(r.startingSlabNumber), b = Number(r.endingSlabNumber);
-    if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b < a || b - a > MAX_SLABS_PER_HOUR) continue;
+    // >= not >, matching scoreShift exactly. The two must agree on which rows
+    // are typos or the double-claim guard is built from a different set of
+    // slabs than the one being scored.
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b < a || b - a >= MAX_SLABS_PER_HOUR) continue;
     for (let n = a; n <= b; n++) out.add(n);
   }
   return [...out];
@@ -143,7 +180,7 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
   const empty: ShiftScore = {
     anchor, shift, quantity: 0, quality: null, rawQuality: null, graded: 0, ungraded: 0,
     gradeA: 0, gradeB: 0, gradeC: 0, points: 0, avgMm: null, breakdownMin: 0, poweroutMin: 0,
-    hoursLogged: 0, contested: 0, wideRows: 0,
+    hoursLogged: 0, contested: 0, wideRows: 0, flagged: [],
     people: [], crew: { production: [], electrical: [], mechanical: [] },
   };
   {
@@ -157,6 +194,7 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
         ],
       },
       select: {
+        id: true, date: true, hour: true, productionInchargeName: true,
         startingSlabNumber: true, endingSlabNumber: true,
         breakdownDelayDurationMechanicalOrElectricalMinutes: true,
         poweroutDelayDurationMinutes: true,
@@ -170,30 +208,41 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
     // entered, so skipping the hour the line was dead scored as perfect uptime.
     const hoursLogged = mis.length;
     const declared = new Set<number>();
+    // Every flagged row carries its id, so the scoreboard banner links straight
+    // to the hour that needs correcting rather than reporting a bare count and
+    // leaving someone to find it by hand.
+    const flagged: FlaggedRow[] = [];
+    const rowOf = (r: any, reason: FlaggedRow["reason"], slabs: number): FlaggedRow => ({
+      id: String(r.id), anchor, shift,
+      date: r.date ? new Date(r.date).toISOString().slice(0, 10) : null,
+      hour: r.hour ?? null,
+      incharge: r.productionInchargeName ?? null,
+      start: Number.isFinite(Number(r.startingSlabNumber)) ? Number(r.startingSlabNumber) : null,
+      end: Number.isFinite(Number(r.endingSlabNumber)) ? Number(r.endingSlabNumber) : null,
+      reason, slabs,
+    });
     let wideRows = 0;
+    // Count each contested slab ONCE for the shift, not once per row that
+    // covers it: two overlapping hours of the same shift used to report the
+    // overlap twice and inflated the red banner.
+    const contestedSlabs = new Set<number>();
     for (const r of mis) {
       const a = Number(r.startingSlabNumber), b = Number(r.endingSlabNumber);
       if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b < a) continue;
       // A typo'd range must not swallow the month; see MAX_SLABS_PER_HOUR.
-      if (b - a >= MAX_SLABS_PER_HOUR) { wideRows += 1; continue; }
-      for (let n = a; n <= b; n++) if (!exclude?.has(n)) declared.add(n);
-    }
-    // Count each contested slab ONCE for the shift, not once per row that
-    // covers it: two overlapping hours of the same shift used to report the
-    // overlap twice and inflate the red banner.
-    const contestedSlabs = new Set<number>();
-    if (exclude) {
-      for (const r of mis) {
-        const a = Number(r.startingSlabNumber), b = Number(r.endingSlabNumber);
-        if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b < a || b - a >= MAX_SLABS_PER_HOUR) continue;
-        for (let n = a; n <= b; n++) if (exclude.has(n)) contestedSlabs.add(n);
+      if (b - a >= MAX_SLABS_PER_HOUR) { wideRows += 1; flagged.push(rowOf(r, "wide", 0)); continue; }
+      let mine = 0;
+      for (let n = a; n <= b; n++) {
+        if (exclude?.has(n)) { contestedSlabs.add(n); mine += 1; }
+        else declared.add(n);
       }
+      if (mine) flagged.push(rowOf(r, "disputed", mine));
     }
     const contested = contestedSlabs.size;
     const slabs = [...declared];
     if (!slabs.length) {
       const crew0 = await crewOnShift(anchor, shift);
-      return { ...empty, breakdownMin, poweroutMin, hoursLogged, contested, wideRows, crew: crew0,
+      return { ...empty, breakdownMin, poweroutMin, hoursLogged, contested, wideRows, flagged, crew: crew0,
         people: [...new Set([...crew0.production, ...crew0.electrical, ...crew0.mechanical])].sort() };
     }
 
@@ -241,8 +290,9 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
       ungraded: slabs.length - graded,
       gradeA: a, gradeB: b, gradeC: c,
       avgMm,
-      points: Math.round(graded * (quality ?? 0)),
-      breakdownMin, poweroutMin, hoursLogged, contested, wideRows,
+      // credit IS the good-slab count: A adds 1, B adds 0.5, C adds 0.
+      points: Math.round(credit),
+      breakdownMin, poweroutMin, hoursLogged, contested, wideRows, flagged,
       people, crew,
     };
   }
@@ -364,6 +414,9 @@ export interface ScoreboardData {
   /** The `to` originally requested, when it was cut short. */
   requestedTo?: string;
   shifts: ShiftScore[];
+  /** Every MIS row that needs correcting, across the whole range, so the page
+   *  can link an admin straight to it. */
+  flagged: FlaggedRow[];
   /** Ranked separately per role — see ShiftScore.crew for why. */
   byRole: Record<CrewRole, PersonScore[]>;
   people: PersonScore[];
@@ -375,6 +428,8 @@ export interface ScoreboardData {
     /** Shift instances that filed MIS but named no production incharge — their
      *  points belong to nobody and silently lift everyone else's share. */
     unattributed: number;
+    unattributedElectrical: number;
+    unattributedMechanical: number;
   };
 }
 
@@ -411,6 +466,26 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
 
   // Each person on a shift carries that shift's whole score: production is a
   // team result, so the team shares one number rather than splitting it.
+  //
+  // THE POOL IS SPLIT, NOT MULTIPLIED. 70% follows good slabs per shift and 30%
+  // follows the quality score, each shared across the qualified field. Both are
+  // rates, and both are scaled by `credibility` so one lucky shift cannot take
+  // the month. See POOL_VOLUME in shiftScoreMath.ts for why this replaced
+  // volume x quality.
+  const splitPool = (rows: Omit<PersonScore, "share">[]): PersonScore[] => {
+    const vol = (r: Omit<PersonScore, "share">) => (r.qualified ? r.pointsPerShift * credibility(r.shifts) : 0);
+    const qua = (r: Omit<PersonScore, "share">) => (r.qualified ? (r.quality ?? 0) * credibility(r.shifts) : 0);
+    const vTot = rows.reduce((a, r) => a + vol(r), 0);
+    const qTot = rows.reduce((a, r) => a + qua(r), 0);
+    return rows
+      .map((r) => ({
+        ...r,
+        share: (vTot ? POOL_VOLUME * vol(r) / vTot : 0) + (qTot ? POOL_QUALITY * qua(r) / qTot : 0),
+      }))
+      // qualified first, then by what they are actually paid
+      .sort((a, b) => Number(b.qualified) - Number(a.qualified) || b.share - a.share);
+  };
+
   const roll = (pick: (s: ShiftScore) => string[], withPowerout = false): PersonScore[] => {
     const m = new Map<string, { shifts: number; quantity: number; points: number; qNum: number; qDen: number; credit: number; down: number; hours: number }>();
     for (const s of shifts) {
@@ -440,12 +515,7 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
       // hour earns nothing rather than scoring as uptime.
       uptime: e.hours ? Math.max(0, 1 - e.down / (e.hours * 60)) : null,
     }));
-    // Share is split over the per-shift rate of the QUALIFIED field only.
-    const tot = raw.filter((r) => r.qualified).reduce((a, r) => a + r.pointsPerShift, 0);
-    return raw
-      .map((r) => ({ ...r, share: r.qualified && tot ? r.pointsPerShift / tot : 0 }))
-      // qualified first, then by rate; unqualified sink to the bottom in rate order
-      .sort((a, b) => Number(b.qualified) - Number(a.qualified) || b.pointsPerShift - a.pointsPerShift);
+    return splitPool(raw);
   };
   /** Electrical / mechanical. Uptime is stretched against a floor for the same
    *  reason grade share is: raw uptime sits between 94% and 99% for everyone, so
@@ -455,7 +525,10 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
    *
    *  It is also weighted by SHIFTS WORKED. Sharing on the rate alone let one
    *  quiet night out-earn a month of cover: uptime is already a rate, so
-   *  dividing by shifts a second time paid for scarcity. */
+   *  dividing by shifts a second time paid for scarcity.
+   *
+   *  There is no 70/30 split here. Uptime IS this role's whole measure — there
+   *  is no second axis to weigh it against, because slabs are not their job. */
   const rankByUptime = (rows: PersonScore[]): PersonScore[] => {
     const weight = (r: PersonScore) =>
       r.qualified ? (scaleUptime(r.uptime) ?? 0) * r.shifts : 0;
@@ -498,10 +571,7 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
     hoursLogged: e.hours,
     uptime: e.hours ? Math.max(0, 1 - e.down / (e.hours * 60)) : null,
   }));
-  const totRate = rawAll.filter((r) => r.qualified).reduce((a, r) => a + r.pointsPerShift, 0);
-  const people: PersonScore[] = rawAll
-    .map((r) => ({ ...r, share: r.qualified && totRate ? r.pointsPerShift / totRate : 0 }))
-    .sort((a, b) => Number(b.qualified) - Number(a.qualified) || b.pointsPerShift - a.pointsPerShift);
+  const people: PersonScore[] = splitPool(rawAll);
 
   const graded = shifts.reduce((a, s) => a + s.graded, 0);
   const qNum = shifts.reduce((a, s) => a + (s.quality ?? 0) * s.graded, 0);
@@ -511,6 +581,9 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
     to: scoredTo,
     requestedTo: scoredTo === to ? undefined : to,
     shifts,
+    // newest first — the hour someone still remembers is the one worth fixing
+    flagged: shifts.flatMap((s) => s.flagged)
+      .sort((a, b) => (b.date ?? "").localeCompare(a.date ?? "") || (b.hour ?? "").localeCompare(a.hour ?? "")),
     byRole,
     people,
     totals: {
@@ -522,10 +595,13 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
       rawQuality: graded ? rawNum / graded : null,
       contested: shifts.reduce((a, s) => a + s.contested, 0),
       wideRows: shifts.reduce((a, s) => a + s.wideRows, 0),
-      // A shift that filed MIS but named no production incharge. Its points are
-      // in the plant total and on nobody's row, so every other person's share of
-      // the pool is quietly larger than the work they did.
+      // A shift that filed MIS but named nobody in a role. Its points are in the
+      // plant total and on nobody's row, so every other person's share of that
+      // role's pool is quietly larger than the work behind it — and not filing
+      // is therefore worth money to everyone who did.
       unattributed: shifts.filter((s) => s.crew.production.length === 0).length,
+      unattributedElectrical: shifts.filter((s) => s.crew.electrical.length === 0).length,
+      unattributedMechanical: shifts.filter((s) => s.crew.mechanical.length === 0).length,
     },
   };
 }
@@ -645,7 +721,10 @@ export async function scoreStations(from: string, to: string, excludeNames: stri
     const raw = [...m.entries()].map(([person, e]) => {
       const rawQuality = e.graded ? e.credit / e.graded : null;
       const quality = st.basis === "polish" ? scalePolish(rawQuality) : scaleQuality(rawQuality);
-      const points = Math.round(e.graded * (quality ?? 0));
+      // Good slabs: A = 1, B = 0.5, C = 0 on the grade boards; finished = 1,
+      // lost = 0 on the polishing board. Same rule as the shift tables — a bad
+      // slab is worth zero, never less, so nobody profits by leaving it out.
+      const points = Math.round(e.credit);
       return {
         person, shifts: e.days.size, quantity: e.slabs.size, points,
         pointsPerShift: e.days.size ? points / e.days.size : 0,
@@ -655,20 +734,27 @@ export async function scoreStations(from: string, to: string, excludeNames: stri
         downtimeMin: 0, downtimePerShift: 0, hoursLogged: 0, uptime: null,
       };
     });
-    // STATION SHARE COMES FROM TOTAL POINTS, NOT A PER-DAY RATE.
+    // Same 70/30 split as the shift tables, but the VOLUME half is the TOTAL,
+    // not a per-day rate.
     //
-    // The shift tables above divide by shifts because MIS records one row per
-    // hour worked and the divisor is real. Here it is not. These rows carry the
-    // time they were TYPED: 278 Kreos rows share three timestamps inside 65
-    // minutes, which read as one enormous shift and took 87.7% of that station's
-    // pool from a man who worked nine days. Total points asks the question the
-    // divisor cannot corrupt — who put the most good slabs through this machine.
-    const tot = raw.filter((r) => r.qualified).reduce((a, r) => a + r.points, 0);
+    // The shift tables divide by shifts because MIS records one row per hour
+    // worked and the divisor is real. Here it is not. These rows carry the time
+    // they were TYPED: 278 Kreos rows share three timestamps inside 65 minutes,
+    // which read as one enormous shift and took 87.7% of that station's pool
+    // from a man who worked nine days. A total asks the question the divisor
+    // cannot corrupt — who put the most good slabs through this machine.
+    const qual = raw.filter((r) => r.qualified);
+    const vTot = qual.reduce((a, r) => a + r.points, 0);
+    const qTot = qual.reduce((a, r) => a + (r.quality ?? 0), 0);
     out.push({
       ...board,
       operators: raw
-        .map((r) => ({ ...r, share: r.qualified && tot ? r.points / tot : 0 }))
-        .sort((a, b) => Number(b.qualified) - Number(a.qualified) || b.points - a.points),
+        .map((r) => ({
+          ...r,
+          share: !r.qualified ? 0
+            : (vTot ? POOL_VOLUME * r.points / vTot : 0) + (qTot ? POOL_QUALITY * (r.quality ?? 0) / qTot : 0),
+        }))
+        .sort((a, b) => Number(b.qualified) - Number(a.qualified) || b.share - a.share),
     });
   }
   return out;
