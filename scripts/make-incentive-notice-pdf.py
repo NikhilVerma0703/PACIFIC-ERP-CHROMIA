@@ -26,9 +26,9 @@ S = {
     "sub": ParagraphStyle("s", parent=ss["Normal"], fontSize=8.5, leading=11,
                           textColor=GREY, alignment=TA_CENTER, spaceAfter=9),
     "h": ParagraphStyle("h", parent=ss["Normal"], fontName="Helvetica-Bold",
-                        fontSize=11.5, leading=14, textColor=BRAND,
-                        spaceBefore=9, spaceAfter=4),
-    "b": ParagraphStyle("b", parent=ss["Normal"], fontSize=9, leading=12.4, spaceAfter=4),
+                        fontSize=11, leading=13, textColor=BRAND,
+                        spaceBefore=7, spaceAfter=3.5),
+    "b": ParagraphStyle("b", parent=ss["Normal"], fontSize=8.8, leading=11.8, spaceAfter=3.5),
     "li": ParagraphStyle("li", parent=ss["Normal"], fontSize=9, leading=12.4,
                          leftIndent=11, bulletIndent=2, spaceAfter=2.5),
     "warn": ParagraphStyle("w", parent=ss["Normal"], fontSize=9.2, leading=12.6,
@@ -101,9 +101,7 @@ A(Paragraph("Pacific Surfaces - Production: Silos &rarr; Mixer &rarr; Distributo
             .replace("&rarr;", "&gt;"), S["sub"]))
 
 A(Paragraph("What this is", S["h"]))
-A(Paragraph("Every month each shift earns a <b>score</b>. The shift with the highest score earns the highest "
-            "incentive, paid as a <b>percentage of your own salary</b> - everyone on the shift shares the same "
-            "result, but each person's amount is based on their own pay.", S["b"]))
+A(Paragraph("Every month each shift earns a <b>score</b>. The highest score earns the highest incentive, paid as a <b>percentage of your own salary</b> - everyone on the shift shares the same result, each person's amount based on their own pay.", S["b"]))
 A(band("<b>Production is a team game.</b> One person cannot win this alone, and one person cannot lose it "
        "alone. Silos, mixer, distributor, press, oven and Jot all count as one shift. You win together.",
        colors.HexColor("#f0f7f8"), BRAND, S["b"]))
@@ -111,48 +109,46 @@ A(band("<b>Production is a team game.</b> One person cannot win this alone, and 
 A(Paragraph("How the score is calculated", S["h"]))
 A(Paragraph("Your score is built from <b>two things only</b> - how much you made, and how good it was.", S["b"]))
 A(Paragraph("SCORE  =  QUANTITY  &times;  QUALITY", S["formula"]))
-A(Paragraph("They are <b>multiplied, not added</b>. This matters:", S["b"]))
-A(KeepTogether(bullets([
-    "1,000 slabs made badly &nbsp;=&nbsp; low score",
-    "100 slabs made perfectly &nbsp;=&nbsp; low score",
-    "<b>Many slabs made well &nbsp;=&nbsp; high score</b>",
-])))
-A(Spacer(1, 3))
+A(Paragraph("They are <b>multiplied, not added</b> - 1,000 slabs made badly scores low, and so do 100 made perfectly.", S["b"]))
 A(Paragraph("You cannot make up bad quality by producing more, and you cannot make up low production by being "
             "careful with a few slabs. <b>You need both.</b>", S["b"]))
 
 A(Paragraph("1. QUANTITY - how many slabs", S["h"]))
 A(Paragraph("The number of slabs your shift produced that reached <b>Jot</b> and were measured.", S["b"]))
 
-A(Paragraph("2. QUALITY - how close to the correct thickness", S["h"]))
-A(Paragraph("Every slab is measured at Jot. The score depends on how close it is to the <b>ideal thickness</b>.",
+A(Paragraph("2. QUALITY - what QC grades those same slabs", S["h"]))
+A(Paragraph("Quality follows <b>your</b> slabs. We take the slabs your shift pressed and look at the grade QC "
+            "finally gave them - not whatever was being polished during your hours, which is someone else's work.",
             S["b"]))
-
-left = tbl([["Slab", "Ideal at Jot"], ["3 cm", "34 mm"], ["2 cm", "24 mm"], ["1.2 cm", "16 mm"]],
-           [26 * mm, 30 * mm], align_right=[1])
-right = tbl([["Measured (3 cm slab)", "Quality score"],
-             ["34 mm  - on target", "100%"],
-             ["35 mm", "75%"],
-             ["36 mm", "50%"],
-             ["37 mm", "25%"],
-             ["38 mm or more", "0%"],
-             ["32 mm", "50%"],
-             ["30 mm or less", "0%"]],
-            [46 * mm, 28 * mm], align_right=[1])
-pair = Table([[left, right]], colWidths=[62 * mm, 80 * mm], hAlign="LEFT")
-pair.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
-A(pair)
+A(tbl([["QC grade", "Counts as"],
+       ["A  (and A2)", "100%"],
+       ["B", "50%"],
+       ["C  (reject)", "0%"]],
+      [34 * mm, 26 * mm], align_right=[1]))
 A(Spacer(1, 5))
-A(Paragraph("It works the same both ways - <b>too thick is as bad as too thin.</b> Too thick wastes material and "
-            "takes longer to polish. Too thin cannot be corrected and the slab may be lost. Weight follows "
-            "thickness, so a slab off-target on thickness is off-target on weight too.", S["b"]))
+A(Paragraph("Your grade share is then scored against a <b>90% minimum standard</b> - you are paid for how far "
+            "<b>above</b> 90% you get:", S["b"]))
+A(tbl([["Your grade share", "Quality score"],
+       ["90% or below", "0%"],
+       ["95%", "50%"],
+       ["98%", "80%"],
+       ["100%", "100%"]],
+      [40 * mm, 30 * mm], align_right=[1]))
+A(Spacer(1, 4))
+A(Paragraph("A slab still waiting to be polished is <b>not</b> counted against you - it simply waits until QC "
+            "grades it.", S["b"]))
 
-A(Paragraph("Worked example", S["h"]))
-A(band("A shift makes <b>300 slabs</b> averaging <b>35 mm</b> on a 3 cm slab. Quality = 75%. "
-       "<b>Score = 300 &times; 0.75 = 225 points.</b><br/>"
-       "Another shift makes <b>260 slabs</b> at <b>34 mm</b>, exactly on target. Quality = 100%. "
-       "<b>Score = 260 &times; 1.00 = 260 points.</b><br/><br/>"
-       "<b>The second shift wins with fewer slabs</b>, because every slab was right.",
+A(Paragraph("Our own figures - July 2026", S["h"]))
+A(Paragraph("Real numbers from our line, not examples:", S["b"]))
+A(tbl([["Shift", "Slabs pressed", "Grade share", "POINTS"],
+       ["Shift C", "2,042", "94.7%", "1,336"],
+       ["Shift A", "1,690", "96.2%", "1,075"],
+       ["Shift B", "1,839", "94.6%", "1,026"]],
+      [24 * mm, 32 * mm, 28 * mm, 26 * mm], align_right=[1, 2, 3]))
+A(Spacer(1, 5))
+A(band("<b>Look at Shift A and Shift B.</b> Shift A pressed <b>149 fewer slabs</b> than Shift B - and still "
+       "<b>beat it</b>, 1,075 points to 1,026, because a higher share of A's slabs came out Grade A.<br/>"
+       "<b>Making more is not enough. It has to be right.</b>",
        colors.HexColor("#f9fafb"), LINE, S["quote"]))
 
 A(PageBreak())

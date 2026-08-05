@@ -40,46 +40,48 @@ by being careful with a few slabs. You need both.
 
 The number of slabs your shift produced that reached **Jot** and were measured.
 
-### 2. QUALITY — how close to the correct thickness
+### 2. QUALITY — what QC grades those same slabs
 
-Every slab is measured at Jot. The score depends on how close it is to the **ideal
-thickness**:
+Quality follows **your** slabs. We take the slabs your shift pressed and look at the grade
+QC finally gave them — not whatever was being polished during your hours, which is
+someone else's work.
 
-| Slab | Ideal thickness at Jot |
+| QC grade | Counts as |
 |---|---|
-| **3 cm** | **34 mm** |
-| 2 cm | 24 mm |
-| 1.2 cm | 16 mm |
+| **A** (and A2) | **100%** |
+| B | 50% |
+| C (reject) | **0%** |
 
-The closer to ideal, the higher the score. The further away, the lower:
+Your grade share is then scored against a **90% minimum standard** — you are paid for how
+far **above** 90% you get:
 
-| Measured (3 cm slab) | Quality score |
+| Your grade share | Quality score |
 |---|---|
-| 34 mm — **on target** | **100%** |
-| 35 mm | 75% |
-| 36 mm | 50% |
-| 37 mm | 25% |
-| 38 mm or more | **0%** |
-| 32 mm | 50% |
-| 30 mm or less | **0%** |
+| 90% or below | **0%** |
+| 95% | 50% |
+| 98% | 80% |
+| 100% | **100%** |
 
-It works the same both ways — **too thick is as bad as too thin.**
+A slab still waiting to be polished is **not** counted against you — it simply waits until
+QC grades it.
 
-Too thick wastes material and takes longer to polish. Too thin cannot be corrected at all
-and the slab may be lost. Weight follows thickness, so a slab off-target on thickness is
-off-target on weight too.
+---
 
-### Worked example
+## Our own figures — July 2026
 
-> A shift produces **300 slabs**. Average thickness is **35 mm** on a 3 cm slab.
-> Quality = **75%**.
-> **Score = 300 × 0.75 = 225 points.**
+Real numbers from our line, not examples:
+
+| Shift | Slabs pressed | Grade share | **Points** |
+|---|---|---|---|
+| Shift C | 2,042 | 94.7% | **1,336** |
+| Shift A | 1,690 | 96.2% | **1,075** |
+| Shift B | 1,839 | 94.6% | **1,026** |
+
+> **Look at Shift A and Shift B.** Shift A pressed **149 fewer slabs** than Shift B — and
+> still **beat it**, 1,075 points to 1,026, because a higher share of A's slabs came out
+> Grade A.
 >
-> Another shift produces **260 slabs** at **34 mm** — exactly on target.
-> Quality = **100%**.
-> **Score = 260 × 1.00 = 260 points.**
->
-> **The second shift wins with fewer slabs**, because every slab was right.
+> **Making more is not enough. It has to be right.**
 
 ---
 
@@ -110,10 +112,8 @@ This is the single most common way a shift loses points it had already earned.
 
 ## What you must record for the score to count
 
-The score can only count what is measured. **A slab with no thickness reading at Jot
-cannot earn quality points.**
+The score can only count what is recorded against your shift.
 
-- Enter the **thickness readings at Jot** for every slab — all measurement points.
 - Enter the **slab class** (3 cm / 2 cm / 1.2 cm) on every Jot record.
 - Enter every **MIS hour** for your shift, with the correct **shift number** and the
   **incharge names**.
