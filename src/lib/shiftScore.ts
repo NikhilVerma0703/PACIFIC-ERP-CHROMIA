@@ -353,14 +353,29 @@ async function crewOnShift(anchor: string, shift: ShiftLetter): Promise<ShiftSco
   }
 }
 
+/** Shifts a person must have worked before they can be RANKED.
+ *  Per-shift scoring rewards the rate, which is what we want — but without a
+ *  floor one lucky shift would top the board over someone who held the same
+ *  rate for twenty. Below this they are still shown, with their figures, just
+ *  not placed or paid. */
+export const MIN_SHIFTS_TO_RANK = 3;
+
 export interface PersonScore {
   person: string;
   shifts: number;
   quantity: number;
+  /** Total points across the period — shown, but NOT what decides the ranking. */
   points: number;
+  /** Points per shift. THE ranking figure: 3 shifts making 300 good slabs beats
+   *  10 shifts making 500, because per shift it is 100 against 50. Ranking on
+   *  the total would pay for availability rather than performance. */
+  pointsPerShift: number;
   /** Points-weighted mean quality across the shifts this person was on. */
   quality: number | null;
-  /** Share of the period's total points — what a salary-percentage payout scales to. */
+  /** Enough shifts to be placed and paid. */
+  qualified: boolean;
+  /** Share of the qualified field's per-shift points — what a salary-percentage
+   *  payout scales to. Unqualified people take no share. */
   share: number;
 }
 
@@ -407,11 +422,18 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
         m.set(p, e);
       }
     }
-    const tot = [...m.values()].reduce((a, e) => a + e.points, 0);
-    return [...m.entries()]
-      .map(([person, e]) => ({ person, shifts: e.shifts, quantity: e.quantity, points: e.points,
-        quality: e.qDen ? e.qNum / e.qDen : null, share: tot ? e.points / tot : 0 }))
-      .sort((a, b) => b.points - a.points);
+    const raw = [...m.entries()].map(([person, e]) => ({
+      person, shifts: e.shifts, quantity: e.quantity, points: e.points,
+      pointsPerShift: e.shifts ? e.points / e.shifts : 0,
+      quality: e.qDen ? e.qNum / e.qDen : null,
+      qualified: e.shifts >= MIN_SHIFTS_TO_RANK,
+    }));
+    // Share is split over the per-shift rate of the QUALIFIED field only.
+    const tot = raw.filter((r) => r.qualified).reduce((a, r) => a + r.pointsPerShift, 0);
+    return raw
+      .map((r) => ({ ...r, share: r.qualified && tot ? r.pointsPerShift / tot : 0 }))
+      // qualified first, then by rate; unqualified sink to the bottom in rate order
+      .sort((a, b) => Number(b.qualified) - Number(a.qualified) || b.pointsPerShift - a.pointsPerShift);
   };
   const byRole = {
     production: roll((s) => s.crew.production),
@@ -430,17 +452,16 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
       byPerson.set(p, e);
     }
   }
-  const totalPoints = [...byPerson.values()].reduce((a, e) => a + e.points, 0);
-  const people: PersonScore[] = [...byPerson.entries()]
-    .map(([person, e]) => ({
-      person,
-      shifts: e.shifts,
-      quantity: e.quantity,
-      points: e.points,
-      quality: e.qDen ? e.qNum / e.qDen : null,
-      share: totalPoints ? e.points / totalPoints : 0,
-    }))
-    .sort((a, b) => b.points - a.points);
+  const rawAll = [...byPerson.entries()].map(([person, e]) => ({
+    person, shifts: e.shifts, quantity: e.quantity, points: e.points,
+    pointsPerShift: e.shifts ? e.points / e.shifts : 0,
+    quality: e.qDen ? e.qNum / e.qDen : null,
+    qualified: e.shifts >= MIN_SHIFTS_TO_RANK,
+  }));
+  const totRate = rawAll.filter((r) => r.qualified).reduce((a, r) => a + r.pointsPerShift, 0);
+  const people: PersonScore[] = rawAll
+    .map((r) => ({ ...r, share: r.qualified && totRate ? r.pointsPerShift / totRate : 0 }))
+    .sort((a, b) => Number(b.qualified) - Number(a.qualified) || b.pointsPerShift - a.pointsPerShift);
 
   const graded = shifts.reduce((a, s) => a + s.graded, 0);
   const qNum = shifts.reduce((a, s) => a + (s.quality ?? 0) * s.graded, 0);
@@ -456,4 +477,101 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
       quality: graded ? qNum / graded : null,
     },
   };
+}
+
+// --------------------------------------------------------------------------
+// Per-station operators
+// --------------------------------------------------------------------------
+// The shift tables above score a TEAM. These score the individual at a machine:
+// the slabs they personally recorded there, and how QC graded those same slabs.
+// Attribution is per record rather than per shift, so it does not depend on the
+// MIS slab range at all — it is the operator's own name on their own row.
+//
+// Ranked by the same per-shift rate as the shift tables, where a "shift" is a
+// distinct shift instance that operator appears in. Someone covering three
+// machines in one night should not out-rank a steady hand by volume alone.
+export const STATIONS = [
+  { key: "press", table: "press", col: "operator", ts: "date", label: "Press" },
+  { key: "distributor", table: "distributor", col: "operator", ts: "date", label: "Distributor" },
+  { key: "kreos", table: "kreos", col: "operator", ts: "date", label: "Kreos" },
+  { key: "oven", table: "oven", col: "operator", ts: "date", label: "Oven" },
+  { key: "jot", table: "jot", col: "operator", ts: "date", label: "Jot" },
+  { key: "polish", table: "polish_entry", col: "calliberator", ts: "created", label: "Polishing" },
+] as const;
+
+export interface StationBoard { key: string; label: string; operators: PersonScore[] }
+
+/** Which shift instance a UTC timestamp falls in (IST clock). */
+function shiftKeyOf(d: Date): string {
+  const ist = new Date(d.getTime() + IST_MIN * 60_000);
+  const h = ist.getUTCHours();
+  const day = ist.toISOString().slice(0, 10);
+  if (h >= 6 && h < 14) return `${day}A`;
+  if (h >= 14 && h < 22) return `${day}B`;
+  return `${h >= 22 ? day : plusDay(day, -1)}C`;
+}
+
+export async function scoreStations(from: string, to: string): Promise<StationBoard[]> {
+  const lo = new Date(`${from}T00:00:00+05:30`);
+  const hi = new Date(new Date(`${to}T00:00:00+05:30`).getTime() + 86400_000);
+  const out: StationBoard[] = [];
+
+  for (const st of STATIONS) {
+    try {
+      const rows: any[] = await prisma.$queryRawUnsafe(
+        `SELECT ${st.col} op, slab_number sn, COALESCE(${st.ts}, imported_at) ts
+           FROM ${st.table}
+          WHERE COALESCE(${st.ts}, imported_at) >= $1 AND COALESCE(${st.ts}, imported_at) < $2
+            AND ${st.col} IS NOT NULL AND slab_number IS NOT NULL`, lo, hi);
+      if (!rows.length) { out.push({ key: st.key, label: st.label, operators: [] }); continue; }
+
+      const slabs = [...new Set(rows.map((r) => Number(r.sn)).filter(Number.isFinite))];
+      const qc: any[] = [];
+      for (let i = 0; i < slabs.length; i += 5000) {
+        qc.push(...await (prisma as any).polishQc.findMany({
+          where: { slabNumber: { in: slabs.slice(i, i + 5000) } },
+          select: { slabNumber: true, qualityGrade: true, createdTime: true, importedAt: true },
+        }));
+      }
+      const stamp = (q: any) => new Date(q.createdTime ?? q.importedAt ?? 0).getTime();
+      qc.sort((a, b) => stamp(b) - stamp(a));
+      const latest = new Map<number, any>();
+      for (const q of qc) if (q.slabNumber != null && !latest.has(Number(q.slabNumber))) latest.set(Number(q.slabNumber), q);
+
+      const m = new Map<string, { slabs: Set<number>; shifts: Set<string>; credit: number; graded: number }>();
+      for (const r of rows) {
+        const who = canonPerson(r.op);
+        if (!who) continue;
+        const e = m.get(who) ?? { slabs: new Set<number>(), shifts: new Set<string>(), credit: 0, graded: 0 };
+        const sn = Number(r.sn);
+        if (!e.slabs.has(sn)) {
+          e.slabs.add(sn);
+          const cr = gradeCredit(latest.get(sn)?.qualityGrade);
+          if (cr != null) { e.credit += cr; e.graded += 1; }
+        }
+        if (r.ts) e.shifts.add(shiftKeyOf(new Date(r.ts)));
+        m.set(who, e);
+      }
+
+      const raw = [...m.entries()].map(([person, e]) => {
+        const quality = scaleQuality(e.graded ? e.credit / e.graded : null);
+        const points = Math.round(e.slabs.size * (quality ?? 0));
+        return {
+          person, shifts: e.shifts.size, quantity: e.slabs.size, points,
+          pointsPerShift: e.shifts.size ? points / e.shifts.size : 0,
+          quality, qualified: e.shifts.size >= MIN_SHIFTS_TO_RANK,
+        };
+      });
+      const tot = raw.filter((r) => r.qualified).reduce((a, r) => a + r.pointsPerShift, 0);
+      out.push({
+        key: st.key, label: st.label,
+        operators: raw
+          .map((r) => ({ ...r, share: r.qualified && tot ? r.pointsPerShift / tot : 0 }))
+          .sort((a, b) => Number(b.qualified) - Number(a.qualified) || b.pointsPerShift - a.pointsPerShift),
+      });
+    } catch {
+      out.push({ key: st.key, label: st.label, operators: [] });
+    }
+  }
+  return out;
 }

@@ -4,7 +4,7 @@ import { Shell } from "@/components/Shell";
 import { Card, H2, Kpi, Empty, Badge, fmt } from "@/components/ui";
 import { ShiftCard, F } from "@/components/ShiftCard";
 import { getShiftReport } from "@/lib/misShift";
-import { scoreRange, type ShiftScore } from "@/lib/shiftScore";
+import { scoreRange, scoreStations, MIN_SHIFTS_TO_RANK, type ShiftScore, type PersonScore } from "@/lib/shiftScore";
 import { isAdmin } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
@@ -23,14 +23,20 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
   const from = sp.from?.trim() || dayAgo(6);
   const to = sp.to?.trim() || istToday;
 
-  const data = await scoreRange(from, to).catch(() => null);
+  const [data, stations] = await Promise.all([
+    scoreRange(from, to).catch(() => null),
+    scoreStations(from, to).catch(() => []),
+  ]);
 
   // The cards are the same component the MIS page draws, one per shift that
   // actually recorded something in the range.
   const cards = data
     ? (await Promise.all(
         data.shifts.map(async (s) => ({ s, report: await getShiftReport(s.anchor, s.shift).catch(() => null) })),
-      )).filter((x) => x.report)
+      ))
+        .filter((x) => x.report)
+        // newest first — the shift people care about is the one that just ended
+        .sort((a, b) => (b.s.anchor + b.s.shift).localeCompare(a.s.anchor + a.s.shift))
     : [];
 
   const presets = [
@@ -40,6 +46,43 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
     { label: "Last 30 days", f: dayAgo(29), t: istToday },
   ];
   const href = (f: string, t: string) => `/scoreboard?from=${f}&to=${t}`;
+
+
+  const board = (rows: PersonScore[], empty: string) => rows.length === 0 ? <Empty>{empty}</Empty> : (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-left text-[11px] uppercase tracking-wider text-gray-500">
+            <th className="py-2 pr-4">#</th>
+            <th className="py-2 pr-4">Person</th>
+            <th className="py-2 pr-4">Shifts</th>
+            <th className="py-2 pr-4">Slabs</th>
+            <th className="py-2 pr-4">Quality</th>
+            <th className="py-2 pr-4">Points</th>
+            <th className="py-2 pr-4">Per shift</th>
+            <th className="py-2">Share</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((p, i) => (
+            <tr key={p.person} className={`border-t border-gray-100 ${p.qualified ? "" : "text-gray-400"}`}>
+              <td className="py-2 pr-4 text-gray-400">{!p.qualified ? "—" : i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : i + 1}</td>
+              <td className={`py-2 pr-4 font-medium ${p.qualified ? "text-gray-900" : ""}`}>
+                {p.person}
+                {!p.qualified && <div className="text-[11px] font-normal">under {MIN_SHIFTS_TO_RANK} shifts — not ranked</div>}
+              </td>
+              <td className="py-2 pr-4">{fmt(p.shifts)}</td>
+              <td className="py-2 pr-4">{fmt(p.quantity)}</td>
+              <td className="py-2 pr-4">{pct(p.quality)}</td>
+              <td className="py-2 pr-4">{fmt(p.points)}</td>
+              <td className={`py-2 pr-4 font-semibold ${p.qualified ? "text-brand" : ""}`}>{p.pointsPerShift.toFixed(0)}</td>
+              <td className="py-2">{p.share ? `${(p.share * 100).toFixed(1)}%` : "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 
   const scoreLine = (s: ShiftScore) => (
     <div className="mt-3 grid grid-cols-2 gap-x-8 gap-y-3 border-t border-gray-100 pt-3 text-sm sm:grid-cols-3 lg:grid-cols-6">
@@ -114,43 +157,31 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
                   {role === "production"
                     ? "Runs the shift and carries its full score. This is the ranking the shift incentive is built on."
                     : "Ranked separately: this role covers the plant rather than one shift, and is often named on more than one shift at a time — so its totals are not comparable with the production incharge's."}
-                  {" "}<b>Share</b> is the slice of this role&rsquo;s points; payroll applies it to each person&rsquo;s own salary.
+                  {" "}Ranked on <b>points per shift</b>, not the total — 3 shifts making 300 good slabs beats 10
+                  making 500. <b>Share</b> is the slice of this role&rsquo;s per-shift points; payroll applies it to
+                  each person&rsquo;s own salary.
                 </p>
-                {rows.length === 0 ? (
-                  <Empty>Nobody recorded in this role for the range.</Empty>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="text-left text-[11px] uppercase tracking-wider text-gray-500">
-                          <th className="py-2 pr-4">#</th>
-                          <th className="py-2 pr-4">Person</th>
-                          <th className="py-2 pr-4">Shifts</th>
-                          <th className="py-2 pr-4">Slabs</th>
-                          <th className="py-2 pr-4">Quality</th>
-                          <th className="py-2 pr-4">Points</th>
-                          <th className="py-2">Share</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {rows.map((p, i) => (
-                          <tr key={p.person} className="border-t border-gray-100">
-                            <td className="py-2 pr-4 text-gray-400">{i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : i + 1}</td>
-                            <td className="py-2 pr-4 font-medium text-gray-900">{p.person}</td>
-                            <td className="py-2 pr-4 text-gray-600">{fmt(p.shifts)}</td>
-                            <td className="py-2 pr-4 text-gray-600">{fmt(p.quantity)}</td>
-                            <td className="py-2 pr-4 text-gray-600">{pct(p.quality)}</td>
-                            <td className="py-2 pr-4 font-semibold text-brand">{fmt(p.points)}</td>
-                            <td className="py-2 text-gray-900">{(p.share * 100).toFixed(1)}%</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                {board(rows, "Nobody recorded in this role for the range.")}
               </Card>
             );
           })}
+
+          {stations.some((st) => st.operators.length > 0) && (
+            <>
+              <H2>Operators by station</H2>
+              <p className="mb-3 mt-1 text-xs text-gray-500">
+                The individual at the machine, not the shift team: the slabs they personally recorded there and how
+                QC graded those same slabs. Attribution is their own name on their own row, so it does not depend on
+                the MIS slab range.
+              </p>
+              {stations.filter((st) => st.operators.length > 0).map((st) => (
+                <Card key={st.key} className="mb-6">
+                  <H2>{st.label}</H2>
+                  <div className="mt-3">{board(st.operators, "No operator recorded here in this range.")}</div>
+                </Card>
+              ))}
+            </>
+          )}
 
           <H2>Shifts in this range</H2>
           <p className="mb-3 mt-1 text-xs text-gray-500">{cards.length} shift(s) recorded between {from} and {to}.</p>
