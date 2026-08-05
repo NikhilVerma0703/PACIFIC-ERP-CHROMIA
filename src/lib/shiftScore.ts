@@ -139,12 +139,22 @@ export interface ShiftScore {
   gradeA: number;
   gradeB: number;
   gradeC: number;
-  /** quantity x quality. No grades yet scores 0, not the quantity — an
-   *  unmeasured shift must never outrank a measured one. */
+  /** GRADED x quality — not pressed x quality.
+   *
+   *  Scoring the pressed count meant every slab QC had not reached yet silently
+   *  inherited the graded slabs' quality, so a shift was paid for work nobody
+   *  had checked. Points are now only earned once a slab has been polished and
+   *  graded, and a shift's score keeps rising as QC works through its slabs. */
   points: number;
   /** Mean measured thickness at Jot for this shift's slabs. Reported only;
    *  it does not enter the score. */
   avgMm: number | null;
+  /** Line stoppage this shift, in minutes. MIS records breakdown as ONE column,
+   *  "mechanical OR electrical" — the trades are not split in the data — so both
+   *  incharges are measured on the same figure. Powerout is separated because it
+   *  is unambiguously electrical. */
+  breakdownMin: number;
+  poweroutMin: number;
   /** People named on this shift's MIS rows — they share the score. Kept per
    *  ROLE: a production incharge runs the shift, whereas electrical and
    *  mechanical cover the plant and are often named on several shifts at once,
@@ -164,8 +174,8 @@ export async function scoreShift(anchor: string, shift: ShiftLetter): Promise<Sh
   const { start, end } = shiftRange(anchor, shift);
   const empty: ShiftScore = {
     anchor, shift, quantity: 0, quality: null, rawQuality: null, graded: 0, ungraded: 0,
-    gradeA: 0, gradeB: 0, gradeC: 0, points: 0, avgMm: null, people: [],
-    crew: { production: [], electrical: [], mechanical: [] },
+    gradeA: 0, gradeB: 0, gradeC: 0, points: 0, avgMm: null, breakdownMin: 0, poweroutMin: 0,
+    people: [], crew: { production: [], electrical: [], mechanical: [] },
   };
   try {
     // What this shift made.
@@ -177,8 +187,15 @@ export async function scoreShift(anchor: string, shift: ShiftLetter): Promise<Sh
           { AND: [{ dateAndTime: null }, { date: { gte: start, lt: end } }] },
         ],
       },
-      select: { startingSlabNumber: true, endingSlabNumber: true },
+      select: {
+        startingSlabNumber: true, endingSlabNumber: true,
+        breakdownDelayDurationMechanicalOrElectricalMinutes: true,
+        poweroutDelayDurationMinutes: true,
+      },
     });
+    const n = (v: unknown) => Number(v ?? 0) || 0;
+    const breakdownMin = mis.reduce((a, r) => a + n(r.breakdownDelayDurationMechanicalOrElectricalMinutes), 0);
+    const poweroutMin = mis.reduce((a, r) => a + n(r.poweroutDelayDurationMinutes), 0);
     const declared = new Set<number>();
     let declaredHours = 0;
     for (const r of mis) {
@@ -208,7 +225,8 @@ export async function scoreShift(anchor: string, shift: ShiftLetter): Promise<Sh
     }
     if (!slabs.length) {
       const crew0 = await crewOnShift(anchor, shift);
-      return { ...empty, crew: crew0, people: [...new Set([...crew0.production, ...crew0.electrical, ...crew0.mechanical])].sort() };
+      return { ...empty, breakdownMin, poweroutMin, crew: crew0,
+        people: [...new Set([...crew0.production, ...crew0.electrical, ...crew0.mechanical])].sort() };
     }
 
     // How QC finally graded those same slabs. Chunked: Postgres caps a
@@ -255,7 +273,8 @@ export async function scoreShift(anchor: string, shift: ShiftLetter): Promise<Sh
       ungraded: slabs.length - graded,
       gradeA: a, gradeB: b, gradeC: c,
       avgMm,
-      points: Math.round(slabs.length * (quality ?? 0)),
+      points: Math.round(graded * (quality ?? 0)),
+      breakdownMin, poweroutMin,
       people, crew,
     };
   } catch {
@@ -374,6 +393,13 @@ export interface PersonScore {
   quality: number | null;
   /** Enough shifts to be placed and paid. */
   qualified: boolean;
+  /** Line stoppage across this person's shifts. The measure for the electrical
+   *  and mechanical incharge: their job is keeping the line running, not making
+   *  slabs, so slab count says nothing about how well they did it. */
+  downtimeMin: number;
+  downtimePerShift: number;
+  /** 0–1, share of the shift NOT lost to stoppage. The scored figure. */
+  uptime: number | null;
   /** Share of the qualified field's per-shift points — what a salary-percentage
    *  payout scales to. Unqualified people take no share. */
   share: number;
@@ -412,12 +438,13 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
 
   // Each person on a shift carries that shift's whole score: production is a
   // team result, so the team shares one number rather than splitting it.
-  const roll = (pick: (s: ShiftScore) => string[]): PersonScore[] => {
-    const m = new Map<string, { shifts: number; quantity: number; points: number; qNum: number; qDen: number }>();
+  const roll = (pick: (s: ShiftScore) => string[], withPowerout = false): PersonScore[] => {
+    const m = new Map<string, { shifts: number; quantity: number; points: number; qNum: number; qDen: number; down: number }>();
     for (const s of shifts) {
       for (const p of pick(s)) {
-        const e = m.get(p) ?? { shifts: 0, quantity: 0, points: 0, qNum: 0, qDen: 0 };
+        const e = m.get(p) ?? { shifts: 0, quantity: 0, points: 0, qNum: 0, qDen: 0, down: 0 };
         e.shifts += 1; e.quantity += s.quantity; e.points += s.points;
+        e.down += s.breakdownMin + (withPowerout ? s.poweroutMin : 0);
         if (s.quality != null) { e.qNum += s.quality * s.graded; e.qDen += s.graded; }
         m.set(p, e);
       }
@@ -427,6 +454,10 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
       pointsPerShift: e.shifts ? e.points / e.shifts : 0,
       quality: e.qDen ? e.qNum / e.qDen : null,
       qualified: e.shifts >= MIN_SHIFTS_TO_RANK,
+      downtimeMin: e.down,
+      downtimePerShift: e.shifts ? e.down / e.shifts : 0,
+      // 480 = the 8-hour shift. Uptime is the share of it the line kept running.
+      uptime: e.shifts ? Math.max(0, 1 - e.down / (e.shifts * 480)) : null,
     }));
     // Share is split over the per-shift rate of the QUALIFIED field only.
     const tot = raw.filter((r) => r.qualified).reduce((a, r) => a + r.pointsPerShift, 0);
@@ -435,19 +466,29 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
       // qualified first, then by rate; unqualified sink to the bottom in rate order
       .sort((a, b) => Number(b.qualified) - Number(a.qualified) || b.pointsPerShift - a.pointsPerShift);
   };
-  const byRole = {
-    production: roll((s) => s.crew.production),
-    electrical: roll((s) => s.crew.electrical),
-    mechanical: roll((s) => s.crew.mechanical),
+  const rankByUptime = (rows: PersonScore[]): PersonScore[] => {
+    const tot = rows.filter((r) => r.qualified).reduce((a, r) => a + (r.uptime ?? 0), 0);
+    return rows
+      .map((r) => ({ ...r, share: r.qualified && tot ? (r.uptime ?? 0) / tot : 0 }))
+      .sort((a, b) => Number(b.qualified) - Number(a.qualified) || (b.uptime ?? 0) - (a.uptime ?? 0));
   };
 
-  const byPerson = new Map<string, { shifts: number; quantity: number; points: number; qNum: number; qDen: number }>();
+  // Electrical and mechanical are ranked on UPTIME, not slabs: their job is
+  // keeping the line running. Powerout counts only against electrical.
+  const byRole = {
+    production: roll((s) => s.crew.production),
+    electrical: rankByUptime(roll((s) => s.crew.electrical, true)),
+    mechanical: rankByUptime(roll((s) => s.crew.mechanical)),
+  };
+
+  const byPerson = new Map<string, { shifts: number; quantity: number; points: number; qNum: number; qDen: number; down: number }>();
   for (const s of shifts) {
     for (const p of s.people) {
-      const e = byPerson.get(p) ?? { shifts: 0, quantity: 0, points: 0, qNum: 0, qDen: 0 };
+      const e = byPerson.get(p) ?? { shifts: 0, quantity: 0, points: 0, qNum: 0, qDen: 0, down: 0 };
       e.shifts += 1;
       e.quantity += s.quantity;
       e.points += s.points;
+      e.down += s.breakdownMin;
       if (s.quality != null) { e.qNum += s.quality * s.graded; e.qDen += s.graded; }
       byPerson.set(p, e);
     }
@@ -457,6 +498,9 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
     pointsPerShift: e.shifts ? e.points / e.shifts : 0,
     quality: e.qDen ? e.qNum / e.qDen : null,
     qualified: e.shifts >= MIN_SHIFTS_TO_RANK,
+    downtimeMin: e.down,
+    downtimePerShift: e.shifts ? e.down / e.shifts : 0,
+    uptime: e.shifts ? Math.max(0, 1 - e.down / (e.shifts * 480)) : null,
   }));
   const totRate = rawAll.filter((r) => r.qualified).reduce((a, r) => a + r.pointsPerShift, 0);
   const people: PersonScore[] = rawAll
@@ -511,7 +555,13 @@ function shiftKeyOf(d: Date): string {
   return `${h >= 22 ? day : plusDay(day, -1)}C`;
 }
 
-export async function scoreStations(from: string, to: string): Promise<StationBoard[]> {
+/** Names already ranked as an incharge, so they are not ALSO ranked as an
+ *  operator at a machine. Two reasons: it double-counts the same shifts across
+ *  two boards, and an incharge covering a station for a few hours is not doing
+ *  the job the station board is meant to compare. Suresh runs shifts; his name
+ *  turning up under Press with 3 shifts was the incharge, not a press operator. */
+export async function scoreStations(from: string, to: string, excludeNames: string[] = []): Promise<StationBoard[]> {
+  const excluded = new Set(excludeNames.map((n) => canonPerson(n)).filter(Boolean));
   const lo = new Date(`${from}T00:00:00+05:30`);
   const hi = new Date(new Date(`${to}T00:00:00+05:30`).getTime() + 86400_000);
   const out: StationBoard[] = [];
@@ -541,7 +591,7 @@ export async function scoreStations(from: string, to: string): Promise<StationBo
       const m = new Map<string, { slabs: Set<number>; shifts: Set<string>; credit: number; graded: number }>();
       for (const r of rows) {
         const who = canonPerson(r.op);
-        if (!who) continue;
+        if (!who || excluded.has(who)) continue;
         const e = m.get(who) ?? { slabs: new Set<number>(), shifts: new Set<string>(), credit: 0, graded: 0 };
         const sn = Number(r.sn);
         if (!e.slabs.has(sn)) {
@@ -555,11 +605,13 @@ export async function scoreStations(from: string, to: string): Promise<StationBo
 
       const raw = [...m.entries()].map(([person, e]) => {
         const quality = scaleQuality(e.graded ? e.credit / e.graded : null);
-        const points = Math.round(e.slabs.size * (quality ?? 0));
+        const points = Math.round(e.graded * (quality ?? 0));
         return {
           person, shifts: e.shifts.size, quantity: e.slabs.size, points,
           pointsPerShift: e.shifts.size ? points / e.shifts.size : 0,
           quality, qualified: e.shifts.size >= MIN_SHIFTS_TO_RANK,
+          // downtime is a shift-level figure; it has no meaning per station
+          downtimeMin: 0, downtimePerShift: 0, uptime: null,
         };
       });
       const tot = raw.filter((r) => r.qualified).reduce((a, r) => a + r.pointsPerShift, 0);

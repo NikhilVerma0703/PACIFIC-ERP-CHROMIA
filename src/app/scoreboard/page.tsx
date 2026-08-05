@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Shell } from "@/components/Shell";
 import { Card, H2, Kpi, Empty, Badge, fmt } from "@/components/ui";
+import { fmtDur } from "@/lib/downtime";
 import { ShiftCard, F } from "@/components/ShiftCard";
 import { getShiftReport } from "@/lib/misShift";
 import { scoreRange, scoreStations, MIN_SHIFTS_TO_RANK, type ShiftScore, type PersonScore } from "@/lib/shiftScore";
@@ -23,10 +24,13 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
   const from = sp.from?.trim() || dayAgo(6);
   const to = sp.to?.trim() || istToday;
 
-  const [data, stations] = await Promise.all([
-    scoreRange(from, to).catch(() => null),
-    scoreStations(from, to).catch(() => []),
-  ]);
+  const data = await scoreRange(from, to).catch(() => null);
+  // Incharges are ranked in their own tables above; excluding them here stops
+  // the same shifts being counted twice on two boards.
+  const inchargeNames = data
+    ? [...new Set([...data.byRole.production, ...data.byRole.electrical, ...data.byRole.mechanical].map((p) => p.person))]
+    : [];
+  const stations = await scoreStations(from, to, inchargeNames).catch(() => []);
 
   // The cards are the same component the MIS page draws, one per shift that
   // actually recorded something in the range.
@@ -47,6 +51,34 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
   ];
   const href = (f: string, t: string) => `/scoreboard?from=${f}&to=${t}`;
 
+
+  const uptimeBoard = (rows: PersonScore[], empty: string) => rows.length === 0 ? <Empty>{empty}</Empty> : (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-left text-[11px] uppercase tracking-wider text-gray-500">
+            <th className="py-2 pr-4">#</th><th className="py-2 pr-4">Person</th>
+            <th className="py-2 pr-4">Shifts</th><th className="py-2 pr-4">Stoppage</th>
+            <th className="py-2 pr-4">Per shift</th><th className="py-2 pr-4">Uptime</th>
+            <th className="py-2">Share</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((p, i) => (
+            <tr key={p.person} className="border-t border-gray-100">
+              <td className="py-2 pr-4 text-gray-400">{i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : i + 1}</td>
+              <td className="py-2 pr-4 font-medium text-gray-900">{p.person}</td>
+              <td className="py-2 pr-4 text-gray-600">{fmt(p.shifts)}</td>
+              <td className="py-2 pr-4 text-gray-600">{fmtDur(p.downtimeMin)}</td>
+              <td className="py-2 pr-4 text-gray-600">{fmtDur(Math.round(p.downtimePerShift))}</td>
+              <td className={`py-2 pr-4 font-semibold ${(p.uptime ?? 0) >= 0.95 ? "text-green-700" : (p.uptime ?? 0) >= 0.9 ? "text-amber-700" : "text-red-600"}`}>{pct(p.uptime)}</td>
+              <td className="py-2 text-gray-900">{p.share ? `${(p.share * 100).toFixed(1)}%` : "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 
   const board = (rows: PersonScore[], empty: string) => rows.length === 0 ? <Empty>{empty}</Empty> : (
     <div className="overflow-x-auto">
@@ -156,12 +188,14 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
                 <p className="mb-3 mt-1 text-xs text-gray-500">
                   {role === "production"
                     ? "Runs the shift and carries its full score. This is the ranking the shift incentive is built on."
-                    : "Ranked separately: this role covers the plant rather than one shift, and is often named on more than one shift at a time — so its totals are not comparable with the production incharge's."}
+                    : "Ranked on UPTIME, not slabs — this role's job is keeping the line running. MIS records breakdown as one “mechanical or electrical” figure, so both trades are measured on the same stoppage; powerout counts against electrical only."}
                   {" "}Ranked on <b>points per shift</b>, not the total — 3 shifts making 300 good slabs beats 10
                   making 500, however many shifts each person worked. <b>Share</b> is the slice of this role&rsquo;s per-shift points; payroll applies it to
                   each person&rsquo;s own salary.
                 </p>
-                {board(rows, "Nobody recorded in this role for the range.")}
+                {role === "production"
+                  ? board(rows, "Nobody recorded in this role for the range.")
+                  : uptimeBoard(rows, "Nobody recorded in this role for the range.")}
               </Card>
             );
           })}
@@ -172,7 +206,8 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
               <p className="mb-3 mt-1 text-xs text-gray-500">
                 The individual at the machine, not the shift team: the slabs they personally recorded there and how
                 QC graded those same slabs. Attribution is their own name on their own row, so it does not depend on
-                the MIS slab range.
+                the MIS slab range. Incharges are left out here — they are ranked in their own tables above, and
+                counting them in both would score the same shifts twice.
               </p>
               {stations.filter((st) => st.operators.length > 0).map((st) => (
                 <Card key={st.key} className="mb-6">

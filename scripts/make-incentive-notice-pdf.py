@@ -194,6 +194,20 @@ A(Spacer(1, 3))
 A(Paragraph("If a shift measures only a few slabs, its quality score is built from those few slabs only. "
             "<b>Measure everything - it is your own score.</b>", S["b"]))
 
+A(Paragraph("The prize depends on what the PLANT makes", S["h"]))
+A(Paragraph("The pool everyone shares is set by the factory's total output for the month. It rises far faster "
+            "than production does - going from 10,000 to 12,000 slabs is 20% more work and <b>double</b> the money:",
+            S["b"]))
+A(tbl([["Slabs in the month", "Total incentive pool"],
+       ["8,000", "Rs 7 lakh"],
+       ["10,000", "Rs 15 lakh"],
+       ["12,000", "Rs 30 lakh"]],
+      [46 * mm, 46 * mm], align_right=[1]))
+A(Spacer(1, 4))
+A(Paragraph("Every shift's output counts towards the same total, so <b>the whole plant has to get there "
+            "together</b> - one shift alone cannot reach it, and one shift falling behind holds everyone back.",
+            S["b"]))
+
 A(Paragraph("How the money is decided", S["h"]))
 A(KeepTogether(bullets([
     "At the end of the month every shift's score is totalled.",
