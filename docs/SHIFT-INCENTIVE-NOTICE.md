@@ -123,6 +123,24 @@ only. **Measure everything — it is your own score.**
 
 ---
 
+## The prize depends on what the PLANT makes
+
+The pool everyone shares is set by the factory's total output for the month. It rises far
+faster than production does — going from 10,000 to 12,000 slabs is 20% more work and
+**double** the money:
+
+| Slabs in the month | Total incentive pool |
+|---|---|
+| 8,000 | **₹7 lakh** |
+| 10,000 | **₹15 lakh** |
+| 12,000 | **₹30 lakh** |
+
+Every shift's output counts towards the same total, so **the whole plant has to get there
+together** — one shift alone cannot reach it, and one shift falling behind holds everyone
+back.
+
+---
+
 ## How the money is decided
 
 1. At the end of the month, every shift's score is totalled.

@@ -183,16 +183,16 @@ A(band("<b>We check this.</b> The system compares the shift written on each reco
        "move points from one shift to another.", colors.HexColor("#f9fafb"), LINE, S["quote"]))
 
 A(Paragraph("What you must record for the score to count", S["h"]))
-A(Paragraph("The score can only count what is measured. <b>A slab with no thickness reading at Jot cannot earn "
-            "quality points.</b>", S["b"]))
+A(Paragraph("The score can only count what your shift records. <b>An hour with no slab numbers claims nothing.</b>",
+            S["b"]))
 A(KeepTogether(bullets([
-    "Enter the <b>thickness readings at Jot</b> for every slab - all measurement points.",
-    "Enter the <b>slab class</b> (3 cm / 2 cm / 1.2 cm) on every Jot record.",
+    "Enter the <b>starting and ending slab number</b> every hour - that is what claims those slabs for your shift.",
     "Enter every <b>MIS hour</b> with the correct <b>shift number</b> and the <b>incharge names</b>.",
+    "Log the <b>reason and minutes</b> for any stoppage - the electrical and mechanical incharges are scored on it.",
 ], bullet="•")))
 A(Spacer(1, 3))
-A(Paragraph("If a shift measures only a few slabs, its quality score is built from those few slabs only. "
-            "<b>Measure everything - it is your own score.</b>", S["b"]))
+A(Paragraph("Points are counted once QC has graded the slab, so a shift&apos;s score keeps rising as polishing "
+            "catches up with it.", S["b"]))
 
 A(Paragraph("The prize depends on what the PLANT makes", S["h"]))
 A(Paragraph("The pool everyone shares is set by the factory's total output for the month. It rises far faster "
