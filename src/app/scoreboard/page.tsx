@@ -5,10 +5,12 @@ import { Card, H2, Kpi, Empty, Badge, fmt } from "@/components/ui";
 import { fmtDur } from "@/lib/downtime";
 import { ShiftCard, F } from "@/components/ShiftCard";
 import { getShiftReport } from "@/lib/misShift";
-import { scoreRange, scoreStations, MIN_SHIFTS_TO_RANK, type ShiftScore, type PersonScore } from "@/lib/shiftScore";
+import { scoreRange, scoreStations, QUALITY_FLOOR, MIN_ROWS_TO_RANK_STATION, type ShiftScore, type PersonScore, type StationBoard } from "@/lib/shiftScore";
 import { isAdmin } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
+// A month of shifts is several hundred queries; the default 10s is not enough.
+export const maxDuration = 60;
 
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
 const pct = (n: number | null) => (n == null ? "—" : `${Math.round(n * 100)}%`);
@@ -24,13 +26,26 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
   const from = sp.from?.trim() || dayAgo(6);
   const to = sp.to?.trim() || istToday;
 
-  const data = await scoreRange(from, to).catch(() => null);
-  // Incharges are ranked in their own tables above; excluding them here stops
-  // the same shifts being counted twice on two boards.
-  const inchargeNames = data
-    ? [...new Set([...data.byRole.production, ...data.byRole.electrical, ...data.byRole.mechanical].map((p) => p.person))]
-    : [];
-  const stations = await scoreStations(from, to, inchargeNames).catch(() => []);
+  // A failure here shows as a failure. It used to fall through to an empty
+  // board, which is indistinguishable from "nobody worked" on a page that
+  // decides money.
+  let data: Awaited<ReturnType<typeof scoreRange>> | null = null;
+  let stations: StationBoard[] = [];
+  let failure: string | null = null;
+  try {
+    data = await scoreRange(from, to);
+    // Incharges are ranked in their own tables above; excluding them here stops
+    // the same shifts being counted twice on two boards. The station boards use
+    // the range that was actually SCORED, so both halves of the page cover the
+    // same days.
+    const inchargeNames = [...new Set(
+      [...data.byRole.production, ...data.byRole.electrical, ...data.byRole.mechanical].map((p) => p.person),
+    )];
+    stations = await scoreStations(data.from, data.to, inchargeNames);
+  } catch (e) {
+    data = null;
+    failure = e instanceof Error ? e.message : String(e);
+  }
 
   // The cards are the same component the MIS page draws, one per shift that
   // actually recorded something in the range.
@@ -80,16 +95,23 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
     </div>
   );
 
-  const board = (rows: PersonScore[], empty: string) => rows.length === 0 ? <Empty>{empty}</Empty> : (
+  // `basis` renames the two quality columns for the polishing line, which is not
+  // judged on A/B/C at all — see STATIONS in shiftScore.ts.
+  const board = (rows: PersonScore[], empty: string, basis: "grade" | "polish" = "grade", unqualifiedNote = "no shifts recorded", unit = "Shifts") =>
+    rows.length === 0 ? <Empty>{empty}</Empty> : (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
           <tr className="text-left text-[11px] uppercase tracking-wider text-gray-500">
             <th className="py-2 pr-4">#</th>
             <th className="py-2 pr-4">Person</th>
-            <th className="py-2 pr-4">Shifts</th>
+            <th className="py-2 pr-4">{unit}</th>
             <th className="py-2 pr-4">Slabs</th>
-            <th className="py-2 pr-4">Quality</th>
+            {/* Two columns, because they are two different numbers and were
+                being read as one: a 96.4% QC grade share scores 64%. Showing
+                only the scored figure made a good month look like a bad one. */}
+            <th className="py-2 pr-4">{basis === "polish" ? "Finished OK" : "QC grade"}</th>
+            <th className="py-2 pr-4">Score</th>
             <th className="py-2 pr-4">Points</th>
             <th className="py-2 pr-4">Per shift</th>
             <th className="py-2">Share</th>
@@ -101,10 +123,11 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
               <td className="py-2 pr-4 text-gray-400">{!p.qualified ? "—" : i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : i + 1}</td>
               <td className={`py-2 pr-4 font-medium ${p.qualified ? "text-gray-900" : ""}`}>
                 {p.person}
-                {!p.qualified && <div className="text-[11px] font-normal">no shifts recorded</div>}
+                {!p.qualified && <div className="text-[11px] font-normal">{unqualifiedNote}</div>}
               </td>
               <td className="py-2 pr-4">{fmt(p.shifts)}</td>
               <td className="py-2 pr-4">{fmt(p.quantity)}</td>
+              <td className="py-2 pr-4">{pct(p.rawQuality)}</td>
               <td className="py-2 pr-4">{pct(p.quality)}</td>
               <td className="py-2 pr-4">{fmt(p.points)}</td>
               <td className={`py-2 pr-4 font-semibold ${p.qualified ? "text-brand" : ""}`}>{p.pointsPerShift.toFixed(0)}</td>
@@ -119,7 +142,9 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
   const scoreLine = (s: ShiftScore) => (
     <div className="mt-3 grid grid-cols-2 gap-x-8 gap-y-3 border-t border-gray-100 pt-3 text-sm sm:grid-cols-3 lg:grid-cols-6">
       <F label="Pressed (quantity)">{fmt(s.quantity)}</F>
-      <F label="Quality">
+      <F label="QC grade → score">
+        <span className="text-gray-900">{pct(s.rawQuality)}</span>
+        <span className="text-gray-400"> → </span>
         <span className={s.quality == null ? "text-gray-400" : s.quality >= 0.7 ? "text-green-700" : s.quality >= 0.4 ? "text-amber-700" : "text-red-600"}>
           {pct(s.quality)}
         </span>
@@ -128,6 +153,7 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
       <F label="Graded / awaiting QC">
         {fmt(s.graded)}{s.ungraded ? ` / ${fmt(s.ungraded)}` : ""}
         {s.contested > 0 && <div className="text-[11px] font-normal text-red-600">{fmt(s.contested)} disputed with another shift</div>}
+        {s.wideRows > 0 && <div className="text-[11px] font-normal text-red-600">{fmt(s.wideRows)} hour(s) ignored — slab range too wide to be real</div>}
       </F>
       <F label="Points"><span className="text-brand">{fmt(s.points)}</span></F>
       <F label="Team">{s.crew.production.join(", ") || "—"}{s.crew.electrical.length || s.crew.mechanical.length ? <div className="text-[11px] font-normal text-gray-400">E: {s.crew.electrical.join(", ") || "—"} · M: {s.crew.mechanical.join(", ") || "—"}</div> : null}</F>
@@ -159,17 +185,55 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
         <button className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-dark">Apply</button>
       </form>
 
-      {!data && <Empty>Could not build the scoreboard.</Empty>}
+      {!data && (
+        <Card className="border-red-300 bg-red-50">
+          <p className="text-sm text-red-900">
+            <b>Could not build the scoreboard.</b> Nothing below is safe to read as a result — an empty
+            board here means the query failed, not that nobody worked.
+            {failure && <span className="mt-1 block font-mono text-xs">{failure}</span>}
+          </p>
+        </Card>
+      )}
 
       {data && (
         <>
           <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
             <Kpi label="Shifts scored" value={fmt(data.shifts.length)} />
             <Kpi label="Slabs pressed" value={fmt(data.totals.quantity)} />
-            <Kpi label="Quality (QC)" value={pct(data.totals.quality)} sub="A = 100% · B = 50% · C = 0%" />
-            <Kpi label="Total points" value={fmt(data.totals.points)} />
-            <Kpi label="Graded by QC" value={fmt(data.totals.graded)} sub={data.totals.quantity ? `${Math.round(data.totals.graded / data.totals.quantity * 100)}% of pressed` : undefined} />
+            <Kpi label="QC grade share" value={pct(data.totals.rawQuality)} sub="A = 100% · B = 50% · C = 0%" />
+            <Kpi label="Quality score" value={pct(data.totals.quality)} sub={`the grade share above, measured from ${Math.round(QUALITY_FLOOR * 100)}%`} />
+            <Kpi label="Total points" value={fmt(data.totals.points)} sub={`${fmt(data.totals.graded)} graded · ${fmt(data.totals.ungraded)} awaiting QC`} />
           </div>
+
+          {data.requestedTo && (
+            <Card className="mb-6 border-amber-300 bg-amber-50">
+              <p className="text-sm text-amber-900">
+                <b>Range shortened.</b> You asked for {from} to {data.requestedTo}; only {from} to <b>{data.to}</b> was
+                scored. Everything on this page covers the shorter range — read the figures as that period, not the
+                one in the date boxes.
+              </p>
+            </Card>
+          )}
+
+          {data.totals.unattributed > 0 && (
+            <Card className="mb-6 border-red-300 bg-red-50">
+              <p className="text-sm text-red-900">
+                <b>{fmt(data.totals.unattributed)} shift(s) named no production incharge.</b> Their slabs are in the
+                plant total but on nobody&rsquo;s row, so every other person&rsquo;s <b>Share</b> below is larger than the
+                work behind it. Fill in the incharge on those hours before this is used for a payout.
+              </p>
+            </Card>
+          )}
+
+          {data.totals.wideRows > 0 && (
+            <Card className="mb-6 border-red-300 bg-red-50">
+              <p className="text-sm text-red-900">
+                <b>{fmt(data.totals.wideRows)} hour(s) declared an impossible slab range</b> and were ignored — a
+                real hour is 2 to 20 slabs. The shift that typed them is scored as if those hours produced nothing,
+                so its points are understated until the starting/ending numbers are corrected.
+              </p>
+            </Card>
+          )}
 
           {data.totals.contested > 0 && (
             <Card className="mb-6 border-red-300 bg-red-50">
@@ -202,12 +266,25 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
               <Card key={role} className="mb-6">
                 <H2>{label}</H2>
                 <p className="mb-3 mt-1 text-xs text-gray-500">
-                  {role === "production"
-                    ? "Runs the shift and carries its full score. This is the ranking the shift incentive is built on."
-                    : "Ranked on UPTIME, not slabs — this role's job is keeping the line running. MIS records breakdown as one “mechanical or electrical” figure, so both trades are measured on the same stoppage; powerout counts against electrical only."}
-                  {" "}Ranked on <b>points per shift</b>, not the total — 3 shifts making 300 good slabs beats 10
-                  making 500, however many shifts each person worked. <b>Share</b> is the slice of this role&rsquo;s per-shift points; payroll applies it to
-                  each person&rsquo;s own salary.
+                  {role === "production" ? (
+                    <>
+                      Runs the shift and carries its full score. This is the ranking the shift incentive is built on.
+                      Ranked on <b>points per shift</b>, not the total — 3 shifts making 300 good slabs beats 10
+                      making 500, however many shifts each person worked. <b>QC grade</b> is the real share
+                      (A 100% · B 50% · C 0%); <b>Score</b> is that share measured from {Math.round(QUALITY_FLOOR * 100)}%,
+                      which is what multiplies into the points. <b>Share</b> is the slice of this role&rsquo;s
+                      per-shift points; payroll applies it to each person&rsquo;s own salary.
+                    </>
+                  ) : (
+                    <>
+                      Ranked on <b>uptime</b>, not slabs — this role&rsquo;s job is keeping the line running. MIS
+                      records breakdown as one “mechanical or electrical” figure, so both trades are measured on the
+                      same stoppage; powerout counts against electrical only. Uptime is stoppage against the
+                      <b> hours MIS actually recorded</b>, so an hour never entered earns nothing rather than
+                      counting as a running line. <b>Share</b> is uptime measured from {Math.round(0.9 * 100)}% and
+                      then weighted by shifts worked — one quiet night does not out-earn a month of cover.
+                    </>
+                  )}
                 </p>
                 {role === "production"
                   ? board(rows, "Nobody recorded in this role for the range.")
@@ -220,15 +297,43 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
             <>
               <H2>Operators by station</H2>
               <p className="mb-3 mt-1 text-xs text-gray-500">
-                The individual at the machine, not the shift team: the slabs they personally recorded there and how
-                QC graded those same slabs. Attribution is their own name on their own row, so it does not depend on
+                The individual at the machine, not the shift team: the slabs they personally recorded there and what
+                happened to those same slabs. Attribution is their own name on their own row, so it does not depend on
                 the MIS slab range. Incharges are left out here — they are ranked in their own tables above, and
-                counting them in both would score the same shifts twice.
+                counting them in both would score the same shifts twice. Someone with fewer
+                than {MIN_ROWS_TO_RANK_STATION} rows at a machine is shown but not ranked: that is cover for an hour,
+                not the job this board compares.
+                {" "}Unlike the incharge tables, <b>Share here is the slice of total points, not a per-day rate</b> —
+                station rows carry the time they were typed, not worked (278 Kreos rows share three timestamps
+                inside 65 minutes), so any rate built on them is fiction. <b>Days</b> is shown for context only.
               </p>
               {stations.filter((st) => st.operators.length > 0).map((st) => (
                 <Card key={st.key} className="mb-6">
                   <H2>{st.label}</H2>
-                  <div className="mt-3">{board(st.operators, "No operator recorded here in this range.")}</div>
+                  <p className="mb-1 mt-1 text-xs text-gray-500">
+                    {st.basis === "polish" ? (
+                      <>
+                        Not scored on A/B/C. The calliberator does not choose what arrives at his machine — his job is
+                        to send it out finished and to rescue what comes back, so this board counts the
+                        slabs he polished and what QC recorded happened to them: <b>Direct Ok</b>, <b>RW Done Ok</b> and
+                        <b> Repolish Done</b> count as finished; <b>Can&rsquo;t be Reworked</b> is a loss; work still
+                        open (<b>RW Required and ongoing</b>, <b>Repolish Required</b>) waits and is never counted
+                        against him.
+                      </>
+                    ) : (
+                      <>Scored on how QC finally graded the slabs this operator handled — A 100% · B 50% · C 0%.</>
+                    )}
+                    {st.datedByImport && (
+                      <>
+                        {" "}<b className="text-amber-700">Dates are import times, not work times</b> — this table has no
+                        usable timestamp of its own after 2026-06-08, so its shift counts are approximate.
+                      </>
+                    )}
+                  </p>
+                  <div className="mt-3">
+                    {board(st.operators, "No operator recorded here in this range.", st.basis,
+                      `under ${MIN_ROWS_TO_RANK_STATION} rows here`, "Days")}
+                  </div>
                 </Card>
               ))}
             </>
