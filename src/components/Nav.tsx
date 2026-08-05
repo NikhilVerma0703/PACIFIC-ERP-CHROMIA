@@ -182,6 +182,9 @@ export function Nav({
   ];
   const admin = [
     ...(showAdmin ? [{ href: "/admin/users", icon: I.users, label: "Users & Roles" }] : []),
+    // Scoreboard ranks named people and feeds an incentive payout, so it is
+    // ADMIN-only — not showAdmin, which also admits shop-floor incharges.
+    ...(isAdmin ? [{ href: "/scoreboard", icon: I.report, label: "Shift Scoreboard" }] : []),
   ];
 
   if (branch === "INTERNATIONAL_SALES") {

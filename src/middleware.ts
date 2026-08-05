@@ -60,6 +60,12 @@ export default auth((req) => {
     }
   }
 
+  // ---- Shift scoreboard: ADMIN only. It ranks named individuals and drives an
+  // incentive payout, so it must not be visible to the people it scores. ----
+  if (p.startsWith("/scoreboard")) {
+    if (!isAdmin) return Response.redirect(new URL("/", nextUrl));
+  }
+
   // ---- Bill automation (finance engine): Office Finance/Accounts and admins
   // only. Runs before the branch blocks below for the same reason as the robo
   // gate — their generic `/api` allowances must not leak it, and Commercial's
