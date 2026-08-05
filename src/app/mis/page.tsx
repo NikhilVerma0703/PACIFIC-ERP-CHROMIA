@@ -8,6 +8,7 @@ import { canRespondDowntime } from "@/lib/rbac";
 import { DowntimeLogCard } from "./DowntimeLogCard";
 import { getLastShiftReport, getCurrentShiftReport, getPreviousShiftReport, currentShiftAnchor } from "@/lib/misShift";
 import { SHIFT_WINDOW } from "@/lib/misShiftHours";
+import { AutoRefresh } from "@/components/AutoRefresh";
 
 export const dynamic = "force-dynamic";
 
@@ -167,6 +168,12 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
       </form>
 
       {error && <Empty>{error}</Empty>}
+      {/* The current-shift card is live — hours are logged into it as the shift
+          runs, so a page left open on a desk went stale. Refreshes on a 45 s
+          tick, and only while the tab is actually visible (AutoRefresh checks
+          visibilityState), so a forgotten tab does not poll this page's
+          aggregation all night. */}
+      <AutoRefresh seconds={45} />
       {currentShift && <ShiftCard s={currentShift} title="Current shift" live />}
       {!currentShift && (
         <Card className="mb-6">

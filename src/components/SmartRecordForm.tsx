@@ -63,7 +63,7 @@ function SiloInfo({ s, addKg }: { s: SiloFormInfo; addKg?: number | null }) {
 
 
 // Module-scope field component: stable identity across renders so uncontrolled
-// inputs are NOT remounted (typed values survive bag search / pick / sku state updates).
+// inputs are NOT remounted (typed values survive bag search / pick state updates).
 function RecordField({ f, def, badge, opts, operatorName }: { f: FieldMeta; def: string; badge: string | null; opts?: string[]; operatorName?: string | null }) {
   const [typeNew, setTypeNew] = useState(false); // curated fields: "+ Add new…" escape
   if (OPERATOR_FIELDS.has(f.prismaField) && operatorName) {
@@ -128,7 +128,6 @@ export function SmartRecordForm({ model, tableName, fields, options = {}, operat
   const [serverBags, setServerBags] = useState<RmBagOption[]>([]);
   const [searching, setSearching] = useState(false);
   const [pickedBag, setPickedBag] = useState<RmBagOption | null>(null);
-  const [sku, setSku] = useState("");
   const [savedCount, setSavedCount] = useState(0);
   // After a successful save: toast + re-pull defaults so counters (silo
   // increment, bag no, resin id…) advance automatically for the next record.
@@ -163,6 +162,11 @@ export function SmartRecordForm({ model, tableName, fields, options = {}, operat
   const bag = isFilling && bagId ? pickedBag : null;
   const hidden = new Set(hideFields);
   // For silo filling, weight + inv/bag are driven by the chosen RM bag, so pull them out of the generic grid.
+  // On the silo filling form weight and invNoBagNo are rendered by the bag card
+  // above instead of this generic loop. `sku` is listed for a different reason:
+  // it is not rendered at all any more (a FIFO silo has no one design), and
+  // dropping it from here would put it straight back on the form as a plain
+  // editable field.
   const editable = fields.filter((f) => f.editable && f.prismaField !== cfg.keyField && !hidden.has(f.prismaField) && !(isFilling && (f.prismaField === "weight" || f.prismaField === "invNoBagNo" || f.prismaField === "sku")));
 
   async function loadDefaults(k: string) {
@@ -209,7 +213,7 @@ export function SmartRecordForm({ model, tableName, fields, options = {}, operat
   }
 
   function clearForm() {
-    setKey(""); setDefaults(null); setVersion((v) => v + 1); setBagId(""); setWeight(""); setBagSearch(""); setBagShow(60); setSku("");
+    setKey(""); setDefaults(null); setVersion((v) => v + 1); setBagId(""); setWeight(""); setBagSearch(""); setBagShow(60);
   }
 
   return (
@@ -234,7 +238,7 @@ export function SmartRecordForm({ model, tableName, fields, options = {}, operat
             <div className="block sm:col-span-1">
               <span className="mb-1 block text-xs font-medium text-gray-600">{cfg.keyLabel}</span>
               {cfg.silo ? (
-                <select name={cfg.keyField} value={key} required onChange={(e) => { setKey(e.target.value); loadDefaults(e.target.value); setSku(silos.find((x) => x.siloNo === e.target.value)?.sku ?? ""); }} className={inputCls}>
+                <select name={cfg.keyField} value={key} required onChange={(e) => { setKey(e.target.value); loadDefaults(e.target.value); }} className={inputCls}>
                   <option value="">—</option>
                   {grit.length > 0 && <optgroup label="Grit silos">{grit.map((s) => <option key={s.siloNo} value={s.siloNo}>{s.siloNo}</option>)}</optgroup>}
                   {filler.length > 0 && <optgroup label="Filler silos">{filler.map((s) => <option key={s.siloNo} value={s.siloNo}>{s.siloNo}</option>)}</optgroup>}
@@ -296,17 +300,16 @@ export function SmartRecordForm({ model, tableName, fields, options = {}, operat
                 </div>
               </>
             )}
+            {/* SKU (the design name) used to sit here, pre-filled "from silo".
+                A silo is FIFO: a bag dumped in mixes with whatever is already
+                inside and is drawn in order, so no filling belongs to one
+                design. The field carried the OLDEST bag's design onto every
+                later bag, which read as fact and was not. Removed rather than
+                left blank — an empty design box invites someone to fill it. */}
             <div className="mt-3 grid grid-cols-1 gap-x-5 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
               <label className="block">
                 <span className="mb-1 flex items-center gap-1.5 text-xs font-medium text-gray-600">Weight (kg){bag && <span className="rounded bg-brand/10 px-1.5 py-0.5 text-[10px] text-brand">from bag</span>}</span>
                 <input name="weight" type="number" step="any" value={weight} readOnly className={inputCls + " bg-brand/[0.04] text-gray-700"} />
-              </label>
-              <label className="block">
-                <span className="mb-1 flex items-center gap-1.5 text-xs font-medium text-gray-600">SKU{sku && siloInfo?.sku ? <span className="rounded bg-brand/10 px-1.5 py-0.5 text-[10px] text-brand">from silo</span> : null}</span>
-                <select name="sku" value={sku} onChange={(e) => setSku(e.target.value)} className={inputCls}>
-                  <option value="">—</option>
-                  {[...new Set([sku, ...(options.sku ?? [])].filter(Boolean))].map((o) => <option key={o} value={o}>{o}</option>)}
-                </select>
               </label>
             </div>
           </div>

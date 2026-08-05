@@ -180,7 +180,9 @@ export interface SiloFormInfo {
   grade: string | null;
   type: string | null;
   supplier: string | null;
-  sku: string | null;
+  // No `sku` (design). A silo is FIFO — a filling mixes with what is already
+  // inside — so this aggregate could only ever report the OLDEST bag's design
+  // as if it described the whole silo. Removed with the form field that fed it.
   remaining: number;
   bags: number;
   bagNos: string[];
@@ -189,7 +191,7 @@ export interface SiloFormInfo {
 }
 
 const emptyFormInfo = (s: string): SiloFormInfo =>
-  ({ siloNo: s, kind: siloKind(s), size: null, grade: null, type: null, supplier: null, sku: null, remaining: 0, bags: 0, bagNos: [], bagList: [] });
+  ({ siloNo: s, kind: siloKind(s), size: null, grade: null, type: null, supplier: null, remaining: 0, bags: 0, bagNos: [], bagList: [] });
 
 export async function getSiloFormStatus(): Promise<SiloFormInfo[]> {
   // outstanding unbacked demand (deficit placeholders) — fetched in PARALLEL
@@ -199,7 +201,7 @@ export async function getSiloFormStatus(): Promise<SiloFormInfo[]> {
   try {
     bags = await prisma.silo.findMany({
       where: { siloNo: { not: null }, remainingWeight: { gt: 0 } },
-      select: { id: true, siloNo: true, sku: true, weight: true, remainingWeight: true, invNoBagNo: true, siloIncrement: true, ...SILO_MAT_SELECT },
+      select: { id: true, siloNo: true, weight: true, remainingWeight: true, invNoBagNo: true, siloIncrement: true, ...SILO_MAT_SELECT },
       orderBy: { siloIncrement: "asc" },
     });
   } catch {
@@ -216,7 +218,6 @@ export async function getSiloFormStatus(): Promise<SiloFormInfo[]> {
     if (b.invNoBagNo) info.bagNos.push(String(b.invNoBagNo));
     info.bagList.push({ id: b.id, bagNo: b.invNoBagNo ?? null, weight: b.weight ?? null, remaining: b.remainingWeight ?? null });
     if (hasMat(m)) { info.size ??= m.size; info.grade ??= m.grade; info.type ??= m.type; info.supplier ??= m.supplier; }
-    if (b.sku) info.sku ??= b.sku;
     by.set(s, info);
   }
   const out: SiloFormInfo[] = GRIT_SILOS.map((s) => by.get(s) ?? emptyFormInfo(s));
