@@ -130,12 +130,6 @@ only. **Measure everything — it is your own score.**
 3. Each rank carries an incentive **percentage of salary**.
 4. Everyone on that shift receives that percentage **of their own salary**.
 
-| Rank | Incentive |
-|---|---|
-| 🥇 1st | ______ % of salary |
-| 🥈 2nd | ______ % of salary |
-| 🥉 3rd | ______ % of salary |
-
 **Conditions**
 
 - A shift must meet the **minimum quality standard** to take first place — the highest

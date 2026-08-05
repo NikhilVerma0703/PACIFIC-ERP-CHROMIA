@@ -78,6 +78,10 @@ def band(text, bg, border, style):
 
 
 def bullets(items, style="li", bullet="-"):
+    """bulletText is a fixed string, so a numbered list needs the number built
+    per item - passing "1." gave every row a literal 1."""
+    if bullet == "#":
+        return [Paragraph(x, S[style], bulletText=f"{i}.") for i, x in enumerate(items, 1)]
     return [Paragraph(x, S[style], bulletText=bullet) for x in items]
 
 
@@ -190,13 +194,7 @@ A(KeepTogether(bullets([
     "Shifts are <b>ranked</b> by score.",
     "Each rank carries an incentive <b>percentage of salary</b>.",
     "Everyone on that shift receives that percentage <b>of their own salary</b>.",
-], bullet="1.")))
-A(Spacer(1, 5))
-A(tbl([["Rank", "Incentive"],
-       ["1st place", "________ % of salary"],
-       ["2nd place", "________ % of salary"],
-       ["3rd place", "________ % of salary"]],
-      [34 * mm, 52 * mm]))
+], bullet="#")))
 A(Spacer(1, 6))
 A(Paragraph("<b>Conditions</b>", S["b"]))
 A(KeepTogether(bullets([
