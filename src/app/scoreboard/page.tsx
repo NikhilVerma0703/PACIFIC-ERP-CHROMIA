@@ -4,6 +4,7 @@ import { Shell } from "@/components/Shell";
 import { Card, H2, Kpi, Empty, Badge, fmt } from "@/components/ui";
 import { fmtDur } from "@/lib/downtime";
 import { ShiftCard, F } from "@/components/ShiftCard";
+import { DisputeRuling } from "@/components/DisputeRuling";
 import { getShiftReport } from "@/lib/misShift";
 import {
   scoreRange, scoreStations, QUALITY_FLOOR, MIN_ROWS_TO_RANK_STATION,
@@ -275,14 +276,21 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
             </Card>
           )}
 
-          {data.totals.contested > 0 && (
+          {data.disputes.length > 0 && (
             <Card className="mb-6 border-red-300 bg-red-50">
               <p className="text-sm text-red-900">
-                <b>{fmt(data.totals.contested)} slab claim(s) are disputed.</b> Two shifts entered MIS ranges
-                covering the same slab, so it cannot belong to both. Those slabs are excluded from
-                <b> both</b> scores — paying twice would be wrong, and choosing a winner would be arbitrary.
-                Correct the starting/ending slab numbers on the hours below and the points return by themselves.
+                <b>{fmt(data.totals.contested)} slab claim(s) are disputed</b>
+                {data.totals.resolved > 0 && <>, and {fmt(data.totals.resolved)} already awarded</>}.
+                {" "}Two shifts entered MIS ranges covering the same slab, so it cannot belong to both. Until
+                someone decides, those slabs are excluded from <b>both</b> scores — paying twice would be wrong,
+                and nothing in the data says whose they were.
+                {" "}<b>You can decide.</b> Award them below and they score for that shift only; leave it at
+                &ldquo;nobody&rdquo; and neither shift is paid for them. Correcting the MIS hours instead has the
+                same effect and is the better fix when the range was simply typed wrong.
               </p>
+              <div className="mt-3 space-y-2">
+                {data.disputes.map((d) => <DisputeRuling key={d.key} d={d} />)}
+              </div>
               {rowLinks(data.flagged.filter((f) => f.reason === "disputed"))}
             </Card>
           )}

@@ -3353,3 +3353,28 @@ model RoboDelayLog {
   remarks            String?
   createdAt          DateTime              @default(now())
 }
+
+/// An admin's ruling on a slab two shifts both claimed in MIS.
+///
+/// The scoreboard drops a contested slab from BOTH shifts, because paying it
+/// twice is wrong and picking a winner is not a machine's decision. This table
+/// is where the admin makes that call: one row per slab, naming the shift it
+/// belongs to. Awarded slabs stop being contested — they score for the winner
+/// and are excluded from everyone else.
+///
+/// Deliberately per-slab rather than per-range: a range is an MIS row, and the
+/// row is exactly what was typed wrong, so a ruling keyed to it would move when
+/// the row is corrected.
+model SlabClaimAward {
+  id         String   @id @default(cuid())
+  slabNumber Float    @unique @map("slab_number")
+  /// The IST date the winning shift STARTED (a C shift anchors on that day).
+  anchor     String   @map("anchor")
+  /// A | B | C
+  shift      String   @map("shift")
+  decidedBy  String?  @map("decided_by")
+  decidedAt  DateTime @default(now()) @map("decided_at")
+
+  @@index([anchor, shift])
+  @@map("slab_claim_award")
+}

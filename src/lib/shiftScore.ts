@@ -405,6 +405,21 @@ export interface PersonScore {
 
 export type CrewRole = "production" | "electrical" | "mechanical";
 
+/** One slab fight, ready for a ruling: the slabs, and every shift that claimed
+ *  them. Grouped by the SET of claimants, so an admin decides once for the whole
+ *  overlap instead of slab by slab. */
+export interface Dispute {
+  /** Stable id for the group — the sorted claimant keys. */
+  key: string;
+  slabs: number[];
+  from: number;
+  to: number;
+  claimants: { anchor: string; shift: ShiftLetter; label: string; incharge: string | null }[];
+  /** "<anchor><shift>" of the shift these slabs were awarded to, if ruled on. */
+  awardedTo: string | null;
+  awardedBy: string | null;
+}
+
 export interface ScoreboardData {
   from: string;
   /** The last day actually SCORED. Equals `to` unless the range was longer than
@@ -417,12 +432,18 @@ export interface ScoreboardData {
   /** Every MIS row that needs correcting, across the whole range, so the page
    *  can link an admin straight to it. */
   flagged: FlaggedRow[];
+  /** Contested slabs grouped by who claimed them, for the admin to rule on. */
+  disputes: Dispute[];
   /** Ranked separately per role — see ShiftScore.crew for why. */
   byRole: Record<CrewRole, PersonScore[]>;
   people: PersonScore[];
   totals: {
     quantity: number; points: number; graded: number; ungraded: number;
-    quality: number | null; rawQuality: number | null; contested: number;
+    quality: number | null; rawQuality: number | null;
+    /** Contested slabs still waiting on an admin ruling. */
+    contested: number;
+    /** Contested slabs an admin has already awarded to a shift. */
+    resolved: number;
     /** Hours whose slab range was too wide to be real, across the range. */
     wideRows: number;
     /** Shift instances that filed MIS but named no production incharge — their
@@ -451,18 +472,76 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
   const instances = days.flatMap((d) => letters.map((l) => ({ d, l })))
     .filter(({ d, l }) => shiftRange(d, l).end <= now);
   const claims = await Promise.all(instances.map(async ({ d, l }) => ({ d, l, slabs: await claimedSlabs(d, l) })));
-  const seenBy = new Map<number, number>();
-  for (const c of claims) for (const n of c.slabs) seenBy.set(n, (seenBy.get(n) ?? 0) + 1);
-  const contestedSet = new Set([...seenBy.entries()].filter(([, n]) => n > 1).map(([s2]) => s2));
+  const claimedBy = new Map<number, string[]>();   // slab -> shift keys that claimed it
+  for (const c of claims) {
+    const key = `${c.d}${c.l}`;
+    for (const n of c.slabs) claimedBy.set(n, [...(claimedBy.get(n) ?? []), key]);
+  }
+  const contestedSlabs = [...claimedBy.entries()].filter(([, k]) => k.length > 1).map(([n]) => n);
+
+  // An ADMIN'S RULING beats the default. Left alone, a slab two shifts both
+  // claimed is dropped from both — right, because paying it twice is wrong and a
+  // machine cannot know whose it was. But someone does know, so the admin can
+  // award it, and from then on it scores for the winner and only the loser is
+  // excluded. Awards outlive the entry: correcting the MIS row later simply
+  // stops the slab being contested, and the ruling becomes moot on its own.
+  const awards = contestedSlabs.length
+    ? await (prisma as any).slabClaimAward.findMany({
+        where: { slabNumber: { in: contestedSlabs } },
+        select: { slabNumber: true, anchor: true, shift: true, decidedBy: true },
+      })
+    : [];
+  const awardOf = new Map<number, { key: string; by: string | null }>();
+  for (const a of awards) awardOf.set(Number(a.slabNumber), { key: `${a.anchor}${a.shift}`, by: a.decidedBy ?? null });
+
+  // Per-shift exclusion: an unruled slab is excluded everywhere, an awarded one
+  // only from the shifts that lost it.
+  const excludeFor = (d: string, l: ShiftLetter) => {
+    const key = `${d}${l}`;
+    const ex = new Set<number>();
+    for (const n of contestedSlabs) if (awardOf.get(n)?.key !== key) ex.add(n);
+    return ex;
+  };
 
   // Pass 2 — score with those slabs excluded.
   const scored = await Promise.all(
-    instances.map(({ d, l }) => scoreShift(d, l, contestedSet)),
+    instances.map(({ d, l }) => scoreShift(d, l, excludeFor(d, l))),
   );
   // Keep a shift that recorded a TEAM even if it pressed nothing: dropping it
   // erased those people from the board entirely, which read as "they did not
   // work" rather than "they worked and produced nothing".
   const shifts = scored.filter((s) => s.quantity > 0 || s.people.length > 0);
+
+  // One fight, one ruling. Contested slabs are grouped by the SET of shifts that
+  // claimed them, so an overlap of a hundred slabs is one decision rather than a
+  // hundred. Contiguous runs inside a group are reported as a range because that
+  // is how the MIS row was typed and how the admin will recognise it.
+  const inchargeOf = new Map(scored.map((s) => [`${s.anchor}${s.shift}`, s.crew.production.join(", ") || null]));
+  const groups = new Map<string, number[]>();
+  for (const n of contestedSlabs) {
+    const key = [...(claimedBy.get(n) ?? [])].sort().join("|");
+    groups.set(key, [...(groups.get(key) ?? []), n]);
+  }
+  const disputes: Dispute[] = [...groups.entries()].map(([key, slabs]) => {
+    slabs.sort((a, b) => a - b);
+    const awarded = [...new Set(slabs.map((n) => awardOf.get(n)?.key ?? ""))];
+    return {
+      key,
+      slabs,
+      from: slabs[0],
+      to: slabs[slabs.length - 1],
+      claimants: key.split("|").map((k) => {
+        const anchor = k.slice(0, 10), shift = k.slice(10) as ShiftLetter;
+        const incharge = inchargeOf.get(k) ?? null;
+        return { anchor, shift, label: `${anchor} shift ${shift}`, incharge };
+      }),
+      // Only a ruling that covers the WHOLE group counts as decided — a partial
+      // one would read as settled while some slabs still score for nobody.
+      awardedTo: awarded.length === 1 && awarded[0] ? awarded[0] : null,
+      awardedBy: awarded.length === 1 && awarded[0] ? (awardOf.get(slabs[0])?.by ?? null) : null,
+    };
+  }).sort((a, b) => a.from - b.from);
+  const unruled = contestedSlabs.filter((n) => !awardOf.has(n)).length;
 
   // Each person on a shift carries that shift's whole score: production is a
   // team result, so the team shares one number rather than splitting it.
@@ -584,6 +663,7 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
     // newest first — the hour someone still remembers is the one worth fixing
     flagged: shifts.flatMap((s) => s.flagged)
       .sort((a, b) => (b.date ?? "").localeCompare(a.date ?? "") || (b.hour ?? "").localeCompare(a.hour ?? "")),
+    disputes,
     byRole,
     people,
     totals: {
@@ -593,7 +673,10 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
       ungraded: shifts.reduce((a, s) => a + s.ungraded, 0),
       quality: graded ? qNum / graded : null,
       rawQuality: graded ? rawNum / graded : null,
-      contested: shifts.reduce((a, s) => a + s.contested, 0),
+      // Slabs still waiting on a ruling. An awarded slab is no longer disputed —
+      // it scores for the shift the admin gave it to.
+      contested: unruled,
+      resolved: contestedSlabs.length - unruled,
       wideRows: shifts.reduce((a, s) => a + s.wideRows, 0),
       // A shift that filed MIS but named nobody in a role. Its points are in the
       // plant total and on nobody's row, so every other person's share of that
