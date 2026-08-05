@@ -52,7 +52,7 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
       <F label="A / B / C">{fmt(s.gradeA)} / {fmt(s.gradeB)} / {fmt(s.gradeC)}</F>
       <F label="Graded / awaiting QC">{fmt(s.graded)}{s.ungraded ? ` / ${fmt(s.ungraded)}` : ""}</F>
       <F label="Points"><span className="text-brand">{fmt(s.points)}</span></F>
-      <F label="Team">{s.people.length ? s.people.join(", ") : "—"}</F>
+      <F label="Team">{s.crew.production.join(", ") || "—"}{s.crew.electrical.length || s.crew.mechanical.length ? <div className="text-[11px] font-normal text-gray-400">E: {s.crew.electrical.join(", ") || "—"} · M: {s.crew.mechanical.join(", ") || "—"}</div> : null}</F>
     </div>
   );
 
@@ -103,46 +103,54 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
             </Card>
           )}
 
-          <Card className="mb-6">
-            <H2>Score by person</H2>
-            <p className="mb-3 mt-1 text-xs text-gray-500">
-              Everyone named on a shift (production, electrical and mechanical incharge) carries that shift&rsquo;s
-              full score. <b>Share</b> is the slice of the period&rsquo;s points — apply it to each person&rsquo;s own
-              salary percentage in payroll. Salaries are deliberately not held in the ERP.
-            </p>
-            {data.people.length === 0 ? (
-              <Empty>No named people on any shift in this range. MIS records an incharge on only part of its rows — without a name a shift cannot be attributed to anyone.</Empty>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-[11px] uppercase tracking-wider text-gray-500">
-                      <th className="py-2 pr-4">#</th>
-                      <th className="py-2 pr-4">Person</th>
-                      <th className="py-2 pr-4">Shifts</th>
-                      <th className="py-2 pr-4">Slabs</th>
-                      <th className="py-2 pr-4">Quality</th>
-                      <th className="py-2 pr-4">Points</th>
-                      <th className="py-2">Share</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.people.map((p, i) => (
-                      <tr key={p.person} className="border-t border-gray-100">
-                        <td className="py-2 pr-4 text-gray-400">{i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : i + 1}</td>
-                        <td className="py-2 pr-4 font-medium text-gray-900">{p.person}</td>
-                        <td className="py-2 pr-4 text-gray-600">{fmt(p.shifts)}</td>
-                        <td className="py-2 pr-4 text-gray-600">{fmt(p.quantity)}</td>
-                        <td className="py-2 pr-4 text-gray-600">{pct(p.quality)}</td>
-                        <td className="py-2 pr-4 font-semibold text-brand">{fmt(p.points)}</td>
-                        <td className="py-2 text-gray-900">{(p.share * 100).toFixed(1)}%</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Card>
+          {(["production", "electrical", "mechanical"] as const).map((role) => {
+            const rows = data.byRole[role];
+            const label = role === "production" ? "Production incharge"
+              : role === "electrical" ? "Electrical incharge" : "Mechanical incharge";
+            return (
+              <Card key={role} className="mb-6">
+                <H2>{label}</H2>
+                <p className="mb-3 mt-1 text-xs text-gray-500">
+                  {role === "production"
+                    ? "Runs the shift and carries its full score. This is the ranking the shift incentive is built on."
+                    : "Ranked separately: this role covers the plant rather than one shift, and is often named on more than one shift at a time — so its totals are not comparable with the production incharge's."}
+                  {" "}<b>Share</b> is the slice of this role&rsquo;s points; payroll applies it to each person&rsquo;s own salary.
+                </p>
+                {rows.length === 0 ? (
+                  <Empty>Nobody recorded in this role for the range.</Empty>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-left text-[11px] uppercase tracking-wider text-gray-500">
+                          <th className="py-2 pr-4">#</th>
+                          <th className="py-2 pr-4">Person</th>
+                          <th className="py-2 pr-4">Shifts</th>
+                          <th className="py-2 pr-4">Slabs</th>
+                          <th className="py-2 pr-4">Quality</th>
+                          <th className="py-2 pr-4">Points</th>
+                          <th className="py-2">Share</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((p, i) => (
+                          <tr key={p.person} className="border-t border-gray-100">
+                            <td className="py-2 pr-4 text-gray-400">{i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : i + 1}</td>
+                            <td className="py-2 pr-4 font-medium text-gray-900">{p.person}</td>
+                            <td className="py-2 pr-4 text-gray-600">{fmt(p.shifts)}</td>
+                            <td className="py-2 pr-4 text-gray-600">{fmt(p.quantity)}</td>
+                            <td className="py-2 pr-4 text-gray-600">{pct(p.quality)}</td>
+                            <td className="py-2 pr-4 font-semibold text-brand">{fmt(p.points)}</td>
+                            <td className="py-2 text-gray-900">{(p.share * 100).toFixed(1)}%</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </Card>
+            );
+          })}
 
           <H2>Shifts in this range</H2>
           <p className="mb-3 mt-1 text-xs text-gray-500">{cards.length} shift(s) recorded between {from} and {to}.</p>

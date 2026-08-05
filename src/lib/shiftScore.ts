@@ -131,8 +131,12 @@ export interface ShiftScore {
   /** Mean measured thickness at Jot for this shift's slabs. Reported only;
    *  it does not enter the score. */
   avgMm: number | null;
-  /** People named on this shift's MIS rows — they share the score. */
+  /** People named on this shift's MIS rows — they share the score. Kept per
+   *  ROLE: a production incharge runs the shift, whereas electrical and
+   *  mechanical cover the plant and are often named on several shifts at once,
+   *  so ranking them in one list compares jobs that are not the same job. */
   people: string[];
+  crew: { production: string[]; electrical: string[]; mechanical: string[] };
 }
 
 /** Per-slab closeness to ideal: 1.0 exactly on target, 0 at the tolerance edge. */
@@ -147,21 +151,31 @@ export async function scoreShift(anchor: string, shift: ShiftLetter): Promise<Sh
   const empty: ShiftScore = {
     anchor, shift, quantity: 0, quality: null, rawQuality: null, graded: 0, ungraded: 0,
     gradeA: 0, gradeB: 0, gradeC: 0, points: 0, avgMm: null, people: [],
+    crew: { production: [], electrical: [], mechanical: [] },
   };
   try {
     // What this shift made.
+    // `date` is the production timestamp and is filled on every row. NOT
+    // createdTime (Airtable-era, present on 19 of 6,013 recent rows) and NOT
+    // importedAt, which is when the row reached the ERP — on average 9.4 h
+    // after the slab was actually pressed. Falling back to importedAt credited
+    // slabs to whichever shift happened to be running at import time, so a
+    // shift could work all night and score nothing.
     const pressed: any[] = await (prisma as any).press.findMany({
       where: {
         slabNumber: { not: null },
         OR: [
-          { createdTime: { gte: start, lt: end } },
-          { AND: [{ createdTime: null }, { importedAt: { gte: start, lt: end } }] },
+          { date: { gte: start, lt: end } },
+          { AND: [{ date: null }, { createdTime: { gte: start, lt: end } }] },
         ],
       },
       select: { slabNumber: true },
     });
     const slabs = [...new Set(pressed.map((r) => Number(r.slabNumber)).filter(Number.isFinite))];
-    if (!slabs.length) return { ...empty, people: await peopleOnShift(anchor, shift) };
+    if (!slabs.length) {
+      const crew0 = await crewOnShift(anchor, shift);
+      return { ...empty, crew: crew0, people: [...new Set([...crew0.production, ...crew0.electrical, ...crew0.mechanical])].sort() };
+    }
 
     // How QC finally graded those same slabs. Chunked: Postgres caps a
     // statement at 32767 bind parameters and a busy shift can press hundreds,
@@ -193,10 +207,11 @@ export async function scoreShift(anchor: string, shift: ShiftLetter): Promise<Sh
     // Raw share kept for the report; the SCORED quality is stretched above the floor.
     const rawQuality = graded ? credit / graded : null;
     const quality = scaleQuality(rawQuality);
-    const [people, avgMm] = await Promise.all([
-      peopleOnShift(anchor, shift),
+    const [crew, avgMm] = await Promise.all([
+      crewOnShift(anchor, shift),
       avgThicknessFor(slabs),
     ]);
+    const people = [...new Set([...crew.production, ...crew.electrical, ...crew.mechanical])].sort();
     return {
       anchor, shift,
       quantity: slabs.length,
@@ -207,7 +222,7 @@ export async function scoreShift(anchor: string, shift: ShiftLetter): Promise<Sh
       gradeA: a, gradeB: b, gradeC: c,
       avgMm,
       points: Math.round(slabs.length * (quality ?? 0)),
-      people,
+      people, crew,
     };
   } catch {
     return empty;
@@ -271,7 +286,7 @@ export function canonPerson(raw: unknown): string {
  *  Production / electrical / mechanical incharge on the shift's MIS rows.
  *  A real ShiftTeam roster would replace this; until one exists these are the
  *  only names attributable to a shift. */
-async function peopleOnShift(anchor: string, shift: ShiftLetter): Promise<string[]> {
+async function crewOnShift(anchor: string, shift: ShiftLetter): Promise<ShiftScore["crew"]> {
   const { start, end } = shiftRange(anchor, shift);
   try {
     const rows: any[] = await (prisma as any).mis.findMany({
@@ -286,23 +301,21 @@ async function peopleOnShift(anchor: string, shift: ShiftLetter): Promise<string
         mechanicalInchargeName: true, submittedBy: true,
       },
     });
-    const set = new Set<string>();
+    const prod = new Set<string>(), elec = new Set<string>(), mech = new Set<string>();
+    // multi-select incharges are stored comma-joined in one text column
+    const add = (set: Set<string>, v: unknown) => {
+      for (const name of String(v ?? "").split(",")) { const n = canonPerson(name); if (n) set.add(n); }
+    };
     for (const r of rows) {
-      for (const v of [r.productionInchargeName, r.electricalInchargeName, r.mechanicalInchargeName]) {
-        // multi-select incharges are stored comma-joined in one text column
-        for (const name of String(v ?? "").split(",")) {
-          const n = canonPerson(name);
-          if (n) set.add(n);
-        }
-      }
-      if (!r.productionInchargeName && r.submittedBy) {
-        const n = canonPerson(r.submittedBy);
-        if (n) set.add(n);
-      }
+      add(prod, r.productionInchargeName);
+      add(elec, r.electricalInchargeName);
+      add(mech, r.mechanicalInchargeName);
+      if (!r.productionInchargeName) add(prod, r.submittedBy);
     }
-    return [...set].filter(Boolean).sort();
+    const srt = (x: Set<string>) => [...x].filter(Boolean).sort();
+    return { production: srt(prod), electrical: srt(elec), mechanical: srt(mech) };
   } catch {
-    return [];
+    return { production: [], electrical: [], mechanical: [] };
   }
 }
 
@@ -317,10 +330,14 @@ export interface PersonScore {
   share: number;
 }
 
+export type CrewRole = "production" | "electrical" | "mechanical";
+
 export interface ScoreboardData {
   from: string;
   to: string;
   shifts: ShiftScore[];
+  /** Ranked separately per role — see ShiftScore.crew for why. */
+  byRole: Record<CrewRole, PersonScore[]>;
   people: PersonScore[];
   totals: { quantity: number; points: number; graded: number; ungraded: number; quality: number | null };
 }
@@ -339,10 +356,35 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
       return scoreShift(d, l);
     })),
   );
-  const shifts = scored.filter((s): s is ShiftScore => s !== null && s.quantity > 0);
+  // Keep a shift that recorded a TEAM even if it pressed nothing: dropping it
+  // erased those people from the board entirely, which read as "they did not
+  // work" rather than "they worked and produced nothing".
+  const shifts = scored.filter((s): s is ShiftScore => s !== null && (s.quantity > 0 || s.people.length > 0));
 
   // Each person on a shift carries that shift's whole score: production is a
   // team result, so the team shares one number rather than splitting it.
+  const roll = (pick: (s: ShiftScore) => string[]): PersonScore[] => {
+    const m = new Map<string, { shifts: number; quantity: number; points: number; qNum: number; qDen: number }>();
+    for (const s of shifts) {
+      for (const p of pick(s)) {
+        const e = m.get(p) ?? { shifts: 0, quantity: 0, points: 0, qNum: 0, qDen: 0 };
+        e.shifts += 1; e.quantity += s.quantity; e.points += s.points;
+        if (s.quality != null) { e.qNum += s.quality * s.graded; e.qDen += s.graded; }
+        m.set(p, e);
+      }
+    }
+    const tot = [...m.values()].reduce((a, e) => a + e.points, 0);
+    return [...m.entries()]
+      .map(([person, e]) => ({ person, shifts: e.shifts, quantity: e.quantity, points: e.points,
+        quality: e.qDen ? e.qNum / e.qDen : null, share: tot ? e.points / tot : 0 }))
+      .sort((a, b) => b.points - a.points);
+  };
+  const byRole = {
+    production: roll((s) => s.crew.production),
+    electrical: roll((s) => s.crew.electrical),
+    mechanical: roll((s) => s.crew.mechanical),
+  };
+
   const byPerson = new Map<string, { shifts: number; quantity: number; points: number; qNum: number; qDen: number }>();
   for (const s of shifts) {
     for (const p of s.people) {
@@ -370,6 +412,7 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
   const qNum = shifts.reduce((a, s) => a + (s.quality ?? 0) * s.graded, 0);
   return {
     from, to, shifts,
+    byRole,
     people,
     totals: {
       quantity: shifts.reduce((a, s) => a + s.quantity, 0),
