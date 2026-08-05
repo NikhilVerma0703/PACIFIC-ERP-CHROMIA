@@ -354,11 +354,11 @@ async function crewOnShift(anchor: string, shift: ShiftLetter): Promise<ShiftSco
 }
 
 /** Shifts a person must have worked before they can be RANKED.
- *  Per-shift scoring rewards the rate, which is what we want — but without a
- *  floor one lucky shift would top the board over someone who held the same
- *  rate for twenty. Below this they are still shown, with their figures, just
- *  not placed or paid. */
-export const MIN_SHIFTS_TO_RANK = 3;
+ *  Set to 1 by decision: everyone who worked at all is placed, however few
+ *  shifts they did. The per-shift rate is the measure, and a short month should
+ *  not remove someone from the board. Raise this if a one-shift rate ever wins
+ *  in a way that reads unfairly — the mechanism is still here. */
+export const MIN_SHIFTS_TO_RANK = 1;
 
 export interface PersonScore {
   person: string;

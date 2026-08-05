@@ -69,7 +69,7 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
               <td className="py-2 pr-4 text-gray-400">{!p.qualified ? "—" : i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : i + 1}</td>
               <td className={`py-2 pr-4 font-medium ${p.qualified ? "text-gray-900" : ""}`}>
                 {p.person}
-                {!p.qualified && <div className="text-[11px] font-normal">under {MIN_SHIFTS_TO_RANK} shifts — not ranked</div>}
+                {!p.qualified && <div className="text-[11px] font-normal">no shifts recorded</div>}
               </td>
               <td className="py-2 pr-4">{fmt(p.shifts)}</td>
               <td className="py-2 pr-4">{fmt(p.quantity)}</td>
@@ -158,7 +158,7 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
                     ? "Runs the shift and carries its full score. This is the ranking the shift incentive is built on."
                     : "Ranked separately: this role covers the plant rather than one shift, and is often named on more than one shift at a time — so its totals are not comparable with the production incharge's."}
                   {" "}Ranked on <b>points per shift</b>, not the total — 3 shifts making 300 good slabs beats 10
-                  making 500. <b>Share</b> is the slice of this role&rsquo;s per-shift points; payroll applies it to
+                  making 500, however many shifts each person worked. <b>Share</b> is the slice of this role&rsquo;s per-shift points; payroll applies it to
                   each person&rsquo;s own salary.
                 </p>
                 {board(rows, "Nobody recorded in this role for the range.")}

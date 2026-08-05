@@ -112,45 +112,53 @@ A(band("<b>Production is a team game.</b> One person cannot win this alone, and 
 
 A(Paragraph("How the score is calculated", S["h"]))
 A(Paragraph("Your score is built from <b>two things only</b> - how much you made, and how good it was.", S["b"]))
-A(Paragraph("SCORE  =  QUANTITY  &times;  QUALITY", S["formula"]))
-A(Paragraph("They are <b>multiplied, not added</b> - 1,000 slabs made badly scores low, and so do 100 made perfectly.", S["b"]))
-A(Paragraph("You cannot make up bad quality by producing more, and you cannot make up low production by being "
-            "careful with a few slabs. <b>You need both.</b>", S["b"]))
+A(Paragraph("EACH SHIFT:&nbsp;&nbsp; POINTS  =  QUANTITY  &times;  QUALITY", S["formula"]))
+A(Paragraph("They are <b>multiplied, not added</b> - 1,000 slabs made badly scores low, and so do 100 made "
+            "perfectly. You cannot make up bad quality with volume, or low volume by being careful with a few "
+            "slabs. <b>You need both.</b>", S["b"]))
+A(Spacer(1, 3))
+A(Paragraph("YOUR RANK:&nbsp;&nbsp; TOTAL POINTS  &divide;  SHIFTS WORKED", S["formula"]))
+A(band("<b>You are ranked on your average per shift, not your total.</b> Working more shifts does not win by "
+       "itself - 3 shifts making 300 good slabs (100 a shift) beats 10 shifts making 500 (50 a shift).<br/>"
+       "Everyone who worked is ranked, however many shifts they did.",
+       colors.HexColor("#f0f7f8"), BRAND, S["quote"]))
 
 A(Paragraph("1. QUANTITY - how many slabs", S["h"]))
 A(Paragraph("The slabs <b>your own MIS entry claims</b> - the starting and ending slab number you enter each hour. Those slabs are yours. An hour with no slab numbers entered claims nothing.", S["b"]))
 
 A(Paragraph("2. QUALITY - what QC grades those same slabs", S["h"]))
 A(Paragraph("Quality follows <b>your</b> slabs - the ones your MIS entry claimed. We look at the grade QC finally gave them, not whatever was polished during your hours, which is someone else's work.", S["b"]))
-A(tbl([["QC grade", "Counts as"],
+gradeT = tbl([["QC grade", "Counts as"],
        ["A  (and A2)", "100%"],
        ["B", "50%"],
-       ["C  (reject)", "0%"]],
-      [34 * mm, 26 * mm], align_right=[1]))
-A(Spacer(1, 5))
-A(Paragraph("Your grade share is then scored against a <b>90% minimum standard</b> - you are paid for how far "
-            "<b>above</b> 90% you get:", S["b"]))
-A(tbl([["Your grade share", "Quality score"],
+       ["C  (reject)", "0%"]], [30 * mm, 24 * mm], align_right=[1])
+floorT = tbl([["Your grade share", "Quality score"],
        ["90% or below", "0%"],
        ["95%", "50%"],
        ["98%", "80%"],
-       ["100%", "100%"]],
-      [40 * mm, 30 * mm], align_right=[1]))
+       ["100%", "100%"]], [36 * mm, 28 * mm], align_right=[1])
+qpair = Table([[gradeT, floorT]], colWidths=[60 * mm, 70 * mm], hAlign="LEFT")
+qpair.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+A(qpair)
 A(Spacer(1, 4))
+A(Paragraph("Your grade share is scored against a <b>90% minimum standard</b> - you are paid for how far "
+            "<b>above</b> 90% you get.", S["b"]))
 A(Paragraph("A slab still waiting to be polished is <b>not</b> counted against you - it simply waits until QC "
             "grades it.", S["b"]))
 
 A(Paragraph("Our own figures - July 2026", S["h"]))
 A(Paragraph("Real numbers from our line, not examples:", S["b"]))
-A(tbl([["Shift", "Slabs pressed", "Grade share", "POINTS"],
-       ["Shift C", "2,042", "94.7%", "1,336"],
-       ["Shift A", "1,690", "96.2%", "1,075"],
-       ["Shift B", "1,839", "94.6%", "1,026"]],
-      [24 * mm, 32 * mm, 28 * mm, 26 * mm], align_right=[1, 2, 3]))
+A(tbl([["Production incharge", "Shifts", "Slabs", "Points", "PER SHIFT"],
+       ["Suresh", "33", "2,236", "1,581", "48"],
+       ["Pradhap", "29", "1,830", "1,145", "39"],
+       ["Appalaraju", "19", "1,270", "726", "38"],
+       ["Sivaiha", "20", "1,022", "663", "33"]],
+      [42 * mm, 20 * mm, 24 * mm, 24 * mm, 26 * mm], align_right=[1, 2, 3, 4]))
 A(Spacer(1, 5))
-A(band("<b>Look at Shift A and Shift B.</b> Shift A pressed <b>149 fewer slabs</b> than Shift B - and still "
-       "<b>beat it</b>, 1,075 points to 1,026, because a higher share of A's slabs came out Grade A.<br/>"
-       "<b>Making more is not enough. It has to be right.</b>",
+A(Spacer(1, 5))
+A(band("<b>Look at Appalaraju and Sivaiha.</b> Sivaiha worked <b>one more shift</b> and still finished behind - "
+       "38 points a shift against 33 - because Appalaraju&apos;s shifts each did more, and did it better.<br/>"
+       "<b>It is not how many shifts you work. It is what each shift does.</b>",
        colors.HexColor("#f9fafb"), LINE, S["quote"]))
 
 A(PageBreak())
