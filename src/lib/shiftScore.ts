@@ -7,6 +7,20 @@
 // explanations of why quantity was what it was. Scoring them alongside quantity
 // pays twice for one thing.
 //
+// WHICH SLABS BELONG TO A SHIFT — THE MIS ENTRY DECIDES, NOT THE CLOCK
+// A shift owns the slabs its own MIS rows declare, via the starting/ending slab
+// numbers the incharge enters each hour. That is a human statement of "these are
+// ours", made by the same person the score is attributed to, and the hours tile
+// cleanly: 152207-152211, 152212-152219, 152220-152230 ... with no overlap.
+//
+// Inferring it from press timestamps instead was wrong twice over. It asked the
+// clock a question only the operator can answer, and press.createdTime survives
+// on 19 of 6,013 rows so the fallback did the work — importedAt, which lands on
+// average 9.4 h after the slab was pressed and therefore inside a later shift.
+//
+// Press timestamps remain the fallback for hours where no range was entered, so
+// a shift that produced but skipped the range boxes is not scored at zero.
+//
 // WHY QUALITY COMES FROM QC, AND WHY IT FOLLOWS THE SLAB
 // Quality is the QC grade of the slabs THIS SHIFT PRESSED, traced by slab
 // number — not the grades recorded during the shift's own hours. Polishing runs
@@ -155,23 +169,43 @@ export async function scoreShift(anchor: string, shift: ShiftLetter): Promise<Sh
   };
   try {
     // What this shift made.
-    // `date` is the production timestamp and is filled on every row. NOT
-    // createdTime (Airtable-era, present on 19 of 6,013 recent rows) and NOT
-    // importedAt, which is when the row reached the ERP — on average 9.4 h
-    // after the slab was actually pressed. Falling back to importedAt credited
-    // slabs to whichever shift happened to be running at import time, so a
-    // shift could work all night and score nothing.
-    const pressed: any[] = await (prisma as any).press.findMany({
+    // 1) What the shift's OWN MIS rows claim, hour by hour.
+    const mis: any[] = await (prisma as any).mis.findMany({
       where: {
-        slabNumber: { not: null },
         OR: [
-          { date: { gte: start, lt: end } },
-          { AND: [{ date: null }, { createdTime: { gte: start, lt: end } }] },
+          { dateAndTime: { gte: start, lt: end } },
+          { AND: [{ dateAndTime: null }, { date: { gte: start, lt: end } }] },
         ],
       },
-      select: { slabNumber: true },
+      select: { startingSlabNumber: true, endingSlabNumber: true },
     });
-    const slabs = [...new Set(pressed.map((r) => Number(r.slabNumber)).filter(Number.isFinite))];
+    const declared = new Set<number>();
+    let declaredHours = 0;
+    for (const r of mis) {
+      const a = Number(r.startingSlabNumber), b = Number(r.endingSlabNumber);
+      if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b < a) continue;
+      // A typo'd range must not swallow the month; an hour cannot make 2,000.
+      if (b - a > 500) continue;
+      declaredHours += 1;
+      for (let n = a; n <= b; n++) declared.add(n);
+    }
+
+    // 2) Only where nothing was declared, fall back to the press clock, so an
+    //    hour logged without the range boxes still counts something.
+    let slabs = [...declared];
+    if (!declaredHours) {
+      const pressed: any[] = await (prisma as any).press.findMany({
+        where: {
+          slabNumber: { not: null },
+          OR: [
+            { date: { gte: start, lt: end } },
+            { AND: [{ date: null }, { createdTime: { gte: start, lt: end } }] },
+          ],
+        },
+        select: { slabNumber: true },
+      });
+      slabs = [...new Set(pressed.map((r) => Number(r.slabNumber)).filter(Number.isFinite))];
+    }
     if (!slabs.length) {
       const crew0 = await crewOnShift(anchor, shift);
       return { ...empty, crew: crew0, people: [...new Set([...crew0.production, ...crew0.electrical, ...crew0.mechanical])].sort() };
