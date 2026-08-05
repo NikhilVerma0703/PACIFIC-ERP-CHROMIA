@@ -38,12 +38,12 @@ by being careful with a few slabs. You need both.
 
 ### 1. QUANTITY — how many slabs
 
-The number of slabs your shift produced that reached **Jot** and were measured.
+The slabs **your own MIS entry claims** — the starting and ending slab number you enter each hour.
+Those slabs are yours. An hour with no slab numbers entered claims nothing.
 
 ### 2. QUALITY — what QC grades those same slabs
 
-Quality follows **your** slabs. We take the slabs your shift pressed and look at the grade
-QC finally gave them — not whatever was being polished during your hours, which is
+Quality follows **your** slabs — the ones your MIS entry claimed. We look at the grade QC finally gave them — not whatever was being polished during your hours, which is
 someone else's work.
 
 | QC grade | Counts as |
@@ -115,8 +115,8 @@ This is the single most common way a shift loses points it had already earned.
 The score can only count what is recorded against your shift.
 
 - Enter the **slab class** (3 cm / 2 cm / 1.2 cm) on every Jot record.
-- Enter every **MIS hour** for your shift, with the correct **shift number** and the
-  **incharge names**.
+- Enter every **MIS hour** for your shift, with the correct **shift number**, the **incharge names**,
+  and the **starting and ending slab number** — that is what claims the slabs for your shift.
 
 If a shift measures only a few slabs, its quality score is built from those few slabs
 only. **Measure everything — it is your own score.**

@@ -118,12 +118,10 @@ A(Paragraph("You cannot make up bad quality by producing more, and you cannot ma
             "careful with a few slabs. <b>You need both.</b>", S["b"]))
 
 A(Paragraph("1. QUANTITY - how many slabs", S["h"]))
-A(Paragraph("The number of slabs your shift produced that reached <b>Jot</b> and were measured.", S["b"]))
+A(Paragraph("The slabs <b>your own MIS entry claims</b> - the starting and ending slab number you enter each hour. Those slabs are yours. An hour with no slab numbers entered claims nothing.", S["b"]))
 
 A(Paragraph("2. QUALITY - what QC grades those same slabs", S["h"]))
-A(Paragraph("Quality follows <b>your</b> slabs. We take the slabs your shift pressed and look at the grade QC "
-            "finally gave them - not whatever was being polished during your hours, which is someone else's work.",
-            S["b"]))
+A(Paragraph("Quality follows <b>your</b> slabs - the ones your MIS entry claimed. We look at the grade QC finally gave them, not whatever was polished during your hours, which is someone else's work.", S["b"]))
 A(tbl([["QC grade", "Counts as"],
        ["A  (and A2)", "100%"],
        ["B", "50%"],
