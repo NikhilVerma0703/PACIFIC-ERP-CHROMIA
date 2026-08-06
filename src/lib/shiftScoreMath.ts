@@ -303,11 +303,24 @@ export function shiftWeight(hoursLogged: number, stoppedMin: number, declaredSla
  *  asks how many times we have watched this man run a shift, and he turned up
  *  for all of them. Scaling it by running time instead cancels the whole
  *  downtime adjustment for exactly the people it protects: below the ramp the
- *  volume term is `(points / shifts) x (shifts / 5)`, which is `points / 5`
+ *  volume term is `(points / shifts) x (shifts / N)`, which is `points / N`
  *  whatever the divisor, so a man whose night was lost to a breakdown would
  *  come out of the fix strictly worse off than before it — punished twice for
- *  one stoppage. */
-export const CREDIBLE_SHIFTS = 5;
+ *  one stoppage.
+ *
+ *  CALIBRATED, like TOLERANCE_MM and UPTIME_FLOOR — 5 was too blunt for a
+ *  three-man rotation. On 2026-07-31..08-06 Suresh ran 106 slabs at 100% QC
+ *  through the one shift of his two the line was alive for: 111 good slabs per
+ *  running shift, nearly double the next man. At 5 that became 111 x 0.40 = 44
+ *  and put him THIRD on the money behind rates of 64 and 50 — the board showed
+ *  him first on performance and paid him third, which is exactly the reading
+ *  that makes an incentive stop working.
+ *
+ *  At 3 he places first (29.2% against Sivaiha's 28.4%) and the guard is still
+ *  live where it matters: two shifts are discounted a third, one shift is cut
+ *  to 0.33, so a single lucky night still cannot take the month. Set by
+ *  decision on those figures — revisit it if the rotation gets deeper. */
+export const CREDIBLE_SHIFTS = 3;
 export const credibility = (shifts: number) => Math.min(1, Math.max(0, shifts) / CREDIBLE_SHIFTS);
 
 /** Shifts a person must have worked before they can be RANKED.
