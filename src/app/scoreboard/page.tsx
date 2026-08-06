@@ -8,8 +8,8 @@ import { DisputeRuling } from "@/components/DisputeRuling";
 import { getShiftReport, currentShiftAnchor } from "@/lib/misShift";
 import { AutoRefresh } from "./AutoRefresh";
 import {
-  scoreRange, scoreStations, QUALITY_FLOOR, MIN_ROWS_TO_RANK_STATION,
-  POOL_VOLUME, POOL_QUALITY, CREDIBLE_SHIFTS,
+  scoreRange, scoreStations, QUALITY_FLOOR, QUALITY_TARGET, MIN_ROWS_TO_RANK_STATION,
+  POOL_VOLUME, POOL_QUALITY, CREDIBLE_SHIFTS, OEE_TARGET, TARGET_SLABS_PER_SHIFT,
   type ShiftScore, type PersonScore, type StationBoard, type FlaggedRow,
 } from "@/lib/shiftScore";
 import { isAdmin } from "@/lib/rbac";
@@ -263,9 +263,46 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
             <Kpi label="Shifts scored" value={fmt(data.shifts.length)} />
             <Kpi label="Slabs pressed" value={fmt(data.totals.quantity)} />
             <Kpi label="QC grade share" value={pct(data.totals.rawQuality)} sub="A = 100% · B = 50% · C = 0%" />
-            <Kpi label="Quality score" value={pct(data.totals.quality)} sub={`the grade share above, measured from ${Math.round(QUALITY_FLOOR * 100)}%`} />
+            <Kpi label="Quality score" value={pct(data.totals.quality)} sub={`the grade share above, stretched ${Math.round(QUALITY_FLOOR * 100)}% → ${Math.round(QUALITY_TARGET * 100)}%`} />
             <Kpi label="Good slabs" value={fmt(data.totals.points)} sub={`${fmt(data.totals.graded)} graded · ${fmt(data.totals.ungraded)} awaiting QC`} />
           </div>
+
+          {/* OEE — REPORTED, NEVER PAID. Kept visually apart from the KPI row
+              above for exactly that reason: everything above this decides money
+              and everything in here does not, and a board that blurs the two
+              teaches the floor to distrust both. */}
+          <Card className="mb-6">
+            <H2>OEE — reported, not paid</H2>
+            <p className="mb-3 mt-1 text-xs text-gray-500">
+              Availability × Performance × Quality, the standard manufacturing measure, built entirely from figures
+              already collected for the payout — nothing new is entered to produce it.{" "}
+              <b>It decides no money.</b> Availability and quality are <i>already</i> in the payout (availability
+              shrinks the per-shift divisor, quality has its own pool), so paying OEE on top would pay twice for one
+              thing — and Performance rests on a target of {TARGET_SLABS_PER_SHIFT} good slabs a running shift, which
+              is a decision, not a measurement. Watch it move for a month before it carries weight.
+            </p>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {([
+                ["Availability", data.totals.oee.availability, OEE_TARGET.availability, "of logged hours, the line could run"],
+                ["Performance", data.totals.oee.performance, OEE_TARGET.performance, `good slabs vs ${TARGET_SLABS_PER_SHIFT} a running shift`],
+                ["Quality", data.totals.oee.quality, OEE_TARGET.quality, "raw QC grade share, unstretched"],
+                ["OEE", data.totals.oee.oee, OEE_TARGET.oee, "the three multiplied"],
+              ] as const).map(([label, v, target, sub]) => (
+                <Kpi
+                  key={label}
+                  label={label}
+                  value={pct(v)}
+                  sub={`${sub} · world-class ${Math.round(target * 100)}%`}
+                />
+              ))}
+            </div>
+            <p className="mt-3 text-xs text-gray-500">
+              <b>MIS discipline: {pct(data.totals.misDiscipline)}</b> — hours filed out of eight, ranges narrow
+              enough to be real, and slabs no other shift also claimed. Each of those already costs points under the
+              payout rules, so this is not a second penalty; it is the same loss, visible while the month is still
+              running instead of on payday.
+            </p>
+          </Card>
 
           {data.requestedTo && (
             <Card className="mb-6 border-amber-300 bg-amber-50">
@@ -354,7 +391,8 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
                       <span className="text-gray-400">grey figure</span> under Shifts is what the rate is actually
                       divided by.
                       {" "}<b>QC grade</b> is the real share (A 100% · B 50% · C 0%); <b>Score</b> is that share
-                      measured from {Math.round(QUALITY_FLOOR * 100)}%. <b>Share</b> combines
+                      stretched between {Math.round(QUALITY_FLOOR * 100)}% and {Math.round(QUALITY_TARGET * 100)}%,
+                      so {Math.round(QUALITY_TARGET * 100)}% and above all score 100%. <b>Share</b> combines
                       both: {Math.round(POOL_VOLUME * 100)}% from good slabs per shift
                       and {Math.round(POOL_QUALITY * 100)}% from the score. Payroll applies it to each
                       person&rsquo;s own salary.

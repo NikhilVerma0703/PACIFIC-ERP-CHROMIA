@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import {
   gradeCredit, polishCredit, canonPerson, shiftRange, shiftWeight,
   scaleQuality, scaleUptime, scalePolish,
-  QUALITY_FLOOR, UPTIME_FLOOR, POLISH_FLOOR, MIN_RUNNING_SHIFT,
+  QUALITY_FLOOR, QUALITY_TARGET, UPTIME_FLOOR, POLISH_FLOOR, MIN_RUNNING_SHIFT,
+  oeeOf, oeeTotal, misDiscipline, TARGET_SLABS_PER_SHIFT,
 } from "../src/lib/shiftScoreMath.ts";
 
 // These decide money. Every one of them is a bug that was live.
@@ -39,11 +40,20 @@ test("polishCredit: rescued work counts, open work waits, scrap is a loss", () =
   assert.equal(polishCredit("Direct Ok", "Direct ok"), 1);
 });
 
-test("scaling: each floor zeroes at or below itself and reaches 1 at 100%", () => {
+test("scaling: each floor zeroes at or below itself and reaches 1 at its target", () => {
   assert.equal(scaleQuality(QUALITY_FLOOR), 0);
   assert.equal(scaleQuality(0.5), 0);
+  // Quality tops out at the TARGET, not at a perfect grade share: 97% and 100%
+  // both score 100%. The notice on the wall says so in the same words.
+  assert.equal(scaleQuality(QUALITY_TARGET), 1);
   assert.equal(scaleQuality(1), 1);
-  assert.equal(Math.round((scaleQuality(0.964) ?? 0) * 1000) / 1000, 0.64);
+  // Midpoint of the 87-97 band.
+  assert.equal(Math.round((scaleQuality(0.92) ?? 0) * 1000) / 1000, 0.5);
+  // The July field (93.6% - 98.0%) now spreads 66% - 100% instead of 36% - 80%.
+  assert.equal(Math.round((scaleQuality(0.936) ?? 0) * 100) / 100, 0.66);
+  assert.equal(scaleQuality(0.98), 1);
+  // A shift just under the floor still takes nothing from the quality pool.
+  assert.equal(scaleQuality(0.869), 0);
   assert.equal(scaleUptime(UPTIME_FLOOR), 0);
   assert.equal(scaleUptime(1), 1);
   assert.equal(scalePolish(POLISH_FLOOR), 0);
@@ -85,6 +95,76 @@ test("shiftWeight: a shift is worth the time its line could run", () => {
   assert.equal(shiftWeight(8, 999, 0), 0);
   // no hours logged claims nothing
   assert.equal(shiftWeight(0, 0, 0), 0);
+});
+
+test("oeeOf: reported only, and null wherever the data cannot support a number", () => {
+  // A perfect shift: never stopped, hit the target, every slab Grade A.
+  const perfect = oeeOf(8, 0, TARGET_SLABS_PER_SHIFT, 1);
+  assert.equal(perfect.availability, 1);
+  assert.equal(perfect.performance, 1);
+  assert.equal(perfect.oee, 1);
+
+  // Half the shift lost to breakdown. Availability halves, and the 50 slabs it
+  // DID make in the running half are full marks on pace — a stoppage must not
+  // be charged twice, once as availability and again as performance.
+  const half = oeeOf(8, 240, 50, 1);
+  assert.equal(half.availability, 0.5);
+  assert.equal(half.performance, 1);
+  assert.equal(half.oee, 0.5);
+
+  // Quality is the RAW grade share, not the payout's stretched score: an OEE
+  // built on QUALITY_FLOOR would not be comparable with any other plant's.
+  assert.equal(oeeOf(8, 0, 100, 0.95).quality, 0.95);
+  assert.equal(Math.round((oeeOf(8, 0, 100, 0.95).oee ?? 0) * 100) / 100, 0.95);
+
+  // Ungraded output: quality is unknown, so OEE is unknown — not a smaller
+  // number. Availability and performance still stand on their own.
+  const ungraded = oeeOf(8, 0, 100, null);
+  assert.equal(ungraded.oee, null);
+  assert.equal(ungraded.availability, 1);
+
+  // Nothing logged measures nothing.
+  assert.equal(oeeOf(0, 0, 0, 1).availability, null);
+  assert.equal(oeeOf(0, 0, 0, 1).oee, null);
+
+  // More than eight rows filed for one shift (a corrected hour re-entered) must
+  // not inflate the expected output and understate the shift.
+  assert.equal(oeeOf(10, 0, TARGET_SLABS_PER_SHIFT, 1).performance, 1);
+});
+
+test("oeeTotal: pools the inputs instead of averaging each shift's OEE", () => {
+  const full = { hoursLogged: 8, breakdownMin: 0, poweroutMin: 0, points: 100 };
+  const dead = { hoursLogged: 8, breakdownMin: 480, poweroutMin: 0, points: 0 };
+  // One clean shift and one the plant spent broken. Availability is 50% across
+  // the two, and the clean shift's pace is untouched by the dead one.
+  const t = oeeTotal([full, dead], 1);
+  assert.equal(t.availability, 0.5);
+  assert.equal(t.performance, 1);
+  assert.equal(t.oee, 0.5);
+  // Averaging each shift's OEE would give (1 + 0)/2 = 0.5 here too, so use a
+  // case that separates them: a two-hour shift must not weigh as much as a
+  // full one. Pooled, this is 20 good slabs against 10 hours of running time.
+  const stub = { hoursLogged: 2, breakdownMin: 0, poweroutMin: 0, points: 20 };
+  const mixed = oeeTotal([full, stub], 1);
+  assert.equal(mixed.availability, 1);
+  assert.equal(Math.round((mixed.performance ?? 0) * 100) / 100, 0.96); // 120 / 125
+  assert.equal(oeeTotal([], 1).oee, null);
+});
+
+test("misDiscipline: an unfiled, disputed or impossible hour shows before payday", () => {
+  // eight hours filed, nothing disputed, nothing impossible
+  assert.equal(misDiscipline(8, 0, 0, 200), 1);
+  // half the hours never entered
+  assert.equal(misDiscipline(4, 0, 0, 100), 0.5);
+  // one of eight hours declared a range too wide to be real
+  assert.equal(misDiscipline(8, 1, 0, 100), 0.875);
+  // a quarter of the shift's slabs are claimed by another shift too
+  assert.equal(misDiscipline(8, 0, 25, 100), 0.75);
+  // a shift that claimed no slabs cannot have disputed any — that term is 1,
+  // not 0, or an idle shift would read as a discipline failure
+  assert.equal(misDiscipline(8, 0, 0, 0), 1);
+  // nothing filed at all is unknown, not zero
+  assert.equal(misDiscipline(0, 0, 0, 0), null);
 });
 
 test("shiftRange: 8 hours in IST, and C anchors on the day it started", () => {

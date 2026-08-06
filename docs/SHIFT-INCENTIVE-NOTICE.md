@@ -63,36 +63,20 @@ The share of **your** slabs that came out Grade A. Quality follows the slab, not
 clock: we look at what QC gave the slabs your MIS entry claimed, not at whatever was
 being polished during your hours — that is someone else's work.
 
-Your grade share is scored against a **90% minimum standard** — you are paid for how far
-**above** 90% you get:
+Your grade share is scored between an **87% minimum standard** and a **97% target** — you
+are paid for how far **above 87%** you get, and **97% scores the full 100%**. You do not
+have to be perfect to score perfectly:
 
 | Your grade share | Quality score |
 |---|---|
-| 90% or below | **0%** |
-| 95% | 50% |
-| 98% | 80% |
-| 100% | **100%** |
+| 87% or below | **0%** |
+| 90% | 30% |
+| 92% | 50% |
+| 95% | 80% |
+| 97% or above | **100%** |
 
 The whole plant already runs between 93% and 98%, so this is where places are won and
 lost. Two points of grade share is worth twenty points of quality score.
-
----
-
-## Our own figures — July 2026
-
-Real numbers from our line, not examples:
-
-| Shift | Slabs pressed | Grade share | **Good slabs** | **Per shift** |
-|---|---|---|---|---|
-| Shift C | 2,021 | 95.4% | **1,488** | **51** |
-| Shift B | 1,731 | 95.0% | **1,342** | **48** |
-| Shift A | 1,638 | 95.6% | **1,228** | **44** |
-
-> Three shifts, 29 · 28 · 28 nights, and **seven slabs a shift** between first and last.
-> That is how close this is — and grade share separates them by barely half a point.
->
-> **The month is won by a few slabs an hour and a few grades a night.** Both halves are
-> in reach of every shift.
 
 ---
 
@@ -134,21 +118,57 @@ only. **Measure everything — it is your own score.**
 
 ---
 
-## The prize depends on what the PLANT makes
+## What the month pays — count the slabs, read your own line
 
-The pool everyone shares is set by the factory's total output for the month. It rises far
-faster than production does — going from 10,000 to 12,000 slabs is 20% more work and
-**double** the money:
+The pool everyone shares is set by the **good slabs the whole plant makes in the month**.
+It rises far faster than production does: 10,000 to 12,000 slabs is 20% more work and
+**double** the money.
 
-| Slabs in the month | Total incentive pool |
-|---|---|
-| 8,000 | **₹7 lakh** |
-| 10,000 | **₹15 lakh** |
-| 12,000 | **₹30 lakh** |
+This is not last month's result. This is what is waiting to be earned:
+
+| Good slabs in the month | A shift averages | Total pool | Of one month's salary | Operator | Incharge | Manager |
+|---|---|---|---|---|---|---|
+| 6,000 | 67 a shift | ₹2 lakh | 11% | ₹2,241 | ₹5,882 | ₹19,608 |
+| 7,000 | 78 a shift | ₹4 lakh | 22% | ₹4,482 | ₹11,765 | ₹39,216 |
+| 8,000 | 89 a shift | ₹7 lakh | 39% | ₹7,843 | ₹20,588 | ₹68,627 |
+| 9,000 | 100 a shift | ₹10 lakh | 56% | ₹11,204 | ₹29,412 | ₹98,039 |
+| 10,000 | 111 a shift | ₹15 lakh | 84% | ₹16,807 | ₹44,118 | ₹1,47,059 |
+| **11,000** | **122 a shift** | **₹20 lakh** | **112%** | **₹22,409** | **₹58,824** | **₹1,96,078** |
+| 12,000 | 133 a shift | ₹30 lakh | 168% | ₹33,613 | ₹88,235 | ₹2,94,118 |
+
+*Worked on an operator at ₹20,000, an incharge at ₹52,500 and a manager at ₹1,75,000 a
+month. Your own figure is that same percentage of your own salary. "A shift averages" is
+the good slabs one shift needs to average across 90 shifts in the month.*
+
+> **Read the second column, then the last three.** About **eleven more good slabs a shift**
+> moves the whole plant up one row — and every row up adds another **11% to 56% of a
+> month's pay** to every person on the line.
+>
+> **11,000 slabs is a full extra month's pay for everyone.**
 
 Every shift's output counts towards the same total, so **the whole plant has to get there
 together** — one shift alone cannot reach it, and one shift falling behind holds everyone
 back.
+
+---
+
+## How the pool is shared out
+
+The pool is divided **in proportion to salary**. Everyone is paid the same percentage of
+their own pay, so a bigger salary takes a bigger amount and the shares always add up to
+exactly the pool:
+
+| Who | On the line | Monthly salary | Share of every pool |
+|---|---|---|---|
+| Operators | 35 | ₹20,000 each | **39%** |
+| Incharges | 4 | ₹52,500 each | **12%** |
+| Managers | 5 | ₹1,75,000 each | **49%** |
+| **Total** | **44** | **₹17,85,000** | **100%** |
+
+There are **44 people on the line** — 35 operators, 4 incharges and 5 managers — and a
+production salary bill of ₹17.85 lakh a month. That bill is what turns a pool into a
+percentage: a ₹7 lakh pool is **39% of one month's salary**, and every person on the line
+gets 39% of their own.
 
 ---
 
@@ -161,17 +181,42 @@ back.
 3. That combined share becomes an incentive **percentage of salary**.
 4. Everyone on that shift receives that percentage **of their own salary**.
 
+The table above is what every shift earns when the three finish level. Win the month and
+your shift takes more than that; finish last and you take less. **But the row the plant
+lands on is worth far more than the place you finish in** — which is why the shift you
+beat this month is the same shift you need next month.
+
 **Conditions**
 
-- A shift below the **90% minimum quality standard** takes nothing from the quality half —
-  the highest quantity alone does not win.
-- Fewer than **5 shifts** in the month and your rate is scaled down in proportion. One
+- A shift below the **87% minimum quality standard** takes nothing from the quality half —
+  the highest quantity alone does not win. At **97% and above the quality half scores in
+  full**.
+- Fewer than **3 shifts** in the month and your rate is scaled down in proportion. One
   good night is not a month's work.
 - **Safety comes first.** Any lost-time accident in the shift means no incentive for that
   month, regardless of score.
 - Scores and rankings are **published every month** and can be checked. If you believe a
   number is wrong, raise it with your incharge — every point can be traced back to the
   individual slab records behind it.
+
+---
+
+## New on the board — OEE, the number world-class factories run on
+
+Three numbers multiplied together, all of them already coming from your own MIS entry —
+nothing new has to be written down. **They do not decide your money yet.** Watch them for
+a month first; they will carry weight only once the floor has seen them and agrees they
+are fair.
+
+| | Availability | Performance | Quality | OEE |
+|---|---|---|---|---|
+| **What it is** | Of the hours you logged, the time the line could run | Good slabs against 100 a running shift | Your QC grade share (A = 1, B = 0.5, C = 0) | The three multiplied together |
+| **World-class** | over 95% | over 95% | over 98% | over 85% |
+
+Beside them is **MIS discipline**: the hours your shift filed out of eight, the ranges
+typed too wide to be real, and the slabs another shift claimed as well. Every one of those
+already costs you points under the rules above — now you can see it and fix the entry
+**while the month is still running**, instead of finding out on payday.
 
 ---
 

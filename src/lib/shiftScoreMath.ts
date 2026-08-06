@@ -73,20 +73,41 @@ export function shiftRange(anchor: string, shift: ShiftLetter) {
 /** The grade share every shift already clears. Quality is scored on the distance
  *  ABOVE this, not from zero.
  *
- *  WHY. Raw grade share does not discriminate: in July every shift landed
- *  between 93.6% and 98.0%, so the quality factor was ~0.95 for everyone and the
- *  ranking collapsed into pure quantity — the second axis was decorative. C
- *  grades are only ~3% of output, so there is simply not much room below 100%.
- *  Rescaling against a 90% floor turns that 4-point spread into a 44-point one
- *  (93.6% -> 36%, 98.0% -> 80%), so quality decides places again. A shift below
- *  the floor scores zero on quality and therefore zero points, which is the
- *  intended cliff. */
-export const QUALITY_FLOOR = 0.9;
+ *  WHY A FLOOR AT ALL. Raw grade share does not discriminate: in July every
+ *  shift landed between 93.6% and 98.0%, so the quality factor was ~0.95 for
+ *  everyone and the ranking collapsed into pure quantity — the second axis was
+ *  decorative. C grades are only ~3% of output, so there is simply not much room
+ *  below 100%. Stretching a narrow band into a wide one is what makes quality
+ *  decide places again. A shift below the floor scores zero on quality and
+ *  therefore takes nothing from the quality pool, which is the intended cliff.
+ *
+ *  WHY 87, NOT 90. Set by decision 2026-08-06 together with QUALITY_TARGET. The
+ *  band is still ten points wide, so a point of grade share is worth the same
+ *  ten points of score it always was — the window simply slides down three, and
+ *  a shift having a bad month is no longer wiped out at 89%. */
+export const QUALITY_FLOOR = 0.87;
 
-/** Raw grade share -> scored quality, stretched against the floor. */
+/** The grade share that scores a FULL 100% on quality. Above it there is nothing
+ *  further to win.
+ *
+ *  WHY NOT 100%. A perfect grade share is not a target anyone can plan for — it
+ *  is the absence of the one bad slab that was always going to happen. Scoring
+ *  against it meant the top of the scale was permanently out of reach, and the
+ *  shifts genuinely running the plant's best quality were still being told they
+ *  had 20% left to find. 97% is the number the good months actually hit.
+ *
+ *  THE COST, STATED PLAINLY: this compresses the top. A shift at 97% and a shift
+ *  at 99.5% now tie on quality at 100%, where before they scored 70% and 95%.
+ *  Above 97% the quality pool is split evenly and only volume separates them.
+ *  That is the intended trade — a reachable ceiling beats a discriminating one —
+ *  but if the field ever bunches ABOVE 97%, raise this rather than the floor. */
+export const QUALITY_TARGET = 0.97;
+
+/** Raw grade share -> scored quality, stretched between the floor and the target.
+ *  87% -> 0, 92% -> 50%, 97% and anything above -> 100%. */
 export function scaleQuality(raw: number | null): number | null {
   if (raw == null) return null;
-  return Math.max(0, Math.min(1, (raw - QUALITY_FLOOR) / (1 - QUALITY_FLOOR)));
+  return Math.max(0, Math.min(1, (raw - QUALITY_FLOOR) / (QUALITY_TARGET - QUALITY_FLOOR)));
 }
 
 /** The same treatment for uptime, and for the same reason: unstretched, the
@@ -289,6 +310,135 @@ export function shiftWeight(hoursLogged: number, stoppedMin: number, declaredSla
   if (!(hoursLogged > 0)) return 0;
   const running = Math.max(0, Math.min(1, 1 - stoppedMin / (hoursLogged * 60)));
   return declaredSlabs > 0 ? Math.max(running, MIN_RUNNING_SHIFT) : running;
+}
+
+// --------------------------------------------------------------------------
+// OEE — REPORTED, NOT PAID
+// --------------------------------------------------------------------------
+// Availability x Performance x Quality, the standard manufacturing measure, so
+// the plant has one number it can compare against the rest of the industry and
+// three it can act on. Every input below is already collected for the payout
+// maths; nothing new has to be entered to produce it.
+//
+// IT DOES NOT DECIDE MONEY, DELIBERATELY. The payout is still 70% good slabs /
+// 30% quality (POOL_VOLUME / POOL_QUALITY) and this changes none of it. Two
+// reasons. Availability and Quality are ALREADY in the payout — availability
+// through shiftWeight shrinking the divisor, quality through its own pool — so
+// paying OEE on top pays twice for one thing. And Performance depends on
+// TARGET_SLABS_PER_SHIFT below, which is a decision, not a measurement: putting
+// an unvalidated target into a payout is how an incentive loses the floor's
+// trust in its first month. Show it, let the floor watch it move for a month,
+// then decide whether it should carry weight.
+
+/** Good slabs an eight-hour shift is expected to produce when the line runs.
+ *
+ *  NOT MEASURED — READ OFF THE INCENTIVE LADDER. The notice's landmark tier is
+ *  9,000 good slabs in a month, which across 90 shifts is 100 a shift, and that
+ *  is the row it calls "a full extra month's pay for everyone". Setting the
+ *  Performance target to the same number means 100% Performance and the landmark
+ *  payout describe the same night's work, so the two boards cannot tell the floor
+ *  different stories about what a good shift is.
+ *
+ *  For context on how far that is: July 2026 ran 44-51 good slabs per shift, so
+ *  the plant currently sits near 50% Performance. That is the point — a target
+ *  already being hit measures nothing. */
+export const TARGET_SLABS_PER_SHIFT = 100;
+export const SHIFT_HOURS = 8;
+
+/** The three numbers every board shows, and their product.
+ *
+ *  Each is null when the shift carries nothing to measure it from, and OEE is
+ *  null unless all three are real — a product with a missing term is not a
+ *  smaller OEE, it is an unknown one, and rendering it as a number would put a
+ *  confident figure on absent data. */
+export interface Oee {
+  /** Running time / time MIS actually logged. Breakdown and powerout only —
+   *  the same minutes shiftWeight removes, for the same reason. */
+  availability: number | null;
+  /** Good slabs against what the running time should have produced. Measured
+   *  against RUNNING hours, not logged hours: a line that was stopped is an
+   *  availability loss and must not be charged again as a pace loss. */
+  performance: number | null;
+  /** The raw QC grade share (A = 1, B = 0.5, C = 0) — unstretched. This is the
+   *  industry definition; QUALITY_FLOOR/QUALITY_TARGET belong to the payout and
+   *  would make the figure incomparable with anyone else's OEE. */
+  quality: number | null;
+  oee: number | null;
+}
+
+/** World-class benchmarks, shown beside each figure so the number reads as
+ *  "against what". These are the standard targets, not the plant's current
+ *  performance — 85% OEE is the classic world-class mark. */
+export const OEE_TARGET = { availability: 0.95, performance: 0.95, quality: 0.98, oee: 0.85 };
+
+export function oeeOf(
+  hoursLogged: number, stoppedMin: number, points: number, rawQuality: number | null,
+): Oee {
+  const availability = hoursLogged > 0
+    ? Math.max(0, Math.min(1, 1 - stoppedMin / (hoursLogged * 60)))
+    : null;
+  // Running hours, capped at the shift length: MIS occasionally files more than
+  // eight rows for one shift (a corrected hour re-entered), and without the cap
+  // that inflates the expected output and understates a good shift.
+  const runningHours = availability == null ? 0 : Math.min(hoursLogged, SHIFT_HOURS) * availability;
+  const expected = runningHours * (TARGET_SLABS_PER_SHIFT / SHIFT_HOURS);
+  const performance = expected > 0 ? Math.max(0, Math.min(1, points / expected)) : null;
+  const oee = availability != null && performance != null && rawQuality != null
+    ? availability * performance * rawQuality
+    : null;
+  return { availability, performance, quality: rawQuality, oee };
+}
+
+/** Sum OEE across shifts the way a plant figure must be summed: pool the inputs
+ *  and divide once. Averaging each shift's OEE weights a two-hour shift the same
+ *  as a full one, which is how a plant number ends up describing nobody. */
+export function oeeTotal(
+  rows: { hoursLogged: number; breakdownMin: number; poweroutMin: number; points: number }[],
+  rawQuality: number | null,
+): Oee {
+  const hours = rows.reduce((a, r) => a + r.hoursLogged, 0);
+  const stopped = rows.reduce((a, r) => a + r.breakdownMin + r.poweroutMin, 0);
+  const points = rows.reduce((a, r) => a + r.points, 0);
+  // Expected output is per shift, so it has to be built shift by shift — the
+  // eight-hour cap does not survive being applied to a month of logged hours.
+  const expected = rows.reduce((a, r) => {
+    const av = r.hoursLogged > 0
+      ? Math.max(0, Math.min(1, 1 - (r.breakdownMin + r.poweroutMin) / (r.hoursLogged * 60))) : 0;
+    return a + Math.min(r.hoursLogged, SHIFT_HOURS) * av * (TARGET_SLABS_PER_SHIFT / SHIFT_HOURS);
+  }, 0);
+  const availability = hours > 0 ? Math.max(0, Math.min(1, 1 - stopped / (hours * 60))) : null;
+  const performance = expected > 0 ? Math.max(0, Math.min(1, points / expected)) : null;
+  const oee = availability != null && performance != null && rawQuality != null
+    ? availability * performance * rawQuality : null;
+  return { availability, performance, quality: rawQuality, oee };
+}
+
+// --------------------------------------------------------------------------
+// MIS DISCIPLINE — also reported, not paid
+// --------------------------------------------------------------------------
+// The notice already tells the floor that an unentered hour claims nothing and a
+// disputed slab is paid to nobody. Until now the consequence was only visible
+// after the fact, inside a payout nobody could reconstruct. This puts the same
+// three failures on the board as one number per shift, so the shift can see the
+// points it is throwing away while there is still time to correct the entry.
+//
+// It is NOT scored, for the same reason as OEE: every one of these already costs
+// the shift real points through the payout maths (an unfiled hour claims no
+// slabs, a wide row is ignored, a disputed slab is dropped from both shifts).
+// Scoring it as well would charge for the same mistake twice.
+
+/** 0-1: how completely a shift filed its own MIS.
+ *  1.0 = eight hours filed, nothing disputed, no impossible ranges. */
+export function misDiscipline(
+  hoursLogged: number, wideRows: number, contested: number, quantity: number,
+): number | null {
+  if (hoursLogged <= 0) return null;
+  const filed = Math.min(1, hoursLogged / SHIFT_HOURS);
+  const clean = hoursLogged > 0 ? Math.max(0, 1 - wideRows / hoursLogged) : 1;
+  // Disputed slabs as a share of what the shift claimed. A shift that claimed
+  // nothing cannot have disputed anything, so this term is 1 rather than 0.
+  const undisputed = quantity > 0 ? Math.max(0, 1 - contested / quantity) : 1;
+  return filed * clean * undisputed;
 }
 
 /** Shifts before a per-shift RATE is trusted at face value.

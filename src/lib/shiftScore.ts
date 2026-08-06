@@ -67,6 +67,7 @@ import {
   POOL_VOLUME, POOL_QUALITY, credibility, shiftWeight,
   shiftRange, shiftKeyOf, canonPerson, gradeCredit, polishCredit,
   scaleQuality, scalePolish, scaleUptime, plusDay, type ShiftLetter,
+  oeeTotal, misDiscipline, type Oee,
 } from "@/lib/shiftScoreMath";
 
 
@@ -467,6 +468,12 @@ export interface ScoreboardData {
     unattributed: number;
     unattributedElectrical: number;
     unattributedMechanical: number;
+    /** Availability x Performance x Quality across the range. REPORTED ONLY —
+     *  it decides no money. See the OEE block in shiftScoreMath.ts for why. */
+    oee: Oee;
+    /** 0-1: hours filed, ranges typed sanely, slabs not double-claimed.
+     *  Reported only, for the same reason. */
+    misDiscipline: number | null;
   };
 }
 
@@ -704,6 +711,15 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
       unattributed: shifts.filter((s) => s.crew.production.length === 0).length,
       unattributedElectrical: shifts.filter((s) => s.crew.electrical.length === 0).length,
       unattributedMechanical: shifts.filter((s) => s.crew.mechanical.length === 0).length,
+      // Built from the RAW grade share, not the stretched one: an OEE measured
+      // against QUALITY_FLOOR would not be comparable with any other plant's.
+      oee: oeeTotal(shifts, graded ? rawNum / graded : null),
+      misDiscipline: misDiscipline(
+        shifts.reduce((a, s) => a + s.hoursLogged, 0),
+        shifts.reduce((a, s) => a + s.wideRows, 0),
+        unruled,
+        shifts.reduce((a, s) => a + s.quantity, 0),
+      ),
     },
   };
 }
