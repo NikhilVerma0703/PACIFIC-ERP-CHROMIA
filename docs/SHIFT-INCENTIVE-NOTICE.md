@@ -208,21 +208,6 @@ your shift takes more than that; finish last and you take less. **But the row th
 lands on is worth far more than the place you finish in** — which is why the shift you
 beat this month is the same shift you need next month.
 
-**Conditions**
-
-- A shift below the **87% minimum quality standard** takes nothing from the quality half —
-  the highest quantity alone does not win. At **97% and above the quality half scores in
-  full**.
-- Fewer than **5 shifts** in the month and your rate is scaled down in proportion. One
-  good night is not a month's work.
-- **Safety comes first.** Any lost-time accident in the shift means no incentive for that
-  month, regardless of score.
-- Scores and rankings are **published every month** and can be checked. If you believe a
-  number is wrong, raise it with your incharge — every point can be traced back to the
-  individual slab records behind it.
-
----
-
 ## Extra points — judged by management, not by the system
 
 The score above is calculated from your MIS and QC records. The points below are **not
@@ -239,6 +224,21 @@ them as they happen.
 | **Saving cost** | Less resin, pigment, power and gas per slab — and less scrap |
 | **Improvement ideas** | Any change you suggest that we adopt and that measurably works |
 | **For incharges** | Getting a breakdown attended fast, closing the root cause so it does not come back, planning the shift, and developing your team |
+
+---
+
+**Conditions**
+
+- A shift below the **87% minimum quality standard** takes nothing from the quality half —
+  the highest quantity alone does not win. At **97% and above the quality half scores in
+  full**.
+- Fewer than **5 shifts** in the month and your rate is scaled down in proportion. One
+  good night is not a month's work.
+- **Safety comes first.** Any lost-time accident in the shift means no incentive for that
+  month, regardless of score.
+- Scores and rankings are **published every month** and can be checked. If you believe a
+  number is wrong, raise it with your incharge — every point can be traced back to the
+  individual slab records behind it.
 
 ---
 

@@ -1,4 +1,4 @@
-"""Render the shift-incentive notice as one printable double-sided A4 sheet.
+"""Render the shift-incentive notice as a printable A4 handout.
 
 Deliberately ASCII/Latin-1 only: ReportLab's built-in fonts carry no emoji,
 arrows or the rupee sign, and any such glyph renders as a solid black box on
@@ -9,9 +9,12 @@ typed - so the columns cannot drift out of step with each other, and changing
 one salary or one headcount re-cuts the whole sheet. The asserts refuse to
 build a notice whose shares do not add up to the pool.
 
-It has to fit TWO pages - one sheet, printed both sides. The type is set tight
-for that reason: if you add a section, take one out, or the build will tell you
-it has gone to three.
+LENGTH. This was one double-sided sheet at 7.9pt until 2026-08-06, when the
+worked example, the manually-awarded points and the OEE block went in. Holding
+one sheet would have meant keeping type too small to read standing at a
+machine, so it is three sides at 9pt instead. PAGES_EXPECTED guards the length
+so it cannot grow without someone noticing - raise it deliberately, do not
+shrink the type to hide a new section.
 
     python scripts/make-incentive-notice-pdf.py [output.pdf]
 """
@@ -485,16 +488,6 @@ def story():
            "last and you take less. <b>But the row the plant lands on is worth far more than the place you finish in</b> "
            "- which is why the shift you beat this month is the same shift you need next month.",
            colors.HexColor("#f9fafb"), LINE, S["quote"]))
-    A(Spacer(1, 3))
-    A(Paragraph("<b>Conditions</b>", S["b"]))
-    A(KeepTogether(bullets([
-        f"A shift below the <b>{FLOOR_PCT}% minimum quality standard</b> takes nothing from the quality half - the highest "
-        f"quantity alone does not win. At <b>{TARGET_PCT}% and above the quality half scores in full</b>.",
-        "<b>Safety comes first.</b> Any lost-time accident in the shift means no incentive that month, whatever the score.",
-        "Scores are <b>published every month</b> and can be checked. If you believe a number is wrong, raise it with "
-        "your incharge - every point traces back to the individual slab records behind it.",
-    ])))
-
     # EVERYTHING IN THIS SECTION IS AWARDED BY HAND. None of it exists in the
     # ERP - there is no referral table, no skill grade, no kaizen log, no energy
     # or resin figure per shift, no attendance roster. So the notice must not
@@ -524,8 +517,18 @@ def story():
            [td("<b>For incharges</b>"),
             td("Getting a breakdown attended fast, closing the root cause so it does not "
                "come back, planning the shift, and developing your team")]],
-          [42 * mm, 128 * mm], size=7.6, pad=2.2))
+          [46 * mm, 124 * mm], size=8.4, pad=3.2))
     A(Spacer(1, 3))
+
+    A(Spacer(1, 3))
+    A(Paragraph("<b>Conditions</b>", S["b"]))
+    A(KeepTogether(bullets([
+        f"A shift below the <b>{FLOOR_PCT}% minimum quality standard</b> takes nothing from the quality half - the highest "
+        f"quantity alone does not win. At <b>{TARGET_PCT}% and above the quality half scores in full</b>.",
+        "<b>Safety comes first.</b> Any lost-time accident in the shift means no incentive that month, whatever the score.",
+        "Scores are <b>published every month</b> and can be checked. If you believe a number is wrong, raise it with "
+        "your incharge - every point traces back to the individual slab records behind it.",
+    ])))
 
     A(Paragraph("New on the board - OEE, the number world-class factories run on", S["h"]))
     A(Paragraph("Three numbers multiplied, all of them already coming from your own MIS entry - nothing new to write "
