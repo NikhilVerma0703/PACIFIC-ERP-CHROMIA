@@ -35,11 +35,16 @@ from reportlab.platypus import (BaseDocTemplate, Frame, KeepTogether, PageBreak,
 # in proportion to salary, which is the same thing as everyone taking the same
 # percentage of their own pay - so the salary bill is what turns a pool into a
 # percentage.
-# HEADCOUNT REVISED 2026-08-06: 22/4/2 -> 35/4/5. The pool tiers below were
-# NOT changed to match, by decision - the same rupees now buy 44 people instead
-# of 28, so every percentage and every per-head figure on the sheet falls. That
-# is why nothing here is typed twice: the tables re-cut themselves and cannot
-# quietly disagree with each other.
+# HEADCOUNT REVISED 2026-08-06: 22 operators / 4 incharges / 2 managers became
+# 30 / 8 / 5, and the middle group is now supervisors and the pigment incharge.
+# The pool tiers below were NOT changed to match, by decision - the same rupees
+# now buy 43 people instead of 28, so every percentage and every per-head figure
+# on the sheet falls with it. That is why nothing here is typed twice: the
+# tables re-cut themselves from these three lines and cannot quietly disagree.
+#
+# Keep this comment in step with the numbers. It said "-> 35/4/5" and "44
+# people" after the figures had moved on to 30/8/5, which is exactly the kind of
+# stale note that makes a correct file look wrong.
 MANAGERS, MANAGER_PAY = 5, 175_000
 INCHARGES, INCHARGE_PAY = 8, 52_500
 OPERATORS, OPERATOR_PAY = 30, 20_000
@@ -242,6 +247,7 @@ S = {
                          fontSize=7.8, leading=9.3, textColor=DARK, alignment=TA_CENTER),
     "td": ParagraphStyle("td", parent=ss["Normal"], fontSize=7.4, leading=8.8,
                          alignment=TA_CENTER),
+    "tdl": ParagraphStyle("tdl", parent=ss["Normal"], fontSize=8.2, leading=9.8),
     "foot": ParagraphStyle("fo", parent=ss["Normal"], fontSize=7.4, leading=9.2,
                            textColor=GREY, alignment=TA_CENTER),
 }
@@ -255,6 +261,18 @@ def th(text):
 def td(text):
     """Body cell that wraps, for the same reason."""
     return Paragraph(text, S["td"])
+
+
+def tdl(text):
+    """Left-aligned body cell.
+
+    USE THIS FOR ANY CELL CARRYING MARKUP OR AN ENTITY. A bare string in a
+    ReportLab Table is drawn verbatim - only Paragraph cells go through the
+    mini-HTML parser - so the role name "Managers / R&amp;D" printed the entity
+    literally on the share table while rendering correctly two pages later,
+    where the same text sat inside a Paragraph.
+    """
+    return Paragraph(text, S["tdl"])
 
 
 def upper_kept(text):
@@ -385,9 +403,14 @@ def story():
                 "pay, so the shares always add up to exactly the pool.", S["b"]))
     shareRows = [[th("Who"), th("On the line"), th("Monthly salary"), th("Share of every pool")]]
     for name, n, pay in ROLES:
-        shareRows.append([name, str(n), f"Rs {inr(pay)} each", f"{n * pay / BILL * 100:.0f}%"])
+        # tdl, not a bare string: the role names carry entities (R&amp;D).
+        shareRows.append([tdl(name), str(n), f"Rs {inr(pay)} each", f"{n * pay / BILL * 100:.0f}%"])
     shareRows.append(["Total", str(HEADS), f"Rs {inr(BILL)}", "100%"])
-    A(tbl(shareRows, [30 * mm, 24 * mm, 38 * mm, 40 * mm], align_right=[1, 2, 3]))
+    # First column widened from 30mm: "Supervisors / Pigment Incharge" did not
+    # fit, and as a bare string it did not wrap either - it overprinted the
+    # headcount in the next column, so the 8 read as part of the word. Paragraph
+    # cells wrap, and the extra width keeps it to one line at this headcount.
+    A(tbl(shareRows, [52 * mm, 20 * mm, 34 * mm, 34 * mm], align_right=[1, 2, 3]))
     # The example tier is picked, not typed: whichever row the plant is likeliest
     # to read first has to be the one the sentence explains.
     ex = POOL[2]
