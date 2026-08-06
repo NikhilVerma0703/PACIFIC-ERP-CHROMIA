@@ -69,10 +69,22 @@ ROLES = [("Operators", OPERATORS, OPERATOR_PAY),
          ("Incharges", INCHARGES, INCHARGE_PAY),
          ("Managers", MANAGERS, MANAGER_PAY)]
 
+# The pay table's last three columns are what ONE person in that group takes, so
+# their headers say the role in the singular and how many of them are on the
+# line. Keyed off ROLES rather than trimming the plural, which would quietly
+# produce "Incharge" from any name that happened to end in an s.
+SINGULAR = {"Operators": "Operator", "Incharges": "Incharge", "Managers": "Manager"}
+
 BILL = sum(n * pay for _, n, pay in ROLES)
 HEADS = sum(n for _, n, _ in ROLES)
 
-PAGES_EXPECTED = 2
+# It was ONE sheet until 2026-08-06, when the worked example, the referral and
+# manually-awarded points, and the OEE block went in. The only way to hold one
+# sheet was 7.9pt type, which is the wrong trade for a notice read standing at a
+# machine - so it is three sides at a readable size instead. Printed both sides
+# that leaves the back of the second sheet blank, which is the intended layout:
+# the guard exists to stop the notice growing SILENTLY, not to force a fold.
+PAGES_EXPECTED = 3
 
 OUT = (Path(sys.argv[1]) if len(sys.argv) > 1
        else Path(__file__).resolve().parent.parent / "docs" / "SHIFT-INCENTIVE-NOTICE.pdf")
@@ -136,6 +148,38 @@ def step_range():
     return min(steps), max(steps)
 
 
+def worked_example(tier_index=3):
+    """One month, three shifts, all the way through to rupees.
+
+    COMPUTED WITH THE REAL RULES, not illustrative numbers typed to look right -
+    the whole point is that a reader can check it against the tables on the
+    earlier pages and find they agree. The example shifts' figures are chosen;
+    everything derived from them is not.
+
+    The mechanism: each shift takes a share of the volume pool on its good-slabs
+    RATE and a share of the quality pool on its quality SCORE. Level pegging is
+    a third each, which is what the pay table shows, so a shift's payout is the
+    tier percentage scaled by how far its share sits above or below that third.
+    """
+    tier = POOL[tier_index]
+    # (shift, good slabs per shift, raw grade share)
+    shifts = [("A", 100, 0.95), ("B", 90, 0.92), ("C", 80, 0.90)]
+    scored = [(s, rate, raw, max(0.0, min(1.0, (raw - FLOOR_PCT / 100) / ((TARGET_PCT - FLOOR_PCT) / 100))))
+              for s, rate, raw in shifts]
+    rate_tot = sum(r for _, r, _, _ in scored)
+    qual_tot = sum(q for _, _, _, q in scored)
+    out = []
+    for s, rate, raw, q in scored:
+        share = POOL_VOLUME * rate / rate_tot + POOL_QUALITY * q / qual_tot
+        # share is of the WHOLE pool; a third is level, so multiply up.
+        pct = tier["pct"] * share * len(scored)
+        out.append({"shift": s, "rate": rate, "raw": raw, "quality": q,
+                    "share": share, "pct": pct, "operator": OPERATOR_PAY * pct})
+    assert abs(sum(r["share"] for r in out) - 1) < 1e-9, "example shares must total the pool"
+    return tier, out
+
+
+POOL_VOLUME, POOL_QUALITY = 0.7, 0.3
 LANDMARK = landmark()
 STEP_LO, STEP_HI = step_range()
 # The second column's promise: how many more good slabs a shift must average to
@@ -156,23 +200,24 @@ S = {
                             fontSize=17.5, leading=20, textColor=BRAND, spaceAfter=1),
     "sub": ParagraphStyle("s", parent=ss["Normal"], fontSize=8, leading=10,
                           textColor=GREY, alignment=TA_CENTER, spaceAfter=6),
-    # TIGHTENED 2026-08-06 to absorb the OEE section without going to a third
-    # sheet. This is close to the floor for a notice read standing up at a
-    # machine - if another section is added, take one out rather than shrinking
-    # these further.
+    # SET FOR READING, NOT FOR FITTING. This sheet was squeezed to 7.9pt to hold
+    # everything on one page; once the referral, manual-points and OEE sections
+    # were added that stopped being possible, and shrinking type to save a fold
+    # is a bad trade on a notice people read standing at a machine. It is now
+    # two sheets printed both sides, and the type is back to a comfortable size.
     "h": ParagraphStyle("h", parent=ss["Normal"], fontName="Helvetica-Bold",
-                        fontSize=9.8, leading=11.6, textColor=BRAND,
-                        spaceBefore=4, spaceAfter=2),
-    "b": ParagraphStyle("b", parent=ss["Normal"], fontSize=7.9, leading=10.3,
-                        spaceAfter=2.5),
-    "li": ParagraphStyle("li", parent=ss["Normal"], fontSize=8, leading=10.5,
-                         leftIndent=11, bulletIndent=2, spaceAfter=1.5),
-    "warn": ParagraphStyle("w", parent=ss["Normal"], fontSize=8.2, leading=10.8,
+                        fontSize=11, leading=13, textColor=BRAND,
+                        spaceBefore=7, spaceAfter=3),
+    "b": ParagraphStyle("b", parent=ss["Normal"], fontSize=9, leading=12,
+                        spaceAfter=4),
+    "li": ParagraphStyle("li", parent=ss["Normal"], fontSize=9, leading=12,
+                         leftIndent=12, bulletIndent=2, spaceAfter=3),
+    "warn": ParagraphStyle("w", parent=ss["Normal"], fontSize=9.2, leading=12.4,
                            textColor=AMBER, spaceAfter=2),
     "formula": ParagraphStyle("f", parent=ss["Normal"], fontName="Helvetica-Bold",
-                              fontSize=11, leading=13, alignment=TA_CENTER,
-                              textColor=DARK, spaceBefore=2.5, spaceAfter=2.5),
-    "quote": ParagraphStyle("q", parent=ss["Normal"], fontSize=8, leading=10.6,
+                              fontSize=12, leading=15, alignment=TA_CENTER,
+                              textColor=DARK, spaceBefore=4, spaceAfter=4),
+    "quote": ParagraphStyle("q", parent=ss["Normal"], fontSize=9, leading=12,
                             leftIndent=8, textColor=colors.HexColor("#374151")),
     "note": ParagraphStyle("n", parent=ss["Normal"], fontSize=7.3, leading=9.4,
                            textColor=GREY, spaceBefore=1.5, spaceAfter=2),
@@ -249,9 +294,9 @@ def story():
     A(Paragraph("Pacific Surfaces - Production: Silos &gt; Mixer &gt; Distributor/Kreos &gt; Robo &gt; Press &gt; Oven &gt; Jot", S["sub"]))
 
     A(Paragraph("What this is", S["h"]))
-    A(Paragraph("Every month each shift earns a <b>score</b>. The highest score earns the highest incentive, paid as "
-                "a <b>percentage of your own salary</b> - everyone on the shift shares the same result, each person's "
-                "amount based on their own pay.", S["b"]))
+    A(Paragraph("Every month, each shift earns a <b>score</b>. A better score earns a bigger incentive. It is paid as "
+                "a <b>percentage of your own salary</b>: everyone on the shift earns the <b>same percentage</b>, so the "
+                "rupees differ but the result is shared.", S["b"]))
     A(band("<b>Production is a team game.</b> One person cannot win this alone, and one person cannot lose it alone. "
            "Silos, mixer, distributor, press, oven and Jot all count as one shift. You win together.",
            TINT, BRAND, S["quote"]))
@@ -260,11 +305,12 @@ def story():
     A(Paragraph("Your score is built from <b>two things only</b> - how much you made, and how good it was. The money "
                 "is <b>split between them</b>, and both halves are counted <b>per shift, not per month</b>.", S["b"]))
     A(Paragraph("70%  GOOD SLABS YOU MADE&nbsp;&nbsp;&nbsp;+&nbsp;&nbsp;&nbsp;30%  QUALITY OF WHAT YOU MADE", S["formula"]))
-    A(Paragraph("A big producer with poor quality loses the whole quality half; a careful shift that makes very little "
-                "loses most of the larger half - <b>you need both</b>. And you are measured on your average per shift, "
-                "not your total: 3 shifts making 300 good slabs (100 a shift) beats 10 shifts making 500 (50 a shift). "
-                f"Below {CREDIBLE_SHIFTS} shifts in the month your rate is scaled down in proportion - one good night is "
-                "not a month.", S["b"]))
+    A(KeepTogether(bullets([
+        "<b>You need both halves.</b> Make a lot badly and you lose the quality half. Make a little carefully and you "
+        "lose most of the bigger half.",
+        "<b>Your average per shift counts, not your total.</b> 3 shifts making 300 good slabs (100 each) beats 10 shifts "
+        f"making 500 (50 each). Under {CREDIBLE_SHIFTS} shifts your rate is scaled down - one good night is not a month.",
+    ])))
 
     A(Paragraph("1. GOOD SLABS - 70% of the money", S["h"]))
     A(Paragraph("The slabs <b>your own MIS entry claims</b> - the starting and ending slab number you enter each hour. "
@@ -323,10 +369,13 @@ def story():
                 "far faster than production does: 10,000 to 12,000 slabs is 20% more work and <b>double</b> the money. "
                 "This is not last month's result - it is what is waiting to be earned.", S["b"]))
 
+    # The last three columns are what ONE person takes, so each says how many
+    # people are in that group - otherwise Rs 7,843 reads as though it might be
+    # the whole operator group's share rather than one operator's.
     head = [th("Good slabs<br/>in the month"), th("A shift<br/>averages"), th("Total<br/>pool"),
-            th("Of one month's<br/>salary"),
-            th(f"Operator<br/>Rs {inr(OPERATOR_PAY)}"), th(f"Incharge<br/>Rs {inr(INCHARGE_PAY)}"),
-            th(f"Manager<br/>Rs {inr(MANAGER_PAY)}")]
+            th("Of one month's<br/>salary")] + [
+        th(f"EACH {SINGULAR[name].upper()}<br/>{n} on the line<br/>Rs {inr(pay)} salary")
+        for name, n, pay in ROLES]
     rows = [head]
     for r in POOL:
         rows.append([f"{r['slabs']:,}", f"{r['per_shift']} a shift", f"Rs {lakh(r['pool'])}",
@@ -348,6 +397,26 @@ def story():
            "one shift alone cannot reach it, and one shift falling behind holds everyone back.",
            TINT, BRAND, S["quote"]))
 
+    ex_tier, ex = worked_example()
+    A(Paragraph("A worked example - one month, all the way to rupees", S["h"]))
+    A(Paragraph(f"Say the plant makes <b>{ex_tier['slabs']:,} good slabs</b>, so the pool is "
+                f"<b>Rs {lakh(ex_tier['pool'])}</b> and level pegging pays <b>{ex_tier['pct'] * 100:.0f}%</b> of salary. "
+                "The three shifts do not finish level:", S["b"]))
+    exRows = [[th("Shift"), th("Good slabs<br/>per shift"), th("QC grade<br/>share"),
+               th("Quality<br/>score"), th("Share of<br/>the pool"), th("Paid, as % of<br/>own salary"),
+               th(f"An operator on<br/>Rs {inr(OPERATOR_PAY)}")]]
+    for r in ex:
+        exRows.append([f"Shift {r['shift']}", f"{r['rate']}", f"{r['raw'] * 100:.0f}%",
+                       f"{r['quality'] * 100:.0f}%", f"{r['share'] * 100:.0f}%",
+                       f"{r['pct'] * 100:.0f}%", f"Rs {inr(r['operator'])}"])
+    A(tbl(exRows, [20 * mm, 24 * mm, 22 * mm, 22 * mm, 22 * mm, 26 * mm, 30 * mm],
+          align_right=[0, 1, 2, 3, 4, 5, 6], pad=3.5))
+    A(Paragraph("Shift A made 25% more than C and finished five grade points ahead, and took "
+                f"{ex[0]['pct'] / ex[2]['pct']:.1f} times the money for it. "
+                "Every shift still earned - nobody is left with nothing - and all three shares add up to exactly the "
+                "pool, so nothing is held back.", S["note"]))
+    A(Spacer(1, 4))
+
     A(Paragraph("IMPORTANT - log in to your OWN shift only", S["h"]))
     A(band("<b>The score is counted from the MIS entry. If you are logged in during another shift, your work is counted "
            "in THEIR score - not yours.</b> This is the most common way a shift loses points it had already earned.",
@@ -368,14 +437,13 @@ def story():
                 "move points from one shift to another.", S["b"]))
 
     A(Paragraph("How the money is decided", S["h"]))
-    A(Paragraph("At the end of the month each shift's <b>good slabs per shift</b> and <b>quality score</b> are worked "
-                "out. The pool is split 70% on good slabs and 30% on quality, each shift takes its share of both, and "
-                "that combined share becomes the <b>percentage of salary</b> paid to everyone on the shift. Good slabs "
-                "are counted once QC has graded them, so a shift's score keeps rising as polishing catches up with it.",
-                S["b"]))
-    A(band("The pay table is what every shift earns when the three finish level. Win the month and your shift takes "
-           "more; finish last and you take less. <b>But the row the plant lands on is worth far more than the place you "
-           "finish in</b> - which is why the shift you beat this month is the same shift you need next month.",
+    A(Paragraph("At month end each shift's <b>good slabs per shift</b> and <b>quality score</b> are worked out. Each "
+                "shift takes its share of both halves, and that becomes the <b>percentage of salary</b> everyone on "
+                "that shift is paid. Slabs count once QC grades them, so your score keeps rising as polishing catches "
+                "up.", S["b"]))
+    A(band("The pay table is what each shift earns when all three finish level. Win the month and you take more; finish "
+           "last and you take less. <b>But the row the plant lands on is worth far more than the place you finish in</b> "
+           "- which is why the shift you beat this month is the same shift you need next month.",
            colors.HexColor("#f9fafb"), LINE, S["quote"]))
     A(Spacer(1, 3))
     A(Paragraph("<b>Conditions</b>", S["b"]))
@@ -386,6 +454,38 @@ def story():
         "Scores are <b>published every month</b> and can be checked. If you believe a number is wrong, raise it with "
         "your incharge - every point traces back to the individual slab records behind it.",
     ])))
+
+    # EVERYTHING IN THIS SECTION IS AWARDED BY HAND. None of it exists in the
+    # ERP - there is no referral table, no skill grade, no kaizen log, no energy
+    # or resin figure per shift, no attendance roster. So the notice must not
+    # imply a formula the floor could check and argue with, only a decision they
+    # can ask about. Points here are added ON TOP of the production score and
+    # are never subtracted from it, which is what keeps this from quietly
+    # becoming a way to dock a good shift.
+    A(Paragraph("Extra points - judged by management, not by the system", S["h"]))
+    A(Paragraph("The score above is calculated from your MIS and QC records. The points below are <b>not calculated</b> "
+                "- they are <b>awarded by management at your assessment</b>, and they are added <b>on top of</b> your "
+                "production points, never taken out of them. Ask your incharge to record them as they happen.",
+                S["b"]))
+    A(tbl([[th("What earns extra points"), th("What counts")],
+           [td("<b>Bringing in good people</b>"),
+            td("You refer someone and we hire them. The plant is growing, and the people "
+               "already on the line know best who can do this work - make sure your name is recorded against theirs.")],
+           [td("<b>Safety and housekeeping</b>"),
+            td("Reporting a hazard before it hurts someone, and keeping your own area clean")],
+           [td("<b>Attendance and conduct</b>"),
+            td("Turning up, following the SOP, no disciplinary issues")],
+           [td("<b>Skill</b>"),
+            td("Learning a second and third machine, and training the people who come after you")],
+           [td("<b>Saving cost</b>"),
+            td("Less resin, pigment, power and gas per slab - and less scrap")],
+           [td("<b>Improvement ideas</b>"),
+            td("Any change you suggest that we adopt and that measurably works")],
+           [td("<b>For incharges</b>"),
+            td("Getting a breakdown attended fast, closing the root cause so it does not "
+               "come back, planning the shift, and developing your team")]],
+          [42 * mm, 128 * mm], size=7.6, pad=2.2))
+    A(Spacer(1, 3))
 
     A(Paragraph("New on the board - OEE, the number world-class factories run on", S["h"]))
     A(Paragraph("Three numbers multiplied, all of them already coming from your own MIS entry - nothing new to write "
@@ -446,5 +546,6 @@ if __name__ == "__main__":
     probe.unlink(missing_ok=True)
     print(f"written: {OUT}  ({pages} pages)")
     if pages != PAGES_EXPECTED:
-        print(f"WARNING: this is meant to be {PAGES_EXPECTED} pages - one sheet, both sides. "
-              f"It came to {pages}. Cut a section or tighten the type in S[].")
+        print(f"WARNING: this is meant to be {PAGES_EXPECTED} pages. It came to {pages}. "
+              "Cut a section, or raise PAGES_EXPECTED if the notice is genuinely meant to grow "
+              "- do NOT shrink the type in S[] to hide it; it is already at a readable minimum.")

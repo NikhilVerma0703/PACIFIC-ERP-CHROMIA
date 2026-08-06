@@ -8,10 +8,9 @@ Effective from: ______________  ·  Reviewed monthly
 
 ## What this is
 
-Every month, each shift earns a **score**. The shift with the highest score earns the
-highest incentive. The incentive is paid as a **percentage of your own salary** — so
-everyone on the shift shares the same result, but each person's amount is based on their
-own pay.
+Every month, each shift earns a **score**. A better score earns a bigger incentive. It is
+paid as a **percentage of your own salary**: everyone on the shift earns the **same
+percentage**, so the rupees differ but the result is shared.
 
 **Production is a team game.** One person cannot win this alone, and one person cannot
 lose it alone. The silo team, the mixer, the distributor, the press, the oven and Jot all
@@ -33,9 +32,11 @@ Both halves are counted **per shift**, not as a monthly total. Three shifts maki
 good slabs beats ten shifts making 500 — you are measured on how you work, not on how
 often you are rostered.
 
-You cannot win on one alone. The biggest producer with poor quality loses the whole
-quality half; the most careful shift that makes very little loses most of the larger
-half. **You need both.**
+- **You need both halves.** Make a lot badly and you lose the quality half. Make a little
+  carefully and you lose most of the bigger half.
+- **Your average per shift counts, not your total.** 3 shifts making 300 good slabs
+  (100 each) beats 10 shifts making 500 (50 each). Under 3 shifts your rate is scaled
+  down — one good night is not a month.
 
 ### 1. GOOD SLABS — 70% of the money
 
@@ -77,6 +78,23 @@ have to be perfect to score perfectly:
 
 The whole plant already runs between 93% and 98%, so this is where places are won and
 lost. Two points of grade share is worth twenty points of quality score.
+
+---
+
+## A worked example — one month, all the way to rupees
+
+Say the plant makes **9,000 good slabs**, so the pool is **₹10 lakh** and level pegging
+pays **56%** of salary. The three shifts do not finish level:
+
+| Shift | Good slabs per shift | QC grade share | Quality score | Share of the pool | Paid, as % of own salary | An operator on ₹20,000 |
+|---|---|---|---|---|---|---|
+| Shift A | 100 | 95% | 80% | 41% | **69%** | **₹13,757** |
+| Shift B | 90 | 92% | 50% | 33% | **55%** | **₹10,994** |
+| Shift C | 80 | 90% | 30% | 26% | **44%** | **₹8,862** |
+
+Shift A made 25% more than C and finished five grade points ahead, and took **1.6 times
+the money** for it. Every shift still earned — nobody is left with nothing — and all three
+shares add up to exactly the pool, so nothing is held back.
 
 ---
 
@@ -126,7 +144,7 @@ It rises far faster than production does: 10,000 to 12,000 slabs is 20% more wor
 
 This is not last month's result. This is what is waiting to be earned:
 
-| Good slabs in the month | A shift averages | Total pool | Of one month's salary | Operator | Incharge | Manager |
+| Good slabs in the month | A shift averages | Total pool | Of one month's salary | **Each operator**<br>35 on the line<br>₹20,000 salary | **Each incharge**<br>4 on the line<br>₹52,500 salary | **Each manager**<br>5 on the line<br>₹1,75,000 salary |
 |---|---|---|---|---|---|---|
 | 6,000 | 67 a shift | ₹2 lakh | 11% | ₹2,241 | ₹5,882 | ₹19,608 |
 | 7,000 | 78 a shift | ₹4 lakh | 22% | ₹4,482 | ₹11,765 | ₹39,216 |
@@ -198,6 +216,25 @@ beat this month is the same shift you need next month.
 - Scores and rankings are **published every month** and can be checked. If you believe a
   number is wrong, raise it with your incharge — every point can be traced back to the
   individual slab records behind it.
+
+---
+
+## Extra points — judged by management, not by the system
+
+The score above is calculated from your MIS and QC records. The points below are **not
+calculated** — they are **awarded by management at your assessment**, and they are added
+**on top of** your production points, never taken out of them. Ask your incharge to record
+them as they happen.
+
+| What earns extra points | What counts |
+|---|---|
+| **Bringing in good people** | You refer someone and we hire them. The plant is growing, and the people already on the line know best who can do this work — make sure your name is recorded against theirs. |
+| **Safety and housekeeping** | Reporting a hazard before it hurts someone, and keeping your own area clean |
+| **Attendance and conduct** | Turning up, following the SOP, no disciplinary issues |
+| **Skill** | Learning a second and third machine, and training the people who come after you |
+| **Saving cost** | Less resin, pigment, power and gas per slab — and less scrap |
+| **Improvement ideas** | Any change you suggest that we adopt and that measurably works |
+| **For incharges** | Getting a breakdown attended fast, closing the root cause so it does not come back, planning the shift, and developing your team |
 
 ---
 
