@@ -175,7 +175,7 @@ export default function FabCuttingPage() {
 
   const loadDone = useCallback(async (date: string) => {
     const r = await getJson<DoneEntry>(`/api/fab/queues/completed?type=CUTTING&date=${date}`);
-    if (r.ok) setCompleted(r.data); else setLoadError(r.error);
+    if (r.ok) { setCompleted(r.data); setLoadError(null); } else setLoadError(r.error);
   }, []);
 
   useEffect(() => {

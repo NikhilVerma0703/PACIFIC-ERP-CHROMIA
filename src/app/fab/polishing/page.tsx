@@ -91,7 +91,7 @@ export default function FabPolishingPage() {
   }, []);
   const loadDone = useCallback(async (date: string) => {
     const r = await getJson<CompletedPiece>(`/api/fab/queues/completed?type=POLISHING&date=${date}`);
-    if (r.ok) setCompleted(r.data); else setLoadError(r.error);
+    if (r.ok) { setCompleted(r.data); setLoadError(null); } else setLoadError(r.error);
   }, []);
 
   useEffect(() => {

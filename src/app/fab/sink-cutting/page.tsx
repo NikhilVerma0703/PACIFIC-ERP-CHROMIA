@@ -94,7 +94,7 @@ export default function FabSinkCuttingPage() {
   }, []);
   const loadDone = useCallback(async (date: string) => {
     const r = await getJson<CompletedPiece>(`/api/fab/queues/completed?type=SINK_CUTTING&date=${date}`);
-    if (r.ok) setCompleted(r.data); else setLoadError(r.error);
+    if (r.ok) { setCompleted(r.data); setLoadError(null); } else setLoadError(r.error);
   }, []);
 
   useEffect(() => {
@@ -176,7 +176,7 @@ export default function FabSinkCuttingPage() {
                     onStart={async () => {
                       setStarted(s => ({ ...s, [p.id]: Date.now() }));
                       const r = await postJson("/api/fab/queues/start-op", { pieceId: p.id, operationType: "SINK_CUTTING" });
-    if (!r.ok) setActionError(r.error);
+                      if (!r.ok) setActionError(r.error);
                     }}
                     onComplete={() => complete(p.id)}
                     completing={!!completing[p.id]} />

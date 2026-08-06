@@ -68,6 +68,11 @@ export async function POST(req: Request) {
     return Response.json({ success: true, alreadyCompleted: true, piecesUpdated: 0, piecesCreated: 0 });
   }
 
+  // Set false by the transaction when another request won the race, so the
+  // response cannot claim work it did not do — it reported piecesUpdated: N
+  // while writing nothing.
+  let applied = true;
+
   await prisma.$transaction(async (tx) => {
     // 1. Mark the slab job complete — conditionally, so two concurrent requests
     //    cannot both proceed into the cascade. The loser writes nothing.
@@ -80,7 +85,7 @@ export async function POST(req: Request) {
         machineId:  machineSession?.machineId ?? undefined,
       },
     });
-    if (done.count === 0) return;   // another request got there first
+    if (done.count === 0) { applied = false; return; }   // another request got there first
 
     if (pieceIds.length === 0 && slabJob.slab.requirementAllocations.length > 0) {
       // AUTO-CREATE pieces for CLO projects that skipped release-project
@@ -175,5 +180,6 @@ export async function POST(req: Request) {
     }
   });
 
+  if (!applied) return Response.json({ success: true, alreadyCompleted: true, piecesUpdated: 0, piecesCreated: 0 });
   return Response.json({ success: true, piecesUpdated: pieceIds.length, piecesCreated });
 }

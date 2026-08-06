@@ -15,6 +15,7 @@ it has gone to three.
 
     python scripts/make-incentive-notice-pdf.py [output.pdf]
 """
+import re
 import sys
 from pathlib import Path
 
@@ -37,8 +38,8 @@ from reportlab.platypus import (BaseDocTemplate, Frame, KeepTogether, PageBreak,
 # is why nothing here is typed twice: the tables re-cut themselves and cannot
 # quietly disagree with each other.
 MANAGERS, MANAGER_PAY = 5, 175_000
-INCHARGES, INCHARGE_PAY = 4, 52_500
-OPERATORS, OPERATOR_PAY = 35, 20_000
+INCHARGES, INCHARGE_PAY = 8, 52_500
+OPERATORS, OPERATOR_PAY = 30, 20_000
 
 # 30 days x 3 shifts. Used only to say what one shift has to average.
 SHIFTS_IN_MONTH = 90
@@ -66,14 +67,20 @@ TIERS = [(6_000, 200_000), (7_000, 400_000), (8_000, 700_000), (9_000, 1_000_000
          (10_000, 1_500_000), (11_000, 2_000_000), (12_000, 3_000_000)]
 
 ROLES = [("Operators", OPERATORS, OPERATOR_PAY),
-         ("Incharges", INCHARGES, INCHARGE_PAY),
-         ("Managers", MANAGERS, MANAGER_PAY)]
+         ("Supervisors / Pigment Incharge", INCHARGES, INCHARGE_PAY),
+         ("Managers / R&amp;D", MANAGERS, MANAGER_PAY)]
 
 # The pay table's last three columns are what ONE person in that group takes, so
 # their headers say the role in the singular and how many of them are on the
 # line. Keyed off ROLES rather than trimming the plural, which would quietly
-# produce "Incharge" from any name that happened to end in an s.
-SINGULAR = {"Operators": "Operator", "Incharges": "Incharge", "Managers": "Manager"}
+# produce "Incharge" from any name that happened to end in an s. The middle row
+# carries a line break because "SUPERVISOR / PIGMENT INCHARGE" will not fit one
+# column at this width.
+SINGULAR = {
+    "Operators": "Operator",
+    "Supervisors / Pigment Incharge": "Supervisor /<br/>Pigment Incharge",
+    "Managers / R&amp;D": "Manager / R&amp;D",
+}
 
 BILL = sum(n * pay for _, n, pay in ROLES)
 HEADS = sum(n for _, n, _ in ROLES)
@@ -125,7 +132,7 @@ def pool_rows():
 
 
 POOL = pool_rows()
-assert BILL == 1_785_000, f"salary bill is {BILL}: check the percentages in the prose"
+assert BILL == 1_895_000, f"salary bill is {BILL}: check the percentages in the prose"
 
 
 def landmark():
@@ -238,6 +245,25 @@ def th(text):
 def td(text):
     """Body cell that wraps, for the same reason."""
     return Paragraph(text, S["td"])
+
+
+def upper_kept(text):
+    """Upper-case the words but leave any markup alone.
+
+    Plain .upper() turns the <br/> inside a role label into <BR/>. ReportLab
+    happens to accept that today, so the first version of this function - which
+    matched [^<>/]+ and therefore uppercased the "br" BETWEEN the angle brackets
+    - looked like it worked while doing exactly what it exists to prevent. It
+    was passing on luck, not correctness.
+
+    Match whole tags AND html entities first so the alternation consumes them
+    intact, and only upper-case the runs of text between them. Entities matter
+    as much as tags: "R&amp;D" upper-cased whole becomes "R&AMP;D", and entity
+    names are case-sensitive, so that renders as literal "&AMP;D" on the sheet.
+    """
+    return re.sub(r"<[^>]*>|&[A-Za-z]+;|[^<&]+",
+                  lambda m: m.group(0) if m.group(0)[0] in "<&" else m.group(0).upper(),
+                  text)
 
 
 def tbl(data, widths, align_right=None, head=True, pad=3, size=8.2, shade=None):
@@ -355,11 +381,17 @@ def story():
     # The example tier is picked, not typed: whichever row the plant is likeliest
     # to read first has to be the one the sentence explains.
     ex = POOL[2]
-    A(Paragraph(f"There are <b>{HEADS} people on the line</b> - {OPERATORS} operators, {INCHARGES} incharges "
-                f"and {MANAGERS} managers - and a production salary bill of Rs {lakh(BILL)} a month. That bill is what "
-                "turns a pool into a percentage. The pool itself is set by what the plant makes - the table overleaf. "
-                f"A Rs {lakh(ex['pool'])} pool is {ex['pct'] * 100:.0f}% of one month's salary, and every person on the "
-                f"line takes {ex['pct'] * 100:.0f}% of their own.", S["note"]))
+    # The roll-call and the worked division are both generated, so the sentence
+    # cannot survive a headcount change that makes it false.
+    roll = ", ".join(f"{n} {name.lower()}" for name, n, _ in ROLES[:-1])
+    roll += f" and {ROLES[-1][1]} {ROLES[-1][0].lower()}"
+    A(Paragraph(f"There are <b>{HEADS} people on the line</b> - {roll} - and a production salary bill of "
+                f"<b>Rs {inr(BILL)}</b> a month. That bill is what turns a pool into a percentage, and the sum is one "
+                f"division you can check yourself:", S["note"]))
+    A(Paragraph(f"Rs {inr(ex['pool'])} pool &divide; Rs {inr(BILL)} salary bill = "
+                f"<b>{ex['pct'] * 100:.0f}% of a month's pay, for everybody</b>", S["formula"]))
+    A(Paragraph("The pool itself is set by what the plant makes - the table overleaf. Whatever that percentage comes "
+                "to, every person on the line takes exactly that much of their own salary.", S["note"]))
 
     A(PageBreak())
 
@@ -374,14 +406,15 @@ def story():
     # the whole operator group's share rather than one operator's.
     head = [th("Good slabs<br/>in the month"), th("A shift<br/>averages"), th("Total<br/>pool"),
             th("Of one month's<br/>salary")] + [
-        th(f"EACH {SINGULAR[name].upper()}<br/>{n} on the line<br/>Rs {inr(pay)} salary")
+        th(f"EACH {upper_kept(SINGULAR[name])}<br/>{n} on the line<br/>Rs {inr(pay)} salary")
         for name, n, pay in ROLES]
     rows = [head]
     for r in POOL:
+        # Per-person columns built by walking ROLES, not by naming the three
+        # groups here: renaming a group used to KeyError on the old literal.
         rows.append([f"{r['slabs']:,}", f"{r['per_shift']} a shift", f"Rs {lakh(r['pool'])}",
-                     f"{r['pct'] * 100:.0f}%",
-                     f"Rs {inr(r['cut']['Operators'])}", f"Rs {inr(r['cut']['Incharges'])}",
-                     f"Rs {inr(r['cut']['Managers'])}"])
+                     f"{r['pct'] * 100:.0f}%"]
+                    + [f"Rs {inr(r['cut'][name])}" for name, _, _ in ROLES])
     # Shade the row worth a full month's pay, wherever it now falls - +1 for the
     # header. At 28 people that was the 9,000 row; at 44 it is 11,000.
     shade = [POOL.index(LANDMARK) + 1] if LANDMARK else []

@@ -84,13 +84,13 @@ lost. Two points of grade share is worth twenty points of quality score.
 ## A worked example — one month, all the way to rupees
 
 Say the plant makes **9,000 good slabs**, so the pool is **₹10 lakh** and level pegging
-pays **56%** of salary. The three shifts do not finish level:
+pays **53%** of salary. The three shifts do not finish level:
 
 | Shift | Good slabs per shift | QC grade share | Quality score | Share of the pool | Paid, as % of own salary | An operator on ₹20,000 |
 |---|---|---|---|---|---|---|
-| Shift A | 100 | 95% | 80% | 41% | **69%** | **₹13,757** |
-| Shift B | 90 | 92% | 50% | 33% | **55%** | **₹10,994** |
-| Shift C | 80 | 90% | 30% | 26% | **44%** | **₹8,862** |
+| Shift A | 100 | 95% | 80% | 41% | **65%** | **₹12,958** |
+| Shift B | 90 | 92% | 50% | 33% | **52%** | **₹10,356** |
+| Shift C | 80 | 90% | 30% | 26% | **42%** | **₹8,348** |
 
 Shift A made 25% more than C and finished five grade points ahead, and took **1.6 times
 the money** for it. Every shift still earned — nobody is left with nothing — and all three
@@ -144,22 +144,22 @@ It rises far faster than production does: 10,000 to 12,000 slabs is 20% more wor
 
 This is not last month's result. This is what is waiting to be earned:
 
-| Good slabs in the month | A shift averages | Total pool | Of one month's salary | **Each operator**<br>35 on the line<br>₹20,000 salary | **Each incharge**<br>4 on the line<br>₹52,500 salary | **Each manager**<br>5 on the line<br>₹1,75,000 salary |
+| Good slabs in the month | A shift averages | Total pool | Of one month's salary | **Each operator**<br>30 on the line<br>₹20,000 salary | **Each supervisor / pigment incharge**<br>8 on the line<br>₹52,500 salary | **Each manager / R&D**<br>5 on the line<br>₹1,75,000 salary |
 |---|---|---|---|---|---|---|
-| 6,000 | 67 a shift | ₹2 lakh | 11% | ₹2,241 | ₹5,882 | ₹19,608 |
-| 7,000 | 78 a shift | ₹4 lakh | 22% | ₹4,482 | ₹11,765 | ₹39,216 |
-| 8,000 | 89 a shift | ₹7 lakh | 39% | ₹7,843 | ₹20,588 | ₹68,627 |
-| 9,000 | 100 a shift | ₹10 lakh | 56% | ₹11,204 | ₹29,412 | ₹98,039 |
-| 10,000 | 111 a shift | ₹15 lakh | 84% | ₹16,807 | ₹44,118 | ₹1,47,059 |
-| **11,000** | **122 a shift** | **₹20 lakh** | **112%** | **₹22,409** | **₹58,824** | **₹1,96,078** |
-| 12,000 | 133 a shift | ₹30 lakh | 168% | ₹33,613 | ₹88,235 | ₹2,94,118 |
+| 6,000 | 67 a shift | ₹2 lakh | 11% | ₹2,111 | ₹5,541 | ₹18,470 |
+| 7,000 | 78 a shift | ₹4 lakh | 21% | ₹4,222 | ₹11,082 | ₹36,939 |
+| 8,000 | 89 a shift | ₹7 lakh | 37% | ₹7,388 | ₹19,393 | ₹64,644 |
+| 9,000 | 100 a shift | ₹10 lakh | 53% | ₹10,554 | ₹27,704 | ₹92,348 |
+| 10,000 | 111 a shift | ₹15 lakh | 79% | ₹15,831 | ₹41,557 | ₹1,38,522 |
+| **11,000** | **122 a shift** | **₹20 lakh** | **106%** | **₹21,108** | **₹55,409** | **₹1,84,697** |
+| 12,000 | 133 a shift | ₹30 lakh | 158% | ₹31,662 | ₹83,113 | ₹2,77,045 |
 
-*Worked on an operator at ₹20,000, an incharge at ₹52,500 and a manager at ₹1,75,000 a
+*Worked on an operator at ₹20,000, a supervisor / pigment incharge at ₹52,500 and a manager / R&D at ₹1,75,000 a
 month. Your own figure is that same percentage of your own salary. "A shift averages" is
 the good slabs one shift needs to average across 90 shifts in the month.*
 
 > **Read the second column, then the last three.** About **eleven more good slabs a shift**
-> moves the whole plant up one row — and every row up adds another **11% to 56% of a
+> moves the whole plant up one row — and every row up adds another **11% to 53% of a
 > month's pay** to every person on the line.
 >
 > **11,000 slabs is a full extra month's pay for everyone.**
@@ -178,15 +178,19 @@ exactly the pool:
 
 | Who | On the line | Monthly salary | Share of every pool |
 |---|---|---|---|
-| Operators | 35 | ₹20,000 each | **39%** |
-| Incharges | 4 | ₹52,500 each | **12%** |
-| Managers | 5 | ₹1,75,000 each | **49%** |
-| **Total** | **44** | **₹17,85,000** | **100%** |
+| Operators | 30 | ₹20,000 each | **32%** |
+| Supervisors / Pigment Incharge | 8 | ₹52,500 each | **22%** |
+| Managers / R&D | 5 | ₹1,75,000 each | **46%** |
+| **Total** | **43** | **₹18,95,000** | **100%** |
 
-There are **44 people on the line** — 35 operators, 4 incharges and 5 managers — and a
-production salary bill of ₹17.85 lakh a month. That bill is what turns a pool into a
-percentage: a ₹7 lakh pool is **39% of one month's salary**, and every person on the line
-gets 39% of their own.
+There are **43 people on the line** — 30 operators, 8 supervisors / pigment incharge and 5
+managers / R&D — and a production salary bill of **₹18,95,000** a month. That bill is what turns a
+pool into a percentage, and the sum is one division you can check yourself:
+
+> **₹7,00,000 pool ÷ ₹18,95,000 salary bill = 37% of a month's pay, for everybody**
+
+Whatever that percentage comes to, every person on the line takes exactly that much of
+their own salary.
 
 ---
 
