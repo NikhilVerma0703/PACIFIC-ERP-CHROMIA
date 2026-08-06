@@ -69,6 +69,19 @@ SHIFTS_IN_MONTH = 90
 # another is worse than no notice.
 FLOOR_PCT, TARGET_PCT = 87, 97
 
+# THE HEADCOUNT ABOVE IS PROVISIONAL. It was given verbally on 2026-08-06 and HR
+# is confirming the establishment; every rupee figure and every percentage on
+# this sheet is computed from it, so the whole money side of the notice moves if
+# it changes. The sheet has to say so, or a signed document reads as a promise
+# of figures nobody has confirmed.
+#
+# WHEN HR CONFIRMS: correct the three constants at the top, set this to False,
+# and rebuild. That removes both notices and the qualifier under the title in
+# one go - there is nothing else to remember.
+HEADCOUNT_PROVISIONAL = True
+HEADCOUNT_SOURCE_DATE = "6 August 2026"
+HEADCOUNT_CONFIRM_BY = "8 August 2026"
+
 # Shifts before a per-shift rate is trusted at face value.
 #
 # LEFT AT 5 ON PURPOSE, AND IT DOES NOT MATCH THE CODE. CREDIBLE_SHIFTS in
@@ -130,7 +143,10 @@ HEADS = sum(n for _, n, _ in ROLES)
 # machine - so it is three sides at a readable size instead. Printed both sides
 # that leaves the back of the second sheet blank, which is the intended layout:
 # the guard exists to stop the notice growing SILENTLY, not to force a fold.
-PAGES_EXPECTED = 3
+# 4 while HEADCOUNT_PROVISIONAL is set - the two provisional notices and the
+# title qualifier add most of a side between them. It drops back to 3 when HR
+# confirms the establishment and that flag goes False.
+PAGES_EXPECTED = 4 if HEADCOUNT_PROVISIONAL else 3
 
 OUT = (Path(sys.argv[1]) if len(sys.argv) > 1
        else Path(__file__).resolve().parent.parent / "docs" / "SHIFT-INCENTIVE-NOTICE.pdf")
@@ -336,6 +352,18 @@ def tdl(text):
     return Paragraph(text, S["tdl"])
 
 
+def role_lower(name):
+    """A role name for running text: lower-cased, but initialisms left alone.
+
+    Plain .lower() printed "7 managers / r&d" in the roll-call sentence, because
+    R&D is an initialism and not a word. It is spelled &amp; in ROLES, so the
+    entity has to survive the fold too - "&AMP;" and "&amp;" are not the same
+    thing to a parser that is case-sensitive about entity names.
+    """
+    out = name.lower().replace("&amp;", "&amp;")
+    return re.sub(r"\br&amp;d\b", "R&amp;D", out)
+
+
 def upper_kept(text):
     """Upper-case the words but leave any markup alone.
 
@@ -407,6 +435,10 @@ def story():
     # ------------------------------------------------- side 1: how you score
     A(Paragraph("Shift Production Incentive", S["title"]))
     A(Paragraph("Pacific Surfaces - Production: Silos &gt; Mixer &gt; Distributor/Kreos &gt; Robo &gt; Press &gt; Oven &gt; Jot", S["sub"]))
+    if HEADCOUNT_PROVISIONAL:
+        A(Paragraph(f"<b>PROVISIONAL DRAFT</b> - figures computed from an unconfirmed headcount of {HEADS} "
+                    f"and subject to revision on confirmation by Human Resources (expected {HEADCOUNT_CONFIRM_BY})",
+                    ParagraphStyle("prov", parent=S["sub"], textColor=AMBER, fontSize=8.2, spaceAfter=7)))
 
     A(Paragraph("What this is", S["h"]))
     A(Paragraph("Every month, each shift earns a <b>score</b>. A better score earns a bigger incentive. It is paid as "
@@ -459,9 +491,6 @@ def story():
            "still waiting to be polished is <b>not</b> counted against you - your score rises when QC grades it.",
            TINT, BRAND, S["quote"]))
 
-    A(Paragraph("How the pool is shared out", S["h"]))
-    A(Paragraph("The pool is divided <b>in proportion to salary</b>: everyone is paid the same percentage of their own "
-                "pay, so the shares always add up to exactly the pool.", S["b"]))
     shareRows = [[th("Who"), th("On the line"), th("Monthly salary"), th("Share of every pool")]]
     # Largest-remainder, so the column totals the 100% the last row claims.
     shares = whole_percents([n * pay for _, n, pay in ROLES])
@@ -475,21 +504,44 @@ def story():
     # Paragraph cells wrap; the width keeps the longest role name on ONE line,
     # which is 60.3mm once "/ Line Incharge" is on the end. Measure before
     # changing a role name - scripts/ has no layout test to catch it for you.
-    A(tbl(shareRows, [68 * mm, 18 * mm, 30 * mm, 30 * mm], align_right=[1, 2, 3]))
+    shareTable = tbl(shareRows, [68 * mm, 18 * mm, 30 * mm, 30 * mm], align_right=[1, 2, 3])
     # The example tier is picked, not typed: whichever row the plant is likeliest
     # to read first has to be the one the sentence explains.
     ex = tier_at(8_000)
     # The roll-call and the worked division are both generated, so the sentence
     # cannot survive a headcount change that makes it false.
-    roll = ", ".join(f"{n} {name.lower()}" for name, n, _ in ROLES[:-1])
-    roll += f" and {ROLES[-1][1]} {ROLES[-1][0].lower()}"
-    A(Paragraph(f"There are <b>{HEADS} people on the line</b> - {roll} - and a production salary bill of "
-                f"<b>Rs {inr(BILL)}</b> a month. That bill is what turns a pool into a percentage, and the sum is one "
-                f"division you can check yourself:", S["note"]))
-    A(Paragraph(f"Rs {inr(ex['pool'])} pool &divide; Rs {inr(BILL)} salary bill = "
-                f"<b>{ex['pct'] * 100:.0f}% of a month's pay, for everybody</b>", S["formula"]))
-    A(Paragraph("The pool itself is set by what the plant makes - the table overleaf. Whatever that percentage comes "
-                "to, every person on the line takes exactly that much of their own salary.", S["note"]))
+    roll = ", ".join(f"{n} {role_lower(name)}" for name, n, _ in ROLES[:-1])
+    roll += f" and {ROLES[-1][1]} {role_lower(ROLES[-1][0])}"
+    # The table and the notice qualifying it are ONE unit. Kept apart they broke
+    # across the fold and "the establishment in the table above" pointed at a
+    # table the reader could no longer see - the qualifier has to be on the same
+    # page as the numbers it qualifies or it is not a qualifier.
+    # Heading inside the group too, or it is left stranded at the foot of the
+    # previous page announcing a table that is not there.
+    block = [
+        Paragraph("How the pool is shared out", S["h"]),
+        Paragraph("The pool is divided <b>in proportion to salary</b>: everyone is paid the same percentage of their "
+                  "own pay, so the shares always add up to exactly the pool.", S["b"]),
+        shareTable,
+        Paragraph(f"There are <b>{HEADS} people on the line</b> - {roll} - and a production salary bill of "
+                  f"<b>Rs {inr(BILL)}</b> a month. That bill is what turns a pool into a percentage, and the sum is "
+                  f"one division you can check yourself:", S["note"]),
+        Paragraph(f"Rs {inr(ex['pool'])} pool &divide; Rs {inr(BILL)} salary bill = "
+                  f"<b>{ex['pct'] * 100:.0f}% of a month's pay, for everybody</b>", S["formula"]),
+        Paragraph("The pool itself is set by what the plant makes - the table overleaf. Whatever that percentage "
+                  "comes to, every person on the line takes exactly that much of their own salary.", S["note"]),
+    ]
+    if HEADCOUNT_PROVISIONAL:
+        block.append(band(
+            f"<b>PROVISIONAL - HEADCOUNT NOT YET CONFIRMED.</b> The establishment in the table above "
+            f"({OPERATORS} operators / {INCHARGES} supervisors and incharges / {MANAGERS} managers) is an assumed "
+            f"figure recorded on {HEADCOUNT_SOURCE_DATE} and is <b>subject to confirmation by Human Resources</b>, "
+            f"expected by {HEADCOUNT_CONFIRM_BY}. <b>Every amount and percentage in this notice is calculated from "
+            "it</b>, including the pay table and the worked example overleaf. Should the confirmed establishment "
+            "differ, all such figures will change accordingly and a corrected notice will be issued. <b>This notice "
+            "is not to be relied upon as a statement of entitlement until the confirmed figures are published.</b>",
+            AMBER_BG, colors.HexColor("#f59e0b"), S["warn"]))
+    A(KeepTogether(block))
 
     A(PageBreak())
 
@@ -665,6 +717,16 @@ def story():
                 "receive <b>may be higher or lower than the figure printed</b>, depending on how you perform "
                 "individually. Treat the tables as the shape of the scheme, not as a fixed promise of a number.",
                 S["note"]))
+    if HEADCOUNT_PROVISIONAL:
+        A(Paragraph(f"<b>Basis of the figures.</b> All amounts in this notice are computed from an assumed "
+                    f"establishment of {OPERATORS} operators, {INCHARGES} {role_lower(ROLES[1][0])} and {MANAGERS} "
+                    f"{role_lower(ROLES[2][0])} ({HEADS} in total), recorded on {HEADCOUNT_SOURCE_DATE} and pending "
+                    f"confirmation by Human Resources, expected by {HEADCOUNT_CONFIRM_BY}. The pool is shared in "
+                    "proportion to the total salary bill, so a change in the establishment changes every amount and "
+                    "percentage shown. <b>This document is issued for information in its present form and is not a "
+                    "statement of entitlement until the confirmed establishment is published and a corrected notice "
+                    "issued.</b>", S["note"]))
+        A(Spacer(1, 4))
     A(Spacer(1, 5))
     A(Paragraph("Effective from: ____________________ &nbsp;&nbsp;&nbsp; Signed: ____________________ "
                 "&nbsp;&nbsp;&nbsp; Date: ____________________", S["b"]))

@@ -4,6 +4,8 @@
 
 Effective from: ______________  ·  Reviewed monthly
 
+> ⚠️ **PROVISIONAL DRAFT** — figures computed from an unconfirmed headcount of 112 and subject to revision on confirmation by Human Resources (expected 8 August 2026).
+
 ---
 
 ## What this is
@@ -198,6 +200,14 @@ pool into a percentage, and the sum is one division you can check yourself:
 Whatever that percentage comes to, every person on the line takes exactly that much of
 their own salary.
 
+> ⚠️ **PROVISIONAL — HEADCOUNT NOT YET CONFIRMED.** The establishment in the table above
+> (75 operators / 30 supervisors and incharges / 7 managers) is an assumed
+> figure recorded on 6 August 2026 and is **subject to confirmation by Human Resources**,
+> expected by 8 August 2026. **Every amount and percentage in this notice is calculated
+> from it.** Should the confirmed establishment differ, all such figures will change accordingly
+> and a corrected notice will be issued. **This notice is not to be relied upon as a statement of
+> entitlement until the confirmed figures are published.**
+
 ---
 
 ## How the money is decided
@@ -281,5 +291,13 @@ performance**. They are what the scheme produces for a shift performing as descr
 amount you actually receive **may be higher or lower than the figure printed**, depending
 on how you perform individually. Treat the tables as the shape of the scheme, not as a
 fixed promise of a number.
+
+**Basis of the figures.** All amounts in this notice are computed from an assumed
+establishment of 75 operators, 30 supervisors / pigment incharge / line incharge
+and 7 managers / R&D (112 in total), recorded on 6 August 2026 and pending
+confirmation by Human Resources, expected by 8 August 2026. The pool is shared in proportion
+to the total salary bill, so a change in the establishment changes every amount and percentage
+shown. **This document is issued for information in its present form and is not a statement of
+entitlement until the confirmed establishment is published and a corrected notice issued.**
 
 *Signed:* ______________________   *Date:* ______________
