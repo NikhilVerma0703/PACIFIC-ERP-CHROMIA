@@ -78,8 +78,18 @@ CREDIBLE_SHIFTS = 5
 TARGET_SLABS_PER_SHIFT = 100
 
 # Good slabs the plant makes in the month -> the pool everyone shares.
-TIERS = [(6_000, 200_000), (7_000, 400_000), (8_000, 700_000), (9_000, 1_000_000),
-         (10_000, 1_500_000), (11_000, 2_000_000), (12_000, 3_000_000)]
+# MINIMUM RAISED 6,000 -> 7,000 and the TOP POOL CUT 30 -> 25 lakh, 2026-08-06.
+# The 6,000 row (Rs 2 lakh) is gone: below 7,000 there is no pool at all, which
+# is what makes it a minimum rather than just the smallest row printed - the
+# sheet says so under the table.
+#
+# The rest were scaled by the same 25/30 the top was cut by, then rounded to
+# WHOLE LAKHS - "Rs 3.33333 lakh" is not a figure to print on a wall.
+# Exact vs printed: 3.33->3, 5.83->6, 8.33->8, 12.5->13, 16.67->17, 25->25.
+# The ladder's shape is unchanged and every row is within 10% of the true
+# proportion. Keep them whole lakhs if these are ever re-cut.
+TIERS = [(7_000, 300_000), (8_000, 600_000), (9_000, 800_000),
+         (10_000, 1_300_000), (11_000, 1_700_000), (12_000, 2_500_000)]
 
 ROLES = [("Operators", OPERATORS, OPERATOR_PAY),
          ("Supervisors / Pigment Incharge / Line Incharge", INCHARGES, INCHARGE_PAY),
@@ -171,7 +181,23 @@ def step_range():
     return min(steps), max(steps)
 
 
-def worked_example(tier_index=3):
+def tier_at(slabs):
+    """The tier row for a given slab count, BY SLABS - never by position.
+
+    Both the worked example and the share-table sum used to index POOL directly
+    (POOL[3], POOL[2]). Dropping the 6,000 row on 2026-08-06 shifted every
+    index by one, which would silently have re-pointed the worked example from
+    the 9,000 tier to the 10,000 one and the share-table sum from 8,000 to
+    9,000 - the prose around them still naming the old figures. Ask for the row
+    you mean.
+    """
+    for r in POOL:
+        if r["slabs"] == slabs:
+            return r
+    raise AssertionError(f"no tier for {slabs:,} slabs - the TIERS table changed under a caller")
+
+
+def worked_example(slabs=9_000):
     """One month, three shifts, all the way through to rupees.
 
     COMPUTED WITH THE REAL RULES, not illustrative numbers typed to look right -
@@ -184,7 +210,7 @@ def worked_example(tier_index=3):
     a third each, which is what the pay table shows, so a shift's payout is the
     tier percentage scaled by how far its share sits above or below that third.
     """
-    tier = POOL[tier_index]
+    tier = tier_at(slabs)
     # (shift, good slabs per shift, raw grade share)
     shifts = [("A", 100, 0.95), ("B", 90, 0.92), ("C", 80, 0.90)]
     scored = [(s, rate, raw, max(0.0, min(1.0, (raw - FLOOR_PCT / 100) / ((TARGET_PCT - FLOOR_PCT) / 100))))
@@ -416,7 +442,7 @@ def story():
     A(tbl(shareRows, [68 * mm, 18 * mm, 30 * mm, 30 * mm], align_right=[1, 2, 3]))
     # The example tier is picked, not typed: whichever row the plant is likeliest
     # to read first has to be the one the sentence explains.
-    ex = POOL[2]
+    ex = tier_at(8_000)
     # The roll-call and the worked division are both generated, so the sentence
     # cannot survive a headcount change that makes it false.
     roll = ", ".join(f"{n} {name.lower()}" for name, n, _ in ROLES[:-1])
@@ -463,9 +489,12 @@ def story():
                 f"shift needs to average across the {SHIFTS_IN_MONTH} shifts in a month.", S["note"]))
     # Stated ON the table, not only at the foot of the sheet: this is the line
     # that stops a printed figure being read as a promise.
-    A(band("<b>These figures are not fixed.</b> Every number in this table already takes your own performance into "
-           "account, and what you actually receive <b>can go up or down from what is printed here</b> depending on how "
-           "you personally perform.",
+    A(band(f"<b>{POOL[0]['slabs']:,} good slabs is the minimum.</b> Below that the plant earns <b>no pool at all</b> "
+           "and there is nothing to share out, whatever any single shift did. The table starts where the money "
+           "starts.<br/>"
+           "<b>And these figures are not fixed.</b> Every number here already takes your own performance into account, "
+           "and what you actually receive <b>can go up or down from what is printed</b> depending on how you "
+           "personally perform.",
            AMBER_BG, colors.HexColor("#f59e0b"), S["warn"]))
     A(band(f"<b>Read the second column, then the last three.</b> About <b>{SLAB_STEP} more good slabs a shift</b> moves the "
            f"whole plant up one row - and every row up adds another <b>{STEP_LO * 100:.0f}% to {STEP_HI * 100:.0f}% of a "
