@@ -82,7 +82,7 @@ TIERS = [(6_000, 200_000), (7_000, 400_000), (8_000, 700_000), (9_000, 1_000_000
          (10_000, 1_500_000), (11_000, 2_000_000), (12_000, 3_000_000)]
 
 ROLES = [("Operators", OPERATORS, OPERATOR_PAY),
-         ("Supervisors / Pigment Incharge", INCHARGES, INCHARGE_PAY),
+         ("Supervisors / Pigment Incharge / Line Incharge", INCHARGES, INCHARGE_PAY),
          ("Managers / R&amp;D", MANAGERS, MANAGER_PAY)]
 
 # The pay table's last three columns are what ONE person in that group takes, so
@@ -93,7 +93,8 @@ ROLES = [("Operators", OPERATORS, OPERATOR_PAY),
 # column at this width.
 SINGULAR = {
     "Operators": "Operator",
-    "Supervisors / Pigment Incharge": "Supervisor /<br/>Pigment Incharge",
+    "Supervisors / Pigment Incharge / Line Incharge":
+        "Supervisor /<br/>Pigment Incharge /<br/>Line Incharge",
     "Managers / R&amp;D": "Manager / R&amp;D",
 }
 
@@ -406,11 +407,13 @@ def story():
         # tdl, not a bare string: the role names carry entities (R&amp;D).
         shareRows.append([tdl(name), str(n), f"Rs {inr(pay)} each", f"{n * pay / BILL * 100:.0f}%"])
     shareRows.append(["Total", str(HEADS), f"Rs {inr(BILL)}", "100%"])
-    # First column widened from 30mm: "Supervisors / Pigment Incharge" did not
-    # fit, and as a bare string it did not wrap either - it overprinted the
-    # headcount in the next column, so the 8 read as part of the word. Paragraph
-    # cells wrap, and the extra width keeps it to one line at this headcount.
-    A(tbl(shareRows, [52 * mm, 20 * mm, 34 * mm, 34 * mm], align_right=[1, 2, 3]))
+    # First column widened twice now: at 30mm "Supervisors / Pigment Incharge"
+    # did not fit, and as a bare string it did not wrap either - it overprinted
+    # the headcount in the next column, so the 8 read as part of the word.
+    # Paragraph cells wrap; the width keeps the longest role name on ONE line,
+    # which is 60.3mm once "/ Line Incharge" is on the end. Measure before
+    # changing a role name - scripts/ has no layout test to catch it for you.
+    A(tbl(shareRows, [68 * mm, 18 * mm, 30 * mm, 30 * mm], align_right=[1, 2, 3]))
     # The example tier is picked, not typed: whichever row the plant is likeliest
     # to read first has to be the one the sentence explains.
     ex = POOL[2]
@@ -451,10 +454,19 @@ def story():
     # Shade the row worth a full month's pay, wherever it now falls - +1 for the
     # header. At 28 people that was the 9,000 row; at 44 it is 11,000.
     shade = [POOL.index(LANDMARK) + 1] if LANDMARK else []
-    A(tbl(rows, [25 * mm, 21 * mm, 21 * mm, 24 * mm, 26 * mm, 26 * mm, 27 * mm],
+    # Narrowed the four left columns to widen the three per-person ones: their
+    # headers now carry three role words plus a headcount and a salary, and the
+    # longest ("PIGMENT INCHARGE /") is 29.5mm at 7.8pt bold.
+    A(tbl(rows, [21 * mm, 20 * mm, 20 * mm, 20 * mm, 30 * mm, 29 * mm, 30 * mm],
           align_right=[0, 1, 2, 3, 4, 5, 6], shade=shade, pad=3.5))
     A(Paragraph("Your own figure is that same percentage of your own salary. \"A shift averages\" is the good slabs one "
                 f"shift needs to average across the {SHIFTS_IN_MONTH} shifts in a month.", S["note"]))
+    # Stated ON the table, not only at the foot of the sheet: this is the line
+    # that stops a printed figure being read as a promise.
+    A(band("<b>These figures are not fixed.</b> Every number in this table already takes your own performance into "
+           "account, and what you actually receive <b>can go up or down from what is printed here</b> depending on how "
+           "you personally perform.",
+           AMBER_BG, colors.HexColor("#f59e0b"), S["warn"]))
     A(band(f"<b>Read the second column, then the last three.</b> About <b>{SLAB_STEP} more good slabs a shift</b> moves the "
            f"whole plant up one row - and every row up adds another <b>{STEP_LO * 100:.0f}% to {STEP_HI * 100:.0f}% of a "
            "month's pay</b> to every person on the line."
@@ -574,7 +586,14 @@ def story():
     A(band("<b>Make more. Make it right. Log in to your own shift. Record everything.</b>",
            TINT, BRAND, ParagraphStyle("c", parent=S["b"], fontSize=10.5, leading=13,
                                        alignment=TA_CENTER, textColor=DARK)))
-    A(Spacer(1, 7))
+    A(Spacer(1, 5))
+    A(Paragraph("<b>A note on every figure in this notice.</b> All the amounts and percentages shown - in the pay "
+                "table, in the worked example and in the share table - <b>already include your personal performance</b>. "
+                "They are what the scheme produces for a shift performing as described; the amount you actually "
+                "receive <b>may be higher or lower than the figure printed</b>, depending on how you perform "
+                "individually. Treat the tables as the shape of the scheme, not as a fixed promise of a number.",
+                S["note"]))
+    A(Spacer(1, 5))
     A(Paragraph("Effective from: ____________________ &nbsp;&nbsp;&nbsp; Signed: ____________________ "
                 "&nbsp;&nbsp;&nbsp; Date: ____________________", S["b"]))
     A(Spacer(1, 3))

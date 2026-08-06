@@ -144,7 +144,7 @@ It rises far faster than production does: 10,000 to 12,000 slabs is 20% more wor
 
 This is not last month's result. This is what is waiting to be earned:
 
-| Good slabs in the month | A shift averages | Total pool | Of one month's salary | **Each operator**<br>30 on the line<br>₹20,000 salary | **Each supervisor / pigment incharge**<br>8 on the line<br>₹52,500 salary | **Each manager / R&D**<br>5 on the line<br>₹1,75,000 salary |
+| Good slabs in the month | A shift averages | Total pool | Of one month's salary | **Each operator**<br>30 on the line<br>₹20,000 salary | **Each supervisor / pigment incharge / line incharge**<br>8 on the line<br>₹52,500 salary | **Each manager / R&D**<br>5 on the line<br>₹1,75,000 salary |
 |---|---|---|---|---|---|---|
 | 6,000 | 67 a shift | ₹2 lakh | 11% | ₹2,111 | ₹5,541 | ₹18,470 |
 | 7,000 | 78 a shift | ₹4 lakh | 21% | ₹4,222 | ₹11,082 | ₹36,939 |
@@ -154,7 +154,7 @@ This is not last month's result. This is what is waiting to be earned:
 | **11,000** | **122 a shift** | **₹20 lakh** | **106%** | **₹21,108** | **₹55,409** | **₹1,84,697** |
 | 12,000 | 133 a shift | ₹30 lakh | 158% | ₹31,662 | ₹83,113 | ₹2,77,045 |
 
-*Worked on an operator at ₹20,000, a supervisor / pigment incharge at ₹52,500 and a manager / R&D at ₹1,75,000 a
+*Worked on an operator at ₹20,000, a supervisor / pigment incharge / line incharge at ₹52,500 and a manager / R&D at ₹1,75,000 a
 month. Your own figure is that same percentage of your own salary. "A shift averages" is
 the good slabs one shift needs to average across 90 shifts in the month.*
 
@@ -163,6 +163,10 @@ the good slabs one shift needs to average across 90 shifts in the month.*
 > month's pay** to every person on the line.
 >
 > **11,000 slabs is a full extra month's pay for everyone.**
+
+> ⚠️ **These figures are not fixed.** Every number in this table already takes your own
+> performance into account, and what you actually receive **can go up or down from what is
+> printed here** depending on how you personally perform.
 
 Every shift's output counts towards the same total, so **the whole plant has to get there
 together** — one shift alone cannot reach it, and one shift falling behind holds everyone
@@ -179,11 +183,11 @@ exactly the pool:
 | Who | On the line | Monthly salary | Share of every pool |
 |---|---|---|---|
 | Operators | 30 | ₹20,000 each | **32%** |
-| Supervisors / Pigment Incharge | 8 | ₹52,500 each | **22%** |
+| Supervisors / Pigment Incharge / Line Incharge | 8 | ₹52,500 each | **22%** |
 | Managers / R&D | 5 | ₹1,75,000 each | **46%** |
 | **Total** | **43** | **₹18,95,000** | **100%** |
 
-There are **43 people on the line** — 30 operators, 8 supervisors / pigment incharge and 5
+There are **43 people on the line** — 30 operators, 8 supervisors / pigment incharge / line incharge and 5
 managers / R&D — and a production salary bill of **₹18,95,000** a month. That bill is what turns a
 pool into a percentage, and the sum is one division you can check yourself:
 
@@ -268,5 +272,12 @@ already costs you points under the rules above — now you can see it and fix th
 Questions: speak to your Production Incharge.
 
 ---
+
+**A note on every figure in this notice.** All the amounts and percentages shown — in the
+pay table, in the worked example and in the share table — **already include your personal
+performance**. They are what the scheme produces for a shift performing as described; the
+amount you actually receive **may be higher or lower than the figure printed**, depending
+on how you perform individually. Treat the tables as the shape of the scheme, not as a
+fixed promise of a number.
 
 *Signed:* ______________________   *Date:* ______________
