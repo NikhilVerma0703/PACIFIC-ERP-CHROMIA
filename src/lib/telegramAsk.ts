@@ -640,8 +640,27 @@ async function designComparisonPack(design: string): Promise<string> {
 // makes a parse failure structurally impossible: the only tags that can reach
 // Telegram are the ones written here.
 const BULLET = "•";
+// Budget for the ESCAPED TEXT, before the conversions below expand it into
+// tags. Truncating afterwards was a bug: a cut landing between <b> and </b>
+// left the tag unclosed and Telegram dropped the whole message. Cutting first,
+// at a line boundary, means every tag the conversions emit is balanced by
+// construction — the emphasis regexes only ever match a closed pair, and they
+// cannot span a newline. 3000 leaves ample room for tag expansion under
+// Telegram's 4096 limit.
+const MAX_TEXT = 3000;
+function truncateSafely(s: string): string {
+  if (s.length <= MAX_TEXT) return s;
+  const nl = s.lastIndexOf("\n", MAX_TEXT);
+  if (nl > MAX_TEXT * 0.5) return s.slice(0, nl) + "\n…";
+  // One very long line: cut mid-line, but never between the halves of a
+  // surrogate pair or the message becomes invalid UTF-16.
+  let cut = MAX_TEXT;
+  const c = s.charCodeAt(cut - 1);
+  if (c >= 0xd800 && c <= 0xdbff) cut -= 1;
+  return s.slice(0, cut) + "…";
+}
 function formatForTelegram(raw: string): string {
-  const lines = esc(raw)
+  const lines = truncateSafely(esc(raw).trim())
     .split("\n")
     .map((line) => {
       let s = line.trimEnd();
@@ -653,7 +672,7 @@ function formatForTelegram(raw: string): string {
       s = s.replace(/^\s*#{1,6}\s*(.+)$/, "<b>$1</b>");
       return s;
     });
-  return lines
+  const out = lines
     .join("\n")
     // **bold** and __bold__ -> <b>. Applied after escaping, so the asterisks
     // are literal text by now and cannot interact with any real markup.
@@ -662,8 +681,21 @@ function formatForTelegram(raw: string): string {
     // `code` -> <code>
     .replace(/`([^\n`]{1,200}?)`/g, "<code>$1</code>")
     .replace(/\n{3,}/g, "\n\n")
-    .trim()
-    .slice(0, 3900); // Telegram caps at 4096; leave room for the header
+    .trim();
+  return capToLimit(out);
+}
+// Conversions expand the text — `x` becomes <code>x</code>, so a dense line can
+// grow several-fold and overshoot Telegram's 4096 even after the pre-truncation
+// above. Cut on a line boundary: every emphasis regex excludes \n, so no tag can
+// span one and a newline cut can never split a tag. If a single line is somehow
+// still too long, fall back to the tagless text — a plainer message beats one
+// Telegram refuses to deliver.
+const MAX_MSG = 4000;
+function capToLimit(html: string): string {
+  if (html.length <= MAX_MSG) return html;
+  const nl = html.lastIndexOf("\n", MAX_MSG);
+  if (nl > 0) return html.slice(0, nl) + "\n…";
+  return html.replace(/<[^>]*>/g, "").slice(0, MAX_MSG - 1) + "…";
 }
 
 // ---- The answering model ---------------------------------------------------
