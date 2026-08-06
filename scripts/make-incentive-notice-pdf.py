@@ -35,19 +35,24 @@ from reportlab.platypus import (BaseDocTemplate, Frame, KeepTogether, PageBreak,
 # in proportion to salary, which is the same thing as everyone taking the same
 # percentage of their own pay - so the salary bill is what turns a pool into a
 # percentage.
-# HEADCOUNT REVISED 2026-08-06: 22 operators / 4 incharges / 2 managers became
-# 30 / 8 / 5, and the middle group is now supervisors and the pigment incharge.
-# The pool tiers below were NOT changed to match, by decision - the same rupees
-# now buy 43 people instead of 28, so every percentage and every per-head figure
-# on the sheet falls with it. That is why nothing here is typed twice: the
-# tables re-cut themselves from these three lines and cannot quietly disagree.
+# HEADCOUNT, 2026-08-06. Started the day at 22 operators / 4 incharges /
+# 2 managers and ended it at 55 / 11 / 6 - the line grew from 28 people to 72.
+# The pool tiers below were NOT scaled to match, by decision, so the same rupees
+# are shared by two and a half times as many people and every percentage on the
+# sheet falls with it. Nothing here is typed twice: the tables re-cut themselves
+# from these three lines and cannot quietly disagree with each other.
 #
-# Keep this comment in step with the numbers. It said "-> 35/4/5" and "44
-# people" after the figures had moved on to 30/8/5, which is exactly the kind of
-# stale note that makes a correct file look wrong.
-MANAGERS, MANAGER_PAY = 5, 175_000
-INCHARGES, INCHARGE_PAY = 8, 52_500
-OPERATORS, OPERATOR_PAY = 30, 20_000
+# WHAT 72 PEOPLE DID TO THE LADDER: no tier reaches a full month's salary any
+# more. The top row (12,000 slabs, Rs 25 lakh) pays 92%, so LANDMARK is None and
+# the headline sentence falls back to stating what the top row really pays.
+# Raise the pools if a full month is meant to be reachable again.
+#
+# Keep this comment in step with the numbers - it has twice described a
+# headcount the file had already moved past, which is what makes a correct file
+# look broken.
+MANAGERS, MANAGER_PAY = 6, 175_000
+INCHARGES, INCHARGE_PAY = 11, 52_500
+OPERATORS, OPERATOR_PAY = 55, 20_000
 
 # 30 days x 3 shifts. Used only to say what one shift has to average.
 SHIFTS_IN_MONTH = 90
@@ -73,8 +78,10 @@ FLOOR_PCT, TARGET_PCT = 87, 97
 CREDIBLE_SHIFTS = 5
 
 # Performance target for the OEE block. Mirrors TARGET_SLABS_PER_SHIFT in
-# src/lib/shiftScoreMath.ts, and is itself read off the pool ladder: the tier
-# that pays a full month's salary, divided by the shifts in a month.
+# src/lib/shiftScoreMath.ts. It USED to be read off the pool ladder - the tier
+# paying a full month's salary, divided by the shifts in a month - but no tier
+# pays a full month any more, so it is now a standalone decision. Keep the two
+# files in step; see the long note beside the TypeScript constant.
 TARGET_SLABS_PER_SHIFT = 100
 
 # Good slabs the plant makes in the month -> the pool everyone shares.
@@ -144,6 +151,27 @@ def lakh(n):
     return f"{n / 100_000:g} lakh"
 
 
+def whole_percents(values):
+    """Round a set of shares to whole percents that still total exactly 100.
+
+    Rounding each share on its own does not add up. At 55/11/6 the true shares
+    are 40.33 / 21.17 / 38.50, which round to 40 / 21 / 38 and print as 99% in a
+    table whose last row says 100% - the first thing anyone checking the sheet
+    would find. Largest-remainder: floor everything, then hand the leftover
+    points to whoever was rounded down hardest.
+    """
+    total = sum(values)
+    exact = [v / total * 100 for v in values]
+    out = [int(x) for x in exact]
+    leftover = 100 - sum(out)
+    # Biggest fractional part first; index as a tie-break so it is deterministic.
+    order = sorted(range(len(exact)), key=lambda i: (-(exact[i] - out[i]), i))
+    for i in order[:leftover]:
+        out[i] += 1
+    assert sum(out) == 100, out
+    return out
+
+
 def pool_rows():
     """One row per tier, with every column derived from the pool."""
     rows = []
@@ -158,7 +186,7 @@ def pool_rows():
 
 
 POOL = pool_rows()
-assert BILL == 1_895_000, f"salary bill is {BILL}: check the percentages in the prose"
+assert BILL == 2_727_500, f"salary bill is {BILL}: check the percentages in the prose"
 
 
 def landmark():
@@ -429,9 +457,11 @@ def story():
     A(Paragraph("The pool is divided <b>in proportion to salary</b>: everyone is paid the same percentage of their own "
                 "pay, so the shares always add up to exactly the pool.", S["b"]))
     shareRows = [[th("Who"), th("On the line"), th("Monthly salary"), th("Share of every pool")]]
-    for name, n, pay in ROLES:
+    # Largest-remainder, so the column totals the 100% the last row claims.
+    shares = whole_percents([n * pay for _, n, pay in ROLES])
+    for (name, n, pay), share in zip(ROLES, shares):
         # tdl, not a bare string: the role names carry entities (R&amp;D).
-        shareRows.append([tdl(name), str(n), f"Rs {inr(pay)} each", f"{n * pay / BILL * 100:.0f}%"])
+        shareRows.append([tdl(name), str(n), f"Rs {inr(pay)} each", f"{share}%"])
     shareRows.append(["Total", str(HEADS), f"Rs {inr(BILL)}", "100%"])
     # First column widened twice now: at 30mm "Supervisors / Pigment Incharge"
     # did not fit, and as a bare string it did not wrap either - it overprinted
@@ -499,7 +529,14 @@ def story():
     A(band(f"<b>Read the second column, then the last three.</b> About <b>{SLAB_STEP} more good slabs a shift</b> moves the "
            f"whole plant up one row - and every row up adds another <b>{STEP_LO * 100:.0f}% to {STEP_HI * 100:.0f}% of a "
            "month's pay</b> to every person on the line."
-           + (f" <b>{LANDMARK['slabs']:,} slabs is a full extra month's pay for everyone.</b>" if LANDMARK else "")
+           # The headline sentence, and its honest fallback. With 72 people on
+           # the line no tier reaches a full month's salary any more, so rather
+           # than quietly dropping the line the sheet says what the top row
+           # DOES pay. A missing headline reads as an oversight; a smaller
+           # number reads as the truth.
+           + (f" <b>{LANDMARK['slabs']:,} slabs is a full extra month's pay for everyone.</b>" if LANDMARK
+              else f" <b>{POOL[-1]['slabs']:,} slabs pays everyone {POOL[-1]['pct'] * 100:.0f}% of a month's "
+                   "salary - the best the ladder currently goes.</b>")
            + "<br/>Every shift's output counts towards the same total, so <b>the whole plant has to get there together</b> - "
            "one shift alone cannot reach it, and one shift falling behind holds everyone back.",
            TINT, BRAND, S["quote"]))

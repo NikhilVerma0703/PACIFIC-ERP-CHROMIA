@@ -332,16 +332,27 @@ export function shiftWeight(hoursLogged: number, stoppedMin: number, declaredSla
 
 /** Good slabs an eight-hour shift is expected to produce when the line runs.
  *
- *  NOT MEASURED — READ OFF THE INCENTIVE LADDER. The notice's landmark tier is
- *  9,000 good slabs in a month, which across 90 shifts is 100 a shift, and that
- *  is the row it calls "a full extra month's pay for everyone". Setting the
- *  Performance target to the same number means 100% Performance and the landmark
- *  payout describe the same night's work, so the two boards cannot tell the floor
- *  different stories about what a good shift is.
+ *  NOT MEASURED — A DECISION. It was originally read off the incentive ladder:
+ *  the notice's landmark tier was 9,000 good slabs a month, which across 90
+ *  shifts is 100 a shift, and that was the row the sheet called "a full extra
+ *  month's pay for everyone". Tying Performance to it meant 100% Performance
+ *  and the landmark payout described the same night's work.
+ *
+ *  THAT DERIVATION NO LONGER HOLDS, and the number is now standing on its own.
+ *  On 2026-08-06 the notice's floor moved to 7,000 slabs, its top pool was cut
+ *  to Rs 25 lakh, and the line grew to 72 people — so NO tier pays a full
+ *  month's salary any more (the top row, 12,000 slabs, pays 92%) and there is
+ *  no landmark left to read a target off. 100 is kept because it is a sane
+ *  eight-hour target and because moving it would silently restate every
+ *  Performance and OEE figure on the scoreboard, not because the ladder still
+ *  points at it.
  *
  *  For context on how far that is: July 2026 ran 44-51 good slabs per shift, so
  *  the plant currently sits near 50% Performance. That is the point — a target
- *  already being hit measures nothing. */
+ *  already being hit measures nothing.
+ *
+ *  This is REPORTED only and decides no money, so a stale target misleads a
+ *  board rather than a payout. Revisit it deliberately. */
 export const TARGET_SLABS_PER_SHIFT = 100;
 export const SHIFT_HOURS = 8;
 
