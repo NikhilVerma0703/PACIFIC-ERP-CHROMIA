@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
+import { postJson, getJson } from "@/lib/fab/postJson";
 
 interface Piece {
   id: string; pieceCode: string;
@@ -153,6 +154,8 @@ export default function FabCuttingPage() {
   const [undoing,       setUndoing]      = useState<Record<string, boolean>>({});
   const [doneDate,      setDoneDate]     = useState(todayStr());
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [actionError,   setActionError]  = useState<string | null>(null);
+  const [loadError,     setLoadError]    = useState<string | null>(null);
 
   // Fetch current user's ID once for lock checks
   useEffect(() => {
@@ -162,16 +165,17 @@ export default function FabCuttingPage() {
       .catch(() => {});
   }, []);
 
+  // A failed load must not render as an empty queue. "Nothing to cut" and "the
+  // queue did not load" look identical on screen otherwise, and only one of them
+  // means the operator can go home.
   const loadOpen = useCallback(async () => {
-    const res  = await fetch("/api/fab/queues/cutting");
-    const data = await res.json();
-    setQueue(Array.isArray(data) ? data : []);
+    const r = await getJson<QueueEntry>("/api/fab/queues/cutting");
+    if (r.ok) { setQueue(r.data); setLoadError(null); } else setLoadError(r.error);
   }, []);
 
   const loadDone = useCallback(async (date: string) => {
-    const res  = await fetch(`/api/fab/queues/completed?type=CUTTING&date=${date}`);
-    const data = await res.json();
-    setCompleted(Array.isArray(data) ? data : []);
+    const r = await getJson<DoneEntry>(`/api/fab/queues/completed?type=CUTTING&date=${date}`);
+    if (r.ok) setCompleted(r.data); else setLoadError(r.error);
   }, []);
 
   useEffect(() => {
@@ -187,55 +191,48 @@ export default function FabCuttingPage() {
 
   async function startClo(slabJobId: string) {
     setStarting(p => ({ ...p, [slabJobId]: true }));
-    const res = await fetch("/api/fab/queues/cutting/start-job", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slabJobId }),
-    });
-    if (res.status === 409) {
-      const body = await res.json();
-      // Already locked — just refresh to show the locked state
-      alert(`This slab is already being cut by ${body.lockedBy}.`);
-    }
+    setActionError(null);
+    const r = await postJson("/api/fab/queues/cutting/start-job", { slabJobId });
+    // The 409 carries who took it, which is more use than the generic message.
+    if (!r.ok) setActionError(r.status === 409 && r.data?.lockedBy
+      ? `This slab is already being cut by ${r.data.lockedBy}.`
+      : r.error);
     await loadOpen();
     setStarting(p => ({ ...p, [slabJobId]: false }));
   }
 
   async function completeLegacy(slabId: string, pieceIds: string[]) {
     setCompleting(p => ({ ...p, [slabId]: true }));
-    await fetch("/api/fab/queues/cutting/complete", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slabId, pieceIds }),
-    });
+    setActionError(null);
+    const r = await postJson("/api/fab/queues/cutting/complete", { slabId, pieceIds });
+    if (!r.ok) setActionError(r.error);
     await Promise.all([loadOpen(), loadDone(doneDate)]);
     setCompleting(p => ({ ...p, [slabId]: false }));
   }
 
   async function completeClo(slabJobId: string) {
     setCompleting(p => ({ ...p, [slabJobId]: true }));
-    await fetch("/api/fab/queues/cutting/complete-job", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slabJobId }),
-    });
+    setActionError(null);
+    const r = await postJson("/api/fab/queues/cutting/complete-job", { slabJobId });
+    if (!r.ok) setActionError(r.error);
     await Promise.all([loadOpen(), loadDone(doneDate)]);
     setCompleting(p => ({ ...p, [slabJobId]: false }));
   }
 
   async function undoLegacy(pieceId: string, opId: string) {
     setUndoing(p => ({ ...p, [opId]: true }));
-    await fetch("/api/fab/queues/undo", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pieceId, operationType: "CUTTING" }),
-    });
+    setActionError(null);
+    const r = await postJson("/api/fab/queues/undo", { pieceId, operationType: "CUTTING" });
+    if (!r.ok) setActionError(r.error);
     await Promise.all([loadOpen(), loadDone(doneDate)]);
     setUndoing(p => ({ ...p, [opId]: false }));
   }
 
   async function revertClo(slabJobId: string) {
     setUndoing(p => ({ ...p, [slabJobId]: true }));
-    await fetch("/api/fab/queues/cutting/revert-job", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slabJobId }),
-    });
+    setActionError(null);
+    const r = await postJson("/api/fab/queues/cutting/revert-job", { slabJobId });
+    if (!r.ok) setActionError(r.error);
     await Promise.all([loadOpen(), loadDone(doneDate)]);
     setUndoing(p => ({ ...p, [slabJobId]: false }));
   }
@@ -268,6 +265,19 @@ export default function FabCuttingPage() {
           </div>
         </div>
       </div>
+
+      {loadError && (
+        <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <b>This list may be out of date.</b> {loadError} Nothing below is confirmed — do not
+          treat an empty queue as &ldquo;nothing to cut&rdquo;.
+        </div>
+      )}
+      {actionError && (
+        <div className="mb-4 flex items-start justify-between gap-4 rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">
+          <span><b>Not saved.</b> {actionError}</span>
+          <button onClick={() => setActionError(null)} className="shrink-0 font-bold text-red-400 hover:text-red-700">✕</button>
+        </div>
+      )}
 
       {tab === "open" && (
         queue.length === 0 ? (

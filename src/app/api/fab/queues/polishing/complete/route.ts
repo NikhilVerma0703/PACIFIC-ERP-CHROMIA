@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
+import { statusFromFlags } from "@/lib/fab/routing";
 
 export async function POST(req: Request) {
   const g = await fabGate("EMPLOYEE");
@@ -13,20 +14,22 @@ export async function POST(req: Request) {
       where: { pieceId, operationType: "POLISHING", isCompleted: false },
       data: { isCompleted: true, completedAt: new Date() },
     });
+    // The status is recomputed from the flags rather than pinned to "POLISHED":
+    // a piece whose sink was already cut must not go BACKWARDS to POLISHED just
+    // because polishing finished second. statusFromFlags orders the stages.
     const piece = await tx.fabPiece.update({
       where: { id: pieceId },
-      data: { polishingCompleted: true, status: "POLISHED" },
+      data: { polishingCompleted: true },
     });
-    // Check if ready for packaging
-    const ready = (!piece.polishRequired || piece.polishingCompleted)
-      && (!piece.hasSink || piece.sinkCompleted)
-      && (!piece.fabricationRequired || piece.fabricationCompleted);
-    if (ready) {
-      await tx.fabPieceOperation.updateMany({
-        where: { pieceId, operationType: "PACKAGING", isCompleted: false },
-        data: { isCompleted: false }, // keep pending, isReadyForPackaging check handles it
-      });
-    }
+    await tx.fabPiece.update({
+      where: { id: pieceId },
+      data: { status: statusFromFlags(piece) as never },
+    });
+    // There used to be an `if (ready)` block here that ran
+    // updateMany({ where: { isCompleted: false }, data: { isCompleted: false } })
+    // — a write that set the value it had already filtered on, so it could never
+    // change a row. The packaging queue derives readiness itself via
+    // isReadyForPackaging, so nothing needs to be written here at all.
   });
 
   return Response.json({ success: true });

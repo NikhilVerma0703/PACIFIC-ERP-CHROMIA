@@ -1,5 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
+import { postJson, getJson } from "@/lib/fab/postJson";
+import { FabAlerts } from "@/components/fab/FabAlerts";
 
 interface Piece {
   id: string; pieceCode: string;
@@ -74,6 +76,8 @@ export default function FabFabricationPage() {
   const [pieces, setPieces]         = useState<Piece[]>([]);
   const [completed, setCompleted]   = useState<CompletedPiece[]>([]);
   const [loading, setLoading]       = useState(true);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [loadError,   setLoadError]   = useState<string | null>(null);
   const [completing, setCompleting] = useState<Record<string, boolean>>({});
   const [undoing, setUndoing]       = useState<Record<string, boolean>>({});
   const [started, setStarted]       = useState<Record<string, number>>({});
@@ -83,14 +87,12 @@ export default function FabFabricationPage() {
   });
 
   const loadOpen = useCallback(async () => {
-    const res = await fetch("/api/fab/queues/fabrication");
-    const data = await res.json();
-    setPieces(Array.isArray(data) ? data : []);
+    const r = await getJson<Piece>("/api/fab/queues/fabrication");
+    if (r.ok) { setPieces(r.data); setLoadError(null); } else setLoadError(r.error);
   }, []);
   const loadDone = useCallback(async (date: string) => {
-    const res = await fetch(`/api/fab/queues/completed?type=FABRICATION&date=${date}`);
-    const data = await res.json();
-    setCompleted(Array.isArray(data) ? data : []);
+    const r = await getJson<CompletedPiece>(`/api/fab/queues/completed?type=FABRICATION&date=${date}`);
+    if (r.ok) setCompleted(r.data); else setLoadError(r.error);
   }, []);
 
   useEffect(() => {
@@ -102,10 +104,8 @@ export default function FabFabricationPage() {
 
   async function complete(pieceId: string) {
     setCompleting(p => ({ ...p, [pieceId]: true }));
-    await fetch("/api/fab/queues/fabrication/complete", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pieceId }),
-    });
+    const r = await postJson("/api/fab/queues/fabrication/complete", { pieceId });
+    if (!r.ok) setActionError(r.error);
     setStarted(s => { const n = { ...s }; delete n[pieceId]; return n; });
     await Promise.all([loadOpen(), loadDone(doneDate)]);
     setCompleting(p => ({ ...p, [pieceId]: false }));
@@ -113,10 +113,8 @@ export default function FabFabricationPage() {
 
   async function undo(pieceId: string, opId: string) {
     setUndoing(p => ({ ...p, [opId]: true }));
-    await fetch("/api/fab/queues/undo", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pieceId, operationType: "FABRICATION" }),
-    });
+    const r = await postJson("/api/fab/queues/undo", { pieceId, operationType: "FABRICATION" });
+    if (!r.ok) setActionError(r.error);
     await Promise.all([loadOpen(), loadDone(doneDate)]);
     setUndoing(p => ({ ...p, [opId]: false }));
   }
@@ -148,6 +146,9 @@ export default function FabFabricationPage() {
         </div>
       </div>
 
+      <FabAlerts loadError={loadError} actionError={actionError}
+        onDismiss={() => setActionError(null)} noun="list" />
+
       {tab === "open" ? (
         pieces.length === 0 ? (
           <div className="text-center py-20 text-gray-400">No pieces pending fabrication.</div>
@@ -172,10 +173,8 @@ export default function FabFabricationPage() {
                     startMs={started[p.id] ?? null}
                     onStart={async () => {
                       setStarted(s => ({ ...s, [p.id]: Date.now() }));
-                      await fetch("/api/fab/queues/start-op", {
-                        method: "POST", headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ pieceId: p.id, operationType: "FABRICATION" }),
-                      });
+                      const r = await postJson("/api/fab/queues/start-op", { pieceId: p.id, operationType: "FABRICATION" });
+    if (!r.ok) setActionError(r.error);
                     }}
                     onComplete={() => complete(p.id)}
                     completing={!!completing[p.id]} />

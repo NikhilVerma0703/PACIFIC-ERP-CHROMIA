@@ -1,5 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback, useRef } from "react";
+import { postJson, getJson } from "@/lib/fab/postJson";
+import { FabAlerts } from "@/components/fab/FabAlerts";
 
 interface Piece {
   id: string; pieceCode: string; hasSink: boolean;
@@ -73,6 +75,8 @@ export default function FabPolishingPage() {
   const [pieces, setPieces]         = useState<Piece[]>([]);
   const [completed, setCompleted]   = useState<CompletedPiece[]>([]);
   const [loading, setLoading]       = useState(true);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [loadError,   setLoadError]   = useState<string | null>(null);
   const [completing, setCompleting] = useState<Record<string, boolean>>({});
   const [undoing, setUndoing]       = useState<Record<string, boolean>>({});
   const [started, setStarted]       = useState<Record<string, number>>({}); // pieceId → startTimestamp
@@ -82,14 +86,12 @@ export default function FabPolishingPage() {
   });
 
   const loadOpen = useCallback(async () => {
-    const res = await fetch("/api/fab/queues/polishing");
-    const data = await res.json();
-    setPieces(Array.isArray(data) ? data : []);
+    const r = await getJson<Piece>("/api/fab/queues/polishing");
+    if (r.ok) { setPieces(r.data); setLoadError(null); } else setLoadError(r.error);
   }, []);
   const loadDone = useCallback(async (date: string) => {
-    const res = await fetch(`/api/fab/queues/completed?type=POLISHING&date=${date}`);
-    const data = await res.json();
-    setCompleted(Array.isArray(data) ? data : []);
+    const r = await getJson<CompletedPiece>(`/api/fab/queues/completed?type=POLISHING&date=${date}`);
+    if (r.ok) setCompleted(r.data); else setLoadError(r.error);
   }, []);
 
   useEffect(() => {
@@ -101,18 +103,14 @@ export default function FabPolishingPage() {
 
   async function startPiece(pieceId: string) {
     setStarted(s => ({ ...s, [pieceId]: Date.now() }));
-    await fetch("/api/fab/queues/start-op", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pieceId, operationType: "POLISHING" }),
-    });
+    const r = await postJson("/api/fab/queues/start-op", { pieceId, operationType: "POLISHING" });
+    if (!r.ok) setActionError(r.error);
   }
 
   async function complete(pieceId: string) {
     setCompleting(p => ({ ...p, [pieceId]: true }));
-    await fetch("/api/fab/queues/polishing/complete", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pieceId }),
-    });
+    const r = await postJson("/api/fab/queues/polishing/complete", { pieceId });
+    if (!r.ok) setActionError(r.error);
     setStarted(s => { const n = { ...s }; delete n[pieceId]; return n; });
     await Promise.all([loadOpen(), loadDone(doneDate)]);
     setCompleting(p => ({ ...p, [pieceId]: false }));
@@ -120,10 +118,8 @@ export default function FabPolishingPage() {
 
   async function undo(pieceId: string, opId: string) {
     setUndoing(p => ({ ...p, [opId]: true }));
-    await fetch("/api/fab/queues/undo", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pieceId, operationType: "POLISHING" }),
-    });
+    const r = await postJson("/api/fab/queues/undo", { pieceId, operationType: "POLISHING" });
+    if (!r.ok) setActionError(r.error);
     await Promise.all([loadOpen(), loadDone(doneDate)]);
     setUndoing(p => ({ ...p, [opId]: false }));
   }
@@ -154,6 +150,9 @@ export default function FabPolishingPage() {
           </div>
         </div>
       </div>
+
+      <FabAlerts loadError={loadError} actionError={actionError}
+        onDismiss={() => setActionError(null)} noun="list" />
 
       {tab === "open" ? (
         pieces.length === 0 ? (

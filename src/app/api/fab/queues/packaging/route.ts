@@ -1,11 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
-
-function isReadyForPackaging(p: { polishRequired: boolean; polishingCompleted: boolean; hasSink: boolean; sinkCompleted: boolean; fabricationRequired: boolean; fabricationCompleted: boolean }): boolean {
-  return (!p.polishRequired || p.polishingCompleted)
-    && (!p.hasSink || p.sinkCompleted)
-    && (!p.fabricationRequired || p.fabricationCompleted);
-}
+import { isReadyForPackaging } from "@/lib/fab/routing";
 
 export async function GET() {
   const g = await fabGate("EMPLOYEE");

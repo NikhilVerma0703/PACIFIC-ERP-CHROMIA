@@ -42,8 +42,16 @@ export async function POST(req: Request) {
     select: { machineId: true },
   });
 
-  await prisma.fabSlabJob.update({
-    where: { id: slabJobId },
+  // TAKE THE LOCK ATOMICALLY. The findUnique above is only for the 409 message;
+  // it cannot be the lock, because between reading READY and writing
+  // IN_PROGRESS another operator can do exactly the same thing. Both passed the
+  // check, both wrote, and the second silently took a slab the first was already
+  // cutting — the one outcome this endpoint exists to prevent.
+  //
+  // `status: "READY"` in the WHERE makes this a compare-and-set: the database
+  // decides the winner, and the loser updates 0 rows.
+  const claimed = await prisma.fabSlabJob.updateMany({
+    where: { id: slabJobId, status: "READY" },
     data:  {
       status:     "IN_PROGRESS",
       startTime:  new Date(),
@@ -51,6 +59,17 @@ export async function POST(req: Request) {
       machineId:  machSession?.machineId ?? undefined,
     },
   });
+
+  if (claimed.count === 0) {
+    // Someone claimed it between our read and our write. Re-read to name them.
+    const now = await prisma.fabSlabJob.findUnique({
+      where:   { id: slabJobId },
+      include: { operator: { select: { name: true, email: true } } },
+    });
+    if (now?.operatorId === userId) return Response.json({ success: true, alreadyStarted: true });
+    const lockedBy = now?.operator?.name ?? now?.operator?.email ?? "another operator";
+    return Response.json({ error: "locked", lockedBy }, { status: 409 });
+  }
 
   return Response.json({ success: true });
 }

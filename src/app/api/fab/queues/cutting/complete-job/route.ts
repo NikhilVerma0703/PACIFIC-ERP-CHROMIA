@@ -58,10 +58,21 @@ export async function POST(req: Request) {
   let pieceIds = [...pieceIdSet];
   let piecesCreated = 0;
 
+  // ALREADY DONE? STOP. Without this the whole cascade below re-runs on a
+  // double-click or a retried request: the auto-create branch would mint a
+  // second full set of FabPieceOperation rows (fabPiece.upsert is idempotent,
+  // but the five creates under it are not, and there is no unique constraint on
+  // pieceId+operationType to catch it). The result is a piece carrying two
+  // CUTTING rows, two PACKAGING rows, and queue counts that never reconcile.
+  if (slabJob.status === "COMPLETED") {
+    return Response.json({ success: true, alreadyCompleted: true, piecesUpdated: 0, piecesCreated: 0 });
+  }
+
   await prisma.$transaction(async (tx) => {
-    // 1. Mark the slab job complete
-    await tx.fabSlabJob.update({
-      where: { id: slabJobId },
+    // 1. Mark the slab job complete — conditionally, so two concurrent requests
+    //    cannot both proceed into the cascade. The loser writes nothing.
+    const done = await tx.fabSlabJob.updateMany({
+      where: { id: slabJobId, status: { not: "COMPLETED" } },
       data: {
         status:     "COMPLETED",
         endTime:    now,
@@ -69,6 +80,7 @@ export async function POST(req: Request) {
         machineId:  machineSession?.machineId ?? undefined,
       },
     });
+    if (done.count === 0) return;   // another request got there first
 
     if (pieceIds.length === 0 && slabJob.slab.requirementAllocations.length > 0) {
       // AUTO-CREATE pieces for CLO projects that skipped release-project
@@ -106,6 +118,21 @@ export async function POST(req: Request) {
             update: {},
           });
           newPieceIds.push(piece.id);
+
+          // The upsert above is idempotent; the creates below are NOT, and
+          // fab_piece_operation has no unique key on (pieceId, operationType) to
+          // stop a second set landing. If this pieceCode already had its
+          // operations built — a partial run, or a piece created by
+          // release-project — advance the existing CUTTING row instead of
+          // laying down a duplicate route.
+          const existingOps = await tx.fabPieceOperation.count({ where: { pieceId: piece.id } });
+          if (existingOps > 0) {
+            await tx.fabPieceOperation.updateMany({
+              where: { pieceId: piece.id, operationType: "CUTTING", isCompleted: false },
+              data:  { isCompleted: true, completedAt: now },
+            });
+            continue;
+          }
 
           let seq = 1;
           await tx.fabPieceOperation.create({

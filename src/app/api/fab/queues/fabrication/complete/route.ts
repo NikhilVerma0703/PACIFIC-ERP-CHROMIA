@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
+import { statusFromFlags } from "@/lib/fab/routing";
 
 export async function POST(req: Request) {
   const g = await fabGate("EMPLOYEE");
@@ -13,9 +14,15 @@ export async function POST(req: Request) {
       where: { pieceId, operationType: "FABRICATION", isCompleted: false },
       data: { isCompleted: true, completedAt: new Date() },
     });
+    // Recomputed for the same reason as the other stations, and through the same
+    // function, so all four agree on what a piece's status means.
+    const piece = await tx.fabPiece.update({
+      where: { id: pieceId },
+      data: { fabricationCompleted: true },
+    });
     await tx.fabPiece.update({
       where: { id: pieceId },
-      data: { fabricationCompleted: true, status: "FABRICATED" },
+      data: { status: statusFromFlags(piece) as never },
     });
   });
 
