@@ -50,12 +50,19 @@ SHIFTS_IN_MONTH = 90
 # another is worse than no notice.
 FLOOR_PCT, TARGET_PCT = 87, 97
 
-# Shifts before a per-shift rate is trusted at face value. Mirrors
-# CREDIBLE_SHIFTS in src/lib/shiftScoreMath.ts, which was lowered 5 -> 3 in
-# commit 1097b11 for a three-man rotation. THE PRINTED NOTICE STILL SAID FIVE
-# until 2026-08-06, so the sheet on the wall and the code paying the money
-# disagreed about the rule. Corrected here; keep the two in step.
-CREDIBLE_SHIFTS = 3
+# Shifts before a per-shift rate is trusted at face value.
+#
+# LEFT AT 5 ON PURPOSE, AND IT DOES NOT MATCH THE CODE. CREDIBLE_SHIFTS in
+# src/lib/shiftScoreMath.ts is 3 — lowered from 5 in commit 1097b11 for a
+# three-man rotation, whose own message said the wall notice needed re-cutting
+# before it drove a payout. This sheet was changed to 3 to match, then reverted
+# on 2026-08-06 because the change had not been asked for.
+#
+# SO THE NOTICE AND THE PAYOUT DISAGREE: a man with 3 or 4 shifts is told his
+# rate is scaled down, and the code pays him in full. It errs in the employee's
+# favour, which is why it is survivable, but it is still a promise the system
+# does not keep. Decide which number is right and change BOTH.
+CREDIBLE_SHIFTS = 5
 
 # Performance target for the OEE block. Mirrors TARGET_SLABS_PER_SHIFT in
 # src/lib/shiftScoreMath.ts, and is itself read off the pool ladder: the tier
