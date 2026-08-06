@@ -86,13 +86,13 @@ lost. Two points of grade share is worth twenty points of quality score.
 ## A worked example — one month, all the way to rupees
 
 Say the plant makes **9,000 good slabs**, so the pool is **₹8 lakh** and level pegging
-pays **19%** of salary. The three shifts do not finish level:
+pays **20%** of salary. The three shifts do not finish level:
 
 | Shift | Good slabs per shift | QC grade share | Quality score | Share of the pool | Paid, as % of own salary | An operator on ₹20,000 |
 |---|---|---|---|---|---|---|
-| Shift A | 100 | 95% | 80% | 41% | **23%** | **₹4,568** |
-| Shift B | 90 | 92% | 50% | 33% | **18%** | **₹3,651** |
-| Shift C | 80 | 90% | 30% | 26% | **15%** | **₹2,943** |
+| Shift A | 100 | 95% | 80% | 41% | **24%** | **₹4,791** |
+| Shift B | 90 | 92% | 50% | 33% | **19%** | **₹3,829** |
+| Shift C | 80 | 90% | 30% | 26% | **15%** | **₹3,087** |
 
 Shift A made 25% more than C and finished five grade points ahead, and took **1.6 times
 the money** for it. Every shift still earned — nobody is left with nothing — and all three
@@ -146,24 +146,24 @@ It rises far faster than production does: 10,000 to 12,000 slabs is 20% more wor
 
 This is not last month's result. This is what is waiting to be earned:
 
-| Good slabs in the month | A shift averages | Total pool | Of one month's salary | **Each operator**<br>75 on the line<br>₹20,000 salary | **Each supervisor / pigment incharge / line incharge**<br>30 on the line<br>₹52,500 salary | **Each manager / R&D**<br>7 on the line<br>₹1,75,000 salary |
-|---|---|---|---|---|---|---|
-| 7,000 | 78 a shift | ₹3 lakh | 7% | ₹1,395 | ₹3,663 | ₹12,209 |
-| 8,000 | 89 a shift | ₹6 lakh | 14% | ₹2,791 | ₹7,326 | ₹24,419 |
-| 9,000 | 100 a shift | ₹8 lakh | 19% | ₹3,721 | ₹9,767 | ₹32,558 |
-| 10,000 | 111 a shift | ₹13 lakh | 30% | ₹6,047 | ₹15,872 | ₹52,907 |
-| 11,000 | 122 a shift | ₹17 lakh | 40% | ₹7,907 | ₹20,756 | ₹69,186 |
-| 12,000 | 133 a shift | ₹25 lakh | 58% | ₹11,628 | ₹30,523 | ₹1,01,744 |
+| Good slabs in the month | A shift averages | Total pool | Of one month's salary | **Each operator**<br>75 on the line<br>₹20,000 salary | **Each supervisor / pigment incharge / line incharge**<br>30 on the line<br>₹52,500 salary | **Each Category B (R&D)**<br>2 on the line<br>₹75,000 salary | **Each manager**<br>5 on the line<br>₹1,75,000 salary |
+|---|---|---|---|---|---|---|---|
+| 7,000 | 78 a shift | ₹3 lakh | 7% | ₹1,463 | ₹3,841 | ₹5,488 | ₹12,805 |
+| 8,000 | 89 a shift | ₹6 lakh | 15% | ₹2,927 | ₹7,683 | ₹10,976 | ₹25,610 |
+| 9,000 | 100 a shift | ₹8 lakh | 20% | ₹3,902 | ₹10,244 | ₹14,634 | ₹34,146 |
+| 10,000 | 111 a shift | ₹13 lakh | 32% | ₹6,341 | ₹16,646 | ₹23,780 | ₹55,488 |
+| 11,000 | 122 a shift | ₹17 lakh | 41% | ₹8,293 | ₹21,768 | ₹31,098 | ₹72,561 |
+| 12,000 | 133 a shift | ₹25 lakh | 61% | ₹12,195 | ₹32,012 | ₹45,732 | ₹1,06,707 |
 
-*Worked on an operator at ₹20,000, a supervisor / pigment incharge / line incharge at ₹52,500 and a manager / R&D at ₹1,75,000 a
+*Worked on an operator at ₹20,000, a supervisor / pigment incharge / line incharge at ₹52,500, a Category B (R&D) at ₹75,000 and a manager at ₹1,75,000 a
 month. Your own figure is that same percentage of your own salary. "A shift averages" is
 the good slabs one shift needs to average across 90 shifts in the month.*
 
-> **Read the second column, then the last three.** About **eleven more good slabs a shift**
-> moves the whole plant up one row — and every row up adds another **5% to 19% of a
+> **Read the second column, then the last four.** About **eleven more good slabs a shift**
+> moves the whole plant up one row — and every row up adds another **5% to 20% of a
 > month's pay** to every person on the line.
 >
-> **12,000 slabs pays everyone 58% of a month's salary — the best the ladder currently goes.**
+> **12,000 slabs pays everyone 61% of a month's salary — the best the ladder currently goes.**
 
 > ⚠️ **7,000 good slabs is the minimum.** Below that the plant earns **no pool at
 > all** and there is nothing to share out, whatever any single shift did. The table starts
@@ -187,21 +187,22 @@ exactly the pool:
 
 | Who | On the line | Monthly salary | Share of every pool |
 |---|---|---|---|
-| Operators | 75 | ₹20,000 each | **35%** |
-| Supervisors / Pigment Incharge / Line Incharge | 30 | ₹52,500 each | **37%** |
-| Managers / R&D | 7 | ₹1,75,000 each | **28%** |
-| **Total** | **112** | **₹43,00,000** | **100%** |
+| Operators | 75 | ₹20,000 each | **37%** |
+| Supervisors / Pigment Incharge / Line Incharge | 30 | ₹52,500 each | **38%** |
+| Category B (R&D) | 2 | ₹75,000 each | **4%** |
+| Managers | 5 | ₹1,75,000 each | **21%** |
+| **Total** | **112** | **₹41,00,000** | **100%** |
 
-There are **112 people on the line** — 75 operators, 30 supervisors / pigment incharge / line incharge and 7 managers / R&D — and a production salary bill of **₹43,00,000** a month. That bill is what turns a
+There are **112 people on the line** — 75 operators, 30 supervisors / pigment incharge / line incharge, 2 Category B (R&D) and 5 managers — and a production salary bill of **₹41,00,000** a month. That bill is what turns a
 pool into a percentage, and the sum is one division you can check yourself:
 
-> **₹6,00,000 pool ÷ ₹43,00,000 salary bill = 14% of a month's pay, for everybody**
+> **₹6,00,000 pool ÷ ₹41,00,000 salary bill = 15% of a month's pay, for everybody**
 
 Whatever that percentage comes to, every person on the line takes exactly that much of
 their own salary.
 
 > ⚠️ **PROVISIONAL — HEADCOUNT NOT YET CONFIRMED.** The establishment in the table above
-> (75 operators / 30 supervisors and incharges / 7 managers) is an assumed
+> (75 operators / 30 supervisors and incharges / 2 Category B / 5 managers) is an assumed
 > figure recorded on 6 August 2026 and is **subject to confirmation by Human Resources**,
 > expected by 8 August 2026. **Every amount and percentage in this notice is calculated
 > from it.** Should the confirmed establishment differ, all such figures will change accordingly
@@ -293,8 +294,8 @@ on how you perform individually. Treat the tables as the shape of the scheme, no
 fixed promise of a number.
 
 **Basis of the figures.** All amounts in this notice are computed from an assumed
-establishment of 75 operators, 30 supervisors / pigment incharge / line incharge
-and 7 managers / R&D (112 in total), recorded on 6 August 2026 and pending
+establishment of 75 operators, 30 supervisors / pigment incharge / line
+incharge, 2 Category B (R&D) and 5 managers (112 in total), recorded on 6 August 2026 and pending
 confirmation by Human Resources, expected by 8 August 2026. The pool is shared in proportion
 to the total salary bill, so a change in the establishment changes every amount and percentage
 shown. **This document is issued for information in its present form and is not a statement of

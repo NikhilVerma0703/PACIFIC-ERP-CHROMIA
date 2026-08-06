@@ -56,9 +56,20 @@ from reportlab.platypus import (BaseDocTemplate, Frame, KeepTogether, PageBreak,
 # Keep this comment in step with the numbers - it has twice described a
 # headcount the file had already moved past, which is what makes a correct file
 # look broken.
-MANAGERS, MANAGER_PAY = 7, 175_000
+MANAGERS, MANAGER_PAY = 5, 175_000
 INCHARGES, INCHARGE_PAY = 30, 52_500
 OPERATORS, OPERATOR_PAY = 75, 20_000
+
+# CATEGORY B - the two new R&D people, moved out of Managers on 2026-08-06.
+# They were counted as managers (7) and are now their own tier of 2 between
+# incharge and manager, so managers drop to 5. The line is still 112 people:
+# they moved, they were not added.
+#
+# Rs 75,000 each, given 2026-08-06. Sits between an incharge's Rs 52,500 and a
+# manager's Rs 1,75,000, which is what "a tier between Manager and Incharge"
+# asked for. Every percentage on the sheet moves if this changes, so it lives
+# here and nowhere else - one line to correct.
+B_CAT, B_CAT_PAY = 2, 75_000
 
 # 30 days x 3 shifts. Used only to say what one shift has to average.
 SHIFTS_IN_MONTH = 90
@@ -117,9 +128,14 @@ TARGET_SLABS_PER_SHIFT = 100
 TIERS = [(7_000, 300_000), (8_000, 600_000), (9_000, 800_000),
          (10_000, 1_300_000), (11_000, 1_700_000), (12_000, 2_500_000)]
 
+# Lowest paid first - the tables read down the ladder, and Category B has to
+# land between the incharges and the managers.
 ROLES = [("Operators", OPERATORS, OPERATOR_PAY),
          ("Supervisors / Pigment Incharge / Line Incharge", INCHARGES, INCHARGE_PAY),
-         ("Managers / R&amp;D", MANAGERS, MANAGER_PAY)]
+         ("Category B - R&amp;D", B_CAT, B_CAT_PAY),
+         ("Managers", MANAGERS, MANAGER_PAY)]
+assert [pay for _, _, pay in ROLES] == sorted(pay for _, _, pay in ROLES), \
+    "ROLES must run lowest-paid to highest - the sheet reads as a ladder"
 
 # The pay table's last three columns are what ONE person in that group takes, so
 # their headers say the role in the singular and how many of them are on the
@@ -131,8 +147,11 @@ SINGULAR = {
     "Operators": "Operator",
     "Supervisors / Pigment Incharge / Line Incharge":
         "Supervisor /<br/>Pigment Incharge /<br/>Line Incharge",
-    "Managers / R&amp;D": "Manager / R&amp;D",
+    "Category B - R&amp;D": "Category B<br/>(R&amp;D)",
+    "Managers": "Manager",
 }
+assert set(SINGULAR) == {name for name, _, _ in ROLES}, \
+    "every role needs a singular form for the pay-table header"
 
 BILL = sum(n * pay for _, n, pay in ROLES)
 HEADS = sum(n for _, n, _ in ROLES)
@@ -208,7 +227,7 @@ def pool_rows():
 
 
 POOL = pool_rows()
-assert BILL == 4_300_000, f"salary bill is {BILL}: check the percentages in the prose"
+assert BILL == 4_100_000, f"salary bill is {BILL}: check the percentages in the prose"
 
 
 def landmark():
@@ -352,16 +371,23 @@ def tdl(text):
     return Paragraph(text, S["tdl"])
 
 
+# Terms that must survive lower-casing in running text: an initialism and a
+# proper category name. Without them the roll-call read "2 category b - r&d".
+KEEP_CASE = {"r&amp;d": "R&amp;D", "category b": "Category B"}
+
+
 def role_lower(name):
-    """A role name for running text: lower-cased, but initialisms left alone.
+    """A role name for running text: lower-cased, but names left alone.
 
     Plain .lower() printed "7 managers / r&d" in the roll-call sentence, because
     R&D is an initialism and not a word. It is spelled &amp; in ROLES, so the
     entity has to survive the fold too - "&AMP;" and "&amp;" are not the same
     thing to a parser that is case-sensitive about entity names.
     """
-    out = name.lower().replace("&amp;", "&amp;")
-    return re.sub(r"\br&amp;d\b", "R&amp;D", out)
+    out = name.lower()
+    for lower, proper in KEEP_CASE.items():
+        out = out.replace(lower, proper)
+    return out
 
 
 def upper_kept(text):
@@ -568,11 +594,18 @@ def story():
     # Shade the row worth a full month's pay, wherever it now falls - +1 for the
     # header. At 28 people that was the 9,000 row; at 44 it is 11,000.
     shade = [POOL.index(LANDMARK) + 1] if LANDMARK else []
-    # Narrowed the four left columns to widen the three per-person ones: their
-    # headers now carry three role words plus a headcount and a salary, and the
-    # longest ("PIGMENT INCHARGE /") is 29.5mm at 7.8pt bold.
-    A(tbl(rows, [21 * mm, 20 * mm, 20 * mm, 20 * mm, 30 * mm, 29 * mm, 30 * mm],
-          align_right=[0, 1, 2, 3, 4, 5, 6], shade=shade, pad=3.5))
+    # Widths are DERIVED from the number of roles, not typed. They were a fixed
+    # list of seven when there were three roles; adding Category B made the table
+    # eight columns wide and reportlab silently auto-sized the one nobody had
+    # declared. The four descriptive columns keep a fixed share and the per-person
+    # columns split what is left evenly, so a role can be added or removed
+    # without anyone having to re-do this arithmetic by hand.
+    # Measured, not guessed: "133 a shift" is 13.3mm and "Rs 25 lakh" 13.7mm at
+    # 8.2pt, and tbl() eats 5mm of every column in padding.
+    LEFT = [18 * mm, 19 * mm, 19 * mm, 16 * mm]
+    per = (170 * mm - sum(LEFT)) / len(ROLES)
+    widths = LEFT + [per] * len(ROLES)
+    A(tbl(rows, widths, align_right=list(range(len(widths))), shade=shade, pad=3.5))
     A(Paragraph("Your own figure is that same percentage of your own salary. \"A shift averages\" is the good slabs one "
                 f"shift needs to average across the {SHIFTS_IN_MONTH} shifts in a month.", S["note"]))
     # Stated ON the table, not only at the foot of the sheet: this is the line
@@ -584,7 +617,12 @@ def story():
            "and what you actually receive <b>can go up or down from what is printed</b> depending on how you "
            "personally perform.",
            AMBER_BG, colors.HexColor("#f59e0b"), S["warn"]))
-    A(band(f"<b>Read the second column, then the last three.</b> About <b>{SLAB_STEP} more good slabs a shift</b> moves the "
+    # "the last N" is derived — it said "three" and there are four role columns
+    # since Category B was split out. Spelled, because "the last 4" reads as a
+    # figure in a sheet already full of them.
+    WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
+    A(band(f"<b>Read the second column, then the last {WORDS.get(len(ROLES), len(ROLES))}.</b> "
+           f"About <b>{SLAB_STEP} more good slabs a shift</b> moves the "
            f"whole plant up one row - and every row up adds another <b>{STEP_LO * 100:.0f}% to {STEP_HI * 100:.0f}% of a "
            "month's pay</b> to every person on the line."
            # The headline sentence, and its honest fallback. With 72 people on
