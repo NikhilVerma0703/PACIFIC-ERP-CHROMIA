@@ -35,24 +35,30 @@ from reportlab.platypus import (BaseDocTemplate, Frame, KeepTogether, PageBreak,
 # in proportion to salary, which is the same thing as everyone taking the same
 # percentage of their own pay - so the salary bill is what turns a pool into a
 # percentage.
-# HEADCOUNT, 2026-08-06. Started the day at 22 operators / 4 incharges /
-# 2 managers and ended it at 55 / 11 / 6 - the line grew from 28 people to 72.
-# The pool tiers below were NOT scaled to match, by decision, so the same rupees
-# are shared by two and a half times as many people and every percentage on the
-# sheet falls with it. Nothing here is typed twice: the tables re-cut themselves
-# from these three lines and cannot quietly disagree with each other.
+# HEADCOUNT, final figures 2026-08-06: 75 operators, 30 supervisors/incharges,
+# 7 managers - 112 people, against 28 at the start of the day. The pool tiers
+# below were NOT scaled to match, by decision, so the same rupees are shared by
+# four times as many people and every percentage on the sheet falls with them.
+# Nothing here is typed twice: the tables re-cut themselves from these three
+# lines and cannot quietly disagree with each other.
 #
-# WHAT 72 PEOPLE DID TO THE LADDER: no tier reaches a full month's salary any
-# more. The top row (12,000 slabs, Rs 25 lakh) pays 92%, so LANDMARK is None and
-# the headline sentence falls back to stating what the top row really pays.
-# Raise the pools if a full month is meant to be reachable again.
+# TWO THINGS 112 PEOPLE DID, BOTH VISIBLE ON THE SHEET:
+#
+#  1. No tier reaches a full month's salary. The top row (12,000 slabs, Rs 25
+#     lakh) pays 58%, so LANDMARK is None and the headline sentence falls back
+#     to stating what the top row really pays. Raise the pools if a full month
+#     is meant to be reachable again.
+#  2. The middle group is now the LARGEST claim on every pool - 30 people at
+#     Rs 52,500 is Rs 15.75 lakh of the bill, ahead of the 75 operators'
+#     Rs 15 lakh. The share table says so plainly; it is arithmetic, not a
+#     decision made here, but it is the row people will read twice.
 #
 # Keep this comment in step with the numbers - it has twice described a
 # headcount the file had already moved past, which is what makes a correct file
 # look broken.
-MANAGERS, MANAGER_PAY = 6, 175_000
-INCHARGES, INCHARGE_PAY = 11, 52_500
-OPERATORS, OPERATOR_PAY = 55, 20_000
+MANAGERS, MANAGER_PAY = 7, 175_000
+INCHARGES, INCHARGE_PAY = 30, 52_500
+OPERATORS, OPERATOR_PAY = 75, 20_000
 
 # 30 days x 3 shifts. Used only to say what one shift has to average.
 SHIFTS_IN_MONTH = 90
@@ -186,7 +192,7 @@ def pool_rows():
 
 
 POOL = pool_rows()
-assert BILL == 2_727_500, f"salary bill is {BILL}: check the percentages in the prose"
+assert BILL == 4_300_000, f"salary bill is {BILL}: check the percentages in the prose"
 
 
 def landmark():
