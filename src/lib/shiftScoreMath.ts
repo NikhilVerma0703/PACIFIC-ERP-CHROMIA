@@ -246,13 +246,67 @@ export function canonPerson(raw: unknown): string {
 export const POOL_VOLUME = 0.7;
 export const POOL_QUALITY = 0.3;
 
+// --------------------------------------------------------------------------
+// A SHIFT IS WORTH THE TIME THE LINE COULD ACTUALLY RUN
+// --------------------------------------------------------------------------
+// The per-shift rate divides good slabs by shifts worked. Counting a shift the
+// plant spent broken as a whole shift charges the incharge for a stoppage he
+// did not cause and cannot fix — 2026-08-03 C was down 480 minutes of 480, made
+// nothing, and still halved Suresh's rate as if he had worked a normal night
+// and produced nothing.
+//
+// So a shift counts for the fraction of its LOGGED hours the line was not
+// stopped. A shift dead throughout counts as zero shifts: it contributes no
+// slabs and no divisor, and drops out of the rate instead of dragging it down.
+//
+// ONLY MECHANICAL/ELECTRICAL BREAKDOWN AND POWEROUT ARE REMOVED. Process and
+// cleaning delay stay in, because they are the shift's own work and its own
+// pace — removing those would pay a man for running his line slowly.
+//
+// WHY THIS IS NOT A LICENCE TO CLAIM DOWNTIME. Shrinking the divisor raises the
+// rate, so an invented breakdown is worth money. Two things sit against it: the
+// hour cannot claim more than 60 minutes, and the SAME figure is what the
+// electrical and mechanical incharge are scored on — a breakdown that did not
+// happen takes money out of a colleague's pocket on the same shift, and he is
+// standing right there. The claim has a witness with the opposite incentive.
+
+/** Floor on a shift that DECLARED SLABS: one hour of an eight-hour shift.
+ *
+ *  A shift that pressed slabs was running for some of it, whatever the delay
+ *  columns say. Without this floor a row claiming a full stoppage AND a slab
+ *  range divides real output by zero, and one contradictory entry takes the
+ *  whole pool. It is a rail against bad data, not a scoring rule — no shift in
+ *  the live range hits it. */
+export const MIN_RUNNING_SHIFT = 1 / 8;
+
+/** What one shift instance is worth as a divisor: 1 for a shift that ran
+ *  clean, 0 for one that never ran at all.
+ *
+ *  `stoppedMin` is breakdown + powerout only. Measured against the hours MIS
+ *  ACTUALLY LOGGED, exactly as uptime is — an hour never entered is not an hour
+ *  the line was running, so it cannot be claimed as one. */
+export function shiftWeight(hoursLogged: number, stoppedMin: number, declaredSlabs = 0): number {
+  if (!(hoursLogged > 0)) return 0;
+  const running = Math.max(0, Math.min(1, 1 - stoppedMin / (hoursLogged * 60)));
+  return declaredSlabs > 0 ? Math.max(running, MIN_RUNNING_SHIFT) : running;
+}
+
 /** Shifts before a per-shift RATE is trusted at face value.
  *
  *  Both pools are shared on rates, which is what the plant asked for: 3 shifts
  *  making 300 good slabs should beat 10 making 500. But a rate from one shift
  *  is not evidence - a single good night would otherwise take the largest slice
  *  of the month from people who worked twenty. Below this, the share is scaled
- *  down in proportion; at or above it, the rate counts in full. */
+ *  down in proportion; at or above it, the rate counts in full.
+ *
+ *  MEASURED ON SHIFTS ATTENDED, NOT RUNNING SHIFTS — deliberately. Credibility
+ *  asks how many times we have watched this man run a shift, and he turned up
+ *  for all of them. Scaling it by running time instead cancels the whole
+ *  downtime adjustment for exactly the people it protects: below the ramp the
+ *  volume term is `(points / shifts) x (shifts / 5)`, which is `points / 5`
+ *  whatever the divisor, so a man whose night was lost to a breakdown would
+ *  come out of the fix strictly worse off than before it — punished twice for
+ *  one stoppage. */
 export const CREDIBLE_SHIFTS = 5;
 export const credibility = (shifts: number) => Math.min(1, Math.max(0, shifts) / CREDIBLE_SHIFTS);
 

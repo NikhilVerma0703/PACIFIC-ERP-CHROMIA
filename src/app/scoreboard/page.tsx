@@ -151,7 +151,16 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
                 {p.person}
                 {!p.qualified && <div className="text-[11px] font-normal">{unqualifiedNote}</div>}
               </td>
-              <td className="py-2 pr-4">{fmt(p.shifts)}</td>
+              {/* Shifts ATTENDED, with the running figure beneath it when a
+                  breakdown or powerout took time out of them — that smaller
+                  number is what "Per shift" is divided by, and a payout is
+                  not readable unless the divisor is on the page. */}
+              <td className="py-2 pr-4">
+                {fmt(p.shifts)}
+                {p.shifts - p.effectiveShifts >= 0.05 && (
+                  <div className="text-[11px] font-normal text-gray-400">{p.effectiveShifts.toFixed(1)} running</div>
+                )}
+              </td>
               <td className="py-2 pr-4">{fmt(p.quantity)}</td>
               <td className="py-2 pr-4">{pct(p.rawQuality)}</td>
               <td className="py-2 pr-4">{pct(p.quality)}</td>
@@ -319,6 +328,12 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
                     <>
                       Runs the shift and carries its full score. This is the ranking the shift incentive is built on.
                       Measured per shift, not on the total — 3 shifts making 300 good slabs beats 10 making 500.
+                      {" "}<b>Per shift is divided by RUNNING shifts</b>, not shifts attended: time the line was
+                      stopped by a mechanical/electrical breakdown or a powercut is taken out of the shift, so a
+                      night the plant spent broken counts as ~0 shifts and drops out of the rate instead of halving
+                      it. Process and cleaning delay stay in — that is the shift&rsquo;s own pace. The{" "}
+                      <span className="text-gray-400">grey figure</span> under Shifts is what the rate is actually
+                      divided by.
                       {" "}<b>QC grade</b> is the real share (A 100% · B 50% · C 0%); <b>Score</b> is that share
                       measured from {Math.round(QUALITY_FLOOR * 100)}%. <b>Share</b> combines
                       both: {Math.round(POOL_VOLUME * 100)}% from good slabs per shift

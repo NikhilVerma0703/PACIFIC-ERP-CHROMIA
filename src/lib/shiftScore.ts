@@ -64,7 +64,7 @@ export * from "@/lib/shiftScoreMath";
 import {
   IDEAL_MM, TOLERANCE_MM, MIN_PLAUSIBLE_MM, MAX_PLAUSIBLE_MM, MAX_SLABS_PER_HOUR,
   IST_MIN, NOT_OPERATORS, MIN_ROWS_TO_RANK_STATION, MIN_SHIFTS_TO_RANK,
-  POOL_VOLUME, POOL_QUALITY, credibility,
+  POOL_VOLUME, POOL_QUALITY, credibility, shiftWeight,
   shiftRange, shiftKeyOf, canonPerson, gradeCredit, polishCredit,
   scaleQuality, scalePolish, scaleUptime, plusDay, type ShiftLetter,
 } from "@/lib/shiftScoreMath";
@@ -126,6 +126,10 @@ export interface ShiftScore {
   /** MIS rows (= hours) this shift actually filed. The uptime denominator:
    *  an hour never entered is not an hour the line was running. */
   hoursLogged: number;
+  /** What this shift is worth as a per-shift DIVISOR: 1 for a shift that ran
+   *  clean, 0 for one the plant spent broken. Breakdown and powerout are taken
+   *  out of the shift; process and cleaning delay are not. See shiftWeight. */
+  weight: number;
   /** Slabs this shift claimed that ANOTHER shift also claimed. Dropped from
    *  both scores and reported so the entry gets corrected. */
   contested: number;
@@ -180,7 +184,7 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
   const empty: ShiftScore = {
     anchor, shift, quantity: 0, quality: null, rawQuality: null, graded: 0, ungraded: 0,
     gradeA: 0, gradeB: 0, gradeC: 0, points: 0, avgMm: null, breakdownMin: 0, poweroutMin: 0,
-    hoursLogged: 0, contested: 0, wideRows: 0, flagged: [],
+    hoursLogged: 0, weight: 0, contested: 0, wideRows: 0, flagged: [],
     people: [], crew: { production: [], electrical: [], mechanical: [] },
   };
   {
@@ -242,7 +246,9 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
     const slabs = [...declared];
     if (!slabs.length) {
       const crew0 = await crewOnShift(anchor, shift);
-      return { ...empty, breakdownMin, poweroutMin, hoursLogged, contested, wideRows, flagged, crew: crew0,
+      return { ...empty, breakdownMin, poweroutMin, hoursLogged,
+        weight: shiftWeight(hoursLogged, breakdownMin + poweroutMin, 0),
+        contested, wideRows, flagged, crew: crew0,
         people: [...new Set([...crew0.production, ...crew0.electrical, ...crew0.mechanical])].sort() };
     }
 
@@ -292,7 +298,9 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
       avgMm,
       // credit IS the good-slab count: A adds 1, B adds 0.5, C adds 0.
       points: Math.round(credit),
-      breakdownMin, poweroutMin, hoursLogged, contested, wideRows, flagged,
+      breakdownMin, poweroutMin, hoursLogged,
+      weight: shiftWeight(hoursLogged, breakdownMin + poweroutMin, slabs.length),
+      contested, wideRows, flagged,
       people, crew,
     };
   }
@@ -373,13 +381,21 @@ async function crewOnShift(anchor: string, shift: ShiftLetter): Promise<ShiftSco
 
 export interface PersonScore {
   person: string;
+  /** Shifts ATTENDED. What credibility is measured on, and what the board
+   *  shows — he turned up for these however the night went. */
   shifts: number;
+  /** Shifts attended, each discounted by the time its line was stopped by
+   *  breakdown or powerout. THE DIVISOR behind pointsPerShift: a shift the
+   *  plant spent broken counts as ~0 here, so it neither earns nor costs. */
+  effectiveShifts: number;
   quantity: number;
   /** Total points across the period — shown, but NOT what decides the ranking. */
   points: number;
-  /** Points per shift. THE ranking figure: 3 shifts making 300 good slabs beats
+  /** Points per RUNNING shift — good slabs over `effectiveShifts`, not over
+   *  shifts attended. THE ranking figure: 3 shifts making 300 good slabs beats
    *  10 shifts making 500, because per shift it is 100 against 50. Ranking on
-   *  the total would pay for availability rather than performance. */
+   *  the total would pay for availability rather than performance; dividing by
+   *  shifts attended would charge a man for the night his line was dead. */
   pointsPerShift: number;
   /** Points-weighted mean quality across the shifts this person was on. */
   quality: number | null;
@@ -566,11 +582,11 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
   };
 
   const roll = (pick: (s: ShiftScore) => string[], withPowerout = false): PersonScore[] => {
-    const m = new Map<string, { shifts: number; quantity: number; points: number; qNum: number; qDen: number; credit: number; down: number; hours: number }>();
+    const m = new Map<string, { shifts: number; eff: number; quantity: number; points: number; qNum: number; qDen: number; credit: number; down: number; hours: number }>();
     for (const s of shifts) {
       for (const p of pick(s)) {
-        const e = m.get(p) ?? { shifts: 0, quantity: 0, points: 0, qNum: 0, qDen: 0, credit: 0, down: 0, hours: 0 };
-        e.shifts += 1; e.quantity += s.quantity; e.points += s.points;
+        const e = m.get(p) ?? { shifts: 0, eff: 0, quantity: 0, points: 0, qNum: 0, qDen: 0, credit: 0, down: 0, hours: 0 };
+        e.shifts += 1; e.eff += s.weight; e.quantity += s.quantity; e.points += s.points;
         e.down += s.breakdownMin + (withPowerout ? s.poweroutMin : 0);
         e.hours += s.hoursLogged;
         if (s.quality != null) { e.qNum += s.quality * s.graded; e.qDen += s.graded; }
@@ -579,8 +595,10 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
       }
     }
     const raw = [...m.entries()].map(([person, e]) => ({
-      person, shifts: e.shifts, quantity: e.quantity, points: e.points,
-      pointsPerShift: e.shifts ? e.points / e.shifts : 0,
+      person, shifts: e.shifts, effectiveShifts: e.eff, quantity: e.quantity, points: e.points,
+      // Over RUNNING shifts, not shifts attended: a night the plant spent
+      // broken carries no slabs and no divisor either.
+      pointsPerShift: e.eff ? e.points / e.eff : 0,
       quality: e.qDen ? e.qNum / e.qDen : null,
       rawQuality: e.qDen ? e.credit / e.qDen : null,
       qualified: e.shifts >= MIN_SHIFTS_TO_RANK,
@@ -625,11 +643,12 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
     mechanical: rankByUptime(roll((s) => s.crew.mechanical)),
   };
 
-  const byPerson = new Map<string, { shifts: number; quantity: number; points: number; qNum: number; qDen: number; credit: number; down: number; hours: number }>();
+  const byPerson = new Map<string, { shifts: number; eff: number; quantity: number; points: number; qNum: number; qDen: number; credit: number; down: number; hours: number }>();
   for (const s of shifts) {
     for (const p of s.people) {
-      const e = byPerson.get(p) ?? { shifts: 0, quantity: 0, points: 0, qNum: 0, qDen: 0, credit: 0, down: 0, hours: 0 };
+      const e = byPerson.get(p) ?? { shifts: 0, eff: 0, quantity: 0, points: 0, qNum: 0, qDen: 0, credit: 0, down: 0, hours: 0 };
       e.shifts += 1;
+      e.eff += s.weight;
       e.quantity += s.quantity;
       e.points += s.points;
       e.down += s.breakdownMin;
@@ -640,8 +659,8 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
     }
   }
   const rawAll = [...byPerson.entries()].map(([person, e]) => ({
-    person, shifts: e.shifts, quantity: e.quantity, points: e.points,
-    pointsPerShift: e.shifts ? e.points / e.shifts : 0,
+    person, shifts: e.shifts, effectiveShifts: e.eff, quantity: e.quantity, points: e.points,
+    pointsPerShift: e.eff ? e.points / e.eff : 0,
     quality: e.qDen ? e.qNum / e.qDen : null,
     rawQuality: e.qDen ? e.credit / e.qDen : null,
     qualified: e.shifts >= MIN_SHIFTS_TO_RANK,
@@ -810,6 +829,9 @@ export async function scoreStations(from: string, to: string, excludeNames: stri
       const points = Math.round(e.credit);
       return {
         person, shifts: e.days.size, quantity: e.slabs.size, points,
+        // Downtime is a shift-level figure — a station row does not carry one,
+        // so a day here is always a whole day and the two are equal.
+        effectiveShifts: e.days.size,
         pointsPerShift: e.days.size ? points / e.days.size : 0,
         quality, rawQuality,
         qualified: e.rows >= MIN_ROWS_TO_RANK_STATION,

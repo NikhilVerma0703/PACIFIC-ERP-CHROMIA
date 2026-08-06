@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  gradeCredit, polishCredit, canonPerson, shiftRange,
+  gradeCredit, polishCredit, canonPerson, shiftRange, shiftWeight,
   scaleQuality, scaleUptime, scalePolish,
-  QUALITY_FLOOR, UPTIME_FLOOR, POLISH_FLOOR,
+  QUALITY_FLOOR, UPTIME_FLOOR, POLISH_FLOOR, MIN_RUNNING_SHIFT,
 } from "../src/lib/shiftScoreMath.ts";
 
 // These decide money. Every one of them is a bug that was live.
@@ -63,6 +63,28 @@ test("canonPerson folds case and the known one-person-two-spellings pairs", () =
   assert.equal(canonPerson("Mathan"), canonPerson("Madhan Kumar"));
   assert.equal(canonPerson(""), "");
   assert.equal(canonPerson(null), "");
+});
+
+test("shiftWeight: a shift is worth the time its line could run", () => {
+  // clean shift — a whole shift in the divisor
+  assert.equal(shiftWeight(8, 0, 100), 1);
+  // 2026-08-03 C, live: down 480 of 480 minutes and pressed nothing. It must
+  // count as ZERO shifts, or it halves the man's rate for a night the plant
+  // was broken. This is the case the whole adjustment exists for.
+  assert.equal(shiftWeight(8, 480, 0), 0);
+  // half the shift stopped is half a shift
+  assert.equal(shiftWeight(8, 240, 50), 0.5);
+  // measured against HOURS LOGGED, not a flat 8 — an hour never entered is
+  // not an hour the line was running, exactly as uptime treats it
+  assert.equal(shiftWeight(4, 120, 20), 0.5);
+  // a shift that DECLARED SLABS cannot be worth zero, whatever the delay
+  // column says — otherwise real output divides by nothing and one bad row
+  // takes the entire pool
+  assert.equal(shiftWeight(8, 480, 30), MIN_RUNNING_SHIFT);
+  // over-claimed stoppage clamps rather than going negative
+  assert.equal(shiftWeight(8, 999, 0), 0);
+  // no hours logged claims nothing
+  assert.equal(shiftWeight(0, 0, 0), 0);
 });
 
 test("shiftRange: 8 hours in IST, and C anchors on the day it started", () => {
