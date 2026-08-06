@@ -5,7 +5,8 @@ import { Card, H2, Kpi, Empty, Badge, fmt } from "@/components/ui";
 import { fmtDur } from "@/lib/downtime";
 import { ShiftCard, F } from "@/components/ShiftCard";
 import { DisputeRuling } from "@/components/DisputeRuling";
-import { getShiftReport } from "@/lib/misShift";
+import { getShiftReport, currentShiftAnchor } from "@/lib/misShift";
+import { AutoRefresh } from "./AutoRefresh";
 import {
   scoreRange, scoreStations, QUALITY_FLOOR, MIN_ROWS_TO_RANK_STATION,
   POOL_VOLUME, POOL_QUALITY, CREDIBLE_SHIFTS,
@@ -62,6 +63,24 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
         // newest first — the shift people care about is the one that just ended
         .sort((a, b) => (b.s.anchor + b.s.shift).localeCompare(a.s.anchor + a.s.shift))
     : [];
+
+  // ---- The shift running RIGHT NOW -----------------------------------------
+  // Shown as a live card and deliberately kept out of every table above.
+  // scoreRange scores only shifts that have ENDED: a running shift carries an
+  // hour or two of output but a WHOLE shift in the per-shift divisor, so
+  // scoring it would make each man's rate — and his money — depend on what time
+  // of day someone happened to open this page. It is reported here, not scored.
+  const running = currentShiftAnchor();
+  // Only when it belongs to the range on screen, so a historical range stays a
+  // historical range (and does not sit there refreshing itself for nothing).
+  const runningInRange = data != null && running.anchor >= from && running.anchor <= data.to;
+  // Belt and braces: if `scoreRange` ever stops filtering by end-of-shift, the
+  // card must not appear twice. Checked this way round so a shift that ended
+  // between that query and this one is never DROPPED from the scored list.
+  const alreadyScored = data?.shifts.some((s) => s.anchor === running.anchor && s.shift === running.shift) ?? false;
+  const liveReport = runningInRange && !alreadyScored
+    ? await getShiftReport(running.anchor, running.shift).catch(() => null)
+    : null;
 
   const presets = [
     { label: "Last 7 days", f: dayAgo(6), t: istToday },
@@ -405,9 +424,31 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
             </>
           )}
 
-          <H2>Shifts in this range</H2>
-          <p className="mb-3 mt-1 text-xs text-gray-500">{cards.length} shift(s) recorded between {from} and {to}.</p>
-          {cards.length === 0 && <Empty>No shift recorded anything in this range.</Empty>}
+          <div className="flex flex-wrap items-center gap-3">
+            <H2>Shifts in this range</H2>
+            {runningInRange && <AutoRefresh seconds={120} />}
+          </div>
+          <p className="mb-3 mt-1 text-xs text-gray-500">
+            {cards.length} completed shift(s) recorded between {from} and {to}.
+            {runningInRange && (liveReport
+              ? " The shift running now is shown first and is not counted here — it is scored once it ends."
+              : " The shift running now has not logged its first hour yet.")}
+          </p>
+          {liveReport && (
+            <ShiftCard
+              s={liveReport}
+              title={`Shift ${running.shift} · ${running.anchor}`}
+              live
+              extra={
+                <p className="mt-3 border-t border-gray-100 pt-3 text-xs text-gray-500">
+                  <b>Running now — not scored yet</b>, and in none of the tables above. A shift is scored once it
+                  has ended: part-finished, it carries an hour or two of output but a whole shift in the per-shift
+                  divisor, which would move the money depending on when this page was opened.
+                </p>
+              }
+            />
+          )}
+          {cards.length === 0 && !liveReport && <Empty>No shift recorded anything in this range.</Empty>}
           {cards.map(({ s, report }) => (
             <ShiftCard
               key={`${s.anchor}-${s.shift}`}
