@@ -72,40 +72,54 @@ export default async function FabLayout({ children }: { children: React.ReactNod
   return (
     <div className="flex min-h-screen bg-slate-50">
       {isEmployee ? (
-        /* EMPLOYEE: dark sidebar locked to machine */
+        /* EMPLOYEE: dark sidebar. One operator login covers every station, so all
+           five queues are listed. The machine session is optional — when one is
+           open its station is highlighted and it is what stamps machineId onto
+           the work; without one the queues still work. */
         <aside className="w-60 min-h-screen bg-slate-900 flex flex-col p-4">
           <div className="mb-6 p-3 bg-slate-800 rounded-xl border border-slate-700">
             <div className="flex items-center gap-2.5">
               {typeMeta && <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${typeMeta.dot}`} />}
               <div>
-                <p className="text-sm font-semibold text-white leading-tight">{machineName ?? "No machine"}</p>
-                <p className="text-xs text-slate-400 mt-0.5">{typeMeta?.label ?? "Session"} Active</p>
+                <p className="text-sm font-semibold text-white leading-tight">{machineName ?? "All stations"}</p>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {typeMeta ? `${typeMeta.label} Active` : "No machine selected"}
+                </p>
               </div>
             </div>
           </div>
 
           <nav className="flex flex-col gap-1 flex-1">
-            {machineUrl && (
-              <Link href={machineUrl}
-                className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium bg-white/10 text-white">
-                <Icon d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18" />
-                My Queue
-              </Link>
-            )}
+            <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 px-3 mb-1.5">Queues</p>
+            {Object.entries(MACHINE_URLS).map(([type, url]) => {
+              const meta      = TYPE_META[type] ?? { label: type, dot: "bg-slate-500" };
+              const isCurrent = url === machineUrl;
+              return (
+                <Link key={type} href={url}
+                  className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition ${
+                    isCurrent ? "bg-white/10 text-white" : "text-slate-400 hover:text-white hover:bg-white/5"
+                  }`}>
+                  <span className={`w-2 h-2 rounded-full flex-shrink-0 ${meta.dot}`} />
+                  {meta.label}
+                </Link>
+              );
+            })}
             <Link href="/fab/session"
-              className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium text-slate-400 hover:text-white hover:bg-white/5 transition">
+              className="mt-2 flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium text-slate-500 hover:text-white hover:bg-white/5 transition">
               <Icon d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" />
-              Switch Machine
+              {machineName ? "Switch Machine" : "Select Machine"}
             </Link>
           </nav>
 
           <div className="space-y-1 pt-4 border-t border-slate-800">
-            <form action="/api/fab/session/end" method="POST">
-              <button type="submit" className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium text-amber-400 hover:bg-amber-500/10 transition">
-                <Icon d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0" />
-                End Session
-              </button>
-            </form>
+            {machineName && (
+              <form action="/api/fab/session/end" method="POST">
+                <button type="submit" className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium text-amber-400 hover:bg-amber-500/10 transition">
+                  <Icon d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0" />
+                  End Session
+                </button>
+              </form>
+            )}
             <form action={fabSignOut}>
               <button type="submit" className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium text-slate-400 hover:text-slate-200 hover:bg-white/5 transition">
                 <Icon d={SIGN_OUT_PATH} />
@@ -130,7 +144,9 @@ export default async function FabLayout({ children }: { children: React.ReactNod
               label="Samples" />
 
             <p className="text-[10px] font-semibold text-slate-400 px-3 mt-4 mb-1">Projects</p>
-            {isSupervisor && (
+            {/* The manager gets the Planning Board link too — they create the
+                project and are the ones asked whether it reached the supervisor. */}
+            {(isSupervisor || isManager) && (
               <SLink href="/fab/supervisor"
                 icon="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"
                 label="Planning Board" />

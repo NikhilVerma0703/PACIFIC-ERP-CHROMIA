@@ -39,7 +39,10 @@ export default function NewFabProjectPage() {
     });
     const data = await res.json();
     if (!res.ok) { setError(data.error ?? "Failed"); setStep("preview"); return; }
-    router.push(`/fab/projects/${data.id}`);
+    // The API returns { success, projectId } — reading data.id gave
+    // /fab/projects/undefined, whose detail page redirects back to the list. The
+    // project HAD been created, so it looked like the save silently failed.
+    router.push(`/fab/projects/${data.projectId}`);
   }
 
   return (

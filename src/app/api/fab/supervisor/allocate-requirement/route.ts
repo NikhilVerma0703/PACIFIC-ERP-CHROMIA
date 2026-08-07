@@ -4,7 +4,14 @@ import { fabGate } from "@/lib/fab/access";
 async function resolveOrImportSlab(slabId: string, projectId: string | null): Promise<string> {
   if (!slabId.startsWith("qc:")) return slabId;
   const qcId = slabId.replace("qc:", "");
-  const existing = await prisma.fabSlab.findFirst({ where: { pacificQcId: qcId } });
+  // Scoped to the project on purpose. An unscoped lookup returned the FabSlab a
+  // DIFFERENT project had already imported for this physical slab, so the
+  // allocation was written against another project's slab — and then
+  // /api/fab/slab-allocation?projectId=<this one> could not see it, which looks
+  // exactly like "the supervisor's assignment did not save".
+  const existing = await prisma.fabSlab.findFirst({
+    where: { pacificQcId: qcId, ...(projectId ? { projectId } : {}) },
+  });
   if (existing) return existing.id;
   const qc = await prisma.polishQc.findUnique({ where: { id: qcId } });
   if (!qc) throw new Error("QC slab not found");
@@ -16,6 +23,7 @@ async function resolveOrImportSlab(slabId: string, projectId: string | null): Pr
   const slab = await prisma.fabSlab.create({
     data: {
       projectId: pid, slabCode: String(qc.slabNumber), colour: qc.design, pacificQcId: qc.id,
+      thickness: qc.slabThickness ? parseFloat(qc.slabThickness) * 10 : null,
       length: 3200, width: 1600, totalArea: 3200 * 1600, availableArea: 3200 * 1600,
     },
   });
@@ -36,7 +44,16 @@ export async function POST(req: Request) {
     where: { id: requirementId },
     select: { projectId: true },
   });
-  const resolvedSlabId = await resolveOrImportSlab(slabId, reqRow?.projectId ?? null);
+
+  // resolveOrImportSlab throws on a QC id that no longer resolves (a slab picked
+  // from a list this tab loaded ten minutes ago). Uncaught it became a framework
+  // 500 with an HTML body, which the board could only report as "error 500".
+  let resolvedSlabId: string;
+  try {
+    resolvedSlabId = await resolveOrImportSlab(slabId, reqRow?.projectId ?? null);
+  } catch (e) {
+    return Response.json({ error: e instanceof Error ? e.message : "Could not resolve that slab" }, { status: 422 });
+  }
 
   if (mode !== "add") {
     // Replace mode: clear existing allocations first

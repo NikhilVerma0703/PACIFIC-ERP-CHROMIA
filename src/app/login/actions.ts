@@ -18,7 +18,11 @@ export async function authenticate(
         role === "ADMIN"        ? "/" :
         role === "LINE_MANAGER" ? "/fab/projects" :
         role === "INCHARGE"     ? "/fab/supervisor" :
-                                  "/fab/session";   // OPERATOR -> pick machine
+                                  "/fab/cutting";   // OPERATOR -> straight to work
+      // OPERATOR used to land on /fab/session because a machine had to be picked
+      // before any queue was reachable. One operator login now covers all five
+      // stations, so they land on the first queue; /fab/session is still there
+      // (sidebar: "Select Machine") for shift + machine attribution.
     } else if (user && String(user.role) === "COMMERCIAL") {
       // Commercial's home is Finished Goods. Sending them to "/" only for middleware to
       // bounce it to /inventory means the router never initiated that hop, so the client

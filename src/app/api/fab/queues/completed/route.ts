@@ -62,6 +62,14 @@ export async function GET(req: Request) {
 
   // For non-CUTTING employees: filter by machine session overlap because
   // CLO-created FabPieceOperation records have no operationId/operatorId.
+  //
+  // If the operator holds no session for this station the filter is skipped
+  // rather than applied to nothing. One operator login now covers all five
+  // stations without having to open a machine session first, and a session-less
+  // operator was being shown an empty "completed today" list right after
+  // completing the work — which reads as "it did not save" and invites a
+  // duplicate. No session means there is nothing to attribute by, not that
+  // nothing happened.
   if (filterByUser && type !== "CUTTING") {
     const userSessions = await prisma.fabMachineSession.findMany({
       where: {
@@ -72,7 +80,7 @@ export async function GET(req: Request) {
       },
       select: { loginTime: true, logoutTime: true, isActive: true },
     });
-    ops = ops.filter(op => {
+    if (userSessions.length) ops = ops.filter(op => {
       if (!op.completedAt) return false;
       return userSessions.some(s => {
         const started = s.loginTime <= op.completedAt!;

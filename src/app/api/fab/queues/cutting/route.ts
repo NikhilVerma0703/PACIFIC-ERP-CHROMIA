@@ -24,13 +24,6 @@ export async function GET() {
     a.piece.pieceOperations.some(op => !op.isCompleted)
   );
 
-  const legacyMap = new Map<string, { type: "legacy"; slab: any; pieces: any[] }>();
-  for (const alloc of pending) {
-    const key = alloc.slabId;
-    if (!legacyMap.has(key)) legacyMap.set(key, { type: "legacy", slab: alloc.slab, pieces: [] });
-    legacyMap.get(key)!.pieces.push(alloc.piece);
-  }
-
   // ── NEW CLO flow: FabSlabJob (READY / IN_PROGRESS) ──────────────────────
   const slabJobs = await prisma.fabSlabJob.findMany({
     where:   { status: { in: ["READY", "IN_PROGRESS"] } },
@@ -51,6 +44,22 @@ export async function GET() {
     },
     orderBy: { createdAt: "asc" },
   });
+
+  // One slab, one row. A project released from the planning board has FabPieces
+  // (the legacy grouping above) AND can have a slab job sent from the cut queue —
+  // the same physical slab, listed twice, on the screen where an operator decides
+  // what to cut next. The slab job is the newer, richer entry and completing it
+  // advances those same pieces, so it wins; only ACTIVE jobs suppress the legacy
+  // row, or pieces still pending under a finished job would have nowhere to show.
+  const slabIdsWithActiveJob = new Set(slabJobs.map(j => j.slabId));
+
+  const legacyMap = new Map<string, { type: "legacy"; slab: any; pieces: any[] }>();
+  for (const alloc of pending) {
+    const key = alloc.slabId;
+    if (slabIdsWithActiveJob.has(key)) continue;
+    if (!legacyMap.has(key)) legacyMap.set(key, { type: "legacy", slab: alloc.slab, pieces: [] });
+    legacyMap.get(key)!.pieces.push(alloc.piece);
+  }
 
   // Lookup physical QC slab names for CLO slabs
   const qcIds = slabJobs.map(j => j.slab.pacificQcId).filter(Boolean) as string[];

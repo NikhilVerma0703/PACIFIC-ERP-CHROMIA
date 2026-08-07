@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
+import { buildReleasePlan } from "@/lib/fab/releasePlan";
 
 const INCH_TO_MM = 25.4;
 
@@ -22,7 +23,10 @@ export async function POST(req: Request) {
 
   const requirements = await prisma.fabRequirement.findMany({
     where: { projectId },
-    include: { drawing: { include: { defaultSlab: true } }, allocations: { include: { slab: true } } },
+    include: {
+      drawing: { include: { defaultSlab: true } },
+      allocations: { include: { slab: true }, orderBy: { createdAt: "asc" } },
+    },
   });
   if (!requirements.length) return Response.json({ error: "No requirements. Upload Excel first." }, { status: 400 });
 
@@ -30,12 +34,28 @@ export async function POST(req: Request) {
   if (unresolved.length) return Response.json({ error: `${unresolved.length} requirement(s) have no slab`, unresolvedIds: unresolved.map(r => r.id) }, { status: 400 });
 
   let counter = 1;
+  const warnings: string[] = [];
   await prisma.$transaction(async (tx) => {
     for (const req of requirements) {
-      const slabId = req.allocations[0]?.slabId ?? req.drawing?.defaultSlabId!;
+      const fallbackSlabId = req.allocations[0]?.slabId ?? req.drawing?.defaultSlabId!;
       const { polishRequired, fabricationRequired, sinkRequired } = deriveRoutingFlags(req);
 
-      for (let i = 0; i < req.quantity; i++) {
+      // A piece belongs to the slab it will be cut FROM, and one requirement can
+      // be split across several — see buildReleasePlan for the rule and its tests.
+      const plan = buildReleasePlan({
+        quantity:       req.quantity,
+        allocations:    req.allocations.map(a => ({ slabId: a.slabId, allocatedQuantity: a.allocatedQuantity })),
+        fallbackSlabId,
+      });
+
+      if (plan.overAllocatedBy > 0) {
+        const label = `${req.drawing?.drawingNumber ?? "?"}-${req.pieceLabel ?? req.description ?? "?"}`;
+        warnings.push(
+          `${label}: slabs are allocated ${req.quantity + plan.overAllocatedBy} pieces but only ${req.quantity} are ordered — the extra allocation was not released.`
+        );
+      }
+
+      for (const slabId of plan.slabIds) {
         const piece = await tx.fabPiece.create({
           data: {
             pieceCode: `${project.projectCode}-${String(counter++).padStart(4, "0")}`,
@@ -59,5 +79,5 @@ export async function POST(req: Request) {
     await tx.fabProject.update({ where: { id: projectId }, data: { status: "RELEASED_TO_PRODUCTION" } });
   });
 
-  return Response.json({ success: true, piecesCreated: counter - 1 });
+  return Response.json({ success: true, piecesCreated: counter - 1, warnings });
 }

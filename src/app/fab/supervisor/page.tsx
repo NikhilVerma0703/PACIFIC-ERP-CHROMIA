@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
+import { PlanningBoard } from "./PlanningBoard";
 
 /* -- Types ----------------------------------------------------------------- */
 interface QcSlab {
@@ -300,8 +301,8 @@ function SlabCard({ slab, qcSlabs, onAssign, onSend, printerEmail }: {
   );
 }
 
-/* -- Main page ------------------------------------------------------------- */
-export default function FabSupervisorPage() {
+/* -- Cut queue ------------------------------------------------------------- */
+function CutQueue() {
   const [allSlabs,     setAllSlabs]     = useState<FabSlabRow[]>([]);
   const [qcSlabs,      setQcSlabs]      = useState<QcSlab[]>([]);
   const [loading,      setLoading]      = useState(true);
@@ -314,8 +315,12 @@ export default function FabSupervisorPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    // Released projects are asked for explicitly. Releasing sets
+    // RELEASED_TO_PRODUCTION, and the endpoint's default filter is planning-only
+    // — so without this the slabs of a released project dropped out of the very
+    // queue that is meant to send them to the cutter.
     const [pRes, qRes] = await Promise.all([
-      fetch("/api/fab/supervisor/projects"),
+      fetch("/api/fab/supervisor/projects?statuses=PLANNING,ALLOCATED,RELEASED_TO_PRODUCTION"),
       fetch("/api/fab/slabs"),
     ]);
     const [projects, qData] = await Promise.all([pRes.json(), qRes.json()]);
@@ -512,7 +517,9 @@ export default function FabSupervisorPage() {
 
       {filtered.length === 0 ? (
         <div className="text-center py-16 text-gray-400 text-sm bg-white rounded-2xl border border-gray-200">
-          {filter === "all" ? "No slab allocations uploaded yet." : "No slabs in this state."}
+          {filter === "all"
+            ? "Nothing to cut yet. Slabs land here once a project is planned on the Planning Board (or a CLO allocation Excel is applied)."
+            : "No slabs in this state."}
         </div>
       ) : (
         <div className="space-y-3">
@@ -528,6 +535,33 @@ export default function FabSupervisorPage() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/* -- Main page ------------------------------------------------------------- */
+// Two tabs, because the supervisor has two distinct jobs and only the second one
+// had a screen. PLANNING is where a project lands the moment the manager creates
+// it — pieces get slabs and the project is released. CUT QUEUE is what comes
+// after: a physical QC slab per cut sheet, then send to the cutter.
+export default function FabSupervisorPage() {
+  const [tab, setTab] = useState<"planning" | "queue">("planning");
+
+  return (
+    // The planning tables carry seven columns; the cut queue is a card list.
+    <div className={tab === "planning" ? "max-w-6xl" : "max-w-4xl"}>
+      <div className="flex items-center gap-1 mb-6 bg-slate-100 rounded-xl p-1 w-fit">
+        {([["planning", "Planning"], ["queue", "Cut Queue"]] as const).map(([id, label]) => (
+          <button key={id} onClick={() => setTab(id)}
+            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${
+              tab === id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"
+            }`}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "planning" ? <PlanningBoard /> : <CutQueue />}
     </div>
   );
 }

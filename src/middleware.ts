@@ -83,16 +83,24 @@ export default auth((req) => {
     // Fabrication staff: fab pages + Overview + API only — never production pages.
     if (p.startsWith("/api")) return;
     if (role === "OPERATOR") {
-      // fab EMPLOYEE — locked to the machine/queue picked at /fab/session
-      const machineType = req.cookies.get("fab_machine_type")?.value;
-      const MACHINE_URLS: Record<string, string> = {
-        CUTTING: "/fab/cutting", POLISHING: "/fab/polishing", SINK_CUTTING: "/fab/sink-cutting",
-        FABRICATION: "/fab/fabrication", PACKAGING: "/fab/packaging",
-      };
-      if (!machineType) { if (p !== "/fab/session") return Response.redirect(new URL("/fab/session", nextUrl)); return; }
-      const allowed = MACHINE_URLS[machineType];
-      const ok = p === allowed || p === "/fab/session";
-      if (!ok) return Response.redirect(new URL(allowed ?? "/fab/session", nextUrl));
+      // fab EMPLOYEE — ONE operator login works every machine and every project.
+      //
+      // This used to read the fab_machine_type cookie and allow exactly one queue
+      // URL: no cookie meant a forced trip to /fab/session, and the machine picked
+      // there became the only page reachable until the operator went back and
+      // switched. With a single operator covering the whole line that is a lock
+      // with nothing on the other side of it, so all five station queues are open.
+      // A machine session is still available at /fab/session — it is what stamps
+      // machineId onto the work — but it is no longer a gate.
+      //
+      // Planning screens (/fab/projects, /fab/supervisor, /fab/ceo) stay closed:
+      // this list is opt-IN, so a fab page added later is not reachable by default.
+      const QUEUE_PAGES = [
+        "/fab/cutting", "/fab/polishing", "/fab/sink-cutting",
+        "/fab/fabrication", "/fab/packaging",
+      ];
+      const ok = QUEUE_PAGES.includes(p) || p === "/fab/session";
+      if (!ok) return Response.redirect(new URL("/fab/cutting", nextUrl));
       return;
     }
     // fab MANAGER (LINE_MANAGER) / SUPERVISOR (INCHARGE): any fab page + Overview
