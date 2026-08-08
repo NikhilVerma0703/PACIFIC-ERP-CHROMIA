@@ -35,24 +35,46 @@ in our favour: there is no competing auth stack to unpick, only a stub to wire.
 
 ---
 
-## 2. Where it lands — the Robo pattern
+## 2. Where it lands — inside Production, exactly like Robo
 
-Robo is the precedent for a gated, self-contained shop-floor module:
+**No separate tab.** This is the point most easily got wrong, so it is worth
+being precise about what Robo actually does, because Chromia copies it:
 
-| Concern | Robo does | Chromia does the same |
+- **For production staff, Robo is a row on the Data Entry page.**
+  `src/app/entry/page.tsx:38` lists it in `SECTIONS` alongside Press, Oven,
+  Kreos, Jot and Mixer — one item, `{ href: "/robo", label: "Robo entry (batch
+  + slab)" }`. That is the whole entry point. Robo appears nowhere in the main
+  nav for these users.
+- **Only the dedicated `ROBO` login gets a nav entry**, and it is a nav of
+  exactly one item — `src/components/Nav.tsx:138`, commented "the robo entry
+  form is their whole ERP".
+- **Reports are not a Robo screen.** Robo data surfaces through the existing
+  reporting — `/tables`, `/records`, the production report — not a parallel
+  reports section.
+
+Chromia takes the same three positions:
+
+| Concern | Robo | Chromia |
 | --- | --- | --- |
+| Entry point for production staff | a row in `/entry` `SECTIONS` | a **Chromia** section in the same list |
+| Nav | none, except the one-item nav for the `ROBO` login | none, except the same for a `CHROMIA` login |
 | Routes | `/robo`, `/api/robo/*` | `/chromia`, `/api/chromia/*` |
 | Role | `ROBO` in the `Role` enum | `CHROMIA` |
-| Gate | `middleware.ts` — `/robo` + `/api/robo` are ROBO-or-admin; the ROBO role is capped to that module and nothing else | identical block |
+| Gate | `middleware.ts` — ROBO-or-admin, and the ROBO role is capped to that module | identical block |
+| Reporting | existing `/tables`, `/records`, `/report` | same — Chromia's 8 report views fold into these, see §6 Phase 3 |
 | Schema | models namespaced `Robo*` | see §4 |
 | Seed | `prisma/seed-robo.ts`, `npm run db:seed:robo` | `prisma/seed-chromia.ts` |
 
-Branch is `SHOP_FLOOR`; the `CHROMIA` login sees the Chromia module and nothing
-else, exactly as `ROBO` does today.
+Branch is `SHOP_FLOOR`. The `CHROMIA` login sees the Chromia screens and
+nothing else; everyone else with entry access reaches them from Data Entry.
 
 Note the middleware ordering rule that already applies to Robo: the module gate
 must sit **above** the branch blocks, because their generic `/api` allowances
 would otherwise let other departments reach Chromia data.
+
+Which rows appear on `/entry` is filtered by `entryAccess()` against the model
+list, so the Chromia row inherits the same per-role visibility machinery as
+every other station — nothing new to build for that.
 
 ---
 
@@ -139,16 +161,25 @@ Each phase builds, typechecks and is reviewable on its own.
 
 **Phase 1 — schema and gate.** Namespace the models per §4, merge into
 `prisma/schema.prisma`, `db push` to Neon, add `CHROMIA` to the `Role` enum,
-add the middleware block, add the nav entry. Nothing renders yet.
+add the middleware block, and add the **Chromia row to `SECTIONS` in
+`src/app/entry/page.tsx`** (plus the one-item nav for the `CHROMIA` login, as
+`Nav.tsx:138` does for Robo). No new tab. Nothing renders behind the row yet.
 
 **Phase 2 — server layer.** Port `server/actions`, `server/services`,
 `server/repositories` and `lib/` off Prisma 7 onto `@/lib/prisma`. Wire
 `current-user.ts` to `currentUser()` so actions attribute to a real ERP user
 instead of `CHROMIA_ACTING_USER`. This is the bulk of the work.
 
-**Phase 3 — screens.** Move the 8 screens under `src/app/chromia/`, convert
-`globals.css` off Tailwind 4, reconcile the component kit against the ERP's
-`components/ui`.
+**Phase 3 — entry screens, then reporting.** Move the operating screens under
+`src/app/chromia/`, convert `globals.css` off Tailwind 4, reconcile the
+component kit against the ERP's `components/ui`.
+
+Chromia's own `/dashboard` and `/reports` screens are **not** ported as-is —
+that would be the parallel reports section this integration is meant to avoid.
+Its report queries move behind the existing surfaces instead: the models become
+visible to `/tables` and `/records` through the normal model registry, and any
+Chromia-specific figures that belong in the production report go into `/report`.
+Its Excel export can stay, since export is a function rather than a tab.
 
 **Phase 4 — tests and jobs.** Port 18 Vitest files to `node --test`; join the
 existing Inngest client.
