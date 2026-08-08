@@ -3378,3 +3378,256 @@ model SlabClaimAward {
   @@index([anchor, shift])
   @@map("slab_claim_award")
 }
+
+// ---------------------------------------------------------------------------
+// Finance engine (Bill Automation) — ported from automation/app/db.py so the
+// whole flow runs inside the web app: Vercel + Neon, no Python service, no
+// tunnel. Table-for-table with the SQLite schema except:
+//   - `vouchers` (live Tally HTTP mode) and `layout_memory` (never read) are
+//     not ported — file export is the only posting path here.
+//   - Page images live in fin_bill_image (bytea) because Vercel has no disk.
+// ---------------------------------------------------------------------------
+
+model FinanceBill {
+  id             Int      @id @default(autoincrement())
+  filename       String
+  // One row per BILL, not per uploaded file: an 11-page PDF of receipts is 11
+  // separate claims, each needing its own ledger and amount.
+  sourceFile     String?  @map("source_file")
+  pageNo         Int      @default(1) @map("page_no")
+  batchId        String?  @map("batch_id")
+  fileSha256     String   @map("file_sha256")
+  textLayer      String?  @map("text_layer")
+  // Chosen by the clerk BEFORE upload, never read off the bill.
+  person         String?
+  phash          String?
+  pageCount      Int      @default(1) @map("page_count")
+  // queued | processing | review | needs_reupload | manual_entry
+  // | approved | posted | rejected | duplicate | error
+  status         String   @default("queued")
+  error          String?
+  autoApproved   Boolean  @default(false) @map("auto_approved")
+  qualityVerdict String?  @map("quality_verdict")
+  qualityJson    Json?    @map("quality_json")
+  ocrEngine      String?  @map("ocr_engine")
+  ocrVariant     String?  @map("ocr_variant")
+  ocrConfidence  Float?   @map("ocr_confidence")
+  ocrText        String?  @map("ocr_text")
+  createdBy      String   @default("system") @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  image       FinanceBillImage?
+  extractions FinanceExtraction[]
+
+  @@index([fileSha256])
+  @@index([status])
+  @@index([batchId])
+  @@map("fin_bill")
+}
+
+/// The page image, separated so bill listings never drag megabytes of bytea
+/// through the pool. Compressed to JPEG at ingest; served by /bills/{id}/image.
+model FinanceBillImage {
+  billId Int         @id @map("bill_id")
+  bill   FinanceBill @relation(fields: [billId], references: [id], onDelete: Cascade)
+  mime   String
+  bytes  Bytes
+
+  @@map("fin_bill_image")
+}
+
+model FinanceExtraction {
+  id              Int         @id @default(autoincrement())
+  billId          Int         @map("bill_id")
+  bill            FinanceBill @relation(fields: [billId], references: [id], onDelete: Cascade)
+  vendorName      String?     @map("vendor_name")
+  vendorGstin     String?     @map("vendor_gstin")
+  invoiceNo       String?     @map("invoice_no")
+  invoiceDate     String?     @map("invoice_date")
+  taxableValue    Float?      @map("taxable_value")
+  cgst            Float?
+  sgst            Float?
+  igst            Float?
+  roundOff        Float?      @map("round_off")
+  netAmount       Float?      @map("net_amount")
+  hsnSac          String?     @map("hsn_sac")
+  ledger          String?
+  person          String?
+  narration       String?
+  fieldsJson      Json?       @map("fields_json")
+  suggestionsJson Json?       @map("suggestions_json")
+  confidence      Float?
+  arithmeticOk    Boolean     @default(false) @map("arithmetic_ok")
+  editedByUser    Boolean     @default(false) @map("edited_by_user")
+  createdBy       String      @default("system") @map("created_by")
+  createdAt       DateTime    @default(now()) @map("created_at")
+
+  @@index([billId])
+  @@index([vendorGstin, invoiceNo, netAmount])
+  @@map("fin_extraction")
+}
+
+model FinanceVendorMemory {
+  vendorKey String   @map("vendor_key")
+  ledger    String
+  count     Int      @default(1)
+  lastSeen  DateTime @default(now()) @map("last_seen")
+
+  @@id([vendorKey, ledger])
+  @@map("fin_vendor_memory")
+}
+
+/// Which ledgers a person's claims actually go to — available BEFORE the bill
+/// is read, and the cheapest intelligence in the system.
+model FinancePersonMemory {
+  person   String
+  ledger   String
+  count    Int      @default(1)
+  lastSeen DateTime @default(now()) @map("last_seen")
+  source   String   @default("confirmed") // confirmed | tally_history
+
+  @@id([person, ledger])
+  @@map("fin_person_memory")
+}
+
+model FinanceLedgerUsage {
+  ledger String @id
+  count  Int    @default(0)
+
+  @@map("fin_ledger_usage")
+}
+
+model FinanceTokenWeight {
+  token  String
+  ledger String
+  weight Float  @default(1.0)
+
+  @@id([token, ledger])
+  @@index([token])
+  @@map("fin_token_weight")
+}
+
+model FinanceCorrection {
+  id        Int      @id @default(autoincrement())
+  billId    Int?     @map("bill_id")
+  suggested String?
+  corrected String?
+  vendorKey String?  @map("vendor_key")
+  person    String?
+  score     Float?
+  createdBy String   @default("system") @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("fin_correction")
+}
+
+model FinanceDuplicate {
+  id             Int      @id @default(autoincrement())
+  billId         Int      @map("bill_id")
+  matchId        Int      @map("match_id")
+  kind           String // file_hash | image_hash | field_match
+  detail         String?
+  overridden     Boolean  @default(false)
+  overrideReason String?  @map("override_reason")
+  overrideBy     String?  @map("override_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([billId])
+  @@map("fin_duplicate")
+}
+
+/// One row per exported XML batch. A bill in an export is `posted` and
+/// permanently excluded from later batches — with Tally's standard Journal
+/// type, this table and dedupe are the ONLY duplicate defences there are.
+model FinanceExport {
+  ref        String   @id
+  xml        String
+  xlsxBase64 String?  @map("xlsx_base64")
+  vouchers   Int
+  total      Float
+  newLedgers Json?    @map("new_ledgers")
+  status     String   @default("generated") // generated | imported | voided
+  note       String?
+  createdBy  String   @default("system") @map("created_by")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  bills FinanceExportBill[]
+
+  @@map("fin_export")
+}
+
+model FinanceExportBill {
+  ref       String
+  export    FinanceExport @relation(fields: [ref], references: [ref], onDelete: Cascade)
+  billId    Int           @map("bill_id")
+  voucherNo String        @map("voucher_no")
+
+  @@id([ref, billId])
+  @@index([billId])
+  @@map("fin_export_bill")
+}
+
+/// The Tally chart of accounts, seeded from a MASTER.xml upload. Replaces both
+/// ledgers_cache and the people list in config.yaml: person rows are the
+/// claimant dropdown, expense rows are the classifier vocabulary.
+model FinanceLedger {
+  name      String   @id
+  parent    String?
+  gstin     String?
+  isPerson  Boolean  @default(false) @map("is_person")
+  isExpense Boolean  @default(false) @map("is_expense")
+  syncedAt  DateTime @default(now()) @map("synced_at")
+
+  @@index([isPerson])
+  @@index([isExpense])
+  @@map("fin_ledger")
+}
+
+model FinanceVendorEntry {
+  id            Int      @id @default(autoincrement())
+  billId        Int      @map("bill_id")
+  vendorLedger  String   @map("vendor_ledger")
+  expenseLedger String   @map("expense_ledger")
+  taxable       Float
+  cgst          Float    @default(0)
+  sgst          Float    @default(0)
+  igst          Float    @default(0)
+  tdsSection    String?  @map("tds_section")
+  tdsAmount     Float    @default(0) @map("tds_amount")
+  invoiceNo     String?  @map("invoice_no")
+  invoiceDate   String?  @map("invoice_date")
+  narration     String?
+  createdBy     String   @default("system") @map("created_by")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([billId])
+  @@map("fin_vendor_entry")
+}
+
+/// The agent's journal. Autonomy without a journal is unaccountable: when a
+/// clerk asks "why is this bill already approved?", the answer must be one
+/// screen away, not a shrug.
+model FinanceAgentEvent {
+  id        Int      @id @default(autoincrement())
+  kind      String
+  billId    Int?     @map("bill_id")
+  message   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("fin_agent_event")
+}
+
+model FinanceLedgerRequest {
+  id        Int      @id @default(autoincrement())
+  name      String
+  parent    String?
+  reason    String?
+  status    String   @default("open") // open | done | declined
+  createdBy String   @default("system") @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("fin_ledger_request")
+}
