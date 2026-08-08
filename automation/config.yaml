@@ -208,8 +208,21 @@ classify:
   # wrong mapping learned early competes forever.
   correction_decay: 0.55
 
-  # Ledger natures a reimbursement may be coded to.
+  # Ledger natures a reimbursement may be coded to. "asset" is here so a capital
+  # purchase can be coded properly - a laptop is Computers & Peripherals, not an
+  # expense head.
   allowed_natures: ["expense", "asset"]
+
+  # ...but "asset" also means CURRENT assets, and PESPL's are 284 customer
+  # ledgers, 49 bank deposits and 9 bank accounts. None of those is something a
+  # bill is ever coded to, and offering them made the picker open on
+  # "4M MARBLE PRIVATE LIMITED" while the classifier scored every food bill
+  # against 284 debtors.
+  #
+  # Excluded by ROOT group - Tally's 28 primary groups are fixed names, so this
+  # keeps working if the sub-groups are ever renamed. Fixed Assets stays.
+  # Empty the list to offer everything again.
+  excluded_root_groups: ["Current Assets"]
 
 dedupe:
   # MASTER SWITCH.
@@ -218,7 +231,14 @@ dedupe:
   #         so nobody forgets it is off.
   # TURN THIS BACK ON BEFORE GOING LIVE - a duplicate reaching Tally becomes a
   # duplicate payment.
-  enabled: false
+  #
+  # ON as of the ERP rollout. Expect false positives in the first week: a person
+  # who eats at the same canteen for the same amount two days running trips the
+  # business-key check. That is the correct trade - the reviewer overrides with
+  # a reason, which is recorded, whereas a missed duplicate is money out the
+  # door that nobody notices. Loosen amount_tolerance/date_tolerance_days below
+  # before ever turning this back off.
+  enabled: true
 
   business_key_threshold: 0.72
   phash_max_distance: 8

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
@@ -183,6 +183,194 @@ def _voucher_block(line: BatchLine, voucher_type: str,
     </TALLYMESSAGE>"""
 
 
+@dataclass
+class VendorTaxLine:
+    """One input-tax line on a vendor invoice: which ledger, how much."""
+    ledger: str
+    amount: float
+
+
+@dataclass
+class VendorLine:
+    """One vendor invoice in the batch - Agent 2.
+
+    Deliberately a separate type from BatchLine rather than optional fields on
+    it. A reimbursement and a purchase invoice look similar on the review screen
+    and are nothing alike in the books: different number of legs, a bill
+    reference that must be the vendor's own invoice number, input credit, and a
+    split credit side when tax is withheld. Folding them together produced a
+    builder where every second line was `if self.is_vendor`, and the reimburse-
+    ment path - the one already live - got riskier every time Agent 2 changed.
+    """
+    bill_id: int
+    vendor_ledger: str          # the creditor, credited
+    expense_ledger: str         # the expense head, debited at taxable value
+    taxable: float
+    invoice_no: str             # becomes the bill reference - NOT our own id
+    tax_lines: list[VendorTaxLine] = field(default_factory=list)
+    tds_ledger: str = ""        # blank when nothing is withheld
+    tds_amount: float = 0.0
+    voucher_date: date | None = None
+    narration: str = ""
+    voucher_no: str = ""
+
+    @property
+    def tax_total(self) -> float:
+        return round(sum(float(t.amount) for t in self.tax_lines), 2)
+
+    @property
+    def invoice_total(self) -> float:
+        """What the vendor billed: taxable + tax. TDS does not reduce this."""
+        return round(round(float(self.taxable), 2) + self.tax_total, 2)
+
+    @property
+    def payable(self) -> float:
+        """What the vendor is actually credited, after withholding."""
+        return round(self.invoice_total - round(float(self.tds_amount or 0), 2), 2)
+
+    def problems(self) -> list[str]:
+        out = []
+        if not (self.vendor_ledger or "").strip():
+            out.append("no vendor")
+        if not (self.expense_ledger or "").strip():
+            out.append("no expense ledger")
+        if not (self.invoice_no or "").strip():
+            # The bill reference has to be the vendor's number or the creditor's
+            # outstandings never tie back to their statement.
+            out.append("no invoice number")
+        try:
+            if not self.taxable or float(self.taxable) <= 0:
+                out.append("taxable value is zero or missing")
+        except (TypeError, ValueError):
+            out.append("taxable value is not a number")
+        for t in self.tax_lines:
+            if not (t.ledger or "").strip():
+                out.append("a tax line has no ledger")
+            if float(t.amount or 0) <= 0:
+                out.append(f"tax line {t.ledger!r} has a zero amount")
+        if float(self.tds_amount or 0) > 0 and not (self.tds_ledger or "").strip():
+            out.append("TDS amount with no TDS ledger")
+        if (self.tds_ledger or "").strip() and float(self.tds_amount or 0) <= 0:
+            out.append("TDS ledger with no amount")
+        if float(self.tds_amount or 0) > 0 and self.payable <= 0:
+            out.append("TDS exceeds the invoice total")
+        return out
+
+
+def _vendor_voucher_block(line: VendorLine, company_gstin: str = "",
+                          gst_registration: str = "", gst_state: str = "",
+                          voucher_type: str = "Journal") -> str:
+    """One vendor invoice as a Tally Journal.
+
+        Dr  expense head        taxable
+        Dr  each tax ledger     its own amount      (input credit, full value)
+        Cr  TDS payable         withheld            (only when withholding)
+        Cr  vendor              invoice total - TDS
+
+    The debits and credits are asserted to net to zero before this returns.
+    Tally rejects an unbalanced voucher, but its message names neither the
+    voucher nor the amount, so in a 60-invoice batch you would be bisecting a
+    file by hand. Failing here names the invoice.
+    """
+    problems = line.problems()
+    if problems:
+        raise ValueError(f"invoice {line.invoice_no or line.bill_id}: "
+                         + "; ".join(problems))
+
+    taxable = round(float(line.taxable), 2)
+    tds = round(float(line.tds_amount or 0), 2)
+    payable = line.payable
+
+    # Negative = debit, positive = credit, and they must cancel exactly.
+    entries: list[tuple[str, bool, float, bool]] = [
+        (line.expense_ledger, True, -taxable, False),
+    ]
+    for t in line.tax_lines:
+        entries.append((t.ledger, True, -round(float(t.amount), 2), False))
+    if tds > 0:
+        entries.append((line.tds_ledger, False, tds, False))
+    entries.append((line.vendor_ledger, False, payable, True))
+
+    total = round(sum(a for _, _, a, _ in entries), 2)
+    if abs(total) > 0.005:
+        raise ValueError(
+            f"invoice {line.invoice_no or line.bill_id} does not balance - "
+            f"entries sum to {total:.2f} (taxable {taxable:.2f}, "
+            f"tax {line.tax_total:.2f}, TDS {tds:.2f})")
+
+    d = _tally_date(line.voucher_date)
+
+    # THE VOUCHER NUMBER IS THE SUPPLIER'S INVOICE NUMBER.
+    #
+    # Unlike a reimbursement - which has no external document number, so we mint
+    # REIMB/26-27/00123 - a purchase already has the number both sides of the
+    # transaction refer to. Numbering the voucher anything else means an
+    # accountant holding the supplier's statement has to translate before they
+    # can find the entry, every time.
+    #
+    # TWO CONSEQUENCES, BOTH DELIBERATE:
+    #
+    #  - Uniqueness now depends on the supplier's numbering, not ours. Two
+    #    vendors can both issue "001". Tally will hold the second one against
+    #    the first; if it objects, that is a real collision worth seeing rather
+    #    than papering over with a prefix.
+    #  - The link back to the scanned image no longer lives in the number, so
+    #    the bill id moves into the narration. Without it, a voucher in Tally
+    #    cannot be traced to the photograph it came from.
+    vch_no = (line.voucher_no or "").strip() or line.invoice_no.strip()
+    narration = line.narration or (
+        f"Purchase - {line.vendor_ledger} - Inv {line.invoice_no}")
+    narration = f"{narration} [bill #{line.bill_id}]"
+
+    gst_block = ""
+    if company_gstin:
+        gst_block = (
+            f"\n      <GSTREGISTRATION TAXTYPE=\"GST\" "
+            f"TAXREGISTRATION=\"{_esc(company_gstin)}\">"
+            f"{_esc(gst_registration)}</GSTREGISTRATION>"
+            f"\n      <CMPGSTIN>{_esc(company_gstin)}</CMPGSTIN>"
+            f"\n      <CMPGSTREGISTRATIONTYPE>Regular</CMPGSTREGISTRATIONTYPE>"
+            f"\n      <CMPGSTSTATE>{_esc(gst_state)}</CMPGSTSTATE>")
+
+    rows = []
+    for ledger, is_debit, amount, is_party in entries:
+        # The bill reference goes on the VENDOR leg only, and it is the
+        # vendor's own invoice number - that is what their statement shows and
+        # what a later payment is settled "Agst Ref" against. Allocating the
+        # net-of-TDS amount is deliberate: the outstanding is what we owe.
+        alloc = ""
+        if is_party:
+            alloc = (
+                f"\n       <BILLALLOCATIONS.LIST>"
+                f"\n        <NAME>{_esc(line.invoice_no)}</NAME>"
+                f"\n        <BILLTYPE>New Ref</BILLTYPE>"
+                f"\n        <AMOUNT>{amount:.2f}</AMOUNT>"
+                f"\n       </BILLALLOCATIONS.LIST>")
+        rows.append(
+            f"      <ALLLEDGERENTRIES.LIST>\n"
+            f"       <LEDGERNAME>{_esc(ledger)}</LEDGERNAME>\n"
+            f"       <ISDEEMEDPOSITIVE>{'Yes' if is_debit else 'No'}</ISDEEMEDPOSITIVE>\n"
+            f"       <ISPARTYLEDGER>{'Yes' if is_party else 'No'}</ISPARTYLEDGER>\n"
+            f"       <AMOUNT>{amount:.2f}</AMOUNT>{alloc}\n"
+            f"      </ALLLEDGERENTRIES.LIST>")
+
+    return f"""    <TALLYMESSAGE xmlns:UDF="TallyUDF">
+     <VOUCHER VCHTYPE="{_esc(voucher_type)}" ACTION="Create" OBJVIEW="Accounting Voucher View">
+      <DATE>{d}</DATE>
+      <EFFECTIVEDATE>{d}</EFFECTIVEDATE>
+      <REFERENCEDATE>{d}</REFERENCEDATE>
+      <VOUCHERTYPENAME>{_esc(voucher_type)}</VOUCHERTYPENAME>
+      <VOUCHERNUMBER>{_esc(vch_no)}</VOUCHERNUMBER>
+      <REFERENCE>{_esc(line.invoice_no)}</REFERENCE>
+      <NARRATION>{_esc(narration)}</NARRATION>
+      <PARTYLEDGERNAME>{_esc(line.vendor_ledger)}</PARTYLEDGERNAME>{gst_block}
+      <PERSISTEDVIEW>Accounting Voucher View</PERSISTEDVIEW>
+      <VCHENTRYMODE>As Voucher</VCHENTRYMODE>
+{chr(10).join(rows)}
+     </VOUCHER>
+    </TALLYMESSAGE>"""
+
+
 def _voucher_type_block(name: str, parent: str = "Journal") -> str:
     """Create a dedicated voucher type for reimbursements.
 
@@ -240,7 +428,10 @@ def build_batch(lines: list[BatchLine], company: str,
                 voucher_type_parent: str = "Journal",
                 known_voucher_types: set[str] | None = None,
                 voucher_no_prefix: str = "REIMB",
-                already_exported: set[int] | None = None) -> dict:
+                already_exported: set[int] | None = None,
+                vendor_lines: list["VendorLine"] | None = None,
+                new_vendor_parent: str = "Sundry Creditors",
+                vendor_no_prefix: str = "PURCH") -> dict:
     """Build one importable XML for the whole batch.
 
     Returns a dict with the xml plus exactly what it will do, so the UI can show
@@ -311,6 +502,74 @@ def build_batch(lines: list[BatchLine], company: str,
         ln.ledger = _canon(ln.ledger)
         ln.person = _canon(ln.person)
 
+    # ---------------------------------------------------------------------
+    # Agent 2: vendor invoices.
+    #
+    # Same batch, same file, same import. They are validated separately because
+    # a purchase can fail in ways a reimbursement cannot - an unbalanced set of
+    # legs, or a GST/TDS head that does not exist.
+    #
+    # THE RULE THAT MATTERS HERE: expense heads and vendors may be CREATED, but
+    # statutory ledgers - input GST, TDS payable - may NOT. A missing "INPUT
+    # IGST @ 12%" means finance has not opened that head yet, and inventing it
+    # under a guessed parent puts input credit somewhere the GST return will
+    # not find it. So the invoice is skipped and named, and a human opens the
+    # ledger in Tally. This is the one place where refusing to act is safer
+    # than acting.
+    # ---------------------------------------------------------------------
+    v_ok: list[VendorLine] = []
+    # The voucher number IS the supplier's invoice number, so uniqueness is no
+    # longer ours to guarantee. Two invoices sharing a number inside one file
+    # would post two vouchers numbered identically - which is exactly the
+    # "every voucher is Vch No 1" problem the numbering exists to prevent, and
+    # it makes reversing one of them a manual hunt. Caught here, named, and
+    # skipped rather than discovered in the books.
+    seen_invoice: dict[str, int] = {}
+    for vl in (vendor_lines or []):
+        probs = vl.problems()
+        if vl.bill_id in exported:
+            probs.append("already exported to Tally in an earlier batch")
+        if vl.bill_id in seen_ids:
+            probs.append("listed twice in this batch")
+        seen_ids.add(vl.bill_id)
+
+        inv = norm_key(vl.invoice_no)
+        if inv and inv in seen_invoice:
+            probs.append(
+                f"invoice number {vl.invoice_no!r} is already used by bill "
+                f"{seen_invoice[inv]} in this batch - a purchase voucher is "
+                f"numbered with the supplier's invoice number, so two cannot "
+                f"share one")
+        elif inv:
+            seen_invoice[inv] = vl.bill_id
+
+        for statutory in ([t.ledger for t in vl.tax_lines]
+                          + ([vl.tds_ledger] if vl.tds_ledger else [])):
+            if norm_key(statutory) not in known:
+                probs.append(
+                    f"{statutory!r} is not a ledger in Tally - create it there "
+                    f"first (statutory heads are never auto-created)")
+
+        if probs:
+            skipped.append({"bill_id": vl.bill_id, "reasons": probs})
+            continue
+
+        for name, parent in ((vl.expense_ledger, new_expense_parent),
+                             (vl.vendor_ledger, new_vendor_parent)):
+            k = norm_key(name)
+            if k and k not in known and k not in seen_new:
+                seen_new.add(k)
+                canonical[k] = name.strip()
+                new_ledgers.append((name.strip(), parent))
+
+        vl.expense_ledger = _canon(vl.expense_ledger)
+        vl.vendor_ledger = _canon(vl.vendor_ledger)
+        vl.tax_lines = [VendorTaxLine(_canon(t.ledger), t.amount)
+                        for t in vl.tax_lines]
+        if vl.tds_ledger:
+            vl.tds_ledger = _canon(vl.tds_ledger)
+        v_ok.append(vl)
+
     # ORDER MATTERS: voucher type, then ledgers, then vouchers. Tally reads the
     # file top to bottom, so anything a voucher refers to must already have been
     # created earlier in the same file.
@@ -328,6 +587,12 @@ def build_batch(lines: list[BatchLine], company: str,
     blocks += [_voucher_block(ln, voucher_type, cash_ledger, company_gstin,
                               gst_registration, gst_state, voucher_no_prefix)
                for ln in ok]
+    # Vendor invoices always post as Journal - confirmed with PESPL. They come
+    # after the reimbursements purely for readability; both only reference
+    # masters emitted above.
+    blocks += [_vendor_voucher_block(vl, company_gstin, gst_registration,
+                                     gst_state, "Journal")
+               for vl in v_ok]
     # A Payment settles against the bank/cash ledger, so the party ledger on the
     # credit side is that account - the person is only the payee. Guard here so a
     # config change to voucher_type cannot silently mis-post.
@@ -357,14 +622,26 @@ def build_batch(lines: list[BatchLine], company: str,
  </BODY>
 </ENVELOPE>
 """
+    # The two totals are reported separately as well as combined. A
+    # reimbursement total is money owed to staff; a purchase total is money owed
+    # to suppliers, and it is net of TDS. Showing one merged number on the
+    # preview screen would be a figure that reconciles to nothing.
+    reimb_total = round(sum(float(l.amount) for l in ok), 2)
+    vendor_total = round(sum(v.payable for v in v_ok), 2)
     return {
         "xml": xml,
-        "vouchers": len(ok),
+        "vouchers": len(ok) + len(v_ok),
+        "reimbursement_vouchers": len(ok),
+        "vendor_vouchers": len(v_ok),
         "new_ledgers": [{"name": n, "parent": p} for n, p in new_ledgers],
         "new_voucher_type": new_voucher_type,
         "skipped": skipped,
-        "total": round(sum(float(l.amount) for l in ok), 2),
+        "total": round(reimb_total + vendor_total, 2),
+        "reimbursement_total": reimb_total,
+        "vendor_total": vendor_total,
+        "vendor_tds_total": round(sum(float(v.tds_amount or 0) for v in v_ok), 2),
         "lines": ok,
+        "vendor_lines": v_ok,
     }
 
 

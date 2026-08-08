@@ -56,8 +56,10 @@ from fastapi import (APIRouter, Depends, File, Form, Header, HTTPException,
                      Request, UploadFile)
 from fastapi.responses import FileResponse, JSONResponse
 
-from .export_batch import (BatchLine, batch_filename, build_batch,
-                           build_batch_excel, voucher_number)
+from . import gst as gst_mod, tds as tds_mod
+from .export_batch import (BatchLine, VendorLine, VendorTaxLine,
+                           batch_filename, build_batch, build_batch_excel,
+                           norm_key, voucher_number)
 
 router = APIRouter(prefix="/api/v1")
 
@@ -240,6 +242,10 @@ def health(user: str = Actor):
         "company": cfg["tally"]["company"],
         "voucher_type": cfg["tally"].get("batch_voucher_type", "Journal"),
         "ledgers": len(ctx("postable")),
+        # How old the chart of accounts is. A ledger created in Tally today is
+        # invisible here until someone re-exports, and the only thing worse than
+        # a stale master is a stale master nobody can see the age of.
+        "ledger_master": ctx("master_info")(),
         "dedupe_enabled": bool(cfg["dedupe"]["enabled"]),
         "bills_by_status": counts,
         "awaiting_review": counts.get("review", 0) + counts.get("manual_entry", 0),
@@ -253,6 +259,19 @@ def people(q: str = "", limit: int = 50, user: str = Actor):
 
     Sourced from the ledgers under tally.people_group, so a name chosen here
     always exists in Tally and the import cannot fail on it.
+
+    THE CAP USED TO BE 500, AND THE GROUP HAS 607 MEMBERS
+    ----------------------------------------------------
+    The ERP loads this list once and filters it in the browser, so a name past
+    the cap was not merely paginated - it was unreachable. The list is sorted,
+    so the loss was alphabetical: everything from "Shri..." onwards vanished,
+    which is how "Veena  SK" became impossible to select while looking exactly
+    like a name that simply did not exist in Tally.
+
+    The cap is now well above any plausible group size, and `truncated` says so
+    outright when it does bite. A dropdown that silently drops the tail is worse
+    than one that refuses to load: nobody goes looking for a name they have been
+    shown no reason to doubt.
     """
     names = ctx("people")()
     ql = q.strip().lower()
@@ -260,7 +279,9 @@ def people(q: str = "", limit: int = 50, user: str = Actor):
         starts = [n for n in names if n.lower().startswith(ql)]
         contains = [n for n in names if ql in n.lower() and n not in starts]
         names = starts + contains
-    return {"people": names[:max(1, min(limit, 500))], "total": len(names)}
+    capped = names[:max(1, min(limit, 5000))]
+    return {"people": capped, "total": len(names),
+            "truncated": len(capped) < len(names)}
 
 
 @router.get("/ledgers")
@@ -289,12 +310,135 @@ def ledgers(q: str = "", limit: int = 25, person: str = "", user: str = Actor):
             "SELECT ledger FROM ledger_usage WHERE ledger IN "
             "(SELECT ledger FROM ledger_usage) ORDER BY count DESC LIMIT ?",
             (limit,)) if r["ledger"] in names]
-        return {"ledgers": popular or sorted(names)[:limit],
-                "source": "most used" if popular else "all"}
+        if popular:
+            return {"ledgers": popular, "source": "most used"}
+        # Nothing learned yet - a fresh deployment. Alphabetical order opened on
+        # "2000 LTR TANK" and "5 Axis Sawing Machine", because capital items
+        # sort first and are legitimately codeable. True, and useless: the
+        # overwhelming majority of bills are expenses. Expense heads lead until
+        # the usage table has something real to say.
+        by_nature = {l.name: l.nature for l in ctx("postable")}
+        first = sorted(names, key=lambda n: (by_nature.get(n) != "expense", n))
+        return {"ledgers": first[:limit], "source": "expense heads"}
 
     starts = [n for n in names if n.lower().startswith(ql)]
     contains = [n for n in names if ql in n.lower() and n not in starts]
     return {"ledgers": (starts + contains)[:limit], "source": "search"}
+
+
+# --------------------------------------------------------------------------
+# Agent 2: GST and TDS pickers
+#
+# These are PICKERS, not resolvers. Everything that can be derived from the bill
+# is derived - the rate from the amounts, IGST-vs-CGST/SGST from the two GSTINs
+# - and everything that cannot is offered as a ranked list for the reviewer.
+#
+# The three things deliberately left to a human, because no part of the invoice
+# carries them: whether input credit is blocked under s.17(5), whether a 9% CGST
+# line is the goods head or the services head, and which TDS section applies.
+# Guessing any of them produces a wrong statutory return, which is corrected
+# with the department rather than by reversing a journal entry.
+# --------------------------------------------------------------------------
+@router.get("/gst")
+def gst_lookup(tax: str = "", rate: float | None = None,
+               eligible: bool = True, rcm: bool = False,
+               user: str = Actor):
+    """Input-tax ledgers, optionally filtered. No filters returns the summary
+    alone, which the UI shows at the top of the vendor panel so a missing slab
+    is obvious before anyone needs it."""
+    index = ctx("gst_index")
+    out: dict = {"summary": gst_mod.summarise(index)}
+    if tax and rate is not None:
+        out["candidates"] = [
+            {"ledger": g.name, "tax": g.tax, "rate": g.rate,
+             "eligible": g.eligible, "rcm": g.rcm, "is_service": g.is_service}
+            for g in gst_mod.candidates(index, tax, float(rate), eligible, rcm)]
+    return out
+
+
+@router.get("/tds")
+def tds_lookup(nature: str = "", section: str = "",
+               rate: float | None = None, user: str = Actor):
+    """TDS deduction heads, optionally filtered by nature/section/rate."""
+    index = ctx("tds_index")
+    return {
+        "summary": tds_mod.summarise(index),
+        "candidates": [
+            {"ledger": t.name, "section": t.section, "rate": t.rate,
+             "nature": t.nature}
+            for t in tds_mod.candidates(index, nature, section, rate)],
+    }
+
+
+@router.get("/vendor/suggest")
+def vendor_suggest(taxable: float, cgst: float = 0.0, sgst: float = 0.0,
+                   igst: float = 0.0, vendor_gstin: str = "",
+                   eligible: bool = True, user: str = Actor):
+    """Turn a read invoice into proposed tax lines.
+
+    Returns `needs_review` reasons rather than silently doing something
+    plausible. The two that matter:
+
+      - the vendor GSTIN was not read, so IGST vs CGST+SGST is unknown. The
+        state code is the ONLY thing that decides it.
+      - the tax over taxable ratio is not near any GST slab, which means an
+        amount was misread or the invoice mixes rates. Snapping to the nearest
+        slab would hide exactly the bills a human needs to see.
+    """
+    cfg = ctx("cfg")
+    index = ctx("gst_index")
+    company_gstin = (cfg["tally"].get("company_gstin") or "").strip()
+
+    interstate = gst_mod.is_interstate(vendor_gstin, company_gstin)
+    needs: list[str] = []
+    if interstate is None:
+        needs.append("Vendor GSTIN not read - confirm IGST or CGST+SGST")
+
+    lines: list[dict] = []
+
+    def add(tax: str, amount: float) -> None:
+        rate = gst_mod.infer_rate(amount, taxable)
+        if rate is None:
+            needs.append(
+                f"{tax} {amount:,.2f} on {float(taxable):,.2f} is "
+                f"{(amount / float(taxable) * 100 if taxable else 0):.2f}% - "
+                f"not a GST slab, please check the amounts")
+            return
+        cands = gst_mod.candidates(index, tax, rate, eligible)
+        if not cands:
+            needs.append(
+                f"No {'' if eligible else 'ineligible '}{tax} ledger at {rate}% "
+                f"exists in Tally - finance must open that head first")
+            return
+        lines.append({"tax": tax, "rate": rate, "amount": round(amount, 2),
+                      "ledger": cands[0].name,
+                      "alternatives": [c.name for c in cands[1:]]})
+
+    if igst and float(igst) > 0:
+        add("IGST", float(igst))
+    if cgst and float(cgst) > 0:
+        add("CGST", float(cgst))
+    if sgst and float(sgst) > 0:
+        add("SGST", float(sgst))
+
+    if interstate is True and (cgst or sgst):
+        needs.append("Vendor is out of state but the bill shows CGST/SGST - "
+                     "check the invoice")
+    if interstate is False and igst:
+        needs.append("Vendor is in-state but the bill shows IGST - "
+                     "check the invoice")
+    if not lines and not needs:
+        needs.append("No tax read on this bill - confirm it is not exempt")
+
+    tax_total = round(sum(l["amount"] for l in lines), 2)
+    return {
+        "interstate": interstate,
+        "tax_lines": lines,
+        "taxable": round(float(taxable), 2),
+        "tax_total": tax_total,
+        "invoice_total": round(float(taxable) + tax_total, 2),
+        "needs_review": needs,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -521,6 +665,129 @@ async def confirm(bill_id: int, request: Request, user: str = Actor):
             "ledger": ledger, "person": person, "amount": amount}
 
 
+@router.post("/bills/{bill_id}/confirm-vendor")
+async def confirm_vendor(bill_id: int, request: Request, user: str = Actor):
+    """Approve a bill as a VENDOR INVOICE - Agent 2.
+
+    Deliberately a separate endpoint from /confirm rather than a mode flag on
+    it. /confirm feeds the learning loop (vendor memory, person memory, token
+    weights) built around "which expense head does this claimant's bill go to".
+    A purchase invoice answers a different question and carries statutory
+    decisions with it; running it through the same path would teach the
+    reimbursement classifier from data that is not about reimbursements.
+
+    Everything here is REVALIDATED server-side even though the UI already
+    checked it. The browser can be wrong, replayed, or bypassed - and the cost
+    of a bad row is a wrong input-credit claim, so the API is the boundary that
+    has to hold. In particular every ledger named must exist in the master; a
+    tax or TDS head that does not is refused here rather than surfacing as a
+    skipped invoice at export time.
+    """
+    body = await request.json()
+    conn = ctx("conn")
+
+    if not conn.execute("SELECT 1 FROM bills WHERE id=?", (bill_id,)).fetchone():
+        raise HTTPException(404, "Unknown bill")
+    if conn.execute("SELECT 1 FROM export_bills WHERE bill_id=?",
+                    (bill_id,)).fetchone():
+        raise HTTPException(409, "This bill has already been exported to Tally")
+
+    vendor = str(body.get("vendor_ledger", "")).strip()
+    expense = str(body.get("expense_ledger", "")).strip()
+    invoice_no = str(body.get("invoice_no", "")).strip()
+    if not vendor or not expense:
+        raise HTTPException(400, "vendor_ledger and expense_ledger are required")
+    if not invoice_no:
+        # Without it the creditor's outstandings never tie back to their
+        # statement, and a later payment cannot be settled against this bill.
+        raise HTTPException(400, "invoice_no is required - it is the bill "
+                                 "reference Tally allocates against")
+    try:
+        taxable = round(float(body.get("taxable")), 2)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "taxable must be a number")
+    if taxable <= 0:
+        raise HTTPException(400, "taxable must be greater than zero")
+
+    known = {norm_key(n) for n in ctx("known_ledgers")()}
+
+    raw_lines = body.get("tax_lines") or []
+    if not isinstance(raw_lines, list):
+        raise HTTPException(400, "tax_lines must be a list")
+    tax_lines = []
+    for i, t in enumerate(raw_lines):
+        led = str((t or {}).get("ledger", "")).strip()
+        try:
+            amt = round(float((t or {}).get("amount")), 2)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"tax line {i + 1} has a non-numeric amount")
+        if not led:
+            raise HTTPException(400, f"tax line {i + 1} has no ledger")
+        if amt <= 0:
+            raise HTTPException(400, f"tax line {i + 1} has a zero amount")
+        if norm_key(led) not in known:
+            raise HTTPException(
+                400, f"{led!r} is not a ledger in Tally. Statutory heads are "
+                     f"never created automatically - open it in Tally first.")
+        tax_lines.append({"ledger": led, "amount": amt,
+                          "tax": str((t or {}).get("tax") or "").upper(),
+                          "rate": (t or {}).get("rate")})
+
+    tds_ledger = str(body.get("tds_ledger") or "").strip()
+    try:
+        tds_amount = round(float(body.get("tds_amount") or 0), 2)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "tds_amount must be a number")
+    if tds_ledger and norm_key(tds_ledger) not in known:
+        raise HTTPException(400, f"{tds_ledger!r} is not a ledger in Tally")
+    if (tds_amount > 0) != bool(tds_ledger):
+        raise HTTPException(400, "TDS needs both a ledger and an amount, "
+                                 "or neither")
+
+    tax_total = round(sum(t["amount"] for t in tax_lines), 2)
+    invoice_total = round(taxable + tax_total, 2)
+    if tds_amount >= invoice_total:
+        raise HTTPException(400, f"TDS {tds_amount:,.2f} is not less than the "
+                                 f"invoice total {invoice_total:,.2f}")
+
+    interstate = body.get("interstate")
+    conn.execute(
+        "INSERT INTO vendor_entries (bill_id, vendor_ledger, expense_ledger,"
+        " taxable, invoice_no, invoice_date, vendor_gstin, interstate, eligible,"
+        " tax_lines_json, tds_ledger, tds_amount, confirmed_by, confirmed_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))"
+        " ON CONFLICT(bill_id) DO UPDATE SET"
+        "  vendor_ledger=excluded.vendor_ledger,"
+        "  expense_ledger=excluded.expense_ledger, taxable=excluded.taxable,"
+        "  invoice_no=excluded.invoice_no, invoice_date=excluded.invoice_date,"
+        "  vendor_gstin=excluded.vendor_gstin,"
+        "  interstate=excluded.interstate, eligible=excluded.eligible,"
+        "  tax_lines_json=excluded.tax_lines_json,"
+        "  tds_ledger=excluded.tds_ledger, tds_amount=excluded.tds_amount,"
+        "  confirmed_by=excluded.confirmed_by, confirmed_at=datetime('now')",
+        (bill_id, vendor, expense, taxable, invoice_no,
+         _iso(body.get("date")) or None,
+         str(body.get("vendor_gstin") or "").strip() or None,
+         None if interstate is None else int(bool(interstate)),
+         0 if body.get("eligible") is False else 1,
+         json.dumps(tax_lines), tds_ledger or None, tds_amount, user))
+    conn.execute("UPDATE bills SET status='approved' WHERE id=?", (bill_id,))
+    conn.commit()
+
+    ctx("pipeline").log_event(
+        "confirm", f"{user} confirmed bill {bill_id} as a vendor invoice "
+                   f"({vendor}, inv {invoice_no}, "
+                   f"{invoice_total:,.2f}"
+                   f"{f', TDS {tds_amount:,.2f}' if tds_amount else ''})")
+
+    return {"ok": True, "bill_id": bill_id, "status": "approved",
+            "kind": "vendor", "vendor_ledger": vendor,
+            "expense_ledger": expense, "invoice_no": invoice_no,
+            "taxable": taxable, "tax_total": tax_total,
+            "invoice_total": invoice_total, "tds_amount": tds_amount,
+            "payable": round(invoice_total - tds_amount, 2)}
+
+
 @router.post("/bills/{bill_id}/reject")
 async def reject(bill_id: int, request: Request, user: str = Actor):
     body = await request.json() if await request.body() else {}
@@ -621,6 +888,49 @@ def _lines_for(bill_ids: list[int],
     return out, blocked
 
 
+def _vendor_lines_for(bill_ids: list[int]) -> list[VendorLine]:
+    """Confirmed vendor invoices among the requested bills.
+
+    Only bills a human has confirmed through /confirm-vendor appear here, and
+    only while still approved. Eligibility (already exported, unresolved
+    duplicate) is enforced inside build_batch alongside the reimbursements, so
+    both kinds are judged by one set of rules and reported in one `skipped`
+    list.
+    """
+    if not bill_ids:
+        return []
+    conn = ctx("conn")
+    qs = ",".join("?" * len(bill_ids))
+    rows = conn.execute(
+        f"SELECT v.*, b.status FROM vendor_entries v "
+        f"JOIN bills b ON b.id = v.bill_id "
+        f"WHERE v.bill_id IN ({qs}) AND b.status = 'approved'",
+        [int(b) for b in bill_ids]).fetchall()
+
+    out: list[VendorLine] = []
+    for r in rows:
+        try:
+            tax = json.loads(r["tax_lines_json"] or "[]")
+        except (TypeError, ValueError):
+            tax = []
+        # The invoice's own date. Falls back to today only when the bill carried
+        # no readable date and the reviewer left it blank.
+        iso = _iso(r["invoice_date"])
+        out.append(VendorLine(
+            bill_id=r["bill_id"],
+            vendor_ledger=r["vendor_ledger"],
+            expense_ledger=r["expense_ledger"],
+            taxable=r["taxable"],
+            invoice_no=r["invoice_no"],
+            tax_lines=[VendorTaxLine(str(t.get("ledger", "")),
+                                     float(t.get("amount") or 0)) for t in tax],
+            tds_ledger=r["tds_ledger"] or "",
+            tds_amount=r["tds_amount"] or 0.0,
+            voucher_date=date.fromisoformat(iso) if iso else date.today(),
+        ))
+    return out
+
+
 def _build(bill_ids: list[int]) -> dict:
     cfg = ctx("cfg")
     t = cfg["tally"]
@@ -633,6 +943,14 @@ def _build(bill_ids: list[int]) -> dict:
         "SELECT bill_id FROM export_bills "
         "UNION SELECT bill_id FROM vouchers WHERE status IN ('posted','generated')")}
     lines, blocked = _lines_for(bill_ids)
+    # Agent 2. A bill confirmed as a vendor invoice has a vendor_entries row and
+    # is NOT a reimbursement, so it is pulled out of the reimbursement lines
+    # rather than being built twice. _lines_for() reads the extraction, which
+    # every bill has; vendor_entries is what a human decided this one actually
+    # is, so it wins.
+    vendor_lines = _vendor_lines_for(bill_ids)
+    vendor_ids = {v.bill_id for v in vendor_lines}
+    lines = [l for l in lines if l.bill_id not in vendor_ids]
     r = build_batch(
         lines, t["company"], ctx("known_ledgers")(),
         voucher_type=t.get("batch_voucher_type", "Journal"),
@@ -646,6 +964,9 @@ def _build(bill_ids: list[int]) -> dict:
         voucher_type_parent=t.get("voucher_type_parent", "Journal"),
         voucher_no_prefix=t.get("voucher_no_prefix", "REIMB"),
         already_exported=exported,
+        vendor_lines=vendor_lines,
+        new_vendor_parent=t.get("new_vendor_parent", "Sundry Creditors"),
+        vendor_no_prefix=t.get("vendor_no_prefix", "PURCH"),
     )
     # Ineligible bills are REPORTED, never silently dropped: the preview is the
     # last cheap moment to notice that something a clerk ticked isn't going.
@@ -655,19 +976,34 @@ def _build(bill_ids: list[int]) -> dict:
 
 def _consequences(r: dict, bill_ids: list[int]) -> dict:
     """What the file will do to Tally, in plain terms, before anyone imports it."""
+    t = ctx("cfg")["tally"]
+    reimb_prefix = t.get("voucher_no_prefix", "REIMB")
     return {
         "requested": len(bill_ids),
         "vouchers": r["vouchers"],
         "total": r["total"],
+        # Split so the screen never shows one merged figure. Money owed to staff
+        # and money owed to suppliers net of TDS are different obligations, and
+        # a combined number reconciles against nothing anyone can check.
+        "reimbursement_vouchers": r.get("reimbursement_vouchers", r["vouchers"]),
+        "reimbursement_total": r.get("reimbursement_total", r["total"]),
+        "vendor_vouchers": r.get("vendor_vouchers", 0),
+        "vendor_total": r.get("vendor_total", 0),
+        "vendor_tds_total": r.get("vendor_tds_total", 0),
         "new_ledgers": r["new_ledgers"],
         "new_voucher_type": r.get("new_voucher_type"),
         "skipped": r["skipped"],
-        "voucher_numbers": [
-            {"bill_id": l.bill_id,
-             "voucher_no": voucher_number(
-                 l.bill_id, l.voucher_date,
-                 ctx("cfg")["tally"].get("voucher_no_prefix", "REIMB"))}
-            for l in r["lines"]],
+        "voucher_numbers": (
+            [{"bill_id": l.bill_id, "kind": "reimbursement",
+              "voucher_no": voucher_number(l.bill_id, l.voucher_date,
+                                           reimb_prefix)}
+             for l in r["lines"]]
+            # A purchase voucher is numbered with the supplier's own invoice
+            # number, so the preview shows exactly what will appear in Tally.
+            + [{"bill_id": v.bill_id, "kind": "vendor",
+                "invoice_no": v.invoice_no,
+                "voucher_no": (v.voucher_no or "").strip() or v.invoice_no}
+               for v in r.get("vendor_lines", [])]),
     }
 
 

@@ -53,29 +53,92 @@ LEDGER_JSON = BASE / CFG["app"]["data_dir"] / "ledgers.json"
 MASTER_XML = BASE / CFG["app"]["data_dir"] / "MASTER.xml"
 TRIAL_BALANCE = BASE / CFG["app"]["data_dir"] / "Trial Balance - PESPL.xlsx"
 
-# Source of truth order: cached json -> Tally All Masters XML -> trial balance.
-# The MASTER.xml route is strongly preferred: the trial balance is a *report*
-# and Tally collapses it, so PESPL's trial balance listed 443 ledgers while the
-# masters export has 2,538. Ledgers the team uses daily were simply absent.
-if LEDGER_JSON.exists():
-    LEDGERS = ledger_mod.load_json(LEDGER_JSON)
-elif MASTER_XML.exists():
-    from .master_xml import load_from_master_xml
-    LEDGERS = load_from_master_xml(MASTER_XML)
-    ledger_mod.save_json(LEDGERS, LEDGER_JSON)
-elif TRIAL_BALANCE.exists():
-    LEDGERS = ledger_mod.load_from_trial_balance(TRIAL_BALANCE)
-    ledger_mod.save_json(LEDGERS, LEDGER_JSON)
-else:
-    LEDGERS = []
+# Source of truth: Tally's All Masters export. ledgers.json is only a CACHE of
+# it - a 1.3 MB parse of a 30 MB file, kept so startup is not measured in
+# seconds.
+#
+# TWO WAYS THIS USED TO GO WRONG SILENTLY, BOTH FIXED HERE
+# --------------------------------------------------------
+# 1. The cache was checked FIRST and never invalidated. Someone would drop in a
+#    freshly exported MASTER.xml, restart, and see none of the new ledgers -
+#    because the stale json still existed and won. Now the master's mtime
+#    decides: newer file, rebuilt cache.
+#
+# 2. The trial balance was a silent fallback. A deploy that forgot MASTER.xml
+#    but shipped the spreadsheet started perfectly happily on 443 ledgers
+#    instead of 2,538 - reintroducing the exact bug that sent 22.8% of journal
+#    lines to a ledger the dashboard could not offer. Nothing in the UI would
+#    say so. It is now opt-in and loud.
+def _load_ledger_master() -> list:
+    have_master = MASTER_XML.exists()
+    have_cache = LEDGER_JSON.exists()
+
+    if have_master:
+        fresh = (not have_cache
+                 or MASTER_XML.stat().st_mtime > LEDGER_JSON.stat().st_mtime)
+        if fresh:
+            from .master_xml import load_from_master_xml
+            out = load_from_master_xml(MASTER_XML)
+            ledger_mod.save_json(out, LEDGER_JSON)
+            return out
+        return ledger_mod.load_json(LEDGER_JSON)
+
+    if have_cache:
+        # No master on disk but a cache from a previous run: usable, and the
+        # common case on a redeploy where only code changed.
+        return ledger_mod.load_json(LEDGER_JSON)
+
+    if TRIAL_BALANCE.exists() and bool(
+            (CFG.get("app", {}) or {}).get("allow_trial_balance_fallback")):
+        return ledger_mod.load_from_trial_balance(TRIAL_BALANCE)
+
+    raise RuntimeError(
+        f"No ledger master found. Export it from Tally with "
+        f"Alt+E -> Masters -> All Masters -> XML and save it as {MASTER_XML}. "
+        f"(A Trial Balance is NOT a substitute: it is a report and Tally "
+        f"collapses it, so PESPL's listed 443 of 2,538 ledgers. Set "
+        f"app.allow_trial_balance_fallback: true only for a throwaway demo.)")
+
+
+LEDGERS = _load_ledger_master()
+
+
+def _master_info() -> dict:
+    """Where the chart of accounts came from and how old it is."""
+    from datetime import datetime, timezone
+    if MASTER_XML.exists():
+        st = MASTER_XML.stat()
+        exported = datetime.fromtimestamp(st.st_mtime, timezone.utc)
+        return {
+            "source": "MASTER.xml",
+            "exported_at": exported.date().isoformat(),
+            "age_days": max(0, (datetime.now(timezone.utc) - exported).days),
+            "ledgers": len(LEDGERS),
+        }
+    return {"source": "cache" if LEDGER_JSON.exists() else "trial balance",
+            "exported_at": None, "age_days": None, "ledgers": len(LEDGERS)}
 
 from .ocr.engine import configure_tesseract
 TESSERACT_PATH = configure_tesseract(CFG["ocr"].get("tesseract_cmd"))
 
 pipeline = Pipeline(conn, CFG, LEDGERS)
 
+# What a bill may be coded to.
+#
+# allowed_natures alone was too blunt. "asset" is there so a capital purchase
+# can be coded - a laptop belongs in Computers & Peripherals, not an expense
+# head - but it also swept in every CURRENT asset: 284 customer ledgers, 49
+# bank deposits and 9 bank accounts. The picker opened on "0", "2000 LTR TANK",
+# "4M MARBLE PRIVATE LIMITED", and the classifier scored a food bill against
+# 284 debtors it could never legitimately be coded to.
+#
+# Excluding by ROOT group rather than by name: the primary groups are fixed in
+# every Tally company, so this survives PESPL renaming their own sub-groups.
+_EXCLUDED_ROOTS = {g.strip().lower() for g in
+                   (CFG["classify"].get("excluded_root_groups") or [])}
 POSTABLE = [l for l in LEDGERS if l.is_postable
-            and l.nature in set(CFG["classify"]["allowed_natures"])]
+            and l.nature in set(CFG["classify"]["allowed_natures"])
+            and (l.root_group or "").strip().lower() not in _EXCLUDED_ROOTS]
 
 
 # --------------------------------------------------------------------------
@@ -187,10 +250,19 @@ def people_list() -> list[str]:
 
 from . import api as api_mod  # noqa: E402  (needs people_list, defined above)
 
+# Agent 2 lookups. Built once at startup from the same master the classifier
+# uses, so a GST or TDS head opened in Tally appears here on the next master
+# refresh with no code change.
+from . import gst as gst_mod, tds as tds_mod  # noqa: E402
+GST_INDEX = gst_mod.build_index(LEDGERS)
+TDS_INDEX = tds_mod.build_index(LEDGERS)
+
 api_mod.CTX.update({
     "conn": conn, "cfg": CFG, "pipeline": pipeline, "ledgers": LEDGERS,
     "postable": POSTABLE, "people": people_list,
     "ledger_names": _ledger_names, "known_ledgers": _known_ledgers,
+    "gst_index": GST_INDEX, "tds_index": TDS_INDEX,
+    "master_info": _master_info,
 })
 app.include_router(api_mod.router)
 

@@ -25,6 +25,29 @@ export const ROLE_LABEL: Record<string, string> = {
 };
 export function rankOf(role?: string | null): number { return ROLE_RANK[String(role ?? "")] ?? 0; }
 
+/** Fabrication shares the ONE role hierarchy with Shop Floor (LINE_MANAGER /
+ * INCHARGE / OPERATOR — see lib/fab/access.ts's fabTierOf: there is no
+ * parallel fabRole field), but the generic ROLE_LABEL names ("Line Manager",
+ * "Incharge", "Operator") don't read as fabrication-specific anywhere the
+ * role is displayed — most visibly in Users & Roles, where an admin picking
+ * the Fabrication department couldn't find "Fabrication Manager" /
+ * "Fabrication Supervisor" / "Fabrication Machine Operator" by name. This
+ * gives the SAME underlying roles department-appropriate display names
+ * without introducing a second role system or touching the Role enum/DB. */
+export const FAB_ROLE_LABEL: Record<string, string> = {
+  LINE_MANAGER: "Fabrication Manager",
+  INCHARGE: "Fabrication Supervisor",
+  OPERATOR: "Fabrication Machine Operator",
+};
+/** Role label, department-aware: Fabrication uses FAB_ROLE_LABEL for the
+ * roles it shares with Shop Floor; every other branch (and any role with no
+ * fabrication-specific name) falls back to the generic ROLE_LABEL. */
+export function roleLabelFor(role?: string | null, branch?: string | null): string {
+  const r = String(role ?? "");
+  if (branch === "FABRICATION" && FAB_ROLE_LABEL[r]) return FAB_ROLE_LABEL[r];
+  return ROLE_LABEL[r] ?? r;
+}
+
 /** The session user, REVALIDATED against the database on every request:
  * a deactivated user or a bumped sessionVersion is treated as signed out
  * immediately, on every device. Request-cached so gates share one query. */

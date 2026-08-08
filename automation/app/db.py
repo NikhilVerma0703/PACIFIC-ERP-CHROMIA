@@ -234,6 +234,42 @@ CREATE TABLE IF NOT EXISTS ledgers_cache (
     is_postable INTEGER,
     synced_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- AGENT 2. A vendor invoice, as confirmed by a reviewer.
+--
+-- Separate from `extractions` on purpose. Extraction is what the OCR *read* and
+-- is rewritten whenever a bill is re-processed; this is what a named human
+-- *decided*, and it must survive that. It is also the audit record for three
+-- judgment calls no invoice contains - whether input credit is blocked under
+-- s.17(5), whether a rate maps to the goods head or the services head, and
+-- which TDS section applies. When the department asks why credit was claimed,
+-- the answer is a row here with a name and a timestamp on it.
+--
+-- One row per bill: re-confirming replaces it, so the latest decision wins and
+-- there is never an ambiguous pair.
+CREATE TABLE IF NOT EXISTS vendor_entries (
+    bill_id         INTEGER PRIMARY KEY REFERENCES bills(id) ON DELETE CASCADE,
+    vendor_ledger   TEXT NOT NULL,
+    expense_ledger  TEXT NOT NULL,
+    taxable         REAL NOT NULL,
+    invoice_no      TEXT NOT NULL,     -- the VENDOR's number: the bill reference
+    -- The invoice's own date, not the review date. A voucher dated when someone
+    -- happened to click confirm lands in the wrong GST period whenever a bill
+    -- is reviewed after month end - which is most of them.
+    invoice_date    TEXT,
+    vendor_gstin    TEXT,
+    interstate      INTEGER,           -- 1 IGST, 0 CGST+SGST, NULL not established
+    eligible        INTEGER NOT NULL DEFAULT 1,   -- 0 = s.17(5) blocked credit
+    -- [{"ledger": "INPUT CGST @ 9%", "tax": "CGST", "rate": 9.0, "amount": 900.0}]
+    -- JSON because the number of legs varies (one IGST line, or a CGST/SGST
+    -- pair) and a column pair per tax type would be three nullable columns
+    -- that must be kept consistent by hand.
+    tax_lines_json  TEXT NOT NULL DEFAULT '[]',
+    tds_ledger      TEXT,
+    tds_amount      REAL NOT NULL DEFAULT 0,
+    confirmed_by    TEXT NOT NULL,
+    confirmed_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 

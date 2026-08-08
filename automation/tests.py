@@ -489,8 +489,24 @@ def main() -> int:
               h.json()["user"] == "SHALMAN")
         check("health reports the real chart of accounts",
               h.json()["ledgers"] > 100, h.json()["ledgers"])
-        check("health warns when dedupe is off",
-              h.json()["dedupe_enabled"] is False)
+        # Asserts the BEHAVIOUR - health mirrors whatever is configured - not the
+        # shipped value. The original assertion hard-coded False and so failed
+        # the moment dedupe was switched on for the rollout, which is a test
+        # breaking on a correct change.
+        check("health reports the live dedupe setting",
+              h.json()["dedupe_enabled"] is bool(m.CFG["dedupe"]["enabled"]))
+        _dedupe_was = m.CFG["dedupe"]["enabled"]
+        try:
+            m.CFG["dedupe"]["enabled"] = False
+            check("health flags dedupe when it is switched off",
+                  c.get("/api/v1/health", headers=H).json()["dedupe_enabled"]
+                  is False)
+            m.CFG["dedupe"]["enabled"] = True
+            check("and reports it on when it is switched on",
+                  c.get("/api/v1/health", headers=H).json()["dedupe_enabled"]
+                  is True)
+        finally:
+            m.CFG["dedupe"]["enabled"] = _dedupe_was
 
         # ---- reference data
         pj = c.get("/api/v1/people?q=vijay", headers=H).json()

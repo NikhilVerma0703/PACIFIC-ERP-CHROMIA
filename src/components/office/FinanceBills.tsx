@@ -6,6 +6,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Card, Badge, Empty } from "@/components/ui";
 import { SearchableSelect } from "@/components/robo/SearchableSelect";
+import { VendorInvoicePanel } from "@/components/office/VendorInvoicePanel";
+import { LedgerPicker } from "@/components/office/LedgerPicker";
 
 const API = "/api/office/finance";
 
@@ -46,11 +48,16 @@ interface Suggestion { ledger: string; score: number; band: string; reasons?: st
 interface BillDetail {
   person: string; status: string; image_url: string;
   ocr: { confidence: number; text: string | null; reasons: string[] };
+  // NULLABLE. The engine sends `extracted: null` for a bill with no extraction
+  // row - OCR failed, the page was unreadable, or it is still processing. The
+  // interface used to declare it always-present, so TypeScript happily compiled
+  // `detail.extracted.arithmetic_ok` and the review panel crashed on exactly the
+  // bills a human most needs to look at.
   extracted: {
     vendor: string | null; gstin: string | null; invoice_no: string | null;
     date: string | null; taxable: number | null; cgst: number | null; sgst: number | null;
-    amount: number | null; arithmetic_ok: boolean | null;
-  };
+    igst: number | null; amount: number | null; arithmetic_ok: boolean | null;
+  } | null;
   suggestions: Suggestion[];
   duplicates: { bill_id: number; reasons?: string[] }[];
 }
@@ -69,69 +76,6 @@ async function j<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
   }
   return r.json();
-}
-
-/** Debounced server-driven ledger search — the master list is too large to ship
- * to the browser, and with no query the engine already returns this person's
- * own claim history, which is usually the answer. */
-function LedgerPicker({ value, person, onSelect }: { value: string; person: string; onSelect: (l: string) => void }) {
-  const [query, setQuery] = useState("");
-  const [open, setOpen] = useState(false);
-  const [options, setOptions] = useState<{ name: string; hint?: string }[]>([]);
-  const ref = useRef<HTMLDivElement>(null);
-  const timer = useRef<number>(0);
-
-  useEffect(() => {
-    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, []);
-
-  const search = useCallback((q: string) => {
-    window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(async () => {
-      try {
-        const url = q.trim()
-          ? `${API}/ledgers?q=${encodeURIComponent(q.trim())}&limit=25`
-          : `${API}/ledgers?person=${encodeURIComponent(person)}&limit=25`;
-        const d = await j<{ ledgers: string[]; source?: string }>(url);
-        setOptions(d.ledgers.map((name) => ({ name, hint: q.trim() ? undefined : d.source })));
-      } catch { setOptions([]); }
-    }, 220);
-  }, [person]);
-
-  if (value) {
-    return (
-      <div className="flex items-center gap-1.5">
-        <div className="min-w-0 flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm">
-          <span className="block truncate text-sm text-gray-900">{value}</span>
-        </div>
-        <button type="button" aria-label="Change ledger" onClick={() => { onSelect(""); setQuery(""); setOptions([]); }}
-          className="shrink-0 rounded-md px-2 py-1 text-xs text-gray-400 hover:bg-gray-100 hover:text-red-500">Change</button>
-      </div>
-    );
-  }
-  return (
-    <div ref={ref} className="relative">
-      <input value={query}
-        onChange={(e) => { setQuery(e.target.value); setOpen(true); search(e.target.value); }}
-        onFocus={() => { setOpen(true); search(query); }}
-        placeholder="Search expense ledgers…" className={inp} autoComplete="off" />
-      {open && (
-        <div className="absolute z-20 mt-1 max-h-52 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
-          {options.length === 0 ? (
-            <div className="px-3 py-2 text-xs text-gray-400">Type to search the ledger master.</div>
-          ) : options.map((o) => (
-            <button key={o.name} type="button" onClick={() => { onSelect(o.name); setOpen(false); }}
-              className="flex w-full items-center gap-2 border-b border-gray-50 px-3 py-2 text-left transition last:border-0 hover:bg-brand/5">
-              <span className="flex-1 truncate text-sm text-gray-800">{o.name}</span>
-              {o.hint && <span className="shrink-0 text-xs text-gray-400">{o.hint}</span>}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
 }
 
 export function FinanceBills() {
@@ -155,6 +99,9 @@ export function FinanceBills() {
   const [actionError, setActionError] = useState("");
   const [saving, setSaving] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
+  // Which kind of document this bill is. Reset on every open so the previous
+  // bill's choice can never carry over onto the next one.
+  const [vendorMode, setVendorMode] = useState(false);
   const [reason, setReason] = useState("");
 
   // export
@@ -181,8 +128,15 @@ export function FinanceBills() {
   }, []);
 
   useEffect(() => {
-    j<{ people: string[] }>(`${API}/people?limit=500`)
-      .then((d) => setPeople(d.people.map((name) => ({ id: name, name }))))
+    // limit=5000: the whole claimant group, never a page of it. This dropdown
+      // is filtered in the browser, so anything not fetched here is unreachable
+      // rather than merely on "page 2" - and the old limit=500 against a
+      // 607-member group silently hid every name from "Shri" onwards.
+      j<{ people: string[]; total: number; truncated?: boolean }>(`${API}/people?limit=5000`)
+      .then((d) => {
+        setPeople(d.people.map((name) => ({ id: name, name })));
+        if (d.truncated) setEngineDown(`Claimant list is incomplete — showing ${d.people.length} of ${d.total} names.`);
+      })
       .catch((e) => setEngineDown((e as Error).message));
     refreshLists();
   }, [refreshLists]);
@@ -224,14 +178,17 @@ export function FinanceBills() {
   };
 
   const openBill = async (id: number) => {
-    setSelected(id); setDetail(null); setActionError(""); setRejectOpen(false); setReason("");
+    setSelected(id); setDetail(null); setActionError(""); setRejectOpen(false); setReason(""); setVendorMode(false);
     try {
       const d = await j<BillDetail>(`${API}/bills/${id}`);
       setDetail(d);
       setForm({
         ledger: d.suggestions[0]?.ledger ?? "",
-        amount: d.extracted.amount != null ? String(d.extracted.amount) : "",
-        date: d.extracted.date ?? "",
+        // Blank rather than crashing when nothing was extracted: the reviewer
+        // types the amount off the image, which is the whole point of the
+        // manual-entry path.
+        amount: d.extracted?.amount != null ? String(d.extracted.amount) : "",
+        date: d.extracted?.date ?? "",
         narration: "",
       });
     } catch (e) { setActionError((e as Error).message); }
@@ -436,7 +393,7 @@ export function FinanceBills() {
                 <div>
                   <div className="mb-2 flex items-center justify-between">
                     <h3 className="text-sm font-semibold text-gray-900">Bill #{selected} — {detail.person}</h3>
-                    <span className="text-xs text-gray-400">OCR {detail.ocr.confidence}%{detail.extracted.arithmetic_ok ? " · totals reconcile ✓" : ""}</span>
+                    <span className="text-xs text-gray-400">OCR {detail.ocr.confidence}%{detail.extracted?.arithmetic_ok ? " · totals reconcile ✓" : ""}</span>
                   </div>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={`${API}${detail.image_url.replace(/^\/api\/v1/, "")}`} alt={`Bill ${selected}`}
@@ -449,9 +406,63 @@ export function FinanceBills() {
                   )}
                 </div>
 
-                {/* the three fields */}
+                {/* the three fields — or the vendor-invoice panel */}
                 <div className="space-y-4">
                   {actionError && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{actionError}</div>}
+
+                  {/* WHAT KIND OF DOCUMENT IS THIS - asked first, because it
+                      decides everything below it. A staff claim books Dr expense
+                      / Cr person; a supplier's tax invoice books input GST and
+                      possibly TDS as well. It cannot be inferred - plenty of
+                      reimbursed restaurant bills carry a GSTIN - so the reviewer
+                      says which, before filling anything in. */}
+                  <div className="grid grid-cols-2 gap-1 rounded-xl bg-gray-100 p-1">
+                    {([
+                      { on: false, title: "Reimbursement", sub: "Pay a person back" },
+                      { on: true, title: "Vendor invoice", sub: "Input GST · TDS" },
+                    ] as const).map((t) => (
+                      <button
+                        key={t.title}
+                        type="button"
+                        onClick={() => setVendorMode(t.on)}
+                        className={`rounded-lg px-3 py-2 text-center transition ${
+                          vendorMode === t.on
+                            ? "bg-white shadow-sm"
+                            : "text-gray-500 hover:text-gray-700"
+                        }`}
+                      >
+                        <span className={`block text-sm ${vendorMode === t.on ? "font-medium text-gray-900" : ""}`}>{t.title}</span>
+                        <span className="block text-[11px] text-gray-400">{t.sub}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  {vendorMode ? (
+                    <VendorInvoicePanel
+                      seed={{
+                        billId: selected,
+                        vendor: detail.extracted?.vendor ?? null,
+                        gstin: detail.extracted?.gstin ?? null,
+                        invoiceNo: detail.extracted?.invoice_no ?? null,
+                        date: detail.extracted?.date ?? null,
+                        // Prefer the taxable value when the OCR separated it;
+                        // otherwise leave blank rather than seeding the gross,
+                        // which would silently over-claim input credit.
+                        taxable: detail.extracted?.taxable ?? null,
+                        cgst: detail.extracted?.cgst ?? null,
+                        sgst: detail.extracted?.sgst ?? null,
+                        amount: detail.extracted?.amount ?? null,
+                      }}
+                      onCancel={() => setVendorMode(false)}
+                      onDone={() => {
+                        setVendorMode(false);
+                        setSelected(null);
+                        setDetail(null);
+                        void refreshLists();
+                      }}
+                    />
+                  ) : (
+                  <>
 
                   {isDuplicate && (
                     <div className="rounded-xl border border-red-200 bg-red-50 p-4">
@@ -521,6 +532,8 @@ export function FinanceBills() {
                       </>
                     )}
                   </div>
+                  </>
+                  )}
                 </div>
               </div>
             )}

@@ -12,7 +12,17 @@ const KEY = process.env.FINANCE_ENGINE_KEY ?? "";
 
 // Only the engine's documented resource roots — this is not an open relay to
 // its built-in Jinja UI, /docs, or anything else that may exist on that host.
-const ALLOWED = new Set(["people", "bills", "batches", "ledgers", "export", "exports"]);
+//
+// ADDING AN ENGINE ROUTE MEANS ADDING IT HERE TOO. The allowlist is a closed
+// set on purpose, so a new engine endpoint is unreachable until someone decides
+// the browser may reach it. The failure is a 404 "Unknown engine route" from
+// the proxy, which looks exactly like an engine that is down - so check this
+// list first when a brand-new call 404s while the rest of the page works.
+//
+// gst / tds / vendor are Agent 2 (vendor invoices): the input-tax and TDS
+// pickers, and the read-only suggestion endpoint behind the vendor panel.
+const ALLOWED = new Set(["people", "bills", "batches", "ledgers", "export",
+                         "exports", "gst", "tds", "vendor"]);
 
 /** FINANCE / ACCOUNTS in the Office branch, or an admin. Returns the audit
  * username for X-User, or null. Middleware enforces the same rule earlier —

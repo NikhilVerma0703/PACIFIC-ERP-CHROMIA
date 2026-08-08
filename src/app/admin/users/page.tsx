@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { Shell } from "@/components/Shell";
-import { canManageUsers, currentRole, currentUser, creatableRoles, rankOf, ROLE_RANK, STATIONS } from "@/lib/rbac";
+import { canManageUsers, currentRole, currentUser, creatableRoles, rankOf, ROLE_RANK, STATIONS, type RoleName } from "@/lib/rbac";
 import { listUsersRows, type UserRow } from "@/lib/users";
 import { salesTierOf } from "@/lib/sales/access";
 import { salesDutyFor } from "@/lib/sales/session";
@@ -50,6 +50,10 @@ export default async function UsersPage() {
     ? (myBranch === "OFFICE" ? ["OFFICE"] : ["SHOP_FLOOR", "FABRICATION"])
     : [myBranch];
   const creatableUnion = [...new Set(assignable.flatMap((b) => creatableRoles(role, b)))];
+  // Per-branch breakdown so the client can filter the Role dropdown to match
+  // whichever Department is currently selected (e.g. Fabrication only offers
+  // its 3 roles, not the Shop Floor superset) — see UserAdmin.tsx.
+  const creatableByBranch: Record<string, RoleName[]> = Object.fromEntries(assignable.map((b) => [b, creatableRoles(role, b)]));
   /* eslint-disable @typescript-eslint/no-explicit-any */
   let rows: { id: string; email: string; name: string | null; role: string; station: string | null; active: boolean; branch: string; createdAt: string; createdByName: string | null }[] = [];
   let migrateNeeded = false;
@@ -84,7 +88,7 @@ export default async function UsersPage() {
             : "Create logins for roles below yours, assign operators to a machine, deactivate accounts, and reset passwords. Admins can create line managers, incharges and operators; line managers create incharges and operators; incharges create operators."}
         </p>
       </div>
-      <UserAdmin users={rows} creatable={creatableUnion} branches={assignable} stations={STATIONS} office={myBranch === "OFFICE"} showGlobal={role === "ADMIN"} myRole={role} myId={String(((await currentUser()) as any)?.id ?? "")} />
+      <UserAdmin users={rows} creatable={creatableUnion} creatableByBranch={creatableByBranch} branches={assignable} stations={STATIONS} office={myBranch === "OFFICE"} showGlobal={role === "ADMIN"} myRole={role} myId={String(((await currentUser()) as any)?.id ?? "")} />
     </Shell>
   );
 }

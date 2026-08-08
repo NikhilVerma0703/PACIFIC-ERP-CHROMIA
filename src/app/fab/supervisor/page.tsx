@@ -2,6 +2,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { PlanningBoard } from "./PlanningBoard";
+import { FabAlerts } from "@/components/fab/FabAlerts";
 
 /* -- Types ----------------------------------------------------------------- */
 interface QcSlab {
@@ -306,6 +307,7 @@ function CutQueue() {
   const [allSlabs,     setAllSlabs]     = useState<FabSlabRow[]>([]);
   const [qcSlabs,      setQcSlabs]      = useState<QcSlab[]>([]);
   const [loading,      setLoading]      = useState(true);
+  const [loadError,    setLoadError]    = useState<string | null>(null);
   const [filter,       setFilter]       = useState<"all"|"unassigned"|"ready"|"sent">("all");
   const [printerEmail, setPrinterEmail] = useState<string>(() =>
     typeof window !== "undefined" ? (localStorage.getItem("fab_printer_email") ?? "") : ""
@@ -315,6 +317,7 @@ function CutQueue() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     // Released projects are asked for explicitly. Releasing sets
     // RELEASED_TO_PRODUCTION, and the endpoint's default filter is planning-only
     // — so without this the slabs of a released project dropped out of the very
@@ -324,6 +327,25 @@ function CutQueue() {
       fetch("/api/fab/slabs"),
     ]);
     const [projects, qData] = await Promise.all([pRes.json(), qRes.json()]);
+
+    // Both endpoints return a plain { error } object (not an array) on
+    // 401/403 — checking res.ok explicitly, instead of just "is this an
+    // array", is what tells a genuinely empty queue apart from a
+    // permissions problem that would otherwise render identically as
+    // "Nothing to cut yet."
+    if (!pRes.ok) {
+      setLoadError(
+        pRes.status === 401
+          ? "Your session has expired — sign in again."
+          : typeof projects?.error === "string"
+          ? `${projects.error} (HTTP ${pRes.status}) — this account may not be set up as a Fabrication Supervisor/Manager.`
+          : `Could not load projects (HTTP ${pRes.status}).`
+      );
+      setAllSlabs([]); setQcSlabs([]); setLoading(false); return;
+    }
+    if (!qRes.ok) {
+      setLoadError(typeof qData?.error === "string" ? `${qData.error} (HTTP ${qRes.status}) loading available slabs.` : `Could not load available slabs (HTTP ${qRes.status}).`);
+    }
 
     setQcSlabs(Array.isArray(qData) ? qData : []);
 
@@ -452,6 +474,8 @@ function CutQueue() {
           </div>
         )}
       </div>
+
+      <FabAlerts loadError={loadError} noun="cut queue" />
 
       {/* Printer email settings */}
       <div className="mb-5 flex items-center gap-2 bg-teal-50 border border-teal-200 rounded-xl px-4 py-2.5 flex-wrap">

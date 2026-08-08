@@ -83,6 +83,18 @@ def unescape(s: str) -> str:
     "Caf" - which then failed to match Tally on import. Only genuine control
     characters are dropped. &amp; is undone last so "&amp;#8377;" survives as
     the literal text "&#8377;" rather than becoming a rupee sign.
+
+    INTERNAL WHITESPACE IS PRESERVED EXACTLY. 33 ledgers in PESPL's chart of
+    accounts genuinely contain double spaces - "Veena  SK", "Conti Cargo
+    Services", "GAYATHRI  R" - and Tally matches ledger names byte for byte.
+    Collapsing them produced a name Tally does not have, so the voucher failed
+    to import, and the export preview offered to CREATE the collapsed spelling
+    as a brand new ledger beside the real one. Tally never wraps these values
+    (verified: zero newlines across 2,538 NAME attributes and 2,691 PARENT
+    values), so there is no wrapping to undo here. Matching stays whitespace-
+    insensitive because normalise() collapses both sides at lookup time - that
+    is the layer that canonicalises a clerk's "Travelling  Expenses" to the
+    master spelling, not this one.
     """
     if not s:
         return ""
@@ -90,7 +102,7 @@ def unescape(s: str) -> str:
     s = (s.replace("&lt;", "<").replace("&gt;", ">")
           .replace("&quot;", '"').replace("&apos;", "'")
           .replace("&amp;", "&"))
-    return re.sub(r"\s+", " ", s).strip()
+    return s.strip()
 
 
 def _parent_of(block: str) -> str:

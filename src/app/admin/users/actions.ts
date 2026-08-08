@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { revalidatePath } from "next/cache";
-import { currentUser, currentRole, canManageUsers, creatableRoles, rankOf, ROLE_RANK, STATIONS } from "@/lib/rbac";
+import { currentUser, currentRole, canManageUsers, creatableRoles, rankOf, ROLE_RANK, STATIONS, roleLabelFor } from "@/lib/rbac";
 import { createUserRecord, setActiveRecord, resetPasswordRecord, setStationRecord, getUserRole, bumpSessionVersion, bumpAllSessionVersions } from "@/lib/users";
 import { isAdmin } from "@/lib/rbac";
 import { salesTierOf } from "@/lib/sales/access";
@@ -84,10 +84,13 @@ export async function createUser(_prev: string | undefined, fd: FormData): Promi
     : [myBranch];
   const branch = assignable.includes(branchRaw) ? branchRaw : myBranch;
   const allowed = creatableRoles(myRole, branch);
-  if (!allowed.includes(role as any)) return `You can only create: ${allowed.join(", ") || "(no roles)"}.`;
+  if (!allowed.includes(role as any)) return `You can only create: ${allowed.map((r) => roleLabelFor(r, branch)).join(", ") || "(no roles)"}.`;
 
+  // Fabrication has no shop-floor machine/station of its own — a fab
+  // employee picks their machine at /fab/session (a cookie), not via this
+  // column — so don't require (or accept) a Press/Oven/… station for them.
   let station: string | null = null;
-  if (role === "OPERATOR") {
+  if (role === "OPERATOR" && branch !== "FABRICATION") {
     if (!stationRaw || !STATIONS.includes(stationRaw as any)) return "Operators must be assigned a machine/station.";
     station = stationRaw;
   }
