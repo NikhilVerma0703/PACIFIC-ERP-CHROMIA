@@ -58,3 +58,43 @@ export function buildReleasePlan(input: ReleasePlanInput): ReleasePlan {
 
   return { slabIds, overAllocatedBy };
 }
+
+/* -- Naming the requirements that block a release -------------------------- */
+
+// The release guard used to say "7 requirement(s) have no slab" and stop there.
+// On a 198-line project that sends the supervisor hunting through the board for
+// seven rows the server has already identified. Name them.
+
+export interface UnresolvedRequirement {
+  drawingNumber?: string | null;
+  pieceLabel?: string | null;
+  description?: string | null;
+}
+
+/** How a single blocked requirement is written on screen: "D-101 piece 2B". */
+export function describeRequirement(r: UnresolvedRequirement): string {
+  const drawing = r.drawingNumber?.trim();
+  const label = r.pieceLabel?.trim() || r.description?.trim();
+  if (drawing && label) return `${drawing} piece ${label}`;
+  if (drawing) return `drawing ${drawing}`;
+  if (label) return `piece ${label}`;
+  return "an unnamed piece type";
+}
+
+/**
+ * The operator-facing message for a release blocked on missing slabs. Names the
+ * offenders rather than counting them, and caps the list so one bad import does
+ * not produce a wall of text — the count still tells them the true size.
+ */
+export function describeUnresolvedRequirements(
+  rows: UnresolvedRequirement[],
+  max = 8,
+): string {
+  const n = rows.length;
+  const head = rows.slice(0, max).map(describeRequirement);
+  const shown = head.join(", ");
+  const rest = n - head.length;
+  const list = rest > 0 ? `${shown}, and ${rest} more` : shown;
+  const noun = n === 1 ? "piece type has" : "piece types have";
+  return `${n} ${noun} no slab: ${list}. Assign a slab to each, or give its drawing a default slab.`;
+}

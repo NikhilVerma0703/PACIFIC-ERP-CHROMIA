@@ -7,6 +7,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
+import { planPieceOperations } from "@/lib/fab/pieceOperations";
 
 export async function POST() {
   const g = await fabGate("MANAGER");
@@ -88,28 +89,18 @@ export async function POST() {
               },
             });
 
-            let seq = 1;
-            await tx.fabPieceOperation.create({
-              data: { pieceId: piece.id, operationType: "CUTTING", sequence: seq++, isRequired: true, isCompleted: true, completedAt },
-            });
-            if (req.polishRequired) {
-              await tx.fabPieceOperation.create({
-                data: { pieceId: piece.id, operationType: "POLISHING", sequence: seq, isRequired: true },
-              });
-            }
-            if (req.sinkRequired) {
-              await tx.fabPieceOperation.create({
-                data: { pieceId: piece.id, operationType: "SINK_CUTTING", sequence: seq, isRequired: true },
-              });
-            }
-            if (req.sinkRequired || req.fabricationRequired) seq++;
-            if (req.fabricationRequired) {
-              await tx.fabPieceOperation.create({
-                data: { pieceId: piece.id, operationType: "FABRICATION", sequence: seq++, isRequired: true },
-              });
-            }
-            await tx.fabPieceOperation.create({
-              data: { pieceId: piece.id, operationType: "PACKAGING", sequence: seq, isRequired: true },
+            // `sequence` used to be advanced only inside the sink branch, so a
+            // polish-only piece got POLISHING = 2 and PACKAGING = 2. There is no
+            // @@unique([pieceId, sequence]), so it never threw — it just wrote a
+            // route sheet with no usable order. planPieceOperations numbers it.
+            await tx.fabPieceOperation.createMany({
+              data: planPieceOperations(req).map(op => ({
+                pieceId:       piece.id,
+                operationType: op.operationType,
+                sequence:      op.sequence,
+                isRequired:    true,
+                ...(op.operationType === "CUTTING" ? { isCompleted: true, completedAt } : {}),
+              })),
             });
             createdThisJob++;
           }

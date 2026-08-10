@@ -375,6 +375,7 @@ export function PlanningBoard() {
   const [loadError,   setLoadError]   = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice,      setNotice]      = useState<string | null>(null);
+  const [releaseWarnings, setReleaseWarnings] = useState<string[]>([]);
   const [busyKey,     setBusyKey]     = useState<string | null>(null);
   const [releasingId, setReleasingId] = useState<string | null>(null);
 
@@ -427,16 +428,34 @@ export function PlanningBoard() {
 
   async function release(project: Project) {
     if (!confirm(`Release ${project.projectCode} to production? This creates the pieces and sends them to the machine queues.`)) return;
-    setReleasingId(project.id); setActionError(null); setNotice(null);
+    setReleasingId(project.id); setActionError(null); setNotice(null); setReleaseWarnings([]);
     const res = await postJson("/api/fab/supervisor/release-project", { projectId: project.id });
-    if (!res.ok) setActionError(res.error);
-    else {
-      const warnings: string[] = Array.isArray(res.data?.warnings) ? res.data.warnings : [];
-      setNotice(
-        `${project.projectCode} released — ${res.data?.piecesCreated ?? 0} piece(s) created. ` +
-        `Assign the physical slabs in Cut Queue and send them to the cutter.` +
-        (warnings.length ? `\n\nCheck these: ${warnings.join(" ")}` : "")
+    const warnings: string[] = Array.isArray(res.data?.warnings) ? res.data.warnings : [];
+
+    if (!res.ok) {
+      // res.error is the route's own `error` string whenever it sent one — the
+      // named list of piece types with no slab, or the reason the write failed.
+      // postJson only falls back to "Could not save (error N)" when the body was
+      // not JSON at all, which now means the framework failed before the route.
+      setActionError(res.error);
+    } else if (res.data?.success !== true) {
+      // 200 without the route's own confirmation: do not paint this green. The
+      // board used to accept any 200 and report `piecesCreated ?? 0`, so an
+      // empty body read as "released — 0 piece(s) created".
+      setActionError(
+        `${project.projectCode} may not have been released — the server replied without confirming. ` +
+        `Refresh and check the project's status before releasing again.`
       );
+    } else {
+      const count = res.data.piecesCreated;
+      setNotice(
+        `${project.projectCode} released — ${count} piece(s) created. ` +
+        `Assign the physical slabs in Cut Queue and send them to the cutter.`
+      );
+      // Warnings mean the release went through but some allocation data is
+      // wrong. They are not an error and must not be buried in the green
+      // banner, where they read as part of the good news.
+      setReleaseWarnings(warnings);
     }
     setReleasingId(null);
     await load();
@@ -478,6 +497,22 @@ export function PlanningBoard() {
           <span className="whitespace-pre-line">{notice}</span>
           <button onClick={() => setNotice(null)} aria-label="Dismiss"
             className="shrink-0 font-bold text-green-400 hover:text-green-700">✕</button>
+        </div>
+      )}
+
+      {/* Released, but something in the allocation data is wrong and a human has
+          to look at it. Amber, listed one per line, and separate from the green
+          banner so it cannot be skimmed past as part of the success message. */}
+      {releaseWarnings.length > 0 && (
+        <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 flex items-start justify-between gap-4">
+          <div>
+            <b>Released, but check {releaseWarnings.length} piece type{releaseWarnings.length !== 1 ? "s" : ""}:</b>
+            <ul className="mt-1 list-disc pl-5 space-y-0.5">
+              {releaseWarnings.map((w, i) => <li key={i}>{w}</li>)}
+            </ul>
+          </div>
+          <button onClick={() => setReleaseWarnings([])} aria-label="Dismiss"
+            className="shrink-0 font-bold text-amber-400 hover:text-amber-700">✕</button>
         </div>
       )}
 

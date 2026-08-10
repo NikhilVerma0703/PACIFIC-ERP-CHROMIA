@@ -20,6 +20,15 @@ export interface PostResult {
   data: any;
 }
 
+/** True unless the response carries a body that is definitely not JSON. An
+ *  empty 204/205 has no content-type and counts as fine; HTML never does. */
+export function isJsonBody(res: Pick<Response, "status" | "headers">): boolean {
+  if (res.status === 204 || res.status === 205) return true;
+  const ctype = res.headers.get("content-type");
+  if (!ctype) return true; // no claim made — leave it to the JSON parse
+  return ctype.includes("json");
+}
+
 export async function postJson(url: string, body: unknown): Promise<PostResult> {
   let res: Response;
   try {
@@ -36,6 +45,22 @@ export async function postJson(url: string, body: unknown): Promise<PostResult> 
 
   // A body is not guaranteed: 500s from the framework come back as HTML.
   const data = await res.json().catch(() => null);
+
+  // An expired session does NOT reach the route. middleware.ts:36-40 redirects
+  // every unauthenticated request — including /api/* — to /login, and fetch
+  // follows redirects by default, so the browser gets 200 + the login page's
+  // HTML. Without this check `res.ok` is true, `data` is null, and the caller
+  // paints a success banner for work that never happened ("released — 0
+  // piece(s) created"). A 204 has no content-type and is untouched by this.
+  if (res.ok && !isJsonBody(res)) {
+    return {
+      ok: false,
+      status: 401,
+      error: "Your session has ended — sign in again in another tab, then retry. Nothing was saved.",
+      data: null,
+    };
+  }
+
   if (res.ok) return { ok: true, status: res.status, error: null, data };
 
   const message =
@@ -55,6 +80,10 @@ export async function getJson<T>(url: string): Promise<{ ok: boolean; error: str
   try {
     const res = await fetch(url);
     if (!res.ok) return { ok: false, error: `Could not load (error ${res.status}).`, data: [] };
+    // Same expired-session trap as postJson: the login page arrives as a 200.
+    if (!isJsonBody(res)) {
+      return { ok: false, error: "Your session has ended — sign in again to see this.", data: [] };
+    }
     const j = await res.json();
     return { ok: true, error: null, data: Array.isArray(j) ? j : [] };
   } catch {
