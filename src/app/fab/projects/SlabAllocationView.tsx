@@ -1,14 +1,6 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
-
-interface QcSlab {
-  pacificQcId:  string;
-  slabCode:     string;
-  colour:       string | null;
-  thicknessMm:  number | null;
-  qualityGrade: string | null;
-  batchKey:     string | null;
-}
+import { useQcSlabs } from "@/lib/fab/qcSlabs";
 
 interface SlabPiece {
   requirementId: string;
@@ -75,21 +67,19 @@ function WastageBadge({ pct }: { pct: number | null }) {
 
 function QcSlabPicker({
   slab,
-  qcSlabs,
   onAssign,
 }: {
   slab:     SlabRow;
-  qcSlabs:  QcSlab[];
   onAssign: (fabSlabId: string, pacificQcId: string | null) => Promise<void>;
 }) {
   const [open,   setOpen]   = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // 3cm pieces -> only 30mm slabs; 2cm or unknown -> all slabs
-  const filtered = qcSlabs.filter(q => {
-    if (slab.thicknessBucket === 3) return q.thicknessMm === 30;
-    return true;
-  });
+  // 3cm pieces -> only 30mm slabs; 2cm or unknown -> all slabs. Filtered and
+  // capped in SQL: this list had no search box at all, so once the endpoint
+  // started paging there had to be a way to reach a slab past the first page.
+  const { search, setSearch, slabs: filtered, loading, error, capped } =
+    useQcSlabs(open, slab.thicknessBucket === 3 ? 30 : null);
 
   async function pick(qcId: string | null) {
     setSaving(true);
@@ -114,7 +104,17 @@ function QcSlabPicker({
         <div className="absolute right-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-xl shadow-xl w-80 max-h-72 overflow-y-auto">
           <div className="px-3 py-2 border-b border-gray-100 text-[11px] text-gray-400 font-semibold uppercase tracking-wide">
             {slab.thicknessBucket === 3 ? "3cm slabs only" : "All available slabs"}
-            {" "}&mdash; {filtered.length} available
+            {" "}&mdash; {capped ? `${filtered.length}+` : filtered.length} available
+          </div>
+          <div className="px-3 py-2 border-b border-gray-100">
+            <input
+              autoFocus
+              type="text"
+              placeholder="Search slab number or colour..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="w-full text-xs border border-gray-200 rounded-lg px-3 py-2 outline-none focus:border-indigo-300 focus:ring-1 focus:ring-indigo-100"
+            />
           </div>
           {slab.pacificQcId && (
             <button
@@ -123,7 +123,12 @@ function QcSlabPicker({
               Clear assignment
             </button>
           )}
-          {filtered.length === 0 && (
+          {/* An empty list and a failed lookup must not look the same. */}
+          {error && <p className="px-3 py-3 text-xs text-red-600">{error}</p>}
+          {loading && !error && (
+            <p className="px-3 py-3 text-xs text-gray-400">Searching...</p>
+          )}
+          {!loading && !error && filtered.length === 0 && (
             <p className="px-3 py-3 text-xs text-gray-400">No matching slabs available</p>
           )}
           {filtered.map(q => (
@@ -160,19 +165,20 @@ export function SlabAllocationView({
   canApprove: boolean;
 }) {
   const [slabs,     setSlabs]     = useState<SlabRow[]>([]);
-  const [qcSlabs,   setQcSlabs]   = useState<QcSlab[]>([]);
   const [loading,   setLoading]   = useState(true);
   const [approving, setApproving] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [slabRes, qcRes] = await Promise.all([
-      fetch(`/api/fab/slab-allocation?projectId=${projectId}`),
-      fetch("/api/fab/slabs"),
-    ]);
-    const [slabData, qcData] = await Promise.all([slabRes.json(), qcRes.json()]);
+    // Only the allocation rows. The available-slab list belongs to each picker
+    // now (useQcSlabs, fetched on open) — this call used to drag the entire QC
+    // history down before the view could render.
+    const slabRes = await fetch(`/api/fab/slab-allocation?projectId=${projectId}`);
+    // .catch(() => null): a non-JSON platform error (gateway timeout, HTML 500)
+    // rejected here and escaped load(), so setLoading(false) never ran and the
+    // view sat on its spinner for good.
+    const slabData = await slabRes.json().catch(() => null);
     setSlabs(Array.isArray(slabData) ? slabData : []);
-    setQcSlabs(Array.isArray(qcData)  ? qcData  : []);
     setLoading(false);
   }, [projectId]);
 
@@ -287,7 +293,6 @@ export function SlabAllocationView({
                     {canApprove && (
                       <QcSlabPicker
                         slab={slab}
-                        qcSlabs={qcSlabs}
                         onAssign={assignQcSlab}
                       />
                     )}

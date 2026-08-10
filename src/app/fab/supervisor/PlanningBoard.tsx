@@ -18,16 +18,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { postJson, getJson } from "@/lib/fab/postJson";
 import { FabAlerts } from "@/components/fab/FabAlerts";
+import { useQcSlabs } from "@/lib/fab/qcSlabs";
 
 /* -- Types ----------------------------------------------------------------- */
-interface QcSlab {
-  pacificQcId:  string;
-  slabCode:     string;
-  colour:       string | null;
-  thicknessMm:  number | null;
-  qualityGrade: string | null;
-  batchKey:     string | null;
-}
 interface Slab {
   id: string; slabCode: string; colour: string | null; pacificQcId: string | null;
 }
@@ -110,24 +103,23 @@ async function deleteJson(url: string): Promise<{ ok: boolean; error: string | n
 }
 
 /* -- Slab picker ----------------------------------------------------------- */
-function SlabPicker({ current, thicknessBucket, qcSlabs, busy, onPick, onClear, compact }: {
+function SlabPicker({ current, thicknessBucket, busy, onPick, onClear, compact }: {
   current:         Slab | null;
   thicknessBucket: 2 | 3 | null;
-  qcSlabs:         QcSlab[];
   busy:            boolean;
   onPick:          (qcId: string) => Promise<void>;
   onClear:         (() => Promise<void>) | null;
   compact?:        boolean;
 }) {
-  const [open,   setOpen]   = useState(false);
-  const [search, setSearch] = useState("");
+  const [open, setOpen] = useState(false);
 
-  const filtered = qcSlabs.filter(q => {
-    const matchThick  = thicknessBucket === 3 ? q.thicknessMm === 30 : true;
-    const matchSearch = !search || [q.slabCode, q.colour ?? "", q.batchKey ?? ""]
-      .some(v => v.toLowerCase().includes(search.toLowerCase()));
-    return matchThick && matchSearch;
-  }).slice(0, 200);
+  // This used to be a client-side .slice(0, 200) over the whole QC history,
+  // ordered by ascending slab number — so with an empty search box it offered
+  // slabs 1..200, the oldest stock in the building, and nothing else was
+  // reachable without typing. The cap is server-side now and ordered newest
+  // first, and the search reaches every slab rather than only the sliced 200.
+  const { search, setSearch, slabs: filtered, loading, error, capped } =
+    useQcSlabs(open, thicknessBucket === 3 ? 30 : null);
 
   return (
     <div className="relative">
@@ -148,7 +140,9 @@ function SlabPicker({ current, thicknessBucket, qcSlabs, busy, onPick, onClear, 
             <div className="px-3 py-2 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
               <span className="text-[11px] font-bold text-gray-600 uppercase tracking-wide">
                 {thicknessBucket === 3 ? "3cm slabs only" : "All slabs"}
-                <span className="ml-1 font-normal text-gray-400">({filtered.length})</span>
+                <span className="ml-1 font-normal text-gray-400">
+                  ({capped ? `${filtered.length}+` : filtered.length})
+                </span>
               </span>
               <button onClick={() => { setOpen(false); setSearch(""); }}
                 className="text-gray-400 hover:text-gray-600 text-lg leading-none">&times;</button>
@@ -171,7 +165,12 @@ function SlabPicker({ current, thicknessBucket, qcSlabs, busy, onPick, onClear, 
                   Clear this slab
                 </button>
               )}
-              {filtered.length === 0 && (
+              {/* An empty list and a failed lookup must not look the same. */}
+              {error && <p className="px-4 py-4 text-xs text-red-600">{error}</p>}
+              {loading && !error && (
+                <p className="px-4 py-4 text-xs text-gray-400 italic">Searching...</p>
+              )}
+              {!loading && !error && filtered.length === 0 && (
                 <p className="px-4 py-4 text-xs text-gray-400 italic">No matching slabs</p>
               )}
               {filtered.map(q => (
@@ -203,9 +202,8 @@ function SlabPicker({ current, thicknessBucket, qcSlabs, busy, onPick, onClear, 
 }
 
 /* -- Project card ---------------------------------------------------------- */
-function ProjectCard({ project, qcSlabs, busyKey, onAssignRequirement, onClearRequirement, onAssignDrawing, onRelease, releasing }: {
+function ProjectCard({ project, busyKey, onAssignRequirement, onClearRequirement, onAssignDrawing, onRelease, releasing }: {
   project:             Project;
-  qcSlabs:             QcSlab[];
   busyKey:             string | null;
   onAssignRequirement: (req: Requirement, qcId: string) => Promise<void>;
   onClearRequirement:  (req: Requirement) => Promise<void>;
@@ -278,7 +276,6 @@ function ProjectCard({ project, qcSlabs, busyKey, onAssignRequirement, onClearRe
                     <SlabPicker
                       current={drawing.defaultSlab}
                       thicknessBucket={drawingBucket}
-                      qcSlabs={qcSlabs}
                       busy={busyKey === `d:${drawing.id}`}
                       onPick={qcId => onAssignDrawing(drawing, qcId)}
                       onClear={null}
@@ -351,7 +348,6 @@ function ProjectCard({ project, qcSlabs, busyKey, onAssignRequirement, onClearRe
                               compact
                               current={req.allocations.length === 1 ? req.allocations[0].slab : null}
                               thicknessBucket={bucket}
-                              qcSlabs={qcSlabs}
                               busy={busyKey === `r:${req.id}`}
                               onPick={qcId => onAssignRequirement(req, qcId)}
                               onClear={req.allocations.length ? () => onClearRequirement(req) : null}
@@ -375,7 +371,6 @@ function ProjectCard({ project, qcSlabs, busyKey, onAssignRequirement, onClearRe
 /* -- Board ----------------------------------------------------------------- */
 export function PlanningBoard() {
   const [projects,    setProjects]    = useState<Project[]>([]);
-  const [qcSlabs,     setQcSlabs]     = useState<QcSlab[]>([]);
   const [loading,     setLoading]     = useState(true);
   const [loadError,   setLoadError]   = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -385,13 +380,12 @@ export function PlanningBoard() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [p, q] = await Promise.all([
-      getJson<Project>("/api/fab/supervisor/projects"),
-      getJson<QcSlab>("/api/fab/slabs"),
-    ]);
+    // Only the projects. The available-slab list is fetched per picker, on
+    // open — pulling the whole QC history up front is what made the board slow
+    // to appear and, past Vercel's response cap, fail outright.
+    const p = await getJson<Project>("/api/fab/supervisor/projects");
     setProjects(p.data);
-    setQcSlabs(q.data);
-    setLoadError(p.error ?? q.error);
+    setLoadError(p.error);
     setLoading(false);
   }, []);
 
@@ -497,7 +491,6 @@ export function PlanningBoard() {
             <ProjectCard
               key={p.id}
               project={p}
-              qcSlabs={qcSlabs}
               busyKey={busyKey}
               releasing={releasingId === p.id}
               onAssignRequirement={assignRequirement}

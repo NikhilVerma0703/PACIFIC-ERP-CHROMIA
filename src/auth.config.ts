@@ -17,6 +17,31 @@ export const authConfig = {
       if (isPublic) return true;
       if (!isLoggedIn) return false;
 
+      // Fabrication staff are routed ENTIRELY by middleware.ts (the branch
+      // allowlist). They must escape before the role caps below, because those
+      // caps are Shop Floor rules that know nothing about branches — and this
+      // callback outranks middleware.ts rather than running alongside it.
+      //
+      // Auth.js only reaches the user middleware when `authorized` returns a
+      // boolean: node_modules/next-auth/lib/index.js takes `if (authorized
+      // instanceof Response) { response = authorized }` and never evaluates the
+      // `else if (userMiddlewareOrRoute)` branch. So a Response returned here
+      // silently replaces every rule in middleware.ts for that request.
+      //
+      // Without this, a FABRICATION OPERATOR asking for /fab/cutting was capped
+      // to /entry by the role check below, and middleware — had it run — bounces
+      // /entry straight back to /fab/cutting. Two gates in two files, each
+      // redirecting to the other's forbidden page: a closed loop that ends in
+      // ERR_TOO_MANY_REDIRECTS the moment the operator signs in. 7301da7 dropped
+      // the `if (fabRole) return true` that used to prevent exactly this when it
+      // folded fabRole into branch+role, and never replaced it.
+      //
+      // Gate on BRANCH, not role: fab LINE_MANAGER and INCHARGE work today only
+      // because their roles happen to be absent from the caps below, so a future
+      // capped role in Fabrication would reopen the same loop.
+      const branch = (auth?.user as { branch?: string } | undefined)?.branch;
+      if (branch === "FABRICATION") return true;
+
       const role = (auth?.user as { role?: string } | undefined)?.role;
       if (role === "STORE") {
         const p = nextUrl.pathname;

@@ -3,16 +3,9 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { PlanningBoard } from "./PlanningBoard";
 import { FabAlerts } from "@/components/fab/FabAlerts";
+import { useQcSlabs } from "@/lib/fab/qcSlabs";
 
 /* -- Types ----------------------------------------------------------------- */
-interface QcSlab {
-  pacificQcId:  string;
-  slabCode:     string;
-  colour:       string | null;
-  thicknessMm:  number | null;
-  qualityGrade: string | null;
-  batchKey:     string | null;
-}
 interface SlabPiece {
   requirementId: string;
   drawingNumber: string;
@@ -59,16 +52,20 @@ function ThickChip({ bucket }: { bucket: 2 | 3 | null }) {
 }
 
 /* -- Slab picker (portal-based) -------------------------------------------- */
-function SlabPicker({ slab, qcSlabs, onAssign }: {
+function SlabPicker({ slab, onAssign }: {
   slab:     FabSlabRow;
-  qcSlabs:  QcSlab[];
   onAssign: (fabSlabId: string, qcId: string | null) => Promise<void>;
 }) {
   const [open,   setOpen]   = useState(false);
   const [saving, setSaving] = useState(false);
-  const [search, setSearch] = useState("");
   const [rect,   setRect]   = useState<DOMRect | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
+
+  // 3cm pieces take 30mm slabs only; 2cm and unknown take anything. The filter
+  // runs in SQL now, so the list arrives already narrowed rather than being cut
+  // down from the whole QC history in the browser.
+  const { search, setSearch, slabs: filtered, loading, error, capped } =
+    useQcSlabs(open, slab.thicknessBucket === 3 ? 30 : null);
 
   function openPicker() {
     if (btnRef.current) setRect(btnRef.current.getBoundingClientRect());
@@ -82,13 +79,6 @@ function SlabPicker({ slab, qcSlabs, onAssign }: {
     setSaving(false);
     close();
   }
-
-  const filtered = qcSlabs.filter(q => {
-    const matchThick  = slab.thicknessBucket === 3 ? q.thicknessMm === 30 : true;
-    const matchSearch = !search || [q.slabCode, q.colour ?? "", q.batchKey ?? ""]
-      .some(v => v.toLowerCase().includes(search.toLowerCase()));
-    return matchThick && matchSearch;
-  });
 
   const panelStyle: React.CSSProperties = rect ? {
     position: "fixed",
@@ -118,7 +108,11 @@ function SlabPicker({ slab, qcSlabs, onAssign }: {
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50">
               <span className="text-xs font-bold text-gray-700">
                 {slab.thicknessBucket === 3 ? "3cm slabs only" : "All slabs"}
-                <span className="ml-1 text-gray-400 font-normal">({filtered.length} available)</span>
+                {/* "200+" not "200": a full page means the newest 200 matched, not
+                    that the factory holds 200 slabs. The old count said "(200)". */}
+                <span className="ml-1 text-gray-400 font-normal">
+                  ({capped ? `${filtered.length}+` : filtered.length} available)
+                </span>
               </span>
               <button onClick={close} className="text-gray-400 hover:text-gray-600 text-lg leading-none">&times;</button>
             </div>
@@ -139,7 +133,14 @@ function SlabPicker({ slab, qcSlabs, onAssign }: {
                   Clear assignment
                 </button>
               )}
-              {filtered.length === 0 && (
+              {/* "Nothing matched" and "the lookup failed" must not render as the
+                  same empty list — the supervisor would go looking for a slab
+                  that is actually there. */}
+              {error && <p className="px-4 py-4 text-xs text-red-600">{error}</p>}
+              {loading && !error && (
+                <p className="px-4 py-4 text-xs text-gray-400 italic">Searching...</p>
+              )}
+              {!loading && !error && filtered.length === 0 && (
                 <p className="px-4 py-4 text-xs text-gray-400 italic">No matching slabs</p>
               )}
               {filtered.map(q => (
@@ -170,9 +171,8 @@ function SlabPicker({ slab, qcSlabs, onAssign }: {
 }
 
 /* -- Slab card ------------------------------------------------------------- */
-function SlabCard({ slab, qcSlabs, onAssign, onSend, printerEmail }: {
+function SlabCard({ slab, onAssign, onSend, printerEmail }: {
   slab:         FabSlabRow;
-  qcSlabs:      QcSlab[];
   onAssign:     (fabSlabId: string, qcId: string | null) => Promise<void>;
   onSend:       (slabId: string) => Promise<void>;
   printerEmail: string;
@@ -259,7 +259,7 @@ function SlabCard({ slab, qcSlabs, onAssign, onSend, printerEmail }: {
             Mail Labels
           </button>
           {!isSent && (
-            <SlabPicker slab={slab} qcSlabs={qcSlabs} onAssign={onAssign} />
+            <SlabPicker slab={slab} onAssign={onAssign} />
           )}
           {isAssigned && !isSent && (
             <button
@@ -305,7 +305,6 @@ function SlabCard({ slab, qcSlabs, onAssign, onSend, printerEmail }: {
 /* -- Cut queue ------------------------------------------------------------- */
 function CutQueue() {
   const [allSlabs,     setAllSlabs]     = useState<FabSlabRow[]>([]);
-  const [qcSlabs,      setQcSlabs]      = useState<QcSlab[]>([]);
   const [loading,      setLoading]      = useState(true);
   const [loadError,    setLoadError]    = useState<string | null>(null);
   const [filter,       setFilter]       = useState<"all"|"unassigned"|"ready"|"sent">("all");
@@ -322,17 +321,24 @@ function CutQueue() {
     // RELEASED_TO_PRODUCTION, and the endpoint's default filter is planning-only
     // — so without this the slabs of a released project dropped out of the very
     // queue that is meant to send them to the cutter.
-    const [pRes, qRes] = await Promise.all([
-      fetch("/api/fab/supervisor/projects?statuses=PLANNING,ALLOCATED,RELEASED_TO_PRODUCTION"),
-      fetch("/api/fab/slabs"),
-    ]);
-    const [projects, qData] = await Promise.all([pRes.json(), qRes.json()]);
+    //
+    // The available-slab list is NOT fetched here any more. Each SlabPicker asks
+    // for its own page when it is opened (useQcSlabs) — this call used to pull
+    // the entire QC history down before the queue could render at all.
+    const pRes = await fetch("/api/fab/supervisor/projects?statuses=PLANNING,ALLOCATED,RELEASED_TO_PRODUCTION");
 
-    // Both endpoints return a plain { error } object (not an array) on
-    // 401/403 — checking res.ok explicitly, instead of just "is this an
-    // array", is what tells a genuinely empty queue apart from a
-    // permissions problem that would otherwise render identically as
-    // "Nothing to cut yet."
+    // .catch(() => null), not a bare .json(): a platform-level failure (gateway
+    // timeout, an HTML 500 from the host) has no JSON body, and the rejection
+    // used to escape load() before the res.ok branch below could run. The
+    // useEffect never caught it, so setLoading(false) never ran and the tab sat
+    // on "Loading..." forever — the res.ok handling written for exactly this
+    // case was unreachable in exactly this case.
+    const projects = await pRes.json().catch(() => null);
+
+    // The endpoint returns a plain { error } object (not an array) on 401/403 —
+    // checking res.ok explicitly, instead of just "is this an array", is what
+    // tells a genuinely empty queue apart from a permissions problem that would
+    // otherwise render identically as "Nothing to cut yet."
     if (!pRes.ok) {
       setLoadError(
         pRes.status === 401
@@ -341,13 +347,8 @@ function CutQueue() {
           ? `${projects.error} (HTTP ${pRes.status}) — this account may not be set up as a Fabrication Supervisor/Manager.`
           : `Could not load projects (HTTP ${pRes.status}).`
       );
-      setAllSlabs([]); setQcSlabs([]); setLoading(false); return;
+      setAllSlabs([]); setLoading(false); return;
     }
-    if (!qRes.ok) {
-      setLoadError(typeof qData?.error === "string" ? `${qData.error} (HTTP ${qRes.status}) loading available slabs.` : `Could not load available slabs (HTTP ${qRes.status}).`);
-    }
-
-    setQcSlabs(Array.isArray(qData) ? qData : []);
 
     if (!Array.isArray(projects) || !projects.length) {
       setAllSlabs([]); setLoading(false); return;
@@ -356,7 +357,9 @@ function CutQueue() {
     const results = await Promise.all(
       projects.map(async (p: Project) => {
         const res  = await fetch(`/api/fab/slab-allocation?projectId=${p.id}`);
-        const data = await res.json();
+        // Same reason as the projects call above: one project replying with a
+        // non-JSON error must not strand the whole tab on the spinner.
+        const data = await res.json().catch(() => null);
         return (Array.isArray(data) ? data : []).map((s: any) => ({
           ...s, projectId: p.id, projectCode: p.projectCode, customerName: p.customerName,
         }));
@@ -551,7 +554,6 @@ function CutQueue() {
             <SlabCard
               key={slab.slabId}
               slab={slab}
-              qcSlabs={qcSlabs}
               onAssign={assignQcSlab}
               onSend={sendToCutter}
               printerEmail={printerEmail}
