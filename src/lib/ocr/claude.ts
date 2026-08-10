@@ -31,6 +31,21 @@ export class ClaudeOcrProvider implements OcrProvider {
     if (!key) throw new Error("ANTHROPIC_API_KEY is not set — cannot use the Claude OCR provider.");
 
     const b64 = Buffer.from(input.data).toString("base64");
+
+    // A single-page PDF is sent AS a PDF, not as an image.
+    //
+    // types.ts says "PDFs must be rasterised before this point", and that is
+    // still true of every other provider — but there is nothing on Vercel to
+    // rasterise with. Rendering a PDF page to pixels needs a canvas, which
+    // means a native module, which is exactly what the in-app port exists to
+    // avoid. Claude reads PDF bytes natively through a `document` block, so the
+    // page goes over as-is, text layer and all. Google Vision cannot, and the
+    // pipeline routes those pages to needs_reupload rather than pretending.
+    const isPdf = input.mimeType === "application/pdf";
+    const source = { type: "base64", media_type: input.mimeType, data: b64 };
+    const attachment = isPdf
+      ? { type: "document", source }
+      : { type: "image", source };
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -50,7 +65,7 @@ export class ClaudeOcrProvider implements OcrProvider {
         messages: [{
           role: "user",
           content: [
-            { type: "image", source: { type: "base64", media_type: input.mimeType, data: b64 } },
+            attachment,
             { type: "text", text: PROMPT },
           ],
         }],

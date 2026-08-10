@@ -13,7 +13,8 @@ export default async function FinancePage() {
   const u = await currentUser();
   const role = (u as { role?: string } | null)?.role ?? "";
   const branch = ((u as { branch?: string } | null)?.branch as string | undefined) ?? "SHOP_FLOOR";
-  const ok = role === "ADMIN" || (branch === "OFFICE" && (role === "FINANCE" || role === "ACCOUNTS"));
+  const admin = role === "ADMIN";
+  const ok = admin || (branch === "OFFICE" && (role === "FINANCE" || role === "ACCOUNTS"));
   if (!ok) redirect("/");
 
   return (
@@ -26,7 +27,10 @@ export default async function FinancePage() {
           every correction — no bill reaches Tally without a human confirming it.
         </p>
       </div>
-      <FinanceBills />
+      {/* Only admins may load the chart of accounts, so only they see the card.
+          The route re-checks with isAdmin() — this prop decides what is drawn,
+          never what is permitted. */}
+      <FinanceBills isAdmin={admin} />
     </Shell>
   );
 }

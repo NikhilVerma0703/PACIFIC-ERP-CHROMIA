@@ -8,6 +8,7 @@ import { Card, Badge, Empty } from "@/components/ui";
 import { SearchableSelect } from "@/components/robo/SearchableSelect";
 import { VendorInvoicePanel } from "@/components/office/VendorInvoicePanel";
 import { LedgerPicker } from "@/components/office/LedgerPicker";
+import { LedgerMasterCard } from "@/components/office/LedgerMasterCard";
 
 const API = "/api/office/finance";
 
@@ -42,11 +43,38 @@ interface BillRow {
 }
 interface BatchState {
   id: string; person: string; total: number; done: number; finished: boolean; sum: number;
-  bills: { id: number; status: string; vendor: string | null; amount: number | null }[];
+  bills: {
+    id: number; status: string; vendor: string | null; amount: number | null;
+    /** The pipeline parks its "waiting for the browser" note here. See
+     *  needsBrowserOcr below - it is the fallback signal when the batch
+     *  response carries no explicit flag. */
+    error?: string | null;
+  }[];
+  /**
+   * True when the SERVER cannot run OCR — OCR_PROVIDER=tesseract, so
+   * serverProvider() returns null and processBill leaves every page `queued`
+   * (pipeline.ts). The browser then has to do the reading.
+   *
+   * GET /batches/{id} sends this (it is `!ocr.server_side`). Still optional in
+   * the type, and needsBrowserOcr() keeps its error-note fallback, only so a
+   * browser holding this page against an older deployment of the route degrades
+   * to the old behaviour instead of silently never starting.
+   */
+  browser_ocr?: boolean;
 }
 interface Suggestion { ledger: string; score: number; band: string; reasons?: string[] }
 interface BillDetail {
   person: string; status: string; image_url: string;
+  /**
+   * The stored page's mime, straight from `fin_bill_image.mime`.
+   *
+   * A PDF page is NEVER rasterised (pipeline.ts: rendering needs a canvas,
+   * which needs a native module), so this is "application/pdf" for any page
+   * split out of a PDF and an <img> cannot show it. GET /bills/{id} sends the
+   * field; the <img> onError swap to <object> stays as the backstop for an
+   * older route and for a mime that was recorded wrongly at ingest.
+   */
+  image_mime?: string | null;
   ocr: { confidence: number; text: string | null; reasons: string[] };
   // NULLABLE. The engine sends `extracted: null` for a bill with no extraction
   // row - OCR failed, the page was unreadable, or it is still processing. The
@@ -78,9 +106,27 @@ async function j<T>(url: string, init?: RequestInit): Promise<T> {
   return r.json();
 }
 
-export function FinanceBills() {
+/**
+ * True when the batch still needs the BROWSER to read its pages.
+ *
+ * Preferred signal is the explicit flag; the fallback exists because the batch
+ * route does not send it yet. A bill parked by pipeline.ts in tesseract mode is
+ * `queued` and carries "Waiting for browser OCR…" in `error`, which is a far
+ * safer tell than "queued for a while" — a page genuinely mid-OCR on the server
+ * is also queued, and kicking off a browser transcription for it would produce
+ * two extractions for one receipt.
+ */
+function needsBrowserOcr(b: BatchState): boolean {
+  if (typeof b.browser_ocr === "boolean") return b.browser_ocr;
+  return b.bills.some((x) => x.status === "queued" && /browser ocr/i.test(x.error ?? ""));
+}
+
+export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
   const [people, setPeople] = useState<{ id: string; name: string }[]>([]);
   const [engineDown, setEngineDown] = useState<string>("");
+  /** Nothing in the claimant list means no ledger master. Distinguished from
+   *  "not loaded yet" so the banner cannot flash on a slow first paint. */
+  const [peopleLoaded, setPeopleLoaded] = useState(false);
 
   // upload
   const [person, setPerson] = useState("");
@@ -90,6 +136,20 @@ export function FinanceBills() {
   const [uploadError, setUploadError] = useState("");
   const [batch, setBatch] = useState<BatchState | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+
+  // browser OCR (OCR_PROVIDER=tesseract)
+  const [browserOcr, setBrowserOcr] = useState({ done: 0, total: 0, current: 0, note: "" });
+  /** One transcription at a time. The batch poll fires every 1.5s and this
+   *  effect keys off `batch`, so without the guard a 20-second Tesseract run
+   *  would be started a dozen times over on the same page. */
+  const ocrBusy = useRef(false);
+  /** Bills this browser already tried and could not finish. Retrying them on
+   *  every poll would spin the tab forever on the one page that cannot be read. */
+  const ocrFailed = useRef<Set<number>>(new Set());
+  /** Set when the handoff itself is broken (no /ocr-result endpoint, or the
+   *  server rejected the transcription). Stops the loop dead rather than
+   *  re-reading every page in the batch against an endpoint that is not there. */
+  const [ocrStopped, setOcrStopped] = useState("");
 
   // queue + review
   const [queue, setQueue] = useState<BillRow[]>([]);
@@ -103,6 +163,9 @@ export function FinanceBills() {
   // bill's choice can never carry over onto the next one.
   const [vendorMode, setVendorMode] = useState(false);
   const [reason, setReason] = useState("");
+  /** Render the page with <object> instead of <img>. Set from image_mime when
+   *  the detail route sends it, or by the <img> failing on PDF bytes. */
+  const [pdfView, setPdfView] = useState(false);
 
   // export
   const [approved, setApproved] = useState<BillRow[]>([]);
@@ -135,6 +198,7 @@ export function FinanceBills() {
       j<{ people: string[]; total: number; truncated?: boolean }>(`${API}/people?limit=5000`)
       .then((d) => {
         setPeople(d.people.map((name) => ({ id: name, name })));
+        setPeopleLoaded(true);
         if (d.truncated) setEngineDown(`Claimant list is incomplete — showing ${d.people.length} of ${d.total} names.`);
       })
       .catch((e) => setEngineDown((e as Error).message));
@@ -154,6 +218,122 @@ export function FinanceBills() {
     return () => window.clearInterval(t);
   }, [batch, refreshLists]);
 
+  // ---- browser OCR (OCR_PROVIDER=tesseract) --------------------------------
+  //
+  // With no server-side provider, processBill parks every page as `queued` and
+  // says so; the reading has to happen here. That is not a fallback, it is the
+  // default configuration: WASM Tesseract on the clerk's laptop is free, needs
+  // no key, and the bill never leaves the machine — which for financial
+  // documents is the better answer, not merely the cheaper one.
+  //
+  // ONE PAGE AT A TIME, deliberately. Each run holds a WASM instance and a web
+  // worker; three in parallel on a ten-page stack locks the tab up, and the
+  // clerk is watching this screen. Sequential also means the batch poll's
+  // progress bar advances page by page instead of jumping at the end.
+  useEffect(() => {
+    if (!batch || batch.finished || ocrStopped) return;
+    if (!needsBrowserOcr(batch)) return;
+    if (ocrBusy.current) return;
+
+    const pending = batch.bills
+      .filter((b) => b.status === "queued" && !ocrFailed.current.has(b.id))
+      .map((b) => b.id);
+    if (!pending.length) return;
+
+    ocrBusy.current = true;
+    void (async () => {
+      // Loaded on demand: the WASM engine and its language data must not be in
+      // the bundle for the (majority) case where the server reads the bills.
+      const { TesseractBrowserProvider } = await import("@/lib/ocr/tesseract");
+      const engine = new TesseractBrowserProvider();
+
+      for (let i = 0; i < pending.length; i++) {
+        const id = pending[i];
+        setBrowserOcr((p) => ({ ...p, done: i, total: pending.length, current: id }));
+        try {
+          const res = await fetch(`${API}/bills/${id}/image`, { cache: "no-store" });
+          if (!res.ok) throw new Error(`page image unavailable (${res.status})`);
+          const blob = await res.blob();
+
+          // A PDF page that reached here has no text layer and no server
+          // provider to read it. Tesseract takes pixels, and there is no
+          // rasteriser on either side of the wire — so say so once and move on
+          // rather than failing silently per page.
+          if (blob.type === "application/pdf") {
+            ocrFailed.current.add(id);
+            setBrowserOcr((p) => ({
+              ...p,
+              note: "Some pages are PDFs with no text layer. In-browser reading cannot open those — set OCR_PROVIDER=claude, or re-upload them as photos.",
+            }));
+            continue;
+          }
+
+          const data = new Uint8Array(await blob.arrayBuffer());
+          const r = await engine.run({
+            data,
+            mimeType: blob.type || "image/jpeg",
+            // The handwriting hint already routed such pages to manual_entry at
+            // register, so nothing reaching here was flagged.
+            handwritten: false,
+          });
+
+          // CONTRACT — POST /bills/{id}/ocr-result
+          //   text:       the transcription
+          //   confidence: 0..1 — the OcrResult scale, sent through UNSCALED —
+          //               or null when the engine scored nothing.
+          //   words:      the engine's own word count. Better than counting
+          //               whitespace runs in `text`, which is the server's
+          //               fallback when this is absent.
+          //   engine:     recorded as ocr_variant / ocr_engine.
+          //
+          // THE SCALE IS 0..1 AND THE SERVER ENFORCES IT (400 outside the
+          // range). fin_bill.ocr_confidence stores a percentage and every
+          // QUALITY threshold is expressed in one, but that conversion belongs
+          // to applyBrowserOcr(), which multiplies by 100 on the way in. This
+          // used to post `meanConfidence * 100`, which meant every page a
+          // browser could actually read — anything scoring above 0.01 — came
+          // back 400 and was added to ocrFailed, permanently disabling the
+          // in-browser path for the whole session.
+          //
+          // `lines` is deliberately NOT sent: OcrResult.lines is toLines(text)
+          // and the server recomputes exactly that with its own splitLines, so
+          // the field was a second copy of the transcription on the wire that
+          // no handler read.
+          const post = await fetch(`${API}/bills/${id}/ocr-result`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              text: r.text,
+              confidence: r.meanConfidence,
+              words: r.words.length || undefined,
+              engine: r.engine,
+            }),
+          });
+          if (!post.ok) {
+            const d = await post.json().catch(() => ({}));
+            const why = (d as { error?: string })?.error ?? `HTTP ${post.status}`;
+            // A 404 is the handoff endpoint not existing; anything else is the
+            // server refusing this transcription. Either way, re-reading the
+            // remaining twenty pages against it is pure waste.
+            throw Object.assign(new Error(why), { fatal: post.status === 404 });
+          }
+        } catch (e) {
+          ocrFailed.current.add(id);
+          const err = e as Error & { fatal?: boolean };
+          if (err.fatal) {
+            setOcrStopped(
+              `In-browser reading cannot hand pages back: ${err.message}. ` +
+              "POST /bills/{id}/ocr-result is not available.",
+            );
+            break;
+          }
+          setBrowserOcr((p) => ({ ...p, note: `Bill #${id}: ${err.message}` }));
+        }
+      }
+      setBrowserOcr((p) => ({ ...p, done: pending.length, current: 0 }));
+    })().finally(() => { ocrBusy.current = false; });
+  }, [batch, ocrStopped]);
+
   const upload = async () => {
     setUploadError("");
     if (!person) { setUploadError("Pick the person first — their whole stack files under one name."); return; }
@@ -166,6 +346,11 @@ export function FinanceBills() {
       for (const f of Array.from(files)) fd.append("files", f);
       const d = await j<{ batch_id: string; count: number; rejected: { filename: string; reason: string }[] }>(
         `${API}/bills`, { method: "POST", body: fd });
+      // A fresh stack gets a fresh browser-OCR slate: a page that failed to
+      // read last time is unrelated to this upload, and carrying the block over
+      // would silently skip a bill that shares an id with nothing.
+      ocrFailed.current = new Set();
+      setBrowserOcr({ done: 0, total: 0, current: 0, note: "" });
       setBatch({ id: d.batch_id, person, total: d.count, done: 0, finished: d.count === 0, sum: 0, bills: [] });
       if (d.rejected?.length) setUploadError(`${d.rejected.length} file(s) unreadable: ${d.rejected.map(r => r.filename).join(", ")}`);
       setFiles(null);
@@ -179,9 +364,11 @@ export function FinanceBills() {
 
   const openBill = async (id: number) => {
     setSelected(id); setDetail(null); setActionError(""); setRejectOpen(false); setReason(""); setVendorMode(false);
+    setPdfView(false);
     try {
       const d = await j<BillDetail>(`${API}/bills/${id}`);
       setDetail(d);
+      setPdfView(d.image_mime === "application/pdf");
       setForm({
         ledger: d.suggestions[0]?.ledger ?? "",
         // Blank rather than crashing when nothing was extracted: the reviewer
@@ -301,6 +488,20 @@ export function FinanceBills() {
         </div>
       )}
 
+      {/* The ledger master is what makes every other card work. Admins get the
+          importer; everyone else gets told why the screen is empty and who to
+          ask, rather than a claimant dropdown that silently finds no names. */}
+      {isAdmin && <LedgerMasterCard />}
+      {!isAdmin && peopleLoaded && people.length === 0 && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+          <p className="font-medium">The chart of accounts has not been imported yet.</p>
+          <p className="mt-1 text-red-700">
+            There are no claimants to pick and no ledgers to suggest, so bills cannot be
+            filed. Ask an administrator to import MASTER.xml from Tally on this page.
+          </p>
+        </div>
+      )}
+
       {/* ---- 1 · upload a person's stack ---- */}
       <Card>
         <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">1 · Upload bills</h2>
@@ -338,6 +539,25 @@ export function FinanceBills() {
             <div className="h-2 overflow-hidden rounded-full bg-gray-200">
               <div className="h-full rounded-full bg-brand transition-all" style={{ width: `${batch.total ? Math.round((batch.done / batch.total) * 100) : 0}%` }} />
             </div>
+
+            {/* In-browser reading. Said out loud because it changes what the
+                clerk must do: this tab has to stay open and on this page, and
+                the first page of the day pays a ~15 MB language-data download. */}
+            {!batch.finished && needsBrowserOcr(batch) && !ocrStopped && (
+              <p className="mt-2 text-xs text-gray-500">
+                {browserOcr.current
+                  ? <>Reading bill #{browserOcr.current} in this browser — {browserOcr.done + 1} of {browserOcr.total}.{" "}</>
+                  : <>Reading these bills in this browser…{" "}</>}
+                Keep this tab open. The first bill downloads the language data (~15 MB).
+              </p>
+            )}
+            {ocrStopped && (
+              <p className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{ocrStopped}</p>
+            )}
+            {browserOcr.note && !ocrStopped && (
+              <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{browserOcr.note}</p>
+            )}
+
             {batch.finished && (
               <button type="button" className="mt-3 text-sm font-medium text-brand hover:underline" onClick={() => setBatch(null)}>
                 Dismiss — bills are in the queue below
@@ -395,9 +615,32 @@ export function FinanceBills() {
                     <h3 className="text-sm font-semibold text-gray-900">Bill #{selected} — {detail.person}</h3>
                     <span className="text-xs text-gray-400">OCR {detail.ocr.confidence}%{detail.extracted?.arithmetic_ok ? " · totals reconcile ✓" : ""}</span>
                   </div>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={`${API}${detail.image_url.replace(/^\/api\/v1/, "")}`} alt={`Bill ${selected}`}
-                    className="max-h-[480px] w-full rounded-lg border border-gray-200 object-contain" />
+                  {/* A page split out of a PDF is STORED as a one-page PDF —
+                      nothing rasterises it (pipeline.ts), so an <img> shows a
+                      broken icon and the reviewer has no bill to read. <object>
+                      hands it to the browser's PDF viewer and, unlike <embed>,
+                      carries a fallback for a browser that has none. The onError
+                      swap covers the detail route not sending image_mime yet:
+                      PDF bytes in an <img> fail to decode, which is the signal. */}
+                  {pdfView ? (
+                    <object data={`${API}${detail.image_url.replace(/^\/api\/v1/, "")}`}
+                      type="application/pdf"
+                      aria-label={`Bill ${selected}`}
+                      className="h-[480px] w-full rounded-lg border border-gray-200">
+                      <p className="p-4 text-sm text-gray-500">
+                        This page is a PDF and this browser will not display it inline.{" "}
+                        <a className="font-medium text-brand underline" target="_blank" rel="noreferrer"
+                          href={`${API}${detail.image_url.replace(/^\/api\/v1/, "")}`}>
+                          Open it in a new tab
+                        </a>{" "}to read it while you fill the form.
+                      </p>
+                    </object>
+                  ) : (
+                    /* eslint-disable-next-line @next/next/no-img-element */
+                    <img src={`${API}${detail.image_url.replace(/^\/api\/v1/, "")}`} alt={`Bill ${selected}`}
+                      onError={() => setPdfView(true)}
+                      className="max-h-[480px] w-full rounded-lg border border-gray-200 object-contain" />
+                  )}
                   {detail.ocr.text && (
                     <details className="mt-2">
                       <summary className="cursor-pointer text-xs text-gray-400 hover:text-gray-600">What the OCR read</summary>

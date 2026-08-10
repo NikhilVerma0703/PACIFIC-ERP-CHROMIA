@@ -3594,7 +3594,21 @@ model FinanceVendorEntry {
   cgst          Float    @default(0)
   sgst          Float    @default(0)
   igst          Float    @default(0)
+  /// The reviewer's CHOSEN input-tax heads: [{ledger, amount, tax, rate}].
+  ///
+  /// The three scalars above cannot stand in for this. (tax, rate, eligible)
+  /// does not identify one ledger — 9% eligible CGST matches both
+  /// "INPUT CGST @ 9%" and "CGST @ 9% ON SERVICE", and nothing on the invoice
+  /// chooses between them (gst.ts, trap 2). Re-deriving the head at export
+  /// time would therefore silently overrule the human on the one decision the
+  /// vendor panel exists to ask, and book input credit where the GST return
+  /// will not find it. So the choice is stored verbatim.
+  taxLinesJson  Json?    @map("tax_lines_json")
   tdsSection    String?  @map("tds_section")
+  /// The full TDS head as spelled in Tally. `tdsSection` keeps the section
+  /// (194C) for reporting; the voucher needs the ledger name itself, and PESPL
+  /// runs several heads per section at different rates (tds.ts).
+  tdsLedger     String?  @map("tds_ledger")
   tdsAmount     Float    @default(0) @map("tds_amount")
   invoiceNo     String?  @map("invoice_no")
   invoiceDate   String?  @map("invoice_date")
