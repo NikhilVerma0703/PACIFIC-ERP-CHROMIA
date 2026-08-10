@@ -39,7 +39,9 @@ export async function GET(req: Request) {
       operationType: type as any,
       isCompleted:   true,
       completedAt:   { gte: startOfDay, lte: endOfDay },
-      ...(filterByUser && type === "CUTTING" ? { operation: { operatorId: userId } } : {}),
+      // NOT filtered by operator here — see the CUTTING block below. Narrowing
+      // in the query made an unmatched filter indistinguishable from an empty
+      // day, and for cutting it never matched at all.
     },
     include: {
       operation: {
@@ -59,6 +61,22 @@ export async function GET(req: Request) {
     },
     orderBy: { completedAt: "desc" },
   });
+
+  // CUTTING attributes through FabOperation.operatorId, which FabSlabJob sets.
+  // Applying that as a query filter returned an empty list to every operator,
+  // every time: the CLO flow creates each FabPieceOperation with operationId
+  // NULL (complete-job/route.ts), and a relation filter over a null relation
+  // matches nothing. The operator finished the slab, looked at "completed
+  // today", saw nothing, and had every reason to think it had not saved — the
+  // same trap 8680176 closed for the other four stations and left open here.
+  //
+  // So narrow only when the narrowing can attribute something. This keeps
+  // per-operator lists working if Fabrication ever moves off its single shared
+  // login, and shows the station's day when it cannot tell people apart.
+  if (filterByUser && type === "CUTTING") {
+    const mine = ops.filter(op => op.operation?.operatorId === userId);
+    if (mine.length) ops = mine;
+  }
 
   // For non-CUTTING employees: filter by machine session overlap because
   // CLO-created FabPieceOperation records have no operationId/operatorId.

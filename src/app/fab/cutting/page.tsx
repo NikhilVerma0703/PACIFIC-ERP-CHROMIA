@@ -14,6 +14,7 @@ interface CloReq { requirementId: string; drawingNumber: string; pieceLabel: str
 interface CloGroup {
   type: "clo"; slabJobId: string; jobStatus: string; startTime: string | null;
   operatorId: string | null; operatorName: string | null;
+  machineId: string | null; machineName: string | null;
   slab: { id: string; slabCode: string; qcSlabCode: string | null; qcColour: string | null };
   project: { projectCode: string; customerName: string };
   requirements: CloReq[]; totalPcs: number;
@@ -50,11 +51,12 @@ function FlagChip({ label, col }: { label: string; col: string }) {
 }
 
 function CloCard({
-  entry, currentUserId, completing, starting,
+  entry, currentUserId, myMachineId, completing, starting,
   onStart, onComplete,
 }: {
   entry: CloGroup;
   currentUserId: string | null;
+  myMachineId: string | null;
   completing: boolean; starting: boolean;
   onStart: () => void; onComplete: () => void;
 }) {
@@ -64,9 +66,25 @@ function CloCard({
     : entry.slab.slabCode;
   const inProgress = entry.jobStatus === "IN_PROGRESS";
 
-  // Lock logic: IN_PROGRESS and started by a *different* user
-  const lockedByOther = inProgress && entry.operatorId !== null && entry.operatorId !== currentUserId;
-  const ownedByMe     = inProgress && entry.operatorId === currentUserId;
+  // WHO ELSE IS ON THIS SLAB — decided by machine first, login second.
+  //
+  // Fabrication signs in on ONE shared operator account, so comparing
+  // operatorId to currentUserId returns "mine" for every job on the board no
+  // matter who started it. The lock rendered, and could never fire. Two people
+  // could cut the same slab with nothing on screen to warn either of them.
+  //
+  // The machine is the real discriminator: each station opens its own
+  // FabMachineSession, so a job stamped with a different machineId is somebody
+  // else's work even though the login matches. When either side has no machine
+  // recorded we genuinely cannot tell, and the card says nothing rather than
+  // claiming an ownership it has not established.
+  const otherMachine = inProgress && entry.machineId !== null && myMachineId !== null
+    && entry.machineId !== myMachineId;
+  const otherLogin   = inProgress && entry.operatorId !== null && currentUserId !== null
+    && entry.operatorId !== currentUserId;
+  const lockedByOther = otherMachine || otherLogin;
+  const ownedByMe     = inProgress && !lockedByOther;
+  const heldBy        = entry.machineName ?? entry.operatorName ?? "another operator";
 
   return (
     <div className={`bg-white rounded-xl border overflow-hidden ${
@@ -83,7 +101,7 @@ function CloCard({
             <span className="text-xs font-mono text-gray-400">({entry.slab.slabCode})</span>
             {lockedByOther ? (
               <span className="text-[11px] font-bold text-gray-600 bg-gray-200 px-2 py-0.5 rounded-full flex items-center gap-1">
-                🔒 Being cut by {entry.operatorName ?? "another operator"}
+                🔒 Being cut on {heldBy}
               </span>
             ) : ownedByMe ? (
               <span className="text-[11px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full flex items-center gap-1">
@@ -144,6 +162,22 @@ function CloCard({
   );
 }
 
+/** The machine this tablet holds, from the cookie /fab/session sets.
+ *
+ *  Fabrication runs on ONE shared operator login, so the user id is identical
+ *  for everyone on the floor and cannot answer "is this job mine". The machine
+ *  can. Read from the cookie rather than fetched because it is already there,
+ *  and a missing value is a real answer: no machine session means we cannot
+ *  tell, and the UI says nothing rather than something false. */
+function useMachineId(): string | null {
+  const [id, setId] = useState<string | null>(null);
+  useEffect(() => {
+    const m = document.cookie.match(/(?:^|;\s*)fab_machine_id=([^;]*)/);
+    setId(m ? decodeURIComponent(m[1]) : null);
+  }, []);
+  return id;
+}
+
 export default function FabCuttingPage() {
   const [tab,           setTab]          = useState<"open"|"done">("open");
   const [queue,         setQueue]        = useState<QueueEntry[]>([]);
@@ -154,6 +188,7 @@ export default function FabCuttingPage() {
   const [undoing,       setUndoing]      = useState<Record<string, boolean>>({});
   const [doneDate,      setDoneDate]     = useState(todayStr());
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const myMachineId = useMachineId();
   const [actionError,   setActionError]  = useState<string | null>(null);
   const [loadError,     setLoadError]    = useState<string | null>(null);
 
@@ -289,6 +324,7 @@ export default function FabCuttingPage() {
                 return (
                   <CloCard key={entry.slabJobId} entry={entry}
                     currentUserId={currentUserId}
+                    myMachineId={myMachineId}
                     completing={!!completing[entry.slabJobId]}
                     starting={!!starting[entry.slabJobId]}
                     onStart={() => startClo(entry.slabJobId)}

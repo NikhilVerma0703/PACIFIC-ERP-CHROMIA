@@ -102,3 +102,70 @@ test("the client page size matches the route's default", () => {
   // mismatch here shows a permanent, wrong "200+" or hides the hint entirely.
   assert.equal(QC_SLAB_PAGE, 200);
 });
+
+// ---------------------------------------------------------------------------
+// Shared operator login: the machine is the only discriminator
+// ---------------------------------------------------------------------------
+// Fabrication signs in on ONE account, so operatorId is identical for everyone
+// on the floor. These pin the rule the cutting card and start-job now share.
+
+/** Mirrors CloCard in src/app/fab/cutting/page.tsx. */
+function heldByOther(
+  inProgress: boolean,
+  job: { operatorId: string | null; machineId: string | null },
+  me: { userId: string | null; machineId: string | null },
+): boolean {
+  const otherMachine = inProgress && job.machineId !== null && me.machineId !== null
+    && job.machineId !== me.machineId;
+  const otherLogin = inProgress && job.operatorId !== null && me.userId !== null
+    && job.operatorId !== me.userId;
+  return otherMachine || otherLogin;
+}
+
+test("shared login: a job on another machine is somebody else's work", () => {
+  const shared = "user-operator";
+  // Same login, different machine — the case the old user-id check could never see.
+  assert.equal(
+    heldByOther(true, { operatorId: shared, machineId: "m-cut-2" },
+                { userId: shared, machineId: "m-cut-1" }),
+    true,
+  );
+  // Same login, same machine — genuinely mine.
+  assert.equal(
+    heldByOther(true, { operatorId: shared, machineId: "m-cut-1" },
+                { userId: shared, machineId: "m-cut-1" }),
+    false,
+  );
+});
+
+test("no machine session means we cannot tell, so we do not claim a lock", () => {
+  const shared = "user-operator";
+  // Nobody opened /fab/session: no machine on either side. Silence beats a
+  // lock that is not backed by evidence.
+  assert.equal(
+    heldByOther(true, { operatorId: shared, machineId: null },
+                { userId: shared, machineId: null }),
+    false,
+  );
+  assert.equal(
+    heldByOther(true, { operatorId: shared, machineId: "m-cut-2" },
+                { userId: shared, machineId: null }),
+    false,
+  );
+});
+
+test("distinct logins still lock, so per-person accounts keep working", () => {
+  assert.equal(
+    heldByOther(true, { operatorId: "user-a", machineId: null },
+                { userId: "user-b", machineId: null }),
+    true,
+  );
+});
+
+test("a READY job is never locked, whatever the machine says", () => {
+  assert.equal(
+    heldByOther(false, { operatorId: "user-a", machineId: "m-cut-2" },
+                { userId: "user-b", machineId: "m-cut-1" }),
+    false,
+  );
+});

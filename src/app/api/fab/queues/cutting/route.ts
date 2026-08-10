@@ -29,6 +29,7 @@ export async function GET() {
     where:   { status: { in: ["READY", "IN_PROGRESS"] } },
     include: {
       operator: { select: { id: true, name: true, email: true } },
+      machine:  { select: { id: true, name: true, code: true } },
       slab: {
         include: {
           project: { select: { projectCode: true, customerName: true } },
@@ -89,6 +90,16 @@ export async function GET() {
       startTime:    job.startTime?.toISOString() ?? null,
       operatorId:   job.operatorId ?? null,
       operatorName: job.operator?.name ?? job.operator?.email ?? null,
+      // WHICH MACHINE holds this job, not just which login started it.
+      //
+      // Fabrication runs on ONE shared operator account, so operatorId is the
+      // same value for every person on the floor and cannot tell two of them
+      // apart. The machine can: each station opens its own FabMachineSession.
+      // Without this the queue could only ever say "you started this", which is
+      // true of everyone, and two operators could cut the same slab with
+      // nothing on screen to warn either of them.
+      machineId:    job.machineId ?? null,
+      machineName:  job.machine?.name ?? job.machine?.code ?? null,
       slab: {
         id:          job.slab.id,
         slabCode:    job.slab.slabCode,
