@@ -120,6 +120,27 @@ export async function isStore(): Promise<boolean> {
 export async function isMaintenance(): Promise<boolean> {
   return (await currentRole()) === "MAINTENANCE";
 }
+/**
+ * Who may RAISE a maintenance request.
+ *
+ * Its own helper rather than borrowing canRectify(), which means "may fix batch
+ * errors" — an unrelated permission that happened to admit the right people and
+ * would have stopped doing so the moment either rule moved. A gate should say
+ * what it gates.
+ *
+ * Incharge and above on the shop floor, because a maintenance queue is only
+ * worth a fitter's walk if the entries are, and the incharge already owns that
+ * judgement. FINANCE and ACCOUNTS share rank 2 and are therefore included —
+ * deliberately, not incidentally: the log covers "machinery or whatever is
+ * relevant", and an office lamp or a jammed printer is a real request. So is
+ * MAINTENANCE itself, who could not previously log their own work because the
+ * capped role sits at rank 1, below INCHARGE.
+ */
+export async function canRaiseMaintenance(): Promise<boolean> {
+  const role = await currentRole();
+  return role === "MAINTENANCE" || rankOf(role) >= ROLE_RANK.INCHARGE;
+}
+
 /** Maintenance Manager or admin may fill the maintenance response on a downtime incident. */
 export async function canRespondDowntime(): Promise<boolean> {
   const role = await currentRole();

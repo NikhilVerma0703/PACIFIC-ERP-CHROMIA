@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { Card, H2, Kpi, Empty, Badge } from "@/components/ui";
-import { canRectify, canRespondDowntime } from "@/lib/rbac";
+import { canRaiseMaintenance, canRespondDowntime } from "@/lib/rbac";
 import { listTickets, isClosed, PRIORITIES, DOWNTIME_STATUSES } from "@/lib/maintenanceLog";
 import { MaintenanceBoard } from "./MaintenanceBoard";
 
@@ -22,7 +22,7 @@ export const dynamic = "force-dynamic";
  */
 export default async function MaintenancePage() {
   const [canRaise, canAnswer, tickets] = await Promise.all([
-    canRectify(),
+    canRaiseMaintenance(),
     canRespondDowntime(),
     listTickets(),
   ]);

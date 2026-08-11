@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { canRectify, canRespondDowntime, currentUser } from "@/lib/rbac";
+import { canRaiseMaintenance, canRespondDowntime, currentUser } from "@/lib/rbac";
 import { answerTicket, raiseTicket, type NewTicket } from "@/lib/maintenanceLog";
 
 export interface ActionRes { ok: boolean; message: string }
@@ -14,18 +14,19 @@ async function actor(): Promise<string | null> {
 }
 
 /**
- * Raise a fault. INCHARGE AND ABOVE, via canRectify().
+ * Raise a fault. See canRaiseMaintenance() for who, and why.
  *
  * Not every authenticated user: a maintenance queue is only useful if the
  * entries are worth a fitter walking to the machine for, and the incharge is
  * the person who already owns that judgement on the floor.
  *
- * Note this excludes the Maintenance Manager themselves, whose rank is 1 — they
- * ANSWER this queue rather than fill it. If maintenance need to raise their own
- * work, that is a deliberate decision to make, not a gap to paper over here.
+ * It used to borrow canRectify() — "may fix batch errors" — which admitted the
+ * right people by coincidence and excluded the Maintenance Manager, whose
+ * capped role sits at rank 1, so the one team that works this queue could not
+ * log its own work.
  */
 export async function raise(input: NewTicket): Promise<ActionRes> {
-  if (!(await canRectify())) return { ok: false, message: "Only an incharge and above can raise a maintenance request." };
+  if (!(await canRaiseMaintenance())) return { ok: false, message: "Only an incharge and above, or maintenance, can raise a request." };
   const title = (input.title ?? "").trim();
   if (!title) return { ok: false, message: "Give it a one-line summary." };
   if (title.length > 200) return { ok: false, message: "Keep the summary under 200 characters — put the rest in the details." };

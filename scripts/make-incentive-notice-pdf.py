@@ -95,17 +95,18 @@ HEADCOUNT_CONFIRM_BY = "8 August 2026"
 
 # Shifts before a per-shift rate is trusted at face value.
 #
-# LEFT AT 5 ON PURPOSE, AND IT DOES NOT MATCH THE CODE. CREDIBLE_SHIFTS in
-# src/lib/shiftScoreMath.ts is 3 — lowered from 5 in commit 1097b11 for a
-# three-man rotation, whose own message said the wall notice needed re-cutting
-# before it drove a payout. This sheet was changed to 3 to match, then reverted
-# on 2026-08-06 because the change had not been asked for.
+# MUST EQUAL CREDIBLE_SHIFTS in src/lib/shiftScoreMath.ts, which is what
+# actually scales the money. The two disagreed for a while — the sheet said 5,
+# the code said 3 — so a man with 3 or 4 shifts was told on a SIGNED notice that
+# his rate was discounted while the code paid him in full. It erred in his
+# favour, which made it survivable, not harmless: a payout document that
+# misstates its own rule is one argument away from being worthless.
 #
-# SO THE NOTICE AND THE PAYOUT DISAGREE: a man with 3 or 4 shifts is told his
-# rate is scaled down, and the code pays him in full. It errs in the employee's
-# favour, which is why it is survivable, but it is still a promise the system
-# does not keep. Decide which number is right and change BOTH.
-CREDIBLE_SHIFTS = 5
+# 3 is the number, because it is the measured one. Commit 1097b11 lowered it
+# from 5 on the live figures: at 5, a three-man rotation discounted a man who
+# ran 111 good slabs per running shift down to third place on the money while
+# the board showed him first on performance. The sheet follows the code.
+CREDIBLE_SHIFTS = 3
 
 # Performance target for the OEE block. Mirrors TARGET_SLABS_PER_SHIFT in
 # src/lib/shiftScoreMath.ts. It USED to be read off the pool ladder - the tier

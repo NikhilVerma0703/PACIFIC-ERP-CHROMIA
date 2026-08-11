@@ -37,7 +37,7 @@ often you are rostered.
 - **You need both halves.** Make a lot badly and you lose the quality half. Make a little
   carefully and you lose most of the bigger half.
 - **Your average per shift counts, not your total.** 3 shifts making 300 good slabs
-  (100 each) beats 10 shifts making 500 (50 each). Under 5 shifts your rate is scaled
+  (100 each) beats 10 shifts making 500 (50 each). Under 3 shifts your rate is scaled
   down — one good night is not a month.
 
 ### 1. GOOD SLABS — 70% of the money
@@ -249,7 +249,7 @@ them as they happen.
 - A shift below the **87% minimum quality standard** takes nothing from the quality half —
   the highest quantity alone does not win. At **97% and above the quality half scores in
   full**.
-- Fewer than **5 shifts** in the month and your rate is scaled down in proportion. One
+- Fewer than **3 shifts** in the month and your rate is scaled down in proportion. One
   good night is not a month's work.
 - **Safety comes first.** Any lost-time accident in the shift means no incentive for that
   month, regardless of score.

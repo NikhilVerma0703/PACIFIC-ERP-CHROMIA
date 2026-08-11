@@ -79,6 +79,9 @@ export function VendorInvoicePanel({ seed, onDone, onCancel }: {
   const [sgst, setSgst] = useState(String(seed.sgst ?? ""));
   const [igst, setIgst] = useState("");
   const [eligible, setEligible] = useState(true);
+  /** The reviewer states this bill genuinely carries no GST. See the blocker
+   *  below for why it is an explicit tick rather than an inference. */
+  const [noGst, setNoGst] = useState(false);
 
   const [suggest, setSuggest] = useState<Suggest | null>(null);
   const [chosen, setChosen] = useState<Record<string, string>>({});
@@ -132,7 +135,14 @@ export function VendorInvoicePanel({ seed, onDone, onCancel }: {
   if (!expense.trim()) blockers.push("Pick the expense head");
   if (!invoiceNo.trim()) blockers.push("Enter the vendor's invoice number");
   if (num(taxable) <= 0) blockers.push("Enter the taxable value");
-  if (!suggest?.tax_lines.length) blockers.push("No tax lines resolved");
+  // ZERO GST IS A REAL BILL — an unregistered vendor, a composition dealer, an
+  // exempt supply. It used to be unsaveable: no tax lines meant no save, full
+  // stop. But "the bill has no GST" and "we could not READ the GST" arrive here
+  // looking identical, and letting the second through silently forfeits input
+  // credit the company is entitled to — quietly, on a screen that said nothing.
+  // So the reviewer says which, with one tick. Nothing else about tax changed:
+  // rates, heads, splits and TDS behave exactly as before.
+  if (!noGst && !suggest?.tax_lines.length) blockers.push("No tax lines resolved — tick “No GST on this bill” if that is correct");
   if (tdsAmount > 0 && !tdsLedger) blockers.push("Pick the TDS head");
   if (tdsAmount >= invoiceTotal && tdsAmount > 0) blockers.push("TDS is not less than the invoice total");
 
@@ -156,6 +166,12 @@ export function VendorInvoicePanel({ seed, onDone, onCancel }: {
           })),
           tds_ledger: tdsAmount > 0 ? tdsLedger : "",
           tds_amount: tdsAmount,
+          // Recorded, not just enforced. A voucher that books no input tax
+          // should say on its face that a human decided that, so the next
+          // person reading it in Tally is not left wondering whether the GST
+          // was zero or simply missed. confirm-vendor already stores a
+          // narration; no schema change is needed to keep the reason.
+          narration: noGst ? "No GST on this bill - confirmed by reviewer" : "",
         }),
       });
       onDone();
@@ -216,11 +232,33 @@ export function VendorInvoicePanel({ seed, onDone, onCancel }: {
         </div>
       </div>
 
-      {suggest?.needs_review?.length ? (
+      {/* Placed under the tax boxes, because that is where a reviewer is looking
+          when they find all three empty. */}
+      <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-gray-200 bg-gray-50/60 px-3 py-2 text-sm">
+        <input type="checkbox" className="mt-0.5" checked={noGst}
+          onChange={(e) => setNoGst(e.target.checked)} />
+        <span>
+          <span className="block font-medium text-gray-700">No GST on this bill</span>
+          <span className="block text-xs text-gray-500">
+            Unregistered vendor, composition dealer or an exempt supply. Tick this and the
+            invoice saves with no input tax — leave it clear if the tax is simply unread.
+          </span>
+        </span>
+      </label>
+
+      {/* The "no tax read" advisory is ANSWERED once that box is ticked, so it
+          stops nagging. Every other check still shows. */}
+      {(noGst
+        ? (suggest?.needs_review ?? []).filter((n) => !/no tax read/i.test(n))
+        : (suggest?.needs_review ?? [])
+      ).length ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
           <span className="font-medium">Check before saving</span>
           <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs">
-            {suggest.needs_review.map((n) => <li key={n}>{n}</li>)}
+            {(noGst
+              ? suggest!.needs_review.filter((n) => !/no tax read/i.test(n))
+              : suggest!.needs_review
+            ).map((n) => <li key={n}>{n}</li>)}
           </ul>
         </div>
       ) : null}
