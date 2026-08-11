@@ -672,17 +672,36 @@ function formatForTelegram(raw: string): string {
       s = s.replace(/^\s*#{1,6}\s*(.+)$/, "<b>$1</b>");
       return s;
     });
-  const out = lines
-    .join("\n")
+  const plain = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  const out = plain
     // **bold** and __bold__ -> <b>. Applied after escaping, so the asterisks
     // are literal text by now and cannot interact with any real markup.
     .replace(/\*\*([^\n*]{1,200}?)\*\*/g, "<b>$1</b>")
     .replace(/__([^\n_]{1,200}?)__/g, "<b>$1</b>")
     // `code` -> <code>
     .replace(/`([^\n`]{1,200}?)`/g, "<code>$1</code>")
-    .replace(/\n{3,}/g, "\n\n")
     .trim();
-  return capToLimit(out);
+  // Last line of defence. The two conversions above are independent passes, so
+  // markers that INTERLEAVE on one line — bold opens, code opens, bold closes,
+  // code closes — emit crossed tags (<b>..<code>..</b>..</code>) rather than
+  // nested ones, and Telegram rejects the whole message for that. Rather than
+  // enumerate every way markers can cross, check the result: if the markup is
+  // not well formed, send the text with no markup at all. A plainer message
+  // always beats one the group never sees.
+  return capToLimit(isWellFormed(out) ? out : stripTags(plain));
+}
+const stripTags = (s: string) => s.replace(/<\/?[a-z]+>/g, "");
+/** Every tag properly closed and nested, and nothing outside what we emit. */
+function isWellFormed(html: string): boolean {
+  const allowed = new Set(["b", "code"]);
+  const stack: string[] = [];
+  for (const m of html.matchAll(/<(\/?)([a-z]*)>/g)) {
+    const [, slash, name] = m;
+    if (!allowed.has(name)) return false;
+    if (slash) { if (stack.pop() !== name) return false; }
+    else stack.push(name);
+  }
+  return stack.length === 0;
 }
 // Conversions expand the text — `x` becomes <code>x</code>, so a dense line can
 // grow several-fold and overshoot Telegram's 4096 even after the pre-truncation
@@ -771,8 +790,9 @@ export async function aiAnswer(question: string): Promise<string> {
         model: ASK_MODEL,
         // max_tokens caps thinking AND text together, so a tight ceiling on the
         // thinking path truncates the answer mid-bullet. Unused budget is never
-        // billed, so the headroom is free.
-        max_tokens: hasCmp ? 10000 : 1200,
+        // billed, so the headroom is free — and the 40s abort above, not this
+        // number, is what actually bounds a runaway.
+        max_tokens: hasCmp ? 16000 : 1200,
         thinking: hasCmp ? { type: "adaptive" } : { type: "disabled" },
         output_config: { effort: hasCmp ? "high" : "medium" },
         system:
@@ -790,7 +810,22 @@ export async function aiAnswer(question: string): Promise<string> {
     const text = (j?.content ?? [])
       .filter((c: { type?: string }) => c?.type === "text")
       .map((c: { text?: string }) => c.text ?? "").join("").trim();
-    return text ? formatForTelegram(text) : "🤖 No answer came back — try rephrasing.";
+    // stop_reason has to be read, not assumed. On the thinking path the token
+    // budget covers thinking AND the answer, so a hard question can return a
+    // 200 whose text is cut mid-bullet — posting that unmarked would put half a
+    // set of factory numbers in the group looking complete. An empty body needs
+    // its own message too: "try rephrasing" sends the reader straight back into
+    // the same path, which fails the same way.
+    const stop = j?.stop_reason;
+    if (stop === "refusal")
+      return "🤖 I can't answer that one. Ask about production, quality or dispatch and I'll pull the numbers.";
+    if (!text)
+      return stop === "max_tokens"
+        ? "🤖 That needed more working-out room than I have. Narrow it to one batch, slab or day."
+        : "🤖 No answer came back — try rephrasing.";
+    if (stop === "max_tokens")
+      return formatForTelegram(text + "\n\n…cut short — ask about one batch, slab or day at a time.");
+    return formatForTelegram(text);
   } catch (e) {
     console.error("aiAnswer error:", e);
     if ((e as { name?: string })?.name === "AbortError")
