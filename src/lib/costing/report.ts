@@ -77,7 +77,17 @@ export async function buildCostingReport(batchKey: string): Promise<CostingRepor
     "manpower", "electricity", "polishing", "packing",
     "sqft-per-slab", "inr-per-usd", "days-per-month",
   ] as const;
-  const blockedBy = NEEDED.filter((k) => card.rates[k] === undefined);
+  // NOT JUST `=== undefined`. Three of these are DENOMINATORS — slab area,
+  // ₹/USD and days per month — and a zero or a NaN in any of them does not
+  // fail loudly, it produces Infinity and prints "₹Infinity per sq ft" on a
+  // sheet somebody is about to price a container from. The admin API rejects
+  // rate <= 0, so this catches the routes it cannot: a direct database edit, a
+  // bad import, a column that arrives null. Treated exactly like a missing
+  // rate, because to the reader it is one.
+  const blockedBy = NEEDED.filter((k) => {
+    const v = card.rates[k];
+    return v === undefined || !Number.isFinite(v) || v <= 0;
+  });
 
   let sheet: CostingSheet | null = null;
   if (blockedBy.length === 0) {

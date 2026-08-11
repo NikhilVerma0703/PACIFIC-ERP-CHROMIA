@@ -118,6 +118,32 @@ export interface CostingSheet {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+/**
+ * A divisor that must be a real, positive number.
+ *
+ * THE HAZARD: three basis values are denominators — sq ft per slab, ₹ per USD,
+ * and days per month. A zero or a NaN in any of them does not fail; it produces
+ * Infinity or NaN, which renders as "₹Infinity per sq ft" on a sheet somebody
+ * is about to price a container from. Silent nonsense on a costing screen is
+ * worse than no screen.
+ *
+ * It THROWS rather than substituting a default, because there is no honest
+ * default for "how big is a slab". The caller (report.ts) refuses the sheet
+ * before it gets here, so reaching this is a programming error and should be
+ * loud. The admin API already rejects rate <= 0, so the only routes in are a
+ * direct database edit or a new caller — exactly the cases a silent 0 would
+ * hide.
+ */
+function divisor(value: number, what: string): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(
+      `Costing needs a positive ${what}; got ${value}. ` +
+      "Set it on the rate card — the sheet cannot be priced without it.",
+    );
+  }
+  return value;
+}
+
 /** Group labels as the sheet prints them in the share table. */
 const GROUP_LABELS: Record<MaterialLine["group"], string> = {
   resin: "Resin (both suppliers)",
@@ -178,7 +204,8 @@ export function computeSheet(
 
   // -- conversion ----------------------------------------------------------
   const runDays = output.runHours / 24;
-  const perDay = (monthly: number) => monthly / basis.daysPerMonth;
+  const daysPerMonth = divisor(basis.daysPerMonth, "days per month");
+  const perDay = (monthly: number) => monthly / daysPerMonth;
   const absorb = (monthly: number) =>
     totalSlabs > 0 ? (perDay(monthly) * runDays) / totalSlabs : 0;
 
@@ -201,13 +228,13 @@ export function computeSheet(
     },
     {
       head: "Manpower",
-      basis: `${lakh(basis.manpowerPerMonth)}/month ÷ ${basis.daysPerMonth} × ` +
+      basis: `${lakh(basis.manpowerPerMonth)}/month ÷ ${daysPerMonth} × ` +
         `${round2(runDays)} days ÷ ${totalSlabs} slabs`,
       perSlab: round2(manpower),
     },
     {
       head: "Electricity",
-      basis: `${lakh(basis.electricityPerMonth)}/month ÷ ${basis.daysPerMonth} × ` +
+      basis: `${lakh(basis.electricityPerMonth)}/month ÷ ${daysPerMonth} × ` +
         `${round2(runDays)} days ÷ ${totalSlabs} slabs`,
       perSlab: round2(electricity),
     },
@@ -215,6 +242,8 @@ export function computeSheet(
   const conversionPerSlab = round2(polish + packing + manpower + electricity);
 
   // -- final ---------------------------------------------------------------
+  const sqftPerSlab = divisor(basis.sqftPerSlab, "slab area in sq ft");
+  const inrPerUsd = divisor(basis.inrPerUsd, "rupees per USD");
   const perSlab3cm = round2(materialPerEquivalent + conversionPerSlab);
   const perSlab2cm = round2(materialPer2cm + conversionPerSlab);
   const conversionTotal = round2(conversionPerSlab * totalSlabs);
@@ -249,12 +278,12 @@ export function computeSheet(
     final: {
       perSlab3cm,
       perSlab2cm,
-      perSqft3cm: round2(perSlab3cm / basis.sqftPerSlab),
-      perSqft2cm: round2(perSlab2cm / basis.sqftPerSlab),
+      perSqft3cm: round2(perSlab3cm / sqftPerSlab),
+      perSqft2cm: round2(perSlab2cm / sqftPerSlab),
       // Four decimals: a slab sells by the container, and the third decimal
       // of a $/sqft price is real money at that volume.
-      perSqftUsd3cm: Math.round((perSlab3cm / basis.sqftPerSlab / basis.inrPerUsd) * 10000) / 10000,
-      perSqftUsd2cm: Math.round((perSlab2cm / basis.sqftPerSlab / basis.inrPerUsd) * 10000) / 10000,
+      perSqftUsd3cm: Math.round((perSlab3cm / sqftPerSlab / inrPerUsd) * 10000) / 10000,
+      perSqftUsd2cm: Math.round((perSlab2cm / sqftPerSlab / inrPerUsd) * 10000) / 10000,
       materialTotal: total,
       conversionTotal,
       batchTotal: round2(total + conversionTotal),

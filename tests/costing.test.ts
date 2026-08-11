@@ -145,3 +145,43 @@ test("costing: zero output does not divide by zero", () => {
   assert.equal(s.conversion.heads.find((h) => h.head === "Manpower")?.perSlab, 0);
   assert.equal(s.final.batchTotal, s.material.total);
 });
+
+// ---------------------------------------------------------------------------
+// Divisor guards. Three basis values are denominators, and a zero in any of
+// them does not fail — it yields Infinity and prints "₹Infinity per sq ft" on
+// a sheet somebody is about to price a container from. report.ts refuses the
+// sheet before it reaches here; this pins the last line of defence.
+// ---------------------------------------------------------------------------
+
+test("costing: a zero or NaN divisor is refused, not rendered as Infinity", () => {
+  const bad = (patch: Partial<ConversionBasis>) =>
+    () => computeSheet(MATERIALS, OUTPUT, { ...BASIS, ...patch });
+
+  for (const [field, label] of [
+    ["sqftPerSlab", "slab area"],
+    ["inrPerUsd", "rupees per USD"],
+    ["daysPerMonth", "days per month"],
+  ] as const) {
+    for (const v of [0, -1, NaN, Infinity]) {
+      assert.throws(bad({ [field]: v } as Partial<ConversionBasis>), /Costing needs a positive/,
+        `${field} = ${v} should be refused`);
+    }
+    // And the honest value still works.
+    assert.ok(bad({ [field]: BASIS[field] })().final.perSqft3cm > 0, label);
+  }
+});
+
+test("costing: no figure on a healthy sheet is NaN or Infinity", () => {
+  const s = computeSheet(MATERIALS, OUTPUT, BASIS);
+  const walk = (v: unknown, path: string): void => {
+    if (typeof v === "number") {
+      assert.ok(Number.isFinite(v), `${path} is ${v}`);
+      return;
+    }
+    if (Array.isArray(v)) { v.forEach((x, i) => walk(x, `${path}[${i}]`)); return; }
+    if (v && typeof v === "object") {
+      for (const [k, x] of Object.entries(v)) walk(x, `${path}.${k}`);
+    }
+  };
+  walk(s, "sheet");
+});
