@@ -327,11 +327,28 @@ async function uploadBills(req: NextRequest, user: string) {
   try {
     form = await req.formData();
   } catch {
-    throw fail(400, "Upload must be multipart/form-data with `person` and `files`.");
+    throw fail(400, "Upload must be multipart/form-data with `files`, and `person` only when reimbursing someone.");
   }
 
+  // PERSON IS OPTIONAL, AND ITS ABSENCE IS THE POINT.
+  //
+  // Most bills are not reimbursements. A supplier raises an invoice on the
+  // company, nobody is out of pocket, and the ledger that matters is the
+  // CREDITOR'S — read off the bill itself. Requiring a claimant up front made
+  // every such invoice arrive attached to someone as though they had paid for
+  // it, which is both wrong in the ledger and extra work at review.
+  //
+  // Blank means "nobody is being reimbursed": the stack is vendor invoices and
+  // the review screen opens on the vendor panel. A name means the opposite —
+  // that person paid on the company's behalf and is owed the money.
+  //
+  // Nothing downstream has to change for this. fin_bill.person is already
+  // nullable, register() already writes `person || null`, afterOcr() already
+  // guards its person-history and auto-approve paths on it, and buildBatch
+  // already refuses a reimbursement line with "no person" rather than crediting
+  // an empty ledger — so a vendor bill that never gets confirmed as one is
+  // SKIPPED at export, not posted to nobody.
   const person = str(form.get("person"));
-  if (!person) throw fail(400, "person is required");
   const handwritten = ["true", "1", "on", "yes"].includes(str(form.get("handwritten")).toLowerCase());
 
   // "files" is what the ERP sends; the fallback picks up any File under any key

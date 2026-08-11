@@ -1,8 +1,13 @@
 "use client";
-// Bill automation for the Office branch (Finance / Accounts): upload a person's
-// stack of bills, the engine OCRs and classifies them, a human confirms three
-// fields, and one Tally-importable XML comes out per batch. All engine calls go
-// through /api/office/finance/* so the API key stays server-side.
+// Bill automation for the Office branch (Finance / Accounts): upload a stack of
+// bills, the engine OCRs and classifies them, a human confirms three fields, and
+// one Tally-importable XML comes out per batch. All engine calls go through
+// /api/office/finance/* so the API key stays server-side.
+//
+// A stack is VENDOR INVOICES by default — the company owes the supplier, and the
+// ledger is matched from whoever raised the bill. Naming a claimant on upload is
+// the exception, for when someone paid out of their own pocket. Either way the
+// per-bill toggle at review can correct a stack that turns out to be mixed.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Card, Badge, Empty } from "@/components/ui";
 import { SearchableSelect } from "@/components/robo/SearchableSelect";
@@ -131,6 +136,9 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
 
   // upload
   const [person, setPerson] = useState("");
+  /** Opt IN to a reimbursement. Unticked (the default) means these are vendor
+   *  invoices and no person is posted — see the upload card. */
+  const [reimbursing, setReimbursing] = useState(false);
   const [files, setFiles] = useState<FileList | null>(null);
   const [handwritten, setHandwritten] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -163,6 +171,10 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
   // Which kind of document this bill is. Reset on every open so the previous
   // bill's choice can never carry over onto the next one.
   const [vendorMode, setVendorMode] = useState(false);
+  /** Who to reimburse, when the bill arrived without a claimant and the
+   *  reviewer is flipping it from vendor invoice to reimbursement. Empty for a
+   *  bill that already names one — detail.person is used then. */
+  const [claimant, setClaimant] = useState("");
   const [reason, setReason] = useState("");
   /** Render the page with <object> instead of <img>. Set from image_mime when
    *  the detail route sends it, or by the <img> failing on PDF bytes. */
@@ -362,12 +374,19 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
 
   const upload = async () => {
     setUploadError("");
-    if (!person) { setUploadError("Pick the person first — their whole stack files under one name."); return; }
+    // A name is required only when reimbursing. Ticking the box and then not
+    // naming anyone is the one genuinely ambiguous state — it says a person
+    // paid but not who — so it is caught here rather than posted as a vendor
+    // stack, which is what an empty `person` would otherwise mean.
+    if (reimbursing && !person) {
+      setUploadError("Name the person being reimbursed, or untick the box if the company owes the vendor.");
+      return;
+    }
     if (!files?.length) { setUploadError("Choose at least one bill (photo or PDF)."); return; }
     setUploading(true);
     try {
       const fd = new FormData();
-      fd.set("person", person);
+      fd.set("person", reimbursing ? person : "");
       fd.set("handwritten", String(handwritten));
       for (const f of Array.from(files)) fd.append("files", f);
       const d = await j<{ batch_id: string; count: number; rejected: { filename: string; reason: string }[] }>(
@@ -377,7 +396,7 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
       // would silently skip a bill that shares an id with nothing.
       ocrFailed.current = new Set();
       setBrowserOcr({ done: 0, total: 0, current: 0, note: "" });
-      setBatch({ id: d.batch_id, person, total: d.count, done: 0, finished: d.count === 0, sum: 0, bills: [] });
+      setBatch({ id: d.batch_id, person: reimbursing ? person : "", total: d.count, done: 0, finished: d.count === 0, sum: 0, bills: [] });
       if (d.rejected?.length) setUploadError(`${d.rejected.length} file(s) unreadable: ${d.rejected.map(r => r.filename).join(", ")}`);
       setFiles(null);
       if (fileInput.current) fileInput.current.value = "";
@@ -389,11 +408,18 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
   };
 
   const openBill = async (id: number) => {
-    setSelected(id); setDetail(null); setActionError(""); setRejectOpen(false); setReason(""); setVendorMode(false);
+    setSelected(id); setDetail(null); setActionError(""); setRejectOpen(false); setReason(""); setVendorMode(false); setClaimant("");
     setPdfView(false);
     try {
       const d = await j<BillDetail>(`${API}/bills/${id}`);
       setDetail(d);
+      // OPEN ON THE KIND THE BILL WAS UPLOADED AS. A bill with no claimant was
+      // filed as a vendor invoice, so the vendor panel is the right first
+      // screen — defaulting every bill to "Reimbursement" made the reviewer
+      // switch on each one, and switching is exactly the step that gets
+      // forgotten. Still only a DEFAULT: the toggle above it is unchanged, so a
+      // stack that turns out to be mixed can be corrected bill by bill.
+      setVendorMode(!(d.person || "").trim());
       setPdfView(d.image_mime === "application/pdf");
       setForm({
         ledger: d.suggestions[0]?.ledger ?? "",
@@ -411,13 +437,18 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
     if (selected == null || !detail) return;
     setActionError("");
     if (!form.ledger) { setActionError("Pick the expense ledger."); return; }
+    // detail.person is empty on a bill uploaded as a vendor invoice. Caught
+    // here so the reviewer sees which field to fill, rather than the server's
+    // "ledger and person are required" with no clue which one is missing.
+    const payee = (detail.person || "").trim() || claimant.trim();
+    if (!payee) { setActionError("Name who gets reimbursed, or switch this bill to Vendor invoice."); return; }
     const amt = Number(form.amount);
     if (!amt || amt <= 0) { setActionError("Amount must be greater than zero."); return; }
     setSaving(true);
     try {
       await j(`${API}/bills/${selected}/confirm`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ledger: form.ledger, person: detail.person, amount: amt, date: form.date || undefined, narration: form.narration || undefined }),
+        body: JSON.stringify({ ledger: form.ledger, person: payee, amount: amt, date: form.date || undefined, narration: form.narration || undefined }),
       });
       setSelected(null); setDetail(null);
       refreshLists();
@@ -528,15 +559,46 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
         </div>
       )}
 
-      {/* ---- 1 · upload a person's stack ---- */}
+      {/* ---- 1 · upload a stack ---- */}
       <Card>
         <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">1 · Upload bills</h2>
         {uploadError && <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{uploadError}</div>}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          {/* REIMBURSEMENT IS THE EXCEPTION, so it is the thing you opt IN to.
+              The common bill is a supplier's invoice on the company: nobody is
+              out of pocket, and the ledger that matters is the creditor's, read
+              off the bill. Naming a claimant used to be mandatory, which
+              attached every such invoice to someone as though they had paid it.
+              Leave this alone and the stack is filed as vendor invoices. */}
           <div>
-            <span className={label}>Person (who gets reimbursed)</span>
-            <SearchableSelect value={person} options={people} placeholder="Search any Tally ledger…" onSelect={setPerson} />
-            <p className="mt-1 text-xs text-gray-400">Every Tally ledger is searchable, staff claimants first — the import can’t fail on a name.</p>
+            <span className={label}>Who paid?</span>
+            <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={reimbursing}
+                onChange={(e) => {
+                  setReimbursing(e.target.checked);
+                  // Clearing on un-tick matters: a name left behind in state
+                  // would still be posted and would silently turn a stack of
+                  // supplier invoices into somebody's expense claim.
+                  if (!e.target.checked) setPerson("");
+                }}
+              />
+              <span>
+                <span className="block font-medium text-gray-700">Someone paid for these personally</span>
+                <span className="block text-xs text-gray-400">Tick only to reimburse a person. Otherwise the company owes the vendor.</span>
+              </span>
+            </label>
+            {reimbursing && (
+              <div className="mt-2">
+                <SearchableSelect value={person} options={people} placeholder="Search any Tally ledger…" onSelect={setPerson} />
+                <p className="mt-1 text-xs text-gray-400">Every Tally ledger is searchable, staff claimants first — the import can’t fail on a name.</p>
+              </div>
+            )}
+            {!reimbursing && (
+              <p className="mt-1 text-xs text-gray-400">Vendor invoices — the ledger is matched from whoever raised the bill.</p>
+            )}
           </div>
           <div>
             <span className={label}>Bills — photos or PDFs, the whole stack at once</span>
@@ -559,7 +621,9 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
         {batch && (
           <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50/60 p-4">
             <div className="mb-2 flex items-center justify-between text-sm">
-              <span className="text-gray-700">{batch.person} — {batch.done} of {batch.total} read{batch.finished ? " · done" : "…"}</span>
+              {/* A vendor stack has no person, and "​ — 3 of 11 read" with a
+                  blank in front of the dash reads as a bug. Name the kind. */}
+              <span className="text-gray-700">{batch.person || "Vendor invoices"} — {batch.done} of {batch.total} read{batch.finished ? " · done" : "…"}</span>
               {batch.sum > 0 && <span className="font-medium text-gray-900">{fmtAmt(batch.sum)}</span>}
             </div>
             <div className="h-2 overflow-hidden rounded-full bg-gray-200">
@@ -752,9 +816,25 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
                     </div>
                   )}
 
+                  {/* A bill uploaded as a VENDOR invoice carries no claimant,
+                      so flipping it to a reimbursement here has to name one —
+                      that is the mixed stack: an envelope of supplier invoices
+                      with one receipt somebody paid for. Without this the
+                      confirm posted an empty person and came back 400 "ledger
+                      and person are required" with nothing on screen to fix. */}
+                  {!(detail.person || "").trim() && (
+                    <div>
+                      <span className={label}>Who gets reimbursed</span>
+                      <SearchableSelect value={claimant} options={people} placeholder="Search any Tally ledger…" onSelect={setClaimant} />
+                      <p className="mt-1 text-xs text-gray-400">
+                        This bill was uploaded as a vendor invoice. Name the person only if they paid for it themselves.
+                      </p>
+                    </div>
+                  )}
+
                   <div>
                     <span className={label}>Expense ledger</span>
-                    <LedgerPicker value={form.ledger} person={detail.person} onSelect={(l) => setForm((p) => ({ ...p, ledger: l }))} />
+                    <LedgerPicker value={form.ledger} person={detail.person || claimant} onSelect={(l) => setForm((p) => ({ ...p, ledger: l }))} />
                     {detail.suggestions.length > 1 && !form.ledger && (
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         {detail.suggestions.slice(0, 4).map((s) => (
