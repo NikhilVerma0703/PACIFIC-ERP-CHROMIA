@@ -21,13 +21,16 @@ async function main() {
   }
 
   // Tools, Liquids, Powders
-  const tools = ["BOAT 120","BOAT 100","SMALL","KNIFE","SOMBRERO-20","ERPICE MOD","DISCOFAT","PAINTING TOOL","ERPICE BRETON","DISCOTHIN"];
+  // Union of the original lists and upstream ROBO_MODULE's additions - the
+  // new names are exactly the ones design-presets.ts references, so dropping
+  // any of them would make preset auto-fill produce dangling names.
+  const tools = ["BOAT 120","BOAT 100","SMALL","KNIFE","SMALL KNIFE","SOMBRERO-20","ERPICE MOD","DISCOFAT","PAINTING TOOL","ERPICE BRETON","DISCOTHIN"];
   for (const name of tools) await prisma.roboTool.upsert({ where: { name }, update: {}, create: { name } });
 
-  const liquids = ["CB-GOLD3","LG5","LVB2","MM-WHITE","LG1","COSTA 703","DARK GREY","IKOS WHITE"];
+  const liquids = ["CB-GOLD3","LG5","LVB2","LVBR2","MM-WHITE","LG1","COSTA 703","COSTA BROWN 703","COSTA GOLD 703/140","703/140","DARK GREY","IKOS WHITE","SUPER MILD BROWN","DV BLACK"];
   for (const name of liquids) await prisma.roboLiquid.upsert({ where: { name }, update: {}, create: { name } });
 
-  const powders = ["DVCG1","DVCTLM2","DV42","DV4","TQ BLUE","DV KHAKHI2"];
+  const powders = ["DVCG1","DVCTLM2","DVCT2","DVCT3","DVCT4","DV42","DV4","DV8","DVLM","DVTQ23","TQ BLUE","LIGHT GREEN","DV KHAKHI2"];
   for (const name of powders) await prisma.roboPowder.upsert({ where: { name }, update: {}, create: { name } });
 
   // Designs + Programs

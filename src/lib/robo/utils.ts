@@ -1,0 +1,78 @@
+export function formatDate(dateStr: string): string {
+  const [y, m, d] = dateStr.split("-");
+  return `${d}/${m}/${y}`;
+}
+export function getDurationMinutes(inTime: string, outTime: string): number | null {
+  if (!inTime || !outTime) return null;
+  const [ih, im] = inTime.split(":").map(Number);
+  const [oh, om] = outTime.split(":").map(Number);
+  const diff = oh * 60 + om - (ih * 60 + im);
+  return diff > 0 ? diff : null;
+}
+export function fmtDuration(mins: number): string {
+  if (mins < 60) return `${mins}m`;
+  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+/** Local calendar date (YYYY-MM-DD) — not UTC, so night shifts get the right date. */
+export function todayStr(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+export function nowTimeStr(): string {
+  const d = new Date();
+  return d.toTimeString().slice(0, 5);
+}
+
+/** Readable duration for KPI cards: "37 minutes", "4 hours 58 minutes", "4 hours". */
+export function fmtDurationLong(mins: number): string {
+  if (!mins || mins <= 0) return "0 minutes";
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  const parts: string[] = [];
+  if (h > 0) parts.push(`${h} ${h === 1 ? "hour" : "hours"}`);
+  if (m > 0) parts.push(`${m} ${m === 1 ? "minute" : "minutes"}`);
+  return parts.join(" ");
+}
+
+/* ── Slab status ───────────────────────────────────────────── */
+export const SLAB_IN_PROCESSING = "IN_PROCESSING";
+export const SLAB_COMPLETED = "COMPLETED";
+
+export function slabStatusLabel(status: string): string {
+  if (status === SLAB_IN_PROCESSING) return "In-Processing";
+  if (status === SLAB_COMPLETED) return "Completed";
+  return status;
+}
+
+export function slabStatusClass(status: string): string {
+  if (status === SLAB_COMPLETED) return "bg-green-100 text-green-700";
+  if (status === SLAB_IN_PROCESSING) return "bg-amber-100 text-amber-700";
+  return "bg-gray-100 text-gray-600";
+}
+
+/* ── Remark / delay rendering ──────────────────────────────── */
+export interface DelayLike {
+  durationMinutes: number;
+  startTime?: string | null;
+  endTime?: string | null;
+  remarks?: string | null;
+  machineName?: string | null;
+  delayCode?: { code: string; description: string } | null;
+}
+
+/** "C1 5m [10:00-10:05] - note - free remark", or "-" when there is nothing to show. */
+export function formatSlabRemarks(
+  remarks: string | null | undefined,
+  delays: DelayLike[] | undefined | null
+): string {
+  const parts: string[] = [];
+  for (const d of delays ?? []) {
+    const code = d.delayCode?.code ?? "";
+    const machine = d.machineName ? ` ${d.machineName}` : "";
+    const window = d.startTime && d.endTime ? ` [${d.startTime}-${d.endTime}]` : "";
+    const note = d.remarks?.trim() ? ` - ${d.remarks.trim()}` : "";
+    parts.push(`${code}${machine} ${d.durationMinutes}m${window}${note}`.trim());
+  }
+  if (remarks?.trim()) parts.push(remarks.trim());
+  return parts.length > 0 ? parts.join(" · ") : "-";
+}

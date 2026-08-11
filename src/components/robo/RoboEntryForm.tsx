@@ -6,6 +6,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, Badge, Empty } from "@/components/ui";
 import { SearchableSelect, type SsOption } from "./SearchableSelect";
+import { findDesignPreset } from "@/lib/robo/design-presets";
+import { SLAB_IN_PROCESSING, slabStatusClass, slabStatusLabel } from "@/lib/robo/utils";
 
 const MACHINE_ORDER = ["Roycut-1", "Roymix", "Roycut-2", "Roycut-3"];
 
@@ -31,7 +33,7 @@ interface BatchRecipe { id: string; designName: string; thickness: number | null
 interface ProdRecord {
   id: string; serialNumber: number | null; slabNumber: string;
   inTime: string | null; outTime: string | null; roymixCycleTime: number | null;
-  roymixBodyWeight: number | null; remarks: string | null; createdAt: string;
+  roymixBodyWeight: number | null; status: string; remarks: string | null; createdAt: string;
 }
 interface ActiveShift {
   id: string; shiftNumber: number; date: string; operatorName: string;
@@ -118,6 +120,9 @@ export function RoboEntryForm() {
   const [slab, setSlab] = useState({ serialNumber: "", slabNumber: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" });
   const [slabError, setSlabError] = useState("");
   const [slabSaving, setSlabSaving] = useState(false);
+  /** Set while an In-Processing slab is loaded back into the form for
+   *  finishing — save then PATCHes instead of creating a duplicate. */
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   // ---- delays inside the slab entry ----
   const [delays, setDelays] = useState<PendingDelay[]>([]);
@@ -175,8 +180,10 @@ export function RoboEntryForm() {
   const latestBatch = shift?.batchRecipes?.[shift.batchRecipes.length - 1] ?? null;
   const records = shift?.productionRecords ?? [];
 
-  // suggest the next serial / slab number from what's already logged
+  // suggest the next serial / slab number from what's already logged —
+  // but never while an existing slab is loaded for editing
   useEffect(() => {
+    if (editingId) return;
     const maxSerial = records.reduce((m, r) => Math.max(m, r.serialNumber ?? 0), 0);
     const lastSlab = records[0]?.slabNumber;
     setSlab((p) => ({
@@ -185,7 +192,7 @@ export function RoboEntryForm() {
       slabNumber: p.slabNumber || (lastSlab && /^\d+$/.test(lastSlab) ? String(Number(lastSlab) + 1) : ""),
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shift?.id, records.length]);
+  }, [shift?.id, records.length, editingId]);
 
   const activeMachineNames = latestBatch
     ? latestBatch.entries
@@ -238,6 +245,34 @@ export function RoboEntryForm() {
 
   const setEntry = (machineId: string, field: keyof MachineEntry, value: string) =>
     setEntries((p) => ({ ...p, [machineId]: { ...(p[machineId] ?? emptyEntry()), [field]: value } }));
+
+  /** Design picked → pre-fill tool/liquid/powder per machine from the plant
+   *  in-charge's reference sheet. Never program, CT or roller height (those
+   *  vary run to run), and everything stays editable — the preset is a head
+   *  start, not a rule. */
+  const applyDesignPreset = (designName: string) => {
+    setBatch((p) => ({ ...p, designName }));
+    const preset = findDesignPreset(designName);
+    if (!preset) return;
+    let touched = 0;
+    setEntries((prev) => {
+      const next = { ...prev };
+      for (const m of machines) {
+        const mp = preset.machines[m.name];
+        if (!mp) continue;
+        const cur = next[m.id] ?? emptyEntry();
+        next[m.id] = {
+          ...cur,
+          toolName: mp.toolName ?? cur.toolName,
+          liquidName: mp.liquidName ?? cur.liquidName,
+          powderName: mp.powderName ?? cur.powderName,
+        };
+        touched += 1;
+      }
+      return next;
+    });
+    if (touched > 0) say(`Tool, liquid and powder pre-filled for ${touched} machine(s) from the ${preset.design} reference — check and adjust as needed.`);
+  };
 
   // ---- the shift row is pure plumbing (schema requires it): reuse today's,
   // silently close a stale one from a previous day, create fresh as needed ----
@@ -323,38 +358,81 @@ export function RoboEntryForm() {
     setCodeSearch("");
   };
 
+  /** Load an In-Processing slab back into the form to finish it. */
+  const editRecord = (r: ProdRecord) => {
+    setEditingId(r.id);
+    setDelays([]);
+    setSlab({
+      serialNumber: r.serialNumber != null ? String(r.serialNumber) : "",
+      slabNumber: r.slabNumber,
+      inTime: r.inTime ?? "",
+      outTime: r.outTime ?? "",
+      roymixCycleTime: r.roymixCycleTime != null ? String(r.roymixCycleTime) : "",
+      roymixBodyWeight: r.roymixBodyWeight != null ? String(r.roymixBodyWeight) : "",
+      remarks: r.remarks ?? "",
+    });
+    setSlabError("");
+  };
+  const cancelEdit = () => {
+    setEditingId(null);
+    setDelays([]);
+    setSlab({ serialNumber: "", slabNumber: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" });
+  };
+
   const saveSlab = async (e: React.FormEvent) => {
     e.preventDefault();
     setSlabError("");
     if (!shift) { setSlabError("Save a batch setup first."); return; }
     if (!slab.slabNumber.trim()) { setSlabError("Slab number is required."); return; }
     setSlabSaving(true);
-    const res = await fetch("/api/robo/production", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        serialNumber: slab.serialNumber ? Number(slab.serialNumber) : null,
-        slabNumber: slab.slabNumber.trim(),
-        shiftId: shift.id,
-        batchRecipeId: latestBatch?.id || null,
-        inTime: slab.inTime || null,
-        outTime: slab.outTime || null,
-        roymixCycleTime: slab.roymixCycleTime ? Number(slab.roymixCycleTime) : null,
-        roymixBodyWeight: slab.roymixBodyWeight ? Number(slab.roymixBodyWeight) : null,
-        remarks: slab.remarks || null,
-        status: "COMPLETED",
-        delays: delays.map((d) => ({
-          delayCodeId: d.delayCodeId, machineId: d.machineId || null, machineName: d.machineName || null,
-          durationMinutes: d.durationMinutes, startTime: d.startTime || null, endTime: d.endTime || null, remarks: d.remarks || null,
-        })),
-      }),
-    }).catch(() => null);
-    if (!res?.ok) { setSlabError("Failed to save the slab."); setSlabSaving(false); return; }
+    const delayPayload = delays.map((d) => ({
+      delayCodeId: d.delayCodeId, machineId: d.machineId || null, machineName: d.machineName || null,
+      durationMinutes: d.durationMinutes, startTime: d.startTime || null, endTime: d.endTime || null, remarks: d.remarks || null,
+    }));
+    // No status sent: the server derives it from Out time, so a slab still in
+    // the line saves as In-Processing and can be finished from the table below.
+    const res = await (editingId
+      ? fetch(`/api/robo/production/${editingId}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            serialNumber: slab.serialNumber ? Number(slab.serialNumber) : null,
+            slabNumber: slab.slabNumber.trim(),
+            inTime: slab.inTime || null,
+            outTime: slab.outTime || null,
+            roymixCycleTime: slab.roymixCycleTime ? Number(slab.roymixCycleTime) : null,
+            roymixBodyWeight: slab.roymixBodyWeight ? Number(slab.roymixBodyWeight) : null,
+            remarks: slab.remarks || null,
+            delays: delayPayload,
+          }),
+        })
+      : fetch("/api/robo/production", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            serialNumber: slab.serialNumber ? Number(slab.serialNumber) : null,
+            slabNumber: slab.slabNumber.trim(),
+            shiftId: shift.id,
+            batchRecipeId: latestBatch?.id || null,
+            inTime: slab.inTime || null,
+            outTime: slab.outTime || null,
+            roymixCycleTime: slab.roymixCycleTime ? Number(slab.roymixCycleTime) : null,
+            roymixBodyWeight: slab.roymixBodyWeight ? Number(slab.roymixBodyWeight) : null,
+            remarks: slab.remarks || null,
+            delays: delayPayload,
+          }),
+        })
+    ).catch(() => null);
+    if (!res?.ok) { setSlabError(editingId ? "Failed to update the slab." : "Failed to save the slab."); setSlabSaving(false); return; }
     const saved = slab.slabNumber.trim();
+    const wasEdit = Boolean(editingId);
+    const finished = Boolean(slab.outTime);
+    setEditingId(null);
     setDelays([]);
     setSlab((p) => ({ ...p, slabNumber: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" }));
     await refetchShift();
     setSlabSaving(false);
-    say(`Slab ${saved} saved.`);
+    say(wasEdit
+      ? `Slab ${saved} updated${finished ? " and completed" : ""}.`
+      : finished ? `Slab ${saved} saved.` : `Slab ${saved} saved as In-Processing — finish it from the table below when it leaves the line.`);
   };
 
   if (loading) return <Empty>Loading robo line…</Empty>;
@@ -402,7 +480,7 @@ export function RoboEntryForm() {
               <div className="col-span-2">
                 <span className={label}>Design <span className="text-red-500">*</span></span>
                 <SearchableSelect value={batch.designName} options={designs} placeholder="Search designs or add new…"
-                  onSelect={(name) => setBatch((p) => ({ ...p, designName: name }))} onCreate={addDesign} />
+                  onSelect={applyDesignPreset} onCreate={addDesign} />
               </div>
               <div>
                 <span className={label}>Thickness (cm)</span>
@@ -507,6 +585,12 @@ export function RoboEntryForm() {
           <Empty>No batch running. Save a batch setup above to start logging slabs.</Empty>
         ) : (
           <form onSubmit={saveSlab} className="space-y-4">
+            {editingId && (
+              <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                <span>Finishing slab <span className="font-semibold">{slab.slabNumber}</span> — add the Out time and save to complete it.</span>
+                <button type="button" onClick={cancelEdit} className="ml-auto text-xs font-medium text-amber-700 underline hover:text-amber-900">Cancel edit</button>
+              </div>
+            )}
             {slabError && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{slabError}</div>}
 
             <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
@@ -644,8 +728,13 @@ export function RoboEntryForm() {
               </div>
             </div>
 
-            <div className="flex justify-end">
-              <button type="submit" disabled={slabSaving} className={btnPrimary}>{slabSaving ? "Saving…" : "Save slab"}</button>
+            <div className="flex items-center justify-end gap-3">
+              {!editingId && !slab.outTime && slab.slabNumber && (
+                <span className="text-xs text-gray-400">No Out time — will save as In-Processing.</span>
+              )}
+              <button type="submit" disabled={slabSaving} className={btnPrimary}>
+                {slabSaving ? "Saving…" : editingId ? "Update slab" : "Save slab"}
+              </button>
             </div>
           </form>
         )}
@@ -661,6 +750,7 @@ export function RoboEntryForm() {
                 <tr className="border-b border-gray-100 text-left text-xs uppercase tracking-wide text-gray-400">
                   <th className="py-2 pr-4 font-medium">#</th>
                   <th className="py-2 pr-4 font-medium">Slab</th>
+                  <th className="py-2 pr-4 font-medium">Status</th>
                   <th className="py-2 pr-4 font-medium">In → Out</th>
                   <th className="py-2 pr-4 font-medium">RoyMix CT</th>
                   <th className="py-2 pr-4 font-medium">Body wt</th>
@@ -669,9 +759,16 @@ export function RoboEntryForm() {
               </thead>
               <tbody>
                 {records.slice(0, 10).map((r) => (
-                  <tr key={r.id} className="border-b border-gray-50 last:border-0">
+                  <tr key={r.id} className={`border-b border-gray-50 last:border-0 ${editingId === r.id ? "bg-amber-50/60" : ""}`}>
                     <td className="py-2 pr-4 text-gray-400">{r.serialNumber ?? "—"}</td>
                     <td className="py-2 pr-4 font-medium text-gray-900">{r.slabNumber}</td>
+                    <td className="py-2 pr-4">
+                      <span className={`rounded px-1.5 py-0.5 text-xs ${slabStatusClass(r.status)}`}>{slabStatusLabel(r.status)}</span>
+                      {r.status === SLAB_IN_PROCESSING && editingId !== r.id && (
+                        <button type="button" onClick={() => editRecord(r)}
+                          className="ml-2 text-xs font-medium text-brand hover:underline">finish →</button>
+                      )}
+                    </td>
                     <td className="py-2 pr-4 text-gray-600">{r.inTime || "—"}{" → "}{r.outTime || "—"}</td>
                     <td className="py-2 pr-4 text-gray-600">{r.roymixCycleTime ? `${r.roymixCycleTime}s` : "—"}</td>
                     <td className="py-2 pr-4 text-gray-600">{r.roymixBodyWeight ? `${r.roymixBodyWeight} kg` : "—"}</td>

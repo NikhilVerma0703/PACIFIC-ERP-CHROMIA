@@ -1,5 +1,6 @@
 // Manual batch slab-range edits: per-batch range confirmations + manually-added
-// slabs. Backed by the raw `batch_range_edit` table (no Prisma model needed).
+// slabs. Backed by the raw `batch_range_edit` table (modeled in schema.prisma as
+// BatchRangeEdit so `db push` won't DROP it; access stays raw SQL).
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";

@@ -6,8 +6,8 @@ export async function GET() {
     where: { status: "ACTIVE" },
     include: {
       batchRecipes: { include: { design: true, program: true, entries: { include: { machine: true } } }, orderBy: { createdAt: "asc" } },
-      productionRecords: { orderBy: { createdAt: "desc" }, take: 50 },
-      delayLogs: { include: { delayCode: true }, orderBy: { createdAt: "desc" }, take: 50 },
+      productionRecords: { orderBy: { createdAt: "desc" }, take: 500 },
+      delayLogs: { include: { delayCode: true }, orderBy: { createdAt: "desc" }, take: 500 },
     },
   });
   if (!shift) return NextResponse.json(null);
