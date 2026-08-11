@@ -198,11 +198,19 @@ async function health(user: string) {
 }
 
 async function people(url: URL) {
-  // The cap is far above any plausible group size and `truncated` says so
-  // outright when it bites: the ERP loads this list once and filters it in the
-  // browser, so a name past the cap is unreachable rather than paginated.
+  // The cap is far above the master's size and `truncated` says so outright
+  // when it bites: the ERP loads this list once and filters it in the browser,
+  // so a name past the cap is unreachable rather than paginated.
   const limit = clampInt(url.searchParams.get("limit"), 50, 5000);
-  const names = await loadPeople();
+  // The WHOLE ledger master is offered, claimants first. The people-group rule
+  // decides who leads the list, not who is reachable: reimbursements also get
+  // filed against directors, contractors and ledgers that live outside the
+  // nominated group, and a name that exists in Tally but cannot be picked
+  // reads exactly like a missing import. Every name here comes from the
+  // master, so /confirm canonicalises it and the export cannot create one.
+  const [claimants, all] = await Promise.all([loadPeople(), knownLedgerNames()]);
+  const lead = new Set(claimants);
+  const names = claimants.concat(all.filter((n) => !lead.has(n)));
   return json(peopleResponse(names, url.searchParams.get("q") ?? "", limit));
 }
 
@@ -234,7 +242,15 @@ async function ledgers(url: URL) {
     return json({ ledgers: postable.slice(0, limit), source: "expense heads" });
   }
 
-  return json({ ledgers: rankNames(postable, q).slice(0, limit), source: "search" });
+  // A typed query searches the WHOLE master, expense heads ranked ahead of
+  // the rest. Searching postable only left every creditor, bank and asset
+  // head unfindable — and the vendor picker comes through here with
+  // person="", where the name wanted is by definition not an expense head.
+  const known = await knownLedgerNames();
+  const pickable = new Set(postable);
+  const rest = known.filter((n) => !pickable.has(n));
+  const ranked = rankNames(postable, q).concat(rankNames(rest, q));
+  return json({ ledgers: ranked.slice(0, limit), source: "search" });
 }
 
 // ---------------------------------------------------------------------------

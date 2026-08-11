@@ -509,8 +509,8 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <div>
             <span className={label}>Person (who gets reimbursed)</span>
-            <SearchableSelect value={person} options={people} placeholder="Search the claimant list…" onSelect={setPerson} />
-            <p className="mt-1 text-xs text-gray-400">Names come from Tally, so the import can’t fail on one.</p>
+            <SearchableSelect value={person} options={people} placeholder="Search any Tally ledger…" onSelect={setPerson} />
+            <p className="mt-1 text-xs text-gray-400">Every Tally ledger is searchable, staff claimants first — the import can’t fail on a name.</p>
           </div>
           <div>
             <span className={label}>Bills — photos or PDFs, the whole stack at once</span>
