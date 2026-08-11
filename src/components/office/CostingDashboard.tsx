@@ -131,13 +131,30 @@ export function CostingDashboard() {
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  /** Why the batch list could not be read. Distinct from "no batches". */
+  const [listError, setListError] = useState("");
 
   useEffect(() => {
     let live = true;
+    // A FAILED LOAD MUST NOT READ AS "NO BATCHES". This used to .catch() into
+    // an empty array, so when listCostableBatches() threw — which it did on
+    // every call, see the ::int cast in batchData.ts — the screen calmly said
+    // "No batches with mixer records in this window" and the whole dashboard
+    // looked like a plant that had never run. The same trap the fabrication
+    // queues had: "empty" and "failed" must never draw the same.
+    setListError("");
     fetch(`${API}?days=${days}`, { cache: "no-store" })
-      .then((r) => r.json())
+      .then(async (r) => {
+        const d = await r.json().catch(() => null);
+        if (!r.ok) throw new Error(d?.error ?? `Could not list batches (HTTP ${r.status}).`);
+        return d;
+      })
       .then((d) => { if (live) setBatches(d.batches ?? []); })
-      .catch(() => { if (live) setBatches([]); });
+      .catch((e) => {
+        if (!live) return;
+        setBatches([]);
+        setListError(e instanceof Error ? e.message : String(e));
+      });
     return () => { live = false; };
   }, [days]);
 
@@ -185,7 +202,16 @@ export function CostingDashboard() {
             </select>
           </label>
           {batches === null && <span className="text-xs text-gray-400">Loading batches…</span>}
-          {batches?.length === 0 && <span className="text-xs text-gray-400">No batches with mixer records in this window.</span>}
+          {/* "Nothing ran" and "the list would not load" are different facts and
+              must not share a sentence. */}
+          {batches?.length === 0 && !listError && (
+            <span className="text-xs text-gray-400">No batches with mixer records in this window.</span>
+          )}
+          {listError && (
+            <span className="rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700">
+              Batch list failed to load — {listError} Nothing is missing from the plant; this screen could not read it.
+            </span>
+          )}
           {loading && <span className="text-xs text-gray-400">Computing…</span>}
         </div>
         {report && (

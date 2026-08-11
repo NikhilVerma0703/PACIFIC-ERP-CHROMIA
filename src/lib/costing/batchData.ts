@@ -68,7 +68,12 @@ export async function listCostableBatches(days: number): Promise<BatchListEntry[
     WITH mixes AS (
       SELECT batch_key, max(batch) batch, count(*)::int cycles
       FROM mixer_cycle
-      WHERE batch_key IS NOT NULL AND imported_at > now() - make_interval(days => ${days})
+      -- ::int IS LOAD-BEARING. Prisma binds a JS number as int8, and
+      -- make_interval's named arguments are int4 with no implicit cast between
+      -- them, so without it Postgres answers 42883 "function
+      -- make_interval(days => bigint) does not exist" and this query throws on
+      -- EVERY call. The batch picker was permanently empty because of it.
+      WHERE batch_key IS NOT NULL AND imported_at > now() - make_interval(days => ${days}::int)
       GROUP BY batch_key
     ),
     pressed AS (
