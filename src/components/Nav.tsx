@@ -135,8 +135,17 @@ export function Nav({
   if (role === "MAINTENANCE")
     return <nav className="flex flex-col gap-1">{MAINTENANCE_TABS.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}</nav>;
   if (role === "ROBO")
-    // robo line operator — the robo entry form is their whole ERP
-    return <nav className="flex flex-col gap-1"><NavLink href="/robo" icon={I.factory} label="Robo Entry" path={path} /></nav>;
+    // robo line operator — the robo module is their whole ERP
+    return (
+      <nav className="flex flex-col gap-1">
+        <NavLink href="/robo" icon={I.factory} label="Robo Entry" path={path} />
+        <NavLink href="/robo/slabs" icon={I.batch} label="Slab Records" path={path} />
+        <NavLink href="/robo/reports" icon={I.ceo} label="Reports" path={path} />
+        <NavLink href="/robo/downloads" icon={I.box} label="Downloads" path={path} />
+        <NavLink href="/robo/import" icon={I.entry} label="Import" path={path} />
+        <NavLink href="/robo/masters" icon={I.tables} label="Master Lists" path={path} />
+      </nav>
+    );
   if (role === "OPERATOR" && branch !== "FABRICATION")
     return (
       <nav className="flex flex-col gap-1">
@@ -151,6 +160,8 @@ export function Nav({
         <NavLink href="/office" icon={I.factory} label="Shop Floor" path={path} office />
         <NavLink href="/entry"  icon={I.entry}   label="Data Entry" path={path} />
         {(role === "FINANCE" || role === "ACCOUNTS" || showAdmin) && <NavLink href="/office/finance" icon={I.report} label="Bill Automation" path={path} />}
+        {/* Costing prices the whole cost base — strictly ADMIN, like the scoreboard. */}
+        {isAdmin && <NavLink href="/office/costing" icon={I.ceo} label="Batch Costing" path={path} />}
         {inventory && <NavLink href="/inventory" icon={I.box} label="Finished Goods" path={path} />}
         {showAdmin && <NavLink href="/admin/users" icon={I.users} label="Users & Roles" path={path} />}
       </nav>
@@ -187,6 +198,8 @@ export function Nav({
     // Scoreboard ranks named people and feeds an incentive payout, so it is
     // ADMIN-only — not showAdmin, which also admits shop-floor incharges.
     ...(isAdmin ? [{ href: "/scoreboard", icon: I.report, label: "Shift Scoreboard" }] : []),
+    // Costing prices the plant's whole cost base — same strictness.
+    ...(isAdmin ? [{ href: "/office/costing", icon: I.ceo, label: "Batch Costing" }] : []),
   ];
 
   if (branch === "INTERNATIONAL_SALES") {

@@ -79,6 +79,19 @@ export default auth((req) => {
     }
   }
 
+  // ---- Batch costing: ADMIN only. It prices the plant's whole cost base -
+  // manpower, electricity, supplier rates - which is exactly the information
+  // a rate negotiation or a payroll grievance would love to have. Same
+  // ordering rule as finance: before the branch blocks, so Commercial's
+  // `/office` allowance cannot leak it. ----
+  if (p.startsWith("/office/costing") || p.startsWith("/api/office/costing")) {
+    if (!isAdmin) {
+      return p.startsWith("/api")
+        ? new Response("Forbidden", { status: 403 })
+        : Response.redirect(new URL("/", nextUrl));
+    }
+  }
+
   if (!isAdmin && branch === "FABRICATION") {
     // Fabrication staff: fab pages + Overview + API only — never production pages.
     if (p.startsWith("/api")) return;

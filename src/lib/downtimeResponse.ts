@@ -1,5 +1,6 @@
 // Maintenance response on a downtime incident (one per MIS hourly row). Backed by
-// the raw `downtime_response` table (no Prisma model needed, like batch_range_edit).
+// the raw `downtime_response` table (modeled in schema.prisma as DowntimeResponse so
+// `db push` won't DROP it; access stays raw SQL, like batch_range_edit).
 // Visible to anyone who can see /mis; only Maintenance Manager + Admin may write
 // (gated in the server action). Resilient if the table isn't created yet.
 //

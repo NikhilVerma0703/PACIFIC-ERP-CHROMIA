@@ -80,6 +80,18 @@ model User {
   @@map("users")
 }
 
+/// Login rate-limit counters (src/auth.ts): one row per throttle key, counting
+/// failures in a rolling 15-minute window; stale rows are cleaned opportunistically.
+/// DB-backed so the lockout survives serverless instances — auth falls back to an
+/// in-memory map if this table is absent. Hand-written; access stays raw SQL.
+model LoginAttempt {
+  key     String   @id
+  n       Int      @default(1)
+  firstAt DateTime @default(now()) @map("first_at") @db.Timestamptz(6)
+
+  @@map("login_attempt")
+}
+
 model GritMaster {
   id                                String   @id @default(cuid())
   airtableId                        String   @unique
@@ -1593,6 +1605,90 @@ model Mis {
   @@map("mis")
 }
 
+// ==========================================
+// Shop-floor MIS side-tables. Hand-written models for tables created out-of-band
+// with raw SQL (their libs keep using $queryRaw — the models exist so `db push`
+// stops proposing to DROP them). NOT generated from Airtable; preserve across regens.
+// ==========================================
+
+/// Manual batch slab-range edits (src/lib/batchRange.ts): per-batch range
+/// confirmations plus manually added/skipped slabs. One row per confirmation
+/// or per slab; `kind` discriminates.
+model BatchRangeEdit {
+  id         String   @id
+  batchKey   String   @map("batch_key")
+  slabNumber Float?   @map("slab_number")
+  kind       String
+  enteredBy  String?  @map("entered_by")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+
+  @@unique([batchKey, kind, slabNumber])
+  @@index([batchKey], map: "idx_bre_batch")
+  @@map("batch_range_edit")
+}
+
+/// Maintenance's response on a downtime incident — one per MIS hourly row
+/// (mis_id UNIQUE, no hard FK). May carry a dispute: maintenance's own duration
+/// recorded BESIDE production's figure, never over it. See src/lib/downtimeResponse.ts.
+model DowntimeResponse {
+  id              String    @id
+  misId           String    @unique @map("mis_id")
+  status          String
+  note            String?
+  respondedBy     String?   @map("responded_by")
+  respondedAt     DateTime  @default(now()) @map("responded_at") @db.Timestamp(6)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamp(6) // maintained by raw SQL, not @updatedAt
+  disputedType    String?   @map("disputed_type")
+  disputedMinutes Float?    @map("disputed_minutes")
+  disputedBy      String?   @map("disputed_by")
+  disputedAt      DateTime? @map("disputed_at") @db.Timestamp(6)
+
+  @@map("downtime_response")
+}
+
+/// The maintenance log: anything from incharge up can raise a fault, with or
+/// without a stoppage behind it. Two-way linked to DowntimeResponse via mis_id
+/// when raised from a downtime incident. See src/lib/maintenanceLog.ts.
+model MaintenanceTicket {
+  id          String    @id
+  ref         String    @unique
+  title       String
+  detail      String?
+  area        String?
+  priority    String    @default("Normal")
+  status      String    @default("Pending")
+  raisedBy    String?   @map("raised_by")
+  raisedAt    DateTime  @default(now()) @map("raised_at") @db.Timestamp(6)
+  misId       String?   @map("mis_id")
+  response    String?
+  respondedBy String?   @map("responded_by")
+  respondedAt DateTime? @map("responded_at") @db.Timestamp(6)
+  closedAt    DateTime? @map("closed_at") @db.Timestamp(6)
+  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamp(6) // maintained by raw SQL, not @updatedAt
+
+  @@index([misId], map: "maintenance_ticket_mis_idx")
+  @@index([raisedAt(sort: Desc)], map: "maintenance_ticket_raised_idx")
+  @@index([status])
+  @@map("maintenance_ticket")
+}
+
+/// Optional photo attached to a shop-floor entry record — bytea in Postgres
+/// because Vercel has no disk (like FinanceBillImage). Saved best-effort from
+/// createRow/saveRow; (model, record_id) points at the owning row. See src/lib/entryPhoto.ts.
+model EntryPhoto {
+  id       String   @id
+  model    String
+  recordId String   @map("record_id")
+  filename String
+  mime     String
+  data     Bytes
+  takenBy  String?  @map("taken_by")
+  at       DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([model, recordId], map: "entry_photo_record")
+  @@map("entry_photo")
+}
+
 model SlabSegregation {
   id                          String   @id @default(cuid())
   airtableId                  String   @unique
@@ -2499,6 +2595,50 @@ model SlabEvent {
   @@map("fg_slab_event")
 }
 
+/// The dispatch invoice file uploaded when slabs leave the yard (inventory
+/// dispatch flow) — bytea in Postgres, Vercel has no disk. `slab_numbers`
+/// pins which slabs the file covered at upload time. Ids are minted in the
+/// route ("inv..."); access stays raw SQL.
+model DispatchInvoice {
+  id           String   @id
+  pi           String?  @map("pi")
+  customer     String?  @map("customer")
+  filename     String   @map("filename")
+  mime         String   @map("mime")
+  data         Bytes    @map("data")
+  slabNumbers  Float[]  @map("slab_numbers")
+  dispatchedBy String?  @map("dispatched_by")
+  at           DateTime @default(now()) @map("at") @db.Timestamptz(6)
+
+  @@map("fg_dispatch_invoice")
+}
+
+/// A batch ticked "approved for Sales" on the inventory approval screen:
+/// a row here puts the batch in the register + Sales view; deleting it sends
+/// the batch back to PENDING. Upserted raw with ON CONFLICT (design, batch).
+model SalesApprovedBatch {
+  design     String   @map("design")
+  batch      String   @default("") @map("batch")
+  approvedBy String?  @map("approved_by")
+  at         DateTime @default(now()) @map("at") @db.Timestamptz(6)
+
+  @@id([design, batch])
+  @@map("fg_sales_approved_batch")
+}
+
+/// A design hidden from the Sales inventory view (design-level master switch,
+/// incl. __TRIALS__). batch is '' rather than NULL so the composite PK can
+/// hold — Postgres treats NULLs as distinct.
+model SalesHiddenDesign {
+  design   String   @map("design")
+  hiddenBy String?  @map("hidden_by")
+  at       DateTime @default(now()) @map("at") @db.Timestamptz(6)
+  batch    String   @default("") @map("batch")
+
+  @@id([design, batch])
+  @@map("fg_sales_hidden_design")
+}
+
 // ==========================================
 // Consumables module (ported from the standalone consumables dashboard).
 // Native ERP tables — NOT generated from Airtable; preserve across regens.
@@ -3194,6 +3334,26 @@ model SalesCreditNote {
   @@map("sales_credit_notes")
 }
 
+/// In-app notification for a Sales user (bell menu). Written via raw SQL by
+/// src/lib/sales/notifications.ts; `actions` is a JSON array of {label, url}
+/// buttons. The id defaults in the DATABASE (gen_random_uuid, unlike the
+/// client-side cuid() ids elsewhere in this block) because inserts are raw SQL.
+model SalesNotification {
+  id        String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId    String   @map("user_id") // -> users.id (no hard FK)
+  orderId   String?  @map("order_id") // -> sales_orders.id (no hard FK)
+  type      String
+  title     String
+  body      String?
+  actionUrl String?  @map("action_url")
+  actions   Json     @default("[]")
+  isRead    Boolean  @default(false) @map("is_read")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([userId, isRead, createdAt(sort: Desc)], map: "idx_sales_notifications_user")
+  @@map("sales_notifications")
+}
+
 // ============================================================================
 // ROBO MODULE — Robo production line (merged from ROBO_MODULE standalone app).
 // Models are Robo-prefixed to keep them clearly namespaced from the Airtable-
@@ -3352,6 +3512,23 @@ model RoboDelayLog {
   endTime            String?
   remarks            String?
   createdAt          DateTime              @default(now())
+}
+
+/// One bulk import of a production register workbook (ROBO_MODULE upstream's
+/// ImportLog, namespaced). No relations on purpose - it is a journal, and the
+/// rows it describes survive it.
+model RoboImportLog {
+  id        String   @id @default(cuid())
+  fileName  String
+  period    String?
+  status    String   @default("failed")
+  totalRows Int      @default(0)
+  imported  Int      @default(0)
+  skipped   Int      @default(0)
+  failed    Int      @default(0)
+  message   String?
+  user      String   @default("System Administrator")
+  createdAt DateTime @default(now())
 }
 
 /// An admin's ruling on a slab two shifts both claimed in MIS.
@@ -3644,4 +3821,36 @@ model FinanceLedgerRequest {
   createdAt DateTime @default(now()) @map("created_at")
 
   @@map("fin_ledger_request")
+}
+
+/// The costing rate card - one rate in force from a date.
+///
+/// Row-per-(item, variant, effective_from), append-only. "What did resin cost
+/// in June?" is answered by the newest row at or before the batch's run date,
+/// so costing a June batch uses June's rates even when today's differ - and a
+/// re-costed batch prices identically forever. Purpose-built rather than
+/// reusing consumables_and_rate: that table is an Airtable-sync snapshot with
+/// one COLUMN per material and no unit or supplier axis, so a new grit band
+/// there is a schema migration, where here it is a row an admin inserts.
+model CostingRate {
+  id            String   @id @default(cuid())
+  /// RESIN | GRIT | FILLER | PIGMENT | CHEMICAL | CONVERSION | BASIS
+  category      String
+  /// Canonical key from src/lib/costing/rateCard.ts, e.g. "grit-0.6-1.2".
+  item          String
+  /// Splits an item across suppliers (resin: "Aypols", "3n Composits").
+  /// Empty string rather than NULL so the uniqueness constraint can hold -
+  /// Postgres treats NULLs as distinct, which would allow duplicate rows.
+  variant       String   @default("")
+  /// What `rate` is per: kg | t | sqft | month | slab | usd | day
+  unit          String
+  rate          Float
+  effectiveFrom DateTime @map("effective_from") @db.Date
+  note          String?
+  createdBy     String   @default("system") @map("created_by")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@unique([item, variant, effectiveFrom])
+  @@index([category, effectiveFrom])
+  @@map("costing_rate")
 }

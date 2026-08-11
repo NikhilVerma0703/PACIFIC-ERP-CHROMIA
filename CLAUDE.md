@@ -62,7 +62,7 @@ Machine change-parameter models: `ChangeParametersDistributor` 689 ·
 `RoboMachine` 3203 · `RoboDesign` 3213 · `RoboProgram` 3222 · `RoboTool` 3231 ·
 `RoboLiquid` 3237 · `RoboPowder` 3243 · `RoboOperator` 3249 · `RoboDelayCode` 3256 ·
 `RoboShift` 3266 · `RoboBatchRecipe` 3285 · `RoboBatchRecipeEntry` 3303 ·
-`RoboProductionRecord` 3320 · `RoboDelayLog` 3339
+`RoboProductionRecord` 3320 · `RoboDelayLog` 3339 · `RoboImportLog` ~3357
 
 ### Quality / lab / polish
 `Lab` 1138 · `Jot` 1188 · `PolishEntry` 543 · `PolishQc` 573 · `Chromia1` 1901 ·
@@ -95,6 +95,8 @@ Machine change-parameter models: `ChangeParametersDistributor` 689 ·
 `ConsumableDepartment` 2509 · `ConsumptionEntry` 2608 · `ProductionConsumable` 2539 ·
 `PolishingConsumable` 2555 · `DirectMaterial` 2521 · `FilmRoll` 2593
 `Costing` 1280 · `Mis` 1537 · `ProductionReport` 1851
+`CostingRate` (hand-written, end of file) — the effective-dated rate card behind
+/office/costing; `consumables_and_rate` and `costing` are Airtable mirrors, do not write to them
 
 ## Layout
 
@@ -105,7 +107,8 @@ src/app/          22 route groups: (dash) admin api batch consumables cutting en
 src/components/   shared UI + consumables/ inventory/ office/ robo/
 src/lib/          domain logic + consumables/ fab/ inventory/ sales/
 src/types/
-prisma/           schema.prisma, seed.ts, seed-robo.ts, migrations
+prisma/           schema.prisma, seed.ts, seed-robo.ts (no migrations dir — schema
+                  changes go to Neon out-of-band; db push is BLOCKED by drift, see note)
 automation/       Bill Automation finance engine (Tally XML, OCR); data/ holds MASTER.xml,
                   finance.db, ledgers.json — runtime data, not code
 scripts/          import.ts, gen-schema.py, fieldmap.json
@@ -124,3 +127,8 @@ docs/             PACIFIC-ERP-CONTEXT-2026-08-03.md is the module handover recor
   See `docs/PACIFIC-ERP-CONTEXT-2026-08-03.md` §9 for remaining items.
 - `chk4-tmp.cjs`, `pi-tmp.cjs`, `db-archives/` are untracked local files, not part of the repo.
 - Neon database holds all schema changes already; it is independent of this working copy.
+- **`prisma db push` is unusable until the drift is reconciled**: the live DB holds tables
+  this schema does not model (`fg_dispatch_invoice`, `fg_sales_approved_batch`,
+  `fg_sales_hidden_design`, `login_attempt`, `sales_notifications` — created by other
+  sessions) and push wants to DROP them with data. New tables (`costing_rate`,
+  `RoboImportLog`) were created with hand-written SQL matching Prisma's DDL instead.

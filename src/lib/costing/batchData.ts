@@ -1,0 +1,264 @@
+import "server-only";
+
+// What one batch actually consumed, read from the mixer records.
+//
+// Every column here was verified against the Simply White reference batch
+// (1403, 747 slabs): resin 41,873.4 kg, filler 125.5425 t, grit per band to
+// the kilogram, 514 x 3 cm + 233 x 2 cm. Where the ERP records nothing - the
+// four chemicals, resin litres per supplier - the gap is stated, not papered
+// over: chemicals are computed from dosing rules, the supplier split is
+// proportioned per resin tank and flagged an estimate.
+//
+// Nothing is stored. A corrected mixer row re-costs the batch on the next
+// read; that is the design, not an accident.
+
+import { prisma } from "@/lib/prisma";
+
+/**
+ * Which supplier fills which daily resin tank.
+ *
+ * The mixer rows record the TANK (m*_r_dtn: I1/I2/I3); litres per supplier
+ * are not recorded, and the tank->supplier bridge tables (daily_resin_tank,
+ * resin_storage) stopped being filled in mid-2026. This map is the standing
+ * assumption, printed on the basis panel of every costing so it can be
+ * challenged; the resin lines it feeds are flagged estimates.
+ */
+export const RESIN_TANK_SUPPLIER: Readonly<Record<string, string>> = {
+  I1: "3n Composits",
+  I2: "Aypols",
+  I3: "Aypols",
+};
+
+/** Normalise silo size strings ("# 8-16", "#8-16", " 0.1-0.4 ") to band keys. */
+export function bandOf(raw: string | null): string {
+  const s = (raw ?? "").replace(/\s+/g, "");
+  if (!s) return "";
+  if (s.includes("8-16")) return "8-16";
+  if (/^#?400#?$/.test(s)) return "filler-400";
+  const m = s.match(/^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/);
+  return m ? `${m[1]}-${m[2]}` : s;
+}
+
+/** Rate-card item key for a grit band. */
+export const gritItemKey = (band: string) => `grit-${band}`;
+export const GRIT_BAND_LABELS: Readonly<Record<string, string>> = {
+  "0.1-0.4": "Grit 0.1 – 0.4",
+  "0.3-0.7": "Grit 0.3 – 0.7",
+  "0.6-1.2": "Grit 0.6 – 1.2",
+  "1.2-2.5": "Grit 1.2 – 2.5",
+  "8-16": "Glass grit # 8-16",
+};
+
+export interface BatchListEntry {
+  batchKey: string;
+  batch: string;
+  design: string;
+  slabs: number;
+  cycles: number;
+  firstPress: string | null;
+  lastPress: string | null;
+}
+
+/** Recent batches with mixer data - the dashboard's picker. */
+export async function listCostableBatches(days: number): Promise<BatchListEntry[]> {
+  const rows: Array<{
+    batch_key: string; batch: string | null; cycles: number;
+    design: string | null; slabs: number; first_press: Date | null; last_press: Date | null;
+  }> = await prisma.$queryRaw`
+    WITH mixes AS (
+      SELECT batch_key, max(batch) batch, count(*)::int cycles
+      FROM mixer_cycle
+      WHERE batch_key IS NOT NULL AND imported_at > now() - make_interval(days => ${days})
+      GROUP BY batch_key
+    ),
+    pressed AS (
+      SELECT batch_key, mode() WITHIN GROUP (ORDER BY design_name) design,
+             count(DISTINCT slab_number)::int slabs,
+             min(imported_at) first_press, max(imported_at) last_press
+      FROM press WHERE batch_key IS NOT NULL GROUP BY batch_key
+    )
+    SELECT m.batch_key, m.batch, m.cycles, p.design, COALESCE(p.slabs, 0)::int slabs,
+           p.first_press, p.last_press
+    FROM mixes m LEFT JOIN pressed p USING (batch_key)
+    ORDER BY p.last_press DESC NULLS LAST`;
+  return rows.map((r) => ({
+    batchKey: r.batch_key,
+    batch: r.batch ?? r.batch_key,
+    design: r.design ?? "(design not recorded)",
+    slabs: r.slabs,
+    cycles: r.cycles,
+    firstPress: r.first_press?.toISOString().slice(0, 10) ?? null,
+    lastPress: r.last_press?.toISOString().slice(0, 10) ?? null,
+  }));
+}
+
+export interface GritCharge {
+  silo: string;
+  band: string;
+  kg: number;
+}
+
+export interface BatchConsumption {
+  batchKey: string;
+  batch: string;
+  design: string;
+  /** Total resin kg across all four mixers - matches the sheet exactly. */
+  resinKg: number;
+  resinCycles: number;
+  /** Per daily-resin-tank: the only supplier signal the mixer records carry. */
+  resinByTank: Array<{ tank: string; cycles: number; kg: number }>;
+  /** Per (silo, band) from the per-charge silo links - the primary attribution. */
+  gritCharges: GritCharge[];
+  /** kg with no resolvable silo link, reported rather than dropped. */
+  gritUnresolvedKg: number;
+  fillerKg: number;
+  /** Mixer charges (mixer1..4 flags) - the TiO₂ dosing multiplier. */
+  mixerCharges: number;
+  /** First-mix-to-last with date-rollover repair; stoppages over 2 h excluded. */
+  runHours: number;
+  runStoppages: { count: number; hours: number };
+  wallClockHours: number;
+  slabs3cm: number;
+  slabs2cm: number;
+  /** Independent thickness counts from JOT - the variance pair. */
+  jot3cm: number;
+  jot2cm: number;
+  pressSlabs: number;
+  firstPress: Date | null;
+  lastPress: Date | null;
+}
+
+/** The 20 (weight, silo, links) slot triplets, unpivoted in SQL. */
+const GRIT_SLOTS = Array.from({ length: 4 }, (_, mi) =>
+  Array.from({ length: 5 }, (_, gi) => ({
+    w: `m${mi + 1}_w${gi + 1}`, sn: `m${mi + 1}_g${gi + 1}_sn`, ids: `m${mi + 1}_g${gi + 1}`,
+  }))).flat();
+
+export async function loadBatchConsumption(batchKey: string): Promise<BatchConsumption | null> {
+  const head: Array<{ batch: string | null; cycles: number; resin_kg: number | null; filler_kg: number | null; charges: number | null }> =
+    await prisma.$queryRaw`
+      SELECT max(batch) batch, count(*)::int cycles,
+             sum(COALESCE(m1_r_w,0)+COALESCE(m2_r_w,0)+COALESCE(m3_r_w,0)+COALESCE(m4_r_w,0)) resin_kg,
+             sum(COALESCE(m1_f_w,0)+COALESCE(m2_f_w,0)+COALESCE(m3_f_w,0)+COALESCE(m4_f_w,0)) filler_kg,
+             sum((mixer1)::int+(mixer2)::int+(mixer3)::int+(mixer4)::int)::int charges
+      FROM mixer_cycle WHERE batch_key = ${batchKey}`;
+  if (!head[0] || head[0].cycles === 0) return null;
+
+  const tanks: Array<{ tank: string | null; cycles: number; kg: number | null }> = await prisma.$queryRaw`
+    SELECT COALESCE(m1_r_dtn, m2_r_dtn, m3_r_dtn, m4_r_dtn) tank, count(*)::int cycles,
+           sum(COALESCE(m1_r_w,0)+COALESCE(m2_r_w,0)+COALESCE(m3_r_w,0)+COALESCE(m4_r_w,0)) kg
+    FROM mixer_cycle WHERE batch_key = ${batchKey}
+    GROUP BY 1 ORDER BY 2 DESC`;
+
+  // Grit: unpivot the 20 slots, resolve each charge's silo fill-records to a
+  // size band. The per-charge link is authoritative - silos swap bands
+  // mid-run, and the whole-silo shortcut is exactly the mistake the variance
+  // panel exists to catch.
+  const arms = GRIT_SLOTS.map((s) =>
+    `SELECT ${s.sn} silo_no, ${s.w} kg, ${s.ids} ids FROM mixer_cycle WHERE batch_key = $1 AND COALESCE(${s.w}, 0) > 0`,
+  ).join(" UNION ALL ");
+  const charges: Array<{ silo_no: string | null; band: string | null; kg: number | null }> =
+    await prisma.$queryRawUnsafe(
+      `SELECT s.silo_no,
+              (SELECT MIN(x.size_from_used_bag->>0) FROM silo x
+                WHERE x."airtableId" = ANY(s.ids) AND x.size_from_used_bag IS NOT NULL) band,
+              SUM(s.kg) kg
+       FROM (${arms}) s
+       GROUP BY 1, 2`,
+      batchKey,
+    );
+
+  const gritMap = new Map<string, number>();
+  let gritUnresolvedKg = 0;
+  for (const c of charges) {
+    const band = bandOf(c.band);
+    const kg = Number(c.kg ?? 0);
+    if (!kg) continue;
+    if (!band) {
+      gritUnresolvedKg += kg;
+      continue;
+    }
+    const key = `${c.silo_no ?? "?"}|${band}`;
+    gritMap.set(key, (gritMap.get(key) ?? 0) + kg);
+  }
+  const gritCharges: GritCharge[] = [...gritMap.entries()]
+    .map(([k, kg]) => {
+      const [silo, band] = k.split("|");
+      return { silo, band, kg };
+    })
+    .sort((a, b) => a.band.localeCompare(b.band) || a.silo.localeCompare(b.silo));
+
+  // Run length. mixer_start_time is an Airtable time-of-day with an
+  // unreliable date part, so the walk repairs rollovers (a start earlier than
+  // its predecessor gains 24 h) and then drops gaps over two hours - those
+  // are stoppages, and absorbing overhead across a day the line stood still
+  // would flatter the batch.
+  const times: Array<{ cycle: number; t: Date | null }> = await prisma.$queryRaw`
+    SELECT cycle::float cycle, mixer_start_time t FROM mixer_cycle
+    WHERE batch_key = ${batchKey} AND mixer_start_time IS NOT NULL
+    ORDER BY cycle`;
+  let runMs = 0, stopMs = 0, stops = 0, wallMs = 0;
+  if (times.length > 1) {
+    const DAY = 86_400_000, GAP = 2 * 3_600_000;
+    // Per-row repair, NOT a carried offset: most rows have a correct date and
+    // only some are a day short, so a cumulative shift would push every
+    // correct time after a bad one into a fake gap. Bump only the row that
+    // went backwards, until it is monotonic again.
+    let prev = times[0].t!.getTime();
+    for (let i = 1; i < times.length; i++) {
+      let t = times[i].t!.getTime();
+      while (t < prev) t += DAY;
+      const gap = t - prev;
+      if (gap > GAP) {
+        stopMs += gap;
+        stops += 1;
+      } else {
+        runMs += gap;
+      }
+      wallMs += gap;
+      prev = t;
+    }
+  }
+
+  const thick: Array<{ src: string; t: string | null; n: number }> = await prisma.$queryRaw`
+    SELECT 'distributor' src, slab_thickness t, count(DISTINCT slab_number)::int n
+    FROM distributor WHERE batch_key = ${batchKey} GROUP BY 2
+    UNION ALL
+    SELECT 'jot' src, thickness t, count(DISTINCT slab_number)::int n
+    FROM jot WHERE batch_key = ${batchKey} GROUP BY 2`;
+  const pick = (src: string, cm: string) =>
+    thick.filter((r) => r.src === src && (r.t ?? "").replace(/\s/g, "").startsWith(cm))
+      .reduce((s, r) => s + r.n, 0);
+
+  const press: Array<{ slabs: number; design: string | null; first: Date | null; last: Date | null }> =
+    await prisma.$queryRaw`
+      SELECT count(DISTINCT slab_number)::int slabs,
+             mode() WITHIN GROUP (ORDER BY design_name) design,
+             min(imported_at) first, max(imported_at) last
+      FROM press WHERE batch_key = ${batchKey}`;
+
+  return {
+    batchKey,
+    batch: head[0].batch ?? batchKey,
+    design: press[0]?.design ?? "(design not recorded)",
+    resinKg: Number(head[0].resin_kg ?? 0),
+    resinCycles: head[0].cycles,
+    resinByTank: tanks.map((t) => ({
+      tank: t.tank ?? "(no tank recorded)", cycles: t.cycles, kg: Number(t.kg ?? 0),
+    })),
+    gritCharges,
+    gritUnresolvedKg,
+    fillerKg: Number(head[0].filler_kg ?? 0),
+    mixerCharges: Number(head[0].charges ?? 0),
+    runHours: runMs / 3_600_000,
+    runStoppages: { count: stops, hours: stopMs / 3_600_000 },
+    wallClockHours: wallMs / 3_600_000,
+    slabs3cm: pick("distributor", "3cm"),
+    slabs2cm: pick("distributor", "2cm"),
+    jot3cm: pick("jot", "3cm"),
+    jot2cm: pick("jot", "2cm"),
+    pressSlabs: press[0]?.slabs ?? 0,
+    firstPress: press[0]?.first ?? null,
+    lastPress: press[0]?.last ?? null,
+  };
+}

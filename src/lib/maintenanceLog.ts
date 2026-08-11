@@ -1,6 +1,7 @@
 // The maintenance log: anything from incharge up can raise a fault here, and
-// maintenance answers it. Backed by the raw `maintenance_ticket` table (no
-// Prisma model, like downtime_response and batch_range_edit).
+// maintenance answers it. Backed by the raw `maintenance_ticket` table (modeled
+// in schema.prisma as MaintenanceTicket so `db push` won't DROP it; access stays
+// raw SQL, like downtime_response and batch_range_edit).
 //
 // WHY IT EXISTS. Maintenance could previously only be asked something THROUGH a
 // downtime incident, because downtime_response hangs off an MIS hourly row. A
