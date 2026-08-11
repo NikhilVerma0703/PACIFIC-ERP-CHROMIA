@@ -256,22 +256,32 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
           const blob = await res.blob();
 
           // A PDF page that reached here has no text layer and no server
-          // provider to read it. Tesseract takes pixels, and there is no
-          // rasteriser on either side of the wire — so say so once and move on
-          // rather than failing silently per page.
+          // provider to read it. Tesseract takes pixels, so render it to pixels
+          // first — pdfjs-dist is already a dependency and the page never
+          // leaves the machine, which is the whole reason tesseract is the
+          // default. This used to give up with "set OCR_PROVIDER=claude, or
+          // re-upload them as photos": an environment variable and a re-scan,
+          // neither of which is something the clerk reading the message can do.
+          let data: Uint8Array;
+          let mimeType: string;
           if (blob.type === "application/pdf") {
-            ocrFailed.current.add(id);
-            setBrowserOcr((p) => ({
-              ...p,
-              note: "Some pages are PDFs with no text layer. In-browser reading cannot open those — set OCR_PROVIDER=claude, or re-upload them as photos.",
-            }));
-            continue;
+            const { rasterisePdf } = await import("@/lib/ocr/pdfRaster");
+            const pages = await rasterisePdf(new Uint8Array(await blob.arrayBuffer()));
+            if (!pages.length) throw new Error("that PDF has no pages to read");
+            // Bills are split to one page at ingest, so page 1 IS the bill. A
+            // multi-page file here is misfiled; read its first page and let the
+            // clerk see the rest in the viewer rather than silently OCRing a
+            // document that should have been split.
+            data = pages[0].data;
+            mimeType = pages[0].mimeType;
+          } else {
+            data = new Uint8Array(await blob.arrayBuffer());
+            mimeType = blob.type || "image/jpeg";
           }
 
-          const data = new Uint8Array(await blob.arrayBuffer());
           const r = await engine.run({
             data,
-            mimeType: blob.type || "image/jpeg",
+            mimeType,
             // The handwriting hint already routed such pages to manual_entry at
             // register, so nothing reaching here was flagged.
             handwritten: false,
