@@ -8,6 +8,7 @@ const I = {
   tables:      "M4 5h16v14H4zM4 10h16M10 5v14",
   report:      "M7 3h7l5 5v13H7zM14 3v5h5M9 13h6M9 17h6",
   mis:         "M12 2a10 10 0 100 20 10 10 0 000-20zM12 7v5M12 16h.01",
+  spanner:     "M14.7 6.3a4 4 0 01-5 5L4 17v3h3l5.7-5.7a4 4 0 015-5l2-2-2.6-2.6-2.4 1.6z",
   entry:       "M12 5v14M5 12h14",
   live:        "M12 2a10 10 0 100 20 10 10 0 000-20zM12 6v6l4 2",
   users:       "M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 7a4 4 0 100 8 4 4 0 000-8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75",
@@ -169,6 +170,7 @@ export function Nav({
     { href: "/slab",   icon: I.batch,  label: "Slab Lookup" },
     { href: "/report", icon: I.report, label: "Production Report" },
     { href: "/mis",    icon: I.mis,    label: "Downtime" },
+    { href: "/maintenance", icon: I.spanner, label: "Maintenance Log" },
   ];
   const fabrication = [
     ...(mgmt ? [{ href: "/fab/projects", icon: I.manager, label: "Manager View" }] : []),

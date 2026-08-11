@@ -28,8 +28,12 @@ import { localId } from "@/lib/rbac";
 
 const db = prisma as any;
 
-export const DOWNTIME_STATUSES = ["Pending", "Attended", "Resolved", "Not required"] as const;
-export type DowntimeStatus = (typeof DOWNTIME_STATUSES)[number];
+// Defined in downtimeShared (which imports nothing) so the maintenance log and
+// client components can share ONE vocabulary with this file — it pulls in
+// prisma, so neither could import it here. Re-exported because this module's
+// callers already take the name from here.
+export { DOWNTIME_STATUSES, type DowntimeStatus } from "@/lib/downtimeShared";
+import { DOWNTIME_STATUSES } from "@/lib/downtimeShared";
 
 export interface DowntimeResp {
   status: string; note: string | null; by: string | null; at: string | null;

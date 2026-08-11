@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { canRespondDowntime, currentUser, localId } from "@/lib/rbac";
 import { writeDowntimeResponse, writeDowntimeDispute, DOWNTIME_STATUSES } from "@/lib/downtimeResponse";
+import { mirrorDowntimeToTicket } from "@/lib/maintenanceLog";
 import { DELAY_FIELDS } from "@/lib/downtimeShared";
 
 export interface RespondRes { ok: boolean; message: string }
@@ -21,7 +22,14 @@ export async function respondToDowntime(misId: string, status: string, note: str
   } catch (e) {
     return { ok: false, message: `Save failed: ${String((e as Error)?.message ?? e)}` };
   }
+  // Keep the maintenance log in step. Half of the two-way link: a ticket raised
+  // from this incident must not still read "Pending" on /maintenance after it
+  // has been answered here — whichever screen is staler is the one somebody
+  // will act on. Deliberately AFTER the write above and non-fatal: the response
+  // itself is saved, and a mirror that fails must not report the save failed.
+  await mirrorDowntimeToTicket(misId, status, (note ?? "").trim() || null, by).catch(() => {});
   revalidatePath("/mis");
+  revalidatePath("/maintenance");
   return { ok: true, message: "Saved." };
 }
 
