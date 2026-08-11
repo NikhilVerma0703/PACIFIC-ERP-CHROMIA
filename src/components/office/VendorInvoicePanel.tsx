@@ -16,6 +16,7 @@
 // `needs_review` and those messages are shown in full rather than summarised,
 // because each one is a specific thing to look at on the paper bill.
 import { useCallback, useEffect, useState } from "react";
+import { invoiceBlockers, visibleAdvisories } from "@/lib/finance/vendorInvoiceRules";
 import { LedgerPicker } from "@/components/office/LedgerPicker";
 
 const API = "/api/office/finance";
@@ -130,21 +131,22 @@ export function VendorInvoicePanel({ seed, onDone, onCancel }: {
   const tdsAmount = tdsRate == null ? 0 : Math.round((num(taxable) * tdsRate) / 100);
   const payable = invoiceTotal - tdsAmount;
 
-  const blockers: string[] = [];
-  if (!vendor.trim()) blockers.push("Pick the vendor ledger");
-  if (!expense.trim()) blockers.push("Pick the expense head");
-  if (!invoiceNo.trim()) blockers.push("Enter the vendor's invoice number");
-  if (num(taxable) <= 0) blockers.push("Enter the taxable value");
-  // ZERO GST IS A REAL BILL — an unregistered vendor, a composition dealer, an
-  // exempt supply. It used to be unsaveable: no tax lines meant no save, full
-  // stop. But "the bill has no GST" and "we could not READ the GST" arrive here
-  // looking identical, and letting the second through silently forfeits input
-  // credit the company is entitled to — quietly, on a screen that said nothing.
-  // So the reviewer says which, with one tick. Nothing else about tax changed:
-  // rates, heads, splits and TDS behave exactly as before.
-  if (!noGst && !suggest?.tax_lines.length) blockers.push("No tax lines resolved — tick “No GST on this bill” if that is correct");
-  if (tdsAmount > 0 && !tdsLedger) blockers.push("Pick the TDS head");
-  if (tdsAmount >= invoiceTotal && tdsAmount > 0) blockers.push("TDS is not less than the invoice total");
+  // The rule lives in lib/finance/vendorInvoiceRules so it can be tested
+  // without a browser or a login. Deliberately NOT re-stated here: the first
+  // verification of the zero-GST change duplicated these conditions in a
+  // scratch script, which proved the author's mental model and would have gone
+  // on passing while this file drifted.
+  const blockers = invoiceBlockers({
+    vendorLedger: vendor,
+    expenseLedger: expense,
+    invoiceNo,
+    taxable: num(taxable),
+    taxLineCount: suggest?.tax_lines.length ?? 0,
+    noGst,
+    tdsAmount,
+    tdsLedger,
+    invoiceTotal,
+  });
 
   const save = async () => {
     setSaving(true); setErr("");
@@ -248,17 +250,11 @@ export function VendorInvoicePanel({ seed, onDone, onCancel }: {
 
       {/* The "no tax read" advisory is ANSWERED once that box is ticked, so it
           stops nagging. Every other check still shows. */}
-      {(noGst
-        ? (suggest?.needs_review ?? []).filter((n) => !/no tax read/i.test(n))
-        : (suggest?.needs_review ?? [])
-      ).length ? (
+      {visibleAdvisories(suggest?.needs_review ?? [], noGst).length ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
           <span className="font-medium">Check before saving</span>
           <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs">
-            {(noGst
-              ? suggest!.needs_review.filter((n) => !/no tax read/i.test(n))
-              : suggest!.needs_review
-            ).map((n) => <li key={n}>{n}</li>)}
+            {visibleAdvisories(suggest!.needs_review, noGst).map((n) => <li key={n}>{n}</li>)}
           </ul>
         </div>
       ) : null}
