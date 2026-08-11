@@ -469,6 +469,35 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
     } catch (e) { setActionError((e as Error).message); } finally { setSaving(false); }
   };
 
+  /**
+   * Delete outright — for the bill that should never have been uploaded.
+   *
+   * Distinct from Reject, which keeps the row: rejecting is a DECISION about a
+   * claim and stays auditable. This is for the page scanned twice, the photo of
+   * a thumb, the file attached to the wrong person — noise, not decisions, and
+   * leaving those as permanent 'rejected' rows trains people to ignore the
+   * queue. Confirmed first because it cannot be undone, and named in the prompt
+   * so a mis-click on the wrong row is caught by reading it.
+   */
+  const deleteBill = async () => {
+    if (selected == null || !detail) return;
+    const who = detail.person ? ` (${detail.person})` : "";
+    if (!window.confirm(
+      `Delete bill #${selected}${who} permanently?\n\n`
+      + "The image and everything read from it are removed and this cannot be undone. "
+      + "To refuse a claim but keep the record, use Reject instead.",
+    )) return;
+    setSaving(true); setActionError("");
+    try {
+      await j(`${API}/bills/${selected}/delete`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: reason.trim() || "uploaded by mistake" }),
+      });
+      setSelected(null); setDetail(null); setRejectOpen(false); setReason("");
+      refreshLists();
+    } catch (e) { setActionError((e as Error).message); } finally { setSaving(false); }
+  };
+
   const overrideDuplicate = async () => {
     if (selected == null) return;
     if (reason.trim().length < 4) { setActionError("An override needs a reason (4+ characters) — it goes in the audit trail."); return; }
@@ -871,7 +900,13 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
                       </div>
                     ) : (
                       <>
-                        <button type="button" onClick={() => { setRejectOpen(true); setReason(""); }} className="text-sm text-gray-400 transition hover:text-red-600">Reject bill</button>
+                        <div className="flex gap-4">
+                          <button type="button" onClick={() => { setRejectOpen(true); setReason(""); }} className="text-sm text-gray-400 transition hover:text-red-600">Reject bill</button>
+                          {/* Deliberately quiet and to the side: deleting is the
+                              rarer, harsher action, and it must not sit where a
+                              thumb lands on the way to Confirm. */}
+                          <button type="button" onClick={deleteBill} disabled={saving} className="text-sm text-gray-300 transition hover:text-red-700 disabled:opacity-60">Delete</button>
+                        </div>
                         <div className="flex gap-2">
                           <button type="button" onClick={() => { setSelected(null); setDetail(null); }} className={btnGhost}>Close</button>
                           <button type="button" onClick={confirm} disabled={saving || isDuplicate} className={btnPrimary}>
@@ -924,8 +959,21 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <tbody>
+                  {/* CLICKABLE. An approved bill could always be re-confirmed —
+                      confirm() checks only that it has not been EXPORTED — but
+                      nothing on this screen ever opened one, so a typo noticed
+                      after approval meant rejecting the bill and uploading it
+                      again. The row now opens the same review panel it came
+                      from. Once exported the API refuses, and the row is no
+                      longer offered. */}
                   {approved.map((b) => (
-                    <tr key={b.id} className="border-b border-gray-50 last:border-0">
+                    <tr key={b.id}
+                      className={`border-b border-gray-50 last:border-0 ${b.exported ? "" : "cursor-pointer hover:bg-gray-50"}`}
+                      onClick={(e) => {
+                        // Not when the click was the export checkbox.
+                        if ((e.target as HTMLElement).closest("input")) return;
+                        if (!b.exported) openBill(b.id);
+                      }}>
                       <td className="w-8 py-2">
                         <input type="checkbox" checked={picked.has(b.id)}
                           onChange={(e) => setPicked((p) => { const n = new Set(p); if (e.target.checked) n.add(b.id); else n.delete(b.id); return n; })}
@@ -936,6 +984,7 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
                       <td className="py-2 pr-4 text-gray-600">{b.ledger}</td>
                       <td className="py-2 pr-4 text-gray-900">{fmtAmt(b.amount)}</td>
                       <td className="py-2 text-gray-400">{b.date ?? ""}</td>
+                      <td className="py-2 pl-3 text-right text-xs text-gray-300">{b.exported ? "in Tally" : "edit"}</td>
                     </tr>
                   ))}
                 </tbody>

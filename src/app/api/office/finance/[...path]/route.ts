@@ -808,6 +808,64 @@ async function confirmVendor(billId: number, body: Record<string, unknown>, user
   });
 }
 
+/**
+ * Delete a bill outright — for the one that should never have been uploaded.
+ *
+ * REJECT IS NOT THIS. Rejecting sets status='rejected' and keeps the row, which
+ * is right for a claim that was considered and refused: it stays auditable and
+ * the duplicate detector goes on remembering its hashes. It is wrong for the
+ * page that was scanned twice, the photo of somebody's thumb, or the file
+ * attached to the wrong person — those are not decisions, they are noise, and
+ * leaving them as permanent 'rejected' rows trains people to ignore the queue.
+ *
+ * AN EXPORTED BILL IS NEVER DELETED. Its voucher is in Tally; removing the row
+ * here would leave an entry in the books that this system can no longer explain,
+ * which is strictly worse than a tidy queue. Reverse it in Tally instead.
+ *
+ * Only fin_bill_image and fin_extraction cascade. fin_duplicate, fin_vendor_entry
+ * and fin_correction carry a bare bill_id with no foreign key, so they are
+ * cleaned explicitly — including the duplicate rows that point AT this bill from
+ * another one (match_id), which would otherwise leave a survivor flagged against
+ * a bill that no longer exists and unclearable from the UI.
+ *
+ * fin_agent_event is NOT cleaned, on purpose. It is the audit trail, and the
+ * whole point of a deletion record is that it outlives the row.
+ */
+async function deleteBill(billId: number, body: Record<string, unknown>, user: string) {
+  const bill = await prisma.financeBill.findUnique({
+    where: { id: billId }, select: { id: true, person: true, status: true },
+  });
+  if (!bill) throw fail(404, "Unknown bill");
+  await assertNotExported(billId);
+
+  const reason = str(body.reason);
+
+  await prisma.$transaction(async (tx) => {
+    // Both directions of the duplicate graph.
+    await tx.financeDuplicate.deleteMany({ where: { OR: [{ billId }, { matchId: billId }] } });
+    await tx.financeVendorEntry.deleteMany({ where: { billId } });
+    await tx.financeCorrection.deleteMany({ where: { billId } });
+    // Image and extraction go with it by cascade.
+    await tx.financeBill.delete({ where: { id: billId } });
+  });
+
+  // AFTER the transaction, deliberately. fin_agent_event carries a bare bill_id
+  // with no foreign key, so the write succeeds either way — the question is only
+  // which failure is worse. Logging first would leave an audit line saying a
+  // bill was deleted when the transaction then rolled back, and a log that
+  // records things that did not happen is worse than one missing an entry.
+  // The id it keeps no longer resolves to a bill, which is the point: it is the
+  // record that this bill existed and who removed it.
+  await logEvent(
+    "error",
+    `${user} DELETED bill ${billId}${bill.person ? ` (${bill.person})` : ""}, status '${bill.status}'`
+      + `${reason ? `: ${reason}` : ""}`,
+    billId,
+  );
+
+  return json({ ok: true, bill_id: billId, deleted: true });
+}
+
 async function rejectBill(billId: number, body: Record<string, unknown>, user: string) {
   const reason = str(body.reason);
   const exists = await prisma.financeBill.findUnique({ where: { id: billId }, select: { id: true } });
@@ -1370,6 +1428,7 @@ async function dispatch(req: NextRequest, path: string[], user: string): Promise
   if (a === "bills" && b && c === "confirm") return confirm(billIdOf(b), body, user);
   if (a === "bills" && b && c === "confirm-vendor") return confirmVendor(billIdOf(b), body, user);
   if (a === "bills" && b && c === "reject") return rejectBill(billIdOf(b), body, user);
+  if (a === "bills" && b && c === "delete") return deleteBill(billIdOf(b), body, user);
   if (a === "bills" && b && c === "override-duplicate") return overrideDuplicate(billIdOf(b), body, user);
   if (a === "bills" && b && c === "ocr-result") return ocrResult(billIdOf(b), body, user);
   if (a === "export" && b === "preview" && !c) return exportPreview(body);
