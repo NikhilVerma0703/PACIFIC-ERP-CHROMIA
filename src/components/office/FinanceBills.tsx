@@ -9,6 +9,7 @@ import { SearchableSelect } from "@/components/robo/SearchableSelect";
 import { VendorInvoicePanel } from "@/components/office/VendorInvoicePanel";
 import { LedgerPicker } from "@/components/office/LedgerPicker";
 import { LedgerMasterCard } from "@/components/office/LedgerMasterCard";
+import { isJsonBody } from "@/lib/httpJson";
 
 const API = "/api/office/finance";
 
@@ -319,13 +320,28 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
               engine: r.engine,
             }),
           });
+          // An expired session never reaches this route: middleware redirects
+          // every unauthenticated request, including /api/*, to /login, and
+          // fetch follows redirects — so the browser gets 200 and the login
+          // page's HTML. Without this the transcription is thrown away and the
+          // page is marked read. Same trap postJson() guards for the fab
+          // screens; this call predates that helper and cannot use it (it needs
+          // the raw Response to tell a missing ROUTE from a missing BILL).
+          if (post.ok && !isJsonBody(post)) {
+            throw new Error("your session has ended — sign in again in another tab, then re-upload this stack");
+          }
           if (!post.ok) {
-            const d = await post.json().catch(() => ({}));
-            const why = (d as { error?: string })?.error ?? `HTTP ${post.status}`;
-            // A 404 is the handoff endpoint not existing; anything else is the
-            // server refusing this transcription. Either way, re-reading the
-            // remaining twenty pages against it is pure waste.
-            throw Object.assign(new Error(why), { fatal: post.status === 404 });
+            const d = await post.json().catch(() => null) as { error?: string } | null;
+            const why = d?.error ?? `HTTP ${post.status}`;
+            // A 404 IS NOT NECESSARILY A MISSING ENDPOINT. ocrResult() answers
+            // 404 "Unknown bill" for a bill that has been deleted or rejected
+            // out from under the batch, and treating that as "the route does
+            // not exist" stopped the WHOLE stack and told the clerk in-browser
+            // reading was unavailable — which was false, and stuck until the
+            // page was reloaded. Our 404 carries the API's JSON error shape; a
+            // route that genuinely is not there returns the framework's HTML.
+            const routeMissing = post.status === 404 && !d?.error;
+            throw Object.assign(new Error(why), { fatal: routeMissing });
           }
         } catch (e) {
           ocrFailed.current.add(id);

@@ -20,14 +20,16 @@ export interface PostResult {
   data: any;
 }
 
-/** True unless the response carries a body that is definitely not JSON. An
- *  empty 204/205 has no content-type and counts as fine; HTML never does. */
-export function isJsonBody(res: Pick<Response, "status" | "headers">): boolean {
-  if (res.status === 204 || res.status === 205) return true;
-  const ctype = res.headers.get("content-type");
-  if (!ctype) return true; // no claim made — leave it to the JSON parse
-  return ctype.includes("json");
-}
+// Moved to lib/httpJson so the finance screens can use it too — importing
+// lib/fab/* from an office component is a dependency that means nothing.
+// Imported AND re-exported: a bare `export { x } from` does not bring the name
+// into this module's scope, and postJson/getJson below both call it.
+//
+// RELATIVE, not the "@/" alias: tests/fabPostJson.test.ts loads this file
+// directly under `node --test`, which has no idea what "@/" means. Anything
+// reachable from a test has to import by path.
+import { isJsonBody } from "../httpJson.ts";
+export { isJsonBody };
 
 export async function postJson(url: string, body: unknown): Promise<PostResult> {
   let res: Response;
