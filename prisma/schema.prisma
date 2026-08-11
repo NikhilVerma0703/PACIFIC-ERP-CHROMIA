@@ -2962,10 +2962,15 @@ model ProformaInvoice {
   createdAt  DateTime  @default(now()) @map("created_at")
   updatedAt  DateTime  @updatedAt @map("updated_at")
 
-  client        SalesClient      @relation(fields: [clientId], references: [id])
-  order         SalesOrder?      @relation(fields: [orderId], references: [id])
-  rejectionLogs PIRejectionLog[]
-  revisions     PIRevision[]
+  client           SalesClient      @relation(fields: [clientId], references: [id])
+  order            SalesOrder?      @relation(fields: [orderId], references: [id])
+  rejectionLogs    PIRejectionLog[]
+  revisions        PIRevision[]
+  /// Present in the live database but not previously modelled here, so
+  /// `prisma db push` proposed DROPping it WITH ITS DATA. Modelled
+  /// 2026-08-12 to reconcile that drift — nullable, exactly as the column
+  /// already is, so this describes the database rather than changing it.
+  paymentTermsData Json?            @map("payment_terms_data")
 
   @@map("proforma_invoices")
 }
@@ -3073,8 +3078,23 @@ model SalesPaymentDivision {
   createdAt    DateTime              @default(now()) @map("created_at")
   updatedAt    DateTime              @updatedAt @map("updated_at")
 
-  order SalesOrder         @relation(fields: [orderId], references: [id])
-  terms SalesPaymentTerms? @relation(fields: [termsId], references: [id])
+  order           SalesOrder         @relation(fields: [orderId], references: [id])
+  terms           SalesPaymentTerms? @relation(fields: [termsId], references: [id])
+  /// Present in the live database but not previously modelled here, so
+  /// `prisma db push` proposed DROPping it WITH ITS DATA. Modelled
+  /// 2026-08-12 to reconcile that drift — nullable, exactly as the column
+  /// already is, so this describes the database rather than changing it.
+  amountReceived  Float?             @map("amount_received")
+  /// In the live database but not modelled here, so `prisma db push`
+  /// proposed DROPping it WITH ITS DATA. Added 2026-08-12 to reconcile
+  /// that drift: each line describes the column as it already exists —
+  /// same type, same nullability, same default — so the schema now
+  /// matches the database instead of asking to change it.
+  extendedDueDate DateTime?          @map("extended_due_date") @db.Timestamptz
+  overriddenAt    DateTime?          @map("overridden_at") @db.Timestamptz
+  overriddenById  String?            @map("overridden_by_id")
+  overrideNote    String?            @map("override_note")
+  remindersSent   Json               @default("[]") @map("reminders_sent")
 
   @@map("sales_payment_divisions")
 }
@@ -3148,8 +3168,20 @@ model SalesPackingList {
   createdAt DateTime          @default(now()) @map("created_at")
   updatedAt DateTime          @updatedAt @map("updated_at")
 
-  order    SalesOrder     @relation(fields: [orderId], references: [id])
-  packages SalesPackage[]
+  order           SalesOrder     @relation(fields: [orderId], references: [id])
+  packages        SalesPackage[]
+  /// Present in the live database but not previously modelled here, so
+  /// `prisma db push` proposed DROPping it WITH ITS DATA. Modelled
+  /// 2026-08-12 to reconcile that drift — nullable, exactly as the column
+  /// already is, so this describes the database rather than changing it.
+  acceptedAt      DateTime?      @map("accepted_at")
+  /// In the live database but not modelled here, so `prisma db push`
+  /// proposed DROPping it WITH ITS DATA. Added 2026-08-12 to reconcile
+  /// that drift: each line describes the column as it already exists —
+  /// same type, same nullability, same default — so the schema now
+  /// matches the database instead of asking to change it.
+  rejectionReason String?        @map("rejection_reason")
+  rejectedAt      DateTime?      @map("rejected_at")
 
   @@map("sales_packing_lists")
 }
@@ -3229,7 +3261,24 @@ model SalesShipmentDocs {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  order SalesOrder @relation(fields: [orderId], references: [id])
+  order                 SalesOrder @relation(fields: [orderId], references: [id])
+  /// Present in the live database but not previously modelled here, so
+  /// `prisma db push` proposed DROPping it WITH ITS DATA. Modelled
+  /// 2026-08-12 to reconcile that drift — nullable, exactly as the column
+  /// already is, so this describes the database rather than changing it.
+  discountAmount        Decimal?   @map("discount_amount") @db.Decimal
+  /// In the live database but not modelled here, so `prisma db push`
+  /// proposed DROPping it WITH ITS DATA. Added 2026-08-12 to reconcile
+  /// that drift: each line describes the column as it already exists —
+  /// same type, same nullability, same default — so the schema now
+  /// matches the database instead of asking to change it.
+  packingListUpload     String?    @map("packing_list_upload")
+  measurementListUpload String?    @map("measurement_list_upload")
+  insurancePct          Decimal?   @map("insurance_pct") @db.Decimal
+  oceanFreight          Decimal?   @map("ocean_freight") @db.Decimal
+  packingCharges        Decimal?   @map("packing_charges") @db.Decimal
+  marksNos              String?    @map("marks_nos")
+  itemNetWeights        Json?      @map("item_net_weights")
 
   @@map("sales_shipment_docs")
 }
@@ -3289,26 +3338,37 @@ model SalesOrderLog {
 }
 
 model SalesConfig {
-  id             String   @id @default("global")
+  id                   String   @id @default("global")
   // CC emails always included in all outbound sales emails
-  ccEmails       String[] @map("cc_emails") // e.g. ["customs@pacific-surfaces.com","acreceivables@pacific-surfaces.com"]
+  ccEmails             String[] @map("cc_emails") // e.g. ["customs@pacific-surfaces.com","acreceivables@pacific-surfaces.com"]
   // Company details for PDF headers
-  companyName    String   @default("Pacific Engineered Surface Pvt Ltd") @map("company_name")
-  companyAddress String?  @map("company_address")
-  iecCode        String?  @map("iec_code")
-  gstNo          String?  @map("gst_no")
-  panNo          String?  @map("pan_no")
+  companyName          String   @default("Pacific Engineered Surface Pvt Ltd") @map("company_name")
+  companyAddress       String?  @map("company_address")
+  iecCode              String?  @map("iec_code")
+  gstNo                String?  @map("gst_no")
+  panNo                String?  @map("pan_no")
   // Bank details for PDF
-  bankName       String?  @map("bank_name")
-  bankBranch     String?  @map("bank_branch")
-  accountNo      String?  @map("account_no")
-  ifscCode       String?  @map("ifsc_code")
-  swiftCode      String?  @map("swift_code")
-  adCode         String?  @map("ad_code")
-  logoUrl        String?  @map("logo_url")
-  ceoEmail       String?  @map("ceo_email") // receives CEO overdue alerts
+  bankName             String?  @map("bank_name")
+  bankBranch           String?  @map("bank_branch")
+  accountNo            String?  @map("account_no")
+  ifscCode             String?  @map("ifsc_code")
+  swiftCode            String?  @map("swift_code")
+  adCode               String?  @map("ad_code")
+  logoUrl              String?  @map("logo_url")
+  ceoEmail             String?  @map("ceo_email") // receives CEO overdue alerts
   // invoice_config_quartz / invoice_config_granite live in the table for raw SQL only (see 0019 SQL)
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+  /// Present in the live database but not previously modelled here, so
+  /// `prisma db push` proposed DROPping it WITH ITS DATA. Modelled
+  /// 2026-08-12 to reconcile that drift — nullable, exactly as the column
+  /// already is, so this describes the database rather than changing it.
+  invoiceConfigGranite Json?    @map("invoice_config_granite")
+  /// In the live database but not modelled here, so `prisma db push`
+  /// proposed DROPping it WITH ITS DATA. Added 2026-08-12 to reconcile
+  /// that drift: each line describes the column as it already exists —
+  /// same type, same nullability, same default — so the schema now
+  /// matches the database instead of asking to change it.
+  invoiceConfigQuartz  Json?    @map("invoice_config_quartz")
 
   @@map("sales_config")
 }
@@ -3329,7 +3389,18 @@ model SalesCreditNote {
   createdAt    DateTime         @default(now()) @map("created_at")
   updatedAt    DateTime         @updatedAt @map("updated_at")
 
-  order SalesOrder @relation(fields: [orderId], references: [id])
+  order            SalesOrder @relation(fields: [orderId], references: [id])
+  /// Present in the live database but not previously modelled here, so
+  /// `prisma db push` proposed DROPping it WITH ITS DATA. Modelled
+  /// 2026-08-12 to reconcile that drift — nullable, exactly as the column
+  /// already is, so this describes the database rather than changing it.
+  appliedAt        DateTime?  @map("applied_at")
+  /// In the live database but not modelled here, so `prisma db push`
+  /// proposed DROPping it WITH ITS DATA. Added 2026-08-12 to reconcile
+  /// that drift: each line describes the column as it already exists —
+  /// same type, same nullability, same default — so the schema now
+  /// matches the database instead of asking to change it.
+  appliedToOrderId String?    @map("applied_to_order_id")
 
   @@map("sales_credit_notes")
 }

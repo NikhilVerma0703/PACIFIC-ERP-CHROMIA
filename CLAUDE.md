@@ -127,8 +127,23 @@ docs/             PACIFIC-ERP-CONTEXT-2026-08-03.md is the module handover recor
   See `docs/PACIFIC-ERP-CONTEXT-2026-08-03.md` §9 for remaining items.
 - `chk4-tmp.cjs`, `pi-tmp.cjs`, `db-archives/` are untracked local files, not part of the repo.
 - Neon database holds all schema changes already; it is independent of this working copy.
-- **`prisma db push` is unusable until the drift is reconciled**: the live DB holds tables
-  this schema does not model (`fg_dispatch_invoice`, `fg_sales_approved_batch`,
-  `fg_sales_hidden_design`, `login_attempt`, `sales_notifications` — created by other
-  sessions) and push wants to DROP them with data. New tables (`costing_rate`,
-  `RoboImportLog`) were created with hand-written SQL matching Prisma's DDL instead.
+- **Schema drift is reconciled as of 2026-08-12 — `db push` no longer proposes anything
+  destructive.** It previously wanted to DROP five whole tables created by other sessions
+  (`fg_dispatch_invoice`, `fg_sales_approved_batch`, `fg_sales_hidden_design`,
+  `login_attempt`, `sales_notifications`) plus **16 Sales columns** that existed in Neon and
+  not in this file — `sales_shipment_docs` alone was missing seven. All are now modelled,
+  each describing the column exactly as it already exists.
+
+  Verify before any push, and read the output rather than trusting this note:
+
+  ```bash
+  npx prisma migrate diff --from-schema-datasource prisma/schema.prisma --to-schema-datamodel prisma/schema.prisma --script
+  ```
+
+  What remains is safe: 24 foreign-key constraint renames, `updated_at DROP DEFAULT` on 19
+  Sales tables (Prisma manages `@updatedAt` in the app, not the DB), and 3 index tweaks.
+  **Zero `DROP TABLE`, zero `DROP COLUMN`.** If that command ever prints one again, a table
+  or column was created out-of-band and must be modelled here before anyone pushes.
+
+  `costing_rate` and `RoboImportLog` were created with hand-written SQL matching Prisma's
+  DDL while push was unusable; both are modelled now.
