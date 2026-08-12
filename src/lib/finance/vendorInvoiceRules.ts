@@ -75,3 +75,101 @@ export function invoiceBlockers(s: InvoiceState): string[] {
 export function visibleAdvisories(needsReview: readonly string[], noGst: boolean): string[] {
   return noGst ? needsReview.filter((n) => !/no tax read/i.test(n)) : [...needsReview];
 }
+
+// ---------------------------------------------------------------------------
+// What a confirmed vendor invoice puts back on the extraction row
+// ---------------------------------------------------------------------------
+
+/** The newest `fin_extraction` row for the bill, or null when it has none. */
+export interface VendorMirrorExisting {
+  invoiceDate: string | null;
+  vendorName: string | null;
+  vendorGstin: string | null;
+}
+
+/** The confirmed invoice, as `confirm-vendor` has already validated it. */
+export interface VendorMirrorInput {
+  invoiceNo: string;
+  /** ISO YYYY-MM-DD, or "" when the reviewer left the date field empty. */
+  date: string;
+  taxable: number;
+  cgst: number;
+  sgst: number;
+  igst: number;
+  /** taxable + EVERY confirmed tax line, rounded by the caller. Passed in
+   *  rather than re-added from the three scalars above, which bucket only
+   *  CGST/SGST/IGST and would quietly drop anything else the reviewer booked. */
+  invoiceTotal: number;
+  /** The confirmed expense head. */
+  expense: string;
+  narration: string;
+  /** The confirmed vendor LEDGER - a Tally creditor account, not a read name. */
+  vendor: string;
+  /** Uppercased, or "" when the bill carries none. */
+  gstin: string;
+  existing: VendorMirrorExisting | null;
+}
+
+/** Column-for-column what to write to `fin_extraction`. */
+export interface VendorMirror {
+  invoiceNo: string;
+  invoiceDate: string | null;
+  taxableValue: number;
+  cgst: number;
+  sgst: number;
+  igst: number;
+  netAmount: number;
+  ledger: string;
+  narration: string | null;
+  editedByUser: boolean;
+  vendorName: string | null;
+  vendorGstin: string | null;
+}
+
+/**
+ * The values a confirmed vendor invoice must leave on `fin_extraction`.
+ *
+ * WHY THIS EXISTS AT ALL. confirm-vendor used to write only fin_vendor_entry,
+ * but every read surface in the UI - the Ready-for-Tally list (store.ts
+ * billSummary), the review panel's seed (billDetail) and the past-export
+ * amounts (exportDetail) - reads fin_extraction. So an approve that corrected
+ * an OCR misread showed the misread straight back, and reopening the row
+ * re-seeded the panel from it: a second confirm then replaced a correct vendor
+ * entry with the stale one. The reimbursement path (pipeline.ts confirmBill)
+ * has always mirrored its confirmed values across; this is the same move for
+ * the vendor path.
+ *
+ * Two of the fields resolve in OPPOSITE directions, which is the whole reason
+ * this is a tested function and not four lines inlined in a transaction:
+ *
+ *   invoiceDate  confirmed wins, stored kept when the field was left blank.
+ *   vendorName   STORED wins. The name the OCR read is the dedupe business key
+ *                and the vendor-memory key; overwriting it with the ledger the
+ *                reviewer picked would re-point both at a different vendor.
+ *                It is filled only when the extractor read nothing.
+ *   vendorGstin  confirmed wins - the reviewer types it against the paper -
+ *                falling back to the stored one, then null.
+ *
+ * Pure: no Prisma, no clock. The caller supplies the stored row.
+ */
+export function vendorExtractionMirror(i: VendorMirrorInput): VendorMirror {
+  const ex = i.existing;
+  return {
+    invoiceNo: i.invoiceNo,
+    // COALESCE(?, invoice_date): a blank date field must not erase a date the
+    // extractor read correctly. Same rule as pipeline.ts confirmBill.
+    invoiceDate: i.date || ex?.invoiceDate || null,
+    taxableValue: i.taxable,
+    cgst: i.cgst,
+    sgst: i.sgst,
+    igst: i.igst,
+    netAmount: i.invoiceTotal,
+    // The CONFIRMED expense head, so the list's ledger column and its
+    // ledger_confirmed flag stop reporting the machine's mere suggestion.
+    ledger: i.expense,
+    narration: i.narration || null,
+    editedByUser: true,
+    vendorName: ex?.vendorName || i.vendor,
+    vendorGstin: i.gstin || ex?.vendorGstin || null,
+  };
+}

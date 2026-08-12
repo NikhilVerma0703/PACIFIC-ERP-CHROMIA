@@ -26,8 +26,8 @@ import {
   type BatchLine, type BuildBatchResult, type VendorLine, type VendorTaxLine,
 } from "./exportBatch";
 import { isoDate } from "./pipelineRules";
-import { knownLedgerNames } from "./refs";
-import { loadExportedBillIds } from "./store";
+import { knownLedgerNames, newLedgerRow, upsertLedgers } from "./refs";
+import { loadExportedBillIds, logEvent } from "./store";
 
 /** ISO date string -> Date at local midnight, or null. `new Date("2026-07-30")`
  *  parses as UTC midnight, which in IST is 05:30 the same day - fine - but in a
@@ -311,6 +311,44 @@ export async function recordExport(
       data: { status: "posted" },
     });
   });
+
+  // ---- the masters this file creates, written into OUR master too ----------
+  //
+  // buildBatch emits a <LEDGER> block for every name that was not in
+  // fin_ledger, so importing the file creates them in Tally. Until now they
+  // were recorded only as JSON on the export row, which meant a ledger born at
+  // export was invisible to every picker, and to the classifier, until somebody
+  // re-imported MASTER.xml. The next bill needing the same head got typed
+  // again, slightly differently, and then there were two.
+  //
+  // AFTER the transaction, and swallowing its own failure, deliberately. The
+  // transaction above is the duplicate guard - a bill in fin_export is excluded
+  // from every later batch - and rolling that back over a failed convenience
+  // write would offer bills for export that are already in a file somebody is
+  // about to import. A statement that errors inside a Postgres transaction
+  // aborts the whole transaction whether or not the error is caught, so this
+  // cannot simply be moved inside and wrapped.
+  //
+  // The parent is what distinguishes the two kinds: buildBatch files a new
+  // expense head under newExpenseParent and a new person or vendor under
+  // newPersonParent (buildForBills above passes both).
+  if (result.newLedgers.length) {
+    try {
+      await upsertLedgers(result.newLedgers.map((l) => newLedgerRow({
+        name: l.name,
+        parent: l.parent,
+        kind: l.parent === TALLY.newLedgerParent ? "expense" : "ledger",
+      })));
+    } catch (err) {
+      console.error("[finance] ledger write-back failed for export", ref, err);
+      await logEvent(
+        "error",
+        `Export ${ref} was written, but ${result.newLedgers.length} new ledger(s) ` +
+        "could not be added to the ledger master. They will still be created in " +
+        "Tally by the import; re-import MASTER.xml to see them in the pickers.",
+      );
+    }
+  }
 
   return { ref, vouchers: result.vouchers, total: result.total };
 }

@@ -17,7 +17,7 @@
 // because each one is a specific thing to look at on the paper bill.
 import { useCallback, useEffect, useState } from "react";
 import { invoiceBlockers, visibleAdvisories } from "@/lib/finance/vendorInvoiceRules";
-import { LedgerPicker } from "@/components/office/LedgerPicker";
+import { createLedger, LedgerPicker } from "@/components/office/LedgerPicker";
 
 const API = "/api/office/finance";
 
@@ -37,6 +37,23 @@ interface TaxLine { tax: string; rate: number; amount: number; ledger: string; a
 interface Suggest { interstate: boolean | null; tax_lines: TaxLine[]; taxable: number; tax_total: number; invoice_total: number; needs_review: string[] }
 interface TdsOption { ledger: string; section: string; rate: number | null; nature: string }
 
+/**
+ * What a PREVIOUS confirm of this same bill chose, when there was one.
+ *
+ * An approved invoice can be reopened until it is exported, and the confirmed
+ * amounts come back through the extraction like everything else. These four do
+ * not live there: the creditor account, the expense head and the exact tax and
+ * TDS heads are the reviewer's decisions, and re-deriving them would overrule
+ * the goods-vs-services and TDS-section calls this panel exists to ask.
+ */
+export interface VendorEntrySeed {
+  vendorLedger: string;
+  expenseLedger: string;
+  /** As stored: the chosen head per tax. Extra keys are ignored. */
+  taxLines: { tax?: string; ledger?: string }[];
+  tdsLedger: string;
+}
+
 export interface VendorSeed {
   billId: number;
   vendor: string | null;
@@ -46,7 +63,9 @@ export interface VendorSeed {
   taxable: number | null;
   cgst: number | null;
   sgst: number | null;
+  igst: number | null;
   amount: number | null;
+  entry?: VendorEntrySeed | null;
 }
 
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
@@ -67,8 +86,11 @@ export function VendorInvoicePanel({ seed, onDone, onCancel }: {
   onDone: () => void;
   onCancel: () => void;
 }) {
-  const [vendor, setVendor] = useState(seed.vendor ?? "");
-  const [expense, setExpense] = useState("");
+  // A previous confirm of this bill, when it is being reopened. Its choices
+  // win over anything derived, because a human made them.
+  const prior = seed.entry ?? null;
+  const [vendor, setVendor] = useState(prior?.vendorLedger || seed.vendor || "");
+  const [expense, setExpense] = useState(prior?.expenseLedger ?? "");
   const [invoiceNo, setInvoiceNo] = useState(seed.invoiceNo ?? "");
   const [date, setDate] = useState(seed.date ?? "");
   const [gstin, setGstin] = useState(seed.gstin ?? "");
@@ -78,16 +100,23 @@ export function VendorInvoicePanel({ seed, onDone, onCancel }: {
   const [taxable, setTaxable] = useState(String(seed.taxable ?? ""));
   const [cgst, setCgst] = useState(String(seed.cgst ?? ""));
   const [sgst, setSgst] = useState(String(seed.sgst ?? ""));
-  const [igst, setIgst] = useState("");
+  const [igst, setIgst] = useState(String(seed.igst ?? ""));
   const [eligible, setEligible] = useState(true);
   /** The reviewer states this bill genuinely carries no GST. See the blocker
    *  below for why it is an explicit tick rather than an inference. */
   const [noGst, setNoGst] = useState(false);
 
   const [suggest, setSuggest] = useState<Suggest | null>(null);
-  const [chosen, setChosen] = useState<Record<string, string>>({});
+  // Pre-loaded from the previous confirm so reload() can KEEP those heads: it
+  // preserves any prior choice that is still among the suggested alternatives,
+  // which is exactly the reopen case.
+  const [chosen, setChosen] = useState<Record<string, string>>(() => {
+    const out: Record<string, string> = {};
+    for (const l of prior?.taxLines ?? []) if (l.tax && l.ledger) out[l.tax] = l.ledger;
+    return out;
+  });
   const [tdsOptions, setTdsOptions] = useState<TdsOption[]>([]);
-  const [tdsLedger, setTdsLedger] = useState("");
+  const [tdsLedger, setTdsLedger] = useState(prior?.tdsLedger ?? "");
   const [tdsRate, setTdsRate] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -118,11 +147,19 @@ export function VendorInvoicePanel({ seed, onDone, onCancel }: {
 
   useEffect(() => { void reload(); }, [reload]);
 
+  const priorTds = prior?.tdsLedger ?? "";
   useEffect(() => {
     j<{ candidates: TdsOption[] }>(`${API}/tds`)
-      .then((d) => setTdsOptions(d.candidates))
+      .then((d) => {
+        setTdsOptions(d.candidates);
+        // A reopened invoice seeds the head it was saved with, but the RATE
+        // that turns it into an amount only exists in this master. Without
+        // this the picker showed the right head and withheld nothing, and
+        // re-confirming posted the invoice with the TDS quietly dropped.
+        if (priorTds) setTdsRate(d.candidates.find((o) => o.ledger === priorTds)?.rate ?? null);
+      })
       .catch(() => setTdsOptions([]));
-  }, []);
+  }, [priorTds]);
 
   const taxTotal = suggest?.tax_lines.reduce((a, l) => a + l.amount, 0) ?? 0;
   const invoiceTotal = num(taxable) + taxTotal;
@@ -189,14 +226,22 @@ export function VendorInvoicePanel({ seed, onDone, onCancel }: {
         reported to the department, so the ledgers below are checked against Tally before this can be saved.
       </div>
 
+      {/* TWO ledger fields, named the same as the reimbursement flow's two and
+          drawing on the same master. "Vendor ledger" and "Expense head" asked
+          the same two questions in different words, which is how a reviewer
+          ends up learning two screens instead of one. The wire keys are
+          unchanged - confirm-vendor still requires vendor_ledger and
+          expense_ledger, and this is a labelling change, not a contract one. */}
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <span className={label}>Vendor ledger</span>
-          <LedgerPicker value={vendor} person="" onSelect={setVendor} />
+          <span className={label}>Ledger</span>
+          <LedgerPicker value={vendor} person="" kind="ledger" onSelect={setVendor}
+            onCreate={async (n) => setVendor(await createLedger(n, "ledger"))} />
         </div>
         <div>
-          <span className={label}>Expense head</span>
-          <LedgerPicker value={expense} person="" onSelect={setExpense} />
+          <span className={label}>Expense Ledger</span>
+          <LedgerPicker value={expense} person="" kind="expense" onSelect={setExpense}
+            onCreate={async (n) => setExpense(await createLedger(n, "expense"))} />
         </div>
       </div>
 

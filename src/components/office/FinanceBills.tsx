@@ -10,9 +10,8 @@
 // per-bill toggle at review can correct a stack that turns out to be mixed.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Card, Badge, Empty } from "@/components/ui";
-import { SearchableSelect } from "@/components/robo/SearchableSelect";
 import { VendorInvoicePanel } from "@/components/office/VendorInvoicePanel";
-import { LedgerPicker } from "@/components/office/LedgerPicker";
+import { createLedger, LedgerPicker } from "@/components/office/LedgerPicker";
 import { LedgerMasterCard } from "@/components/office/LedgerMasterCard";
 import { isJsonBody } from "@/lib/httpJson";
 
@@ -92,6 +91,14 @@ interface BillDetail {
     date: string | null; taxable: number | null; cgst: number | null; sgst: number | null;
     igst: number | null; amount: number | null; arithmetic_ok: boolean | null;
   } | null;
+  // Present only when this bill was already confirmed as a VENDOR invoice, and
+  // it is being reopened to be corrected. The amounts come back through
+  // `extracted`; these are the choices that live nowhere else.
+  vendor_entry?: {
+    vendor_ledger: string; expense_ledger: string;
+    tax_lines: { tax?: string; ledger?: string }[];
+    tds_ledger: string | null;
+  } | null;
   suggestions: Suggestion[];
   duplicates: { bill_id: number; reasons?: string[] }[];
 }
@@ -128,11 +135,15 @@ function needsBrowserOcr(b: BatchState): boolean {
 }
 
 export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
-  const [people, setPeople] = useState<{ id: string; name: string }[]>([]);
   const [engineDown, setEngineDown] = useState<string>("");
-  /** Nothing in the claimant list means no ledger master. Distinguished from
-   *  "not loaded yet" so the banner cannot flash on a slow first paint. */
-  const [peopleLoaded, setPeopleLoaded] = useState(false);
+  /** How many ledgers the master holds. Zero means nothing has been imported.
+   *  Null until the probe answers, so the banner cannot flash on a slow first
+   *  paint - the distinction the old `peopleLoaded` flag drew.
+   *
+   *  A COUNT, not a list. Every ledger field on this page is a LedgerPicker
+   *  that searches server-side now, so the 5,000-name payload this used to
+   *  fetch had no reader left. */
+  const [masterSize, setMasterSize] = useState<number | null>(null);
 
   // upload
   const [person, setPerson] = useState("");
@@ -171,9 +182,10 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
   // Which kind of document this bill is. Reset on every open so the previous
   // bill's choice can never carry over onto the next one.
   const [vendorMode, setVendorMode] = useState(false);
-  /** Who to reimburse, when the bill arrived without a claimant and the
-   *  reviewer is flipping it from vendor invoice to reimbursement. Empty for a
-   *  bill that already names one — detail.person is used then. */
+  /** Who to reimburse. Seeded from the bill's own claimant when it has one and
+   *  empty when it does not (a stack uploaded as vendor invoices), and either
+   *  way this — not detail.person — is what gets posted, so a name the reviewer
+   *  corrects on screen is the name that reaches Tally. */
   const [claimant, setClaimant] = useState("");
   const [reason, setReason] = useState("");
   /** Render the page with <object> instead of <img>. Set from image_mime when
@@ -204,16 +216,12 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
   }, []);
 
   useEffect(() => {
-    // limit=5000: the whole claimant group, never a page of it. This dropdown
-      // is filtered in the browser, so anything not fetched here is unreachable
-      // rather than merely on "page 2" - and the old limit=500 against a
-      // 607-member group silently hid every name from "Shri" onwards.
-      j<{ people: string[]; total: number; truncated?: boolean }>(`${API}/people?limit=5000`)
-      .then((d) => {
-        setPeople(d.people.map((name) => ({ id: name, name })));
-        setPeopleLoaded(true);
-        if (d.truncated) setEngineDown(`Claimant list is incomplete — showing ${d.people.length} of ${d.total} names.`);
-      })
+    // limit=1: this asks ONE question - "is there a chart of accounts at all?" -
+      // and `total` answers it. It used to fetch all 5,000 names to fill two
+      // browser-filtered dropdowns; both are LedgerPickers now, which search the
+      // master server-side per keystroke, so nothing here is capped or stale.
+      j<{ people: string[]; total: number }>(`${API}/people?limit=1`)
+      .then((d) => setMasterSize(d.total))
       .catch((e) => setEngineDown((e as Error).message));
     refreshLists();
   }, [refreshLists]);
@@ -420,6 +428,9 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
       // forgotten. Still only a DEFAULT: the toggle above it is unchanged, so a
       // stack that turns out to be mixed can be corrected bill by bill.
       setVendorMode(!(d.person || "").trim());
+      // The Ledger field is always on screen now, so it has to start on the
+      // claimant the bill already names, not blank.
+      setClaimant((d.person || "").trim());
       setPdfView(d.image_mime === "application/pdf");
       setForm({
         ledger: d.suggestions[0]?.ledger ?? "",
@@ -437,10 +448,12 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
     if (selected == null || !detail) return;
     setActionError("");
     if (!form.ledger) { setActionError("Pick the expense ledger."); return; }
-    // detail.person is empty on a bill uploaded as a vendor invoice. Caught
-    // here so the reviewer sees which field to fill, rather than the server's
-    // "ledger and person are required" with no clue which one is missing.
-    const payee = (detail.person || "").trim() || claimant.trim();
+    // Whatever is in the Ledger field, which openBill seeds from the bill's own
+    // claimant and the reviewer may have corrected. Empty on a bill uploaded as
+    // a vendor invoice and not yet named. Caught here so the reviewer sees which
+    // field to fill, rather than the server's "ledger and person are required"
+    // with no clue which one is missing.
+    const payee = claimant.trim();
     if (!payee) { setActionError("Name who gets reimbursed, or switch this bill to Vendor invoice."); return; }
     const amt = Number(form.amount);
     if (!amt || amt <= 0) { setActionError("Amount must be greater than zero."); return; }
@@ -578,7 +591,7 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
           importer; everyone else gets told why the screen is empty and who to
           ask, rather than a claimant dropdown that silently finds no names. */}
       {isAdmin && <LedgerMasterCard />}
-      {!isAdmin && peopleLoaded && people.length === 0 && (
+      {!isAdmin && masterSize === 0 && (
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
           <p className="font-medium">The chart of accounts has not been imported yet.</p>
           <p className="mt-1 text-red-700">
@@ -600,7 +613,7 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
               attached every such invoice to someone as though they had paid it.
               Leave this alone and the stack is filed as vendor invoices. */}
           <div>
-            <span className={label}>Who paid?</span>
+            <span className={label}>Ledger</span>
             <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm">
               <input
                 type="checkbox"
@@ -621,7 +634,8 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
             </label>
             {reimbursing && (
               <div className="mt-2">
-                <SearchableSelect value={person} options={people} placeholder="Search any Tally ledger…" onSelect={setPerson} />
+                <LedgerPicker value={person} person="" kind="ledger" onSelect={setPerson}
+                  onCreate={async (n) => setPerson(await createLedger(n, "ledger"))} />
                 <p className="mt-1 text-xs text-gray-400">Every Tally ledger is searchable, staff claimants first — the import can’t fail on a name.</p>
               </div>
             )}
@@ -813,7 +827,18 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
                         taxable: detail.extracted?.taxable ?? null,
                         cgst: detail.extracted?.cgst ?? null,
                         sgst: detail.extracted?.sgst ?? null,
+                        igst: detail.extracted?.igst ?? null,
                         amount: detail.extracted?.amount ?? null,
+                        // Null unless this bill is an approved vendor invoice
+                        // being reopened. See VendorEntrySeed.
+                        entry: detail.vendor_entry
+                          ? {
+                            vendorLedger: detail.vendor_entry.vendor_ledger,
+                            expenseLedger: detail.vendor_entry.expense_ledger,
+                            taxLines: detail.vendor_entry.tax_lines,
+                            tdsLedger: detail.vendor_entry.tds_ledger ?? "",
+                          }
+                          : null,
                       }}
                       onCancel={() => setVendorMode(false)}
                       onDone={() => {
@@ -845,25 +870,34 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
                     </div>
                   )}
 
-                  {/* A bill uploaded as a VENDOR invoice carries no claimant,
-                      so flipping it to a reimbursement here has to name one —
-                      that is the mixed stack: an envelope of supplier invoices
-                      with one receipt somebody paid for. Without this the
-                      confirm posted an empty person and came back 400 "ledger
-                      and person are required" with nothing on screen to fix. */}
-                  {!(detail.person || "").trim() && (
-                    <div>
-                      <span className={label}>Who gets reimbursed</span>
-                      <SearchableSelect value={claimant} options={people} placeholder="Search any Tally ledger…" onSelect={setClaimant} />
+                  {/* ALWAYS SHOWN, and seeded from the bill's own claimant.
+                      It used to appear only on a bill uploaded without one —
+                      the mixed stack: an envelope of supplier invoices with one
+                      receipt somebody paid for. But hiding it on every other
+                      bill meant the reviewer could see one of the two ledgers
+                      this voucher posts to and correct only that one, with a
+                      misread claimant fixable nowhere on the screen. Both
+                      fields are visible, both are the same widget over the same
+                      master, and `person` is still the wire key. */}
+                  <div>
+                    <span className={label}>Ledger</span>
+                    <LedgerPicker value={claimant} person="" kind="ledger" onSelect={setClaimant}
+                      onCreate={async (n) => setClaimant(await createLedger(n, "ledger"))} />
+                    {!(detail.person || "").trim() && (
                       <p className="mt-1 text-xs text-gray-400">
                         This bill was uploaded as a vendor invoice. Name the person only if they paid for it themselves.
                       </p>
-                    </div>
-                  )}
+                    )}
+                  </div>
 
                   <div>
-                    <span className={label}>Expense ledger</span>
-                    <LedgerPicker value={form.ledger} person={detail.person || claimant} onSelect={(l) => setForm((p) => ({ ...p, ledger: l }))} />
+                    <span className={label}>Expense Ledger</span>
+                    <LedgerPicker value={form.ledger} person={claimant} kind="expense"
+                      onSelect={(l) => setForm((p) => ({ ...p, ledger: l }))}
+                      onCreate={async (n) => {
+                        const made = await createLedger(n, "expense");
+                        setForm((p) => ({ ...p, ledger: made }));
+                      }} />
                     {detail.suggestions.length > 1 && !form.ledger && (
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         {detail.suggestions.slice(0, 4).map((s) => (
