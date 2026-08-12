@@ -18,9 +18,14 @@ import "server-only";
 //                          is not offered for coding is a real mess to unpick.
 //   loadPeople() (store)   who can be reimbursed.
 
+import { Prisma } from "@prisma/client";
+
 import { prisma } from "@/lib/prisma";
-import { CLASSIFY } from "./config";
+import { CLASSIFY, TALLY } from "./config";
 import { buildGstIndex, type GstLedger } from "./gst";
+import {
+  handCreatedLedger, seedRowFor, type SeedLedgerRow, type SeedRules,
+} from "./ledgerSeed";
 import { buildTdsIndex, type TdsLedger } from "./tds";
 import { loadLedgers } from "./store";
 
@@ -88,6 +93,85 @@ export async function personLedgers(person: string, limit: number): Promise<stri
     select: { ledger: true },
   });
   return rows.map((r) => r.ledger);
+}
+
+// ---------------------------------------------------------------------------
+// Writing to the master
+// ---------------------------------------------------------------------------
+
+/** The rules the MASTER.xml importer runs under, verbatim
+ *  (finance-admin/seed-ledgers/route.ts). A ledger created by hand must be
+ *  classified by the same rule as an imported one or the two disagree. */
+const RULES: SeedRules = {
+  peopleGroup: TALLY.peopleGroup,
+  allowedNatures: CLASSIFY.allowedNatures,
+  excludedRootGroups: CLASSIFY.excludedRootGroups,
+};
+
+export type NewLedgerKind = "ledger" | "expense";
+
+/** Where a new ledger of each kind belongs. The SAME two groups the export
+ *  already creates masters under, so a head created by hand this morning and
+ *  the same head created by tonight's export land in one place, not two. */
+export function defaultParentFor(kind: NewLedgerKind): string {
+  return kind === "expense" ? TALLY.newLedgerParent : TALLY.newPersonParent;
+}
+
+/** One fin_ledger row for a name that was typed, not imported. */
+export function newLedgerRow(input: {
+  name: string;
+  parent?: string | null;
+  gstin?: string | null;
+  kind: NewLedgerKind;
+}): SeedLedgerRow {
+  return seedRowFor(
+    handCreatedLedger({
+      name: input.name,
+      parent: (input.parent ?? "").trim() || defaultParentFor(input.kind),
+      gstin: input.gstin ?? null,
+      kind: input.kind,
+    }),
+    RULES,
+  );
+}
+
+/**
+ * Add ledgers to the master. Returns how many rows were actually inserted.
+ *
+ * The seeding route writes its 2,500 rows as a chunked raw
+ * `INSERT ... ON CONFLICT (name) DO UPDATE`; this is the same statement with
+ * two deliberate differences, and it is a handful of rows, not thousands:
+ *
+ *  - DO NOTHING, not DO UPDATE. A MASTER.xml import IS the authority on what a
+ *    ledger is. These two callers - a name typed into a picker, and a name an
+ *    export had to invent - are not. Both only ever mean "this name should
+ *    exist", so re-stating a classification over an imported row is a way to
+ *    LOSE one, never to gain one. `skipDuplicates` is exactly ON CONFLICT DO
+ *    NOTHING on Postgres.
+ *  - createMany rather than $executeRaw, because at this size the raw form buys
+ *    nothing and spells the six columns by hand. The insert is complete on its
+ *    own either way: `name` is the primary key and every other column has a
+ *    default (synced_at included - see the note in masterInfo()).
+ *
+ * Case matters. `name` IS the key, so "Fuel" and "FUEL" are two rows and two
+ * heads in Tally - the duplicate this module's header warns about. Callers
+ * canonicalise first: route.ts's POST /ledgers against knownLedgerNames(), and
+ * the export while building the batch (exportBatch's `canonical` map).
+ */
+export async function upsertLedgers(rows: readonly SeedLedgerRow[]): Promise<number> {
+  const named = rows.filter((r) => r.name.trim().length > 0);
+  if (!named.length) return 0;
+  const { count } = await prisma.financeLedger.createMany({
+    data: named.map((r) => ({
+      name: r.name,
+      parent: r.parent,
+      gstin: r.gstin,
+      isPerson: r.isPerson,
+      isExpense: r.isExpense,
+    })),
+    skipDuplicates: true,
+  });
+  return count;
 }
 
 /**

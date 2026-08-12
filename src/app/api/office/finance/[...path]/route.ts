@@ -45,6 +45,11 @@
 //     MASTER.xml's mtime; there is no file here.
 //   * /ledger-requests folds the bill id into the reason - fin_ledger_request
 //     has no bill_id column.
+//   * GET /ledgers takes ?kind=ledger|expense, which orders the SAME master two
+//     ways for the two fields every flow now shows. Ordering only; absent means
+//     "expense", which is what the route did before it existed.
+//   * POST /ledgers is NEW - creating one ledger in the master. api.py had no
+//     way in at all: MASTER.xml or nothing.
 
 import { NextRequest, NextResponse } from "next/server";
 
@@ -54,8 +59,8 @@ import { configuredProviderName, serverProvider } from "@/lib/ocr";
 
 import { CLASSIFY, DEDUPE, TALLY } from "@/lib/finance/config";
 import {
-  clampInt, consequences, duplicateView, IMPORT_INSTRUCTIONS, parseBillIds,
-  parseBoolParam, parseStatuses, peopleResponse, rankNames,
+  clampInt, consequences, duplicateView, IMPORT_INSTRUCTIONS, ledgerOptions,
+  parseBillIds, parseBoolParam, parseLedgerKind, parseStatuses, peopleResponse,
 } from "@/lib/finance/apiShapes";
 import { normKey, voucherNumber } from "@/lib/finance/exportBatch";
 import { buildForBills, linesFor, recordExport, xlsxBase64 } from "@/lib/finance/exportRun";
@@ -67,13 +72,14 @@ import {
 } from "@/lib/finance/pipeline";
 import { isoDate } from "@/lib/finance/pipelineRules";
 import {
-  knownLedgerNames, loadTaxIndexes, masterInfo, personLedgers, popularLedgers,
-  postableLedgerNames,
+  knownLedgerNames, loadTaxIndexes, masterInfo, newLedgerRow, personLedgers,
+  popularLedgers, postableLedgerNames, upsertLedgers,
 } from "@/lib/finance/refs";
 import {
   loadBillSummaries, loadLedgers, loadPeople, logEvent,
 } from "@/lib/finance/store";
 import { sectionOf, summariseTds, tdsCandidates } from "@/lib/finance/tds";
+import { vendorExtractionMirror } from "@/lib/finance/vendorInvoiceRules";
 
 // OCR and XML generation need Node's crypto, sharp and Buffer, and a hosted OCR
 // round trip is seconds. 60 is the Vercel Hobby ceiling.
@@ -214,43 +220,100 @@ async function people(url: URL) {
   return json(peopleResponse(names, url.searchParams.get("q") ?? "", limit));
 }
 
+/**
+ * The one ledger endpoint behind BOTH fields, in both flows.
+ *
+ * `kind` selects the ORDERING and what the field opens on. It is not a filter:
+ * every branch below ends in the whole master (apiShapes.ledgerOptions puts
+ * `all` last), so a name that exists can always be reached by typing it, from
+ * either field. Absent `kind` means "expense", which is what this route did
+ * before the parameter existed.
+ */
 async function ledgers(url: URL) {
   const q = (url.searchParams.get("q") ?? "").trim();
   const person = (url.searchParams.get("person") ?? "").trim();
   const limit = clampInt(url.searchParams.get("limit"), 25, 200);
+  const kind = parseLedgerKind(url.searchParams.get("kind"));
 
   // With no query, what THIS person has claimed before - for a driver that is
   // fuel and tolls, which is usually the answer before anyone types anything.
-  if (!q && person) {
+  // Expense field only: person memory records which EXPENSE HEAD a claimant's
+  // bills went to, so replaying it into the Ledger field would offer fuel and
+  // tolls where a name belongs.
+  if (kind === "expense" && !q && person) {
     const prior = await personLedgers(person, limit);
     if (prior.length) return json({ ledgers: prior, source: "this person's history" });
   }
 
-  const postable = await postableLedgerNames();
+  // `popular` is over-fetched and filtered inside ledgerOptions: ledger_usage
+  // is built from Tally's Journal Register and contains heads that were never
+  // imported, and taking `limit` rows before dropping those returns a short
+  // list for no reason.
+  const [all, expense, people, popular] = await Promise.all([
+    knownLedgerNames(),
+    postableLedgerNames(),
+    kind === "ledger" ? loadPeople() : Promise.resolve([] as string[]),
+    !q && kind === "expense" ? popularLedgers(limit * 4) : Promise.resolve([] as string[]),
+  ]);
 
-  if (!q) {
-    // Fall back to what the company actually uses, not the alphabet. Over-fetch
-    // then filter: ledger_usage is built from Tally's Journal Register and
-    // contains heads that are not codeable here, and taking `limit` rows before
-    // dropping those returns a short list for no reason.
-    const pickable = new Set(postable);
-    const popular = (await popularLedgers(limit * 4)).filter((l) => pickable.has(l));
-    if (popular.length) return json({ ledgers: popular.slice(0, limit), source: "most used" });
-    // Nothing learned yet - a fresh deployment. postableLedgerNames() is
-    // already expense-only, so this is api.py's "expense heads" branch without
-    // needing to sort by nature.
-    return json({ ledgers: postable.slice(0, limit), source: "expense heads" });
-  }
+  return json(ledgerOptions({ kind, q, limit, all, expense, people, popular }));
+}
 
-  // A typed query searches the WHOLE master, expense heads ranked ahead of
-  // the rest. Searching postable only left every creditor, bank and asset
-  // head unfindable — and the vendor picker comes through here with
-  // person="", where the name wanted is by definition not an expense head.
+/**
+ * Create one ledger in the master - the only way to add one without a Tally
+ * round trip and a re-import.
+ *
+ * WHY THIS EXISTS. A clerk could already type an unknown head at confirm time
+ * and let the export create it in Tally (see confirm(), where the ledger is
+ * deliberately checked and not required to exist). But until that export ran
+ * the name existed nowhere: not in this picker, not in the other three, not in
+ * the classifier's vocabulary. The next bill needing the same head got typed
+ * again, slightly differently, and Tally ended up with both spellings.
+ *
+ * The row is classified by ledgerSeed's decidePerson/decideExpense - the same
+ * two functions the MASTER.xml importer uses - with the FIELD it was created
+ * from standing in for the nature the XML would have carried.
+ *
+ * NOT a way in for statutory heads. A GST or TDS ledger carries statutory
+ * configuration that only Tally can hold, and every place one is named still
+ * requires it to already exist (confirmVendor below, buildBatch at export).
+ * A row created here is an ordinary expense head or party and satisfies
+ * neither check by being one.
+ */
+async function createLedger(body: Record<string, unknown>, user: string) {
+  const name = str(body.name);
+  if (!name) throw fail(400, "name is required");
+  if (name.length > 200) throw fail(400, "That ledger name is too long for Tally");
+
+  const kind = parseLedgerKind(str(body.kind));
+
+  // Case and whitespace are NOT a new ledger. fin_ledger.name is the primary
+  // key, so "Fuel Expenses" and "FUEL  EXPENSES" would be two rows, and two
+  // heads in Tally that have to be merged by hand later. If the master already
+  // holds a variant, that variant IS the answer, and the caller is told the
+  // name it actually got so the field can select that spelling.
   const known = await knownLedgerNames();
-  const pickable = new Set(postable);
-  const rest = known.filter((n) => !pickable.has(n));
-  const ranked = rankNames(postable, q).concat(rankNames(rest, q));
-  return json({ ledgers: ranked.slice(0, limit), source: "search" });
+  const existing = new Map(known.map((n) => [normKey(n), n]));
+  const already = existing.get(normKey(name));
+  if (already) return json({ ok: true, created: false, name: already, existed: true });
+
+  const row = newLedgerRow({ name, parent: str(body.parent), gstin: str(body.gstin), kind });
+  const inserted = await upsertLedgers([row]);
+
+  await logEvent(
+    "ledger_request",
+    `${user} created ledger '${row.name}' under ${row.parent} ` +
+    `(${row.isPerson ? "person" : row.isExpense ? "expense head" : "party"})`,
+  );
+
+  return json({
+    ok: true,
+    created: inserted > 0,
+    name: row.name,
+    parent: row.parent,
+    is_person: row.isPerson,
+    is_expense: row.isExpense,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -490,7 +553,7 @@ async function billDetail(billId: number) {
   });
   if (!bill) throw fail(404, "Unknown bill");
 
-  const [ex, dupes, exp, img] = await Promise.all([
+  const [ex, dupes, exp, img, ve] = await Promise.all([
     prisma.financeExtraction.findFirst({ where: { billId }, orderBy: { id: "desc" } }),
     prisma.financeDuplicate.findMany({
       where: { billId, overridden: false },
@@ -510,6 +573,19 @@ async function billDetail(billId: number) {
     // a broken image to the reviewer.
     prisma.financeBillImage.findUnique({
       where: { billId }, select: { mime: true },
+    }),
+    // The vendor-invoice row, when this bill was already confirmed as one. The
+    // mirrored extraction carries the amounts back to the panel, but three of
+    // the reviewer's decisions live only here: the Tally creditor account, the
+    // expense head, and the exact input-tax and TDS heads chosen. Reopening an
+    // approved invoice without them re-derived the tax heads from scratch and
+    // dropped the TDS silently, and the re-confirm then wrote that back.
+    prisma.financeVendorEntry.findFirst({
+      where: { billId },
+      orderBy: { id: "desc" },
+      select: {
+        vendorLedger: true, expenseLedger: true, taxLinesJson: true, tdsLedger: true,
+      },
     }),
   ]);
 
@@ -563,6 +639,16 @@ async function billDetail(billId: number) {
       : null,
     ledger: ex?.ledger ?? null,
     narration: ex?.narration ?? null,
+    // Null unless this bill was already confirmed as a vendor invoice. Only the
+    // parts the review panel cannot rebuild from the extraction.
+    vendor_entry: ve
+      ? {
+        vendor_ledger: ve.vendorLedger,
+        expense_ledger: ve.expenseLedger,
+        tax_lines: Array.isArray(ve.taxLinesJson) ? ve.taxLinesJson : [],
+        tds_ledger: ve.tdsLedger,
+      }
+      : null,
     suggestions: ex && Array.isArray(ex.suggestionsJson) ? ex.suggestionsJson : [],
     duplicates: dupes.map(duplicateView),
     export: exp
@@ -699,6 +785,11 @@ async function confirmVendor(billId: number, body: Record<string, unknown>, user
   const vendor = str(body.vendor_ledger);
   const expense = str(body.expense_ledger);
   const invoiceNo = str(body.invoice_no);
+  // The panel has always sent this and the server has always dropped it:
+  // fin_vendor_entry has no GSTIN column. It is kept now because the mirrored
+  // extraction row does, and that is where dedupe and the GSTIN advisory look.
+  // Not validated here - that is the existing advisory's job, deliberately.
+  const gstin = str(body.vendor_gstin).toUpperCase();
   if (!vendor || !expense) throw fail(400, "vendor_ledger and expense_ledger are required");
   if (!invoiceNo) {
     // Without it the creditor's outstandings never tie back to their statement,
@@ -789,6 +880,40 @@ async function confirmVendor(billId: number, body: Record<string, unknown>, user
         createdBy: user,
       },
     });
+
+    // MIRROR THE CONFIRMED VALUES ONTO fin_extraction, in the same transaction.
+    // Nothing in the UI reads fin_vendor_entry: the Ready-for-Tally list, this
+    // bill's detail payload and the past-export amounts all read the extraction
+    // row. Without this the screen showed the pre-edit OCR values straight back
+    // after a successful approve, and reopening the row re-seeded the panel
+    // from them - so a second confirm overwrote a correct vendor entry with the
+    // stale reading. confirmBill (pipeline.ts) has always done this for
+    // reimbursements; the rules are in vendorInvoiceRules so they are testable.
+    const ex = await tx.financeExtraction.findFirst({
+      where: { billId },
+      orderBy: { id: "desc" },
+      select: { id: true, invoiceDate: true, vendorName: true, vendorGstin: true },
+    });
+    const mirror = vendorExtractionMirror({
+      invoiceNo,
+      date,
+      taxable,
+      cgst: byTax("CGST"),
+      sgst: byTax("SGST"),
+      igst: byTax("IGST"),
+      invoiceTotal,
+      expense,
+      narration: str(body.narration),
+      vendor,
+      gstin,
+      existing: ex,
+    });
+    if (ex) {
+      await tx.financeExtraction.update({ where: { id: ex.id }, data: mirror });
+    } else {
+      await tx.financeExtraction.create({ data: { ...mirror, billId, createdBy: user } });
+    }
+
     await tx.financeBill.update({ where: { id: billId }, data: { status: "approved" } });
   });
 
@@ -1435,6 +1560,7 @@ async function dispatch(req: NextRequest, path: string[], user: string): Promise
   if (a === "export" && !b) return runExport(body, user);
   if (a === "exports" && b && c === "mark-imported") return markImported(b, body, user);
   if (a === "exports" && b && c === "void") return voidExport(b, body, user);
+  if (a === "ledgers" && !b) return createLedger(body, user);
   if (a === "ledger-requests" && !b) return ledgerRequest(body, user);
   throw fail(404, "Unknown finance route");
 }

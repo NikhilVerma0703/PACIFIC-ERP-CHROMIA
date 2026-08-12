@@ -187,6 +187,65 @@ export function decideExpense(
 }
 
 // ---------------------------------------------------------------------------
+// One ledger at a time
+// ---------------------------------------------------------------------------
+
+/**
+ * Both decisions applied to a SINGLE ledger.
+ *
+ * buildSeedRows() does this per row for a whole MASTER.xml; a ledger created by
+ * hand in the picker, or by an export that had to invent one, gets here instead
+ * - and must be classified by the same two rules, not by a second copy of them
+ * written next to the INSERT. A hand-created head that never gets isExpense is
+ * a head the classifier can never suggest, and nobody would ever see why.
+ */
+export function seedRowFor(l: SeedLedgerInput, rules: SeedRules): SeedLedgerRow {
+  const isPerson = decidePerson(l, rules);
+  return {
+    name: String(l.name ?? "").trim(),
+    parent: String(l.parent ?? "").trim() || null,
+    gstin: String(l.gstin ?? "").trim() || null,
+    isPerson,
+    isExpense: decideExpense(l, rules, isPerson),
+  };
+}
+
+/**
+ * A ledger nobody imported, described the way the rules above expect.
+ *
+ * MASTER.xml carries a nature and a full group path; a name typed into a picker
+ * carries neither, and decideExpense() correctly refuses to guess - with no
+ * nature it returns false for everything. The one thing we DO know is which of
+ * the two fields the name was typed into, so that stands in for the nature:
+ *
+ *   kind "expense"  the Expense Ledger field -> nature "expense", which is an
+ *                   allowed nature, so the row is postable unless its parent is
+ *                   an excluded root group.
+ *   kind "ledger"   the Ledger field -> no nature, so never an expense head.
+ *                   decidePerson() then does the real work: under the people
+ *                   group without a GSTIN it is a claimant, with one it is a
+ *                   registered business and is neither.
+ *
+ * The parent doubles as the root group because a hand-created ledger has no
+ * ancestry beyond it - which keeps "Current Assets" excluded exactly as an
+ * imported row would be.
+ */
+export function handCreatedLedger(input: {
+  name: string;
+  parent: string;
+  gstin?: string | null;
+  kind: "ledger" | "expense";
+}): SeedLedgerInput {
+  return {
+    name: input.name,
+    parent: input.parent,
+    gstin: input.gstin ?? null,
+    rootGroup: input.parent,
+    nature: input.kind === "expense" ? "expense" : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Payload -> rows
 // ---------------------------------------------------------------------------
 

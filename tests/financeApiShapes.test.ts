@@ -13,8 +13,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  clampInt, consequences, duplicateView, parseBillIds, parseBoolParam,
-  parseStatuses, peopleResponse, rankNames,
+  clampInt, consequences, duplicateView, ledgerOptions, parseBillIds,
+  parseBoolParam, parseLedgerKind, parseStatuses, peopleResponse, rankNames,
 } from "../src/lib/finance/apiShapes.ts";
 import {
   buildGstIndex, vendorSuggestion, type GstLedger,
@@ -307,4 +307,152 @@ test("duplicateView degrades rather than throwing on an unparseable detail", () 
   const plain = duplicateView({ matchId: 12, kind: "file_hash", detail: "exact file match" });
   assert.equal(plain.score, null);
   assert.deepEqual(plain.reasons, ["exact file match"]);
+});
+
+// ---------------------------------------------------------------------------
+// The two ledger fields
+//
+// Both flows now show exactly two of them, `Ledger` and `Expense Ledger`, both
+// served by GET /ledgers, both over the SAME fin_ledger master. `kind` is the
+// only thing that tells them apart, and the property that matters is negative:
+// it may reorder, it may NOT hide. A field that cannot reach a ledger which
+// exists looks - from the clerk's side - exactly like a master that was never
+// imported, and the fix they reach for is to type a second spelling.
+// ---------------------------------------------------------------------------
+
+/** A small chart of accounts with one of everything the tiers sort on. */
+const ALL = [
+  "4M MARBLE PRIVATE LIMITED", // a customer: Current Assets, never postable
+  "BANK OD A/C",               // a bank: in the master, not an expense head
+  "FUEL & TOLLS",              // an expense head
+  "FUEL DEPOSIT",              // Current Assets - EXCLUDED from expense heads
+  "MEENA R",                   // a claimant
+  "PRINTING & STATIONERY",     // an expense head
+  "SRI BALAJI TRADERS",        // a registered supplier: neither person nor head
+  "VIJAY KIRAN GAUTARAJ",      // a claimant
+];
+// postableLedgerNames() - excludedRootGroups ALREADY applied, which is why
+// FUEL DEPOSIT is absent here while remaining present in ALL.
+const EXPENSE = ["FUEL & TOLLS", "PRINTING & STATIONERY"];
+const PEOPLE = ["MEENA R", "VIJAY KIRAN GAUTARAJ"];
+
+function opts(over: Partial<Parameters<typeof ledgerOptions>[0]> = {}) {
+  return ledgerOptions({
+    kind: "expense", q: "", limit: 25, all: ALL, expense: EXPENSE, people: PEOPLE, ...over,
+  });
+}
+
+test("parseLedgerKind defaults to expense, which is what /ledgers did before it existed", () => {
+  // Back-compat is the point: a caller that sends no kind must get the old
+  // endpoint. Only the exact word switches fields.
+  assert.equal(parseLedgerKind(null), "expense");
+  assert.equal(parseLedgerKind(undefined), "expense");
+  assert.equal(parseLedgerKind(""), "expense");
+  assert.equal(parseLedgerKind("person"), "expense");
+  assert.equal(parseLedgerKind("ledger"), "ledger");
+  assert.equal(parseLedgerKind("  LEDGER "), "ledger");
+  assert.equal(parseLedgerKind("expense"), "expense");
+});
+
+test("Ledger opens on claimants, then the other parties, expense heads last", () => {
+  const { ledgers, source } = opts({ kind: "ledger" });
+  assert.deepEqual(ledgers.slice(0, 2), PEOPLE);
+  assert.equal(source, "claimants and parties");
+  // The whole master is still offered, just ordered - nothing is dropped.
+  assert.deepEqual([...ledgers].sort(), [...ALL].sort());
+  // ...and the two expense heads sort behind every non-expense party.
+  const firstHead = Math.min(ledgers.indexOf("FUEL & TOLLS"), ledgers.indexOf("PRINTING & STATIONERY"));
+  assert.ok(ledgers.indexOf("SRI BALAJI TRADERS") < firstHead);
+  assert.ok(ledgers.indexOf("BANK OD A/C") < firstHead);
+});
+
+test("Expense Ledger opens on what the company actually posts to", () => {
+  // popular = fin_ledger_usage, strongest first.
+  const used = opts({ popular: ["PRINTING & STATIONERY"] });
+  assert.equal(used.ledgers[0], "PRINTING & STATIONERY");
+  assert.equal(used.source, "most used");
+
+  // With no usage recorded it falls back to the expense heads themselves.
+  const cold = opts();
+  assert.equal(cold.source, "expense heads");
+  assert.deepEqual(cold.ledgers.slice(0, 2), EXPENSE);
+  assert.deepEqual([...cold.ledgers].sort(), [...ALL].sort());
+});
+
+test("popular names that are not in the master are never offered", () => {
+  // fin_ledger_usage is built from Tally's Journal Register and carries heads
+  // that were never imported (insights() reports them as missing_ledgers).
+  // Offering one puts a name in the picker that /confirm cannot canonicalise.
+  const { ledgers } = opts({ popular: ["REPAIRS - PLANT & MACHINERY", "PRINTING & STATIONERY"] });
+  assert.ok(!ledgers.includes("REPAIRS - PLANT & MACHINERY"));
+  assert.equal(ledgers[0], "PRINTING & STATIONERY");
+});
+
+test("a heavily-used ledger that is not an expense head does not lead the Expense field", () => {
+  // MEENA R is in the master and in the usage table (she is credited on every
+  // reimbursement) but she is not a head anything is coded TO.
+  const { ledgers } = opts({ popular: ["MEENA R"] });
+  assert.equal(ledgers[0], "FUEL & TOLLS");
+  assert.equal(ledgers.indexOf("MEENA R") > ledgers.indexOf("PRINTING & STATIONERY"), true);
+  // Still reachable, just not promoted.
+  assert.ok(ledgers.includes("MEENA R"));
+});
+
+test("excludedRootGroups ranks expense heads - it does not hide a ledger from search", () => {
+  // FUEL DEPOSIT is Current Assets, so postableLedgerNames() drops it and the
+  // Expense field never OPENS on it. Typing its name must still find it: the
+  // deposit exists in Tally, and a picker that refuses to say so is how a
+  // second "FUEL DEPOSIT" gets created.
+  const fromExpense = opts({ q: "fuel deposit" });
+  assert.deepEqual(fromExpense.ledgers, ["FUEL DEPOSIT"]);
+  assert.equal(fromExpense.source, "search");
+
+  const fromLedger = opts({ kind: "ledger", q: "fuel deposit" });
+  assert.deepEqual(fromLedger.ledgers, ["FUEL DEPOSIT"]);
+});
+
+test("either field can reach every name in the master by typing it", () => {
+  // The requirement in one assertion: "ledger shows all 2.5k+ and same expense
+  // too can show all 2.5k+". `all` is the last tier of both kinds, so this
+  // holds by construction - and this test is what keeps it holding.
+  for (const name of ALL) {
+    for (const kind of ["ledger", "expense"] as const) {
+      const { ledgers } = opts({ kind, q: name });
+      assert.ok(ledgers.includes(name), `${kind} could not reach ${name}`);
+    }
+  }
+});
+
+test("the same query answers both fields, ordered by which field asked", () => {
+  // Two ledgers match "fuel": one is a postable head, one is a deposit.
+  const expense = opts({ q: "fuel" }).ledgers;
+  const ledger = opts({ kind: "ledger", q: "fuel" }).ledgers;
+  assert.deepEqual([...expense].sort(), [...ledger].sort());
+  assert.equal(expense[0], "FUEL & TOLLS");  // the head leads the Expense field
+  assert.equal(ledger[0], "FUEL DEPOSIT");   // the non-head leads the Ledger field
+});
+
+test("prefix beats substring inside a tier, as everywhere else in the picker", () => {
+  const { ledgers } = ledgerOptions({
+    kind: "expense", q: "print", limit: 25,
+    all: ["OFFICE PRINTING RECHARGE", "PRINTING & STATIONERY"],
+    expense: ["OFFICE PRINTING RECHARGE", "PRINTING & STATIONERY"],
+    people: [],
+  });
+  assert.deepEqual(ledgers, ["PRINTING & STATIONERY", "OFFICE PRINTING RECHARGE"]);
+});
+
+test("limit is honoured and the tiers decide who survives the cut", () => {
+  assert.deepEqual(opts({ kind: "ledger", limit: 2 }).ledgers, PEOPLE);
+  assert.deepEqual(opts({ limit: 2, popular: ["PRINTING & STATIONERY"] }).ledgers,
+    ["PRINTING & STATIONERY", "FUEL & TOLLS"]);
+  assert.equal(opts({ limit: 1 }).ledgers.length, 1);
+});
+
+test("an empty master answers empty rather than throwing", () => {
+  // fin_ledger ships empty and stays that way until MASTER.xml is imported.
+  const { ledgers } = ledgerOptions({
+    kind: "ledger", q: "anything", limit: 25, all: [], expense: [], people: [], popular: [],
+  });
+  assert.deepEqual(ledgers, []);
 });

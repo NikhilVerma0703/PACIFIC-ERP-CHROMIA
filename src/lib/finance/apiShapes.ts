@@ -132,6 +132,114 @@ export function peopleResponse(names: readonly string[], q: string, limit: numbe
 }
 
 // ---------------------------------------------------------------------------
+// The two ledger fields
+// ---------------------------------------------------------------------------
+
+/**
+ * WHICH of the two fields is asking - and nothing more than that.
+ *
+ * Both flows show exactly two ledger fields, `Ledger` and `Expense Ledger`, and
+ * both draw on the SAME master (fin_ledger, ~2,500 rows). `kind` decides the
+ * ORDER they are offered in and what the field shows before anyone types. It
+ * must never decide what is reachable: a field that hides part of the master
+ * looks, from the clerk's side, exactly like a missing import, and the fix they
+ * reach for is to invent a duplicate ledger.
+ *
+ * "expense" is the default on purpose - it is what /ledgers did before the
+ * parameter existed, so a caller that does not send one is unaffected.
+ */
+export type LedgerKind = "ledger" | "expense";
+
+export function parseLedgerKind(raw: string | null | undefined): LedgerKind {
+  return (raw ?? "").trim().toLowerCase() === "ledger" ? "ledger" : "expense";
+}
+
+export interface LedgerOptionsInput {
+  kind: LedgerKind;
+  /** The typed query. Empty means "what should this field open on?". */
+  q: string;
+  limit: number;
+  /** Every name in the master. The ONLY thing that bounds reachability. */
+  all: readonly string[];
+  /** Expense heads, excludedRootGroups already applied. Ranking, not filtering. */
+  expense: readonly string[];
+  /** Claimants (isPerson). */
+  people: readonly string[];
+  /** Most-used first, from Tally's Journal Register. May name ledgers that are
+   *  not in the master at all - see below. */
+  popular?: readonly string[];
+}
+
+export interface LedgerOptions {
+  ledgers: string[];
+  source: string;
+}
+
+/**
+ * Priority tiers, flattened. Earlier tiers win, duplicates are dropped, and
+ * each tier is ranked internally (prefix before substring) by rankNames.
+ *
+ * Stopping once `limit` is reached is safe BECAUSE the tiers are strict
+ * priority: nothing a later tier holds could outrank a name already taken.
+ */
+function tiered(tiers: readonly (readonly string[])[], q: string, limit: number): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const tier of tiers) {
+    for (const n of rankNames(tier, q)) {
+      if (seen.has(n)) continue;
+      seen.add(n);
+      out.push(n);
+    }
+    if (out.length >= limit) break;
+  }
+  return out.slice(0, limit);
+}
+
+/**
+ * What one ledger field offers, for a query or for no query at all.
+ *
+ * `all` is always the last tier, so every name in the master is reachable from
+ * either field by typing it - which is the whole requirement. The tiers above
+ * it only decide who leads:
+ *
+ *   Ledger         claimants, then the other parties (creditors, banks,
+ *                  customers - everything that is not an expense head), then
+ *                  the expense heads. This field names WHO the money moves to
+ *                  or from: a claimant on a reimbursement, a supplier on a
+ *                  purchase invoice.
+ *   Expense Ledger the heads this company actually posts to, then the rest of
+ *                  the expense heads, then everything else. Unchanged from what
+ *                  /ledgers has always done, with the master appended.
+ *
+ * `popular` is filtered against the master, not trusted: fin_ledger_usage is
+ * built from Tally's Journal Register and carries heads that were never
+ * imported (insights() reports them as `missing_ledgers`). Offering one would
+ * put a name in the picker that /confirm cannot canonicalise.
+ */
+export function ledgerOptions(i: LedgerOptionsInput): LedgerOptions {
+  const q = i.q.trim();
+  const inMaster = new Set(i.all);
+  const keep = (names: readonly string[] | undefined) =>
+    (names ?? []).filter((n) => inMaster.has(n));
+
+  const expense = keep(i.expense);
+  const isExpense = new Set(expense);
+
+  const tiers: readonly string[][] = i.kind === "ledger"
+    ? [keep(i.people), i.all.filter((n) => !isExpense.has(n)), [...i.all]]
+    : [keep(i.popular).filter((n) => isExpense.has(n)), expense, [...i.all]];
+
+  const source = q
+    ? "search"
+    : i.kind === "ledger"
+      ? "claimants and parties"
+      : tiers[0].length ? "most used" : "expense heads";
+
+  return { ledgers: tiered(tiers, q, i.limit), source };
+}
+
+// ---------------------------------------------------------------------------
 // Export preview - api.py:977 _consequences
 // ---------------------------------------------------------------------------
 
