@@ -4,10 +4,10 @@ import { prisma } from "@/lib/prisma";
 
 /** The four robots on the line, in physical order. */
 const ROBOTS = [
-  { db: "Roycut-1", label: "Roycut1 (R1)", short: "R1" },
-  { db: "Roymix",   label: "RoyMix (R2)",  short: "R2" },
-  { db: "Roycut-2", label: "Roycut2 (R3)", short: "R3" },
-  { db: "Roycut-3", label: "Roycut3 (R4)", short: "R4" },
+  { db: "Roycut-1", label: "Robo1", short: "R1" },
+  { db: "Roymix",   label: "Robo2", short: "R2" },
+  { db: "Roycut-2", label: "Robo3", short: "R3" },
+  { db: "Roycut-3", label: "Robo4", short: "R4" },
 ];
 
 function toMins(t: string): number {
