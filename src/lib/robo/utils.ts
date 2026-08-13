@@ -76,3 +76,16 @@ export function formatSlabRemarks(
   if (remarks?.trim()) parts.push(remarks.trim());
   return parts.length > 0 ? parts.join(" · ") : "-";
 }
+
+/** Shop-floor display names for the four robo machines. The DB/machine.name
+ * values ("Roycut-1", "Roymix", "Roycut-2", "Roycut-3") are the identity used
+ * for ordering, preset matching and reports and MUST stay as-is; this only
+ * changes what operators SEE. */
+export const MACHINE_LABEL: Record<string, string> = {
+  "Roycut-1": "Robo1",
+  "Roymix":   "Robo2",
+  "Roycut-2": "Robo3",
+  "Roycut-3": "Robo4",
+};
+export const machineLabel = (name: string | null | undefined): string =>
+  (name && MACHINE_LABEL[name]) || name || "";
