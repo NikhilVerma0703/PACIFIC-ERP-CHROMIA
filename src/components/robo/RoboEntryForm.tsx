@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, Badge, Empty } from "@/components/ui";
 import { SearchableSelect, type SsOption } from "./SearchableSelect";
 import { findDesignPreset } from "@/lib/robo/design-presets";
-import { SLAB_IN_PROCESSING, slabStatusClass, slabStatusLabel } from "@/lib/robo/utils";
+import { SLAB_IN_PROCESSING, slabStatusClass, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
 
 const MACHINE_ORDER = ["Roycut-1", "Roymix", "Roycut-2", "Roycut-3"];
 
@@ -450,7 +450,7 @@ export function RoboEntryForm() {
             <Badge tone="green">Batch running</Badge>
             <span className="flex min-w-0 items-center gap-2 text-sm text-gray-600">
               <span className="font-medium text-gray-900">{latestBatch.designName}</span>
-              <span className="truncate text-gray-400">{activeMachineNames.join(" → ")}</span>
+              <span className="truncate text-gray-400">{activeMachineNames.map(machineLabel).join(" → ")}</span>
               {latestBatch.thickness != null && <span className="text-gray-400">{latestBatch.thickness} cm</span>}
             </span>
             <span className="text-sm text-gray-400">{records.length} slab{records.length === 1 ? "" : "s"} logged</span>
@@ -503,7 +503,7 @@ export function RoboEntryForm() {
                     <div className="mb-3 flex items-center gap-3">
                       <input type="checkbox" checked={on} onChange={() => setActiveMachines((p) => ({ ...p, [m.id]: !p[m.id] }))}
                         className="h-4 w-4 rounded border-gray-300 text-brand focus:ring-brand/30" />
-                      <h3 className="text-sm font-medium text-gray-900">{m.name}</h3>
+                      <h3 className="text-sm font-medium text-gray-900">{machineLabel(m.name)}</h3>
                       {isRoymix && <Badge tone="green">liquid optional · CT varies per slab</Badge>}
                       {!on && <span className="ml-auto text-xs text-gray-400">Not in use</span>}
                     </div>
@@ -574,7 +574,7 @@ export function RoboEntryForm() {
                 .sort((a, b) => MACHINE_ORDER.indexOf(a.machine.name) - MACHINE_ORDER.indexOf(b.machine.name))
                 .map((e) => (
                   <span key={e.machine.name} className="rounded-lg bg-gray-50 px-2.5 py-1 text-xs text-gray-500">
-                    {e.machine.name} CT <span className="font-semibold text-gray-700">{e.targetCycleTime}s</span>
+                    {machineLabel(e.machine.name)} CT <span className="font-semibold text-gray-700">{e.targetCycleTime}s</span>
                   </span>
                 ))}
             </div>
@@ -603,21 +603,21 @@ export function RoboEntryForm() {
                 <input value={slab.slabNumber} onChange={(e) => setSlab((p) => ({ ...p, slabNumber: e.target.value }))} placeholder="e.g. 140748" className={inp} required />
               </div>
               <div>
-                <span className={label}>In time{firstMachine ? ` (${firstMachine})` : ""}</span>
+                <span className={label}>In time{firstMachine ? ` (${machineLabel(firstMachine)})` : ""}</span>
                 <input type="time" value={slab.inTime} onChange={(e) => setSlab((p) => ({ ...p, inTime: e.target.value }))} className={inp} />
               </div>
               <div>
-                <span className={label}>Out time{lastMachine ? ` (${lastMachine})` : ""}</span>
+                <span className={label}>Out time{lastMachine ? ` (${machineLabel(lastMachine)})` : ""}</span>
                 <input type="time" value={slab.outTime} onChange={(e) => setSlab((p) => ({ ...p, outTime: e.target.value }))} className={inp} />
               </div>
               {hasRoymix && (
                 <>
                   <div>
-                    <span className={label}>RoyMix body weight (kg)</span>
+                    <span className={label}>Robo2 body weight (kg)</span>
                     <input type="number" step="0.1" value={slab.roymixBodyWeight} onChange={(e) => setSlab((p) => ({ ...p, roymixBodyWeight: e.target.value }))} placeholder="e.g. 42.5" className={inp} />
                   </div>
                   <div>
-                    <span className={label}>RoyMix cycle time (sec)</span>
+                    <span className={label}>Robo2 cycle time (sec)</span>
                     <input type="number" value={slab.roymixCycleTime} onChange={(e) => setSlab((p) => ({ ...p, roymixCycleTime: e.target.value }))} placeholder="e.g. 185" className={inp} />
                   </div>
                 </>
@@ -643,7 +643,7 @@ export function RoboEntryForm() {
                       <div key={d.tempId} className="flex items-center gap-3 rounded-lg bg-white px-3 py-2 shadow-sm">
                         <span className="w-10 shrink-0 text-xs font-bold text-gray-800">{d.code}</span>
                         <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${CATEGORY_COLOR[d.category] || "bg-gray-100 text-gray-600"}`}>{d.category}</span>
-                        {d.machineName && <span className="shrink-0 text-xs text-gray-500">{d.machineName}</span>}
+                        {d.machineName && <span className="shrink-0 text-xs text-gray-500">{machineLabel(d.machineName)}</span>}
                         <span className="min-w-0 flex-1 truncate text-sm text-gray-700">{d.description}</span>
                         <span className="shrink-0 text-xs text-gray-400">{d.startTime}–{d.endTime}</span>
                         <span className="shrink-0 text-xs font-medium text-amber-700">{dur ? fmtDuration(dur) : `${d.durationMinutes}m`}</span>
@@ -700,7 +700,7 @@ export function RoboEntryForm() {
                       onChange={(e) => { const m = machines.find((x) => x.id === e.target.value); setDelayForm((p) => ({ ...p, machineId: e.target.value, machineName: m?.name || "" })); }}
                       className={inp}>
                       <option value="">Select machine</option>
-                      {machines.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                      {machines.map((m) => <option key={m.id} value={m.id}>{machineLabel(m.name)}</option>)}
                     </select>
                   </div>
                 )}
