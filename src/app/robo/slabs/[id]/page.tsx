@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { Shell } from "@/components/Shell";
 import { Card } from "@/components/ui";
 import { prisma } from "@/lib/prisma";
-import { slabStatusClass, slabStatusLabel } from "@/lib/robo/utils";
+import { slabStatusClass, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Slab Details | Pacific ERP" };
@@ -123,7 +123,7 @@ export default async function SlabCompleteDetailsPage({ params }: { params: Prom
                       <div key={e.id} className="rounded-lg border border-gray-100 p-4">
                         <div className="mb-2 flex items-center gap-2">
                           <span className={`h-5 w-2 rounded-full ${MACHINE_COLORS[e.machine.name] || "bg-gray-400"}`} />
-                          <p className="font-semibold text-gray-800">{e.machine.name}</p>
+                          <p className="font-semibold text-gray-800">{machineLabel(e.machine.name)}</p>
                         </div>
                         {fields.map(f => <Field key={f.label} label={f.label} value={f.value} />)}
                       </div>
@@ -157,7 +157,7 @@ export default async function SlabCompleteDetailsPage({ params }: { params: Prom
                     <div key={d.id} className="flex flex-wrap items-center gap-3 rounded-lg bg-red-50 px-4 py-2">
                       <span className="w-10 text-xs font-bold text-red-700">{d.delayCode.code}</span>
                       <span className="min-w-[8rem] flex-1 text-sm text-gray-700">{d.delayCode.description}</span>
-                      {d.machineName && <span className="text-xs text-gray-500">{d.machineName}</span>}
+                      {d.machineName && <span className="text-xs text-gray-500">{machineLabel(d.machineName)}</span>}
                       {d.startTime && d.endTime && <span className="text-xs text-gray-400">{d.startTime}–{d.endTime}</span>}
                       <span className="text-xs font-medium text-red-600">{d.durationMinutes} min</span>
                       {d.remarks && <span className="w-full text-xs text-gray-500">{d.remarks}</span>}
