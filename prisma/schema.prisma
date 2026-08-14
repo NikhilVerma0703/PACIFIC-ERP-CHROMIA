@@ -247,6 +247,7 @@ model Rm {
   assignedBy     String?   @map("assigned_by")
   assignedAt     DateTime? @map("assigned_at")
 
+  @@index([importedAt]) // 0038 hot-path (2026-08-14): /tables default sort was a seq scan
   @@map("rm")
 }
 
@@ -329,6 +330,7 @@ model UsedBags {
   importedAt             DateTime  @default(now()) @map("imported_at")
   syncedAt               DateTime  @updatedAt @map("synced_at")
 
+  @@index([importedAt]) // 0038 hot-path (2026-08-14): /tables default sort was a seq scan
   @@map("used_bags")
 }
 
@@ -390,6 +392,10 @@ model Silo {
   enteredById                       String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
+  // 0038 hot-path (2026-08-14): /live + /tables recency sorts; silo_no serves the pinned-bag
+  // query and the FIFO fill transaction that scans while holding pg_advisory_xact_lock.
+  @@index([importedAt])
+  @@index([siloNo])
   @@map("silo")
 }
 
@@ -533,6 +539,7 @@ model MixerCycle {
   enteredById                                   String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
+  @@index([importedAt]) // 0038 hot-path (2026-08-14): /live 30-min window + /tables sort seq-scanned 7.6k wide rows
   @@map("mixer_cycle")
 }
 
@@ -579,6 +586,12 @@ model PolishEntry {
   enteredById     String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
+  // 0038 hot-path (2026-08-14): imported_at — /tables page 1 was a 41.7 ms seq scan of 44.7k
+  // rows; created + imported_at BitmapOr the scoreStations window (rewritten from COALESCE);
+  // slab_number kills the 2.4 ms seq-scan duplicate guard on every save.
+  @@index([importedAt])
+  @@index([created])
+  @@index([slabNumber])
   @@map("polish_entry")
 }
 
@@ -635,6 +648,11 @@ model PolishQc {
   enteredById         String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
+  // 0038 hot-path (2026-08-14): slab_number was the app's single worst predicate — 11 ms
+  // seq scan over 3,624 buffers per shift instance in shiftScore (~90/scoreboard load),
+  // plus the dup guard on every QC save. imported_at serves /live findFirst + /tables sort.
+  @@index([slabNumber])
+  @@index([importedAt])
   @@map("polish_qc")
 }
 
@@ -695,6 +713,9 @@ model Distributor {
   enteredById                          String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
+  // 0038 hot-path (2026-08-14): /live + /tables recency; date window for scoreStations/downtime
+  @@index([importedAt])
+  @@index([date])
   @@map("distributor")
 }
 
@@ -901,6 +922,9 @@ model Kreos {
   enteredById                             String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
+  // 0038 hot-path (2026-08-14): /live + /tables recency; date window for scoreStations/downtime
+  @@index([importedAt])
+  @@index([date])
   @@map("kreos")
 }
 
@@ -1002,6 +1026,10 @@ model Press {
   vacuumPumps                                    String?   @map("vacuum_pumps") // which pumps ran, e.g. "1,2,4" (count auto-fills noOfVacuumPumps)
 
   @@index([batchKey])
+  // 0038 hot-path (2026-08-14): /live + /tables recency; date window (scoreStations, downtime,
+  // dashboard press-today) was a 4.2 ms seq scan discarding 27,720 of 28,813 rows per call.
+  @@index([importedAt])
+  @@index([date])
   @@map("press")
 }
 
@@ -1076,6 +1104,9 @@ model Oven {
   enteredById    String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
+  // 0038 hot-path (2026-08-14): /live + /tables recency; date window for scoreStations/downtime
+  @@index([importedAt])
+  @@index([date])
   @@map("oven")
 }
 
@@ -1228,6 +1259,11 @@ model Jot {
   enteredById    String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
+  // 0038 hot-path (2026-08-14): /tables recency; date window for scoreStations;
+  // slab_number for avgThicknessFor's IN-list (was 1.9 ms seq scan discarding 17,759 rows).
+  @@index([importedAt])
+  @@index([date])
+  @@index([slabNumber])
   @@map("jot")
 }
 
@@ -1602,6 +1638,12 @@ model Mis {
   enteredById                                         String?   @map("entered_by_user_id") // who created this row in the ERP (operator self-edit)
 
   @@index([batchKey])
+  // 0038 hot-path (2026-08-14): the shift-window OR shape ((date_and_time in window) OR
+  // (date_and_time IS NULL AND date in window)) runs ~3x per shift instance — ~270 seq
+  // scans per month-scoreboard load. The planner BitmapOrs these two. imported_at: /tables.
+  @@index([dateAndTime])
+  @@index([date])
+  @@index([importedAt])
   @@map("mis")
 }
 

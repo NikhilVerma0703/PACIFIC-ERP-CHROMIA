@@ -1,8 +1,13 @@
 import Link from "next/link";
+// next/form: identical markup to <form method="GET"> but submits as a CLIENT-side
+// navigation, so the existing [model]/loading.tsx skeleton shows instead of the
+// full-document blank screen a plain GET form causes (measured: search/page-jump
+// were the only /tables interactions that bypassed the router entirely).
+import Form from "next/form";
 import { notFound } from "next/navigation";
 import { Shell } from "@/components/Shell";
 import { Card, Empty } from "@/components/ui";
-import { tableMeta, listRows } from "@/lib/tables";
+import { tableMeta, listRows, modelFieldSet } from "@/lib/tables";
 import { prisma } from "@/lib/prisma";
 import { canSeeModel, canWriteModel } from "@/lib/branch";
 import { currentUser } from "@/lib/rbac";
@@ -66,15 +71,35 @@ export default async function TableGrid({ params, searchParams }: { params: Prom
   const silo = sp.silo?.trim();
   // back target: only allow internal paths
   const from = sp.from && sp.from.startsWith("/") ? sp.from : undefined;
+
+  // Columns this page actually renders — passed to listRows so the row query selects
+  // only them (+ id). WHY (measured 2026-08-14): the unselected findMany shipped every
+  // column, 69 KB per MixerCycle page vs ~3–4 KB rendered. enteredById feeds the
+  // operator own-row Edit gate below; the Silo extras feed the usedIn()/remaining
+  // columns (m[1-4]G[1-5]Ids + fillerSiloIdIds are what usageIds() reads).
+  const SILO_USAGE_FIELDS = [
+    "remainingWeight", "invNoBagNo", "fillerSiloIdIds",
+    ...Array.from({ length: 4 }, (_, m) => Array.from({ length: 5 }, (_, g) => `m${m + 1}G${g + 1}Ids`)).flat(),
+  ];
+  const renderedFields = [
+    ...mainCols.map((c) => c.prismaField),
+    "enteredById",
+    ...(isSilo ? SILO_USAGE_FIELDS : []),
+  ];
+
   let pinned: Record<string, unknown>[] = [];
   if (isSilo && silo) {
+    // Same narrow projection as the main grid: the pinned table renders siloCols +
+    // remaining + usedIn, not all ~100 Silo columns (60 full rows were pure transfer waste).
+    const known = modelFieldSet("Silo");
+    const pinnedSelect = Object.fromEntries(["id", ...siloCols.map((c) => c.prismaField), ...SILO_USAGE_FIELDS].filter((f) => known?.has(f)).map((f) => [f, true]));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    try { pinned = await (prisma as any).silo.findMany({ where: { siloNo: silo, remainingWeight: { gt: 0 } }, orderBy: { siloIncrement: "desc" }, take: 60 }); } catch { /* ignore */ }
+    try { pinned = await (prisma as any).silo.findMany({ where: { siloNo: silo, remainingWeight: { gt: 0 } }, orderBy: { siloIncrement: "desc" }, take: 60, select: pinnedSelect }); } catch { /* ignore */ }
   }
 
   let data;
   let error: string | null = null;
-  try { data = await listRows(model, page, 25, batch, q, sort, dir, emptyField); }
+  try { data = await listRows(model, page, 25, batch, q, sort, dir, emptyField, renderedFields); }
   catch { error = "Could not read this table."; }
 
   // Resolve which mixer cycle (batch · cycle) each bag was used in.
@@ -140,7 +165,7 @@ export default async function TableGrid({ params, searchParams }: { params: Prom
         </Card>
       )}
 
-      <form method="GET" className="mb-4 flex flex-wrap items-center gap-2">
+      <Form action={`/tables/${model}`} className="mb-4 flex flex-wrap items-center gap-2">
         {batch && <input type="hidden" name="b" value={batch} />}
         {silo && <input type="hidden" name="silo" value={silo} />}
         {from && <input type="hidden" name="from" value={from} />}
@@ -154,7 +179,7 @@ export default async function TableGrid({ params, searchParams }: { params: Prom
         />
         <button className="min-h-[44px] rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-black">Search</button>
         {q && <Link href={qp(1).replace(/&q=[^&]*/, "")} className="text-sm text-brand hover:underline">Clear</Link>}
-      </form>
+      </Form>
 
       {!error && data && (
         <Card>
@@ -181,7 +206,7 @@ export default async function TableGrid({ params, searchParams }: { params: Prom
           ) : <Empty>No records.</Empty>}
           <div className="mt-4 flex items-center justify-between gap-3 text-sm">
             <Link href={qp(Math.max(1, page - 1))} className={`min-h-[44px] content-center rounded-md border px-3 py-1.5 ${page <= 1 ? "pointer-events-none border-gray-100 text-gray-300" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}>← Prev</Link>
-            <form method="GET" className="flex items-center gap-2 text-gray-500">
+            <Form action={`/tables/${model}`} className="flex items-center gap-2 text-gray-500">
               {batch && <input type="hidden" name="b" value={batch} />}
               {q && <input type="hidden" name="q" value={q} />}
               {silo && <input type="hidden" name="silo" value={silo} />}
@@ -192,7 +217,7 @@ export default async function TableGrid({ params, searchParams }: { params: Prom
               <input name="page" type="number" min={1} max={totalPages} defaultValue={page} className="w-20 rounded-md border border-gray-300 px-2 py-1.5 text-center text-sm" />
               <span>of {totalPages}</span>
               <button className="rounded-md border border-gray-300 px-3 py-1.5 text-gray-700 hover:bg-gray-50">Go</button>
-            </form>
+            </Form>
             <Link href={qp(Math.min(totalPages, page + 1))} className={`min-h-[44px] content-center rounded-md border px-3 py-1.5 ${page >= totalPages ? "pointer-events-none border-gray-100 text-gray-300" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}>Next →</Link>
           </div>
         </Card>

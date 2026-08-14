@@ -3,6 +3,7 @@
 // is derived from scripts/fieldmap.json; editability follows the field kind.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { CURATED_TEXT_FIELDS } from "@/lib/categoricalFields";
 
@@ -82,7 +83,28 @@ export function tableMeta(model: string): TableMeta | undefined {
   return load()[model];
 }
 
-export async function listRows(model: string, page: number, pageSize = 25, batch?: string, q?: string, sort?: string, dir?: string, empty?: string) {
+// Prisma field names per model, from the generated client's DMMF — the source of
+// truth for what a `select` may name. Used to validate caller-requested columns so a
+// field that exists in the UI metadata but not on the model can never 500 the page.
+const _modelFields = new Map<string, Set<string>>();
+export function modelFieldSet(model: string): Set<string> | undefined {
+  let s = _modelFields.get(model);
+  if (!s) {
+    const m = Prisma.dmmf.datamodel.models.find((x) => x.name === model);
+    if (!m) return undefined;
+    s = new Set(m.fields.map((f) => f.name));
+    _modelFields.set(model, s);
+  }
+  return s;
+}
+
+// `fields` (optional): the columns the caller actually renders. When given, the row
+// query selects ONLY those columns (+ id). WHY (measured 2026-08-14, live Neon): the
+// grid renders 6 columns but the unselected findMany shipped every column — 25 rows
+// weighed 69.0 KB on MixerCycle (137 cols), 29.4 KB Press, 26.0 KB PolishQc, vs ~3–4 KB
+// for what the page shows. Same rows, same order — only unrendered bytes are dropped.
+// Unknown names are silently skipped (see modelFieldSet); no `fields` = full rows.
+export async function listRows(model: string, page: number, pageSize = 25, batch?: string, q?: string, sort?: string, dir?: string, empty?: string, fields?: string[]) {
   const d = delegateOf(model);
   if (!d) throw new Error("unknown table");
   const meta = tableMeta(model);
@@ -112,8 +134,16 @@ export async function listRows(model: string, page: number, pageSize = 25, batch
     const sf = meta?.fields.find((x) => x.prismaField === sort);
     if (sf && ["scalar", "number", "int", "bool", "date"].includes(sf.kind)) orderBy = { [sort]: dir === "asc" ? "asc" : "desc" };
   }
+  let select: Record<string, true> | undefined;
+  if (fields?.length) {
+    const known = modelFieldSet(model);
+    if (known) {
+      const cols = [...new Set(["id", ...fields])].filter((f) => known.has(f));
+      if (cols.length) select = Object.fromEntries(cols.map((c) => [c, true]));
+    }
+  }
   const [rows, total] = await Promise.all([
-    d.findMany({ where, skip: (page - 1) * pageSize, take: pageSize, orderBy }),
+    d.findMany({ where, skip: (page - 1) * pageSize, take: pageSize, orderBy, ...(select ? { select } : {}) }),
     d.count({ where }),
   ]);
   return { rows: rows as Record<string, unknown>[], total, pageSize };
@@ -243,45 +273,62 @@ export async function selectOptions(model: string): Promise<Record<string, strin
   if (hit && Date.now() - hit.at < OPT_TTL_MS) return hit.data;
   const d = delegateOf(model);
   const out: Record<string, string[]> = {};
-  // One distinct-values query per select field — run them in PARALLEL batches
-  // (sequentially this was the slowest part of loading every entry form; small
-  // batches keep well under the Prisma/Neon connection-pool limit).
-  const BATCH = 8;
+
+  // The two merge steps, shared by the one-shot path and the per-field fallback so
+  // both produce byte-identical option lists.
+  // Preset (canonical) first so its casing wins; dedupe case-insensitively so
+  // "Direct ok" can't appear next to "Direct Ok". Presets guarantee the field
+  // always has options (so it renders as a dropdown, not a free-text box).
+  const mergeSingle = (field: string, raw: unknown[]) => {
+    const vals = raw.filter((v) => v != null && v !== "").map((v) => String(v).trim()).filter(Boolean);
+    const preset = PRESET_OPTIONS[field] ?? [];
+    const seen = new Set(preset.map((x) => x.toLowerCase()));
+    const extras: string[] = [];
+    for (const v of vals) { const k = v.toLowerCase(); if (!seen.has(k)) { seen.add(k); extras.push(v); } }
+    const merged = liveOptions(field, [...preset, ...extras.sort()]); // preset in authored order, extras sorted after
+    if (merged.length) out[field] = merged;
+  };
+  // Trimmed like the singleSelect branch: a value differing only by stray whitespace
+  // is a different string, so it would render as a second, identical-looking chip
+  // and split the same reason across both.
+  const mergeMulti = (field: string, raw: unknown[]) => {
+    const set = new Set<string>(PRESET_OPTIONS[field] ?? []);
+    for (const v of raw) if (v) { const t = String(v).trim(); if (t) set.add(t); }
+    const vals = liveOptions(field, [...set].sort());
+    if (vals.length) out[field] = vals;
+  };
+
+  const isSingle = (f: FieldMeta) => f.airtableType === "singleSelect" || (CURATED_TEXT_FIELDS.has(f.prismaField) && f.kind === "scalar");
+  const isMulti = (f: FieldMeta) => f.airtableType === "multipleSelects";
+
+  // One distinct-values query per select field, all fired in ONE parallel wave.
+  // They used to run in serialized batches of 8 — MixerCycle's 26 queries took 4
+  // round-trip waves, measured 3,075 ms on a cold lambda (2026-08-14). One wave
+  // costs roughly the slowest single query instead of the sum of four; Prisma's
+  // own pool queues anything beyond its connection limit, so a wider wave cannot
+  // exhaust connections — the pool throttles it exactly like the batches did.
+  //
+  // DELIBERATELY NOT folded into one UNION ALL round trip (measured 18x faster
+  // cold): mergeSingle keeps the FIRST casing it sees of each option, so the
+  // option lists' casing follows the row order the exact current queries return.
+  // A different query shape returns a different order and silently relabels
+  // options ("Chinna" -> "chinna" in live data). Same queries = same dropdowns.
   const fieldJob = async (f: (typeof meta.fields)[number]) => {
     try {
-      if (f.airtableType === "singleSelect" || (CURATED_TEXT_FIELDS.has(f.prismaField) && f.kind === "scalar")) {
+      if (isSingle(f)) {
         const rows: Record<string, unknown>[] = await d.findMany({ where: { [f.prismaField]: { not: null } }, select: { [f.prismaField]: true }, distinct: [f.prismaField], take: 500 });
-        const vals = rows.map((r) => r[f.prismaField]).filter((v) => v != null && v !== "").map((v) => String(v).trim()).filter(Boolean);
-        // Preset (canonical) first so its casing wins; dedupe case-insensitively so
-        // "Direct ok" can't appear next to "Direct Ok". Presets guarantee the field
-        // always has options (so it renders as a dropdown, not a free-text box).
-        const preset = PRESET_OPTIONS[f.prismaField] ?? [];
-        const seen = new Set(preset.map((x) => x.toLowerCase()));
-        const extras: string[] = [];
-        for (const v of vals) { const k = v.toLowerCase(); if (!seen.has(k)) { seen.add(k); extras.push(v); } }
-        const merged = liveOptions(f.prismaField, [...preset, ...extras.sort()]); // preset in authored order, extras sorted after
-        if (merged.length) out[f.prismaField] = merged;
-      } else if (f.airtableType === "multipleSelects" && meta.tableMap && f.column) {
+        mergeSingle(f.prismaField, rows.map((r) => r[f.prismaField]));
+      } else if (isMulti(f) && meta.tableMap && f.column) {
         // distinct values computed in the DB (covers the whole table, returns a handful of rows)
         const rows: { v: unknown }[] = await db.$queryRawUnsafe(`SELECT DISTINCT unnest("${f.column}") AS v FROM "${meta.tableMap}" LIMIT 500`);
-        const set = new Set<string>(PRESET_OPTIONS[f.prismaField] ?? []);
-        // Trimmed like the singleSelect branch above: a value differing only by stray
-        // whitespace is a different string, so it would render as a second, identical-
-        // looking chip and split the same reason across both.
-        for (const r of rows) if (r.v) { const t = String(r.v).trim(); if (t) set.add(t); }
-        const vals = liveOptions(f.prismaField, [...set].sort());
-        if (vals.length) out[f.prismaField] = vals;
-      } else if (f.airtableType === "multipleSelects") {
+        mergeMulti(f.prismaField, rows.map((r) => r.v));
+      } else if (isMulti(f)) {
         const rows: Record<string, unknown>[] = await d.findMany({ select: { [f.prismaField]: true }, take: 3000 });
-        const set = new Set<string>(PRESET_OPTIONS[f.prismaField] ?? []);
-        for (const r of rows) for (const v of (r[f.prismaField] as unknown[] | null | undefined) ?? []) if (v) { const t = String(v).trim(); if (t) set.add(t); }
-        const vals = liveOptions(f.prismaField, [...set].sort());
-        if (vals.length) out[f.prismaField] = vals;
+        mergeMulti(f.prismaField, rows.flatMap((r) => ((r[f.prismaField] as unknown[] | null | undefined) ?? [])));
       }
     } catch { /* ignore */ }
   };
-  for (let i = 0; i < meta.fields.length; i += BATCH)
-    await Promise.all(meta.fields.slice(i, i + BATCH).map(fieldJob));
+  await Promise.all(meta.fields.map(fieldJob));
   // Never DEGRADE: a field whose query failed this run (no values) keeps the
   // values the previous run had — a select must not fall back to a text box.
   // (filtered again: a cache entry written before a value was retired would resurrect it)

@@ -233,8 +233,22 @@ export async function changeSlabStatus(
  * Lazy reservation-expiry sweep: any RESERVED slab whose hold has lapsed goes
  * back to AVAILABLE (hold cleared, event logged). Called best-effort from the
  * inventory read APIs, so expired holds never show as reserved.
+ *
+ * SINGLE-FLIGHT: the dashboard fires the kpi and list APIs together on every
+ * mount, and each called this WRITE independently — two sweeps per load
+ * (measured 2026-08-14). When both land on the same instance the second call
+ * now awaits the first's promise instead of re-running the scan. Semantics are
+ * unchanged: every read still waits for a completed sweep before reporting, and
+ * the per-row guards below already made concurrent sweeps safe — this only
+ * stops paying twice for the same pass.
  */
-export async function sweepExpiredReservations(): Promise<number> {
+let _sweepInFlight: Promise<number> | null = null;
+export function sweepExpiredReservations(): Promise<number> {
+  if (_sweepInFlight) return _sweepInFlight;
+  _sweepInFlight = _sweep().finally(() => { _sweepInFlight = null; });
+  return _sweepInFlight;
+}
+async function _sweep(): Promise<number> {
   try {
     const now = new Date();
     const lapsed: { slabNumber: number; reservedForPi: string | null }[] = await db.finishedSlab.findMany({

@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
-import { auth } from "@/auth";
-import { currentUser } from "@/lib/rbac";
+import { currentUser, sessionOnce } from "@/lib/rbac";
 import { logout } from "@/app/actions";
 import { Nav } from "./Nav";
 import { fabTierOf } from "@/lib/fab/access";
@@ -14,7 +13,10 @@ import { ROLE_LABEL, STATION_LABEL, rankOf, ROLE_RANK } from "@/lib/rbac";
 import { BRANCH_LABEL } from "@/lib/branch";
 
 export async function Shell({ children }: { children: ReactNode }) {
-  const session = await auth();
+  // sessionOnce = request-cached auth(): Shell's own auth() call plus the one
+  // inside currentUser() used to run the jwt-callback User query twice per
+  // navigation (measured 2026-08-14). Same session object, one decode+query.
+  const session = await sessionOnce();
   // revoked / deactivated sessions get bounced even though a cookie exists
   if (session?.user && !(await currentUser())) redirect("/login");
   const user = session?.user;

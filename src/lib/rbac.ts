@@ -1,6 +1,6 @@
 import { cache } from "react";
 import { auth } from "@/auth";
-import { prisma } from "@/lib/prisma";
+import { sessionUserRow } from "@/lib/sessionRevalidation";
 
 // Role hierarchy (low -> high). Kept as string-typed so this compiles even
 // before `prisma generate` refreshes the @prisma/client enum.
@@ -48,16 +48,26 @@ export function roleLabelFor(role?: string | null, branch?: string | null): stri
   return ROLE_LABEL[r] ?? r;
 }
 
+/** `auth()` once per request. Every `auth()` call runs the jwt callback, which
+ * revalidates the User row — so Shell calling `auth()` AND `currentUser()` (which
+ * called `auth()` again) paid the jwt-callback query twice per navigation
+ * (measured 2026-08-14: 3 sequential User lookups before any page data).
+ * Request-cached here so the whole render shares one decode + one validation. */
+export const sessionOnce = cache(() => auth());
+
 /** The session user, REVALIDATED against the database on every request:
  * a deactivated user or a bumped sessionVersion is treated as signed out
- * immediately, on every device. Request-cached so gates share one query. */
+ * immediately, on every device. Request-cached so gates share one query —
+ * and the row itself comes from sessionUserRow, the same request-scoped
+ * lookup the jwt callback uses, so the check runs on every request but the
+ * query runs once per request. */
 export const currentUser = cache(async () => {
-  const session = await auth();
+  const session = await sessionOnce();
   const u = session?.user;
   if (!u?.id) return null;
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const row: any = await (prisma as any).user.findUnique({ where: { id: u.id }, select: { active: true, sessionVersion: true } });
+    const row: any = await sessionUserRow(u.id);
     if (!row || row.active === false) return null;
     const tokenSv = Number((u as { sv?: number }).sv ?? 1);
     if (Number(row.sessionVersion ?? 1) !== tokenSv) return null; // revoked -> signed out everywhere

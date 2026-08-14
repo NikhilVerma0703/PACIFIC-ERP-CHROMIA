@@ -1,4 +1,7 @@
 import Link from "next/link";
+// next/form: identical markup to <form method="GET"> but submits as a CLIENT-side
+// navigation, so the app's loading skeleton shows instead of a blank full-document load.
+import Form from "next/form";
 import { batchHasUnbacked } from "@/lib/backfill";
 import { normalizeBatch } from "@/lib/normalizeBatch";
 import { Shell } from "@/components/Shell";
@@ -74,14 +77,10 @@ export default async function BatchPage({
 
   let lastAct = null;
   let history: Awaited<ReturnType<typeof recentActions>> = [];
-  if (query) { try { [lastAct, history] = await Promise.all([getLastUndoable(query), recentActions(query)]); } catch { /* action_log not migrated yet */ } }
   let qcSummary: string | null = null;
-  if (query && data) { try { qcSummary = await getQcParamSummary(query); } catch { /* qc summary optional */ } }
-
   let mixerCycles: Awaited<ReturnType<typeof getMixerCycles>> = [];
   let silos: Awaited<ReturnType<typeof getSiloBags>> = [];
   let unbacked = false;
-  if (query) { try { unbacked = await batchHasUnbacked(normalizeBatch(query) ?? ""); } catch { /* ignore */ } }
   let wrongBatch: Awaited<ReturnType<typeof detectWrongBatch>> | null = null;
   let sharedMix: Awaited<ReturnType<typeof detectSharedMixRun>> = null;
   let split: Awaited<ReturnType<typeof confirmedSplitAllocation>> = null;
@@ -97,14 +96,37 @@ export default async function BatchPage({
   // Defaults to "" so a failed read fails closed rather than assuming Shop Floor.
   // Typed (not plain string) so a typo in the branch literal below is a compile error.
   let branch: BranchName | "" = "";
-  if (query && data?.found) {
-    // mixer cycles / silo bags follow the same call the totals made: when the mix is
-    // only stamped on the parent key, a solo view still shows it family-wide (labelled).
-    const mixScope = { solo: scope.solo && !data.family.mixFamilyWide };
-    if (data.family.keys.length > 1) {
-      try { thickByBatch = await thicknessMixByBatch(data.family.keys); } catch { /* chips degrade to slab count only */ }
-    }
-    try { [mixerCycles, silos, wrongBatch, mayFix, canManage, branch, sharedMix, split, rmPending] = await Promise.all([getMixerCycles(query, mixScope), getSiloBags(query, mixScope), detectWrongBatch(query), canRectify(), isManager(), currentBranchName(), detectSharedMixRun(query, data.family), confirmedSplitAllocation(query), pendingRmAllocation(query)]); } catch { /* ignore */ }
+  if (query) {
+    // Everything below depends only on `query` and the already-fetched `data` —
+    // not on each other — yet it used to run as FIVE serialized await stages
+    // (undo pair -> qc summary -> unbacked -> family thickness -> the 9-way
+    // Promise.all), each paying a full round-trip wave. Measured 2026-08-14:
+    // /batch was 45 queries in 5+ sequential stages, 1.65 s wall. One combined
+    // settle collapses the stages; each closure keeps ITS OWN try/catch so a
+    // failure still degrades exactly the same slice of the page as before.
+    // (Closures RETURN their results — assigning outer `let`s from inside them
+    // defeats TypeScript's control-flow narrowing at the use sites below.)
+    const [undoRes, qcRes, unbackedRes, thickRes, famRes] = await Promise.all([
+      (async () => { try { return await Promise.all([getLastUndoable(query), recentActions(query)]); } catch { return null; /* action_log not migrated yet */ } })(),
+      (async () => { if (!data) return null; try { return await getQcParamSummary(query); } catch { return null; /* qc summary optional */ } })(),
+      (async () => { try { return await batchHasUnbacked(normalizeBatch(query) ?? ""); } catch { return false; /* ignore */ } })(),
+      (async () => {
+        if (!data?.found || data.family.keys.length <= 1) return null;
+        try { return await thicknessMixByBatch(data.family.keys); } catch { return null; /* chips degrade to slab count only */ }
+      })(),
+      (async () => {
+        if (!data?.found) return null;
+        // mixer cycles / silo bags follow the same call the totals made: when the mix is
+        // only stamped on the parent key, a solo view still shows it family-wide (labelled).
+        const mixScope = { solo: scope.solo && !data.family.mixFamilyWide };
+        try { return await Promise.all([getMixerCycles(query, mixScope), getSiloBags(query, mixScope), detectWrongBatch(query), canRectify(), isManager(), currentBranchName(), detectSharedMixRun(query, data.family), confirmedSplitAllocation(query), pendingRmAllocation(query)] as const); } catch { return null; /* ignore */ }
+      })(),
+    ]);
+    if (undoRes) [lastAct, history] = undoRes;
+    qcSummary = qcRes;
+    unbacked = unbackedRes;
+    if (thickRes) thickByBatch = thickRes;
+    if (famRes) [mixerCycles, silos, wrongBatch, mayFix, canManage, branch, sharedMix, split, rmPending] = famRes;
   }
 
   // The split view takes over ONLY when its own figure is computable — one provenance
@@ -146,7 +168,7 @@ export default async function BatchPage({
   return (
     <Shell>
       <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center">
-        <form method="GET" className="flex gap-2">
+        <Form action="/batch" className="flex gap-2">
           <input
             name="b"
             defaultValue={query ?? ""}
@@ -156,9 +178,9 @@ export default async function BatchPage({
           <button className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-dark">
             Look up
           </button>
-        </form>
+        </Form>
         <span className="text-xs text-gray-400 sm:px-1">or</span>
-        <form method="GET" className="flex gap-2">
+        <Form action="/batch" className="flex gap-2">
           <input
             name="d"
             defaultValue={designQuery ?? ""}
@@ -168,7 +190,7 @@ export default async function BatchPage({
           <button className="rounded-md border border-brand px-4 py-2 text-sm font-medium text-brand hover:bg-brand/5">
             Find
           </button>
-        </form>
+        </Form>
       </div>
 
       {error && <Empty>{error}</Empty>}

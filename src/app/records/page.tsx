@@ -1,3 +1,7 @@
+import Link from "next/link";
+// next/form: identical markup to <form method="GET"> but submits as a CLIENT-side
+// navigation, so the app's loading skeleton shows instead of a blank full-document load.
+import Form from "next/form";
 import { Shell } from "@/components/Shell";
 import { Card, Empty } from "@/components/ui";
 import { listRecords, RECORD_VIEWS, type RecordView } from "@/lib/erp";
@@ -37,7 +41,7 @@ export default async function RecordsPage({
 
   return (
     <Shell>
-      <form method="GET" className="mb-5 flex flex-wrap items-center gap-2">
+      <Form action="/records" className="mb-5 flex flex-wrap items-center gap-2">
         <select
           name="model"
           defaultValue={view}
@@ -58,7 +62,7 @@ export default async function RecordsPage({
         <button className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-dark">
           Apply
         </button>
-      </form>
+      </Form>
 
       {error && <Empty>{error}</Empty>}
 
@@ -97,18 +101,21 @@ export default async function RecordsPage({
           )}
 
           <div className="mt-4 flex items-center justify-between text-sm">
-            <a
+            {/* Link (not <a>): renders the same anchor markup but navigates through the
+                client router, so paging shows the loading skeleton instead of a blank
+                full-document reload. Same href, same styling. */}
+            <Link
               href={qp(Math.max(1, page - 1))}
               className={`rounded-md border px-3 py-1.5 ${page <= 1 ? "pointer-events-none border-gray-100 text-gray-300" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}
             >
               ← Prev
-            </a>
-            <a
+            </Link>
+            <Link
               href={qp(Math.min(totalPages, page + 1))}
               className={`rounded-md border px-3 py-1.5 ${page >= totalPages ? "pointer-events-none border-gray-100 text-gray-300" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}
             >
               Next →
-            </a>
+            </Link>
           </div>
         </Card>
       )}

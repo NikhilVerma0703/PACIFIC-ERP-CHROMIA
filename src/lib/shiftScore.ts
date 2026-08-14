@@ -191,6 +191,12 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
   {
     // What this shift made.
     // 1) What the shift's OWN MIS rows claim, hour by hour.
+    //
+    // The three incharge columns ride along here so the crew can be derived from
+    // THESE rows instead of crewOnShift() re-querying the identical window — that
+    // second fetch was one more round-trip per shift instance (~90 extra queries
+    // per month scoreboard, measured 2026-08-14). Same where-clause, same rows,
+    // same crew; only the duplicate read is gone.
     const mis: any[] = await (prisma as any).mis.findMany({
       where: {
         OR: [
@@ -203,6 +209,7 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
         startingSlabNumber: true, endingSlabNumber: true,
         breakdownDelayDurationMechanicalOrElectricalMinutes: true,
         poweroutDelayDurationMinutes: true,
+        electricalInchargeName: true, mechanicalInchargeName: true,
       },
     });
     const n = (v: unknown) => Number(v ?? 0) || 0;
@@ -245,12 +252,15 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
     }
     const contested = contestedSlabs.size;
     const slabs = [...declared];
+    // Crew comes straight from the rows already in hand (see the select above) —
+    // crewFromRows is the same pure derivation crewOnShift applied to its own
+    // identical fetch of this window.
+    const crew = crewFromRows(mis);
     if (!slabs.length) {
-      const crew0 = await crewOnShift(anchor, shift);
       return { ...empty, breakdownMin, poweroutMin, hoursLogged,
         weight: shiftWeight(hoursLogged, breakdownMin + poweroutMin, 0),
-        contested, wideRows, flagged, crew: crew0,
-        people: [...new Set([...crew0.production, ...crew0.electrical, ...crew0.mechanical])].sort() };
+        contested, wideRows, flagged, crew,
+        people: [...new Set([...crew.production, ...crew.electrical, ...crew.mechanical])].sort() };
     }
 
     // How QC finally graded those same slabs. Chunked: Postgres caps a
@@ -283,10 +293,7 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
     // Raw share kept for the report; the SCORED quality is stretched above the floor.
     const rawQuality = graded ? credit / graded : null;
     const quality = scaleQuality(rawQuality);
-    const [crew, avgMm] = await Promise.all([
-      crewOnShift(anchor, shift),
-      avgThicknessFor(slabs),
-    ]);
+    const avgMm = await avgThicknessFor(slabs);
     const people = [...new Set([...crew.production, ...crew.electrical, ...crew.mechanical])].sort();
     return {
       anchor, shift,
@@ -340,25 +347,18 @@ async function avgThicknessFor(slabs: number[]): Promise<number | null> {
 /** Who was named on this shift — the closest thing to a roster the ERP holds.
  *  Production / electrical / mechanical incharge on the shift's MIS rows.
  *  A real ShiftTeam roster would replace this; until one exists these are the
- *  only names attributable to a shift. */
-async function crewOnShift(anchor: string, shift: ShiftLetter): Promise<ShiftScore["crew"]> {
-  const { start, end } = shiftRange(anchor, shift);
-  // NO try/catch. A failed read here used to return an empty crew, which does
-  // not mean "nobody worked" — it silently deletes that shift's points from
-  // everyone who did, and raises every other person's share to fill the gap.
-  // A scoreboard that pays money must fail loudly, not quietly redistribute.
-  const rows: any[] = await (prisma as any).mis.findMany({
-    where: {
-      OR: [
-        { dateAndTime: { gte: start, lt: end } },
-        { AND: [{ dateAndTime: null }, { date: { gte: start, lt: end } }] },
-      ],
-    },
-    select: {
-      productionInchargeName: true, electricalInchargeName: true,
-      mechanicalInchargeName: true,
-    },
-  });
+ *  only names attributable to a shift.
+ *
+ *  PURE: derives the crew from MIS rows the caller already fetched for the same
+ *  shift window. It used to be its own query (crewOnShift) against the identical
+ *  where-clause — one extra round-trip per shift instance, ~90 per month
+ *  scoreboard load (measured 2026-08-14). No try/catch anywhere on this path:
+ *  a failed read must not return an empty crew — that does not mean "nobody
+ *  worked", it silently deletes the shift's points from everyone who did and
+ *  raises every other person's share to fill the gap. A scoreboard that pays
+ *  money must fail loudly, not quietly redistribute — so the caller's fetch
+ *  still throws, and this stays a pure function tests can hit without a DB. */
+export function crewFromRows(rows: { productionInchargeName?: unknown; electricalInchargeName?: unknown; mechanicalInchargeName?: unknown }[]): ShiftScore["crew"] {
   const prod = new Set<string>(), elec = new Set<string>(), mech = new Set<string>();
   // multi-select incharges are stored comma-joined in one text column
   const add = (set: Set<string>, v: unknown) => {
@@ -782,33 +782,59 @@ export async function scoreStations(from: string, to: string, excludeNames: stri
   const hi = new Date(new Date(`${to}T00:00:00+05:30`).getTime() + 86400_000);
   const out: StationBoard[] = [];
 
-  for (const st of STATIONS) {
-    // No try/catch. A station whose query fails must not render as "nobody
-    // worked here" — that quietly removes real people from a payout board.
+  // PERFORMANCE RESHAPE, 2026-08-14 — same rows, same math, same boards.
+  // The old loop ran the 6 stations one after another and re-fetched polish_qc
+  // grades per station; the station slab sets overlap heavily (they are the same
+  // month of slabs seen at different machines), so a month of QC rows crossed the
+  // wire up to 6 times and the whole function measured 2.4–3.1 s warm. Now:
+  //   1) all 6 station window queries run in parallel (independent reads);
+  //   2) QC is fetched ONCE for the union of their slabs — the per-slab "latest
+  //      verdict" is a property of the slab, not of the station asking, so one
+  //      shared map is provably the same input to every board;
+  //   3) the per-station roll-up below is pure in-memory work, unchanged.
+  // No try/catch anywhere, as before: a station whose query fails must not render
+  // as "nobody worked here" — that quietly removes real people from a payout board.
+  const stationRows: any[][] = await Promise.all(STATIONS.map((st) => {
     const when = st.tsRequired ? st.ts : `COALESCE(${st.ts}, imported_at)`;
-    const rows: any[] = await prisma.$queryRawUnsafe(
+    // The polishing board's window used to filter on COALESCE(created, imported_at),
+    // which no btree can serve — a 24–29 ms seq scan over 44.7k polish_entry rows
+    // (measured 2026-08-14). The OR shape below is equivalent by the definition of
+    // COALESCE (created NULL -> imported_at decides; imported_at is NOT NULL) and
+    // lets the planner BitmapOr polish_entry_created_idx + polish_entry_imported_at_idx.
+    // COALESCE stays in the SELECT list — only the WHERE needed to become indexable.
+    const windowPred = st.tsRequired
+      ? `${st.ts} >= $1 AND ${st.ts} < $2`
+      : `((${st.ts} >= $1 AND ${st.ts} < $2) OR (${st.ts} IS NULL AND imported_at >= $1 AND imported_at < $2))`;
+    return prisma.$queryRawUnsafe(
       `SELECT ${st.col} op, slab_number sn, ${when} ts
          FROM ${st.table}
-        WHERE ${when} >= $1 AND ${when} < $2
-          AND ${st.col} IS NOT NULL AND slab_number IS NOT NULL`, lo, hi);
+        WHERE ${windowPred}
+          AND ${st.col} IS NOT NULL AND slab_number IS NOT NULL`, lo, hi) as Promise<any[]>;
+  }));
+
+  // One QC fetch for the union of every station's slabs. Chunked: Postgres caps a
+  // statement at 32767 bind parameters (same guard as scoreShift).
+  const slabUnion = [...new Set(stationRows.flat().map((r) => Number(r.sn)).filter(Number.isFinite))];
+  const qc: any[] = [];
+  for (let i = 0; i < slabUnion.length; i += 5000) {
+    qc.push(...await (prisma as any).polishQc.findMany({
+      where: { slabNumber: { in: slabUnion.slice(i, i + 5000) } },
+      select: {
+        slabNumber: true, qualityGrade: true, createdTime: true, importedAt: true,
+        rwStatus: true, repolishStatus: true,
+      },
+    }));
+  }
+  // Newest verdict per slab — a re-graded slab reports its latest outcome.
+  const stamp = (q: any) => new Date(q.createdTime ?? q.importedAt ?? 0).getTime();
+  qc.sort((a, b) => stamp(b) - stamp(a));
+  const latest = new Map<number, any>();
+  for (const q of qc) if (q.slabNumber != null && !latest.has(Number(q.slabNumber))) latest.set(Number(q.slabNumber), q);
+
+  for (const [sti, st] of STATIONS.entries()) {
+    const rows = stationRows[sti];
     const board = { key: st.key, label: st.label, basis: st.basis, datedByImport: !st.tsRequired };
     if (!rows.length) { out.push({ ...board, operators: [] }); continue; }
-
-    const slabs = [...new Set(rows.map((r) => Number(r.sn)).filter(Number.isFinite))];
-    const qc: any[] = [];
-    for (let i = 0; i < slabs.length; i += 5000) {
-      qc.push(...await (prisma as any).polishQc.findMany({
-        where: { slabNumber: { in: slabs.slice(i, i + 5000) } },
-        select: {
-          slabNumber: true, qualityGrade: true, createdTime: true, importedAt: true,
-          rwStatus: true, repolishStatus: true,
-        },
-      }));
-    }
-    const stamp = (q: any) => new Date(q.createdTime ?? q.importedAt ?? 0).getTime();
-    qc.sort((a, b) => stamp(b) - stamp(a));
-    const latest = new Map<number, any>();
-    for (const q of qc) if (q.slabNumber != null && !latest.has(Number(q.slabNumber))) latest.set(Number(q.slabNumber), q);
 
     // What this station's quality column is built from.
     const creditOf = (q: any): number | null =>

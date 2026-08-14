@@ -3,6 +3,7 @@ import Credentials from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { sessionUserRow } from "@/lib/sessionRevalidation";
 import { authConfig } from "./auth.config";
 
 // ---- failed-login throttle (per email+IP, fixed window) ----
@@ -121,12 +122,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       }
 
       // Subsequent requests: validate sessionVersion against DB
-      // (runs every updateAge = 30 min, or when auth() is called)
+      // (runs every updateAge = 30 min, or when auth() is called).
+      // sessionUserRow is request-cached: Shell's auth(), currentUser()'s auth()
+      // and currentUser()'s own revalidation used to fire this identical query
+      // up to 3x per navigation (measured 2026-08-14) — the check still runs on
+      // every request, it just shares one row per request.
       if (token.uid) {
-        const dbUser = await prisma.user.findUnique({
-          where:  { id: token.uid as string },
-          select: { sessionVersion: true, active: true },
-        }).catch(() => null);
+        const dbUser = await sessionUserRow(token.uid as string).catch(() => null);
 
         // If user deactivated OR sessionVersion bumped (logout-all triggered) → invalidate
         if (!dbUser || !dbUser.active || dbUser.sessionVersion !== (token.sv as number ?? 1)) {

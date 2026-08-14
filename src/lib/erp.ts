@@ -109,16 +109,36 @@ export async function getOverview(): Promise<OverviewData> {
   const todayStart = daysAgo(0);
 
   /* eslint-disable @typescript-eslint/no-explicit-any */
-  const [polished7d, polished30d, pressedToday, dayRows, statusRows, pressKeys] = await Promise.all([
+  // The window predicates below are the OR expansion of COALESCE(col, imported_at) —
+  // identical row set by COALESCE's definition (imported_at is NOT NULL), but the OR
+  // shape lets the planner BitmapOr the 0038 indexes (created/date + imported_at)
+  // instead of seq-scanning 44.7k polish_entry rows per bucket query (measured
+  // 2026-08-14: the status-mix GROUP BY alone was ~200 ms as COALESCE). The COALESCE
+  // stays in the SELECT list — only the WHERE had to become indexable.
+  //
+  // `grouped` (recent batches from Press) rides in the same Promise.all: it depends on
+  // nothing above and used to be a third serialized await stage.
+  const [polished7d, polished30d, pressedToday, dayRows, statusRows, pressKeys, grouped] = await Promise.all([
     prisma.polishEntry.count({ where: { OR: [{ created: { gte: since7 } }, { created: null, importedAt: { gte: since7 } }] } }),
     prisma.polishEntry.count({ where: { OR: [{ created: { gte: since30 } }, { created: null, importedAt: { gte: since30 } }] } }),
     prisma.press.count({ where: { date: { gte: todayStart } } }),
     // counted in the DB — same buckets as before, ~40 rows instead of ~20k
-    (prisma as any).$queryRaw`SELECT to_char(COALESCE(created, imported_at), 'YYYY-MM-DD') AS k, COUNT(*)::int AS c FROM polish_entry WHERE COALESCE(created, imported_at) >= ${since30} GROUP BY 1` as Promise<{ k: string; c: number }[]>,
-    (prisma as any).$queryRaw`SELECT COALESCE(NULLIF(TRIM(polishing_status), ''), '—') AS k, COUNT(*)::int AS c FROM polish_entry WHERE COALESCE(created, imported_at) >= ${since30} GROUP BY 1` as Promise<{ k: string; c: number }[]>,
+    (prisma as any).$queryRaw`SELECT to_char(COALESCE(created, imported_at), 'YYYY-MM-DD') AS k, COUNT(*)::int AS c FROM polish_entry WHERE (created >= ${since30} OR (created IS NULL AND imported_at >= ${since30})) GROUP BY 1` as Promise<{ k: string; c: number }[]>,
+    (prisma as any).$queryRaw`SELECT COALESCE(NULLIF(TRIM(polishing_status), ''), '—') AS k, COUNT(*)::int AS c FROM polish_entry WHERE (created >= ${since30} OR (created IS NULL AND imported_at >= ${since30})) GROUP BY 1` as Promise<{ k: string; c: number }[]>,
     // batches pressed in the window — the thickness split itself comes from the
     // shared resolver below, not from any single station's column
-    (prisma as any).$queryRaw`SELECT DISTINCT batch_key AS k FROM press WHERE batch_key IS NOT NULL AND COALESCE(date, imported_at) >= ${since30} AND COALESCE(date, imported_at) <= now() + interval '2 days'` as Promise<{ k: string }[]>,
+    (prisma as any).$queryRaw`SELECT DISTINCT batch_key AS k FROM press WHERE batch_key IS NOT NULL AND (date >= ${since30} OR (date IS NULL AND imported_at >= ${since30})) AND COALESCE(date, imported_at) <= now() + interval '2 days'` as Promise<{ k: string }[]>,
+    // Recent batches from Press. "Last date" = latest PRESS date that is NOT a
+    // future-dated typo (a press row mis-dated e.g. 2028 must not float the batch
+    // to the top); the 2-day grace tolerates IST/UTC skew on today's rows; the
+    // slab count still includes every press row.
+    prisma.$queryRaw`
+      SELECT batch_key, COUNT(*)::int AS slabs, MAX(date) FILTER (WHERE date <= now() + interval '2 days') AS last_date
+      FROM press
+      WHERE batch_key IS NOT NULL
+      GROUP BY batch_key
+      ORDER BY MAX(date) FILTER (WHERE date <= now() + interval '2 days') DESC NULLS LAST
+      LIMIT 10` as Promise<{ batch_key: string; slabs: number; last_date: Date | null }[]>,
   ]);
 
   // Thickness mix = slabs PRESSED in the last 30 days, split by the per-slab thickness
@@ -127,9 +147,15 @@ export async function getOverview(): Promise<OverviewData> {
   // throughput rather than production and (b) rendered "3cm" and "3 cm" as two bars.
   // `since30` is passed through so a batch straddling the window contributes only the
   // slabs actually pressed inside it.
-  const thicknessMix = mixBars(mergeMix(
-    (await thicknessMixByBatch(pressKeys.map((r) => String(r.k)), since30)).values(),
-  ));
+  //
+  // Runs in parallel with the recent-batch design lookup: the two chains are
+  // independent (thickness needs pressKeys, designs need `grouped`), and running
+  // them back to back was one more serialized round-trip wave for nothing.
+  const [thickMixMap, designMap] = await Promise.all([
+    thicknessMixByBatch(pressKeys.map((r) => String(r.k)), since30),
+    designsForBatchKeys(grouped.map((g) => g.batch_key)),
+  ]);
+  const thicknessMix = mixBars(mergeMix(thickMixMap.values()));
 
   const dayMap = new Map<string, number>(dayRows.map((r) => [r.k, r.c]));
   const statusMap = new Map<string, number>(statusRows.map((r) => [r.k, r.c]));
@@ -141,19 +167,6 @@ export async function getOverview(): Promise<OverviewData> {
     .slice(0, 8)
     .map(([label, count]) => ({ label, count }));
 
-  // Recent batches from Press. "Last date" = latest PRESS date that is NOT a
-  // future-dated typo (a press row mis-dated e.g. 2028 must not float the batch
-  // to the top); the 2-day grace tolerates IST/UTC skew on today's rows; the
-  // slab count still includes every press row.
-  const grouped: { batch_key: string; slabs: number; last_date: Date | null }[] = await prisma.$queryRaw`
-    SELECT batch_key, COUNT(*)::int AS slabs, MAX(date) FILTER (WHERE date <= now() + interval '2 days') AS last_date
-    FROM press
-    WHERE batch_key IS NOT NULL
-    GROUP BY batch_key
-    ORDER BY MAX(date) FILTER (WHERE date <= now() + interval '2 days') DESC NULLS LAST
-    LIMIT 10`;
-  const batchKeys = grouped.map((g) => g.batch_key);
-  const designMap = await designsForBatchKeys(batchKeys);
   const recentBatches = grouped.map((g) => {
     const d = designMap.get(g.batch_key);
     return {
@@ -378,21 +391,29 @@ export async function getBatch(input: string, scope?: BatchScope): Promise<Batch
   // Entry rows carrying 1376-A's slabs stretched 1376's range to 147757 and invented "391
   // missing from every station".
   let foreign = new Set<number>();
-  if (solo && subKeys.length) {
-    try {
-      const rows = await prisma.$queryRaw<{ s: number }[]>`
-        SELECT DISTINCT slab_number::float8 s FROM (
-          SELECT slab_number, batch_key FROM press       WHERE batch_key = ANY(${subKeys}::text[])
-          UNION ALL SELECT slab_number, batch_key FROM distributor WHERE batch_key = ANY(${subKeys}::text[])
-          UNION ALL SELECT slab_number, batch_key FROM kreos       WHERE batch_key = ANY(${subKeys}::text[])
-        ) t WHERE slab_number IS NOT NULL`;
-      foreign = new Set(rows.map((r) => Number(r.s)));
-    } catch (e) { console.error("solo-view slab ownership lookup failed:", e); /* audit degrades to the old behaviour */ }
-  }
-  const mixFamilyWide = solo && subKeys.length > 0
-    && (await prisma.mixerCycle.count({ where: { batchKey: { in: subKeys } } })) === 0;
+  // The foreign-slab lookup and the sub-batch mixer count are independent reads that
+  // used to run back to back — one round-trip wave each (part of /batch's measured
+  // 5+ serialized stages, 2026-08-14). Same two queries, one wave.
+  const [, subMixerCount] = await Promise.all([
+    (async () => {
+      if (!(solo && subKeys.length)) return;
+      try {
+        const rows = await prisma.$queryRaw<{ s: number }[]>`
+          SELECT DISTINCT slab_number::float8 s FROM (
+            SELECT slab_number, batch_key FROM press       WHERE batch_key = ANY(${subKeys}::text[])
+            UNION ALL SELECT slab_number, batch_key FROM distributor WHERE batch_key = ANY(${subKeys}::text[])
+            UNION ALL SELECT slab_number, batch_key FROM kreos       WHERE batch_key = ANY(${subKeys}::text[])
+          ) t WHERE slab_number IS NOT NULL`;
+        foreign = new Set(rows.map((r) => Number(r.s)));
+      } catch (e) { console.error("solo-view slab ownership lookup failed:", e); /* audit degrades to the old behaviour */ }
+    })(),
+    solo && subKeys.length > 0 ? prisma.mixerCycle.count({ where: { batchKey: { in: subKeys } } }) : Promise.resolve(-1),
+  ]);
+  const mixFamilyWide = solo && subKeys.length > 0 && subMixerCount === 0;
   const mixWhere = mixFamilyWide ? famWhere : where;
-  const [design, audit, [mixer, press, polishEntryCount, qcRows, ovenCount, jotCount], famDesigns, famSlabs] = await Promise.all([
+  // thicknessMixByBatch rides in this Promise.all too: it depends only on `keys`,
+  // but used to run as its own await stage after everything else had finished.
+  const [design, audit, [mixer, press, polishEntryCount, qcRows, ovenCount, jotCount], famDesigns, famSlabs, thickMixMap] = await Promise.all([
     designForBatch(key),
     slabAuditForKeys(keys, foreign),
     Promise.all([
@@ -417,6 +438,7 @@ export async function getBatch(input: string, scope?: BatchScope): Promise<Batch
     ]),
     dispKeys.length > 1 ? designsForBatchKeys(dispKeys) : Promise.resolve(new Map()),
     dispKeys.length > 1 ? prisma.press.groupBy({ by: ["batchKey"], where: famWhere, _count: { _all: true } }) : Promise.resolve([] as { batchKey: string | null; _count: { _all: number } }[]),
+    thicknessMixByBatch(keys),
   ]);
 
   const rawCycleWeight = (m: Record<string, unknown>) => {
@@ -449,7 +471,7 @@ export async function getBatch(input: string, scope?: BatchScope): Promise<Batch
   // the same numbers the production report and the Telegram bot show. It used to be
   // built from polish_qc rows only, using the RAW string, so a batch was split across
   // a "3cm" and a "3 cm" bar and unpolished slabs never appeared at all.
-  let thicknessBars = mixBars(mergeMix((await thicknessMixByBatch(keys)).values()));
+  let thicknessBars = mixBars(mergeMix(thickMixMap.values()));
   if (!thicknessBars.length) {
     // Older batches carry station thickness but NO press rows (nothing to anchor to),
     // and an empty card would hide data the old QC-only card did show. Count the
@@ -577,8 +599,12 @@ export async function listRecords(view: RecordView, page: number, batch?: string
   const cfg = RECORD_VIEWS[view];
   const d = delegateMap[view]();
   const where = batch ? { batchKey: normalizeBatch(batch) } : {};
+  // Select ONLY the view's fixed columns — /records renders nothing else. WHY
+  // (measured 2026-08-14): the unselected findMany shipped all ~90–140 columns per row
+  // (~4 KB/row on polish_qc) to paint a 6-column grid; same 25 rows, same order.
+  const select = Object.fromEntries(cfg.columns.map((c) => [c, true]));
   const [rows, total] = await Promise.all([
-    d.findMany({ where, skip: (page - 1) * pageSize, take: pageSize, orderBy: { importedAt: "desc" } }),
+    d.findMany({ where, skip: (page - 1) * pageSize, take: pageSize, orderBy: { importedAt: "desc" }, select }),
     d.count({ where }),
   ]);
   return { rows: rows as Record<string, unknown>[], total, pageSize, columns: cfg.columns as readonly string[] };
