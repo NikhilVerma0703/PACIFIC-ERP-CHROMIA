@@ -151,6 +151,47 @@ export async function undoLastAction(batchKey?: string | null): Promise<UndoResu
   return { ok: true, message: `Undid: ${row.summary}` };
 }
 
+/**
+ * The last un-undone action of one MODEL, and its reversal.
+ *
+ * undoLastAction is keyed on batchKey, which is right for the rectification
+ * screens: an undo there means "take back what I just did to THIS batch". A
+ * robo slab delete carries no batchKey, so it could only have been reached by
+ * calling undoLastAction(null) — and that undoes whatever happened last
+ * ANYWHERE, which on a busy afternoon is somebody else's work on another
+ * screen. Scoping by model is what makes the robo delete recoverable without
+ * putting a global undo button on a shop-floor page.
+ *
+ * The delete was widened to the ROBO tablet on the strength of being
+ * reversible (see canDeleteRoboSlab), so this is not a convenience — it is the
+ * half of that decision that makes it safe.
+ */
+export async function lastUndoableFor(model: string): Promise<UndoableInfo | null> {
+  try {
+    const row = await log().findFirst({
+      where: { undone: false, model, kind: "delete" },
+      orderBy: { createdAt: "desc" },
+    });
+    if (!row) return null;
+    return { id: row.id, summary: row.summary, kind: row.kind, createdAt: new Date(row.createdAt).toISOString(), actor: row.actor ?? null };
+  } catch { return null; }
+}
+
+export async function undoLastFor(model: string): Promise<UndoResult> {
+  const row = await log().findFirst({
+    where: { undone: false, model, kind: "delete" },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!row) return { ok: false, message: "Nothing to undo." };
+  try {
+    await reverse(row);
+  } catch (e) {
+    return { ok: false, message: `Undo failed: ${(e as Error).message}` };
+  }
+  await log().update({ where: { id: row.id }, data: { undone: true, undoneAt: new Date() } });
+  return { ok: true, message: `Restored: ${row.summary}` };
+}
+
 export interface ActionHistoryEntry { summary: string; actor: string | null; kind: string; createdAt: string; undone: boolean }
 
 /** Recent logged actions for a batch (the "who rectified what, when" trail). Best-effort. */

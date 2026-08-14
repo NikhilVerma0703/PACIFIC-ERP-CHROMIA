@@ -177,11 +177,28 @@ export async function canSeeMaintenanceLog(): Promise<boolean> {
  * (including closed ones) precisely so the operator never needs delete to fix
  * their own mistake: correction stays on the tablet, destruction moves up.
  *
- * ADMIN rather than INCHARGE because middleware already admits only ADMIN and
- * ROBO to /robo and /api/robo — an INCHARGE gate would name a rank that cannot
- * reach the route at all, which reads like a permission but is really a
- * no-one. This says what it means: everyone who can reach the endpoint except
- * the tablet.
+ * THE ROBO TABLET AND ADMIN. It was admin-only when this landed, and the owner
+ * has since opened it to the operator deliberately, knowing what it costs.
+ *
+ * The argument for giving it to the tablet is that the mistake it undoes is the
+ * operator's own and is made seconds earlier: a slab keyed against the wrong
+ * number, noticed while he is still standing at the machine. Sending that to an
+ * admin means the wrong row sits in the shift until someone else is free, and
+ * the count is wrong for as long as it does.
+ *
+ * The argument against is that it cascades — the slab's delay logs go with it —
+ * and a tablet is a device people mis-tap. What makes it survivable is that the
+ * delete is NOT actually irreversible: the handler writes its reversal payload
+ * into action_log inside the same transaction, so an admin can restore a row
+ * that should not have gone. That is the whole reason this can be widened at
+ * all, and it is why the audit write must never be moved out of the
+ * transaction or made best-effort.
+ *
+ * ROBO is named rather than tested by rank: the capped role sits at rank 1,
+ * below every rank comparison, so a rank test cannot express "the tablet".
+ * INCHARGE is deliberately still absent — middleware admits only ADMIN and ROBO
+ * to /robo and /api/robo, so naming it would read like a permission and be a
+ * no-one.
  *
  * This must be enforced INSIDE the route handler. Middleware matches on path
  * prefix only and cannot tell DELETE from GET, and hiding the button is a
@@ -189,7 +206,8 @@ export async function canSeeMaintenanceLog(): Promise<boolean> {
  * fetch from the same signed-in session.
  */
 export async function canDeleteRoboSlab(): Promise<boolean> {
-  return rankOf(await currentRole()) >= ROLE_RANK.ADMIN;
+  const role = await currentRole();
+  return role === "ROBO" || rankOf(role) >= ROLE_RANK.ADMIN;
 }
 
 /**
