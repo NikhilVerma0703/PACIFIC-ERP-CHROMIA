@@ -34,6 +34,14 @@ export async function raise(input: NewTicket): Promise<ActionRes> {
     const t = await raiseTicket({ ...input, title }, await actor());
     if (!t) return { ok: false, message: "The maintenance log table is not set up on this deployment yet." };
     revalidatePath("/maintenance");
+    // Only when it was raised FROM an incident. The form on this page never
+    // sets misId, so the common case touches nothing on /mis — but NewTicket
+    // carries the field and a caller that fills it changes what the MIS card
+    // shows (the "MT-0007 · Attended" chip), so the revalidate has to follow the
+    // data rather than the route it was typed on. Conditional rather than
+    // unconditional so the ordinary case does not evict a heavy report page's
+    // cache for a fault about an office lamp.
+    if (t.misId) revalidatePath("/mis");
     return { ok: true, message: `Raised as ${t.ref}.` };
   } catch (e) {
     return { ok: false, message: `Could not raise it: ${String((e as Error)?.message ?? e)}` };

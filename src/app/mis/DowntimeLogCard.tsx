@@ -139,16 +139,7 @@ export function DowntimeLogCard({ incidents, incidentsTotal, typeTotals, initial
                     // colouring it there would claim a change that did not happen.
                     const cls = type ? reclassFigureClass(mark, type) : "";
                     return cls ? <span className={cls} title={reclassFigureTitle(mark, type!, i.minutesByType, recs)}>{txt}</span> : txt;
-                  })()}{i.over ? " ⚠" : ""}{(() => {
-                    // Amber dot: maintenance disputes one of this row's durations and the
-                    // figures still differ. Independent of the active type filter — the
-                    // disagreement belongs to the row. Green handled in the response cell.
-                    const r = responses[i.id];
-                    if (!r || r.dispMinutes == null) return null;
-                    const cur = i.minutesByType[r.dispType ?? ""] ?? 0;
-                    if (Math.round(cur) === Math.round(r.dispMinutes)) return null;
-                    return <span className="text-amber-600" title={`Maintenance says ${fmtDur(r.dispMinutes)} — see the response column`}> ●</span>;
-                  })()}{mark.count > 0 && <span className={RECLASS_TONE.dot} title={mark.tooltip}> ⇄</span>}</td>
+                  })()}{i.over ? " ⚠" : ""}{mark.count > 0 && <span className={RECLASS_TONE.dot} title={mark.tooltip}> ⇄</span>}</td>
                   {/* The Type cell is where the four buckets live, so it is where a
                       correction is visible: the moved figures carry the violet mark,
                       the untouched ones stay grey, and the badge names the act. */}
@@ -180,8 +171,6 @@ export function DowntimeLogCard({ incidents, incidentsTotal, typeTotals, initial
                   <td className="py-2 align-top"><DowntimeRespond misId={i.id} canRespond={canRespond}
                     status={responses[i.id]?.status ?? null} note={responses[i.id]?.note ?? null}
                     by={responses[i.id]?.by ?? null} at={responses[i.id]?.at ?? null}
-                    dispType={responses[i.id]?.dispType ?? null} dispMinutes={responses[i.id]?.dispMinutes ?? null}
-                    dispBy={responses[i.id]?.dispBy ?? null} dispAt={responses[i.id]?.dispAt ?? null}
                     minutesByType={i.minutesByType} photos={photos[i.id] ?? []}
                     reclass={recs} canReclass={canReclass} /></td>
                 </tr>

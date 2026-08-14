@@ -37,50 +37,29 @@ export async function respondToDowntime(misId: string, status: string, note: str
   // will act on. Deliberately AFTER the write above and non-fatal: the response
   // itself is saved, and a mirror that fails must not report the save failed.
   await mirrorDowntimeToTicket(misId, status, (note ?? "").trim() || null, by).catch(() => {});
+  // BOTH, always. /maintenance no longer merely mirrors this answer onto a
+  // ticket — it renders the incident itself, in its own inbox, with this very
+  // form. Revalidating only /mis would leave the maintenance manager looking at
+  // the answer he just typed still reading "No response yet" until a hard
+  // reload, and a KPI card still counting it as awaiting a first reply.
   revalidatePath("/mis");
   revalidatePath("/maintenance");
   return { ok: true, message: "Saved." };
 }
 
-/** Maintenance Manager / Admin records a DISAGREEMENT with a logged duration: their own
- *  minutes for one delay type, stored beside production's figure. Nothing here writes to
- *  the MIS row, and nothing downstream reads the disputed figure into a total — it is a
- *  visible disagreement, resolved by production correcting their own entry (the UI shows
- *  the figures matching once they do). minutes === null clears the dispute. */
-export async function disputeDowntime(misId: string, typeKey: string | null, minutes: number | null): Promise<RespondRes> {
-  if (!(await canRespondDowntime())) return { ok: false, message: "Only Maintenance Manager or Admin can dispute." };
-  if (!misId) return { ok: false, message: "Missing incident reference." };
-  const u = await currentUser();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const by = ((u as any)?.name as string | undefined) || ((u as any)?.email as string | undefined) || null;
-  try {
-    if (minutes === null) {
-      await writeDowntimeDispute(misId, null, by);
-    } else {
-      // 0 is meaningful — "there was no breakdown that hour" is exactly the disagreement
-      // the maintenance manager described. Integers only. 1440 is a generous typo guard,
-      // not a claim about the MIS form (which has no such bound): the page already flags
-      // anything over 60 in one hour as an entry error, and a dispute may legitimately
-      // say the same kind of oversized figure production can enter.
-      if (!DELAY_FIELDS.some((d) => d.key === typeKey)) return { ok: false, message: "Unknown delay type." };
-      if (!Number.isInteger(minutes) || minutes < 0 || minutes > 1440) return { ok: false, message: "Minutes must be a whole number between 0 and 1440." };
-      // The row must exist: a dispute keyed to a mistyped id would be invisible forever.
-      const row = await prisma.mis.findUnique({ where: { id: misId }, select: { id: true } });
-      if (!row) return { ok: false, message: "Incident not found." };
-      await writeDowntimeDispute(misId, { type: typeKey as string, minutes }, by);
-    }
-  } catch (e) {
-    // Before scripts/0029-downtime-dispute.sql runs, the dispute columns do not exist.
-    // Say that plainly instead of dumping the raw SQL error into an 11px span.
-    const msg = String((e as Error)?.message ?? e);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if ((e as any)?.meta?.code === "42703" || /column "disputed_\w+" does not exist/i.test(msg))
-      return { ok: false, message: "Disputes are not enabled yet — run scripts/0029-downtime-dispute.sql on the database first." };
-    return { ok: false, message: `Save failed: ${msg}` };
-  }
-  revalidatePath("/mis");
-  return { ok: true, message: minutes === null ? "Dispute cleared." : "Dispute recorded." };
-}
+/* disputeDowntime lived here.
+ *
+ * It recorded maintenance's own duration for one delay type BESIDE production's
+ * figure and wrote nothing to the MIS row — deliberately powerless, so no total,
+ * chart or score ever read it. Retired on the owner's instruction once
+ * reclassifyDelay below existed: a correction that actually moves the minutes
+ * makes a parallel disagreement that moves none into a second number to argue
+ * over and a second place to look. One row had ever been saved, for 0 minutes.
+ *
+ * The disputed_* columns stay on downtime_response and writeDowntimeDispute
+ * stays with them, unused. That row remains recoverable, and dropping columns
+ * on this database is exactly what the schema notes warn against.
+ */
 
 /** Thrown inside the reclass transaction to roll it back with a message the
  *  manager can act on. Not exported — a "use server" module may only export async
@@ -93,29 +72,17 @@ class ReclassRefused extends Error {}
  * of the bucket production filed them under and into the right one, on the MIS
  * hourly row itself.
  *
- * THIS IS THE STRONGER SIBLING OF disputeDowntime ABOVE, AND IT IS DELIBERATE.
- * The dispute records maintenance's own figure BESIDE production's and writes
- * nothing to the MIS row — "a visible disagreement, not a second set of books",
- * and that decision stands for "we disagree about how long it was". It is the
- * wrong shape for "those minutes are in the wrong bucket": the four buckets ARE
- * the downtime totals, the type chips, every chart and the uptime score, so a
- * counter-claim nothing reads leaves all of them wrong. The owner asked for the
- * correction, so this action performs it. Two actions, two meanings — dispute the
- * duration, reclassify the type.
+ * This is now maintenance's ONLY way to object to a logged duration, and that is
+ * deliberate. The retired dispute (see above) recorded a rival figure that no
+ * total, chart or score ever read, so a wrongly-filed hour stayed wrong
+ * everywhere it mattered. The four buckets ARE the downtime totals, the type
+ * chips, every chart and the uptime score — correcting them is the only act that
+ * actually fixes the record, so it is the one that survived.
  *
- * IT MOVES MONEY, so read the guarantees before changing anything here:
- *  - the arithmetic and every rule live in the pure src/lib/delayReclass.ts, and
- *    the hour's TOTAL never changes, which is what keeps the 60-min/hr cap in
- *    src/app/tables/actions.ts satisfied without this action re-checking it;
- *  - the Mis rewrite and the audit row are ONE transaction. A corrected figure
- *    with no audit row beside it is the invisible edit the whole feature exists
- *    to prevent — and shiftScore.ts ranks the electrical and mechanical incharges
- *    on uptime computed from the breakdown and power-out minutes, so moving
- *    minutes out of `breakdown` raises the mover's own incentive;
- *  - the author is taken from the SESSION, never from an argument, for the same
- *    reason;
- *  - the write is guarded on the figures the plan was computed from, so a
- *    concurrent MIS edit loses instead of silently compounding.
+ * It moves minutes rather than relabelling, so the hour's total is unchanged and
+ * the 60-min/hour cap holds structurally. Every move writes an audit row in the
+ * same transaction, is marked violet in both logs, and is reported on the
+ * scoreboard whose uptime it moves.
  */
 export async function reclassifyDelay(
   misId: string,
@@ -203,7 +170,7 @@ export async function reclassifyDelay(
   } catch (e) {
     if (e instanceof ReclassRefused) return { ok: false, message: e.message };
     // Before scripts/0037-mis-delay-reclass.sql runs the audit table does not
-    // exist. Say that plainly, the way disputeDowntime does for its own columns,
+    // exist. Say that plainly, the way the retired dispute did for its own columns,
     // instead of dumping a raw SQL error into an 11px span. Nothing was written:
     // the whole transaction rolled back, including the Mis rewrite.
     const msg = String((e as Error)?.message ?? e);
@@ -246,5 +213,10 @@ export async function addDowntimePhoto(fd: FormData): Promise<RespondRes> {
     return { ok: false, message: `Photo save failed: ${String((e as Error)?.message ?? e)}` };
   }
   revalidatePath("/mis");
+  // Same reason as the dispute above: the 📷 chip is rendered on both pages, off
+  // the same entry_photo rows, and a photo that only appears on one of them is
+  // exactly the "two places to look, one of them staler" failure this feature
+  // was built to end.
+  revalidatePath("/maintenance");
   return { ok: true, message: "Photo attached." };
 }

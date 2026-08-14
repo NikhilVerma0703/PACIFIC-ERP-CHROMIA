@@ -35,7 +35,7 @@ export async function GET(request: Request) {
     // type's share (the row set is already filtered); in the All view a multi-type row
     // spells out each type's duration. The file must match the screen it came from.
     const photoMap = await photosForRecords("Mis", r.incidents.map((i) => i.id));
-    const header = ["Date", "Hour", "Batch", "Down (min)", "Down", "Over 60m", "Type(s)", "Reason(s)", "Details", "RCA", "Action", "Spares", "Electrical incharge", "Mechanical incharge", "Maint. status", "Maint. note", "Responded by", "Responded at", "Maint. disputes", "Disputed by", "Photos"];
+    const header = ["Date", "Hour", "Batch", "Down (min)", "Down", "Over 60m", "Type(s)", "Reason(s)", "Details", "RCA", "Action", "Spares", "Electrical incharge", "Mechanical incharge", "Maint. status", "Maint. note", "Responded by", "Responded at", "Photos"];
     const data: (string | number)[][] = [header];
     // incidents arrive unfiltered (the page filters client-side); apply the view's type here
     const incidents = r.typeFilter ? r.incidents.filter((i) => i.typeKeys.includes(r.typeFilter as string)) : r.incidents;
@@ -55,14 +55,6 @@ export async function GET(request: Request) {
         i.details ?? "", i.rca ?? "", i.action ?? "", i.spares ?? "",
         i.elecIncharge ?? "", i.mechIncharge ?? "",
         m?.status ?? "", m?.note ?? "", m?.by ?? "", m?.at ?? "",
-        // The dispute, phrased exactly as the page shows it: maintenance's figure beside
-        // the logged one — or "agreed" once production's correction matches it.
-        m?.dispMinutes != null
-          ? (Math.round(i.minutesByType[m.dispType ?? ""] ?? 0) === Math.round(m.dispMinutes)
-              ? `agreed — ${DELAY_LABEL[m.dispType ?? ""] ?? m.dispType ?? "?"} ${fmtDur(m.dispMinutes)}`
-              : `${DELAY_LABEL[m.dispType ?? ""] ?? m.dispType ?? "?"} ${fmtDur(m.dispMinutes)} (logged ${fmtDur(i.minutesByType[m.dispType ?? ""] ?? 0)})`)
-          : "",
-        m?.dispMinutes != null ? (m?.dispBy ?? "") : "",
         (photoMap.get(i.id)?.length ?? 0) || "",
       ]);
     }
