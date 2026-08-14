@@ -40,7 +40,7 @@ interface BatchEntry {
   programName: string | null; toolName: string | null; liquidName: string | null;
   powderName: string | null; rollerHeight: string | null; targetCycleTime: number | null;
 }
-interface BatchRecipe { id: string; designName: string; thickness: number | null; targetSlabs: number | null; entries: BatchEntry[] }
+interface BatchRecipe { id: string; designName: string; thickness: number | null; targetSlabs: number | null; notes: string | null; entries: BatchEntry[] }
 interface ProdRecord {
   id: string; serialNumber: number | null; slabNumber: string;
   inTime: string | null; outTime: string | null; roymixCycleTime: number | null;
@@ -185,6 +185,10 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
   const [batch, setBatch] = useState({ designName: "", targetSlabs: "", thickness: "", notes: "" });
   const [activeMachines, setActiveMachines] = useState<Record<string, boolean>>({});
   const [entries, setEntries] = useState<Record<string, MachineEntry>>({});
+  /** Set while the batch-setup half is REOPENING a saved setup to correct it,
+   *  rather than configuring a new run. Save then PATCHes that setup instead
+   *  of POSTing a second one — see saveBatch. */
+  const [editingBatchId, setEditingBatchId] = useState<string | null>(null);
 
   // ---- slab entry ----
   const [slab, setSlab] = useState(emptySlab());
@@ -270,14 +274,6 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // seed per-machine entry state once machines arrive
-  useEffect(() => {
-    if (machines.length === 0) return;
-    const e: Record<string, MachineEntry> = {}, a: Record<string, boolean> = {};
-    for (const m of machines) { e[m.id] = emptyEntry(); a[m.id] = true; }
-    setEntries(e); setActiveMachines(a);
-  }, [machines]);
-
   // close the delay-code dropdown on outside click
   useEffect(() => {
     const h = (e: MouseEvent) => { if (codeRef.current && !codeRef.current.contains(e.target as Node)) setCodeOpen(false); };
@@ -287,6 +283,70 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
 
   const latestBatch = shift?.batchRecipes?.[shift.batchRecipes.length - 1] ?? null;
   const records = shift?.productionRecords ?? [];
+
+  /**
+   * Fills the batch-setup half once the machine list is in.
+   *
+   * Reopening a saved setup starts from exactly what was stored, so the design,
+   * the targets, the notes and all four robots open editable and already filled
+   * in. Machines are matched by NAME, because a name is what the saved setup
+   * carries; a saved setup also only holds the machines that were ticked at the
+   * time, so an entry it has no row for opens unticked.
+   *
+   * Keyed on the setup id, not the setup object: `shift` is replaced wholesale
+   * by every refetchShift(), and re-seeding from the new object would throw
+   * away what the operator is part-way through typing.
+   */
+  useEffect(() => {
+    if (machines.length === 0) return;
+    const saved = editingBatchId ? shift?.batchRecipes?.find((b) => b.id === editingBatchId) ?? null : null;
+    const e: Record<string, MachineEntry> = {}, a: Record<string, boolean> = {};
+    for (const m of machines) {
+      const row = saved?.entries.find((x) => x.machine.name === m.name);
+      e[m.id] = row
+        ? {
+            programName: row.programName ?? "",
+            toolName: row.toolName ?? "",
+            liquidName: row.liquidName ?? "",
+            powderName: row.powderName ?? "",
+            rollerHeight: row.rollerHeight ?? "",
+            targetCycleTime: row.targetCycleTime != null ? String(row.targetCycleTime) : "",
+          }
+        : emptyEntry();
+      a[m.id] = saved ? Boolean(row) : true;
+    }
+    setEntries(e);
+    setActiveMachines(a);
+    setBatch(saved
+      ? {
+          designName: saved.designName ?? "",
+          targetSlabs: saved.targetSlabs != null ? String(saved.targetSlabs) : "",
+          thickness: saved.thickness != null ? String(saved.thickness) : "",
+          notes: saved.notes ?? "",
+        }
+      : { designName: "", targetSlabs: "", thickness: "", notes: "" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [machines, editingBatchId]);
+
+  /** Reopen the running setup to correct it. */
+  const startEditBatch = () => {
+    if (!latestBatch) return;
+    setBatchError("");
+    setEditingBatchId(latestBatch.id);
+    setBatchOpen(true);
+  };
+  /** Configure a genuinely different run — a second design in the same shift. */
+  const startNewBatch = () => {
+    setBatchError("");
+    setEditingBatchId(null);
+    setBatchOpen(true);
+  };
+  /** Close the batch half; leaving edit mode re-seeds the cards blank. */
+  const closeBatchForm = () => {
+    setBatchError("");
+    setEditingBatchId(null);
+    setBatchOpen(false);
+  };
 
   // suggest the next serial / slab number from what's already logged —
   // but never while an existing slab is loaded for editing
@@ -427,11 +487,22 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
     if (activeList.length === 0) { setBatchError("At least one machine must be active."); return; }
     setBatchSaving(true);
     try {
-      const shiftId = await ensureShiftId();
-      const res = await fetch("/api/robo/batch-recipes", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+      /* Editing corrects the setup this shift is already running on, so it
+         PATCHes that row and keeps its id — every slab logged so far points at
+         it. Posting a new setup instead would leave the shift with two, the
+         slabs attached to the older one, and the design linked to a spare setup
+         that then blocks the design from ever being deleted. See the PATCH
+         handler for the full reasoning.
+
+         ensureShiftId() is skipped on an edit for the same reason the API
+         ignores shiftId: the setup belongs to the shift it was made in, and
+         calling it here could roll a stale shift over mid-correction. */
+      const isEdit = Boolean(editingBatchId);
+      const shiftId = isEdit ? null : await ensureShiftId();
+      const res = await fetch(isEdit ? `/api/robo/batch-recipes/${editingBatchId}` : "/api/robo/batch-recipes", {
+        method: isEdit ? "PATCH" : "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          shiftId,
+          ...(shiftId ? { shiftId } : {}),
           designName: batch.designName.trim(),
           targetSlabs: batch.targetSlabs ? Number(batch.targetSlabs) : null,
           thickness: batch.thickness ? Number(batch.thickness) : null,
@@ -447,12 +518,19 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
           })),
         }),
       });
-      if (!res.ok) { const d = await res.json().catch(() => ({})); setBatchError(d.error || "Failed to save batch."); return; }
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setBatchError(d.error || (isEdit ? "Failed to save the setup." : "Failed to save batch."));
+        return;
+      }
       await refetchShift();
+      setEditingBatchId(null);
       setBatchOpen(false);
-      say(`Batch saved — ${batch.designName.trim()}.`);
+      say(isEdit
+        ? `Setup updated — ${batch.designName.trim()}. The slabs already logged this shift stay on it.`
+        : `Batch saved — ${batch.designName.trim()}.`);
     } catch {
-      setBatchError("Failed to save the batch — try again.");
+      setBatchError(editingBatchId ? "Failed to save the setup — try again." : "Failed to save the batch — try again.");
     } finally {
       setBatchSaving(false);
     }
@@ -699,9 +777,22 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
                 {latestBatch.thickness != null && <span className="text-gray-400">{latestBatch.thickness} cm</span>}
               </span>
               <span className="text-sm text-gray-400">{records.length} slab{records.length === 1 ? "" : "s"} logged</span>
-              <button type="button" className={`${btnGhost} ml-auto`} onClick={() => setBatchOpen((o) => !o)}>
-                {batchOpen ? "Hide batch setup" : "New batch"}
-              </button>
+              {/* Two distinct acts, kept as two buttons. "Edit setup" corrects
+                  the run in progress; "New batch" starts another one. Offering
+                  only the second is what made operators start a duplicate setup
+                  to fix a typo. */}
+              <div className="ml-auto flex items-center gap-2">
+                {batchOpen ? (
+                  <button type="button" className={btnGhost} onClick={closeBatchForm}>
+                    {editingBatchId ? "Cancel edit" : "Hide batch setup"}
+                  </button>
+                ) : (
+                  <>
+                    <button type="button" className={btnGhost} onClick={startEditBatch}>Edit setup</button>
+                    <button type="button" className={btnGhost} onClick={startNewBatch}>New batch</button>
+                  </>
+                )}
+              </div>
             </>
           ) : (
             <>
@@ -716,9 +807,16 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
       {!isPageEdit && batchOpen && (
         <Card>
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-gray-900">Batch setup</h2>
+            <h2 className="text-sm font-semibold text-gray-900">{editingBatchId ? "Edit batch setup" : "Batch setup"}</h2>
             <span className="text-xs text-gray-400">{machines.filter((m) => activeMachines[m.id]).length} of {machines.length} machines active</span>
           </div>
+          {editingBatchId && (
+            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              Correcting the setup this shift is already running on. The slabs logged against it stay attached and
+              are not changed — but unticking a robot restates which machines this run used, so their In/Out
+              labels will follow. To start a different run instead, cancel and use New batch.
+            </div>
+          )}
           {batchError && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{batchError}</div>}
 
           <form onSubmit={saveBatch} className="space-y-5">
@@ -802,8 +900,10 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
               <div className="mr-auto w-full max-w-sm">
                 <input value={batch.notes} onChange={(e) => setBatch((p) => ({ ...p, notes: e.target.value }))} placeholder="Batch notes (optional)" className={inp} />
               </div>
-              {latestBatch && <button type="button" className={btnGhost} onClick={() => setBatchOpen(false)}>Cancel</button>}
-              <button type="submit" disabled={batchSaving} className={btnPrimary}>{batchSaving ? "Saving…" : "Save batch setup"}</button>
+              {latestBatch && <button type="button" className={btnGhost} onClick={closeBatchForm}>Cancel</button>}
+              <button type="submit" disabled={batchSaving} className={btnPrimary}>
+                {batchSaving ? "Saving…" : editingBatchId ? "Save changes" : "Save batch setup"}
+              </button>
             </div>
           </form>
         </Card>

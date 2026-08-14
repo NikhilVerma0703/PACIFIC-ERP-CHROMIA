@@ -192,6 +192,46 @@ export async function canDeleteRoboSlab(): Promise<boolean> {
   return rankOf(await currentRole()) >= ROLE_RANK.ADMIN;
 }
 
+/**
+ * Who may EDIT a saved robo production setup in place — PATCH
+ * /api/robo/batch-recipes/[id] with an `entries` array, which deletes and
+ * recreates every RoboBatchRecipeEntry on that setup.
+ *
+ * ADMIN **and** the ROBO tablet — deliberately WIDER than canDeleteRoboSlab()
+ * above, and the difference between the two is the whole argument.
+ *
+ * Slab delete could move up a rank without taking any workflow with it,
+ * because the operator had a clean alternative: edit the slab. Setup edit has
+ * no clean alternative. An operator who mistyped the design, a program or a
+ * cycle time at the top of the shift can already press "New batch" — that
+ * button is open to ROBO and always has been — and doing so is the WORSE
+ * outcome, not a safe fallback: the shift ends up carrying two setups, every
+ * slab already logged stays attached to the first, and the design is left
+ * linked to a spare setup that then blocks the design from ever being deleted.
+ * Withholding the edit does not prevent that mess, it is what produces it. The
+ * upstream change exists precisely to give the operator the correcting action
+ * instead of the duplicating one.
+ *
+ * The edit is also not destructive in the way the delete is. No slab row is
+ * touched: RoboProductionRecord.batchRecipeId keeps pointing at the same
+ * setup, which is exactly why the update is in place. What is lost is the
+ * previous per-machine settings, which are configuration the operator typed
+ * minutes earlier — not production data anyone reconciles against paper.
+ *
+ * Today this set matches what middleware already allows through to /api/robo,
+ * so the check adds no one and turns no one away. It still earns its place
+ * twice over. Middleware matches on path prefix and cannot tell this PATCH
+ * from the GET the reports page makes against the same URL, and the delete
+ * port established that the handler is where a destructive verb is gated. And
+ * it is an allowlist rather than an inheritance: if /api/robo is ever opened
+ * to INCHARGE or LINE_MANAGER for reporting, the rebuild does not quietly go
+ * with it.
+ */
+export async function canEditRoboSetup(): Promise<boolean> {
+  const role = await currentRole();
+  return role === "ROBO" || rankOf(role) >= ROLE_RANK.ADMIN;
+}
+
 /** Maintenance Manager or admin may fill the maintenance response on a downtime incident. */
 export async function canRespondDowntime(): Promise<boolean> {
   const role = await currentRole();
