@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { prisma } from "@/lib/prisma";
-import { fmtDurationLong } from "@/lib/robo/utils";
+import { fmtDurationLong, machineLabel } from "@/lib/robo/utils";
 
 const COLUMNS = [
   "S.No.", "Production Date", "Shift", "Delay Code", "Description", "Category",
@@ -33,7 +33,8 @@ export async function GET(req: NextRequest) {
     "Delay Code":       d.delayCode.code,
     "Description":      d.delayCode.description,
     "Category":         d.delayCode.category,
-    "Machine":          String(dash(d.machineName || d.machine?.name)),
+    // Shop-floor name, matching every screen — see the note in the production export.
+    "Machine":          String(dash(machineLabel(d.machineName || d.machine?.name))),
     "Slab No.":         String(dash(d.productionRecord?.slabNumber)),
     "Start Time":       String(dash(d.startTime)),
     "End Time":         String(dash(d.endTime)),

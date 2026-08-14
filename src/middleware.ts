@@ -211,9 +211,28 @@ export default auth((req) => {
     if (!ok) return Response.redirect(new URL("/", nextUrl));
   }
   if (role === "ROBO") {
-    // robo line operator: the robo entry form and its APIs — nothing else
-    const ok = p.startsWith("/robo") || p.startsWith("/api");
-    if (!ok) return Response.redirect(new URL("/robo", nextUrl));
+    // Robo line operator: the robo entry form and ITS APIs — nothing else.
+    //
+    // The second clause used to read `p.startsWith("/api")`, which said
+    // "nothing else" and meant the opposite: it handed a shop-floor tablet
+    // every API in the ERP — /api/sales, /api/admin, /api/office and the rest.
+    // The gate further up only stops OTHER roles reaching /api/robo; nothing
+    // confined ROBO to it. Narrowed to /api/robo, which is the whole surface
+    // the robo pages actually call (verified: no shared component or robo page
+    // fetches a non-robo endpoint). /api/auth is unaffected — it returns as
+    // public long before this block.
+    //
+    // This matters directly to the slab DELETE: a capped role is the layer
+    // that contains a mis-scoped destructive endpoint, and it can only do that
+    // if the cap is real.
+    const ok = p.startsWith("/robo") || p.startsWith("/api/robo");
+    if (!ok) {
+      // 403 rather than a redirect for API paths: a fetch that follows a 302
+      // to an HTML page fails as a confusing parse error instead of a refusal.
+      return p.startsWith("/api")
+        ? new Response("Forbidden", { status: 403 })
+        : Response.redirect(new URL("/robo", nextUrl));
+    }
   }
 });
 

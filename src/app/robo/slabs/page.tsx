@@ -1,11 +1,14 @@
 import type { Metadata } from "next";
 import { Shell } from "@/components/Shell";
 import { SlabsBrowser } from "@/components/robo/SlabsBrowser";
+import { canDeleteRoboSlab } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Slabs Records | Pacific ERP" };
 
-export default function RoboSlabsPage() {
+export default async function RoboSlabsPage() {
+  // See /robo/page.tsx — a courtesy hide, not the control.
+  const canDelete = await canDeleteRoboSlab();
   return (
     <Shell>
       <div className="mb-6">
@@ -14,7 +17,7 @@ export default function RoboSlabsPage() {
           Browse robo production records — filter by date, slab number or design, then open a slab for its complete details.
         </p>
       </div>
-      <SlabsBrowser />
+      <SlabsBrowser canDelete={canDelete} />
     </Shell>
   );
 }

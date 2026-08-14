@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import * as XLSX from "xlsx";
+import { machineLabel } from "@/lib/robo/utils";
 
 export async function GET(req: NextRequest) {
   const shiftId = req.nextUrl.searchParams.get("shiftId");
@@ -24,7 +25,8 @@ export async function GET(req: NextRequest) {
     "Delay Code": d.delayCode.code,
     "Description": d.delayCode.description,
     "Category": d.delayCode.category,
-    "Machine": d.machineName || d.machine?.name || "—",
+    // Shop-floor name, matching every screen — see the note in the production export.
+    "Machine": machineLabel(d.machineName || d.machine?.name) || "—",
     "Slab No.": d.productionRecord?.slabNumber || "—",
     "Start Time": d.startTime || "—",
     "End Time": d.endTime || "—",

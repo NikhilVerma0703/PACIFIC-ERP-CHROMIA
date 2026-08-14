@@ -141,6 +141,38 @@ export async function canRaiseMaintenance(): Promise<boolean> {
   return role === "MAINTENANCE" || rankOf(role) >= ROLE_RANK.INCHARGE;
 }
 
+/**
+ * Who may PERMANENTLY delete a robo production record (the slab and every
+ * delay logged against it).
+ *
+ * ADMIN only — deliberately NOT the ROBO role, even though ROBO owns every
+ * other action in the module.
+ *
+ * ROBO sits at rank 1 alongside OPERATOR: a shop-floor tablet user on a
+ * shared, often unattended 10-inch device. The delete is irreversible in the
+ * module's own terms — there is no soft-delete column on RoboProductionRecord,
+ * the record's RoboDelayLog rows go with it, and the numbers feed the shift
+ * reports, the Excel exports and MIS. A mis-tap would leave a shift silently
+ * short a slab with nothing on screen to say so. Correcting a mistyped slab is
+ * what EDIT is for, and edit stays open to ROBO on every slab in every shift
+ * (including closed ones) precisely so the operator never needs delete to fix
+ * their own mistake: correction stays on the tablet, destruction moves up.
+ *
+ * ADMIN rather than INCHARGE because middleware already admits only ADMIN and
+ * ROBO to /robo and /api/robo — an INCHARGE gate would name a rank that cannot
+ * reach the route at all, which reads like a permission but is really a
+ * no-one. This says what it means: everyone who can reach the endpoint except
+ * the tablet.
+ *
+ * This must be enforced INSIDE the route handler. Middleware matches on path
+ * prefix only and cannot tell DELETE from GET, and hiding the button is a
+ * courtesy to the operator, not a control — the endpoint is reachable with a
+ * fetch from the same signed-in session.
+ */
+export async function canDeleteRoboSlab(): Promise<boolean> {
+  return rankOf(await currentRole()) >= ROLE_RANK.ADMIN;
+}
+
 /** Maintenance Manager or admin may fill the maintenance response on a downtime incident. */
 export async function canRespondDowntime(): Promise<boolean> {
   const role = await currentRole();

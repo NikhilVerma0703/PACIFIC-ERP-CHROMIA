@@ -60,7 +60,14 @@ export interface DelayLike {
   delayCode?: { code: string; description: string } | null;
 }
 
-/** "C1 5m [10:00-10:05] - note - free remark", or "-" when there is nothing to show. */
+/** "C1 Robo1 5m [10:00-10:05] - note - free remark", or "-" when there is
+ *  nothing to show.
+ *
+ *  The machine goes through machineLabel() for the same reason every screen
+ *  does: the delay log stores "Roycut-1", the operator who logged it knows the
+ *  machine as "Robo1". This line was the last place the rename missed, so the
+ *  Remark column on Slabs Records printed a name that appears nowhere else in
+ *  the UI. */
 export function formatSlabRemarks(
   remarks: string | null | undefined,
   delays: DelayLike[] | undefined | null
@@ -68,7 +75,7 @@ export function formatSlabRemarks(
   const parts: string[] = [];
   for (const d of delays ?? []) {
     const code = d.delayCode?.code ?? "";
-    const machine = d.machineName ? ` ${d.machineName}` : "";
+    const machine = d.machineName ? ` ${machineLabel(d.machineName)}` : "";
     const window = d.startTime && d.endTime ? ` [${d.startTime}-${d.endTime}]` : "";
     const note = d.remarks?.trim() ? ` - ${d.remarks.trim()}` : "";
     parts.push(`${code}${machine} ${d.durationMinutes}m${window}${note}`.trim());

@@ -1,11 +1,15 @@
 import type { Metadata } from "next";
 import { Shell } from "@/components/Shell";
 import { RoboEntryForm } from "@/components/robo/RoboEntryForm";
+import { canDeleteRoboSlab } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Robo Entry | Pacific ERP" };
 
-export default function RoboPage() {
+export default async function RoboPage() {
+  // Resolved on the server so the tablet never renders a Delete it cannot use.
+  // The gate that matters is in the route handler, not here.
+  const canDelete = await canDeleteRoboSlab();
   return (
     <Shell>
       <div className="mb-6">
@@ -15,7 +19,7 @@ export default function RoboPage() {
           Robo doesn’t run in every production — when it does, save a batch setup once and log slabs against it.
         </p>
       </div>
-      <RoboEntryForm />
+      <RoboEntryForm canDelete={canDelete} />
     </Shell>
   );
 }

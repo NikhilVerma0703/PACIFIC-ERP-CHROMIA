@@ -1,14 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { prisma } from "@/lib/prisma";
-import { fmtDurationLong, slabStatusLabel } from "@/lib/robo/utils";
+import { fmtDurationLong, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
 
 const MACHINE_ORDER = ["Roycut-1", "Roymix", "Roycut-2", "Roycut-3"];
 
 const RECORD_COLUMNS = [
   "S.No.", "Production Date", "Shift", "Operator", "Design Name", "Thickness (cm)",
   "Slab Number", "In Time", "Out Time",
-  "RoyMix Body Weight (kg)", "RoyMix Cycle Time (sec)",
+  // Robo2, not RoyMix. The machine is stored as "Roymix" and always will be —
+  // the stored names carry the ordering, the preset keys and every delay log
+  // ever saved — but nothing on screen says RoyMix any more, so an export that
+  // did was naming a machine the reader cannot find. The Machine cell was fixed
+  // with machineLabel and these headers were missed. Re-importing an exported
+  // sheet still works either way: importRegister accepts both robo2* and
+  // roymix* spellings for exactly this reason.
+  "Robo2 Body Weight (kg)", "Robo2 Cycle Time (sec)",
   "Status", "Delay Codes", "Total Delay", "Remarks",
 ];
 
@@ -94,7 +101,9 @@ export async function GET(req: NextRequest) {
         "Design Name":              String(dash(s.designName)),
         "Thickness (cm)":           String(dash(s.thickness)),
         "Target Slabs":             String(dash(s.targetSlabs)),
-        "Machine":                  e.machine.name,
+        // machineLabel, not the stored name: every screen says Robo1..Robo4,
+        // so an export that says Roycut-1 forces the reader to translate.
+        "Machine":                  machineLabel(e.machine.name),
         "Program Name":             String(dash(e.programName)),
         "Tool Name":                String(dash(e.toolName)),
         "Target Cycle Time (sec)":  String(dash(e.targetCycleTime)),

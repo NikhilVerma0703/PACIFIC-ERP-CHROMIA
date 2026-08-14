@@ -72,6 +72,13 @@ export default async function SlabCompleteDetailsPage({ params }: { params: Prom
             </div>
             <p className="mt-1 text-xs text-gray-400">Complete details for this slab</p>
           </div>
+          {/* Corrections start here, from the record itself — the same route
+              the Slabs Records table offers, so whichever screen someone
+              noticed the mistake on leads to the same form. */}
+          <Link href={`/robo/slabs/${id}/edit`}
+            className="inline-flex items-center rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50">
+            Edit slab
+          </Link>
         </div>
 
         {/* ── 1. Shift Information ── */}

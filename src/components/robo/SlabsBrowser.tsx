@@ -20,12 +20,19 @@ interface SlabRecord {
 
 const EMPTY = { date: "", slabNumber: "", designName: "" };
 
-export function SlabsBrowser() {
+export function SlabsBrowser({ canDelete = false }: {
+  /** Whether the signed-in user may delete a slab. A courtesy so a ROBO
+   *  operator never meets a button that 403s — the real gate is in the route
+   *  handler (see canDeleteRoboSlab in src/lib/rbac.ts). */
+  canDelete?: boolean;
+}) {
   const [filters, setFilters] = useState(EMPTY);
   const [results, setResults] = useState<SlabRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [applied, setApplied] = useState(false);
   const [designOptions, setDesignOptions] = useState<string[]>([...DESIGN_SUGGESTIONS]);
+  const [actionError, setActionError] = useState("");
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   /* Suggestions = designs already produced, plus the plant reference designs.
      The field stays free text, so anything else can still be typed. */
@@ -58,6 +65,28 @@ export function SlabsBrowser() {
   }, []);
 
   useEffect(() => { runSearch(EMPTY); }, [runSearch]);
+
+  /**
+   * Permanently removes one slab record and its delay logs, then re-runs the
+   * current search so the row disappears without losing the filters.
+   *
+   * The confirm names the slab number rather than saying "this record":
+   * the operator's own check is against the paper register, and a row
+   * position on a filtered table is not something they can verify.
+   */
+  const removeSlab = async (r: SlabRecord) => {
+    if (!confirm(`Are you sure you want to delete this slab record?\n\nSlab No. ${r.slabNumber} — this cannot be undone.`)) return;
+    setActionError("");
+    setDeletingId(r.id);
+    const res = await fetch(`/api/robo/production/${r.id}`, { method: "DELETE" }).catch(() => null);
+    setDeletingId(null);
+    if (!res?.ok) {
+      const data = res ? await res.json().catch(() => ({})) : {};
+      setActionError(data.error || "Could not delete this slab record.");
+      return;
+    }
+    runSearch(filters);
+  };
 
   const set = (k: keyof typeof EMPTY, v: string) => setFilters(p => ({ ...p, [k]: v }));
 
@@ -105,6 +134,10 @@ export function SlabsBrowser() {
         </form>
       </Card>
 
+      {actionError && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{actionError}</div>
+      )}
+
       {/* ── B. Results ── */}
       <Card>
         <div className="mb-3 flex items-center justify-between">
@@ -146,11 +179,26 @@ export function SlabsBrowser() {
                   </td>
                   <td className="max-w-xs px-4 py-3 text-gray-600">{formatSlabRemarks(r.remarks, r.delayLogs)}</td>
                   <td className="px-4 py-3 text-right">
-                    <Link href={`/robo/slabs/${r.id}`}
-                      className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-brand/20 bg-brand/5 px-3 py-1.5 text-xs font-semibold text-brand transition hover:border-brand hover:bg-brand hover:text-white">
-                      Complete Details
-                      <span aria-hidden>→</span>
-                    </Link>
+                    <div className="flex items-center justify-end gap-2 whitespace-nowrap">
+                      <Link href={`/robo/slabs/${r.id}`}
+                        className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-brand/20 bg-brand/5 px-3 py-1.5 text-xs font-semibold text-brand transition hover:border-brand hover:bg-brand hover:text-white">
+                        Complete Details
+                        <span aria-hidden>→</span>
+                      </Link>
+                      {/* Edit reaches every slab in every shift, closed ones
+                          included — this table is the only way back to a slab
+                          once its shift has rolled over. */}
+                      <Link href={`/robo/slabs/${r.id}/edit`}
+                        className="inline-flex items-center rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-700 transition hover:bg-gray-50">
+                        Edit
+                      </Link>
+                      {canDelete && (
+                        <button type="button" onClick={() => removeSlab(r)} disabled={deletingId === r.id}
+                          className="inline-flex items-center rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 transition hover:border-red-600 hover:bg-red-600 hover:text-white disabled:opacity-50">
+                          {deletingId === r.id ? "Deleting…" : "Delete"}
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}

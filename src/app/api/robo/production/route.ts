@@ -39,6 +39,10 @@ export async function GET(req: NextRequest) {
   return NextResponse.json(data);
 }
 
+/** Thrown inside the create transaction so the clash rolls the whole thing
+ *  back; caught below and turned into the 409 the form expects. */
+class DuplicateSlabError extends Error {}
+
 /**
  * POST /api/robo/production — create a slab record.
  * S.No. is assigned automatically per shift when not supplied.
@@ -47,11 +51,29 @@ export async function GET(req: NextRequest) {
 export async function POST(req: Request) {
   const body = await req.json();
 
-  // One transaction end to end: the serial lookup, the slab record and its
-  // delay logs land together or not at all. The auto-serial MUST live inside
-  // it - findFirst-then-create outside a transaction hands two operators
-  // saving at once the same S.No.
+  // The slab number is how a slab is found again — on the Slabs Records
+  // screen, in the Excel export, and by anyone holding the paper register.
+  // Two records sharing one makes every one of those ambiguous, so the rule
+  // is enforced on the server: the form's on-blur check is the friendlier
+  // half of it, not the control. Trimmed first, because a trailing space
+  // would otherwise create a second, invisible "140748".
+  const slabNumber = String(body.slabNumber ?? "").trim();
+  if (!slabNumber) return NextResponse.json({ error: "Slab number is required." }, { status: 400 });
+
+  // One transaction end to end: the duplicate check, the serial lookup, the
+  // slab record and its delay logs land together or not at all. The
+  // auto-serial MUST live inside it - findFirst-then-create outside a
+  // transaction hands two operators saving at once the same S.No.
+  //
+  // The clash check narrows the window rather than closing it: read-committed
+  // still lets two simultaneous saves both see "free". Only a unique index on
+  // slab_number would make it airtight, and that is a Neon DDL change this
+  // working copy cannot make safely (see CLAUDE.md on db push) — so the check
+  // is written to be replaced by one, not to stand in for it forever.
   const record = await prisma.$transaction(async (tx) => {
+    const clash = await tx.roboProductionRecord.findFirst({ where: { slabNumber }, select: { id: true } });
+    if (clash) throw new DuplicateSlabError();
+
     let serialNumber = body.serialNumber ? Number(body.serialNumber) : null;
     if (!serialNumber) {
       const last = await tx.roboProductionRecord.findFirst({
@@ -67,7 +89,7 @@ export async function POST(req: Request) {
     const rec = await tx.roboProductionRecord.create({
       data: {
         serialNumber,
-        slabNumber:       body.slabNumber,
+        slabNumber,
         shiftId:          body.shiftId,
         batchRecipeId:    body.batchRecipeId || null,
         inTime:           body.inTime || null,
@@ -95,7 +117,17 @@ export async function POST(req: Request) {
       });
     }
     return rec;
+  }).catch((e: unknown) => {
+    if (e instanceof DuplicateSlabError) return null;
+    throw e;
   });
+
+  if (!record) {
+    return NextResponse.json(
+      { error: "Duplicate Slab No. — this slab number already exists." },
+      { status: 409 },
+    );
+  }
 
   return NextResponse.json(record, { status: 201 });
 }
