@@ -128,17 +128,36 @@ export async function isMaintenance(): Promise<boolean> {
  * would have stopped doing so the moment either rule moved. A gate should say
  * what it gates.
  *
- * Incharge and above on the shop floor, because a maintenance queue is only
- * worth a fitter's walk if the entries are, and the incharge already owns that
- * judgement. FINANCE and ACCOUNTS share rank 2 and are therefore included —
- * deliberately, not incidentally: the log covers "machinery or whatever is
- * relevant", and an office lamp or a jammed printer is a real request. So is
- * MAINTENANCE itself, who could not previously log their own work because the
- * capped role sits at rank 1, below INCHARGE.
+ * LINE MANAGER and above, plus MAINTENANCE itself.
+ *
+ * It was INCHARGE and above, which also swept in FINANCE and ACCOUNTS on rank 2.
+ * Narrowed on the owner's instruction to "manager and above, not incharge": the
+ * queue is a fitter's work list, and the wider it is raised the less each entry
+ * means. An incharge who finds a fault still has the route that matters — log
+ * the stoppage in MIS, and the hour appears in this same queue as an incident.
+ *
+ * MAINTENANCE is named explicitly because the capped role sits at rank 1, below
+ * every rank test, and would otherwise be the one role unable to log its own
+ * work on its own page.
  */
 export async function canRaiseMaintenance(): Promise<boolean> {
   const role = await currentRole();
-  return role === "MAINTENANCE" || rankOf(role) >= ROLE_RANK.INCHARGE;
+  return role === "MAINTENANCE" || rankOf(role) >= ROLE_RANK.LINE_MANAGER;
+}
+
+/** Who may OPEN the maintenance log at all.
+ *
+ *  Deliberately the same set as canRaiseMaintenance: on this page reading and
+ *  raising are the same act — you open it to see what is outstanding and to add
+ *  to it — so two different answers would only produce a screen with its own
+ *  form greyed out. Answering is narrower still (canRespondDowntime: the
+ *  Maintenance Manager and admins).
+ *
+ *  Kept beside the middleware rule for /maintenance, not instead of it: the
+ *  middleware stops the request, this stops a direct render, and each is
+ *  useless on its own the day the other is edited. */
+export async function canSeeMaintenanceLog(): Promise<boolean> {
+  return canRaiseMaintenance();
 }
 
 /**

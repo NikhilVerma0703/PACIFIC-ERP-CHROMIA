@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { Card, H2, Kpi, Badge } from "@/components/ui";
-import { canRaiseMaintenance, canRespondDowntime } from "@/lib/rbac";
+import { canRaiseMaintenance, canRespondDowntime, canSeeMaintenanceLog } from "@/lib/rbac";
+import { redirect } from "next/navigation";
 import { listTickets, PRIORITIES, DOWNTIME_STATUSES } from "@/lib/maintenanceLog";
 import { getDowntimeReport } from "@/lib/downtime";
 import { getDowntimeResponses, type DowntimeResp } from "@/lib/downtimeResponse";
@@ -41,16 +42,29 @@ export const dynamic = "force-dynamic";
  * with tests, because those four numbers are the first thing anyone checks and
  * they must be provable without a database.
  *
- * ON AUDIENCE: no new data is exposed. Every role that can open /maintenance can
- * already open /mis (src/middleware.ts blocks STORE, OPERATOR, COMMERCIAL, SALES
- * and ROBO from both), and the write paths are the same server actions with the
- * same canRespondDowntime() gate they enforce on /mis.
+ * ON AUDIENCE: the Maintenance Manager, Line Manager and admins — "manager and
+ * above, not incharge", on the owner's instruction. The route is gated in
+ * src/middleware.ts and again here; canRaiseMaintenance decides the form, and
+ * answering is narrower still (canRespondDowntime: Maintenance Manager and
+ * admins).
+ *
+ * No data is hidden that its former audience cannot reach: the same downtime
+ * incidents are on /mis, which INCHARGE still opens. What narrowed is the
+ * INBOX. A work list is only worth a fitter's walk if the entries are, and
+ * everyone who can see a queue treats it as their own. An incharge who finds a
+ * fault still has the route that matters — log the stoppage in MIS, and the
+ * hour arrives in this queue as an incident.
  */
 export default async function MaintenancePage({
   searchParams,
 }: {
   searchParams: Promise<{ from?: string; to?: string }>;
 }) {
+  // Middleware gates the route; this stops a direct render, the way the other
+  // restricted screens do. Either alone is one edit away from being the only
+  // thing standing there.
+  if (!(await canSeeMaintenanceLog())) redirect("/");
+
   const sp = await searchParams;
   // The window applies to INCIDENTS only. Tickets are a small hand-raised list
   // and are always shown whole — a fault reported three weeks ago and never

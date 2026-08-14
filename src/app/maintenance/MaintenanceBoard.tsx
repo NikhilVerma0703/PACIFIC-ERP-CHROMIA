@@ -232,15 +232,56 @@ export function MaintenanceBoard({
                   : "Nothing open — every fault raised and every stoppage in this window has been answered."}
           </p>
         ) : (
-          <div className="mt-3 space-y-2">
-            {shown.map((it) => (it.kind === "ticket"
-              ? <TicketRow key={it.key} item={it} canAnswer={canAnswer} statuses={statuses}
-                  openId={openId} setOpenId={setOpenId} reply={reply} setReply={setReply}
-                  status={status} setStatus={setStatus} pending={pending} submitAnswer={submitAnswer} />
-              : <IncidentRow key={it.key} item={it} canRespond={canRespond} canReclass={canReclass}
-                  responses={responses} photos={photos} reclass={reclass} />
-            ))}
-          </div>
+          /* TWO SECTIONS, not one merged list.
+             They arrive by different routes and are worked differently: a
+             stoppage came off an hourly MIS row and is answered against the
+             hour (and reclassified, if production filed it under the wrong
+             delay type); a raised fault is somebody walking up and reporting
+             something that never stopped the line. Merged, the raised faults —
+             far the rarer of the two — vanish into a wall of hourly rows and
+             are read last, which is the opposite of what their urgency
+             deserves.
+             Ordering WITHIN each section is untouched: open first, then
+             urgency, then oldest, computed across the whole queue before the
+             split, so nothing is reordered by being sectioned. */
+          (() => {
+            const incidents = shown.filter((it) => it.kind === "incident");
+            const tickets = shown.filter((it) => it.kind === "ticket");
+            const sec = "mt-4 text-[11px] font-semibold uppercase tracking-wider text-gray-500";
+            return (
+              <div className="mt-3 space-y-2">
+                {tickets.length > 0 && (
+                  <>
+                    <div className={sec}>
+                      Raised here · {tickets.length}
+                      <span className="ml-2 font-normal normal-case tracking-normal text-gray-400">
+                        reported by hand — did not necessarily stop the line
+                      </span>
+                    </div>
+                    {tickets.map((it) => (
+                      <TicketRow key={it.key} item={it} canAnswer={canAnswer} statuses={statuses}
+                        openId={openId} setOpenId={setOpenId} reply={reply} setReply={setReply}
+                        status={status} setStatus={setStatus} pending={pending} submitAnswer={submitAnswer} />
+                    ))}
+                  </>
+                )}
+                {incidents.length > 0 && (
+                  <>
+                    <div className={sec}>
+                      From the MIS hourly log · {incidents.length}
+                      <span className="ml-2 font-normal normal-case tracking-normal text-gray-400">
+                        stoppages already logged against an hour
+                      </span>
+                    </div>
+                    {incidents.map((it) => (
+                      <IncidentRow key={it.key} item={it} canRespond={canRespond} canReclass={canReclass}
+                        responses={responses} photos={photos} reclass={reclass} />
+                    ))}
+                  </>
+                )}
+              </div>
+            );
+          })()
         )}
 
         {/* The end of the list is not necessarily the end of the queue. A list

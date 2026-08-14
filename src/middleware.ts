@@ -66,6 +66,27 @@ export default auth((req) => {
     if (!isAdmin) return Response.redirect(new URL("/", nextUrl));
   }
 
+  // ---- Maintenance log: the Maintenance Manager, Line Manager and admins. ----
+  //
+  // An EXPLICIT gate, because the per-role caps further down work by exception:
+  // a role with no cap of its own falls through and reaches everything, which is
+  // how INCHARGE — and FINANCE/ACCOUNTS, who share its rank — were reading this
+  // page. The owner's rule is "manager and above, not incharge", so it has to be
+  // stated here rather than left to the absence of a rule.
+  //
+  // MAINTENANCE is named separately because the capped role sits at rank 1, below
+  // every rank test: it is the page's whole audience and would otherwise be the
+  // one role excluded by a rank comparison.
+  //
+  // Nothing is hidden by this that its audience cannot otherwise see — the same
+  // downtime incidents are on /mis, which INCHARGE still reaches. What goes away
+  // is the INBOX: the queue exists to tell maintenance what is theirs to answer,
+  // and everyone who can see it treats it as their own list.
+  if (p.startsWith("/maintenance")) {
+    const ok = isAdmin || role === "MAINTENANCE" || role === "LINE_MANAGER";
+    if (!ok) return Response.redirect(new URL("/", nextUrl));
+  }
+
   // ---- Bill automation (finance engine): Office Finance/Accounts and admins
   // only. Runs before the branch blocks below for the same reason as the robo
   // gate — their generic `/api` allowances must not leak it, and Commercial's
