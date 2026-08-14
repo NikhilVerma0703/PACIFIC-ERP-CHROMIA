@@ -89,3 +89,31 @@ export const MACHINE_LABEL: Record<string, string> = {
 };
 export const machineLabel = (name: string | null | undefined): string =>
   (name && MACHINE_LABEL[name]) || name || "";
+
+/** Display name back to the stored one — the reverse of machineLabel.
+ *
+ *  The rename gave operators Robo1..Robo4 while the database kept Roycut-1 /
+ *  Roymix / Roycut-2 / Roycut-3, and that is right: the stored names carry the
+ *  line ordering, the RoyMix-specific field rules, the design-preset keys and
+ *  the machine on every delay log ever saved.
+ *
+ *  But the rename also changed what people TYPE. A register workbook written
+ *  after it says "Robo2" in the Machine column, and the importer matches that
+ *  column against the stored names — so those rows failed the lookup and were
+ *  dropped by a .filter() with no error and no count, taking the whole
+ *  Production Setup sheet for that machine with them. A silent loss, because
+ *  nothing on screen can tell "this machine was not in the file" from "this
+ *  machine was not recognised".
+ *
+ *  Matching is case-insensitive and trims, because a header typed by hand is
+ *  not a key. Anything already stored-shaped, or simply unknown, passes
+ *  through untouched so an unmapped machine still reaches the same lookup it
+ *  always did. */
+const STORED_BY_DISPLAY: Record<string, string> = Object.fromEntries(
+  Object.entries(MACHINE_LABEL).map(([stored, shown]) => [shown.toLowerCase(), stored]),
+);
+export function canonicalMachineName(input: string | null | undefined): string {
+  if (!input) return "";
+  const v = input.trim();
+  return STORED_BY_DISPLAY[v.toLowerCase()] ?? v;
+}

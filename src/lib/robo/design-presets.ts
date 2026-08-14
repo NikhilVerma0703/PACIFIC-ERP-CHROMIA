@@ -4,6 +4,8 @@
  * Source: the plant in-charge's "Robo designs / pigments / tools" sheet.
  * Robot numbering on that sheet maps to this ERP as:
  *   robo 1 → Roycut-1 · robo 2 → Roymix · robo 3 → Roycut-2 · robo 4 → Roycut-3
+ * These are the STORED machine names. On screen they read Robo1..Robo4 — see
+ * MACHINE_LABEL in src/lib/robo/utils.ts. Keys here must stay the stored names.
  *
  * ── To add or change a design ────────────────────────────────────────────
  * Add one block to DESIGN_PRESETS below. Leave a machine out entirely when

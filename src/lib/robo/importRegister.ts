@@ -1,4 +1,5 @@
 import * as XLSX from "xlsx";
+import { canonicalMachineName } from "@/lib/robo/utils";
 
 /* ── Header matching ──────────────────────────────────────────
    Headers are normalised to lowercase alphanumerics, so
@@ -17,8 +18,12 @@ const RECORD_ALIASES: Record<string, string[]> = {
   slabNumber:   ["slabnumber", "slabno", "slab"],
   inTime:       ["intime", "in"],
   outTime:      ["outtime", "out"],
-  bodyWeight:   ["roymixbodyweightkg", "bodyweightkg", "bodyweight"],
-  cycleTime:    ["roymixcycletimesec", "cycletimesec", "roymixcycletime"],
+  // "robo2*" first: after the Robo1..Robo4 rename a freshly written register
+  // headers these columns by the name the operator now sees, and the old
+  // "roymix*" spellings still arrive from every workbook made before it. Both
+  // have to match, or the body weight and cycle time import as blank.
+  bodyWeight:   ["robo2bodyweightkg", "roymixbodyweightkg", "bodyweightkg", "bodyweight"],
+  cycleTime:    ["robo2cycletimesec", "roymixcycletimesec", "cycletimesec", "roymixcycletime"],
   status:       ["status"],
   remarks:      ["remarks", "remark", "note", "notes"],
 };
@@ -250,7 +255,11 @@ export function parseRegister(buf: Buffer): ParseResult {
       const sAt = (row: unknown[], field: string): unknown => (field in sCol ? row[sCol[field]] : null);
       for (let i = 1; i < sAoa.length; i++) {
         const raw = sAoa[i] ?? [];
-        const machineName = text(sAt(raw, "machine"));
+        // Fold "Robo2" back to the stored "Roymix" before it is handed on. The
+        // consumer looks this up in a map keyed by stored name and DROPS what
+        // it cannot find, so an un-canonicalised display name loses the row in
+        // silence. See canonicalMachineName.
+        const machineName = canonicalMachineName(text(sAt(raw, "machine")));
         const date = parseDateCell(sAt(raw, "date"));
         if (!machineName || !date) continue;
         const shiftRaw = parseNumberCell(sAt(raw, "shiftNumber"));
