@@ -1646,6 +1646,47 @@ model DowntimeResponse {
   @@map("downtime_response")
 }
 
+/// An APPLIED correction to one hour's delay classification: minutes moved out
+/// of one delay bucket on the Mis row and into another, by the Maintenance
+/// Manager. Append-only, one row per move. See src/lib/delayReclass.ts.
+///
+/// Unlike DowntimeResponse's dispute — which sits BESIDE production's figure and
+/// is read by nothing — a reclass REWRITES the Mis row, so every total, chart and
+/// incentive figure downstream picks it up with no code change. That is the point
+/// and also the hazard: shiftScore.ts rates the electrical/mechanical incharges on
+/// uptime computed from the breakdown and power-out minutes, so moving minutes out
+/// of `breakdown` raises the maintenance team's own payout. This table is the
+/// answer to that — a log, not a flag, because the before-figure, the author and
+/// the stated reason are all needed months later when a payout is argued about,
+/// and a boolean on the Mis row answers none of those questions.
+model MisDelayReclass {
+  id  String @id
+  /// The Mis hourly row corrected. No hard FK, matching downtime_response.
+  misId String @map("mis_id")
+  /// DELAY_FIELDS keys from src/lib/downtimeShared.ts: process | cleaning |
+  /// breakdown | powerout. Text, not an enum, so the vocabulary stays owned by
+  /// that one file rather than being half here and half there.
+  fromType String @map("from_type")
+  toType   String @map("to_type")
+  /// Whole minutes moved, always > 0. Float only to match the delay columns it
+  /// moves between (all `Float?` on Mis); delayReclass.ts refuses non-integers.
+  minutes Float
+  /// Required, min 4 chars — the same bar as the finance duplicate-override.
+  /// An unexplained move of paid minutes is indistinguishable from a mistake.
+  reason String
+  /// Display name or email, for the tooltip. Nullable only because a session can
+  /// carry neither; the action falls back to the user id rather than writing NULL.
+  changedBy String? @map("changed_by")
+  /// User.id as well as the name: attribution has to survive a rename or a
+  /// leaver, because this is an edit to somebody's own incentive input.
+  changedByUserId String?  @map("changed_by_user_id")
+  changedAt       DateTime @default(now()) @map("changed_at") @db.Timestamp(6)
+
+  @@index([misId])
+  @@index([changedAt])
+  @@map("mis_delay_reclass")
+}
+
 /// The maintenance log: anything from incharge up can raise a fault, with or
 /// without a stoppage behind it. Two-way linked to DowntimeResponse via mis_id
 /// when raised from a downtime incident. See src/lib/maintenanceLog.ts.

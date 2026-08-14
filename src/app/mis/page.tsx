@@ -3,9 +3,12 @@ import { Shell } from "@/components/Shell";
 import { Card, H2, Kpi, Empty, Badge, fmt } from "@/components/ui";
 import { getDowntimeReport, fmtDur } from "@/lib/downtime";
 import { getDowntimeResponses } from "@/lib/downtimeResponse";
+import { getDelayReclassLog } from "@/lib/delayReclassLog";
+import type { ReclassRecord } from "@/lib/delayReclass";
 import { photosForRecords } from "@/lib/entryPhoto";
 import { canRespondDowntime } from "@/lib/rbac";
 import { DowntimeLogCard } from "./DowntimeLogCard";
+import { MisHourlyLogCard } from "./MisHourlyLogCard";
 import { getLastShiftReport, getCurrentShiftReport, getPreviousShiftReport, currentShiftAnchor } from "@/lib/misShift";
 import { SHIFT_WINDOW } from "@/lib/misShiftHours";
 import { ShiftCard } from "@/components/ShiftCard";
@@ -31,7 +34,21 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
   // saved-response column as unknown and disable responding for this load — a fresh save
   // against an unseen earlier response would overwrite it blind.
   const respFailed = !!r && r.incidents.length > 0 && respMap === null;
-  const canRespond = (await canRespondDowntime()) && !respFailed;
+  // Applied delay-type corrections (mis_delay_reclass), one list per MIS row. Same
+  // null-means-unknown contract as the responses above, for a different reason: the
+  // corrected figures are already IN the Mis row, so an unreadable log does not leave a
+  // gap on screen — it leaves an hour that looks like production entered it that way.
+  // That is worse than a blank, so it is said out loud and writing is withheld.
+  const reclassMap = r ? await getDelayReclassLog(r.incidents.map((i) => i.id)) : null;
+  const reclassFailed = !!r && r.incidents.length > 0 && reclassMap === null;
+  // ONE role check, two independent gates: responding and reclassifying are the same
+  // audience (canRespondDowntime = MAINTENANCE or ADMIN) but they fail apart — a broken
+  // responses read must not silently disable the correction, or vice versa.
+  const mayMaintain = await canRespondDowntime();
+  const canRespond = mayMaintain && !respFailed;
+  const canReclass = mayMaintain && !reclassFailed;
+  const reclass: Record<string, ReclassRecord[]> = {};
+  if (reclassMap) for (const [k, v] of reclassMap) reclass[k] = v;
   // Map -> plain object: props crossing into the client log card must be serializable.
   const responses: Record<string, import("@/lib/downtimeResponse").DowntimeResp> = {};
   if (respMap) for (const [k, v] of respMap) responses[k] = v;
@@ -246,6 +263,23 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
             )}
           </Card>
 
+          {/* The hour-by-hour ledger of the four delay buckets, and the maintenance
+              manager's correction control. Above the incident log on purpose: this is
+              the raw classification, that is the story told about it. Both are fed the
+              same rows and the same reclass log, so a corrected hour is marked in both
+              — the owner asked for the mark in both places, and one screen quietly
+              missing it is how a moved figure gets argued about later. */}
+          <MisHourlyLogCard
+            rows={r.incidents.map((i) => ({
+              id: i.id, date: i.date, hour: i.hour, batch: i.batch,
+              minutes: i.minutes, over: i.over, minutesByType: i.minutesByType,
+            }))}
+            rowsTotal={r.incidentsTotal}
+            canReclass={canReclass}
+            reclass={reclass}
+            reclassFailed={reclassFailed}
+          />
+
           {/* Type filtering happens inside the card, client-side — a chip click must not
               navigate (the searchParams change re-keys the segment, the root loading
               skeleton swaps in, and the collapse throws the scroll to the top). */}
@@ -259,6 +293,9 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
             respFailed={respFailed}
             responses={responses}
             photos={photos}
+            reclass={reclass}
+            reclassFailed={reclassFailed}
+            canReclass={canReclass}
           />
         </div>
       )}

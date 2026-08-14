@@ -39,10 +39,16 @@ const STORE_TABS = [
   { href: "/consumables",  label: "Consumables",   icon: I.box    },
 ];
 
-// Maintenance Manager is capped: Overview + the Downtime report only.
+// Maintenance Manager is capped: Overview, the Downtime report and their own
+// Maintenance Log. This list is the WHOLE nav for the role — the branch below
+// returns early, so the "Lookups & Reports" section (which carries the
+// Maintenance Log for everyone else) is never reached. That is why the entry has
+// to be repeated here: the role that lives in the maintenance log was the only
+// role with no link to it. Middleware allows all three paths.
 const MAINTENANCE_TABS = [
-  { href: "/",    label: "Overview", icon: I.overview },
-  { href: "/mis", label: "Downtime", icon: I.mis      },
+  { href: "/",            label: "Overview",        icon: I.overview },
+  { href: "/mis",         label: "Downtime",        icon: I.mis      },
+  { href: "/maintenance", label: "Maintenance Log", icon: I.spanner  },
 ];
 
 /* helpers */

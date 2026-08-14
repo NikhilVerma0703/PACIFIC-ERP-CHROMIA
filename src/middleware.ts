@@ -192,9 +192,22 @@ export default auth((req) => {
     if (!ok) return Response.redirect(new URL("/inventory", nextUrl));
   }
   if (role === "MAINTENANCE") {
-    // maintenance manager: Overview + the Downtime report only (may also POST the
-    // downtime response, which is a server action on /mis)
-    const ok = p === "/" || p.startsWith("/mis") || p.startsWith("/api");
+    // maintenance manager: Overview, the Downtime report and the Maintenance Log
+    // (may also POST the downtime response and the delay reclassification, both
+    // server actions on /mis).
+    //
+    // /maintenance was missing from this list, so the one page written FOR this
+    // role was the one page it could not open — the Nav entry existed and the
+    // page's own gates (canRaiseMaintenance, canRespondDowntime) both admit
+    // MAINTENANCE, but middleware redirected to "/" before either could run.
+    // That is why the role appeared to have no maintenance log at all.
+    //
+    // under() is exact-or-subpath, borrowed from the Commercial block above:
+    // a bare startsWith("/maintenance") would also hand this capped role
+    // a future /maintenance-costs or /maintenance-admin, which is opt-OUT
+    // security — the safer form costs one helper.
+    const under = (base: string) => p === base || p.startsWith(base + "/");
+    const ok = p === "/" || under("/mis") || under("/maintenance") || p.startsWith("/api");
     if (!ok) return Response.redirect(new URL("/", nextUrl));
   }
   if (role === "ROBO") {

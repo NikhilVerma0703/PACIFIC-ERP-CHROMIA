@@ -13,6 +13,14 @@ import {
   type ShiftScore, type PersonScore, type StationBoard, type FlaggedRow,
 } from "@/lib/shiftScore";
 import { isAdmin } from "@/lib/rbac";
+// The scoreboard is where the reclassification feature has to be VISIBLE to the
+// person it costs. src/lib/shiftScore.ts computes uptime from the breakdown and
+// power-out minutes on the Mis row, and the Maintenance Manager can now move
+// minutes out of those buckets — an edit to an input to their own incentive. The
+// board must therefore say so on its face; see the banner below.
+import { getReclassImpact } from "@/lib/delayReclassLog";
+import { describeReclassRecord } from "@/lib/delayReclass";
+import { shiftRange } from "@/lib/shiftScoreMath";
 
 export const dynamic = "force-dynamic";
 // A month of shifts is several hundred queries; the default 10s is not enough.
@@ -52,6 +60,25 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
     data = null;
     failure = e instanceof Error ? e.message : String(e);
   }
+
+  // ---- Delay-type corrections inside the scored window --------------------
+  // Read over the SAME span of shifts the board scored — shiftRange, not
+  // midnight, because a shift-C hour after 22:00 IST belongs to the day that
+  // started it. `data.to` and not `to`: when the range was cut short the banner
+  // must cover what was actually scored, like every other figure on this page.
+  const scoreWindow = data
+    ? {
+        start: shiftRange(data.from, "A").start,
+        // Never past now: scoreRange only scores shifts that have ENDED, so
+        // counting a correction to the hour still running would report an impact
+        // on a score nobody has been given.
+        end: new Date(Math.min(shiftRange(data.to, "C").end.getTime(), Date.now())),
+      }
+    : null;
+  const reclass = scoreWindow ? await getReclassImpact(scoreWindow.start, scoreWindow.end) : null;
+  // null = the lookup itself failed. On a page that decides money that is not the
+  // same as "nothing was corrected", and it is said out loud rather than swallowed.
+  const reclassUnknown = !!data && reclass === null;
 
   // The cards are the same component the MIS page draws, one per shift that
   // actually recorded something in the range.
@@ -311,6 +338,87 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
                 scored. Everything on this page covers the shorter range — read the figures as that period, not the
                 one in the date boxes.
               </p>
+            </Card>
+          )}
+
+          {/* ---- Maintenance corrected the input this board pays on ----------
+              The one banner on this page that is not about a production mistake.
+              A reclassification MOVES minutes between the four delay buckets on
+              the MIS row; uptime here is 1 - (breakdown + power-out)/(hours x 60),
+              so minutes moved OUT of those two buckets raise the very uptime the
+              ELECTRICAL and MECHANICAL incharges are ranked and paid on — and the
+              Maintenance Manager is the person who may move them. That is not an
+              accusation and the correction is usually right: production really
+              does book cleaning changeovers to maintenance. It is a conflict of
+              interest, and the answer to a conflict of interest is daylight, on
+              the page where the money is decided. Amber, not red: nothing here is
+              known to be wrong. */}
+          {reclassUnknown && (
+            <Card className="mb-6 border-amber-300 bg-amber-50">
+              <p className="text-sm text-amber-900">
+                <b>Delay corrections could not be checked.</b> Maintenance can move minutes between delay types on
+                the MIS rows, which changes the uptime the electrical and mechanical shares are computed from. The
+                log of those moves did not load, so this board cannot tell you whether any were made in this range.
+                Reload before paying on these figures.
+              </p>
+            </Card>
+          )}
+          {reclass && reclass.count > 0 && (
+            <Card className="mb-6 border-amber-300 bg-amber-50">
+              <p className="text-sm text-amber-900">
+                <b>⇄ {fmt(reclass.count)} delay(s) reclassified by maintenance</b> in this range
+                {reclass.authors.length > 0 && <> — by {reclass.authors.join(", ")}</>}.
+                {" "}Those minutes were MOVED between delay types on the MIS rows below, so the hour totals are
+                unchanged but the split is not what production entered.
+                {(reclass.breakdownRemoved !== 0 || reclass.poweroutRemoved !== 0) && (
+                  <>
+                    {" "}
+                    <b>
+                      {reclass.breakdownRemoved > 0
+                        ? `${fmtDur(reclass.breakdownRemoved)} was taken out of Breakdown`
+                        : reclass.breakdownRemoved < 0
+                          ? `${fmtDur(-reclass.breakdownRemoved)} was moved into Breakdown`
+                          : ""}
+                      {reclass.breakdownRemoved !== 0 && reclass.poweroutRemoved !== 0 && " and "}
+                      {reclass.poweroutRemoved > 0
+                        ? `${fmtDur(reclass.poweroutRemoved)} out of Power-out`
+                        : reclass.poweroutRemoved < 0
+                          ? `${fmtDur(-reclass.poweroutRemoved)} into Power-out`
+                          : ""}
+                    </b>
+                    .{" "}
+                    {reclass.breakdownRemoved + reclass.poweroutRemoved > 0
+                      ? <>Both count as stoppage in <b>uptime</b>, so this <b>raised</b> the electrical and mechanical
+                        scores below — and their share of the pool. The people who made the correction are the people
+                        it pays.</>
+                      : <>Both count as stoppage in <b>uptime</b>, so this <b>lowered</b> the electrical and mechanical
+                        scores below.</>}
+                  </>
+                )}
+                {reclass.breakdownRemoved === 0 && reclass.poweroutRemoved === 0 && (
+                  <> None of it touched Breakdown or Power-out, so no uptime figure on this page moved.</>
+                )}
+                {" "}Each move carries a written reason; check them against the hours before signing anything off.
+              </p>
+              <ul className="mt-3 space-y-1.5">
+                {reclass.rows.slice(0, 20).map((r, i) => (
+                  <li key={`${r.misId}-${i}`} className="text-xs text-amber-900">
+                    <Link href={`/tables/Mis/${r.misId}`} className="rounded border border-amber-300 bg-white px-1.5 py-0.5 font-semibold hover:border-amber-500 hover:bg-amber-100">
+                      {r.misDate ?? "date ?"} · {r.misHour ?? "hour ?"}
+                    </Link>{" "}
+                    {/* Same sentence the two logs on /mis print, from the same pure
+                        function — three screens describing one move three ways is
+                        how an argument about a payout becomes unanswerable. */}
+                    {describeReclassRecord(r)}
+                  </li>
+                ))}
+              </ul>
+              {reclass.rows.length > 20 && (
+                <p className="mt-2 text-xs text-amber-700">
+                  +{fmt(reclass.rows.length - 20)} more — the full history is on the{" "}
+                  <Link href="/mis" className="underline">MIS hourly log</Link>.
+                </p>
+              )}
             </Card>
           )}
 

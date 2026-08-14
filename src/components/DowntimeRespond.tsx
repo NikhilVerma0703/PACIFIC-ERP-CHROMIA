@@ -4,6 +4,8 @@ import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { respondToDowntime, disputeDowntime, addDowntimePhoto, type RespondRes } from "@/app/mis/actions";
 import { DELAY_FIELDS, DELAY_LABEL, fmtDur } from "@/lib/downtimeShared";
+import { ReclassifyDelay } from "@/components/ReclassifyDelay";
+import type { ReclassRecord } from "@/lib/delayReclass";
 
 const STATUSES = ["Pending", "Attended", "Resolved", "Not required"];
 const TONE: Record<string, string> = {
@@ -25,12 +27,21 @@ export interface RespondProps {
   dispMinutes: number | null;
   dispBy: string | null;
   dispAt: string | null;
-  /** Production's logged minutes per type, to compare the dispute against. */
+  /** Production's logged minutes per type, to compare the dispute against — and, for
+   *  the reclassification below, the hour the move is planned against. */
   minutesByType: Record<string, number>;
   photos: { id: string; filename: string }[];
+  /** Applied delay-type corrections on this hour, oldest first. Empty for almost every
+   *  row; non-empty means the figures beside it are maintenance's, not production's. */
+  reclass: readonly ReclassRecord[];
+  /** Separate from canRespond on purpose. A response and a reclassification are gated
+   *  on the same role but fail independently: responding is withheld when the SAVED
+   *  RESPONSES could not be read (a blind overwrite), correcting is withheld when the
+   *  RECLASS LOG could not be read (a second move stacked on an invisible first). */
+  canReclass: boolean;
 }
 
-export function DowntimeRespond({ misId, canRespond, status, note, by, at, dispType, dispMinutes, dispBy, dispAt, minutesByType, photos }: RespondProps) {
+export function DowntimeRespond({ misId, canRespond, status, note, by, at, dispType, dispMinutes, dispBy, dispAt, minutesByType, photos, reclass, canReclass }: RespondProps) {
   const [open, setOpen] = useState(false);
   const [st, setSt] = useState(status || "Pending");
   const [nt, setNt] = useState(note || "");
@@ -46,8 +57,12 @@ export function DowntimeRespond({ misId, canRespond, status, note, by, at, dispT
   const [pending, start] = useTransition();
   const router = useRouter();
 
-  const hasAnything = !!status || dispMinutes != null || photos.length > 0;
-  if (!canRespond && !hasAnything) return <span className="text-gray-300">—</span>;
+  // reclass.length counts here even though nothing in this component's own form wrote
+  // it: a corrected hour must never render as an empty cell to a reader who cannot
+  // write, or the one row on the page whose figures were changed by hand is the one
+  // row that says nothing at all.
+  const hasAnything = !!status || dispMinutes != null || photos.length > 0 || reclass.length > 0;
+  if (!canRespond && !canReclass && !hasAnything) return <span className="text-gray-300">—</span>;
 
   // The dispute is resolved by PRODUCTION correcting their own entry, so "resolved" is
   // not a stored state — it is the live comparison coming back equal.
@@ -113,6 +128,13 @@ export function DowntimeRespond({ misId, canRespond, status, note, by, at, dispT
           </div>
         )
       )}
+
+      {/* The second, stronger action, deliberately next to the first: same person, same
+          job, one screen. The dispute above says "we disagree about the duration" and
+          leaves the MIS row alone; this says "those minutes are in the wrong bucket"
+          and moves them. Violet, never the dispute's amber — an applied correction must
+          not read as an open argument. */}
+      <ReclassifyDelay misId={misId} canReclass={canReclass} minutesByType={minutesByType} records={reclass} />
 
       {photos.length > 0 && (
         <div className="flex flex-wrap gap-1">

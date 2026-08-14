@@ -14,8 +14,10 @@ import { DELAY_FIELDS, fmtDur } from "@/lib/downtimeShared";
 import type { IncidentRow } from "@/lib/downtime";
 import type { DowntimeResp } from "@/lib/downtimeResponse";
 import { DowntimeRespond } from "@/components/DowntimeRespond";
+import { ReclassBadge, reclassFigureClass, reclassFigureTitle } from "@/components/ReclassifyDelay";
+import { describeReclass, RECLASS_TONE, type ReclassRecord } from "@/lib/delayReclass";
 
-export function DowntimeLogCard({ incidents, incidentsTotal, typeTotals, initialType, from, to, batch, canRespond, respFailed, responses, photos }: {
+export function DowntimeLogCard({ incidents, incidentsTotal, typeTotals, initialType, from, to, batch, canRespond, respFailed, responses, photos, reclass, reclassFailed, canReclass }: {
   incidents: IncidentRow[];
   /** Rows in the range, which may exceed `incidents` — that list is capped for payload
    *  size. The KPI cards above are aggregated over ALL of them, so the difference has to
@@ -32,6 +34,15 @@ export function DowntimeLogCard({ incidents, incidentsTotal, typeTotals, initial
   responses: Record<string, DowntimeResp>;
   /** Response photos per MIS row id, served by /api/photo under its own gate. */
   photos: Record<string, { id: string; filename: string }[]>;
+  /** Applied delay-type corrections per MIS row id, oldest first. A row that appears
+   *  here has figures maintenance moved between buckets — the hour's TOTAL is
+   *  untouched, so the "Down" column is unaffected and only the Type breakdown moved. */
+  reclass: Record<string, ReclassRecord[]>;
+  /** The corrections lookup itself failed. The figures are still production's plus
+   *  whatever was moved — we just cannot say which — so the marks are unreliable for
+   *  this load and correcting is withheld until a reload proves otherwise. */
+  reclassFailed: boolean;
+  canReclass: boolean;
 }) {
   const [type, setType] = useState<string | null>(initialType);
   const shown = type ? incidents.filter((i) => i.typeKeys.includes(type)) : incidents;
@@ -79,6 +90,20 @@ export function DowntimeLogCard({ incidents, incidentsTotal, typeTotals, initial
           ⚠ Saved maintenance responses could not be loaded just now — the column below is <b>unknown</b>, not empty. Reload the page; responding is disabled meanwhile so an earlier response can&apos;t be overwritten unseen.
         </p>
       )}
+      {reclassFailed && (
+        <p className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          ⚠ Applied delay-type corrections could not be loaded just now — a reclassified hour below will look untouched, because the MIS row already carries the corrected figures. Reload the page; reclassifying is disabled meanwhile so a second move can&apos;t be stacked on one nobody can see.
+        </p>
+      )}
+      {/* The legend, shown only when there is something to explain. A colour with no
+          explanation raises the question it exists to answer — and the mark is a glyph
+          and a word as well as a colour, so it survives a printout and a colour-blind
+          reader. */}
+      {!reclassFailed && shown.some((i) => (reclass[i.id]?.length ?? 0) > 0) && (
+        <p className={`mb-3 rounded-lg border px-3 py-2 text-xs ${RECLASS_TONE.panel} ${RECLASS_TONE.text}`}>
+          <span className="font-medium">⇄ Reclassified</span> — maintenance moved these minutes to a different delay type. The hour&apos;s total is unchanged; hover the mark for what moved, who moved it, when and why. A <span className="font-medium text-amber-800">⚠ amber</span> note is a different thing: an open disagreement about a duration, with nothing changed.
+        </p>
+      )}
       {/* Sub-filter: narrow the log to one delay type (in place — no navigation, no scroll) */}
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
         <span className="mr-1 text-xs font-medium uppercase tracking-wider text-gray-400">Type</span>
@@ -95,12 +120,26 @@ export function DowntimeLogCard({ incidents, incidentsTotal, typeTotals, initial
               <th className="py-2 pr-3">Down</th><th className="py-2 pr-3">Type</th><th className="py-2 pr-3">Reason(s)</th><th className="py-2 pr-3">Details / RCA / action</th><th className="py-2 pr-3">Electrical incharge</th><th className="py-2 pr-3">Mechanical incharge</th><th className="py-2">Maintenance response</th>
             </tr></thead>
             <tbody>
-              {shown.map((i) => (
+              {shown.map((i) => {
+                // One mark per row, built by the shared pure helper so this screen and
+                // the MIS hourly log cannot describe the same correction differently.
+                const recs = reclass[i.id] ?? [];
+                const mark = describeReclass(recs);
+                return (
                 <tr key={i.id} className="border-t border-gray-100 align-top">
                   <td className="py-2 pr-3 whitespace-nowrap text-gray-500">{i.date ?? "—"}</td>
                   <td className="py-2 pr-3 whitespace-nowrap text-gray-500">{i.hour ?? "—"}</td>
                   <td className="py-2 pr-3 whitespace-nowrap text-gray-700">{i.batch ? <Link href={`/batch?b=${encodeURIComponent(i.batch)}`} className="text-brand hover:underline">{i.batch}</Link> : "—"}</td>
-                  <td className={`py-2 pr-3 whitespace-nowrap font-medium ${i.over ? "text-red-600" : "text-gray-900"}`} title={i.over ? `This hour logs ${fmtDur(i.minutes)} across all types — more than 60 min in one hour, an entry error` : undefined}>{(() => { const m = type ? i.minutesByType[type] ?? 0 : i.minutes; return m > 0 ? fmtDur(m) : "—"; })()}{i.over ? " ⚠" : ""}{(() => {
+                  <td className={`py-2 pr-3 whitespace-nowrap font-medium ${i.over ? "text-red-600" : "text-gray-900"}`} title={i.over ? `This hour logs ${fmtDur(i.minutes)} across all types — more than 60 min in one hour, an entry error` : undefined}>{(() => {
+                    const m = type ? i.minutesByType[type] ?? 0 : i.minutes;
+                    const txt = m > 0 ? fmtDur(m) : "—";
+                    // Under a type filter this cell IS one bucket's figure, so it is a
+                    // number a reclassification can have moved and it takes the mark.
+                    // Unfiltered it is the hour's TOTAL, which a move never changes —
+                    // colouring it there would claim a change that did not happen.
+                    const cls = type ? reclassFigureClass(mark, type) : "";
+                    return cls ? <span className={cls} title={reclassFigureTitle(mark, type!, i.minutesByType, recs)}>{txt}</span> : txt;
+                  })()}{i.over ? " ⚠" : ""}{(() => {
                     // Amber dot: maintenance disputes one of this row's durations and the
                     // figures still differ. Independent of the active type filter — the
                     // disagreement belongs to the row. Green handled in the response cell.
@@ -109,12 +148,31 @@ export function DowntimeLogCard({ incidents, incidentsTotal, typeTotals, initial
                     const cur = i.minutesByType[r.dispType ?? ""] ?? 0;
                     if (Math.round(cur) === Math.round(r.dispMinutes)) return null;
                     return <span className="text-amber-600" title={`Maintenance says ${fmtDur(r.dispMinutes)} — see the response column`}> ●</span>;
-                  })()}</td>
-                  <td className="py-2 pr-3 text-gray-600">{type
-                    ? (DELAY_FIELDS.find((d) => d.key === type)?.label ?? "—")
-                    : Object.keys(i.minutesByType).length > 1
-                      ? DELAY_FIELDS.filter((d) => i.minutesByType[d.key]).map((d) => `${d.label} ${fmtDur(i.minutesByType[d.key])}`).join(" · ")
-                      : i.types.join(", ") || "—"}</td>
+                  })()}{mark.count > 0 && <span className={RECLASS_TONE.dot} title={mark.tooltip}> ⇄</span>}</td>
+                  {/* The Type cell is where the four buckets live, so it is where a
+                      correction is visible: the moved figures carry the violet mark,
+                      the untouched ones stay grey, and the badge names the act. */}
+                  <td className="py-2 pr-3 text-gray-600">{(() => {
+                    const held = DELAY_FIELDS.filter((d) => i.minutesByType[d.key]);
+                    if (type) {
+                      const d = DELAY_FIELDS.find((x) => x.key === type);
+                      if (!d) return "—";
+                      return <span className={reclassFigureClass(mark, d.key)} title={reclassFigureTitle(mark, d.key, i.minutesByType, recs)}>{d.label}</span>;
+                    }
+                    if (held.length > 1) {
+                      return held.map((d, idx) => (
+                        <span key={d.key}>
+                          {idx > 0 ? " · " : ""}
+                          <span className={reclassFigureClass(mark, d.key)} title={reclassFigureTitle(mark, d.key, i.minutesByType, recs)}>{d.label} {fmtDur(i.minutesByType[d.key])}</span>
+                        </span>
+                      ));
+                    }
+                    const only = held[0]?.key;
+                    const text = i.types.join(", ") || "—";
+                    return only
+                      ? <span className={reclassFigureClass(mark, only)} title={reclassFigureTitle(mark, only, i.minutesByType, recs)}>{text}</span>
+                      : text;
+                  })()}{mark.count > 0 && <> <ReclassBadge mark={mark} /></>}</td>
                   <td className="py-2 pr-3 text-gray-600">{(type ? i.reasonsByType[type] ?? [] : i.reasons).join(", ") || "—"}</td>
                   <td className="py-2 pr-3 text-gray-600">{[i.details, i.rca ? `RCA ${i.rca}` : null, i.action, i.spares ? `spares: ${i.spares}` : null].filter(Boolean).join(" · ") || "—"}</td>
                   <td className="py-2 pr-3 whitespace-nowrap text-gray-700">{i.elecIncharge || "—"}</td>
@@ -124,9 +182,11 @@ export function DowntimeLogCard({ incidents, incidentsTotal, typeTotals, initial
                     by={responses[i.id]?.by ?? null} at={responses[i.id]?.at ?? null}
                     dispType={responses[i.id]?.dispType ?? null} dispMinutes={responses[i.id]?.dispMinutes ?? null}
                     dispBy={responses[i.id]?.dispBy ?? null} dispAt={responses[i.id]?.dispAt ?? null}
-                    minutesByType={i.minutesByType} photos={photos[i.id] ?? []} /></td>
+                    minutesByType={i.minutesByType} photos={photos[i.id] ?? []}
+                    reclass={recs} canReclass={canReclass} /></td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
