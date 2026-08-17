@@ -10,6 +10,11 @@ import "server-only";
 // looks at "today".
 
 import { prisma } from "@/lib/prisma";
+import {
+  applyBatchRates, type BatchRateRow, type LayeredCard,
+} from "./batchRates";
+
+export type { LayeredCard };
 
 export type RateCategory =
   | "RESIN" | "GRIT" | "FILLER" | "PIGMENT" | "CHEMICAL" | "DOSING" | "CONVERSION" | "BASIS";
@@ -170,6 +175,38 @@ export async function effectiveRateCard(onDate: Date): Promise<EffectiveRateCard
     .map((d) => d.item);
 
   return { onDate: day(onDate), resinBySupplier, rates, effectiveFrom, missing };
+}
+
+/** The rates one batch has set for itself. Empty for almost every batch — the
+ *  card is the normal answer and these are the exceptions. */
+export async function listBatchRates(batchKey: string): Promise<BatchRateRow[]> {
+  const rows = await prisma.costingBatchRate.findMany({
+    where: { batchKey },
+    orderBy: [{ item: "asc" }, { variant: "asc" }],
+  });
+  return rows.map((r) => ({
+    item: r.item, variant: r.variant, category: r.category, rate: r.rate, note: r.note,
+  }));
+}
+
+/**
+ * The card a batch is actually costed against: the date card, with the batch's
+ * own material rates laid over it.
+ *
+ * This is the function the report calls, rather than effectiveRateCard, so
+ * there is one place that decides what a batch costs. Calling the plain card
+ * anywhere in the costing path would price a batch at the plant average while
+ * the screen showed its own rates — the two disagreeing silently.
+ */
+export async function rateCardForBatch(
+  batchKey: string,
+  onDate: Date,
+): Promise<LayeredCard> {
+  const [card, overrides] = await Promise.all([
+    effectiveRateCard(onDate),
+    listBatchRates(batchKey),
+  ]);
+  return applyBatchRates(card, overrides);
 }
 
 /**

@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Badge, Card } from "@/components/ui";
+import { BatchRatesPanel } from "@/components/office/BatchRatesPanel";
 
 const API = "/api/office/costing";
 
@@ -55,7 +56,13 @@ interface Report {
     lines: Array<{ item: string; primaryQty: number; checkQty: number; unit: string; delta: number; costEffect: number }>;
     totalAbsEffect: number; netDeltaTonnes: number;
   };
-  basis: { assumptions: string[]; effectiveFrom: Record<string, string> };
+  basis: {
+    assumptions: string[];
+    effectiveFrom: Record<string, string>;
+    /** Rates set on this batch rather than taken from the card. */
+    batchRates?: string[];
+    rejectedRates?: Array<{ item: string; variant: string; reason: string }>;
+  };
   stats: {
     resinCycles: number; mixerCharges: number; runHours: number; wallClockHours: number;
     stoppages: { count: number; hours: number }; pressSlabs: number;
@@ -177,6 +184,7 @@ export function CostingDashboard() {
   }, []);
 
   const s = report?.sheet ?? null;
+  const onThisBatch = new Set(report?.basis.batchRates ?? []);
 
   return (
     <div className="space-y-5">
@@ -222,6 +230,20 @@ export function CostingDashboard() {
         )}
         {error && <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
       </Card>
+
+      {/* ---- rates for this batch ---- */}
+      {report && (
+        <BatchRatesPanel
+          key={report.batchKey}
+          batchKey={report.batchKey}
+          batchLabel={report.batch}
+          // Re-read the sheet rather than patching it: the report is computed
+          // from mixer records and the card on every read, so recomputing is
+          // the only way the totals, shares and per-sqft lines all move
+          // together with a changed rate.
+          onSaved={() => void load(report.batchKey)}
+        />
+      )}
 
       {report && report.blockedBy.length > 0 && (
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
@@ -397,11 +419,31 @@ export function CostingDashboard() {
           </ul>
           <div className="mt-3 border-t border-gray-100 pt-3">
             <p className="mb-1 text-xs font-medium text-gray-500">Rates used, and since when</p>
+            {/* A rate set on this batch is toned differently from one that came
+                off the card. Both are legitimate; showing them identically is
+                what would let a reader take a hand-typed number for the
+                month's published rate. */}
             <div className="flex flex-wrap gap-1.5">
               {Object.entries(report.basis.effectiveFrom).map(([k, v]) => (
-                <Badge key={k} tone="brand">{k}: {v}</Badge>
+                <Badge key={k} tone={onThisBatch.has(k) ? "amber" : "brand"}>
+                  {k}: {v}
+                </Badge>
               ))}
             </div>
+            {onThisBatch.size > 0 && (
+              <p className="mt-2 text-xs text-amber-700">
+                {onThisBatch.size} rate{onThisBatch.size === 1 ? " is" : "s are"} set on this batch
+                (amber) and override the {report.rateDate} card.
+              </p>
+            )}
+            {report.basis.rejectedRates?.length ? (
+              <p className="mt-2 text-xs text-red-600">
+                Refused, so the card was used instead:{" "}
+                {report.basis.rejectedRates
+                  .map((r) => `${r.item}${r.variant ? ` · ${r.variant}` : ""} (${r.reason})`)
+                  .join("; ")}
+              </p>
+            ) : null}
           </div>
           <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-gray-500 sm:grid-cols-4">
             <span>{report.stats.resinCycles} resin cycles</span>

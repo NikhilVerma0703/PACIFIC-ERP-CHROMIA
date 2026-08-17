@@ -4010,6 +4010,53 @@ model CostingRate {
   @@map("costing_rate")
 }
 
+/// What ONE batch's materials actually cost, layered over the date-resolved
+/// card (src/lib/costing/batchRates.ts).
+///
+/// The card answers "what did resin cost in August", which is right for a plant
+/// average and wrong for a specific run: the resin in a given batch came off a
+/// particular purchase order at a particular price, and costing it at the
+/// month's card produces a number nobody can reconcile against the invoice.
+///
+/// FALLBACK, NOT REPLACEMENT. Only the items someone actually set live here;
+/// everything else still resolves from costing_rate by date. So a batch with no
+/// rows prices exactly as it did before this table existed.
+///
+/// Unlike costing_rate this is NOT append-only. A rate revision is history the
+/// whole plant shares, so it earns a row; a batch rate is a single current fact
+/// about one run, corrected in place — hence the unique key on
+/// (batch_key, item, variant) and updatedAt rather than effective_from.
+///
+/// Only material categories may appear: RESIN, GRIT, FILLER, PIGMENT, CHEMICAL
+/// and the DOSING rules. CONVERSION is a whole-plant monthly figure and BASIS
+/// holds the denominators every sheet divides by — a per-batch slab area or
+/// ₹/USD would make two batches incomparable under the same column heading.
+/// Enforced in batchRates.ts and again in the write route, not by this table.
+model CostingBatchRate {
+  id       String @id @default(cuid())
+  /// mixer_cycle.batch_key — the same key the costing dashboard picks by.
+  /// No FK: batch_key is a string across several import tables, not a table.
+  batchKey String @map("batch_key")
+  /// RESIN | GRIT | FILLER | PIGMENT | CHEMICAL | DOSING
+  category String
+  /// Canonical key from src/lib/costing/rateCard.ts, e.g. "grit-0.6-1.2".
+  item     String
+  /// Supplier for resin; empty string otherwise, so the unique key holds —
+  /// Postgres treats NULLs as distinct and would allow duplicates.
+  variant  String @default("")
+  unit     String
+  rate     Float
+  note     String?
+
+  createdBy String   @default("system") @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([batchKey, item, variant])
+  @@index([batchKey])
+  @@map("costing_batch_rate")
+}
+
 // ============================================================================
 // CHROMIA MODULE — Chromia line slab lifecycle (merged from CHROMIA_MODULE
 // standalone app). Intake -> ten processing stages -> QC -> grade ->

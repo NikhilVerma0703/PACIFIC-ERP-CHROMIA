@@ -13,7 +13,11 @@ import {
   bandOf, GRIT_BAND_LABELS, gritItemKey, listCostableBatches, loadBatchConsumption,
   RESIN_TANK_SUPPLIER, type BatchConsumption, type BatchListEntry,
 } from "./batchData";
-import { effectiveRateCard, RATE_ITEM_BY_KEY, type EffectiveRateCard } from "./rateCard";
+import { rateCardForBatch, RATE_ITEM_BY_KEY, type LayeredCard } from "./rateCard";
+
+/** The card the report prices against: the date card with this batch's own
+ *  material rates laid over it. Aliased so the helpers below read unchanged. */
+type EffectiveRateCard = LayeredCard;
 
 export type { BatchListEntry };
 
@@ -43,6 +47,15 @@ export interface CostingReport {
     assumptions: string[];
     /** item -> effective_from actually used. */
     effectiveFrom: Record<string, string>;
+    /** Rates this batch set for itself, overriding the card. Named rather than
+     *  counted: "3 rates set on this batch" tells a reader something is
+     *  different but not what, and the whole point of showing it is that they
+     *  can check the ones that matter. */
+    batchRates: string[];
+    /** Overrides that were refused, with the reason — a rejected rate that
+     *  vanished silently would leave someone believing the batch is costed at
+     *  a number it is not. */
+    rejectedRates: Array<{ item: string; variant: string; reason: string }>;
   };
   stats: {
     resinCycles: number;
@@ -66,8 +79,11 @@ export async function buildCostingReport(batchKey: string): Promise<CostingRepor
   if (!c) return null;
 
   // June batches price at June's card: the run's start date picks the rates.
+  // Then this batch's own material rates go over the top — see
+  // lib/costing/batchRates.ts for why a run needs them and why only materials
+  // may be set.
   const rateDate = c.firstPress ?? new Date();
-  const card = await effectiveRateCard(rateDate);
+  const card = await rateCardForBatch(batchKey, rateDate);
 
   const { materials, unpriced, assumptions } = buildMaterialLines(c, card);
 
@@ -119,7 +135,16 @@ export async function buildCostingReport(batchKey: string): Promise<CostingRepor
     unpriced,
     blockedBy: blockedBy.map((k) => RATE_ITEM_BY_KEY.get(k)?.label ?? k),
     variance: buildVariance(c, card),
-    basis: { assumptions, effectiveFrom: card.effectiveFrom },
+    basis: {
+      assumptions: card.overridden.length
+        ? [...assumptions,
+           `${card.overridden.length} material rate(s) are set on this batch rather than ` +
+           `taken from the ${card.onDate} card: ${card.overridden.join(", ")}.`]
+        : assumptions,
+      effectiveFrom: card.effectiveFrom,
+      batchRates: card.overridden,
+      rejectedRates: card.rejected,
+    },
     stats: {
       resinCycles: c.resinCycles,
       mixerCharges: c.mixerCharges,
