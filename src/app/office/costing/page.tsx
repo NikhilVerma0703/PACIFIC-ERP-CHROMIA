@@ -22,10 +22,12 @@ export default async function CostingPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Batch costing</h1>
         <p className="mt-1 max-w-2xl text-sm text-gray-500">
-          Cost a batch from its mixer records at the rates in force when it ran. Nothing is
-          stored: correct a mixer row or backdate a rate and the batch re-costs on the next
-          load. Estimates are flagged, missing rates block loudly, and the variance panel
-          shows where two records of the same quantity disagree.
+          Quantities come from the mixer; prices come from you. Material rates are set on the
+          batch that bought them, and manpower, electricity, polishing, packing and the basis
+          figures are plant-wide. Nothing is stored: correct a mixer row or change a rate and
+          the batch re-costs on the next load. Estimates are flagged, missing rates block
+          loudly, and the variance panel shows where two records of the same quantity
+          disagree.
         </p>
       </div>
       <div className="space-y-5">

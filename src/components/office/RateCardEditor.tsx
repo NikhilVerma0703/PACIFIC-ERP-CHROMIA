@@ -1,22 +1,38 @@
 "use client";
 
-// The rate card, and how an admin keeps it current.
+// The PLANT-WIDE rates, and how an admin keeps them current.
 //
-// costing_rate is the floor the costing dashboard stands on: every quantity
-// the mixer records is priced by a row here, picked by the batch's run date.
-// With the table empty the dashboard renders and computes nothing, which
-// reads as broken rather than unconfigured - so this card states the gap
-// first and loudly, and offers the reference sheet's rates as a one-click
-// starting card.
+// WHAT THIS NO LONGER SHOWS. Materials — resin, the grit bands, filler, TiO₂,
+// the chemicals and the dosing rules — are now set per batch, on the batch
+// itself, because that is where the answer actually differs: the resin in one
+// run came off a particular purchase order at a particular price. They were
+// taking up most of this card while being the wrong place to look, so they are
+// gone from here and live in the batch panel below.
 //
-// Revisions, not edits: saving "resin ₹158 from 1 Sep" adds a row. June
-// batches keep costing at June's rate. That is the whole design.
+// Their ROWS are untouched in costing_rate and still resolve by date. That is
+// deliberate and load-bearing: per-batch rates are an override with the card as
+// fallback, so a batch that sets nothing still prices at those material rates
+// exactly as it always did. Removing them from this screen removes a place to
+// edit them, not the rates themselves.
+//
+// WHAT IS LEFT is what genuinely has one value for the whole plant: manpower
+// and electricity (monthly figures absorbed by run length), polishing and
+// packing per square foot, and the basis figures — slab area, ₹ per USD, days
+// per month. Those last three are the denominators every sheet divides by, so
+// they must not vary by batch or two batches stop being comparable under the
+// same column heading. `buildCostingReport` refuses to compute a sheet at all
+// while any of the seven is missing, which is why this card still states the
+// gap first and loudly.
+//
+// Revisions, not edits: saving "electricity ₹62 lakh from 1 Sep" adds a row.
+// June batches keep costing at June's rate. That is the whole design.
 //
 // ADMIN ONLY. The page renders it exclusively for admins; the route enforces
 // the same rule again, because a UI condition is not an authorisation.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Card } from "@/components/ui";
+import { isOverridable } from "@/lib/costing/batchRates";
 
 const ENDPOINT = "/api/office/costing-admin/rates";
 
@@ -65,7 +81,6 @@ export function RateCardEditor() {
   const [showHistory, setShowHistory] = useState(false);
   /** item|variant -> draft {rate, from, note} for the revision being typed. */
   const [drafts, setDrafts] = useState<Record<string, { rate: string; from: string; note: string }>>({});
-  const [newSupplier, setNewSupplier] = useState("");
 
   const refresh = useCallback(async () => {
     try {
@@ -115,36 +130,62 @@ export function RateCardEditor() {
   };
 
   const empty = state != null && state.rows.length === 0;
+
+  /** Only the plant-wide half of the catalogue. isOverridable is the SAME
+   *  predicate the batch panel and the write route use, so an item can never be
+   *  editable in both places or in neither. */
+  const plantWide = useMemo(
+    () => (state?.catalogue ?? []).filter((c) => !isOverridable(c.category)),
+    [state],
+  );
+
   const byCategory = useMemo(() => {
     const groups: Record<string, CatalogueItem[]> = {};
-    for (const c of state?.catalogue ?? []) (groups[c.category] ??= []).push(c);
+    for (const c of plantWide) (groups[c.category] ??= []).push(c);
     return groups;
-  }, [state]);
+  }, [plantWide]);
 
-  const draftKey = (item: string, variant = "") => `${item}|${variant}`;
+  /** Gaps in the plant-wide rates only. The API reports every missing item in
+   *  the catalogue, and nagging here about an unset grit band — which is now a
+   *  per-batch decision, and one most batches never need — is how a warning
+   *  banner becomes something people stop reading. */
+  const missingPlantWide = useMemo(() => {
+    const keys = new Set(plantWide.map((c) => c.item));
+    return (state?.today.missing ?? []).filter((m) => keys.has(m));
+  }, [plantWide, state]);
+
+  /** Missing items that ARE materials — mentioned once, quietly, with where to
+   *  set them, rather than presented as a fault on this card. */
+  const missingMaterials = useMemo(() => {
+    const keys = new Set(plantWide.map((c) => c.item));
+    return (state?.today.missing ?? []).filter((m) => !keys.has(m));
+  }, [plantWide, state]);
+
+  // No variant anywhere on this card now: resin was the only item that split by
+  // supplier and it is set per batch. Keeping the parameter "just in case"
+  // would leave a branch nothing reaches and a reader would have to prove that
+  // for themselves.
   const draft = (k: string) => drafts[k] ?? { rate: "", from: todayStr(), note: "" };
   const setDraft = (k: string, patch: Partial<{ rate: string; from: string; note: string }>) =>
     setDrafts((p) => ({ ...p, [k]: { ...draft(k), ...patch } }));
 
-  const saveDraft = (item: string, variant = "") => {
-    const d = draft(draftKey(item, variant));
+  const saveDraft = (item: string) => {
+    const d = draft(item);
     const rate = Number(d.rate);
     if (!Number.isFinite(rate) || rate <= 0) { setError("The rate must be a number above zero."); return; }
-    void save([{ item, variant: variant || undefined, rate, effectiveFrom: d.from, note: d.note || undefined }]);
+    void save([{ item, rate, effectiveFrom: d.from, note: d.note || undefined }]);
   };
 
   /** One editable line: current rate + the revision inputs. */
-  const line = (c: CatalogueItem, variant = "") => {
-    const k = draftKey(c.item, variant);
-    const current = variant
-      ? state?.today.resinBySupplier[variant]
-      : state?.today.rates[c.item];
-    const since = state?.today.effectiveFrom[variant ? `resin · ${variant}` : c.item];
+  const line = (c: CatalogueItem) => {
+    const k = c.item;
+    const current = state?.today.rates[c.item];
+    const since = state?.today.effectiveFrom[c.item];
     const d = draft(k);
     return (
       <div key={k} className="grid grid-cols-1 items-center gap-2 border-b border-gray-50 py-2 last:border-0 sm:grid-cols-12">
         <div className="sm:col-span-4">
-          <p className="text-sm text-gray-800">{c.label}{variant ? <span className="text-gray-500"> · {variant}</span> : null}</p>
+          <p className="text-sm text-gray-800">{c.label}</p>
           <p className="text-[11px] text-gray-400">{c.hint}</p>
         </div>
         <div className="sm:col-span-3">
@@ -160,30 +201,30 @@ export function RateCardEditor() {
           <input type="date" value={d.from} onChange={(e) => setDraft(k, { from: e.target.value })} className={inp} />
         </div>
         <div className="sm:col-span-1">
-          <button type="button" onClick={() => saveDraft(c.item, variant)}
+          <button type="button" onClick={() => saveDraft(c.item)}
             disabled={busy || !d.rate} className={btnGhost}>Save</button>
         </div>
       </div>
     );
   };
 
-  const resinDef = state?.catalogue.find((c) => c.item === "resin");
-  const resinSuppliers = useMemo(() => {
-    const fromCard = Object.keys(state?.today.resinBySupplier ?? {});
-    const fromRows = (state?.rows ?? []).filter((r) => r.item === "resin").map((r) => r.variant);
-    return [...new Set([...fromCard, ...fromRows])].sort();
-  }, [state]);
-
   return (
     <Card>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">Rate card · admin</h2>
+        <div>
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+            Plant-wide rates · admin
+          </h2>
+          <p className="mt-0.5 text-xs text-gray-400">
+            One value for the whole plant. Material rates are set on the batch, below.
+          </p>
+        </div>
         {state && (
           <span className="flex items-center gap-2 text-xs text-gray-400">
             {empty
               ? <Badge tone="red">empty</Badge>
-              : state.today.missing.length > 0
-                ? <Badge tone="amber">{state.today.missing.length} rate(s) not set</Badge>
+              : missingPlantWide.length > 0
+                ? <Badge tone="amber">{missingPlantWide.length} not set</Badge>
                 : <Badge tone="green">complete</Badge>}
             <span>{state.rows.length} revision(s)</span>
           </span>
@@ -196,9 +237,10 @@ export function RateCardEditor() {
         <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
           <p className="font-medium">No rates have been entered.</p>
           <p className="mt-1 text-red-700">
-            The costing dashboard prices mixer quantities with this card, so until rates exist
-            every batch costs to zero. Start from the Simply White sheet&rsquo;s August 2026 rates
-            and revise from there, or type each rate by hand below.
+            No batch can be costed until the plant-wide figures below exist. The starter also
+            seeds the material rates, which every batch then falls back to unless it sets its
+            own — so it is the fastest way to a working sheet, not a commitment to those
+            numbers.
           </p>
           <button type="button" onClick={loadStarter} disabled={busy} className={`${btnPrimary} mt-3`}>
             {busy ? "Loading…" : "Load the Simply White rates (Aug 2026)"}
@@ -206,40 +248,42 @@ export function RateCardEditor() {
         </div>
       )}
 
-      {state && !empty && state.today.missing.length > 0 && (
-        <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          Not yet set: {state.today.missing.join(", ")}. Batches will cost without those lines
-          and the dashboard will say so.
+      {/* A missing plant-wide rate is not a warning, it is a stop: the report
+          refuses to compute a sheet without all seven, because electricity
+          silently at zero reads as a cheap batch rather than an unset rate. */}
+      {state && !empty && missingPlantWide.length > 0 && (
+        <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+          <p className="font-medium">
+            No batch can be costed until these are set: {missingPlantWide.join(", ")}.
+          </p>
+          <p className="mt-1 text-red-700">
+            The sheet needs every one of them — four of the seven are divided by, so a blank
+            would print an infinite cost per square foot rather than fail.
+          </p>
         </div>
+      )}
+
+      {/* Materials are mentioned once and quietly. An unpriced grit band is a
+          real gap, but it belongs to whichever batch actually used it, and most
+          never will. */}
+      {state && !empty && missingMaterials.length > 0 && (
+        <p className="mb-3 text-xs text-gray-500">
+          {missingMaterials.length} material rate
+          {missingMaterials.length === 1 ? " has" : "s have"} never been set
+          ({missingMaterials.join(", ")}). Set them on the batches that used them, below — a
+          batch consuming one without a rate says so on its own sheet.
+        </p>
       )}
 
       {state && (
         <div className="space-y-4">
+          {/* No variant branch any more. Resin was the only item that split by
+              supplier, and it is set per batch now — so every line here is a
+              single plant-wide value. */}
           {Object.entries(byCategory).map(([cat, items]) => (
             <div key={cat}>
               <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-400">{CATEGORY_LABELS[cat] ?? cat}</p>
-              <div>
-                {items.map((c) => c.variants
-                  ? (
-                    <div key={c.item}>
-                      {resinSuppliers.map((s) => line(c, s))}
-                      <div className="flex items-center gap-2 py-2">
-                        <input value={newSupplier} onChange={(e) => setNewSupplier(e.target.value)}
-                          placeholder="New supplier name…" className={`${inp} max-w-56`} />
-                        <button type="button" disabled={busy || !newSupplier.trim()} className={btnGhost}
-                          onClick={() => {
-                            const s = newSupplier.trim();
-                            setNewSupplier("");
-                            setDraft(draftKey("resin", s), {});
-                          }}>Add supplier</button>
-                        {resinDef && Object.keys(drafts).some((k) => k.startsWith("resin|") && !resinSuppliers.includes(k.split("|")[1]))
-                          && Object.keys(drafts).filter((k) => k.startsWith("resin|") && !resinSuppliers.includes(k.split("|")[1]))
-                            .map((k) => line(resinDef, k.split("|")[1]))}
-                      </div>
-                    </div>
-                  )
-                  : line(c))}
-              </div>
+              <div>{items.map((c) => line(c))}</div>
             </div>
           ))}
         </div>
@@ -251,6 +295,14 @@ export function RateCardEditor() {
             className="text-sm font-medium text-brand hover:underline">
             {showHistory ? "Hide history" : `History — all ${state.rows.length} revisions →`}
           </button>
+          {showHistory && (
+            // Deliberately still every row, materials included. Those rates are
+            // the fallback a batch uses when it sets none of its own, and this
+            // is the only place left to see or remove one.
+            <p className="mt-1 text-xs text-gray-400">
+              Every revision, including the material rates batches fall back to.
+            </p>
+          )}
           {showHistory && (
             <table className="mt-2 w-full text-sm">
               <thead>
