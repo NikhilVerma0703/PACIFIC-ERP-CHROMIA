@@ -1,0 +1,75 @@
+# Provision the single Chromia account — manual, one-off.
+# No-admin version: needs NO repo secret of its own. It reads the DATABASE_URL
+# secret that already exists in this repo, and takes the password as a run
+# input. Write access is enough — you do NOT need the Settings tab.
+#
+# Creates ONE row in "users": branch CHROMIA + the chosen rank. Never modifies
+# an existing account (scripts/provision-chromia-user.ts stops if the email is
+# taken). Runs ONLY when you click "Run workflow".
+#
+# ---------------------------------------------------------------------------
+# EXPOSURE: a workflow_dispatch input shows on the run's summary page to anyone
+# with repo read access. The step masks it in the logs, not on that page. This
+# is a department login (confined to /chromia), and a temp password — so DELETE
+# THE RUN once you have signed in (Actions -> this run -> "..." -> Delete
+# workflow run), then delete this workflow file.
+# ---------------------------------------------------------------------------
+
+name: Provision Chromia account
+
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email for the Chromia account (e.g. chromia.manager@thepacific.group)"
+        required: true
+        type: string
+      password:
+        description: "Password (8+ chars). You will type this to log in."
+        required: true
+        type: string
+      role:
+        description: "Chromia rank"
+        required: true
+        default: "LINE_MANAGER"
+        type: choice
+        options:
+          - "LINE_MANAGER"   # Chromia Manager  — sees everything (dashboards, masters, imports)
+          - "INCHARGE"       # Chromia Supervisor — also full management tier
+          - "OPERATOR"       # Chromia Machine Operator — floor stages only
+      name:
+        description: "Display name shown in Users & Roles"
+        required: false
+        default: "Chromia Manager"
+        type: string
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Create the Chromia account
+        env:
+          DATABASE_URL:       ${{ secrets.DATABASE_URL }}
+          CHROMIA_EMAIL:      ${{ inputs.email }}
+          CHROMIA_PASSWORD:   ${{ inputs.password }}
+          CHROMIA_ROLE:       ${{ inputs.role }}
+          CHROMIA_NAME:       ${{ inputs.name }}
+          CONFIRM_PRODUCTION: "yes"
+        run: |
+          echo "::add-mask::$CHROMIA_PASSWORD"
+          test -n "$DATABASE_URL"    || { echo "::error::DATABASE_URL secret is not set on this repo"; exit 1; }
+          test -n "$CHROMIA_PASSWORD" || { echo "::error::password input was empty"; exit 1; }
+          npx tsx scripts/provision-chromia-user.ts
