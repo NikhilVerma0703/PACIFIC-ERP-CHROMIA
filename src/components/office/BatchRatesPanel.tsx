@@ -19,7 +19,10 @@ const API = "/api/office/costing-admin/batch-rates";
 interface CatalogueItem {
   item: string; category: string; label: string; unit: string; hint: string; variants?: boolean;
 }
-interface BatchRate { item: string; variant: string; category: string; rate: number; note?: string | null }
+interface BatchRate {
+  item: string; variant: string; category: string; rate: number; note?: string | null;
+  savedBy?: string | null; savedAt?: string | null;
+}
 interface CardShape {
   onDate: string;
   resinBySupplier: Record<string, number>;
@@ -89,7 +92,11 @@ export function BatchRatesPanel({
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
-  const [open, setOpen] = useState(false);
+  // Null until the first load decides: a batch that already has rates opens
+  // showing them. Anything else means someone has to click to find out whether
+  // last month's numbers are still there, and a saved figure nobody can see is
+  // no better than one that was never saved.
+  const [open, setOpen] = useState<boolean | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -97,6 +104,7 @@ export function BatchRatesPanel({
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
         setNote({ text: d.error ?? `Could not load (${r.status})`, ok: false });
+        setOpen((v) => v ?? false);
         return;
       }
       const p: Payload = await r.json();
@@ -104,28 +112,57 @@ export function BatchRatesPanel({
       const d: Record<string, string> = {};
       for (const row of p.rows) d[`${row.item}|${row.variant}`] = String(row.rate);
       setDraft(d);
+      // Only on the FIRST load. Re-reading after a save must not re-open a
+      // panel the user has just closed.
+      setOpen((v) => v ?? p.rows.length > 0);
     } catch (e) {
       setNote({ text: e instanceof Error ? e.message : String(e), ok: false });
+      setOpen((v) => v ?? false);
     }
   }, [batchKey]);
 
-  useEffect(() => { if (open) void load(); }, [open, load]);
+  // Always, not only when opened: the collapsed state has to know whether this
+  // batch has saved rates before it can say so. The component is keyed on the
+  // batch, so switching batches remounts and asks again.
+  useEffect(() => { void load(); }, [load]);
 
-  if (!open) {
+  const savedCount = data?.rows.length ?? 0;
+  const lastSaved = data?.rows
+    .map((r) => r.savedAt)
+    .filter((s): s is string => Boolean(s))
+    .sort()
+    .at(-1);
+  const savedBy = data?.rows.find((r) => r.savedBy)?.savedBy ?? null;
+  const savedWhen = lastSaved
+    ? new Date(lastSaved).toLocaleDateString("en-IN", { dateStyle: "medium" })
+    : null;
+
+  if (open === false || open === null) {
     return (
       <Card>
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
+          <div className="min-w-0">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
               Rates for this batch
             </h2>
-            <p className="mt-1 text-sm text-gray-500">
-              By default {batchLabel} prices at the card in force on its run date. Set a rate here
-              when a material was bought for this run at a different price.
-            </p>
+            {savedCount > 0 ? (
+              <p className="mt-1 text-sm text-gray-700">
+                <span className="font-medium">
+                  {savedCount} rate{savedCount === 1 ? "" : "s"} saved on {batchLabel}
+                </span>
+                {savedWhen ? ` — last changed ${savedWhen}` : ""}
+                {savedBy ? ` by ${savedBy}` : ""}. Everything else prices at the card.
+              </p>
+            ) : (
+              <p className="mt-1 text-sm text-gray-500">
+                {batchLabel} prices entirely at the card in force on its run date. Set a rate here
+                when a material was bought for this run at a different price — it is kept with the
+                batch and shown again next time.
+              </p>
+            )}
           </div>
           <button type="button" onClick={() => setOpen(true)} className={btn}>
-            Set batch rates
+            {savedCount > 0 ? "Show and edit" : "Set batch rates"}
           </button>
         </div>
       </Card>
@@ -133,7 +170,6 @@ export function BatchRatesPanel({
   }
 
   const slots = data ? buildSlots(data) : [];
-  const setCount = data?.rows.length ?? 0;
 
   const save = async () => {
     if (!data) return;
@@ -189,12 +225,14 @@ export function BatchRatesPanel({
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-            Rates for this batch · {setCount} set
+            Rates for this batch · {savedCount} saved
           </h2>
           <p className="mt-1 text-sm text-gray-500">
-            Leave a box empty to use the card. Only materials can be set here — manpower,
-            electricity, slab area and ₹/USD stay plant-wide, or two batches stop being
-            comparable.
+            {savedCount > 0
+              ? `Filled in from what was saved on ${batchLabel}${savedWhen ? ` on ${savedWhen}` : ""}${savedBy ? ` by ${savedBy}` : ""} — change any of them and save again. `
+              : "Leave a box empty to use the card. "}
+            Only materials can be set here — manpower, electricity, slab area and ₹/USD stay
+            plant-wide, or two batches stop being comparable.
           </p>
         </div>
         <button type="button" onClick={() => setOpen(false)} className={btnGhost}>Close</button>
@@ -227,7 +265,14 @@ export function BatchRatesPanel({
                 {slots.map((slot) => {
                   const typed = (draft[slot.key] ?? "").trim();
                   const val = typed === "" ? null : Number(typed);
-                  const saved = data.rows.some((r) => r.item === slot.item && r.variant === slot.variant);
+                  const savedRow = data.rows.find(
+                    (r) => r.item === slot.item && r.variant === slot.variant);
+                  const saved = savedRow != null;
+                  // A box holding an unsaved edit must not look like one holding
+                  // last month's agreed figure — they are about to be treated
+                  // identically by the save, and only one of them has been
+                  // checked by anybody.
+                  const dirty = saved && typed !== String(savedRow.rate);
                   const delta = val != null && Number.isFinite(val) && slot.cardRate
                     ? Math.round(((val - slot.cardRate) / slot.cardRate) * 1000) / 10
                     : null;
@@ -248,8 +293,17 @@ export function BatchRatesPanel({
                           value={draft[slot.key] ?? ""}
                           onChange={(e) => setDraft((p) => ({ ...p, [slot.key]: e.target.value }))}
                           placeholder="card"
-                          className={`${inp} max-w-[10rem]`}
+                          className={`${inp} max-w-[10rem] ${
+                            dirty ? "border-amber-400 bg-amber-50" : saved ? "border-brand/40" : ""
+                          }`}
                         />
+                        {saved && (
+                          <span className="mt-0.5 block text-[11px] text-gray-400">
+                            {dirty
+                              ? `unsaved — was ₹${inr.format(savedRow.rate)}`
+                              : `saved${savedRow.savedBy ? ` by ${savedRow.savedBy}` : ""}`}
+                          </span>
+                        )}
                       </td>
                       <td className="py-2 pr-4">
                         {delta == null ? (

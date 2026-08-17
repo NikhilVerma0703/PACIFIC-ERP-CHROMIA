@@ -186,6 +186,8 @@ export async function listBatchRates(batchKey: string): Promise<BatchRateRow[]> 
   });
   return rows.map((r) => ({
     item: r.item, variant: r.variant, category: r.category, rate: r.rate, note: r.note,
+    savedBy: r.createdBy,
+    savedAt: r.updatedAt.toISOString(),
   }));
 }
 

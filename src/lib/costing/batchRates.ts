@@ -52,6 +52,11 @@ export interface BatchRateRow {
   category: string;
   rate: number;
   note?: string | null;
+  /** Who last set it, and when. Carried so the screen can say "₹172, set by
+   *  Vinoth on 17 Aug" rather than presenting a hand-typed figure with the same
+   *  authority as the published card. Absent on rows built in tests. */
+  savedBy?: string | null;
+  savedAt?: string | null;
 }
 
 /** The card as rateCard.ts resolves it — the shape this layers onto. */
