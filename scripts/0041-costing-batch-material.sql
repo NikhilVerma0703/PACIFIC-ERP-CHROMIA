@@ -56,17 +56,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS "costing_batch_material_batch_item_seq_key"
 CREATE INDEX IF NOT EXISTS "costing_batch_material_batch_idx"
   ON "costing_batch_material" ("batch_key");
 
--- Retire 0040's table, but only if nothing was ever written to it.
-DO $$
-DECLARE n bigint;
-BEGIN
-  IF to_regclass('public.costing_batch_rate') IS NULL THEN
-    RETURN;
-  END IF;
-  EXECUTE 'SELECT count(*) FROM costing_batch_rate' INTO n;
-  IF n > 0 THEN
-    RAISE EXCEPTION
-      'costing_batch_rate holds % row(s) — refusing to drop it. Those are per-batch rates somebody entered; migrate them into costing_batch_material (one line each, qty NULL) before running this.', n;
-  END IF;
-  DROP TABLE costing_batch_rate;
-END $$;
+-- THE DROP THAT USED TO BE HERE HAS BEEN REMOVED. Read this before adding one.
+--
+-- This script originally ended by dropping 0040's costing_batch_rate, guarded
+-- so it would refuse if the table held rows. The guard was fine and the drop
+-- was still wrong: the table was empty, but the build LIVE IN PRODUCTION at
+-- that moment still queried it. Pushing the code that stopped reading it is not
+-- the same as deploying that code, and prisma.costingBatchRate.findMany against
+-- a missing table raised P2021 inside buildCostingReport, so every batch on the
+-- costing screen answered 500 with an empty body.
+--
+-- Expand, then contract. Deploy the code that stops using a table FIRST,
+-- confirm it is actually live, and only then drop. "Empty" says nothing about
+-- who is still asking for it.
+--
+-- scripts/0042 puts the table back. It is empty and nothing current reads it;
+-- leaving it costs nothing and removes the only way this repeats.
