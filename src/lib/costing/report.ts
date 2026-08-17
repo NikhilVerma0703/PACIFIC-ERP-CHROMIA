@@ -262,9 +262,20 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
     }
     materials.push({ group, item, basis: basisOf(d), qty, unit: "kg", rate, estimated: true });
   };
-  dose("tio2-kg-per-charge", "tio2", "TiO₂",
-    (d) => d * c.mixerCharges, (d) => `${d} kg × ${c.mixerCharges} mixer charges (dosing rule)`,
-    "pigment");
+  // TiO₂ is dosed on resin weight like the other three. The per-charge rule it
+  // used to follow came from how the Simply White sheet wrote it, not from how
+  // the line runs; it stays as a fallback so a plant that has only ever set
+  // that figure keeps costing until the percentage is entered.
+  if (pricing.dosing["tio2-pct-of-resin"] !== undefined
+      || card.rates["tio2-pct-of-resin"] !== undefined) {
+    dose("tio2-pct-of-resin", "tio2", "TiO₂",
+      (d) => (c.resinKg * d) / 100, (d) => `${d}% of resin weight (dosing rule)`, "pigment");
+  } else {
+    dose("tio2-kg-per-charge", "tio2", "TiO₂",
+      (d) => d * c.mixerCharges,
+      (d) => `${d} kg × ${c.mixerCharges} mixer charges (legacy per-charge rule)`,
+      "pigment");
+  }
   dose("silane-pct-of-resin", "silane", "Silane",
     (d) => (c.resinKg * d) / 100, (d) => `${d}% of resin weight (dosing rule)`, "chemical");
   dose("cobalt-pct-of-resin", "cobalt", "Cobalt",
@@ -272,8 +283,8 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
   dose("catalyst-pct-of-resin", "catalyst", "Catalyst",
     (d) => (c.resinKg * d) / 100, (d) => `${d}% of resin weight (dosing rule)`, "chemical");
   assumptions.push(
-    "TiO₂, silane, cobalt and catalyst are computed from the dosing rules on the rate card - " +
-    "the mixer weighs resin, grit and filler but not the chemicals.",
+    "TiO₂, silane, cobalt and catalyst are all dosed on resin weight and computed from the " +
+    "dosing rules — the mixer weighs resin, grit and filler but not these four.",
   );
 
   // -- grit per band (per-charge attribution) -------------------------------

@@ -62,19 +62,22 @@ async function mixerQuantities(batchKey: string): Promise<Record<string, { qty: 
   for (const g of c.gritCharges) byBand.set(g.band, (byBand.get(g.band) ?? 0) + g.kg);
   for (const [band, kg] of byBand) out[gritItemKey(bandOf(band))] = { qty: kg / 1000, unit: "t" };
 
-  // The chemicals have no weighed quantity — they are derived from the dosing
-  // rules — so the editor shows the derived figure rather than a blank, and
-  // says where it came from.
+  // The four chemicals have no weighed quantity — they are dosed on resin
+  // weight — so the editor shows the derived figure rather than a blank. It has
+  // to match what report.ts derives, or someone splits a quantity the sheet
+  // never had.
   const card = await effectiveRateCard(c.firstPress ?? new Date());
   const dose = (k: string) => card.rates[k];
-  if (dose("tio2-kg-per-charge") !== undefined) {
-    out.tio2 = { qty: dose("tio2-kg-per-charge") * c.mixerCharges, unit: "kg" };
-  }
   for (const [item, key] of [
-    ["silane", "silane-pct-of-resin"], ["cobalt", "cobalt-pct-of-resin"],
-    ["catalyst", "catalyst-pct-of-resin"],
+    ["tio2", "tio2-pct-of-resin"], ["silane", "silane-pct-of-resin"],
+    ["cobalt", "cobalt-pct-of-resin"], ["catalyst", "catalyst-pct-of-resin"],
   ] as const) {
     if (dose(key) !== undefined) out[item] = { qty: (c.resinKg * dose(key)) / 100, unit: "kg" };
+  }
+  // The legacy per-charge rule, in the same order of preference the report
+  // uses, so the two never show different TiO₂.
+  if (out.tio2 === undefined && dose("tio2-kg-per-charge") !== undefined) {
+    out.tio2 = { qty: dose("tio2-kg-per-charge") * c.mixerCharges, unit: "kg" };
   }
 
   return out;
