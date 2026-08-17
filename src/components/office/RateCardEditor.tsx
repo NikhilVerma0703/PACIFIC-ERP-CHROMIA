@@ -32,6 +32,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Card } from "@/components/ui";
+import { readJson } from "@/lib/readJson";
 import { isOverridable } from "@/lib/costing/batchRates";
 
 const ENDPOINT = "/api/office/costing-admin/rates";
@@ -86,7 +87,11 @@ export function RateCardEditor() {
     try {
       const r = await fetch(ENDPOINT, { cache: "no-store" });
       if (!r.ok) return; // not an admin or not deployed - stay quiet
-      setState(await r.json());
+      // Read then judge: a 200 with an empty body threw a parser error here,
+      // which the catch below swallowed, leaving the card blank with no reason.
+      const res = await readJson<State>(r);
+      if (res.ok && res.data) setState(res.data);
+      else if (res.error) setError(res.error);
     } catch { /* card renders without counts */ }
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);

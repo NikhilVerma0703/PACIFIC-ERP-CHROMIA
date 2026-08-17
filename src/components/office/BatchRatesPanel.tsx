@@ -1,18 +1,18 @@
-"use client";
+﻿"use client";
 
 // How this batch's materials were bought.
 //
 // The mixer weighs one number per material. What was bought is often several
-// things, so each material can be SPLIT into lines — a quantity, a description
-// of what that part was, and its own price. 600 kg from Aypols at ₹161 and 400
-// from 3n Composits at ₹145, rather than one average nobody can reconcile.
+// things, so each material can be SPLIT into lines â€” a quantity, a description
+// of what that part was, and its own price. 600 kg from Aypols at â‚¹161 and 400
+// from 3n Composits at â‚¹145, rather than one average nobody can reconcile.
 //
 // Three things the screen has to do, because the arithmetic is unforgiving:
 //
 //   * show the mixer's quantity next to the boxes. Someone splitting resin
 //     against a figure they have to remember from another panel is how 600+400
 //     gets typed against a batch that used 1,240 kg.
-//   * show what is still unallocated, live, while they type — that is the
+//   * show what is still unallocated, live, while they type â€” that is the
 //     moment it can be fixed, not after a save.
 //   * show the card price beside the batch price. A rate well above the card is
 //     usually a correction and occasionally a typo, and only seeing both tells
@@ -20,6 +20,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Card, Empty } from "@/components/ui";
+import { readJson } from "@/lib/readJson";
 
 const API = "/api/office/costing-admin/batch-rates";
 
@@ -78,13 +79,13 @@ export function BatchRatesPanel({
   const load = useCallback(async () => {
     try {
       const r = await fetch(`${API}?batchKey=${encodeURIComponent(batchKey)}`, { cache: "no-store" });
-      if (!r.ok) {
-        const d = await r.json().catch(() => ({}));
-        setNote({ text: d.error ?? `Could not load (${r.status})`, ok: false });
+      const res = await readJson<Payload>(r);
+      if (!res.ok || !res.data) {
+        setNote({ text: res.error ?? `Could not load (${res.status})`, ok: false });
         setOpen((v) => v ?? false);
         return;
       }
-      const p: Payload = await r.json();
+      const p = res.data;
       setData(p);
       const d: Record<string, DraftLine[]> = {};
       for (const row of p.rows) {
@@ -95,7 +96,7 @@ export function BatchRatesPanel({
         });
       }
       setDrafts(d);
-      // First load only — re-reading after a save must not reopen a panel the
+      // First load only â€” re-reading after a save must not reopen a panel the
       // user has just closed.
       setOpen((v) => v ?? p.rows.length > 0);
     } catch (e) {
@@ -127,13 +128,13 @@ export function BatchRatesPanel({
                 <span className="font-medium">
                   {savedItems.length} material{savedItems.length === 1 ? "" : "s"} priced on {batchLabel}
                 </span>
-                {savedWhen ? ` — last changed ${savedWhen}` : ""}
+                {savedWhen ? ` â€” last changed ${savedWhen}` : ""}
                 {savedBy ? ` by ${savedBy}` : ""}. The rest price at the card.
               </p>
             ) : (
               <p className="mt-1 text-sm text-gray-500">
                 {batchLabel} prices entirely at the card. Split a material into what was actually
-                bought — quantity, supplier, price — and it is kept with the batch.
+                bought â€” quantity, supplier, price â€” and it is kept with the batch.
               </p>
             )}
           </div>
@@ -146,7 +147,7 @@ export function BatchRatesPanel({
   }
 
   if (!data) {
-    return <Card><Empty>Loading the mixer quantities and the card…</Empty></Card>;
+    return <Card><Empty>Loading the mixer quantities and the cardâ€¦</Empty></Card>;
   }
 
   const lineOf = (item: string): DraftLine[] => drafts[item] ?? [];
@@ -180,8 +181,8 @@ export function BatchRatesPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ batchKey, item: c.item, lines }),
       });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) { setNote({ text: d.error ?? `Save failed (${r.status})`, ok: false }); return; }
+      const res = await readJson<{ error?: string }>(r);
+      if (!res.ok) { setNote({ text: res.error ?? `Save failed (${res.status})`, ok: false }); return; }
       setNote({
         text: lines.length
           ? `${c.label}: ${lines.length} line${lines.length === 1 ? "" : "s"} saved. The batch has been re-costed.`
@@ -200,8 +201,8 @@ export function BatchRatesPanel({
     try {
       const qs = new URLSearchParams({ batchKey, item: c.item });
       const r = await fetch(`${API}?${qs}`, { method: "DELETE" });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) { setNote({ text: d.error ?? `Could not clear (${r.status})`, ok: false }); return; }
+      const res = await readJson<{ error?: string }>(r);
+      if (!res.ok) { setNote({ text: res.error ?? `Could not clear (${res.status})`, ok: false }); return; }
       setLines(c.item, []);
       setNote({ text: `${c.label} falls back to the ${data.card.onDate} card.`, ok: true });
       await load();
@@ -216,10 +217,10 @@ export function BatchRatesPanel({
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-            Materials for this batch · {savedItems.length} priced here
+            Materials for this batch Â· {savedItems.length} priced here
           </h2>
           <p className="mt-1 max-w-3xl text-sm text-gray-500">
-            Quantities come from the mixer. Split a material into what was actually bought —
+            Quantities come from the mixer. Split a material into what was actually bought â€”
             each line gets its own quantity, description and price. Leave one line&rsquo;s
             quantity blank to mean &ldquo;the rest&rdquo;. A material with no lines prices whole
             at the card.
@@ -269,7 +270,7 @@ export function BatchRatesPanel({
                     {mixer
                       ? `mixer: ${num.format(mixer.qty)} ${mixer.unit}`
                       : splittable ? "no mixer quantity for this batch" : "a dosing factor"}
-                    {cardRate != null ? ` · card ₹${money.format(cardRate)}` : " · not on the card"}
+                    {cardRate != null ? ` Â· card â‚¹${money.format(cardRate)}` : " Â· not on the card"}
                   </span>
                 </button>
 
@@ -292,8 +293,8 @@ export function BatchRatesPanel({
                 <div className="mt-3 border-t border-gray-200 pt-3">
                   {lines.length === 0 && (
                     <p className="mb-2 text-sm text-gray-500">
-                      No lines — {c.label} prices whole at the card
-                      {cardRate != null ? ` (₹${money.format(cardRate)} per ${c.unit})` : ""}.
+                      No lines â€” {c.label} prices whole at the card
+                      {cardRate != null ? ` (â‚¹${money.format(cardRate)} per ${c.unit})` : ""}.
                     </p>
                   )}
 
@@ -304,7 +305,7 @@ export function BatchRatesPanel({
                           <tr className="text-left text-xs uppercase tracking-wide text-gray-400">
                             {splittable && <th className="pb-1 pr-3 font-medium">Quantity ({c.unit})</th>}
                             <th className="pb-1 pr-3 font-medium">Description</th>
-                            <th className="pb-1 pr-3 font-medium">₹ per {c.unit}</th>
+                            <th className="pb-1 pr-3 font-medium">â‚¹ per {c.unit}</th>
                             <th className="pb-1 pr-3 font-medium">Amount</th>
                             <th className="pb-1 font-medium" />
                           </tr>
@@ -346,12 +347,12 @@ export function BatchRatesPanel({
                                     value={l.rate}
                                     onChange={(e) => setLines(c.item,
                                       lines.map((x, j) => j === i ? { ...x, rate: e.target.value } : x))}
-                                    placeholder="₹"
+                                    placeholder="â‚¹"
                                     className={`${inp} max-w-[8rem]`}
                                   />
                                 </td>
                                 <td className="py-1.5 pr-3 text-gray-700">
-                                  {amount == null ? "—" : `₹${money.format(amount)}`}
+                                  {amount == null ? "â€”" : `â‚¹${money.format(amount)}`}
                                   {/* The check that catches a mistyped rate: a
                                       line 40% off the card is worth a second
                                       look before a container is priced off it. */}
@@ -388,7 +389,7 @@ export function BatchRatesPanel({
                         : balanced
                           ? `Adds up to the ${num.format(mixer.qty)} ${mixer.unit} the mixer recorded.`
                           : left! > 0
-                            ? `${num.format(left!)} ${mixer.unit} of ${num.format(mixer.qty)} still unallocated — it will price at the card, or be reported unpriced if there is no card rate.`
+                            ? `${num.format(left!)} ${mixer.unit} of ${num.format(mixer.qty)} still unallocated â€” it will price at the card, or be reported unpriced if there is no card rate.`
                             : `${num.format(-left!)} ${mixer.unit} MORE than the mixer recorded. It will still be priced, and the sheet will say the two disagree.`}
                     </p>
                   )}
@@ -401,7 +402,7 @@ export function BatchRatesPanel({
                     </button>
                     <button type="button" className={btn} disabled={busy === c.item}
                       onClick={() => void save(c)}>
-                      {busy === c.item ? "Saving…" : "Save"}
+                      {busy === c.item ? "Savingâ€¦" : "Save"}
                     </button>
                     {saved && (
                       <button type="button" className={btnGhost} disabled={busy === c.item}
@@ -411,7 +412,7 @@ export function BatchRatesPanel({
                     )}
                     {!splittable && (
                       <span className="text-xs text-gray-400">
-                        A dosing rule is one value — there is nothing to split.
+                        A dosing rule is one value â€” there is nothing to split.
                       </span>
                     )}
                   </div>

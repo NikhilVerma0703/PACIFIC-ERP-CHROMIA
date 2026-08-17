@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Badge, Card } from "@/components/ui";
+import { readJson } from "@/lib/readJson";
 import { BatchRatesPanel } from "@/components/office/BatchRatesPanel";
 
 const API = "/api/office/costing";
@@ -152,9 +153,11 @@ export function CostingDashboard() {
     setListError("");
     fetch(`${API}?days=${days}`, { cache: "no-store" })
       .then(async (r) => {
-        const d = await r.json().catch(() => null);
-        if (!r.ok) throw new Error(d?.error ?? `Could not list batches (HTTP ${r.status}).`);
-        return d;
+        const res = await readJson<{ batches: BatchEntry[] }>(r);
+        // The old guard caught a bad body but then said "Could not list
+        // batches" for it too — so a crash and an empty list read the same.
+        if (!res.ok || !res.data) throw new Error(res.error ?? `Could not list batches (HTTP ${res.status}).`);
+        return res.data;
       })
       .then((d) => { if (live) setBatches(d.batches ?? []); })
       .catch((e) => {
@@ -173,9 +176,12 @@ export function CostingDashboard() {
     setLoading(true);
     try {
       const r = await fetch(`${API}?batch=${encodeURIComponent(key)}`, { cache: "no-store" });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d?.error ?? `Failed (${r.status})`);
-      setReport(d as Report);
+      // Read, THEN judge. Parsing first meant a crashed or timed-out route —
+      // which answers with an empty body — surfaced as "Unexpected end of JSON
+      // input" and the status was never reported.
+      const res = await readJson<Report>(r);
+      if (!res.ok || !res.data) throw new Error(res.error ?? `Failed (${res.status})`);
+      setReport(res.data);
     } catch (e) {
       setError((e as Error).message);
     } finally {
