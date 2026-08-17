@@ -29,7 +29,7 @@ import { prisma } from "@/lib/prisma";
 import {
   effectiveRateCard, listBatchMaterials, RATE_ITEM_BY_KEY, RATE_ITEMS,
 } from "@/lib/costing/rateCard";
-import { isOverridable, isSplittable } from "@/lib/costing/batchRates";
+import { dosingOverrides, isOverridable, isSplittable } from "@/lib/costing/batchRates";
 import { loadBatchConsumption } from "@/lib/costing/batchData";
 import { bandOf, gritItemKey } from "@/lib/costing/batchData";
 
@@ -63,21 +63,31 @@ async function mixerQuantities(batchKey: string): Promise<Record<string, { qty: 
   for (const [band, kg] of byBand) out[gritItemKey(bandOf(band))] = { qty: kg / 1000, unit: "t" };
 
   // The four chemicals have no weighed quantity — they are dosed on resin
-  // weight — so the editor shows the derived figure rather than a blank. It has
-  // to match what report.ts derives, or someone splits a quantity the sheet
-  // never had.
-  const card = await effectiveRateCard(c.firstPress ?? new Date());
-  const dose = (k: string) => card.rates[k];
+  // weight — so the editor shows the derived figure rather than a blank.
+  //
+  // A BATCH THAT OVERRODE A DOSING RULE MUST SEE ITS OWN. Reading only the card
+  // here meant a batch dosed at 1.4% silane showed the card's 1.2143% quantity
+  // in the split boxes while the sheet priced the other one, so the two screens
+  // disagreed about how much silane the run used — and the person splitting it
+  // would have been allocating against a figure that never appears anywhere.
+  const [card, batchDosing] = await Promise.all([
+    effectiveRateCard(c.firstPress ?? new Date()),
+    listBatchMaterials(batchKey).then(dosingOverrides),
+  ]);
+  const dose = (k: string): number | undefined => batchDosing[k] ?? card.rates[k];
+
   for (const [item, key] of [
     ["tio2", "tio2-pct-of-resin"], ["silane", "silane-pct-of-resin"],
     ["cobalt", "cobalt-pct-of-resin"], ["catalyst", "catalyst-pct-of-resin"],
   ] as const) {
-    if (dose(key) !== undefined) out[item] = { qty: (c.resinKg * dose(key)) / 100, unit: "kg" };
+    const d = dose(key);
+    if (d !== undefined) out[item] = { qty: (c.resinKg * d) / 100, unit: "kg" };
   }
-  // The legacy per-charge rule, in the same order of preference the report
-  // uses, so the two never show different TiO₂.
-  if (out.tio2 === undefined && dose("tio2-kg-per-charge") !== undefined) {
-    out.tio2 = { qty: dose("tio2-kg-per-charge") * c.mixerCharges, unit: "kg" };
+  // The legacy per-charge rule, in the same order of preference report.ts uses,
+  // so the two never show different TiO₂.
+  const perCharge = dose("tio2-kg-per-charge");
+  if (out.tio2 === undefined && perCharge !== undefined) {
+    out.tio2 = { qty: perCharge * c.mixerCharges, unit: "kg" };
   }
 
   return out;
