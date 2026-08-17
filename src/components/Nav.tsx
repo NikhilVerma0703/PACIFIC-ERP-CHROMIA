@@ -201,12 +201,10 @@ export function Nav({
   //
   // ONLY THE SCREENS THAT EXIST ARE LISTED — a nav item is a promise that the
   // route is there, and this section shows for every admin as well as for
-  // Chromia staff, so a dead link here is a 404 for the whole company. Two of
-  // the module's eight are still unbuilt (Downloads, Import); they go back in,
-  // in this order, when they land.
+  // Chromia staff, so a dead link here is a 404 for the whole company.
   //
-  // Recalibration (the send/receive screen) and Summary are supervisor-and-
-  // above, matching the module's MANAGEMENT_ROLES guard and the tier the pages
+  // Recalibration, Summary, Downloads and Import are supervisor-and-above,
+  // matching the module's MANAGEMENT_ROLES guard and the tier the pages
   // themselves enforce via chromiaGate — a link an operator cannot follow is
   // just a redirect they did not ask for.
   //
@@ -220,7 +218,11 @@ export function Nav({
     { href: "/chromia/slabs",                  icon: I.batch,     label: "Slabs" },
     ...(cSupPlus ? [{ href: "/chromia/recalibrations", icon: I.polishing, label: "Recalibration" }] : []),
     { href: "/chromia/recalibration-tracking", icon: I.live,      label: "Recal. Tracking" },
-    ...(cSupPlus ? [{ href: "/chromia/reports", icon: I.report,   label: "Summary" }] : []),
+    ...(cSupPlus ? [
+      { href: "/chromia/reports",   icon: I.report,  label: "Summary" },
+      { href: "/chromia/downloads", icon: I.box,     label: "Downloads" },
+      { href: "/chromia/import",    icon: I.factory, label: "Import" },
+    ] : []),
   ];
   const fabrication = [
     ...(mgmt ? [{ href: "/fab/projects", icon: I.manager, label: "Manager View" }] : []),
