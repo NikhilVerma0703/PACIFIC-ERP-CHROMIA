@@ -24,6 +24,7 @@ import {
   STAGE_ORDER, stageSequence, thicknessRemoved,
   type Disposition, type ProcessStage, type SlabGrade,
 } from "./process";
+import { toCode } from "./register";
 
 export interface ActionResult {
   ok: boolean;
@@ -52,6 +53,119 @@ async function actor(min: keyof typeof CHROMIA_MIN_TIER): Promise<
   if (!gate.ok) return null;
   const id = (gate.user as { id?: string } | null)?.id;
   return id ? { id } : null;
+}
+
+// ---------------------------------------------------------------------------
+// Intake
+// ---------------------------------------------------------------------------
+
+export interface IntakeResult extends ActionResult {
+  slabNo?: string;
+}
+
+/**
+ * Receive a slab into the plant — the moment it gets its permanent identity.
+ *
+ * Until this existed the only way a slab could enter was the Excel import,
+ * which meant the ERP could describe history but not accept anything new: the
+ * line would still have been keeping the register by hand.
+ *
+ * The slab number is the identity and it is unique for the slab's entire life,
+ * across every recalibration. A collision is refused with the number named
+ * rather than surfacing as a database error, because on the floor the usual
+ * cause is the slab having been received already by somebody else.
+ */
+export async function receiveSlab(input: {
+  slabNo: string;
+  batchNo: string;
+  materialName: string;
+  receivedDate?: Date | null;
+  designId?: string | null;
+  thicknessMm?: number | null;
+  lengthMm?: number | null;
+  widthMm?: number | null;
+  conditionOnArrival?: string;
+  remarks?: string;
+  locationId?: string | null;
+}): Promise<IntakeResult> {
+  const user = await actor("production");
+  if (!user) return fail("You are not allowed to receive Chromia slabs.");
+
+  const slabNo = input.slabNo.trim();
+  const batchNo = input.batchNo.trim();
+  const materialName = input.materialName.trim();
+  if (!slabNo) return fail("The slab number is its identity — it cannot be blank.");
+  if (!batchNo) return fail("Which batch did it come in on?");
+  if (!materialName) return fail("What base material is it?");
+
+  const clash = await prisma.chromiaSlab.findUnique({
+    where: { slabNo }, select: { id: true, status: true },
+  });
+  if (clash) {
+    return fail(`Slab ${slabNo} is already here (${clash.status.toLowerCase().replace(/_/g, " ")}).`);
+  }
+
+  const received = input.receivedDate ?? new Date();
+  const code = toCode(materialName);
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const material = await tx.chromiaBaseMaterial.upsert({
+        where: { code }, update: {},
+        create: { code, name: materialName },
+        select: { id: true },
+      });
+      const batch = await tx.chromiaBatch.upsert({
+        where: { batchNo },
+        update: {},
+        create: {
+          batchNo, receivedDate: received, baseMaterialId: material.id,
+          createdById: user.id,
+        },
+        select: { id: true },
+      });
+
+      const slab = await tx.chromiaSlab.create({
+        data: {
+          slabNo,
+          batchId: batch.id,
+          baseMaterialId: material.id,
+          plannedDesignId: input.designId ?? null,
+          status: "RECEIVED",
+          // Original and current start equal. Current is what recalibration
+          // eats into; keeping the original is how anyone can later see how
+          // much of the slab is gone.
+          originalThicknessMm: input.thicknessMm ?? null,
+          currentThicknessMm: input.thicknessMm ?? null,
+          lengthMm: input.lengthMm ?? null,
+          widthMm: input.widthMm ?? null,
+          receivedDate: received,
+          conditionOnArrival: input.conditionOnArrival || null,
+          remarks: input.remarks || null,
+          currentLocationId: input.locationId ?? null,
+          createdById: user.id,
+        },
+      });
+
+      await tx.chromiaBatch.update({
+        where: { id: batch.id }, data: { totalSlabs: { increment: 1 } },
+      });
+
+      await tx.chromiaSlabEvent.create({
+        data: {
+          slabId: slab.id, eventType: "SLAB_CREATED", toStatus: "RECEIVED",
+          userId: user.id, occurredAt: received,
+          locationId: input.locationId ?? null,
+          note: `Received into batch ${batchNo}`,
+        },
+      });
+    });
+  } catch (e) {
+    return fail(`That slab could not be received: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  for (const p of [...FLOOR_PATHS, "/chromia/slabs/new"]) revalidatePath(p);
+  return { ok: true, message: `${slabNo} received.`, slabNo };
 }
 
 // ---------------------------------------------------------------------------
@@ -168,11 +282,20 @@ export async function advanceStage(
 
   const cycle = await prisma.chromiaProcessCycle.findUnique({
     where: { slabId_cycleNumber: { slabId, cycleNumber: slab.currentCycleNumber } },
-    select: { id: true },
+    select: { id: true, inTime: true, outTime: true },
   });
   if (!cycle) return fail("This slab has no open cycle — stamp it in first.");
 
   const at = new Date();
+
+  // QUALITY_CHECK is the far edge of the processing window: the six production
+  // stages end at UV_POLISHING, so arriving at QC IS the out-time. Stamping it
+  // here as well as in finishProcessing closes a hole that lost the whole
+  // measurement — a slab walked through the stages one tap at a time reached QC
+  // with no outTime at all, so it never counted as finished today, never
+  // appeared in the Summary, and had no processing duration on its own history.
+  // Only the operator who used the "stamp out" shortcut produced a timed cycle.
+  const closesWindow = target === "QUALITY_CHECK" && !cycle.outTime;
 
   await prisma.$transaction(async (tx) => {
     // Close the stage being left, so its true duration is known.
@@ -210,6 +333,13 @@ export async function advanceStage(
       },
       update: { status: "IN_PROGRESS", startedAt: at, operatorId: user.id },
     });
+
+    if (closesWindow) {
+      await tx.chromiaProcessCycle.update({
+        where: { id: cycle.id },
+        data: { outTime: at, processingMinutes: processingMinutes(cycle.inTime, at) },
+      });
+    }
 
     // QUALITY_CHECK is where the slab leaves the operator's hands, so the
     // status changes with it rather than waiting for a separate action nobody

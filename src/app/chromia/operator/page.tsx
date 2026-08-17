@@ -22,8 +22,11 @@ export default async function ChromiaOperatorPage() {
   const gate = await chromiaGate(CHROMIA_MIN_TIER.production);
   if (!gate.ok) redirect("/");
 
-  const canGrade = gate.tier != null
-    && CHROMIA_TIER_RANK[gate.tier] >= CHROMIA_TIER_RANK[CHROMIA_MIN_TIER.quality];
+  const clears = (group: keyof typeof CHROMIA_MIN_TIER) =>
+    gate.tier != null && CHROMIA_TIER_RANK[gate.tier] >= CHROMIA_TIER_RANK[CHROMIA_MIN_TIER[group]];
+
+  const canGrade = clears("quality");
+  const canDispose = clears("store");
 
   const rows = await operatorQueue();
   const slabs: OperatorSlab[] = rows.map((r) => ({
@@ -34,6 +37,7 @@ export default async function ChromiaOperatorPage() {
     currentStage: r.currentStage,
     cycleNumber: r.currentCycleNumber,
     recalibrationCount: r.recalibrationCount,
+    grade: r.currentGrade,
     location: r.currentLocation?.name ?? null,
   }));
 
@@ -46,7 +50,7 @@ export default async function ChromiaOperatorPage() {
           the six production stages are done. Each tap writes a timed, attributed event.
         </p>
       </div>
-      <OperatorBoard slabs={slabs} canGrade={canGrade} />
+      <OperatorBoard slabs={slabs} canGrade={canGrade} canDispose={canDispose} />
     </Shell>
   );
 }

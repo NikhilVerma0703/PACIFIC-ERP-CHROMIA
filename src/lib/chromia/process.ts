@@ -134,6 +134,38 @@ export const STATUS_LABEL: Record<SlabStatus, string> = {
 };
 
 /**
+ * Where a slab's life ends. Nothing more happens to it on the floor.
+ *
+ * OUT_FOR_RECALIBRATION is terminal FOR THE FLOOR but not for the slab: it
+ * comes back through the Recalibration screen, which is a different queue with
+ * a different guard, so it does not belong on the operator's board either.
+ */
+export const TERMINAL_STATUSES: readonly SlabStatus[] = [
+  "DISPATCHED", "IN_STOCK", "SAMPLE_CUT", "WASTE", "OUT_FOR_RECALIBRATION",
+];
+
+/**
+ * Every status where somebody on the floor still has something to do — the
+ * operator board's queue.
+ *
+ * Derived from TERMINAL_STATUSES rather than typed out a second time, and
+ * partition-checked in the tests. The first version of the board listed these
+ * by hand and left out UNDER_INSPECTION and GRADED, which meant the QC panel
+ * could never appear (the only slabs that reach it are the ones waiting for QC)
+ * and a graded slab had no screen anywhere that could record its outcome. The
+ * lifecycle stopped dead at the end of processing, and a hand-written list is
+ * exactly how that happens twice.
+ */
+export const ALL_STATUSES: readonly SlabStatus[] = [
+  "RECEIVED", "IN_PROCESS", "UNDER_INSPECTION", "GRADED",
+  "OUT_FOR_RECALIBRATION", "RECEIVED_FROM_RECALIBRATION", "IN_STOCK",
+  "SAMPLE_CUT", "DISPATCHED", "WASTE", "ON_HOLD",
+];
+
+export const ACTIONABLE_STATUSES: readonly SlabStatus[] =
+  ALL_STATUSES.filter((s) => !TERMINAL_STATUSES.includes(s));
+
+/**
  * What each grade may become — CHROMIA_PROCESS.md section 6.
  *
  * A premium slab is never sample-cut and a rejected one is never dispatched;

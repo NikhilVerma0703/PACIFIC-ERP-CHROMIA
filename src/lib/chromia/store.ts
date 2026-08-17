@@ -11,7 +11,7 @@ import "server-only";
 
 import { prisma } from "@/lib/prisma";
 import {
-  recalibrationAgeing, STAGE_ORDER,
+  ACTIONABLE_STATUSES, recalibrationAgeing, STAGE_ORDER,
   type ProcessStage, type RecalibrationAgeing, type SlabStatus,
 } from "./process";
 
@@ -275,20 +275,32 @@ export async function listRecalibrations(
 // Operator entry
 // ---------------------------------------------------------------------------
 
-/** Slabs an operator can act on right now: on the line or waiting to start.
- *  Terminal states (dispatched, waste, out for recalibration) are excluded —
- *  offering them invites a tap that would have to be undone. */
+/**
+ * Slabs anyone on the floor can still act on.
+ *
+ * UNDER_INSPECTION and GRADED are in this list and must stay in it. They were
+ * left out first time round, which meant the board's QC panel could never
+ * appear — the only slabs that reach it are the ones waiting for QC — and a
+ * graded slab had no screen anywhere that could record what happened to it. The
+ * lifecycle simply stopped at the end of processing.
+ *
+ * Terminal states (dispatched, in stock, sample cut, waste, out for
+ * recalibration) are excluded: there is nothing left to do to them here, and
+ * offering one invites a tap that would have to be undone.
+ */
 export async function operatorQueue(limit = 100) {
   return prisma.chromiaSlab.findMany({
     where: {
       deletedAt: null,
-      status: { in: ["RECEIVED", "IN_PROCESS", "RECEIVED_FROM_RECALIBRATION", "ON_HOLD"] },
+      // Derived from the status list, never typed out here — see
+      // ACTIONABLE_STATUSES for what a hand-written copy cost the first time.
+      status: { in: [...ACTIONABLE_STATUSES] },
     },
     orderBy: [{ currentStage: "asc" }, { slabNo: "asc" }],
     take: limit,
     select: {
       id: true, slabNo: true, status: true, currentStage: true,
-      currentCycleNumber: true, recalibrationCount: true,
+      currentCycleNumber: true, recalibrationCount: true, currentGrade: true,
       batch: { select: { batchNo: true } },
       currentLocation: { select: { name: true } },
     },

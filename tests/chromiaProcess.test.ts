@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  canAdvance, daysBetween, dispositionAllowed, GRADE_DISPOSITIONS,
-  MAX_RECALIBRATION_ATTEMPTS, nextStage, processingMinutes, PRODUCTION_STAGES,
-  RECALIBRATION_OVERDUE_DAYS, recalibrationAgeing, recalibrationEligibility,
-  STAGE_LABEL, STAGE_ORDER, stageSequence, thicknessRemoved,
-  type ProcessStage,
+  ACTIONABLE_STATUSES, ALL_STATUSES, canAdvance, daysBetween, dispositionAllowed,
+  GRADE_DISPOSITIONS, MAX_RECALIBRATION_ATTEMPTS, nextStage, processingMinutes,
+  PRODUCTION_STAGES, RECALIBRATION_OVERDUE_DAYS, recalibrationAgeing,
+  recalibrationEligibility, STAGE_LABEL, STAGE_ORDER, stageSequence,
+  STATUS_LABEL, TERMINAL_STATUSES, thicknessRemoved,
+  type ProcessStage, type SlabStatus,
 } from "../src/lib/chromia/process.ts";
 
 // These are the rules the Excel register could not enforce, which is why the
@@ -60,6 +61,59 @@ test("every stage in the line can be reached by advancing from the one before", 
     current = stage;
   }
   assert.equal(nextStage(current!), null);
+});
+
+// --- the lifecycle has to be completable -----------------------------------
+
+test("every status is either terminal or actionable, and never both", () => {
+  // The partition is the point. The operator board's queue was hand-written the
+  // first time and left out UNDER_INSPECTION and GRADED, so the QC panel could
+  // never appear and a graded slab had no screen that could record its outcome
+  // — the lifecycle stopped dead at the end of processing. Deriving one list
+  // from the other makes that omission impossible; this pins the derivation.
+  assert.equal(new Set(ALL_STATUSES).size, ALL_STATUSES.length, "no status twice");
+  for (const s of ALL_STATUSES) {
+    const terminal = TERMINAL_STATUSES.includes(s);
+    const actionable = ACTIONABLE_STATUSES.includes(s);
+    assert.notEqual(terminal, actionable, `${s} is neither or both`);
+  }
+  assert.equal(
+    TERMINAL_STATUSES.length + ACTIONABLE_STATUSES.length,
+    ALL_STATUSES.length,
+  );
+});
+
+test("the statuses a slab passes through on its way to an outcome are all actionable", () => {
+  // The happy path, end to end. If any of these ever leaves the queue, a slab
+  // reaching it becomes invisible to the only screen that can move it on.
+  for (const s of ["RECEIVED", "IN_PROCESS", "UNDER_INSPECTION", "GRADED"] as SlabStatus[]) {
+    assert.ok(ACTIONABLE_STATUSES.includes(s), `${s} must stay on the board`);
+  }
+  // And so must a slab that has come back from recalibration — it has to be
+  // restartable, or the return journey ends in a dead end.
+  assert.ok(ACTIONABLE_STATUSES.includes("RECEIVED_FROM_RECALIBRATION"));
+});
+
+test("a slab that has left the floor is off the board", () => {
+  for (const s of ["DISPATCHED", "IN_STOCK", "SAMPLE_CUT", "WASTE"] as SlabStatus[]) {
+    assert.ok(TERMINAL_STATUSES.includes(s), `${s} should be finished`);
+  }
+  // Out for recalibration is terminal for the FLOOR: it comes back through the
+  // Recalibration screen, which is a different queue with a different guard.
+  assert.ok(TERMINAL_STATUSES.includes("OUT_FOR_RECALIBRATION"));
+});
+
+test("every status the app can store has a label", () => {
+  // A status with no label renders as a raw enum value on the board and in the
+  // register — the sort of thing nobody notices until it is in front of a user.
+  for (const s of ALL_STATUSES) assert.ok(STATUS_LABEL[s], `no label for ${s}`);
+});
+
+test("every grade leads somewhere", () => {
+  // A grade with no allowed disposition would strand every slab that got it.
+  for (const grade of ["A", "B", "C"] as const) {
+    assert.ok(GRADE_DISPOSITIONS[grade].length > 0, `grade ${grade} is a dead end`);
+  }
 });
 
 test("grade decides what a slab may become", () => {

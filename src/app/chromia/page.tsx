@@ -31,6 +31,8 @@ export default async function ChromiaDashboard() {
 
   const overdue = outstanding.filter((r) => r.ageing.overdue);
   const empty = counts.totalSlabs === 0;
+  // Never zero, so the bar widths below cannot divide by it.
+  const busiestStage = Math.max(...counts.byStage.map((s) => s.count), 1);
 
   return (
     <Shell>
@@ -70,7 +72,11 @@ export default async function ChromiaDashboard() {
             Work in progress, by stage
           </h2>
           {/* Every stage is listed, including the empty ones — a board with gaps
-              where nothing is sitting reads as a broken query, not an idle stage. */}
+              where nothing is sitting reads as a broken query, not an idle stage.
+              Bars are scaled against the busiest STAGE, not against the count of
+              slabs in processing: a slab waiting at Quality Check has a stage but
+              is not IN_PROCESS, so scaling by that drew every bar at zero width
+              next to non-zero numbers. */}
           <div className="space-y-1.5">
             {counts.byStage.map(({ stage, count }) => (
               <div key={stage} className="flex items-center gap-3">
@@ -78,9 +84,7 @@ export default async function ChromiaDashboard() {
                 <div className="h-2 flex-1 overflow-hidden rounded-full bg-gray-100">
                   <div
                     className="h-full rounded-full bg-brand transition-all"
-                    style={{
-                      width: `${counts.onLine > 0 ? Math.round((count / Math.max(...counts.byStage.map((s) => s.count), 1)) * 100) : 0}%`,
-                    }}
+                    style={{ width: `${Math.round((count / busiestStage) * 100)}%` }}
                   />
                 </div>
                 <span className="w-8 shrink-0 text-right text-sm font-medium text-gray-900">

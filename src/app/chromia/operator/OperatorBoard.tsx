@@ -11,11 +11,11 @@
 import { useState, useTransition } from "react";
 import { Badge, Card, Empty } from "@/components/ui";
 import {
-  advanceStage, finishProcessing, recordQc, startProcessing,
+  advanceStage, finishProcessing, recordDisposition, recordQc, startProcessing,
 } from "@/lib/chromia/actions";
 import {
-  nextStage, STAGE_LABEL, STATUS_LABEL,
-  type ProcessStage, type SlabStatus,
+  DISPOSITION_LABEL, GRADE_DISPOSITIONS, nextStage, STAGE_LABEL, STATUS_LABEL,
+  type Disposition, type ProcessStage, type SlabGrade, type SlabStatus,
 } from "@/lib/chromia/process";
 
 export interface OperatorSlab {
@@ -26,6 +26,7 @@ export interface OperatorSlab {
   currentStage: string | null;
   cycleNumber: number;
   recalibrationCount: number;
+  grade: string | null;
   location: string | null;
 }
 
@@ -33,10 +34,11 @@ const btn = "rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transi
 const btnGhost = "rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-60";
 
 export function OperatorBoard({
-  slabs, canGrade,
+  slabs, canGrade, canDispose,
 }: {
   slabs: OperatorSlab[];
   canGrade: boolean;
+  canDispose: boolean;
 }) {
   const [open, setOpen] = useState<string | null>(null);
   const [note, setNote] = useState<{ id: string; text: string; ok: boolean } | null>(null);
@@ -67,7 +69,13 @@ export function OperatorBoard({
         const next = stage ? nextStage(stage) : null;
         const inProcess = s.status === "IN_PROCESS";
         const awaitingQc = s.status === "UNDER_INSPECTION";
+        const graded = s.status === "GRADED";
         const showing = open === s.id;
+        // The grade decides the options, exactly as the server does. Showing a
+        // choice the action will refuse is worse than not showing it.
+        const outcomes = graded && s.grade
+          ? GRADE_DISPOSITIONS[s.grade as SlabGrade] ?? []
+          : [];
 
         return (
           <Card key={s.id}>
@@ -85,6 +93,7 @@ export function OperatorBoard({
                 <p className="mt-0.5 text-xs text-gray-500">
                   Batch {s.batchNo}
                   {stage ? ` · at ${STAGE_LABEL[stage]}` : " · not started"}
+                  {s.grade ? ` · grade ${s.grade}` : ""}
                   {s.location ? ` · ${s.location}` : ""}
                 </p>
               </div>
@@ -129,6 +138,32 @@ export function OperatorBoard({
                 )}
                 {awaitingQc && !canGrade && (
                   <span className="py-2 text-xs text-gray-400">waiting for an inspector</span>
+                )}
+
+                {/* The last step. Without it a slab stopped dead at GRADED and
+                    never reached dispatch, stock, sample cutting or waste — the
+                    lifecycle had no end. RECALIBRATION is absent on purpose: it
+                    goes through the Recalibration screen so the attempt ceiling
+                    and the outward paperwork cannot be bypassed. */}
+                {graded && canDispose && outcomes
+                  .filter((d) => d !== "RECALIBRATION")
+                  .map((d) => (
+                    <button
+                      key={d} type="button" disabled={pending} className={btnGhost}
+                      onClick={() => run(s.id, () => recordDisposition(s.id, d as Disposition))}
+                    >
+                      {DISPOSITION_LABEL[d as Disposition]}
+                    </button>
+                  ))}
+                {graded && canDispose && outcomes.includes("RECALIBRATION") && (
+                  <span className="py-2 text-xs text-gray-400">
+                    rejected — send it from the Recalibration screen
+                  </span>
+                )}
+                {graded && !canDispose && (
+                  <span className="py-2 text-xs text-gray-400">
+                    graded {s.grade} — waiting for someone to record the outcome
+                  </span>
                 )}
               </div>
             </div>

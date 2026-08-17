@@ -54,11 +54,22 @@ export default async function ChromiaSlabsPage({
 
   return (
     <Shell>
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Slabs</h1>
-        <p className="mt-1 max-w-2xl text-sm text-gray-500">
-          Every slab the line has ever seen. Search a slab or batch number for its full history.
-        </p>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Slabs</h1>
+          <p className="mt-1 max-w-2xl text-sm text-gray-500">
+            Every slab the line has ever seen. Search a slab or batch number for its full history.
+          </p>
+        </div>
+        {/* Intake is reached from here rather than from the menu — the module's
+            own decision: a blank form in the nav invites someone to type a slab
+            the operator has already entered. */}
+        <Link
+          href="/chromia/slabs/new"
+          className="rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-white transition hover:bg-brand/90"
+        >
+          Receive slabs
+        </Link>
       </div>
 
       <Card className="mb-5">
