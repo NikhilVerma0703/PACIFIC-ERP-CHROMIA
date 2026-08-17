@@ -2,9 +2,16 @@ import { cache } from "react";
 import { auth } from "@/auth";
 import { sessionUserRow } from "@/lib/sessionRevalidation";
 
-// Role hierarchy (low -> high). Kept as string-typed so this compiles even
-// before `prisma generate` refreshes the @prisma/client enum.
-export type RoleName = "OPERATOR" | "INCHARGE" | "LINE_MANAGER" | "ADMIN" | "FINANCE" | "ACCOUNTS" | "SALES" | "COMMERCIAL" | "STORE" | "MAINTENANCE" | "ROBO";
+// Role hierarchy: ROLE_RANK/rankOf moved to lib/roles.ts (a pure, import-free
+// module) so node --test can reach them — imported AND re-exported here so
+// every existing `from "@/lib/rbac"` import keeps working unchanged.
+import { ROLE_RANK, rankOf } from "@/lib/roles";
+import type { RoleName } from "@/lib/roles";
+export { ROLE_RANK, rankOf };
+// Imported as well as re-exported: `export type { RoleName } from ...` alone
+// forwards the name to importers without binding it locally, so creatableRoles
+// below could not see it and the whole app failed to typecheck.
+export type { RoleName };
 export type StationName =
   | "PRESS" | "OVEN" | "JOT" | "MIXER" | "KREOS"
   | "DISTRIBUTOR" | "SILO" | "POLISH_QC" | "POLISH_ENTRY" | "CUTTING";
@@ -15,15 +22,11 @@ export const STATION_LABEL: Record<string, string> = {
   DISTRIBUTOR: "Distributor", SILO: "Silo", POLISH_QC: "Polish QC", POLISH_ENTRY: "Polish Entry", CUTTING: "Cutting",
 };
 
-// FINANCE and ACCOUNTS are flat office roles directly under ADMIN (rank 2:
-// they may edit office tables, but user management stays admin-only in Office).
-export const ROLE_RANK: Record<string, number> = { OPERATOR: 1, STORE: 1, MAINTENANCE: 1, SALES: 1, COMMERCIAL: 1, ROBO: 1, INCHARGE: 2, FINANCE: 2, ACCOUNTS: 2, LINE_MANAGER: 3, ADMIN: 4 };
 export const ROLE_LABEL: Record<string, string> = {
   OPERATOR: "Operator", INCHARGE: "Incharge", LINE_MANAGER: "Line Manager", ADMIN: "Administrator",
   FINANCE: "Finance", ACCOUNTS: "Accounts", SALES: "Sales", COMMERCIAL: "Commercial", STORE: "Store Incharge", MAINTENANCE: "Maintenance Manager",
   ROBO: "Robo Operator",
 };
-export function rankOf(role?: string | null): number { return ROLE_RANK[String(role ?? "")] ?? 0; }
 
 /** Fabrication shares the ONE role hierarchy with Shop Floor (LINE_MANAGER /
  * INCHARGE / OPERATOR — see lib/fab/access.ts's fabTierOf: there is no
@@ -39,12 +42,26 @@ export const FAB_ROLE_LABEL: Record<string, string> = {
   INCHARGE: "Fabrication Supervisor",
   OPERATOR: "Fabrication Machine Operator",
 };
-/** Role label, department-aware: Fabrication uses FAB_ROLE_LABEL for the
- * roles it shares with Shop Floor; every other branch (and any role with no
- * fabrication-specific name) falls back to the generic ROLE_LABEL. */
+/** Chromia takes the Fabrication pattern verbatim: same ONE role hierarchy
+ * (LINE_MANAGER / INCHARGE / OPERATOR), a branch value to say which line the
+ * user belongs to, and display names so an admin creating a login can find
+ * "Chromia Manager" by name instead of guessing that generic "Line Manager"
+ * means the Chromia line. The module itself shipped seven roles (ADMIN,
+ * PRODUCTION_MANAGER, SUPERVISOR, OPERATOR, QUALITY_INSPECTOR, STORE_KEEPER,
+ * VIEWER) — those map onto these three ranks in lib/chromia/access.ts rather
+ * than widening the Role enum; see that file for the mapping and why. */
+export const CHROMIA_ROLE_LABEL: Record<string, string> = {
+  LINE_MANAGER: "Chromia Manager",
+  INCHARGE: "Chromia Supervisor",
+  OPERATOR: "Chromia Machine Operator",
+};
+/** Role label, department-aware: Fabrication and Chromia use their own label
+ * maps for the roles they share with Shop Floor; every other branch (and any
+ * role with no department-specific name) falls back to the generic ROLE_LABEL. */
 export function roleLabelFor(role?: string | null, branch?: string | null): string {
   const r = String(role ?? "");
   if (branch === "FABRICATION" && FAB_ROLE_LABEL[r]) return FAB_ROLE_LABEL[r];
+  if (branch === "CHROMIA" && CHROMIA_ROLE_LABEL[r]) return CHROMIA_ROLE_LABEL[r];
   return ROLE_LABEL[r] ?? r;
 }
 
@@ -113,7 +130,7 @@ export async function canManageUsers(): Promise<boolean> {
 export function creatableRoles(role?: string | null, branch?: string | null): RoleName[] {
   const r = rankOf(role);
   if (branch === "OFFICE") return r >= ROLE_RANK.ADMIN ? (["FINANCE", "ACCOUNTS", "SALES", "COMMERCIAL"] as RoleName[]) : [];
-  if (branch === "FABRICATION") return (["LINE_MANAGER", "INCHARGE", "OPERATOR"] as RoleName[]).filter((x) => ROLE_RANK[x] < r);
+  if (branch === "FABRICATION" || branch === "CHROMIA") return (["LINE_MANAGER", "INCHARGE", "OPERATOR"] as RoleName[]).filter((x) => ROLE_RANK[x] < r);
   return (["LINE_MANAGER", "INCHARGE", "OPERATOR", "STORE", "MAINTENANCE", "ROBO"] as RoleName[]).filter((x) => ROLE_RANK[x] < r);
 }
 

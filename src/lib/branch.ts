@@ -3,9 +3,9 @@
 // branch for a session is set at login and carried in the JWT.
 import { currentUser, rankOf, ROLE_RANK } from "@/lib/rbac";
 
-export type BranchName = "SHOP_FLOOR" | "OFFICE" | "FABRICATION" | "INTERNATIONAL_SALES";
-export const BRANCHES: BranchName[] = ["SHOP_FLOOR", "OFFICE", "FABRICATION", "INTERNATIONAL_SALES"];
-export const BRANCH_LABEL: Record<string, string> = { SHOP_FLOOR: "Shop Floor", OFFICE: "Office", FABRICATION: "Fabrication", INTERNATIONAL_SALES: "International Sales" };
+export type BranchName = "SHOP_FLOOR" | "OFFICE" | "FABRICATION" | "INTERNATIONAL_SALES" | "CHROMIA";
+export const BRANCHES: BranchName[] = ["SHOP_FLOOR", "OFFICE", "FABRICATION", "INTERNATIONAL_SALES", "CHROMIA"];
+export const BRANCH_LABEL: Record<string, string> = { SHOP_FLOOR: "Shop Floor", OFFICE: "Office", FABRICATION: "Fabrication", INTERNATIONAL_SALES: "International Sales", CHROMIA: "Chromia" };
 
 /** Tables that belong to the Office ERP (finance / dispatch). */
 export const OFFICE_MODELS = new Set(["ShippingInvoice", "NazzBhai"]);
@@ -24,7 +24,7 @@ export const ADMIN_ONLY_TABLES = new Set(["Lab"]);
 const roleOf = (u: unknown): string => String((u as { role?: unknown } | null)?.role ?? "");
 const branchOf = (u: unknown): BranchName => {
   const b = (u as { branch?: string } | null)?.branch;
-  return b === "OFFICE" || b === "FABRICATION" || b === "INTERNATIONAL_SALES" ? b : "SHOP_FLOOR";
+  return b === "OFFICE" || b === "FABRICATION" || b === "INTERNATIONAL_SALES" || b === "CHROMIA" ? b : "SHOP_FLOOR";
 };
 
 /** Retired tables — hidden from BOTH branches (finance will be rebuilt from

@@ -67,7 +67,7 @@ function NavLink({ href, icon, label, path, office }: {
 }) {
   const active = office && href === "/office"
     ? SHOP_PATHS.some(p => (p === "/" ? path === "/" : path.startsWith(p)))
-    : href === "/" || href === "/sales" ? path === href : path.startsWith(href);
+    : href === "/" || href === "/sales" || href === "/chromia" ? path === href : path.startsWith(href);
   return (
     <Link href={href}
       className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
@@ -94,9 +94,9 @@ function Section({ label, items, path }: { label: string; items: { href: string;
 
 /* Main Nav export — flat, access-filtered sections (no dropdowns) */
 export function Nav({
-  showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false, intlSales = false, salesDuty = "",
+  showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", chromiaTier = "", inventory = false, consumables = false, intlSales = false, salesDuty = "",
 }: {
-  showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; inventory?: boolean; consumables?: boolean; intlSales?: boolean; salesDuty?: string;
+  showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; chromiaTier?: string; inventory?: boolean; consumables?: boolean; intlSales?: boolean; salesDuty?: string;
 }) {
   const path    = usePathname();
   const office  = branch === "OFFICE";
@@ -105,7 +105,8 @@ export function Nav({
   // branch (admins included, via the sales login card) sees only the sales
   // section + Admin — production/fab nav stays in the other branches.
   const isFab   = isAdmin || branch === "FABRICATION";               // fabrication section
-  const isProd  = isAdmin || (!office && branch !== "FABRICATION" && branch !== "INTERNATIONAL_SALES");  // production section
+  const isChromia = isAdmin || branch === "CHROMIA";                 // chromia section
+  const isProd  = isAdmin || (!office && branch !== "FABRICATION" && branch !== "INTERNATIONAL_SALES" && branch !== "CHROMIA");  // production section
   const mgmt    = fabTier === "ADMIN" || fabTier === "MANAGER";
   const supPlus = mgmt || fabTier === "SUPERVISOR";
 
@@ -189,6 +190,30 @@ export function Nav({
     { href: "/mis",    icon: I.mis,    label: "Downtime" },
     { href: "/maintenance", icon: I.spanner, label: "Maintenance Log" },
   ];
+  // Chromia section — the module's own eight screens, straight from the
+  // standalone app's navigation config (src/config/navigation.ts): Dashboard,
+  // Operator Entry, Slabs, Recalibration, Recal. Tracking, Summary, Downloads,
+  // Import — re-rooted under /chromia. Slab Intake is deliberately absent
+  // there ("not a place you visit; it is what opens when you click a slab
+  // that still needs finishing"), so it is absent here too. Import mutates
+  // history wholesale, so it is kept to supervisor-and-above like the
+  // module's MANAGEMENT_ROLES guard (lib/chromia/access.ts).
+  //
+  // ONLY THE SCREENS THAT EXIST ARE LISTED. All eight went in here while seven
+  // of them were still unbuilt, and this section shows for every admin as well
+  // as for Chromia staff — so the live nav handed every admin seven links
+  // straight to a 404. A nav item is a promise that the route is there. The
+  // rest get added back as each screen lands, in the module's own order:
+  //   Operator Entry · Slabs · Recalibration · Recal. Tracking · Summary ·
+  //   Downloads, then Import wrapped in a supervisor-and-above check to match
+  //   the module's MANAGEMENT_ROLES guard (lib/chromia/access.ts):
+  //     ...(chromiaTier !== "EMPLOYEE" ? [{ href: "/chromia/import", ... }] : [])
+  // Slab Intake is absent from the module's own navigation config ("not a
+  // place you visit; it is what opens when you click a slab that still needs
+  // finishing"), so it stays absent here too.
+  const chromia = [
+    { href: "/chromia", icon: I.overview, label: "Dashboard" },
+  ];
   const fabrication = [
     ...(mgmt ? [{ href: "/fab/projects", icon: I.manager, label: "Manager View" }] : []),
     ...(supPlus ? [{ href: "/fab/supervisor", icon: I.planning, label: "Supervisor Board" }] : []),
@@ -226,6 +251,7 @@ export function Nav({
       {isProd && <Section label="Production" items={production} path={path} />}
       {isProd && <Section label="Lookups &amp; Reports" items={reports} path={path} />}
       {isFab  && <Section label="Fabrication" items={fabrication} path={path} />}
+      {isChromia && <Section label="Chromia" items={chromia} path={path} />}
       {inventory && <Section label="Inventory" items={[{ href: "/inventory", icon: I.box, label: "Finished Goods" }]} path={path} />}
       {consumables && <Section label="Consumables" items={[{ href: "/consumables", icon: I.box, label: "Consumables" }]} path={path} />}
       {intlSales && <Section label="International Sales" items={intlSalesItems} path={path} />}
