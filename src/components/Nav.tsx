@@ -199,20 +199,28 @@ export function Nav({
   // history wholesale, so it is kept to supervisor-and-above like the
   // module's MANAGEMENT_ROLES guard (lib/chromia/access.ts).
   //
-  // ONLY THE SCREENS THAT EXIST ARE LISTED. All eight went in here while seven
-  // of them were still unbuilt, and this section shows for every admin as well
-  // as for Chromia staff — so the live nav handed every admin seven links
-  // straight to a 404. A nav item is a promise that the route is there. The
-  // rest get added back as each screen lands, in the module's own order:
-  //   Operator Entry · Slabs · Recalibration · Recal. Tracking · Summary ·
-  //   Downloads, then Import wrapped in a supervisor-and-above check to match
-  //   the module's MANAGEMENT_ROLES guard (lib/chromia/access.ts):
-  //     ...(chromiaTier !== "EMPLOYEE" ? [{ href: "/chromia/import", ... }] : [])
-  // Slab Intake is absent from the module's own navigation config ("not a
-  // place you visit; it is what opens when you click a slab that still needs
+  // ONLY THE SCREENS THAT EXIST ARE LISTED — a nav item is a promise that the
+  // route is there, and this section shows for every admin as well as for
+  // Chromia staff, so a dead link here is a 404 for the whole company. Two of
+  // the module's eight are still unbuilt (Downloads, Import); they go back in,
+  // in this order, when they land.
+  //
+  // Recalibration (the send/receive screen) and Summary are supervisor-and-
+  // above, matching the module's MANAGEMENT_ROLES guard and the tier the pages
+  // themselves enforce via chromiaGate — a link an operator cannot follow is
+  // just a redirect they did not ask for.
+  //
+  // Slab Intake is absent from the module's own navigation config ("not a place
+  // you visit; it is what opens when you click a slab that still needs
   // finishing"), so it stays absent here too.
+  const cSupPlus = chromiaTier === "ADMIN" || chromiaTier === "MANAGER" || chromiaTier === "SUPERVISOR";
   const chromia = [
-    { href: "/chromia", icon: I.overview, label: "Dashboard" },
+    { href: "/chromia",                        icon: I.overview,  label: "Dashboard" },
+    { href: "/chromia/operator",               icon: I.entry,     label: "Operator Entry" },
+    { href: "/chromia/slabs",                  icon: I.batch,     label: "Slabs" },
+    ...(cSupPlus ? [{ href: "/chromia/recalibrations", icon: I.polishing, label: "Recalibration" }] : []),
+    { href: "/chromia/recalibration-tracking", icon: I.live,      label: "Recal. Tracking" },
+    ...(cSupPlus ? [{ href: "/chromia/reports", icon: I.report,   label: "Summary" }] : []),
   ];
   const fabrication = [
     ...(mgmt ? [{ href: "/fab/projects", icon: I.manager, label: "Manager View" }] : []),
