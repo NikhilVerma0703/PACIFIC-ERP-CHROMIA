@@ -1,31 +1,37 @@
-// Per-batch material rates — the write surface.
+// How a batch's materials were bought — the write surface.
 //
-// ADMIN ONLY, like the rate card next door. A batch rate changes what a run
-// cost, which is what a container is priced from; it is not a clerk's field.
+// ADMIN ONLY, like the rate card next door. These lines change what a run cost,
+// which is what a container is priced from; not a clerk's field.
 //
-// Three things this route refuses, each because the alternative produces a
-// plausible number rather than an error:
+// A material's lines are saved as a SET, not one at a time: the request carries
+// every line for that item and this route replaces them. Anything else and
+// deleting the second of three splits becomes its own endpoint, its own race,
+// and its own way to leave a batch priced on a half-edited split.
+//
+// Four things this refuses, each because the alternative produces a plausible
+// number rather than an error:
 //
 //   * a category that is not a material. Conversion is a whole-plant monthly
 //     figure and basis holds the denominators every sheet divides by, so a
 //     per-batch value would make two batches incomparable under the same
-//     column heading. Refused here AND in batchRates.applyBatchRates, because
-//     this route is not the only way rows could arrive.
+//     column heading.
 //   * a rate at or below zero. A zero does not fail loudly — it prices the
 //     material at nothing and makes the batch look cheap.
-//   * an item the catalogue does not know. The computation consumes rates by
-//     name; a rate nobody reads is worse than none, because the screen shows
-//     it as set.
+//   * a quantity at or below zero. Negative quantities show up as credits.
+//   * an item the catalogue does not know. The computation consumes materials
+//     by name; a line nobody reads is worse than none, because the screen shows
+//     it as saved.
 
 import { NextRequest, NextResponse } from "next/server";
 
 import { isAdmin, currentUser } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 import {
-  effectiveRateCard, listBatchRates, RATE_ITEM_BY_KEY, RATE_ITEMS,
+  effectiveRateCard, listBatchMaterials, RATE_ITEM_BY_KEY, RATE_ITEMS,
 } from "@/lib/costing/rateCard";
-import { compareToCard, isOverridable } from "@/lib/costing/batchRates";
+import { isOverridable, isSplittable } from "@/lib/costing/batchRates";
 import { loadBatchConsumption } from "@/lib/costing/batchData";
+import { bandOf, gritItemKey } from "@/lib/costing/batchData";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,56 +41,73 @@ const json = (body: unknown, status = 200) => NextResponse.json(body, { status }
 /** The catalogue a batch may set — materials and the dosing rules. */
 const SETTABLE = RATE_ITEMS.filter((d) => isOverridable(d.category));
 
+/**
+ * What the mixer weighed for each material, so the editor can show the number
+ * a split has to add up to.
+ *
+ * Without this the person splitting resin is typing quantities against a figure
+ * they have to find on another panel and remember — which is how 600 + 400 gets
+ * entered against a batch that used 1,240 kg.
+ */
+async function mixerQuantities(batchKey: string): Promise<Record<string, { qty: number; unit: string }>> {
+  const c = await loadBatchConsumption(batchKey);
+  if (!c) return {};
+
+  const out: Record<string, { qty: number; unit: string }> = {
+    resin: { qty: c.resinKg, unit: "kg" },
+    "filler-400": { qty: c.fillerKg / 1000, unit: "t" },
+  };
+
+  const byBand = new Map<string, number>();
+  for (const g of c.gritCharges) byBand.set(g.band, (byBand.get(g.band) ?? 0) + g.kg);
+  for (const [band, kg] of byBand) out[gritItemKey(bandOf(band))] = { qty: kg / 1000, unit: "t" };
+
+  // The chemicals have no weighed quantity — they are derived from the dosing
+  // rules — so the editor shows the derived figure rather than a blank, and
+  // says where it came from.
+  const card = await effectiveRateCard(c.firstPress ?? new Date());
+  const dose = (k: string) => card.rates[k];
+  if (dose("tio2-kg-per-charge") !== undefined) {
+    out.tio2 = { qty: dose("tio2-kg-per-charge") * c.mixerCharges, unit: "kg" };
+  }
+  for (const [item, key] of [
+    ["silane", "silane-pct-of-resin"], ["cobalt", "cobalt-pct-of-resin"],
+    ["catalyst", "catalyst-pct-of-resin"],
+  ] as const) {
+    if (dose(key) !== undefined) out[item] = { qty: (c.resinKg * dose(key)) / 100, unit: "kg" };
+  }
+
+  return out;
+}
+
 export async function GET(req: NextRequest) {
   if (!(await isAdmin())) return json({ error: "Admins only." }, 403);
 
   const batchKey = new URL(req.url).searchParams.get("batchKey")?.trim() ?? "";
   if (!batchKey) return json({ error: "Which batch? Pass ?batchKey=" }, 400);
 
-  const rows = await listBatchRates(batchKey);
-  // The card the batch WOULD price at, resolved for its own run date rather
-  // than today: comparing a June batch's rates against today's card would
-  // report a difference that is just the passage of time.
-  const consumption = await loadBatchConsumption(batchKey);
-  const onDate = consumption?.firstPress ?? new Date();
-  const card = await effectiveRateCard(onDate);
+  const rows = await listBatchMaterials(batchKey);
+  // The card resolved for the batch's OWN run date, not today: comparing a June
+  // batch against today's card would report a difference that is just the
+  // passage of time.
+  const c = await loadBatchConsumption(batchKey);
+  const [card, mixer] = await Promise.all([
+    effectiveRateCard(c?.firstPress ?? new Date()),
+    mixerQuantities(batchKey),
+  ]);
 
-  return json({
-    batchKey,
-    catalogue: SETTABLE,
-    rows,
-    card,
-    comparison: compareToCard(card, rows),
-  });
+  return json({ batchKey, catalogue: SETTABLE, rows, card, mixer });
 }
 
-interface PostedRow {
-  item?: unknown; variant?: unknown; rate?: unknown; note?: unknown;
-}
-
-function validate(r: PostedRow):
-  | { item: string; variant: string; rate: number; note: string | null; category: string; unit: string }
-  | string {
-  const item = typeof r.item === "string" ? r.item.trim() : "";
-  const def = RATE_ITEM_BY_KEY.get(item);
-  if (!def) return `Unknown rate item '${item}'`;
-  if (!isOverridable(def.category)) {
-    return `'${def.label}' is a plant-wide rate and cannot be set on one batch`;
-  }
-  const variant = typeof r.variant === "string" ? r.variant.trim() : "";
-  if (def.variants && !variant) return `'${def.label}' needs a supplier name`;
-  if (!def.variants && variant) return `'${def.label}' does not take a supplier`;
-  const rate = Number(r.rate);
-  if (!Number.isFinite(rate) || rate <= 0) return `'${def.label}' needs a rate above zero`;
-  const note = typeof r.note === "string" && r.note.trim() ? r.note.trim().slice(0, 300) : null;
-  return { item, variant, rate, note, category: def.category, unit: def.unit };
+interface PostedLine {
+  seq?: unknown; qty?: unknown; rate?: unknown; description?: unknown;
 }
 
 export async function POST(req: NextRequest) {
   if (!(await isAdmin())) return json({ error: "Admins only." }, 403);
   const user = (await currentUser())?.name ?? "admin";
 
-  let body: { batchKey?: unknown; rows?: PostedRow[] };
+  let body: { batchKey?: unknown; item?: unknown; lines?: PostedLine[] };
   try {
     body = await req.json();
   } catch {
@@ -94,50 +117,93 @@ export async function POST(req: NextRequest) {
   const batchKey = typeof body.batchKey === "string" ? body.batchKey.trim() : "";
   if (!batchKey) return json({ error: "Which batch? Send batchKey." }, 400);
 
-  const posted = Array.isArray(body.rows) ? body.rows : [];
-  if (!posted.length) return json({ error: "No rates to save." }, 400);
-  if (posted.length > 60) return json({ error: "Too many rates in one save." }, 400);
+  const item = typeof body.item === "string" ? body.item.trim() : "";
+  const def = RATE_ITEM_BY_KEY.get(item);
+  if (!def) return json({ error: `Unknown material '${item}'` }, 400);
+  if (!isOverridable(def.category)) {
+    return json({ error: `'${def.label}' is a plant-wide rate and cannot be set on one batch` }, 400);
+  }
+
+  const posted = Array.isArray(body.lines) ? body.lines : [];
+  if (posted.length > 30) return json({ error: "Too many lines for one material." }, 400);
 
   // Validate the whole set before writing any of it — a half-applied save
-  // leaves a batch costed on a mixture nobody chose.
-  const rows = [];
-  for (const p of posted) {
-    const v = validate(p);
-    if (typeof v === "string") return json({ error: v }, 400);
-    rows.push(v);
+  // leaves a batch priced on a split nobody chose.
+  const lines: Array<{ seq: number; qty: number | null; rate: number; description: string }> = [];
+  let restLines = 0;
+  posted.forEach((p, i) => {
+    lines.push({ seq: typeof p.seq === "number" ? p.seq : i, qty: null, rate: 0, description: "" });
+  });
+
+  for (let i = 0; i < posted.length; i++) {
+    const p = posted[i];
+    const rate = Number(p.rate);
+    if (!Number.isFinite(rate) || rate <= 0) {
+      return json({ error: `Line ${i + 1} of ${def.label} needs a price above zero.` }, 400);
+    }
+
+    let qty: number | null = null;
+    const rawQty = p.qty;
+    const blank = rawQty === null || rawQty === undefined || rawQty === "";
+    if (!blank) {
+      qty = Number(rawQty);
+      if (!Number.isFinite(qty) || qty <= 0) {
+        return json({ error: `Line ${i + 1} of ${def.label} needs a quantity above zero, or none at all for "the rest".` }, 400);
+      }
+    } else if (!isSplittable(def.category)) {
+      // A dosing factor is one value; a blank there means nothing.
+      qty = null;
+    } else {
+      restLines += 1;
+    }
+
+    // Two "the rest" lines cannot both be the rest — the second would price
+    // nothing and the person would not know why.
+    if (restLines > 1) {
+      return json({ error: `Only one line of ${def.label} can be left blank to mean "the rest".` }, 400);
+    }
+
+    // A dosing rule has nothing to split, so more than one line is meaningless.
+    if (!isSplittable(def.category) && posted.length > 1) {
+      return json({ error: `${def.label} is a dosing rule — it takes one value, not a split.` }, 400);
+    }
+
+    lines[i] = {
+      seq: i,
+      qty,
+      rate,
+      description: typeof p.description === "string" ? p.description.trim().slice(0, 200) : "",
+    };
   }
 
-  for (const r of rows) {
-    await prisma.costingBatchRate.upsert({
-      where: {
-        batchKey_item_variant: { batchKey, item: r.item, variant: r.variant },
-      },
-      create: {
-        batchKey, category: r.category, item: r.item, variant: r.variant,
-        unit: r.unit, rate: r.rate, note: r.note, createdBy: user,
-      },
-      // Corrected in place, not appended. A batch rate is one current fact
-      // about one run; the plant-wide card is where revision history lives.
-      update: { rate: r.rate, note: r.note, createdBy: user },
+  // Replace this material's lines wholesale, in one transaction. Deleting then
+  // inserting outside a transaction would leave the batch briefly priced at the
+  // card, and a read landing in that window would show a different total.
+  await prisma.$transaction(async (tx) => {
+    await tx.costingBatchMaterial.deleteMany({ where: { batchKey, item } });
+    if (!lines.length) return;
+    await tx.costingBatchMaterial.createMany({
+      data: lines.map((l) => ({
+        batchKey, item, category: def.category, unit: def.unit,
+        seq: l.seq, qty: l.qty, rate: l.rate,
+        description: l.description || null, createdBy: user,
+      })),
     });
-  }
+  });
 
-  return json({ ok: true, written: rows.length });
+  return json({ ok: true, item, lines: lines.length });
 }
 
-/** Remove one batch rate, so the item falls back to the card again. Takes the
- *  exact (item, variant) rather than an id, because that is what the screen
- *  knows and it cannot match more than one row. */
+/** Remove every line for one material, so it falls back to the card again. */
 export async function DELETE(req: NextRequest) {
   if (!(await isAdmin())) return json({ error: "Admins only." }, 403);
 
   const sp = new URL(req.url).searchParams;
   const batchKey = sp.get("batchKey")?.trim() ?? "";
   const item = sp.get("item")?.trim() ?? "";
-  const variant = sp.get("variant")?.trim() ?? "";
   if (!batchKey || !item) return json({ error: "Pass ?batchKey= and ?item=" }, 400);
 
-  const gone = await prisma.costingBatchRate.deleteMany({ where: { batchKey, item, variant } });
-  if (!gone.count) return json({ error: "That batch has no such rate." }, 404);
-  return json({ ok: true, fellBackToCard: item });
+  const gone = await prisma.costingBatchMaterial.deleteMany({ where: { batchKey, item } });
+  if (!gone.count) return json({ error: "That batch has no lines for that material." }, 404);
+  return json({ ok: true, fellBackToCard: item, removed: gone.count });
 }

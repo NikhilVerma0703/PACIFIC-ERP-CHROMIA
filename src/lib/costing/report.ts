@@ -13,11 +13,9 @@ import {
   bandOf, GRIT_BAND_LABELS, gritItemKey, listCostableBatches, loadBatchConsumption,
   RESIN_TANK_SUPPLIER, type BatchConsumption, type BatchListEntry,
 } from "./batchData";
-import { rateCardForBatch, RATE_ITEM_BY_KEY, type LayeredCard } from "./rateCard";
-
-/** The card the report prices against: the date card with this batch's own
- *  material rates laid over it. Aliased so the helpers below read unchanged. */
-type EffectiveRateCard = LayeredCard;
+import { pricingForBatch, RATE_ITEM_BY_KEY, type BatchPricing } from "./rateCard";
+import { splitMaterial } from "./batchRates";
+import type { EffectiveRateCard } from "./rateCard";
 
 export type { BatchListEntry };
 
@@ -47,15 +45,12 @@ export interface CostingReport {
     assumptions: string[];
     /** item -> effective_from actually used. */
     effectiveFrom: Record<string, string>;
-    /** Rates this batch set for itself, overriding the card. Named rather than
-     *  counted: "3 rates set on this batch" tells a reader something is
-     *  different but not what, and the whole point of showing it is that they
-     *  can check the ones that matter. */
+    /** Materials priced from lines entered on this batch rather than from the
+     *  card. Named rather than counted: "3 materials are different" tells a
+     *  reader something changed but not what, and the whole point of showing it
+     *  is that they can check the ones that matter. Anything the split and the
+     *  mixer disagreed about is spelled out in `assumptions`. */
     batchRates: string[];
-    /** Overrides that were refused, with the reason — a rejected rate that
-     *  vanished silently would leave someone believing the batch is costed at
-     *  a number it is not. */
-    rejectedRates: Array<{ item: string; variant: string; reason: string }>;
   };
   stats: {
     resinCycles: number;
@@ -79,13 +74,14 @@ export async function buildCostingReport(batchKey: string): Promise<CostingRepor
   if (!c) return null;
 
   // June batches price at June's card: the run's start date picks the rates.
-  // Then this batch's own material rates go over the top — see
+  // Then this batch's own material lines take over wherever it has any — see
   // lib/costing/batchRates.ts for why a run needs them and why only materials
   // may be set.
   const rateDate = c.firstPress ?? new Date();
-  const card = await rateCardForBatch(batchKey, rateDate);
+  const pricing = await pricingForBatch(batchKey, rateDate);
+  const card = pricing.card;
 
-  const { materials, unpriced, assumptions } = buildMaterialLines(c, card);
+  const { materials, unpriced, assumptions } = buildMaterialLines(c, card, pricing);
 
   // Conversion and basis are all-or-nothing: a sheet with electricity
   // silently at zero reads as a cheap batch, not an unconfigured card.
@@ -136,14 +132,13 @@ export async function buildCostingReport(batchKey: string): Promise<CostingRepor
     blockedBy: blockedBy.map((k) => RATE_ITEM_BY_KEY.get(k)?.label ?? k),
     variance: buildVariance(c, card),
     basis: {
-      assumptions: card.overridden.length
-        ? [...assumptions,
-           `${card.overridden.length} material rate(s) are set on this batch rather than ` +
-           `taken from the ${card.onDate} card: ${card.overridden.join(", ")}.`]
+      assumptions: pricing.overridden.length
+        ? [`${pricing.overridden.length} material(s) are priced from lines entered on this ` +
+           `batch rather than from the ${card.onDate} card: ${pricing.overridden.join(", ")}.`,
+           ...assumptions]
         : assumptions,
       effectiveFrom: card.effectiveFrom,
-      batchRates: card.overridden,
-      rejectedRates: card.rejected,
+      batchRates: pricing.overridden,
     },
     stats: {
       resinCycles: c.resinCycles,
@@ -156,13 +151,67 @@ export async function buildCostingReport(batchKey: string): Promise<CostingRepor
   };
 }
 
-function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard): {
+function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricing: BatchPricing): {
   materials: MaterialLine[]; unpriced: UnpricedLine[]; assumptions: string[];
 } {
   const materials: MaterialLine[] = [];
   const unpriced: UnpricedLine[] = [];
   const assumptions: string[] = [];
 
+  /**
+   * Price one material from the batch's own lines when it has any.
+   *
+   * Returns false when the batch said nothing about this item, so the caller
+   * falls back to whatever it did before — the card rate, the tank inference,
+   * the dosing rule. That fallback is why a batch nobody has touched costs
+   * exactly as it always did.
+   *
+   * A split line is NOT an estimate. The tank map and the dosing rules are
+   * inferences the sheet flags as such; a quantity and a price somebody typed
+   * off an invoice is a stated fact, and marking it "estimate" alongside them
+   * would tell the reader the opposite of the truth.
+   */
+  const fromBatch = (
+    item: string, label: string, group: MaterialLine["group"],
+    mixerQty: number, unit: "kg" | "t", cardRate: number | null,
+  ): boolean => {
+    const lines = pricing.byItem.get(item);
+    if (!lines?.length) return false;
+
+    const split = splitMaterial(mixerQty, lines, cardRate, label);
+    for (const l of split.lines) {
+      materials.push({
+        group, item: label,
+        basis: l.description || (l.fromBatch ? "set on this batch" : "the rest, at the card rate"),
+        qty: l.qty, unit, rate: l.rate,
+      });
+    }
+    if (split.unpriced > 0) {
+      unpriced.push({
+        item: label, qty: r2(split.unpriced), unit,
+        needs: "a line covering it on this batch, or a card rate",
+      });
+    }
+    // Every disagreement between the split and the mixer, verbatim. These are
+    // the sentences that stop a wrong total looking right.
+    assumptions.push(...split.problems);
+    return true;
+  };
+
+  // -- resin ----------------------------------------------------------------
+  // A batch that states how its resin was bought supersedes the tank map
+  // entirely: the map is a standing assumption about which supplier fills which
+  // tank, and an invoice beats an assumption.
+  //
+  // No card fallback for the remainder. The card prices resin PER SUPPLIER, so
+  // there is no single rate to charge the unsplit part to, and picking one
+  // would book it to a supplier nobody named. It is reported unpriced instead.
+  if (fromBatch("resin", "Resin", "resin", c.resinKg, "kg", null)) {
+    assumptions.push(
+      "Resin is priced from the lines entered on this batch, not from the tank map — " +
+      "so the supplier split is a stated fact here rather than an inference.",
+    );
+  } else {
   // -- resin, one line per daily tank ---------------------------------------
   for (const t of c.resinByTank) {
     const supplier = RESIN_TANK_SUPPLIER[t.tank];
@@ -186,6 +235,7 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard): {
     "so tanks are proportioned by cycle count under the standing tank map " +
     Object.entries(RESIN_TANK_SUPPLIER).map(([t, s]) => `${t} → ${s}`).join(", ") + ".",
   );
+  }
 
   // -- chemicals from dosing rules ------------------------------------------
   const dose = (
@@ -193,13 +243,19 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard): {
     qtyOf: (doseRate: number) => number, basisOf: (doseRate: number) => string,
     group: MaterialLine["group"],
   ) => {
-    const d = card.rates[doseKey];
+    // A batch may redose — a run mixed differently is a real thing — so its own
+    // factor wins over the card's.
+    const d = pricing.dosing[doseKey] ?? card.rates[doseKey];
     const rate = card.rates[rateKey];
     if (d === undefined) {
       unpriced.push({ item, qty: null, unit: "kg", needs: `dosing rule '${doseKey}'` });
       return;
     }
     const qty = qtyOf(d);
+    // The chemical itself may also have been bought in parts — a drum of
+    // catalyst from a different supplier prices differently even though the
+    // DOSE that produced the quantity is one number.
+    if (fromBatch(rateKey, item, group, qty, "kg", rate ?? null)) return;
     if (rate === undefined) {
       unpriced.push({ item, qty: r1(qty), unit: "kg", needs: `rate '${rateKey}'` });
       return;
@@ -232,6 +288,10 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard): {
     const label = GRIT_BAND_LABELS[band] ?? `Grit ${band}`;
     const rate = card.rates[gritItemKey(band)];
     const basis = `silo${e.silos.size > 1 ? "s" : ""} ${[...e.silos].sort().join(", ")} — per-charge silo records`;
+    // Grit is quoted in tonnes, so the batch's lines are in tonnes too — the
+    // unit passed here has to match what the editor showed, or someone types
+    // 14,780 against a kilogram and the batch costs a thousand times too much.
+    if (fromBatch(gritItemKey(band), label, "grit", e.kg / 1000, "t", rate ?? null)) continue;
     if (rate === undefined) {
       unpriced.push({ item: label, qty: r2(e.kg / 1000), unit: "t", needs: `rate '${gritItemKey(band)}'` });
       continue;
@@ -247,13 +307,15 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard): {
 
   // -- filler ---------------------------------------------------------------
   const fillerRate = card.rates["filler-400"];
-  if (fillerRate === undefined) {
-    unpriced.push({ item: "Filler 400#", qty: r2(c.fillerKg / 1000), unit: "t", needs: "rate 'filler-400'" });
-  } else {
-    materials.push({
-      group: "filler", item: "Filler 400# pm", basis: "Filler A · Buffer B",
-      qty: c.fillerKg / 1000, unit: "t", rate: fillerRate,
-    });
+  if (!fromBatch("filler-400", "Filler 400#", "filler", c.fillerKg / 1000, "t", fillerRate ?? null)) {
+    if (fillerRate === undefined) {
+      unpriced.push({ item: "Filler 400#", qty: r2(c.fillerKg / 1000), unit: "t", needs: "rate 'filler-400'" });
+    } else {
+      materials.push({
+        group: "filler", item: "Filler 400# pm", basis: "Filler A · Buffer B",
+        qty: c.fillerKg / 1000, unit: "t", rate: fillerRate,
+      });
+    }
   }
 
   assumptions.push(

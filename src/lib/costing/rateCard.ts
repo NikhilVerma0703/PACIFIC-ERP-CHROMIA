@@ -10,11 +10,7 @@ import "server-only";
 // looks at "today".
 
 import { prisma } from "@/lib/prisma";
-import {
-  applyBatchRates, type BatchRateRow, type LayeredCard,
-} from "./batchRates";
-
-export type { LayeredCard };
+import { dosingOverrides, linesByItem, type BatchMaterialLine } from "./batchRates";
 
 export type RateCategory =
   | "RESIN" | "GRIT" | "FILLER" | "PIGMENT" | "CHEMICAL" | "DOSING" | "CONVERSION" | "BASIS";
@@ -177,38 +173,71 @@ export async function effectiveRateCard(onDate: Date): Promise<EffectiveRateCard
   return { onDate: day(onDate), resinBySupplier, rates, effectiveFrom, missing };
 }
 
-/** The rates one batch has set for itself. Empty for almost every batch — the
+/** Provenance the editor shows so a hand-typed figure is never presented with
+ *  the same authority as the published card. */
+export interface SavedMaterialLine extends BatchMaterialLine {
+  id: string;
+  unit: string;
+  note: string | null;
+  savedBy: string;
+  savedAt: string;
+}
+
+/** How one batch's materials were bought. Empty for almost every batch — the
  *  card is the normal answer and these are the exceptions. */
-export async function listBatchRates(batchKey: string): Promise<BatchRateRow[]> {
-  const rows = await prisma.costingBatchRate.findMany({
+export async function listBatchMaterials(batchKey: string): Promise<SavedMaterialLine[]> {
+  const rows = await prisma.costingBatchMaterial.findMany({
     where: { batchKey },
-    orderBy: [{ item: "asc" }, { variant: "asc" }],
+    orderBy: [{ item: "asc" }, { seq: "asc" }],
   });
   return rows.map((r) => ({
-    item: r.item, variant: r.variant, category: r.category, rate: r.rate, note: r.note,
+    id: r.id,
+    item: r.item,
+    seq: r.seq,
+    category: r.category,
+    qty: r.qty,
+    rate: r.rate,
+    description: r.description ?? "",
+    unit: r.unit,
+    note: r.note,
     savedBy: r.createdBy,
     savedAt: r.updatedAt.toISOString(),
   }));
 }
 
 /**
- * The card a batch is actually costed against: the date card, with the batch's
- * own material rates laid over it.
+ * Everything the report needs to price a batch: the card in force on its run
+ * date, plus how this batch's materials were actually bought.
  *
- * This is the function the report calls, rather than effectiveRateCard, so
- * there is one place that decides what a batch costs. Calling the plain card
- * anywhere in the costing path would price a batch at the plant average while
- * the screen showed its own rates — the two disagreeing silently.
+ * One function so there is one place that decides what a batch costs. Reading
+ * the plain card anywhere in the costing path would price a batch at the plant
+ * average while the screen showed its own splits, the two disagreeing silently.
  */
-export async function rateCardForBatch(
+export interface BatchPricing {
+  card: EffectiveRateCard;
+  /** item -> its lines, in seq order. */
+  byItem: Map<string, BatchMaterialLine[]>;
+  /** Dosing factors this batch overrode. */
+  dosing: Record<string, number>;
+  /** Items the batch has lines for — what the sheet reports as "set on this
+   *  batch" rather than taken from the card. */
+  overridden: string[];
+}
+
+export async function pricingForBatch(
   batchKey: string,
   onDate: Date,
-): Promise<LayeredCard> {
-  const [card, overrides] = await Promise.all([
+): Promise<BatchPricing> {
+  const [card, lines] = await Promise.all([
     effectiveRateCard(onDate),
-    listBatchRates(batchKey),
+    listBatchMaterials(batchKey),
   ]);
-  return applyBatchRates(card, overrides);
+  return {
+    card,
+    byItem: linesByItem(lines),
+    dosing: dosingOverrides(lines),
+    overridden: [...new Set(lines.map((l) => l.item))].sort(),
+  };
 }
 
 /**

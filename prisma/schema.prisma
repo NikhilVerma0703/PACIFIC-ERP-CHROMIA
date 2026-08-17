@@ -4010,29 +4010,37 @@ model CostingRate {
   @@map("costing_rate")
 }
 
-/// What ONE batch's materials actually cost, layered over the date-resolved
-/// card (src/lib/costing/batchRates.ts).
+/// How ONE batch's materials were actually bought — quantity, price and what
+/// each part was (src/lib/costing/batchRates.ts).
 ///
-/// The card answers "what did resin cost in August", which is right for a plant
-/// average and wrong for a specific run: the resin in a given batch came off a
-/// particular purchase order at a particular price, and costing it at the
-/// month's card produces a number nobody can reconcile against the invoice.
+/// WHY LINES AND NOT A RATE. The mixer weighs one number, "resin, 1,000 kg".
+/// What was bought is often several things: 600 kg from Aypols at ₹161 and 400
+/// from 3n Composits at ₹145, or one drum from a new supplier at a trial price.
+/// A single ₹/kg can only average that, and an average is exactly the figure
+/// nobody can reconcile against an invoice. So a material may carry several
+/// rows here, each with its own qty, rate and description.
 ///
-/// FALLBACK, NOT REPLACEMENT. Only the items someone actually set live here;
-/// everything else still resolves from costing_rate by date. So a batch with no
-/// rows prices exactly as it did before this table existed.
+/// FALLBACK, NOT REPLACEMENT. A material with no rows is priced whole at the
+/// card rate, so a batch nobody has touched costs exactly as it did before this
+/// table existed.
+///
+/// QUANTITIES NEED NOT SUM TO THE MIXER. Deliberately: the mixer figure is not
+/// fixed — a corrected mixer row re-costs the batch on the next read — so a
+/// split that balanced when typed can stop balancing without anyone touching
+/// it. splitMaterial prices what is there and reports the difference; refusing
+/// would blank a costing because a different screen was corrected.
 ///
 /// Unlike costing_rate this is NOT append-only. A rate revision is history the
-/// whole plant shares, so it earns a row; a batch rate is a single current fact
-/// about one run, corrected in place — hence the unique key on
-/// (batch_key, item, variant) and updatedAt rather than effective_from.
+/// whole plant shares and earns a row; these are current facts about one run,
+/// corrected in place — hence (batch_key, item, seq) and updatedAt rather than
+/// effective_from.
 ///
 /// Only material categories may appear: RESIN, GRIT, FILLER, PIGMENT, CHEMICAL
 /// and the DOSING rules. CONVERSION is a whole-plant monthly figure and BASIS
 /// holds the denominators every sheet divides by — a per-batch slab area or
 /// ₹/USD would make two batches incomparable under the same column heading.
 /// Enforced in batchRates.ts and again in the write route, not by this table.
-model CostingBatchRate {
+model CostingBatchMaterial {
   id       String @id @default(cuid())
   /// mixer_cycle.batch_key — the same key the costing dashboard picks by.
   /// No FK: batch_key is a string across several import tables, not a table.
@@ -4041,20 +4049,30 @@ model CostingBatchRate {
   category String
   /// Canonical key from src/lib/costing/rateCard.ts, e.g. "grit-0.6-1.2".
   item     String
-  /// Supplier for resin; empty string otherwise, so the unique key holds —
-  /// Postgres treats NULLs as distinct and would allow duplicates.
-  variant  String @default("")
+  /// Order within the material. Lines consume the mixer quantity in this
+  /// order, so a null-qty "rest" line placed last takes what is left rather
+  /// than everything.
+  seq      Int    @default(0)
+
+  /// How much this line covers, in the item's own unit. NULL means "whatever
+  /// is left of the mixer's quantity" — the common case when someone splits
+  /// off one known drum and lets the remainder fall through. Always null for
+  /// DOSING, which is a factor with nothing to split.
+  qty      Float?
   unit     String
   rate     Float
-  note     String?
+  /// Supplier, PO number, "trial drum" — what this part of the quantity was.
+  /// This is the column that makes a split readable six months later.
+  description String?
+  note        String?
 
   createdBy String   @default("system") @map("created_by")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  @@unique([batchKey, item, variant])
+  @@unique([batchKey, item, seq])
   @@index([batchKey])
-  @@map("costing_batch_rate")
+  @@map("costing_batch_material")
 }
 
 // ============================================================================

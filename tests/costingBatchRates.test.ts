@@ -1,173 +1,231 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  applyBatchRates, compareToCard, isOverridable, OVERRIDABLE_CATEGORIES,
-  rateKey, type BatchRateRow, type RateCardLike,
+  dosingOverrides, isOverridable, isSplittable, linesByItem,
+  OVERRIDABLE_CATEGORIES, splitMaterial, summariseSplit,
+  type BatchMaterialLine,
 } from "../src/lib/costing/batchRates.ts";
 
-// The layering decides what a batch costs. Every case below is one where
-// getting it wrong produces a plausible-looking number rather than an error —
-// which is the only kind of costing bug that survives to a customer quote.
+// The split decides what a batch costs. Every case below is one where getting
+// it wrong produces a plausible-looking number rather than an error — the only
+// kind of costing bug that survives to a customer quote.
 
-const card: RateCardLike = {
-  onDate: "2026-08-01",
-  resinBySupplier: { Aypols: 161, "3n Composits": 145 },
-  rates: {
-    "grit-0.6-1.2": 14780,
-    "filler-400": 12499,
-    tio2: 310,
-    manpower: 9_000_000,
-    "sqft-per-slab": 75,
-  },
-  effectiveFrom: {
-    "resin · Aypols": "2026-08-01",
-    "grit-0.6-1.2": "2026-08-01",
-    manpower: "2026-08-01",
-  },
-  missing: [],
-};
-
-const row = (o: Partial<BatchRateRow>): BatchRateRow => ({
-  item: "grit-0.6-1.2", variant: "", category: "GRIT", rate: 15000, ...o,
+const line = (o: Partial<BatchMaterialLine>): BatchMaterialLine => ({
+  item: "resin", seq: 0, category: "RESIN", qty: null, rate: 161, description: "", ...o,
 });
 
-test("a batch with no rates of its own prices exactly as the card", () => {
-  // The guarantee that makes this safe to ship: every costing that exists
-  // today must be unchanged until somebody deliberately sets a rate.
-  const r = applyBatchRates(card, []);
-  assert.deepEqual(r.rates, card.rates);
-  assert.deepEqual(r.resinBySupplier, card.resinBySupplier);
-  assert.deepEqual(r.overridden, []);
-  assert.deepEqual(r.rejected, []);
-  for (const k of Object.keys(card.rates)) assert.equal(r.source[k], "card");
+// --- the ordinary case ------------------------------------------------------
+
+test("a material with no lines is priced whole at the card rate", () => {
+  // The guarantee that keeps this safe: a batch nobody has touched must price
+  // exactly as it did before any of this existed.
+  const r = splitMaterial(1000, [], 161);
+  assert.deepEqual(r.lines, [{ qty: 1000, rate: 161, description: "", fromBatch: false }]);
+  assert.equal(r.remainder, 0);
+  assert.deepEqual(r.problems, []);
 });
 
-test("a batch rate wins over the card, and says so", () => {
-  const r = applyBatchRates(card, [row({ rate: 15500 })]);
-  assert.equal(r.rates["grit-0.6-1.2"], 15500);
-  assert.equal(r.source["grit-0.6-1.2"], "batch");
-  assert.deepEqual(r.overridden, ["grit-0.6-1.2"]);
-  // Everything untouched still comes from the card.
-  assert.equal(r.rates["filler-400"], 12499);
-  assert.equal(r.source["filler-400"], "card");
+test("no lines and no card rate leaves the quantity unpriced, not free", () => {
+  // Pricing it at zero would make the batch look cheap; the report shows this
+  // as "consumed but not priced" instead.
+  const r = splitMaterial(1000, [], null);
+  assert.deepEqual(r.lines, []);
+  assert.equal(r.unpriced, 1000);
 });
 
-test("resin is overridden per supplier, not wholesale", () => {
-  // Resin is the one item that splits by variant. Setting Aypols must not
-  // silently re-price the other supplier's tanks.
-  const r = applyBatchRates(card, [
-    row({ item: "resin", variant: "Aypols", category: "RESIN", rate: 172 }),
-  ]);
-  assert.equal(r.resinBySupplier.Aypols, 172);
-  assert.equal(r.resinBySupplier["3n Composits"], 145, "the other supplier is untouched");
-  assert.equal(r.source["resin · Aypols"], "batch");
-  assert.equal(r.source["resin · 3n Composits"], "card");
+// --- the thing this was built for -------------------------------------------
+
+test("one tonne of resin splits into two priced deliveries", () => {
+  // The worked example: 600 kg from one supplier, 400 from another, each with
+  // its own price and a description saying which is which.
+  const r = splitMaterial(1000, [
+    line({ seq: 0, qty: 600, rate: 161, description: "Aypols · PO-4471" }),
+    line({ seq: 1, qty: 400, rate: 145, description: "3n Composits" }),
+  ], 161);
+
+  assert.equal(r.lines.length, 2);
+  assert.deepEqual(r.lines.map((l) => [l.qty, l.rate]), [[600, 161], [400, 145]]);
+  assert.equal(r.lines[0].description, "Aypols · PO-4471");
+  assert.ok(r.lines.every((l) => l.fromBatch));
+  assert.equal(r.remainder, 0);
+  assert.deepEqual(r.problems, [], "a balanced split is not a problem");
+
+  // And the money is the point: 600×161 + 400×145 = 154,600, not 1000 × any
+  // single average rate.
+  const total = r.lines.reduce((s, l) => s + l.qty * l.rate, 0);
+  assert.equal(total, 154_600);
 });
 
-test("the card is never mutated", () => {
-  // The caller may hold one card across several batches; layering in place
-  // would leak one batch's resin price into the next.
-  const before = JSON.stringify(card);
-  applyBatchRates(card, [
-    row({ rate: 99999 }),
-    row({ item: "resin", variant: "Aypols", category: "RESIN", rate: 999 }),
-  ]);
-  assert.equal(JSON.stringify(card), before);
+test("a line with no quantity takes whatever is left", () => {
+  // The common shape: split off the one drum you have a price for and let the
+  // rest fall through.
+  const r = splitMaterial(1000, [
+    line({ seq: 0, qty: 250, rate: 180, description: "trial drum" }),
+    line({ seq: 1, qty: null, rate: 161, description: "regular stock" }),
+  ], null);
+  assert.deepEqual(r.lines.map((l) => [l.qty, l.description]),
+    [[250, "trial drum"], [750, "regular stock"]]);
+  assert.equal(r.remainder, 0);
 });
 
-test("an overridden rate stops claiming a card revision date", () => {
-  const r = applyBatchRates(card, [row({ rate: 15500 })]);
-  assert.equal(r.effectiveFrom["grit-0.6-1.2"], "set on this batch");
-  // Untouched items keep pointing at the revision that really supplied them.
-  assert.equal(r.effectiveFrom["manpower"], "2026-08-01");
+test("lines consume in seq order, so the catch-all does not swallow everything", () => {
+  // Entered in the other order. If the null-qty line were applied first it
+  // would take all 1000 and the 250 would be added ON TOP, over-pricing the
+  // batch by a quarter.
+  const r = splitMaterial(1000, [
+    line({ seq: 1, qty: 250, rate: 180, description: "second" }),
+    line({ seq: 0, qty: null, rate: 161, description: "first" }),
+  ], null);
+  assert.deepEqual(r.lines.map((l) => [l.qty, l.description]),
+    [[1000, "first"], [250, "second"]]);
+  // ...and that IS over-allocated, which must be reported.
+  assert.ok(r.problems.some((p) => /more is being priced than was weighed/.test(p)));
 });
 
-test("plant-wide costs cannot be set per batch", () => {
-  // Conversion is a whole-plant monthly figure — there is no such thing as this
-  // batch's electricity bill. Basis is worse: slab area and ₹/USD are the
-  // denominators, so a per-batch value makes two batches incomparable while
-  // still printing the same column heading.
-  for (const category of ["CONVERSION", "BASIS"]) {
-    const r = applyBatchRates(card, [row({ item: "manpower", category, rate: 1 })]);
-    assert.equal(r.rates["manpower"], 9_000_000, `${category} leaked through`);
-    assert.equal(r.rejected.length, 1);
-    assert.match(r.rejected[0].reason, /plant-wide/i);
+// --- when the split and the mixer disagree ----------------------------------
+
+test("an under-allocated split prices the rest at the card rate", () => {
+  const r = splitMaterial(1000, [
+    line({ seq: 0, qty: 600, rate: 172, description: "Aypols" }),
+  ], 161);
+  assert.equal(r.lines.length, 2);
+  assert.deepEqual(r.lines[1], {
+    qty: 400, rate: 161, description: "the rest, at the card rate", fromBatch: false,
+  });
+  assert.equal(r.remainder, 400);
+  assert.equal(r.unpriced, 0);
+});
+
+test("an under-allocated split with no card rate reports the gap loudly", () => {
+  // Resin has a rate per supplier, so there is no single card rate to fall back
+  // on. Guessing one would book the leftover to a supplier nobody named.
+  const r = splitMaterial(1000, [
+    line({ seq: 0, qty: 600, rate: 172, description: "Aypols" }),
+  ], null);
+  assert.equal(r.lines.length, 1);
+  assert.equal(r.unpriced, 400);
+  assert.ok(r.problems.some((p) => /NOT in the total/.test(p)));
+});
+
+test("an over-allocated split still prices what was entered, and says so", () => {
+  // The person said what they bought. Silently clamping to the mixer figure
+  // would hide a disagreement that means one of the two records is wrong.
+  const r = splitMaterial(1000, [
+    line({ seq: 0, qty: 700, rate: 161, description: "A" }),
+    line({ seq: 1, qty: 500, rate: 145, description: "B" }),
+  ], 161);
+  assert.equal(r.lines.length, 2, "nothing was dropped");
+  assert.equal(r.remainder, 0);
+  assert.ok(r.problems.some((p) => /1200.*1000|more is being priced/.test(p)));
+});
+
+test("the mixer figure moving later does not blank the costing", () => {
+  // The reason the rule is not "they must add up": a corrected mixer row
+  // re-costs the batch, so a split that balanced when typed can stop balancing
+  // without anyone touching it. It must still price.
+  const split = [
+    line({ seq: 0, qty: 600, rate: 161, description: "A" }),
+    line({ seq: 1, qty: 400, rate: 145, description: "B" }),
+  ];
+  const corrected = splitMaterial(950, split, 161);
+  assert.equal(corrected.lines.length, 2, "still priced after the mixer changed");
+  assert.ok(corrected.problems.length > 0, "and the disagreement is surfaced");
+});
+
+test("a catch-all line after the quantity is used up prices nothing, and says why", () => {
+  const r = splitMaterial(1000, [
+    line({ seq: 0, qty: 1000, rate: 161, description: "all of it" }),
+    line({ seq: 1, qty: null, rate: 145, description: "leftovers" }),
+  ], 161);
+  assert.equal(r.lines.length, 1);
+  assert.ok(r.problems.some((p) => /prices nothing/.test(p)));
+});
+
+// --- rubbish input ----------------------------------------------------------
+
+test("a line with no usable price is left out rather than priced at zero", () => {
+  for (const bad of [0, -5, Number.NaN]) {
+    const r = splitMaterial(1000, [
+      line({ seq: 0, qty: 400, rate: bad as number, description: "bad" }),
+      line({ seq: 1, qty: 600, rate: 161, description: "good" }),
+    ], null);
+    assert.equal(r.lines.length, 1, `rate ${bad} was priced`);
+    assert.equal(r.lines[0].description, "good");
+    assert.ok(r.problems.some((p) => /no usable price/.test(p)));
   }
-  assert.equal(isOverridable("CONVERSION"), false);
-  assert.equal(isOverridable("BASIS"), false);
+});
+
+test("a line with no usable quantity is left out", () => {
+  const r = splitMaterial(1000, [
+    line({ seq: 0, qty: -100, rate: 161, description: "negative" }),
+  ], null);
+  assert.equal(r.lines.length, 0);
+  assert.ok(r.problems.some((p) => /no usable quantity/.test(p)));
+});
+
+test("rounding noise is not treated as a shortfall", () => {
+  // Kilos off a scale. 0.002 left over is not worth a warning line on a sheet.
+  const r = splitMaterial(1000, [
+    line({ seq: 0, qty: 999.998, rate: 161, description: "A" }),
+  ], 161);
+  assert.equal(r.lines.length, 1, "no spurious remainder line");
+  assert.deepEqual(r.problems, []);
+});
+
+// --- dosing is a factor, not a quantity -------------------------------------
+
+test("dosing rules cannot be split, only set", () => {
+  assert.equal(isSplittable("RESIN"), true);
+  assert.equal(isSplittable("GRIT"), true);
+  assert.equal(isSplittable("DOSING"), false, "1% of resin weight has nothing to split");
+  assert.equal(isSplittable("CONVERSION"), false);
+
+  const d = dosingOverrides([
+    line({ item: "catalyst-pct-of-resin", category: "DOSING", seq: 0, rate: 1.1 }),
+    line({ item: "silane-pct-of-resin", category: "DOSING", seq: 0, rate: 1.3 }),
+    line({ item: "resin", category: "RESIN", seq: 0, rate: 161 }),
+  ]);
+  assert.deepEqual(d, { "catalyst-pct-of-resin": 1.1, "silane-pct-of-resin": 1.3 });
+  assert.ok(!("resin" in d), "a material is not a dosing factor");
+});
+
+test("plant-wide costs still cannot be set per batch", () => {
+  for (const c of ["CONVERSION", "BASIS"]) assert.equal(isOverridable(c), false);
   for (const c of ["RESIN", "GRIT", "FILLER", "PIGMENT", "CHEMICAL", "DOSING"]) {
     assert.ok(OVERRIDABLE_CATEGORIES.has(c), `${c} should be settable`);
   }
 });
 
-test("a zero or negative rate is refused, not applied", () => {
-  // The failure this stops: a zero does not error, it prices the material at
-  // nothing and makes the batch look cheap.
-  for (const bad of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
-    const r = applyBatchRates(card, [row({ rate: bad as number })]);
-    assert.equal(r.rates["grit-0.6-1.2"], 14780, `rate ${bad} was applied`);
-    assert.equal(r.rejected.length, 1);
-    assert.match(r.rejected[0].reason, /above zero/i);
-  }
-});
+// --- the editor's live view -------------------------------------------------
 
-test("a rejected row is reported rather than dropped", () => {
-  // An override that silently did nothing is worse than one refused: the
-  // person who typed it believes the batch is costed at their number.
-  const r = applyBatchRates(card, [
-    row({ rate: 15500 }),
-    row({ item: "", rate: 100 }),
-    row({ item: "packing", category: "CONVERSION", rate: 30 }),
+test("the summary tells the typist what is still unallocated", () => {
+  const s = summariseSplit(1000, [
+    line({ seq: 0, qty: 600 }), line({ seq: 1, qty: 250 }),
   ]);
-  assert.deepEqual(r.overridden, ["grit-0.6-1.2"]);
-  assert.equal(r.rejected.length, 2);
+  assert.equal(s.allocated, 850);
+  assert.equal(s.left, 150);
+  assert.equal(s.balanced, false);
 });
 
-test("an override fills a hole the card left open", () => {
-  const gappy: RateCardLike = { ...card, rates: {}, missing: ["tio2", "filler-400"] };
-  const r = applyBatchRates(gappy, [row({ item: "tio2", category: "PIGMENT", rate: 320 })]);
-  assert.equal(r.rates.tio2, 320);
-  assert.deepEqual(r.missing, ["filler-400"], "only the still-missing item remains");
+test("a catch-all line counts as balanced however much is left", () => {
+  const s = summariseSplit(1000, [line({ seq: 0, qty: 600 }), line({ seq: 1, qty: null })]);
+  assert.equal(s.allocated, 600);
+  assert.equal(s.balanced, true, "the rest is spoken for");
+  assert.equal(s.hasRest, true);
 });
 
-test("resin counts as present once any supplier has a rate", () => {
-  const gappy: RateCardLike = { ...card, resinBySupplier: {}, missing: ["resin"] };
-  const r = applyBatchRates(gappy, [
-    row({ item: "resin", variant: "Aypols", category: "RESIN", rate: 170 }),
+test("over-allocation shows as a negative remainder, not as balanced", () => {
+  const s = summariseSplit(1000, [line({ seq: 0, qty: 1200 })]);
+  assert.equal(s.left, -200);
+  assert.equal(s.balanced, false);
+});
+
+test("lines group by material and stay in seq order", () => {
+  const m = linesByItem([
+    line({ item: "resin", seq: 1, description: "b" }),
+    line({ item: "grit-0.6-1.2", category: "GRIT", seq: 0, description: "g" }),
+    line({ item: "resin", seq: 0, description: "a" }),
   ]);
-  assert.deepEqual(r.missing, []);
-});
-
-test("the last row wins when the same item is set twice", () => {
-  const r = applyBatchRates(card, [row({ rate: 15000 }), row({ rate: 16000 })]);
-  assert.equal(r.rates["grit-0.6-1.2"], 16000);
-  assert.deepEqual(r.overridden, ["grit-0.6-1.2"], "listed once, not twice");
-});
-
-test("rate keys match how the card files them", () => {
-  assert.equal(rateKey("resin", "Aypols"), "resin · Aypols");
-  assert.equal(rateKey("grit-0.6-1.2", ""), "grit-0.6-1.2");
-  // Resin with no supplier is not a per-supplier key.
-  assert.equal(rateKey("resin", ""), "resin");
-});
-
-test("the comparison shows how far a batch rate sits from the card", () => {
-  // The point of showing both: 12% above the month's card is usually a
-  // correction and occasionally a typo, and only seeing both tells them apart.
-  const [grit] = compareToCard(card, [row({ rate: 15000 })]);
-  assert.equal(grit.cardRate, 14780);
-  assert.equal(grit.deltaPct, 1.5);
-
-  const [resin] = compareToCard(card, [
-    row({ item: "resin", variant: "Aypols", category: "RESIN", rate: 180 }),
-  ]);
-  assert.equal(resin.cardRate, 161);
-  assert.equal(resin.deltaPct, 11.8);
-});
-
-test("a rate the card cannot price compares against nothing, not against zero", () => {
-  // Dividing by a missing card rate would print Infinity% — worse than blank.
-  const [c] = compareToCard(card, [row({ item: "silane", category: "CHEMICAL", rate: 420 })]);
-  assert.equal(c.cardRate, null);
-  assert.equal(c.deltaPct, null);
+  assert.deepEqual(m.get("resin")?.map((l) => l.description), ["a", "b"]);
+  assert.equal(m.get("grit-0.6-1.2")?.length, 1);
 });

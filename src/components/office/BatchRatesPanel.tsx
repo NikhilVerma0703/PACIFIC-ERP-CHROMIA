@@ -1,17 +1,24 @@
 "use client";
 
-// Setting one batch's material rates.
+// How this batch's materials were bought.
 //
-// The card price sits beside every box, and the difference is shown as soon as
-// a number is typed. That is the whole design: a rate 12% above the month's
-// card is usually a correction and occasionally a typo, and the only way to
-// tell them apart is to see both at once. A form that showed only the box would
-// make a mistyped 1610 look exactly like a deliberate 161.
+// The mixer weighs one number per material. What was bought is often several
+// things, so each material can be SPLIT into lines — a quantity, a description
+// of what that part was, and its own price. 600 kg from Aypols at ₹161 and 400
+// from 3n Composits at ₹145, rather than one average nobody can reconcile.
 //
-// Empty means "use the card". Clearing a rate is a real action, not a blank
-// save, so it has its own button and says what it falls back to.
+// Three things the screen has to do, because the arithmetic is unforgiving:
+//
+//   * show the mixer's quantity next to the boxes. Someone splitting resin
+//     against a figure they have to remember from another panel is how 600+400
+//     gets typed against a batch that used 1,240 kg.
+//   * show what is still unallocated, live, while they type — that is the
+//     moment it can be fixed, not after a save.
+//   * show the card price beside the batch price. A rate well above the card is
+//     usually a correction and occasionally a typo, and only seeing both tells
+//     them apart.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Card, Empty } from "@/components/ui";
 
 const API = "/api/office/costing-admin/batch-rates";
@@ -19,9 +26,10 @@ const API = "/api/office/costing-admin/batch-rates";
 interface CatalogueItem {
   item: string; category: string; label: string; unit: string; hint: string; variants?: boolean;
 }
-interface BatchRate {
-  item: string; variant: string; category: string; rate: number; note?: string | null;
-  savedBy?: string | null; savedAt?: string | null;
+interface SavedLine {
+  id: string; item: string; seq: number; category: string;
+  qty: number | null; rate: number; description: string; unit: string;
+  savedBy: string; savedAt: string;
 }
 interface CardShape {
   onDate: string;
@@ -31,55 +39,23 @@ interface CardShape {
 interface Payload {
   batchKey: string;
   catalogue: CatalogueItem[];
-  rows: BatchRate[];
+  rows: SavedLine[];
   card: CardShape;
+  /** item -> what the mixer weighed, in the item's own unit. */
+  mixer: Record<string, { qty: number; unit: string }>;
 }
 
-const inp = "w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
+/** A row being edited. Blank qty means "the rest". */
+interface DraftLine { qty: string; rate: string; description: string }
+
+const inp = "w-full rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-sm shadow-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
 const btn = "rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transition hover:bg-brand/90 disabled:opacity-60";
 const btnGhost = "rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-60";
 
-const inr = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 });
+const num = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 3 });
+const money = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 });
 
-/** One editable row: an item, optionally a supplier. Resin grows a row per
- *  supplier the card knows; everything else is a single row. */
-interface Slot {
-  key: string;
-  item: string;
-  variant: string;
-  label: string;
-  unit: string;
-  hint: string;
-  cardRate: number | null;
-}
-
-function buildSlots(p: Payload): Slot[] {
-  const out: Slot[] = [];
-  for (const def of p.catalogue) {
-    if (def.variants) {
-      // Suppliers the card knows, plus any this batch has already set — a
-      // supplier that has left the card must not lose its batch rate.
-      const suppliers = new Set([
-        ...Object.keys(p.card.resinBySupplier),
-        ...p.rows.filter((r) => r.item === def.item && r.variant).map((r) => r.variant),
-      ]);
-      for (const s of [...suppliers].sort()) {
-        out.push({
-          key: `${def.item}|${s}`, item: def.item, variant: s,
-          label: `${def.label} — ${s}`, unit: def.unit, hint: def.hint,
-          cardRate: p.card.resinBySupplier[s] ?? null,
-        });
-      }
-    } else {
-      out.push({
-        key: `${def.item}|`, item: def.item, variant: "",
-        label: def.label, unit: def.unit, hint: def.hint,
-        cardRate: p.card.rates[def.item] ?? null,
-      });
-    }
-  }
-  return out;
-}
+const SPLITTABLE = new Set(["RESIN", "GRIT", "FILLER", "PIGMENT", "CHEMICAL"]);
 
 export function BatchRatesPanel({
   batchKey, batchLabel, onSaved,
@@ -89,14 +65,15 @@ export function BatchRatesPanel({
   onSaved: () => void;
 }) {
   const [data, setData] = useState<Payload | null>(null);
-  const [draft, setDraft] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState(false);
+  const [drafts, setDrafts] = useState<Record<string, DraftLine[]>>({});
+  const [busy, setBusy] = useState("");
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
-  // Null until the first load decides: a batch that already has rates opens
+  // Null until the first load decides: a batch that already has lines opens
   // showing them. Anything else means someone has to click to find out whether
   // last month's numbers are still there, and a saved figure nobody can see is
   // no better than one that was never saved.
   const [open, setOpen] = useState<boolean | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -109,11 +86,17 @@ export function BatchRatesPanel({
       }
       const p: Payload = await r.json();
       setData(p);
-      const d: Record<string, string> = {};
-      for (const row of p.rows) d[`${row.item}|${row.variant}`] = String(row.rate);
-      setDraft(d);
-      // Only on the FIRST load. Re-reading after a save must not re-open a
-      // panel the user has just closed.
+      const d: Record<string, DraftLine[]> = {};
+      for (const row of p.rows) {
+        (d[row.item] ??= []).push({
+          qty: row.qty == null ? "" : String(row.qty),
+          rate: String(row.rate),
+          description: row.description ?? "",
+        });
+      }
+      setDrafts(d);
+      // First load only — re-reading after a save must not reopen a panel the
+      // user has just closed.
       setOpen((v) => v ?? p.rows.length > 0);
     } catch (e) {
       setNote({ text: e instanceof Error ? e.message : String(e), ok: false });
@@ -121,21 +104,15 @@ export function BatchRatesPanel({
     }
   }, [batchKey]);
 
-  // Always, not only when opened: the collapsed state has to know whether this
-  // batch has saved rates before it can say so. The component is keyed on the
-  // batch, so switching batches remounts and asks again.
   useEffect(() => { void load(); }, [load]);
 
-  const savedCount = data?.rows.length ?? 0;
-  const lastSaved = data?.rows
-    .map((r) => r.savedAt)
-    .filter((s): s is string => Boolean(s))
-    .sort()
-    .at(-1);
-  const savedBy = data?.rows.find((r) => r.savedBy)?.savedBy ?? null;
+  const savedItems = useMemo(
+    () => [...new Set(data?.rows.map((r) => r.item) ?? [])], [data]);
+  const lastSaved = data?.rows.map((r) => r.savedAt).sort().at(-1);
   const savedWhen = lastSaved
     ? new Date(lastSaved).toLocaleDateString("en-IN", { dateStyle: "medium" })
     : null;
+  const savedBy = data?.rows[0]?.savedBy ?? null;
 
   if (open === false || open === null) {
     return (
@@ -143,81 +120,95 @@ export function BatchRatesPanel({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-              Rates for this batch
+              Materials for this batch
             </h2>
-            {savedCount > 0 ? (
+            {savedItems.length > 0 ? (
               <p className="mt-1 text-sm text-gray-700">
                 <span className="font-medium">
-                  {savedCount} rate{savedCount === 1 ? "" : "s"} saved on {batchLabel}
+                  {savedItems.length} material{savedItems.length === 1 ? "" : "s"} priced on {batchLabel}
                 </span>
                 {savedWhen ? ` — last changed ${savedWhen}` : ""}
-                {savedBy ? ` by ${savedBy}` : ""}. Everything else prices at the card.
+                {savedBy ? ` by ${savedBy}` : ""}. The rest price at the card.
               </p>
             ) : (
               <p className="mt-1 text-sm text-gray-500">
-                {batchLabel} prices entirely at the card in force on its run date. Set a rate here
-                when a material was bought for this run at a different price — it is kept with the
-                batch and shown again next time.
+                {batchLabel} prices entirely at the card. Split a material into what was actually
+                bought — quantity, supplier, price — and it is kept with the batch.
               </p>
             )}
           </div>
           <button type="button" onClick={() => setOpen(true)} className={btn}>
-            {savedCount > 0 ? "Show and edit" : "Set batch rates"}
+            {savedItems.length > 0 ? "Show and edit" : "Price this batch"}
           </button>
         </div>
       </Card>
     );
   }
 
-  const slots = data ? buildSlots(data) : [];
+  if (!data) {
+    return <Card><Empty>Loading the mixer quantities and the card…</Empty></Card>;
+  }
 
-  const save = async () => {
-    if (!data) return;
-    setBusy(true); setNote(null);
-    // Only rows with a number go up. A blank box means "use the card", which is
-    // the absence of a row rather than a rate of zero.
-    const rows = slots
-      .map((s) => ({ s, v: (draft[s.key] ?? "").trim() }))
-      .filter(({ v }) => v !== "")
-      .map(({ s, v }) => ({ item: s.item, variant: s.variant, rate: Number(v) }));
-    if (!rows.length) {
-      setBusy(false);
-      setNote({ text: "Nothing to save — every box is empty, so the card is already in use.", ok: false });
-      return;
+  const lineOf = (item: string): DraftLine[] => drafts[item] ?? [];
+  const setLines = (item: string, next: DraftLine[]) =>
+    setDrafts((p) => ({ ...p, [item]: next }));
+
+  const cardRateFor = (c: CatalogueItem): number | null => {
+    // Resin is the one item the card holds per supplier, so there is no single
+    // number to show. The split is where a supplier gets named now.
+    if (c.item === "resin") {
+      const vals = Object.values(data.card.resinBySupplier);
+      return vals.length === 1 ? vals[0] : null;
     }
+    const v = data.card.rates[c.item];
+    return Number.isFinite(v) ? v : null;
+  };
+
+  const save = async (c: CatalogueItem) => {
+    setBusy(c.item); setNote(null);
+    const lines = lineOf(c.item)
+      .filter((l) => l.rate.trim() !== "")
+      .map((l, i) => ({
+        seq: i,
+        qty: l.qty.trim() === "" ? null : Number(l.qty),
+        rate: Number(l.rate),
+        description: l.description,
+      }));
     try {
       const r = await fetch(API, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batchKey, rows }),
+        body: JSON.stringify({ batchKey, item: c.item, lines }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { setNote({ text: d.error ?? `Save failed (${r.status})`, ok: false }); return; }
-      setNote({ text: `${d.written} rate(s) saved. The batch has been re-costed.`, ok: true });
-      await load();
-      onSaved();
-    } catch (e) {
-      setNote({ text: e instanceof Error ? e.message : String(e), ok: false });
-    } finally { setBusy(false); }
-  };
-
-  const clear = async (slot: Slot) => {
-    setBusy(true); setNote(null);
-    try {
-      const qs = new URLSearchParams({ batchKey, item: slot.item, variant: slot.variant });
-      const r = await fetch(`${API}?${qs}`, { method: "DELETE" });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) { setNote({ text: d.error ?? `Could not clear (${r.status})`, ok: false }); return; }
-      setDraft((p) => ({ ...p, [slot.key]: "" }));
       setNote({
-        text: `${slot.label} falls back to the ${data?.card.onDate ?? "current"} card.`,
+        text: lines.length
+          ? `${c.label}: ${lines.length} line${lines.length === 1 ? "" : "s"} saved. The batch has been re-costed.`
+          : `${c.label} falls back to the card.`,
         ok: true,
       });
       await load();
       onSaved();
     } catch (e) {
       setNote({ text: e instanceof Error ? e.message : String(e), ok: false });
-    } finally { setBusy(false); }
+    } finally { setBusy(""); }
+  };
+
+  const clear = async (c: CatalogueItem) => {
+    setBusy(c.item); setNote(null);
+    try {
+      const qs = new URLSearchParams({ batchKey, item: c.item });
+      const r = await fetch(`${API}?${qs}`, { method: "DELETE" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setNote({ text: d.error ?? `Could not clear (${r.status})`, ok: false }); return; }
+      setLines(c.item, []);
+      setNote({ text: `${c.label} falls back to the ${data.card.onDate} card.`, ok: true });
+      await load();
+      onSaved();
+    } catch (e) {
+      setNote({ text: e instanceof Error ? e.message : String(e), ok: false });
+    } finally { setBusy(""); }
   };
 
   return (
@@ -225,14 +216,13 @@ export function BatchRatesPanel({
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-            Rates for this batch · {savedCount} saved
+            Materials for this batch · {savedItems.length} priced here
           </h2>
-          <p className="mt-1 text-sm text-gray-500">
-            {savedCount > 0
-              ? `Filled in from what was saved on ${batchLabel}${savedWhen ? ` on ${savedWhen}` : ""}${savedBy ? ` by ${savedBy}` : ""} — change any of them and save again. `
-              : "Leave a box empty to use the card. "}
-            Only materials can be set here — manpower, electricity, slab area and ₹/USD stay
-            plant-wide, or two batches stop being comparable.
+          <p className="mt-1 max-w-3xl text-sm text-gray-500">
+            Quantities come from the mixer. Split a material into what was actually bought —
+            each line gets its own quantity, description and price. Leave one line&rsquo;s
+            quantity blank to mean &ldquo;the rest&rdquo;. A material with no lines prices whole
+            at the card.
           </p>
         </div>
         <button type="button" onClick={() => setOpen(false)} className={btnGhost}>Close</button>
@@ -246,103 +236,191 @@ export function BatchRatesPanel({
         </div>
       )}
 
-      {!data ? (
-        <Empty>Loading the card…</Empty>
-      ) : (
-        <>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-100 text-left text-xs uppercase tracking-wide text-gray-400">
-                  <th className="py-2 pr-4 font-medium">Material</th>
-                  <th className="py-2 pr-4 font-medium">Card ({data.card.onDate})</th>
-                  <th className="py-2 pr-4 font-medium">This batch</th>
-                  <th className="py-2 pr-4 font-medium">Difference</th>
-                  <th className="py-2 font-medium"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {slots.map((slot) => {
-                  const typed = (draft[slot.key] ?? "").trim();
-                  const val = typed === "" ? null : Number(typed);
-                  const savedRow = data.rows.find(
-                    (r) => r.item === slot.item && r.variant === slot.variant);
-                  const saved = savedRow != null;
-                  // A box holding an unsaved edit must not look like one holding
-                  // last month's agreed figure — they are about to be treated
-                  // identically by the save, and only one of them has been
-                  // checked by anybody.
-                  const dirty = saved && typed !== String(savedRow.rate);
-                  const delta = val != null && Number.isFinite(val) && slot.cardRate
-                    ? Math.round(((val - slot.cardRate) / slot.cardRate) * 1000) / 10
-                    : null;
-                  return (
-                    <tr key={slot.key} className="border-b border-gray-50 last:border-0">
-                      <td className="py-2 pr-4">
-                        <span className="block text-gray-900">{slot.label}</span>
-                        <span className="block text-xs text-gray-400">per {slot.unit}</span>
-                      </td>
-                      <td className="py-2 pr-4 text-gray-600">
-                        {slot.cardRate == null
-                          ? <span className="text-amber-700">not on the card</span>
-                          : `₹${inr.format(slot.cardRate)}`}
-                      </td>
-                      <td className="py-2 pr-4">
-                        <input
-                          type="number" step="0.0001" min="0" inputMode="decimal"
-                          value={draft[slot.key] ?? ""}
-                          onChange={(e) => setDraft((p) => ({ ...p, [slot.key]: e.target.value }))}
-                          placeholder="card"
-                          className={`${inp} max-w-[10rem] ${
-                            dirty ? "border-amber-400 bg-amber-50" : saved ? "border-brand/40" : ""
-                          }`}
-                        />
-                        {saved && (
-                          <span className="mt-0.5 block text-[11px] text-gray-400">
-                            {dirty
-                              ? `unsaved — was ₹${inr.format(savedRow.rate)}`
-                              : `saved${savedRow.savedBy ? ` by ${savedRow.savedBy}` : ""}`}
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-2 pr-4">
-                        {delta == null ? (
-                          <span className="text-xs text-gray-400">—</span>
-                        ) : (
-                          // Flagged past 15%: far enough from the card that it
-                          // wants a second look before a container is priced
-                          // off it, close enough that real movements pass.
-                          <Badge tone={Math.abs(delta) > 15 ? "red" : delta === 0 ? "brand" : "amber"}>
-                            {delta > 0 ? "+" : ""}{delta}%
-                          </Badge>
-                        )}
-                      </td>
-                      <td className="py-2 text-right">
-                        {saved && (
-                          <button type="button" disabled={busy} onClick={() => void clear(slot)}
-                            className={btnGhost}>
-                            Use card
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+      <div className="space-y-2">
+        {data.catalogue.map((c) => {
+          const lines = lineOf(c.item);
+          const mixer = data.mixer[c.item];
+          const cardRate = cardRateFor(c);
+          const splittable = SPLITTABLE.has(c.category);
+          const isOpen = expanded === c.item;
+          const saved = savedItems.includes(c.item);
 
-          <div className="mt-4 flex items-center gap-3 border-t border-gray-100 pt-3">
-            <button type="button" disabled={busy} onClick={() => void save()} className={btn}>
-              {busy ? "Saving…" : "Save batch rates"}
-            </button>
-            <span className="text-xs text-gray-400">
-              Saving re-costs the batch immediately — nothing is stored, the sheet is computed on
-              every read.
-            </span>
-          </div>
-        </>
-      )}
+          // Live: what the lines account for against what the mixer weighed.
+          let allocated = 0;
+          let hasRest = false;
+          for (const l of lines) {
+            if (l.qty.trim() === "") { hasRest = true; continue; }
+            const q = Number(l.qty);
+            if (Number.isFinite(q) && q > 0) allocated += q;
+          }
+          const left = mixer ? Math.round((mixer.qty - allocated) * 1000) / 1000 : null;
+          const balanced = hasRest || left == null || Math.abs(left) <= 0.005;
+
+          return (
+            <div key={c.item} className={`rounded-xl border p-3 ${saved ? "border-brand/30 bg-brand/5" : "border-gray-200"}`}>
+              <div className="flex flex-wrap items-center gap-3">
+                <button type="button" onClick={() => setExpanded(isOpen ? null : c.item)}
+                  className="min-w-0 flex-1 text-left">
+                  <span className="block text-sm font-medium text-gray-900">
+                    {c.label}
+                    <span className="ml-2 text-xs font-normal text-gray-400">per {c.unit}</span>
+                  </span>
+                  <span className="block text-xs text-gray-500">
+                    {mixer
+                      ? `mixer: ${num.format(mixer.qty)} ${mixer.unit}`
+                      : splittable ? "no mixer quantity for this batch" : "a dosing factor"}
+                    {cardRate != null ? ` · card ₹${money.format(cardRate)}` : " · not on the card"}
+                  </span>
+                </button>
+
+                {saved && (
+                  <Badge tone={balanced ? "green" : "amber"}>
+                    {lines.length} line{lines.length === 1 ? "" : "s"}
+                  </Badge>
+                )}
+                {saved && !balanced && left != null && (
+                  <span className="text-xs text-amber-700">
+                    {left > 0 ? `${num.format(left)} ${mixer?.unit} unallocated` : `${num.format(-left)} ${mixer?.unit} over`}
+                  </span>
+                )}
+                <button type="button" onClick={() => setExpanded(isOpen ? null : c.item)} className={btnGhost}>
+                  {isOpen ? "Done" : saved ? "Edit" : "Split"}
+                </button>
+              </div>
+
+              {isOpen && (
+                <div className="mt-3 border-t border-gray-200 pt-3">
+                  {lines.length === 0 && (
+                    <p className="mb-2 text-sm text-gray-500">
+                      No lines — {c.label} prices whole at the card
+                      {cardRate != null ? ` (₹${money.format(cardRate)} per ${c.unit})` : ""}.
+                    </p>
+                  )}
+
+                  {lines.length > 0 && (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="text-left text-xs uppercase tracking-wide text-gray-400">
+                            {splittable && <th className="pb-1 pr-3 font-medium">Quantity ({c.unit})</th>}
+                            <th className="pb-1 pr-3 font-medium">Description</th>
+                            <th className="pb-1 pr-3 font-medium">₹ per {c.unit}</th>
+                            <th className="pb-1 pr-3 font-medium">Amount</th>
+                            <th className="pb-1 font-medium" />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {lines.map((l, i) => {
+                            const q = l.qty.trim() === ""
+                              ? (mixer ? Math.max(0, mixer.qty - allocated) : null)
+                              : Number(l.qty);
+                            const rate = Number(l.rate);
+                            const amount = q != null && Number.isFinite(q) && Number.isFinite(rate)
+                              ? q * rate : null;
+                            return (
+                              <tr key={i} className="border-t border-gray-100">
+                                {splittable && (
+                                  <td className="py-1.5 pr-3">
+                                    <input
+                                      type="number" step="0.001" min="0" inputMode="decimal"
+                                      value={l.qty}
+                                      onChange={(e) => setLines(c.item,
+                                        lines.map((x, j) => j === i ? { ...x, qty: e.target.value } : x))}
+                                      placeholder="the rest"
+                                      className={`${inp} max-w-[9rem]`}
+                                    />
+                                  </td>
+                                )}
+                                <td className="py-1.5 pr-3">
+                                  <input
+                                    value={l.description}
+                                    onChange={(e) => setLines(c.item,
+                                      lines.map((x, j) => j === i ? { ...x, description: e.target.value } : x))}
+                                    placeholder="supplier, PO number, what this was"
+                                    className={inp}
+                                  />
+                                </td>
+                                <td className="py-1.5 pr-3">
+                                  <input
+                                    type="number" step="0.0001" min="0" inputMode="decimal"
+                                    value={l.rate}
+                                    onChange={(e) => setLines(c.item,
+                                      lines.map((x, j) => j === i ? { ...x, rate: e.target.value } : x))}
+                                    placeholder="₹"
+                                    className={`${inp} max-w-[8rem]`}
+                                  />
+                                </td>
+                                <td className="py-1.5 pr-3 text-gray-700">
+                                  {amount == null ? "—" : `₹${money.format(amount)}`}
+                                  {/* The check that catches a mistyped rate: a
+                                      line 40% off the card is worth a second
+                                      look before a container is priced off it. */}
+                                  {cardRate != null && Number.isFinite(rate) && rate > 0 && (
+                                    <span className={`ml-2 text-xs ${
+                                      Math.abs((rate - cardRate) / cardRate) > 0.15 ? "text-red-600" : "text-gray-400"
+                                    }`}>
+                                      {rate === cardRate ? "= card"
+                                        : `${rate > cardRate ? "+" : ""}${Math.round(((rate - cardRate) / cardRate) * 1000) / 10}%`}
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="py-1.5 text-right">
+                                  <button type="button" className="text-xs text-gray-400 hover:text-red-500"
+                                    onClick={() => setLines(c.item, lines.filter((_, j) => j !== i))}>
+                                    remove
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {/* Live reconciliation against the mixer, while they type. */}
+                  {splittable && mixer && lines.length > 0 && (
+                    <p className={`mt-2 text-xs ${
+                      balanced ? "text-gray-500" : left! > 0 ? "text-amber-700" : "text-red-600"
+                    }`}>
+                      {hasRest
+                        ? `One line takes whatever is left of the ${num.format(mixer.qty)} ${mixer.unit}.`
+                        : balanced
+                          ? `Adds up to the ${num.format(mixer.qty)} ${mixer.unit} the mixer recorded.`
+                          : left! > 0
+                            ? `${num.format(left!)} ${mixer.unit} of ${num.format(mixer.qty)} still unallocated — it will price at the card, or be reported unpriced if there is no card rate.`
+                            : `${num.format(-left!)} ${mixer.unit} MORE than the mixer recorded. It will still be priced, and the sheet will say the two disagree.`}
+                    </p>
+                  )}
+
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <button type="button" className={btnGhost}
+                      disabled={!splittable && lines.length >= 1}
+                      onClick={() => setLines(c.item, [...lines, { qty: "", rate: "", description: "" }])}>
+                      {lines.length ? "Add another line" : splittable ? "Add a line" : "Set a value"}
+                    </button>
+                    <button type="button" className={btn} disabled={busy === c.item}
+                      onClick={() => void save(c)}>
+                      {busy === c.item ? "Saving…" : "Save"}
+                    </button>
+                    {saved && (
+                      <button type="button" className={btnGhost} disabled={busy === c.item}
+                        onClick={() => void clear(c)}>
+                        Use the card instead
+                      </button>
+                    )}
+                    {!splittable && (
+                      <span className="text-xs text-gray-400">
+                        A dosing rule is one value — there is nothing to split.
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </Card>
   );
 }
