@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  dosingOverrides, isOverridable, isSplittable, linesByItem,
-  OVERRIDABLE_CATEGORIES, splitMaterial, summariseSplit,
+  basisOverrides, daysInMonthOf, dosingOverrides, isOverridable, isSplittable,
+  linesByItem, OVERRIDABLE_CATEGORIES, splitMaterial, summariseSplit,
   type BatchMaterialLine,
 } from "../src/lib/costing/batchRates.ts";
 
@@ -194,6 +194,52 @@ test("plant-wide costs still cannot be set per batch", () => {
   for (const c of ["RESIN", "GRIT", "FILLER", "PIGMENT", "CHEMICAL", "DOSING"]) {
     assert.ok(OVERRIDABLE_CATEGORIES.has(c), `${c} should be settable`);
   }
+  // Named individually, so the rest of BASIS stays plant-wide with it.
+  for (const item of ["manpower", "electricity", "polishing", "packing", "sqft-per-slab"]) {
+    assert.equal(isOverridable("CONVERSION", item), false, item);
+    assert.equal(isOverridable("BASIS", item), false, item);
+  }
+});
+
+test("the exchange rate is the one basis item a batch sets for itself", () => {
+  // Reversal of the earlier rule, and deliberate: the rate a batch is quoted at
+  // is the rate on the day it was quoted. One global figure silently re-prices
+  // every past batch's dollar line the moment somebody revises it.
+  assert.equal(isOverridable("BASIS", "inr-per-usd"), true);
+  // Slab area sits in the same category and must NOT follow it — it is a
+  // denominator, and two batches measured on different slab areas are not
+  // comparable however they are labelled.
+  assert.equal(isOverridable("BASIS", "sqft-per-slab"), false);
+  // One value, never a split.
+  assert.equal(isSplittable("BASIS", "inr-per-usd"), false);
+
+  const b = basisOverrides([
+    line({ item: "inr-per-usd", category: "BASIS", seq: 0, rate: 88.5 }),
+    line({ item: "resin", category: "RESIN", seq: 0, rate: 161 }),
+  ]);
+  assert.deepEqual(b, { "inr-per-usd": 88.5 });
+  // A material is not a basis value, and vice versa — folding the two maps
+  // together would let a caller apply the wrong one.
+  assert.deepEqual(dosingOverrides([line({ item: "inr-per-usd", category: "BASIS", rate: 88.5 })]), {});
+});
+
+test("a zero or negative exchange rate is ignored rather than dividing by it", () => {
+  for (const bad of [0, -5]) {
+    assert.deepEqual(basisOverrides([
+      line({ item: "inr-per-usd", category: "BASIS", seq: 0, rate: bad }),
+    ]), {}, `rate ${bad} was accepted`);
+  }
+});
+
+test("days per month comes off the calendar, not off a form", () => {
+  // A typed 30 overstated the daily rate in every 31-day month and understated
+  // it in February; monthly plant figures are divided by this.
+  assert.equal(daysInMonthOf(new Date(2026, 7, 15)), 31, "August");
+  assert.equal(daysInMonthOf(new Date(2026, 8, 1)), 30, "September");
+  assert.equal(daysInMonthOf(new Date(2026, 1, 3)), 28, "Feb 2026");
+  assert.equal(daysInMonthOf(new Date(2028, 1, 3)), 29, "Feb 2028 is a leap year");
+  // Last instant of a month still belongs to that month.
+  assert.equal(daysInMonthOf(new Date(2026, 7, 31, 23, 59)), 31);
 });
 
 // --- the editor's live view -------------------------------------------------

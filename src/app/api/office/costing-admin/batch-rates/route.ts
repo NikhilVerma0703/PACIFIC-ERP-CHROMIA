@@ -38,8 +38,8 @@ export const dynamic = "force-dynamic";
 
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status });
 
-/** The catalogue a batch may set — materials and the dosing rules. */
-const SETTABLE = RATE_ITEMS.filter((d) => isOverridable(d.category));
+/** The catalogue a batch may set — materials, the dosing rules, and ₹ per USD. */
+const SETTABLE = RATE_ITEMS.filter((d) => isOverridable(d.category, d.item));
 
 /**
  * What the mixer weighed for each material, so the editor can show the number
@@ -133,7 +133,7 @@ export async function POST(req: NextRequest) {
   const item = typeof body.item === "string" ? body.item.trim() : "";
   const def = RATE_ITEM_BY_KEY.get(item);
   if (!def) return json({ error: `Unknown material '${item}'` }, 400);
-  if (!isOverridable(def.category)) {
+  if (!isOverridable(def.category, def.item)) {
     return json({ error: `'${def.label}' is a plant-wide rate and cannot be set on one batch` }, 400);
   }
 
@@ -163,8 +163,8 @@ export async function POST(req: NextRequest) {
       if (!Number.isFinite(qty) || qty <= 0) {
         return json({ error: `Line ${i + 1} of ${def.label} needs a quantity above zero, or none at all for "the rest".` }, 400);
       }
-    } else if (!isSplittable(def.category)) {
-      // A dosing factor is one value; a blank there means nothing.
+    } else if (!isSplittable(def.category, def.item)) {
+      // A dosing factor or an exchange rate is one value; a blank means nothing.
       qty = null;
     } else {
       restLines += 1;
@@ -177,8 +177,8 @@ export async function POST(req: NextRequest) {
     }
 
     // A dosing rule has nothing to split, so more than one line is meaningless.
-    if (!isSplittable(def.category) && posted.length > 1) {
-      return json({ error: `${def.label} is a dosing rule — it takes one value, not a split.` }, 400);
+    if (!isSplittable(def.category, def.item) && posted.length > 1) {
+      return json({ error: `${def.label} takes one value, not a split.` }, 400);
     }
 
     lines[i] = {

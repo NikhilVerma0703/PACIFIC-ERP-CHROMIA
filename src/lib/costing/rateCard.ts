@@ -10,7 +10,9 @@ import "server-only";
 // looks at "today".
 
 import { prisma } from "@/lib/prisma";
-import { dosingOverrides, linesByItem, type BatchMaterialLine } from "./batchRates";
+import {
+  basisOverrides, dosingOverrides, linesByItem, type BatchMaterialLine,
+} from "./batchRates";
 
 export type RateCategory =
   | "RESIN" | "GRIT" | "FILLER" | "PIGMENT" | "CHEMICAL" | "DOSING" | "CONVERSION" | "BASIS";
@@ -89,10 +91,22 @@ export const RATE_ITEMS: readonly RateItemDef[] = [
     hint: "₹ per square foot of slab." },
   { item: "sqft-per-slab", category: "BASIS", label: "Slab area", unit: "slab",
     hint: "Square feet per slab. A 137 × 79 inch slab is 75.15." },
+  // Set on the BATCH, not here. The rate a batch is quoted at is the rate on
+  // the day it was quoted, and a single plant-wide figure silently re-prices
+  // every past batch in dollars the moment somebody revises it. The global row
+  // below is only the default a batch inherits when nobody has typed one.
+  // ONE label, because this item appears on two screens with opposite meanings:
+  // on the admin card it is the plant default, on the batch panel it is that
+  // batch's own rate. Baking "(default)" into the label made it read as a
+  // default in the one place it is not. The hint carries the distinction on the
+  // admin card, and the batch panel says "leave unset to use the plant default"
+  // beside its own box.
   { item: "inr-per-usd", category: "BASIS", label: "₹ per USD", unit: "usd",
-    hint: "For the dollar cost-per-sqft line." },
-  { item: "days-per-month", category: "BASIS", label: "Days per month", unit: "month",
-    hint: "Monthly plant figures are spread over this many days." },
+    hint: "The plant default. Each batch can set its own on the batch panel." },
+  // days-per-month is gone: it is derived from the calendar month the run
+  // started in (see daysInMonthOf), because "how many days are in August" is
+  // not a business decision and a hand-typed 30 quietly overstated the daily
+  // rate for seven months of the year.
 ] as const;
 
 export const RATE_ITEM_BY_KEY: ReadonlyMap<string, RateItemDef> =
@@ -114,6 +128,19 @@ export interface RateRow {
 export interface EffectiveRateCard {
   /** The date the card was resolved FOR (the batch's run date). */
   onDate: string;
+  /**
+   * How many revision rows were in force at that date, and the earliest
+   * revision the table holds at all.
+   *
+   * Diagnostics, and they earn their place: a costing screen reported all seven
+   * conversion and basis rates missing while the admin card two panels above
+   * showed every one of them set and green. "Missing" was the only word
+   * available, and it sent the reader to re-enter rates that already existed.
+   * With these, a resolution that came back empty says so — and says whether
+   * the table is empty, or simply has nothing dated at or before this batch.
+   */
+  rowsInForce: number;
+  earliestRevision: string | null;
   /** supplier -> ₹/kg. */
   resinBySupplier: Record<string, number>;
   /** item key -> rate, for every non-variant item present. */
@@ -154,10 +181,16 @@ export async function listRateRows(): Promise<RateRow[]> {
  * DISTINCT ON the next reader has to decode.
  */
 export async function effectiveRateCard(onDate: Date): Promise<EffectiveRateCard> {
-  const rows = await prisma.costingRate.findMany({
-    where: { effectiveFrom: { lte: onDate } },
-    orderBy: { effectiveFrom: "asc" },
-  });
+  const [rows, earliest] = await Promise.all([
+    prisma.costingRate.findMany({
+      where: { effectiveFrom: { lte: onDate } },
+      orderBy: { effectiveFrom: "asc" },
+    }),
+    // Asked unconditionally so an empty resolution can tell the difference
+    // between "no rates exist" and "none are dated early enough for this
+    // batch" — two problems with entirely different fixes.
+    prisma.costingRate.aggregate({ _min: { effectiveFrom: true } }),
+  ]);
 
   const resinBySupplier: Record<string, number> = {};
   const rates: Record<string, number> = {};
@@ -180,7 +213,12 @@ export async function effectiveRateCard(onDate: Date): Promise<EffectiveRateCard
       : rates[d.item] === undefined))
     .map((d) => d.item);
 
-  return { onDate: day(onDate), resinBySupplier, rates, effectiveFrom, missing };
+  return {
+    onDate: day(onDate),
+    rowsInForce: rows.length,
+    earliestRevision: earliest._min.effectiveFrom ? day(earliest._min.effectiveFrom) : null,
+    resinBySupplier, rates, effectiveFrom, missing,
+  };
 }
 
 /** Provenance the editor shows so a hand-typed figure is never presented with
@@ -229,6 +267,8 @@ export interface BatchPricing {
   byItem: Map<string, BatchMaterialLine[]>;
   /** Dosing factors this batch overrode. */
   dosing: Record<string, number>;
+  /** Single-value basis items this batch set — currently ₹ per USD. */
+  basis: Record<string, number>;
   /** Items the batch has lines for — what the sheet reports as "set on this
    *  batch" rather than taken from the card. */
   overridden: string[];
@@ -246,6 +286,7 @@ export async function pricingForBatch(
     card,
     byItem: linesByItem(lines),
     dosing: dosingOverrides(lines),
+    basis: basisOverrides(lines),
     overridden: [...new Set(lines.map((l) => l.item))].sort(),
   };
 }
@@ -285,6 +326,5 @@ export const STARTER_RATES: ReadonlyArray<{
   { item: "polishing", rate: 10, note: "₹10/sqft, Simply White sheet" },
   { item: "packing", rate: 25, note: "₹25/sqft, Simply White sheet" },
   { item: "sqft-per-slab", rate: 75, note: "137 × 79 inch slab is 75.15 sqft" },
-  { item: "inr-per-usd", rate: 95, note: "Simply White sheet, Aug 2026" },
-  { item: "days-per-month", rate: 30, note: "Monthly figures spread evenly" },
+  { item: "inr-per-usd", rate: 95, note: "Default only — batches set their own" },
 ] as const;

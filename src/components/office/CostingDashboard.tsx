@@ -62,7 +62,9 @@ interface Report {
     effectiveFrom: Record<string, string>;
     /** Rates set on this batch rather than taken from the card. */
     batchRates?: string[];
-    rejectedRates?: Array<{ item: string; variant: string; reason: string }>;
+    rowsInForce?: number;
+    earliestRevision?: string | null;
+    daysPerMonth?: number;
   };
   stats: {
     resinCycles: number; mixerCharges: number; runHours: number; wallClockHours: number;
@@ -253,8 +255,27 @@ export function CostingDashboard() {
 
       {report && report.blockedBy.length > 0 && (
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-          <p className="font-medium">The sheet cannot be computed: the rate card is missing {report.blockedBy.join(", ")}.</p>
-          <p className="mt-1 text-red-700">Set them in the rate card above — quantities are shown below so the batch is still inspectable.</p>
+          <p className="font-medium">
+            The sheet cannot be computed. Still needed: {report.blockedBy.join(", ")}.
+          </p>
+          {/* "Missing" is only half a diagnosis. A card can look complete on the
+              admin panel and still resolve to nothing for THIS batch, because
+              the batch ran before any revision was dated. Those two need
+              different fixes, so the screen says which one it is. */}
+          {report.basis.rowsInForce === 0 ? (
+            <p className="mt-1 text-red-700">
+              No rate revision was in force on {report.rateDate}
+              {report.basis.earliestRevision
+                ? ` — the earliest on the card is ${report.basis.earliestRevision}, which is after this batch ran. Backdate a revision to on or before ${report.rateDate}.`
+                : ", and the rate card is empty. Load or enter the rates above."}
+            </p>
+          ) : (
+            <p className="mt-1 text-red-700">
+              {report.basis.rowsInForce} revision(s) were in force on {report.rateDate}, so the rest
+              of the card resolved — only what is listed above is outstanding. Quantities are shown
+              below, so the batch is still inspectable.
+            </p>
+          )}
         </div>
       )}
 
@@ -442,14 +463,13 @@ export function CostingDashboard() {
                 (amber) and override the {report.rateDate} card.
               </p>
             )}
-            {report.basis.rejectedRates?.length ? (
-              <p className="mt-2 text-xs text-red-600">
-                Refused, so the card was used instead:{" "}
-                {report.basis.rejectedRates
-                  .map((r) => `${r.item}${r.variant ? ` · ${r.variant}` : ""} (${r.reason})`)
-                  .join("; ")}
-              </p>
-            ) : null}
+            {/* Anything the split and the mixer disagreed about is spelled out
+                in the assumptions above, not summarised here — a refusal
+                reduced to a chip is a refusal nobody reads. */}
+            <p className="mt-2 text-xs text-gray-500">
+              Monthly figures divided by {report.basis.daysPerMonth ?? "—"} days, the length of the
+              month this run started in.
+            </p>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-gray-500 sm:grid-cols-4">
             <span>{report.stats.resinCycles} resin cycles</span>

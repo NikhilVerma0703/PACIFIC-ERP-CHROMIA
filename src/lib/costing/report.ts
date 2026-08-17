@@ -14,7 +14,7 @@ import {
   RESIN_TANK_SUPPLIER, type BatchConsumption, type BatchListEntry,
 } from "./batchData";
 import { pricingForBatch, RATE_ITEM_BY_KEY, type BatchPricing } from "./rateCard";
-import { splitMaterial } from "./batchRates";
+import { daysInMonthOf, splitMaterial } from "./batchRates";
 import type { EffectiveRateCard } from "./rateCard";
 
 export type { BatchListEntry };
@@ -51,6 +51,14 @@ export interface CostingReport {
      *  is that they can check the ones that matter. Anything the split and the
      *  mixer disagreed about is spelled out in `assumptions`. */
     batchRates: string[];
+    /** How the card resolved: revisions in force at the batch's date, and the
+     *  earliest the table holds. Lets the screen tell "nothing is set" apart
+     *  from "nothing is dated early enough for this batch", which look
+     *  identical as a list of missing rates and have different fixes. */
+    rowsInForce: number;
+    earliestRevision: string | null;
+    /** Days the monthly figures were divided by — off the calendar. */
+    daysPerMonth: number;
   };
   stats: {
     resinCycles: number;
@@ -85,9 +93,11 @@ export async function buildCostingReport(batchKey: string): Promise<CostingRepor
 
   // Conversion and basis are all-or-nothing: a sheet with electricity
   // silently at zero reads as a cheap batch, not an unconfigured card.
+  // days-per-month is NOT here any more: it comes off the calendar. Nor is
+  // inr-per-usd required from the card — a batch supplies its own, and the card
+  // row is only the default.
   const NEEDED = [
-    "manpower", "electricity", "polishing", "packing",
-    "sqft-per-slab", "inr-per-usd", "days-per-month",
+    "manpower", "electricity", "polishing", "packing", "sqft-per-slab",
   ] as const;
   // NOT JUST `=== undefined`. Three of these are DENOMINATORS — slab area,
   // ₹/USD and days per month — and a zero or a NaN in any of them does not
@@ -96,10 +106,29 @@ export async function buildCostingReport(batchKey: string): Promise<CostingRepor
   // rate <= 0, so this catches the routes it cannot: a direct database edit, a
   // bad import, a column that arrives null. Treated exactly like a missing
   // rate, because to the reader it is one.
-  const blockedBy = NEEDED.filter((k) => {
-    const v = card.rates[k];
-    return v === undefined || !Number.isFinite(v) || v <= 0;
-  });
+  const usable = (v: number | undefined) =>
+    v !== undefined && Number.isFinite(v) && v > 0;
+
+  // Labels, not keys, because this list is read by a person who then has to go
+  // and fix it — and the two are fixed in different places now.
+  const blockedBy: string[] = NEEDED
+    .filter((k) => !usable(card.rates[k]))
+    .map((k) => RATE_ITEM_BY_KEY.get(k)?.label ?? k);
+
+  // The batch's own rate beats the card's default; the card's default beats
+  // nothing. Zero would turn the dollar line into infinity, so it is treated as
+  // absent rather than accepted.
+  const inrPerUsdRaw = pricing.basis["inr-per-usd"] ?? card.rates["inr-per-usd"];
+  const inrPerUsd = usable(inrPerUsdRaw) ? inrPerUsdRaw : null;
+  if (inrPerUsd == null) {
+    // Named as a batch field, because that is where it is now set. Sending the
+    // reader to the plant-wide card for it would be sending them to the one
+    // place that no longer decides it.
+    blockedBy.push("₹ per USD (set it on this batch, below)");
+  }
+
+  // Off the calendar, not off the card.
+  const daysPerMonth = daysInMonthOf(rateDate);
 
   let sheet: CostingSheet | null = null;
   if (blockedBy.length === 0) {
@@ -113,8 +142,8 @@ export async function buildCostingReport(batchKey: string): Promise<CostingRepor
       polishPerSqft: card.rates["polishing"],
       packingPerSqft: card.rates["packing"],
       sqftPerSlab: card.rates["sqft-per-slab"],
-      inrPerUsd: card.rates["inr-per-usd"],
-      daysPerMonth: card.rates["days-per-month"],
+      inrPerUsd: inrPerUsd!,
+      daysPerMonth,
     });
   }
 
@@ -129,7 +158,7 @@ export async function buildCostingReport(batchKey: string): Promise<CostingRepor
     rateDate: rateDate.toISOString().slice(0, 10),
     sheet,
     unpriced,
-    blockedBy: blockedBy.map((k) => RATE_ITEM_BY_KEY.get(k)?.label ?? k),
+    blockedBy,
     variance: buildVariance(c, card),
     basis: {
       assumptions: pricing.overridden.length
@@ -139,6 +168,9 @@ export async function buildCostingReport(batchKey: string): Promise<CostingRepor
         : assumptions,
       effectiveFrom: card.effectiveFrom,
       batchRates: pricing.overridden,
+      rowsInForce: card.rowsInForce,
+      earliestRevision: card.earliestRevision,
+      daysPerMonth,
     },
     stats: {
       resinCycles: c.resinCycles,
@@ -329,6 +361,10 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
     }
   }
 
+  assumptions.push(
+    `Monthly plant figures are spread over ${daysInMonthOf(c.firstPress ?? new Date())} days — ` +
+    "the length of the calendar month the run started in, not a typed figure.",
+  );
   assumptions.push(
     `Run length ${r2(c.runHours)} h from first mix to last, mixer-clock rollovers repaired; ` +
     `${c.runStoppages.count} stoppage(s) over 2 h totalling ${r2(c.runStoppages.hours)} h excluded ` +

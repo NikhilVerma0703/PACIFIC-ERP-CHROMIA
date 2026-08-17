@@ -68,10 +68,10 @@ const money = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 });
 const SPLITTABLE = new Set(["RESIN", "GRIT", "FILLER", "PIGMENT", "CHEMICAL"]);
 
 /** The families, in the order the line consumes them. */
-const FAMILY_ORDER = ["RESIN", "GRIT", "FILLER", "PIGMENT", "CHEMICAL", "DOSING"] as const;
+const FAMILY_ORDER = ["RESIN", "GRIT", "FILLER", "PIGMENT", "CHEMICAL", "DOSING", "BASIS"] as const;
 const FAMILY_LABEL: Record<string, string> = {
   RESIN: "Resin", GRIT: "Grit", FILLER: "Filler", PIGMENT: "Pigment",
-  CHEMICAL: "Chemicals", DOSING: "Dosing rules",
+  CHEMICAL: "Chemicals", DOSING: "Dosing rules", BASIS: "This batch's exchange rate",
 };
 const FAMILY_NOTE: Record<string, string> = {
   RESIN: "Weighed by the mixer.",
@@ -80,7 +80,11 @@ const FAMILY_NOTE: Record<string, string> = {
   PIGMENT: "Not weighed — dosed on resin weight.",
   CHEMICAL: "Not weighed — dosed on resin weight.",
   DOSING: "The percentages that turn resin weight into the quantities above. One value each, nothing to split.",
+  BASIS: "The rate this batch was quoted at. Leave it and the plant default is used.",
 };
+
+/** Items that are one value per batch rather than a split quantity. */
+const SINGLE_VALUE = new Set(["inr-per-usd"]);
 
 export function BatchRatesPanel({
   batchKey, batchLabel, onSaved,
@@ -154,8 +158,10 @@ export function BatchRatesPanel({
       // A dosing rule is always in force — it is the percentage that produced
       // the chemical quantities above it, whatever the batch ran. Judging it by
       // "did the mixer weigh any" hid all four behind "not used in this batch",
-      // which is both false and the opposite of useful.
-      const alwaysApplies = c.category === "DOSING";
+      // which is both false and the opposite of useful. The exchange rate is
+      // the same: every batch has one, and it is the whole point that it is
+      // asked for per batch.
+      const alwaysApplies = c.category === "DOSING" || SINGLE_VALUE.has(c.item);
       (hasQty || priced || alwaysApplies ? slot.used : slot.unused).push(c);
       byFamily.set(c.category, slot);
     }
@@ -281,7 +287,7 @@ export function BatchRatesPanel({
     const lines = lineOf(c.item);
     const mixer = data.mixer[c.item];
     const cardRate = cardRateFor(c);
-    const splittable = SPLITTABLE.has(c.category);
+    const splittable = SPLITTABLE.has(c.category) && !SINGLE_VALUE.has(c.item);
     const isOpen = expanded === c.item;
     const saved = savedItems.includes(c.item);
 
@@ -310,7 +316,8 @@ export function BatchRatesPanel({
             <span className="block text-xs text-gray-500">
               {mixer
                 ? `mixer: ${num.format(mixer.qty)} ${mixer.unit}`
-                : splittable ? "not used in this batch" : "a dosing factor"}
+                : splittable ? "not used in this batch"
+                  : SINGLE_VALUE.has(c.item) ? "one value for this batch" : "a dosing factor"}
               {" · "}{cardSummary(c)}
             </span>
           </button>
@@ -453,7 +460,9 @@ export function BatchRatesPanel({
               )}
               {!splittable && (
                 <span className="text-xs text-gray-400">
-                  A dosing rule is one value — there is nothing to split.
+                  {SINGLE_VALUE.has(c.item)
+                    ? "One value for the whole batch. Leave it unset to use the plant default."
+                    : "A dosing rule is one value — there is nothing to split."}
                 </span>
               )}
             </div>
@@ -500,7 +509,9 @@ export function BatchRatesPanel({
                 <span className="text-xs text-gray-400">
                   {family === "DOSING"
                     ? `${used.length} rule${used.length === 1 ? "" : "s"}`
-                    : used.length
+                    : family === "BASIS"
+                      ? "set per batch"
+                      : used.length
                       ? `${used.length} in this batch`
                       : "none in this batch"}
                 </span>

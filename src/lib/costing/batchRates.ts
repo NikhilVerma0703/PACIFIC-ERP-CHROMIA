@@ -43,8 +43,34 @@ export const OVERRIDABLE_CATEGORIES: ReadonlySet<string> = new Set<OverridableCa
   "RESIN", "GRIT", "FILLER", "PIGMENT", "CHEMICAL", "DOSING",
 ]);
 
-export function isOverridable(category: string): boolean {
+/**
+ * Items outside those categories that a batch may still set.
+ *
+ * ₹ per USD is the exception, and a deliberate reversal of the rule above it.
+ * I argued it had to stay plant-wide so two batches would stay comparable; that
+ * was wrong for the way this is used. The rate a batch is quoted at is the rate
+ * on the day it was quoted, and one global figure silently re-prices every past
+ * batch's dollar line the moment somebody revises it. Comparability is not
+ * served by giving two runs three months apart the same made-up exchange rate.
+ *
+ * The card keeps a row as the default a batch inherits when nobody typed one.
+ */
+export const OVERRIDABLE_ITEMS: ReadonlySet<string> = new Set(["inr-per-usd"]);
+
+export function isOverridable(category: string, item?: string): boolean {
+  if (item && OVERRIDABLE_ITEMS.has(item)) return true;
   return OVERRIDABLE_CATEGORIES.has(category);
+}
+
+/** Days in the calendar month a run started in — 28 to 31, never typed.
+ *
+ *  The monthly plant figures are spread across this many days, so a hand-typed
+ *  30 overstated the daily rate in every 31-day month and understated it in
+ *  February. It is a property of the calendar, not a business decision. A run
+ *  spanning a month boundary uses the month it STARTED in, matching how the
+ *  rate card is already resolved from the first press. */
+export function daysInMonthOf(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
 }
 
 /**
@@ -54,8 +80,11 @@ export function isOverridable(category: string): boolean {
  * to split. Those items take a single value and no line ever carries a qty for
  * them, which is why the UI and the split below treat them apart.
  */
-export function isSplittable(category: string): boolean {
-  return isOverridable(category) && category !== "DOSING";
+export function isSplittable(category: string, item?: string): boolean {
+  // A dosing factor and an exchange rate are both single values with nothing to
+  // divide into deliveries.
+  if (item && OVERRIDABLE_ITEMS.has(item)) return false;
+  return isOverridable(category, item) && category !== "DOSING";
 }
 
 /** One line a human entered against a batch's material. */
@@ -216,6 +245,22 @@ export function dosingOverrides(
   const out: Record<string, number> = {};
   for (const l of [...lines].sort((a, b) => a.seq - b.seq)) {
     if (l.category !== "DOSING") continue;
+    const v = Number(l.rate);
+    if (Number.isFinite(v) && v > 0) out[l.item] = v;
+  }
+  return out;
+}
+
+/** Single-value items a batch set for itself — currently just ₹ per USD.
+ *  Same shape as dosingOverrides and separate from it, because a dosing factor
+ *  produces a quantity and an exchange rate divides a total; folding them into
+ *  one map would invite a caller to apply the wrong one. */
+export function basisOverrides(
+  lines: readonly BatchMaterialLine[],
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const l of [...lines].sort((a, b) => a.seq - b.seq)) {
+    if (!OVERRIDABLE_ITEMS.has(l.item)) continue;
     const v = Number(l.rate);
     if (Number.isFinite(v) && v > 0) out[l.item] = v;
   }
