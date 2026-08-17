@@ -57,7 +57,8 @@ import { extract, hasValue, overallConfidence, type Extraction } from "./extract
 import { tokenise } from "./ledgers";
 import {
   anomalyVerdict, autoApprovalVerdict, isoDate, ocrVerdict, pageLabel,
-  pageMimeFor, REUPLOAD_TIPS, sanitiseFilename, splitDecision, usableTextLayer,
+  pageMimeFor, REUPLOAD_TIPS, sanitiseFilename, splitDecision, staleReclaim,
+  STALE_PROCESSING_MS, usableTextLayer,
 } from "./pipelineRules";
 import {
   buildClassifier, commitMemory, learningTokens, loadMemory,
@@ -781,12 +782,62 @@ export interface ProcessQueuedResult {
  * A failure on one page must not stop the rest - a single unreadable receipt in
  * a stack of twenty should not cost the other nineteen.
  */
+/**
+ * Return bills orphaned in 'processing' to the queue.
+ *
+ * The claim in processQueued is atomic, and anything processBill throws is
+ * caught and recorded. Neither helps when the invocation itself ends —
+ * maxDuration reached, or the container recycled — because that leaves the row
+ * in 'processing' with nothing anywhere looking at it again.
+ *
+ * Runs on every poll. When nothing is stale this is one indexed count-shaped
+ * read against a status that holds at most a couple of rows.
+ */
+export async function reclaimStaleProcessing(): Promise<number> {
+  const cutoff = new Date(Date.now() - STALE_PROCESSING_MS);
+  const stale = await prisma.financeBill.findMany({
+    where: { status: "processing", updatedAt: { lt: cutoff } },
+    select: { id: true, error: true },
+  });
+
+  let n = 0;
+  for (const bill of stale) {
+    const verdict = staleReclaim(bill.error);
+    // Guarded by status again: a poll that started before this one may have
+    // finished the bill in between, and a completed bill must not be dragged
+    // back to the queue.
+    const moved = await prisma.financeBill.updateMany({
+      where: { id: bill.id, status: "processing" },
+      data: verdict,
+    });
+    if (!moved.count) continue;
+    n++;
+    await logEvent(
+      "error",
+      `Bill ${bill.id} was left mid-read by an interrupted run; moved to '${verdict.status}'.`,
+      bill.id,
+    );
+  }
+  return n;
+}
+
 export async function processQueued(
   batchId?: string | null,
   max = 5,
 ): Promise<ProcessQueuedResult> {
   const out: ProcessQueuedResult = { processed: [], skipped: 0, failed: [], remaining: 0 };
   const where = { status: "queued", ...(batchId ? { batchId } : {}) };
+
+  // Put back anything a dead invocation left mid-flight, BEFORE choosing work:
+  // a bill orphaned in 'processing' is invisible to every query below and to
+  // the review queue, and its batch never reports finished. See staleReclaim
+  // in pipelineRules.ts for why it goes back to 'queued' the first time and to
+  // 'manual_entry' the second.
+  //
+  // Deliberately NOT scoped to batchId. This is a repair pass, not part of the
+  // batch's own work, and a stuck bill in a batch whose tab has been closed
+  // would never be reached by a scoped one.
+  await reclaimStaleProcessing();
 
   // Bills this call has already had a go at. Needed because a bill does not
   // always LEAVE the queue when it is processed: under OCR_PROVIDER=tesseract

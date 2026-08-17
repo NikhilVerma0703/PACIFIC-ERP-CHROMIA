@@ -478,3 +478,73 @@ export function amountTrusted(
 ): boolean {
   return Boolean(amount) && (arithmeticOk || amountConfidence >= 0.80);
 }
+
+// ---------------------------------------------------------------------------
+// Orphaned 'processing' rows
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a bill may sit in 'processing' before its worker is assumed dead.
+ *
+ * The poll route caps at maxDuration 60s, so nothing legitimate is still
+ * working after five minutes; anything past this belongs to an invocation that
+ * no longer exists.
+ */
+export const STALE_PROCESSING_MS = 5 * 60_000;
+
+/** Prefix on the bill's `error` note, and the marker that says this has
+ *  happened before. Matched by prefix so the two messages below can be
+ *  reworded without turning a second interruption back into a first. */
+export const RECLAIM_NOTE = "Reading was interrupted";
+
+export interface StaleReclaim {
+  status: "queued" | "manual_entry";
+  error: string;
+}
+
+/**
+ * What to do with a bill still marked 'processing' long after its worker
+ * vanished — the gap that let a bill disappear entirely.
+ *
+ * processQueued claims a bill by moving it 'queued' -> 'processing', which is
+ * a proper atomic compare-and-set, and it catches anything processBill throws
+ * and records it as 'error'. What it could not catch is the invocation simply
+ * ending: a Vercel function that hits maxDuration, or a container that goes
+ * away, leaves the row in 'processing' with no code path anywhere that looks
+ * at it again. processQueued only ever selects `status: "queued"`.
+ *
+ * The consequences compound. The batch reports `finished: false` forever, so
+ * the UI polls that batch for as long as the tab is open; and 'processing' is
+ * not one of the statuses the review queue lists, so the bill is invisible to
+ * the clerk who would otherwise deal with it. A real expense, uploaded and
+ * accepted, is simply gone.
+ *
+ * Returning to 'queued' rather than 'error' because the commonest cause is a
+ * slow OCR round trip and the retry usually works. But only once: a bill that
+ * times out reliably would otherwise be reclaimed and re-read forever, paying
+ * for a hosted OCR call each time. The second interruption sends it to
+ * 'manual_entry', where a human reads it off the image — a queue this system
+ * already has, for exactly this kind of page.
+ */
+export function staleReclaim(previousError: string | null | undefined): StaleReclaim {
+  const seenBefore = (previousError ?? "").startsWith(RECLAIM_NOTE);
+  return seenBefore
+    ? {
+        status: "manual_entry",
+        error: `${RECLAIM_NOTE} twice while reading this page — please enter it by hand.`,
+      }
+    : {
+        status: "queued",
+        error: `${RECLAIM_NOTE} while reading this page — it will be read again automatically.`,
+      };
+}
+
+/** Whether a 'processing' row has been abandoned. Split from staleReclaim so
+ *  the cutoff is testable without a clock. */
+export function isStaleProcessing(
+  updatedAt: Date,
+  now: Date = new Date(),
+  windowMs: number = STALE_PROCESSING_MS,
+): boolean {
+  return now.getTime() - updatedAt.getTime() > windowMs;
+}
