@@ -56,6 +56,12 @@ END $$;
 -- The tablet role the module is gated by, exactly like ROBO.
 ALTER TYPE "Role" ADD VALUE IF NOT EXISTS 'CHROMIA';
 
+-- The retired department value. 0039 added it and the live database has it;
+-- prisma/schema.prisma still declares it so that logins the old integration
+-- created still decode. Kept here too so a database rebuilt from scripts/
+-- matches the schema. It is offered nowhere in the UI, and 0045 empties it.
+ALTER TYPE "Branch" ADD VALUE IF NOT EXISTS 'CHROMIA';
+
 DO $$ BEGIN
   CREATE TYPE "chromia_role" AS ENUM ('ADMIN', 'PRODUCTION_MANAGER', 'SUPERVISOR', 'OPERATOR', 'QUALITY_INSPECTOR', 'STORE_KEEPER', 'VIEWER');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;

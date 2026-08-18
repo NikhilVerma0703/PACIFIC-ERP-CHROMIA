@@ -20,6 +20,8 @@ jobs:
         run: npx tsc --noEmit
       - name: Unit tests
         run: npm test
+      - name: Chromia module tests
+        run: npm run test:chromia
       - name: Lint (advisory)
         run: npx next lint
         continue-on-error: true

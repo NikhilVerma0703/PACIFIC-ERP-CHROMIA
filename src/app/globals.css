@@ -105,17 +105,24 @@ body {
   --header-tab: #37475f;
 }
 
-/* Utilities used by the Chromia components (names unused elsewhere). */
-.surface { background: var(--surface); }
-.surface-muted { background: var(--surface-muted); }
-.text-muted { color: var(--muted); }
-.border-line { border-color: var(--line); }
-.border-line-strong { border-color: var(--line-strong); }
-.tabular { font-variant-numeric: tabular-nums; }
+/* Utilities used by the Chromia components (names unused elsewhere).
+   Declared inside @layer utilities, not as plain CSS: that is what makes
+   Tailwind treat them as utilities and generate the variants the module
+   actually uses — `hover:border-line-strong` on every secondary button,
+   `placeholder:text-muted` on every field — and what keeps them in the
+   utilities cascade slot rather than after it. */
+@layer utilities {
+  .surface { background: var(--surface); }
+  .surface-muted { background: var(--surface-muted); }
+  .text-muted { color: var(--muted); }
+  .border-line { border-color: var(--line); }
+  .border-line-strong { border-color: var(--line-strong); }
+  .tabular { font-variant-numeric: tabular-nums; }
 
-/* A horizontally scrolling strip should scroll without announcing it. */
-.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
-.no-scrollbar::-webkit-scrollbar { display: none; }
+  /* A horizontally scrolling strip should scroll without announcing it. */
+  .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+}
 
 /* Swipe navigation: the page body owns horizontal gestures, the browser keeps
    vertical panning and pinch-zoom. `contain` stops an overflowing table's

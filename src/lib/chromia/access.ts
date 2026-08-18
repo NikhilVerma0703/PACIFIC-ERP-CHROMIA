@@ -30,10 +30,16 @@ export async function chromiaGate(min: ChromiaTier = "OPERATOR"): Promise<Chromi
 }
 
 /**
- * Verb-level gate for the destructive actions, enforced INSIDE the handler.
- * Middleware matches on path prefix only and cannot tell a DELETE from a GET,
- * and hiding a button is a courtesy to the operator, not a control — the
- * endpoint is reachable with a fetch from the same signed-in session.
+ * Verb-level gate for the destructive actions — deleting a slab record,
+ * importing a register over history.
+ *
+ * NOT currently wired to either: the standalone module gated neither (it had no
+ * sign-in at all), and a Chromia login is the module's whole audience, so
+ * gating them to ADMIN would take the floor's own corrections away from it.
+ * The helper is here, and the argument for using it is the ERP's usual one —
+ * middleware matches on path prefix and cannot tell a DELETE from a GET, and
+ * hiding a button is a courtesy, not a control. Decide with the line owner,
+ * then call it at the top of deleteSlabRecordAction and importProRegisterAction.
  */
 export async function canManageChromia(): Promise<boolean> {
   return chromiaCanManage(await currentUser());

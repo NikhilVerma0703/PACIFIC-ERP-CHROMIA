@@ -154,6 +154,34 @@ export default auth((req) => {
         : Response.redirect(new URL("/", nextUrl));
     }
   }
+
+  if (role === "CHROMIA" || (!isAdmin && branch === "CHROMIA")) {
+    // Chromia line tablet: the Chromia screens and THEIR APIs — nothing else.
+    // Deliberately the narrow allowlist form the ROBO cap at the foot of this
+    // file documents, not the generic `p.startsWith("/api")` the branch blocks
+    // use: the module carries its own dashboard, records, reports and import,
+    // so there is nothing outside /chromia a Chromia login needs. /api/auth is
+    // unaffected — it returns as public above.
+    //
+    // It sits HERE, with the branch caps and above them, for two reasons: the
+    // terminal `return` makes the cap final (a block appended below must not
+    // silently also apply to a tablet), and a CHROMIA-branch login of any role
+    // must be capped before its own role cap redirects it somewhere this block
+    // would only redirect it back from.
+    //
+    // The branch arm is TRANSITIONAL: it keeps a login left on the retired
+    // CHROMIA department working inside the module until
+    // scripts/0045-migrate-chromia-branch-users.sql moves it onto the role.
+    // Remove it, the escape in auth.config.ts, the branch arm in Nav.tsx and
+    // the one in lib/chromia/tier.ts together, once that has run.
+    const ok = p.startsWith("/chromia") || p.startsWith("/api/chromia") || STATIC_FILE.test(p);
+    if (!ok) {
+      return p.startsWith("/api")
+        ? new Response("Forbidden", { status: 403 })
+        : Response.redirect(new URL("/chromia", nextUrl));
+    }
+    return;
+  }
   if (!isAdmin && branch === "FABRICATION") {
     // Fabrication staff: fab pages + Overview + API only — never production pages.
     if (p.startsWith("/api")) return;
@@ -302,25 +330,6 @@ export default auth((req) => {
       return p.startsWith("/api")
         ? new Response("Forbidden", { status: 403 })
         : Response.redirect(new URL("/robo", nextUrl));
-    }
-  }
-  if (role === "CHROMIA" || (!isAdmin && branch === "CHROMIA")) {
-    // Chromia line tablet: the Chromia screens and THEIR APIs — nothing else.
-    // Deliberately the narrow allowlist form the ROBO block above documents,
-    // not the generic `p.startsWith("/api")` the branch blocks use: the module
-    // carries its own dashboard, records, reports and import, so there is
-    // nothing outside /chromia a Chromia login needs. /api/auth is unaffected —
-    // it returns as public long before this block.
-    //
-    // The branch arm is the other half of the transitional allowance above: a
-    // login left on the retired CHROMIA department stays contained here instead
-    // of falling through to full Shop Floor access. Both go once
-    // scripts/0045-migrate-chromia-branch-users.sql has run.
-    const ok = p.startsWith("/chromia") || p.startsWith("/api/chromia") || STATIC_FILE.test(p);
-    if (!ok) {
-      return p.startsWith("/api")
-        ? new Response("Forbidden", { status: 403 })
-        : Response.redirect(new URL("/chromia", nextUrl));
     }
   }
 });

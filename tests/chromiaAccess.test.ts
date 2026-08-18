@@ -16,7 +16,7 @@ test("admins span every department", () => {
   assert.equal(chromiaTierOf({ role: "ADMIN", branch: "OFFICE" }), "ADMIN");
 });
 
-test("no other role reaches the module — including shop-floor management", () => {
+test("no other role on any live branch reaches the module", () => {
   for (const role of ["OPERATOR", "INCHARGE", "LINE_MANAGER", "STORE", "MAINTENANCE", "ROBO", "SALES", "FINANCE", "ACCOUNTS", "COMMERCIAL", ""]) {
     assert.equal(chromiaTierOf({ role }), null, `${role || "(blank)"} must not reach Chromia`);
   }
@@ -24,9 +24,20 @@ test("no other role reaches the module — including shop-floor management", () 
   assert.equal(chromiaTierOf(undefined), null);
 });
 
-test("branch alone never grants access — the module is role-gated like Robo", () => {
-  assert.equal(chromiaTierOf({ role: "OPERATOR", branch: "CHROMIA" }), null);
-  assert.equal(chromiaTierOf({ role: "LINE_MANAGER", branch: "CHROMIA" }), null);
+test("the retired CHROMIA department still reaches the module — transitional", () => {
+  // The old integration made Chromia a department. Those logins keep the module
+  // (and nothing else — middleware caps them) until
+  // scripts/0045-migrate-chromia-branch-users.sql moves them onto the role.
+  // Delete this test with the four transitional arms it covers.
+  assert.equal(chromiaTierOf({ role: "OPERATOR", branch: "CHROMIA" }), "OPERATOR");
+  assert.equal(chromiaTierOf({ role: "LINE_MANAGER", branch: "CHROMIA" }), "OPERATOR");
+  // ...and no further: the module's own destructive tier stays admin-only.
+  assert.equal(chromiaCanManage({ role: "LINE_MANAGER", branch: "CHROMIA" }), false);
+});
+
+test("a branch value other than CHROMIA never grants access", () => {
+  assert.equal(chromiaTierOf({ role: "OPERATOR", branch: "SHOP_FLOOR" }), null);
+  assert.equal(chromiaTierOf({ role: "INCHARGE", branch: "FABRICATION" }), null);
 });
 
 test("only admins may run the destructive actions", () => {
