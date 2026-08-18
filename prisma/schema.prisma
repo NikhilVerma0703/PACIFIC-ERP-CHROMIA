@@ -3602,6 +3602,15 @@ model RoboBatchRecipe {
   id                String                 @id @default(cuid())
   shiftId           String
   shift             RoboShift              @relation(fields: [shiftId], references: [id])
+  // The two the operator writes at the top of the setup. productionDate is a
+  // plain yyyy-mm-dd string, the same convention RoboShift.date already uses —
+  // the shift's own date is when the tablet was opened, and a run entered late
+  // or corrected the next morning belongs to the day it was produced, not the
+  // day it was typed. batchNo is the plant's own number for the run, free text
+  // because it is theirs to format. Both optional: setups saved before this
+  // existed have neither, and the form does not force either.
+  productionDate    String?
+  batchNo           String?
   designId          String?
   design            RoboDesign?            @relation(fields: [designId], references: [id])
   programId         String?

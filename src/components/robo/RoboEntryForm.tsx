@@ -40,7 +40,7 @@ interface BatchEntry {
   programName: string | null; toolName: string | null; liquidName: string | null;
   powderName: string | null; rollerHeight: string | null; targetCycleTime: number | null;
 }
-interface BatchRecipe { id: string; designName: string; thickness: number | null; targetSlabs: number | null; notes: string | null; entries: BatchEntry[] }
+interface BatchRecipe { id: string; productionDate: string | null; batchNo: string | null; designName: string; thickness: number | null; targetSlabs: number | null; notes: string | null; entries: BatchEntry[] }
 interface ProdRecord {
   id: string; serialNumber: number | null; slabNumber: string;
   inTime: string | null; outTime: string | null; roymixCycleTime: number | null;
@@ -182,7 +182,7 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
   const [batchOpen, setBatchOpen] = useState(false);
   const [batchError, setBatchError] = useState("");
   const [batchSaving, setBatchSaving] = useState(false);
-  const [batch, setBatch] = useState({ designName: "", targetSlabs: "", thickness: "", notes: "" });
+  const [batch, setBatch] = useState({ productionDate: localDate(), batchNo: "", designName: "", targetSlabs: "", thickness: "", notes: "" });
   const [activeMachines, setActiveMachines] = useState<Record<string, boolean>>({});
   const [entries, setEntries] = useState<Record<string, MachineEntry>>({});
   /** Set while the batch-setup half is REOPENING a saved setup to correct it,
@@ -319,12 +319,17 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
     setActiveMachines(a);
     setBatch(saved
       ? {
+          // A setup saved before these two existed has neither; the date falls
+          // back to today so the field is never blank on a correction, and the
+          // batch number stays empty rather than inventing one.
+          productionDate: saved.productionDate ?? localDate(),
+          batchNo: saved.batchNo ?? "",
           designName: saved.designName ?? "",
           targetSlabs: saved.targetSlabs != null ? String(saved.targetSlabs) : "",
           thickness: saved.thickness != null ? String(saved.thickness) : "",
           notes: saved.notes ?? "",
         }
-      : { designName: "", targetSlabs: "", thickness: "", notes: "" });
+      : { productionDate: localDate(), batchNo: "", designName: "", targetSlabs: "", thickness: "", notes: "" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [machines, editingBatchId]);
 
@@ -503,6 +508,8 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
         method: isEdit ? "PATCH" : "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...(shiftId ? { shiftId } : {}),
+          productionDate: batch.productionDate || null,
+          batchNo: batch.batchNo.trim() || null,
           designName: batch.designName.trim(),
           targetSlabs: batch.targetSlabs ? Number(batch.targetSlabs) : null,
           thickness: batch.thickness ? Number(batch.thickness) : null,
@@ -821,6 +828,14 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
 
           <form onSubmit={saveBatch} className="space-y-5">
             <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+              <div>
+                <span className={label}>Production date</span>
+                <input type="date" value={batch.productionDate} onChange={(e) => setBatch((p) => ({ ...p, productionDate: e.target.value }))} className={inp} />
+              </div>
+              <div>
+                <span className={label}>Batch no.</span>
+                <input value={batch.batchNo} onChange={(e) => setBatch((p) => ({ ...p, batchNo: e.target.value }))} placeholder="e.g. B-1042" className={inp} />
+              </div>
               <div className="col-span-2">
                 <span className={label}>Design <span className="text-red-500">*</span></span>
                 <SearchableSelect value={batch.designName} options={designs} placeholder="Search designs or add new…"
