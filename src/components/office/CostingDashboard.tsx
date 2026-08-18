@@ -298,7 +298,7 @@ export function CostingDashboard() {
 
       {report && report.unpriced.length > 0 && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          <p className="font-medium">Consumed but not priced — these amounts are NOT in the totals:</p>
+          <p className="font-medium">Used in this batch but not priced. None of it is in the totals below:</p>
           <ul className="mt-1 list-inside list-disc">
             {report.unpriced.map((u, i) => (
               <li key={i}>{u.item}{u.qty != null ? ` — ${num(u.qty)} ${u.unit}` : ""} · needs {u.needs}</li>

@@ -17,6 +17,16 @@ import { pricingForBatch, RATE_ITEM_BY_KEY, type BatchPricing } from "./rateCard
 import { daysInMonthOf, splitMaterial } from "./batchRates";
 import type { EffectiveRateCard } from "./rateCard";
 
+/**
+ * A catalogue key in the words the screens already use for it.
+ *
+ * The unpriced list is read by whoever has to go and fix it, and it was
+ * answering in database keys: "needs dosing rule 'tio2-pct-of-resin'", "needs
+ * rate 'grit-0.6-1.2'". Those name a column, not the row somebody has to open.
+ * The catalogue already carries a label for every one of them, so say that.
+ */
+const labelOf = (key: string): string => RATE_ITEM_BY_KEY.get(key)?.label ?? key;
+
 export type { BatchListEntry };
 
 export interface UnpricedLine {
@@ -254,7 +264,7 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
     if (rate === undefined) {
       unpriced.push({
         item: `Resin — ${basis}`, qty: r1(t.kg), unit: "kg",
-        needs: supplier ? `resin rate for ${supplier}` : `a supplier for tank ${t.tank}`,
+        needs: supplier ? `a price for ${supplier} resin` : `a supplier for tank ${t.tank}`,
       });
       continue;
     }
@@ -280,7 +290,7 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
     const d = pricing.dosing[doseKey] ?? card.rates[doseKey];
     const rate = card.rates[rateKey];
     if (d === undefined) {
-      unpriced.push({ item, qty: null, unit: "kg", needs: `dosing rule '${doseKey}'` });
+      unpriced.push({ item, qty: null, unit: "kg", needs: `the ${labelOf(doseKey)} to be set` });
       return;
     }
     const qty = qtyOf(d);
@@ -289,7 +299,7 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
     // DOSE that produced the quantity is one number.
     if (fromBatch(rateKey, item, group, qty, "kg", rate ?? null)) return;
     if (rate === undefined) {
-      unpriced.push({ item, qty: r1(qty), unit: "kg", needs: `rate '${rateKey}'` });
+      unpriced.push({ item, qty: r1(qty), unit: "kg", needs: `a price for ${labelOf(rateKey)}` });
       return;
     }
     materials.push({ group, item, basis: basisOf(d), qty, unit: "kg", rate, estimated: true });
@@ -328,15 +338,15 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
     // 14,780 against a kilogram and the batch costs a thousand times too much.
     if (fromBatch(gritItemKey(band), label, "grit", e.kg / 1000, "t", rate ?? null)) continue;
     if (rate === undefined) {
-      unpriced.push({ item: label, qty: r2(e.kg / 1000), unit: "t", needs: `rate '${gritItemKey(band)}'` });
+      unpriced.push({ item: label, qty: r2(e.kg / 1000), unit: "t", needs: `a price for ${labelOf(gritItemKey(band))}` });
       continue;
     }
     materials.push({ group: "grit", item: label, basis, qty: e.kg / 1000, unit: "t", rate });
   }
   if (c.gritUnresolvedKg > 0) {
     unpriced.push({
-      item: "Grit with no resolvable silo record", qty: r2(c.gritUnresolvedKg / 1000),
-      unit: "t", needs: "a silo fill record link on those charges",
+      item: "Grit that could not be traced to a silo", qty: r2(c.gritUnresolvedKg / 1000),
+      unit: "t", needs: "the silo fill records for those charges",
     });
   }
 
@@ -344,7 +354,7 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
   const fillerRate = card.rates["filler-400"];
   if (!fromBatch("filler-400", "Filler 400#", "filler", c.fillerKg / 1000, "t", fillerRate ?? null)) {
     if (fillerRate === undefined) {
-      unpriced.push({ item: "Filler 400#", qty: r2(c.fillerKg / 1000), unit: "t", needs: "rate 'filler-400'" });
+      unpriced.push({ item: "Filler 400#", qty: r2(c.fillerKg / 1000), unit: "t", needs: `a price for ${labelOf("filler-400")}` });
     } else {
       materials.push({
         group: "filler", item: "Filler 400# pm", basis: "Filler A · Buffer B",
