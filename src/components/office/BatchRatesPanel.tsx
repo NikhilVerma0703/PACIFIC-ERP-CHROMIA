@@ -250,12 +250,18 @@ export function BatchRatesPanel({
 
   /** What the card says, in words. Resin is the one item the card holds per
    *  supplier, and "not on the card" was a lie for it — the rates are there,
-   *  there is just more than one. */
+   *  there is just more than one.
+   *
+   *  It used to print every supplier and its price on the summary line. That is
+   *  the one row where the price is not a single fact: which rate applies
+   *  depends on how the tanks are proportioned, so a list of them side by side
+   *  invited the reader to pick one. The count says the rates exist; the split
+   *  editor below says what they are, against the quantity they apply to. */
   const cardSummary = (c: CatalogueItem): string => {
     if (c.item === "resin") {
-      const entries = Object.entries(data.card.resinBySupplier);
-      if (!entries.length) return "not on the card";
-      return "card: " + entries.map(([s, r]) => `${s} ₹${money.format(r)}`).join(", ");
+      const n = Object.keys(data.card.resinBySupplier).length;
+      if (!n) return "not on the card";
+      return `card: ${n} supplier rate${n === 1 ? "" : "s"}`;
     }
     const v = cardRateFor(c);
     return v == null ? "not on the card" : `card ₹${money.format(v)}`;

@@ -192,6 +192,23 @@ export function CostingDashboard() {
   }, []);
 
   const s = report?.sheet ?? null;
+
+  /**
+   * Whether this batch can be costed at all yet.
+   *
+   * A sheet with no slabs on it is not a cheap sheet, it is an undefined one:
+   * every per-slab and per-sqft figure divides by zero, the allocation cannot
+   * tie back, and the headline prints a confident "₹2,625 / slab" that is
+   * conversion cost alone with the entire material cost missing from it. The
+   * sheet's own check caught this and said "do not use this sheet" - at the
+   * bottom, four sections below the numbers it was disowning.
+   *
+   * A batch mid-run is the normal way to arrive here: the mixer has logged its
+   * consumption and the press has not finished, so there is nothing wrong to
+   * fix, only something not to read yet. So the numbers are withheld rather
+   * than annotated, and the panel says which figure is missing.
+   */
+  const notCostable = !!s && s.output.totalSlabs <= 0;
   const onThisBatch = new Set(report?.basis.batchRates ?? []);
 
   return (
@@ -290,8 +307,34 @@ export function CostingDashboard() {
         </div>
       )}
 
+      {/* ---- not costable yet: say what is missing, print nothing ---- */}
+      {s && notCostable && (
+        <Card>
+          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
+            Not costed yet — {report!.batch} · {report!.design}
+          </h2>
+          <p className="text-sm text-gray-700">
+            No slabs have been recorded against this batch, so there is nothing to divide
+            the cost over. Every per-slab and per-square-foot figure would be a division by
+            zero, and the material cost could not be allocated — so the sheet is withheld
+            rather than printed with numbers that do not mean what they appear to.
+          </p>
+          <p className="mt-2 text-sm text-gray-500">
+            The costing appears on its own once the slab count arrives. Nothing needs to be
+            re-entered here; the sheet is computed fresh on every load.
+          </p>
+          {report!.unpriced.length > 0 && (
+            <p className="mt-2 text-sm text-amber-700">
+              Worth fixing while you wait: {report!.unpriced.length} consumed material
+              {report!.unpriced.length === 1 ? " has" : "s have"} no rate, listed above.
+              Those quantities stay out of the total even once slabs are recorded.
+            </p>
+          )}
+        </Card>
+      )}
+
       {/* ---- 1 · headline ---- */}
-      {s && (
+      {s && !notCostable && (
         <Section title={`Headline — ${report!.batch} · ${report!.design} · ${s.output.totalSlabs} slabs`}>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             <Kpi label="Cost / slab · 3 cm" value={inr0(s.final.perSlab3cm)} sub="material + conversion" />
@@ -305,7 +348,7 @@ export function CostingDashboard() {
       )}
 
       {/* ---- 2 · raw material ---- */}
-      {s && (
+      {s && !notCostable && (
         <Section title="Raw material — quantities are actual mixer consumption">
           <p className="mb-2 text-xs font-medium text-gray-500">Resin and chemicals</p>
           <MaterialTable lines={s.material.resinAndChemicals} totalLabel="Sub-total" total={s.material.resinAndChemicalsTotal} />
@@ -335,7 +378,7 @@ export function CostingDashboard() {
       )}
 
       {/* ---- 3 · output & allocation ---- */}
-      {s && (
+      {s && !notCostable && (
         <Section title="Output and how material cost is split">
           <div className="overflow-x-auto">
             <table className="w-full max-w-2xl text-sm">
@@ -366,7 +409,7 @@ export function CostingDashboard() {
       )}
 
       {/* ---- 4 · conversion ---- */}
-      {s && (
+      {s && !notCostable && (
         <Section title="Conversion cost per slab — identical for both thicknesses">
           <div className="overflow-x-auto">
             <table className="w-full max-w-3xl text-sm">
