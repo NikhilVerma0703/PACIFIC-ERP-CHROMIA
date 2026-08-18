@@ -37,9 +37,14 @@ COMMIT;
 -- Verify: this must return 0.
 --   SELECT count(*) FROM "users" WHERE "branch"::text = 'CHROMIA';
 --
--- Once it does, the transitional clauses can go:
+-- Once it does, the transitional clauses can go — all of them, together:
+--   src/auth.config.ts — the `branch === "CHROMIA"` escape
 --   src/middleware.ts  — the two `branch === "CHROMIA"` arms
+--   src/lib/chromia/tier.ts — the branch arm of chromiaTierOf
 --   src/components/Nav.tsx — the branch arm of the Chromia nav takeover
+--   src/app/admin/users/page.tsx — the `visible` list (fold back into assignable)
+--   src/lib/consumables/access.ts — the `|| b === "CHROMIA"` clause
+--   tests/chromiaAccess.test.ts — the transitional test
 --   src/lib/branch.ts  — the CHROMIA member of BranchName and BRANCH_LABEL
 --   prisma/schema.prisma — CHROMIA in enum Branch (then the DB-side recipe in
 --                          the footer of 0043)
