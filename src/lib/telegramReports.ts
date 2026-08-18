@@ -121,6 +121,22 @@ export async function shiftMessage(anchor: string, shift: "A" | "B" | "C"): Prom
     // bucket first, zero buckets omitted.
     `Downtime: <b>${r.delayMin > 0 ? fmtDur(r.delayMin) : "none"}</b>${breakdownSplit(r.delayByType)}`,
   ];
+  // Breakdown by trade, its own line under the buckets. Attribution comes from
+  // the hour's typed reasons — MIS stores ONE combined minutes column — so the
+  // residue an hour's reasons cannot assign is shown as "unsplit" rather than
+  // silently rolled into either trade. Whose problem the stoppage was is the
+  // question this report exists to answer; a made-up answer is worse than none.
+  {
+    const t = r.breakdownByTrade;
+    if (t && (t.electrical > 0 || t.mechanical > 0 || t.unsplit > 0)) {
+      const parts = [
+        t.electrical > 0 ? `electrical ${fmtDur(t.electrical)}` : null,
+        t.mechanical > 0 ? `mechanical ${fmtDur(t.mechanical)}` : null,
+        t.unsplit > 0 ? `unsplit ${fmtDur(t.unsplit)}` : null,
+      ].filter(Boolean);
+      lines.push(`Breakdown by trade: ${parts.join(" · ")}`);
+    }
+  }
   if (r.batches.length || r.designs.length) lines.push(`Batch/design: ${esc([...r.batches, ...r.designs].slice(0, 6).join(", "))}`);
   if (r.areas.length) lines.push(`Problem areas: ${esc(r.areas.join(", "))}`);
   const maint = [r.elecIncharge ? `elec ${r.elecIncharge}` : null, r.mechIncharge ? `mech ${r.mechIncharge}` : null].filter(Boolean).join(", ");

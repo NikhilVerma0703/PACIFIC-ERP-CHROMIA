@@ -5,6 +5,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
 import { SHIFT_HOURS as HOURS, SHIFT_WINDOW as WINDOW, shiftOfHour } from "@/lib/misShiftHours";
+import { classifyBreakdownTrade } from "@/lib/downtimeShared";
 import { canonicalGrade } from "@/lib/inventory/grading";
 
 const db = prisma as any;
@@ -18,6 +19,11 @@ export interface LastShiftReport {
    *  the total, and the Telegram /shift report needed the split — "2h 0m" says
    *  the line stopped, the split says whose problem it was. */
   delayByType: Record<string, number>;
+  /** The breakdown bucket attributed to a trade from each hour's typed reasons.
+   *  NOT a measurement — MIS stores one combined minutes column, so an hour
+   *  whose reasons name both trades (or none) sits in `unsplit` rather than
+   *  being divided by guesswork. */
+  breakdownByTrade: { electrical: number; mechanical: number; unsplit: number };
   batches: string[]; designs: string[]; areas: string[];
   /** QC'd in the same window. Polish is downstream of the press, so these are
    *  not the same slabs that were pressed this shift — they are two separate
@@ -95,7 +101,7 @@ export async function getShiftReport(anchor: string, shift: "A" | "B" | "C"): Pr
       hour: true, batch: true, design: true, submittedBy: true,
       productionInchargeName: true, electricalInchargeName: true, mechanicalInchargeName: true,
       slabsPerHourActual: true, startingSlabNumber: true, endingSlabNumber: true, numberOfJumpedSlabs: true,
-      areaOfProblem: true, processDelayDurationMinutes: true, cleaningDelayDurationMinutes: true,
+      areaOfProblem: true, reasonForDeviation: true, processDelayDurationMinutes: true, cleaningDelayDurationMinutes: true,
       breakdownDelayDurationMechanicalOrElectricalMinutes: true, poweroutDelayDurationMinutes: true,
     } });
     if (rows.length === 0) return null;
@@ -115,6 +121,18 @@ export async function getShiftReport(anchor: string, shift: "A" | "B" | "C"): Pr
       powerout: rows.reduce((a, r) => a + n(r.poweroutDelayDurationMinutes), 0),
     };
     const delayMin = Object.values(delayByType).reduce((a, b) => a + b, 0);
+    // Breakdown split by trade, attributed hour-by-hour from the typed reasons
+    // (see classifyBreakdownTrade). An hour naming both trades, or neither,
+    // lands in "unsplit" — one minutes figure cannot be divided honestly.
+    const breakdownByTrade = { electrical: 0, mechanical: 0, unsplit: 0 };
+    for (const r of rows) {
+      const min = n(r.breakdownDelayDurationMechanicalOrElectricalMinutes);
+      if (min <= 0) continue;
+      const trade = classifyBreakdownTrade(Array.isArray(r.reasonForDeviation) ? r.reasonForDeviation : []);
+      if (trade === "electrical") breakdownByTrade.electrical += min;
+      else if (trade === "mechanical") breakdownByTrade.mechanical += min;
+      else breakdownByTrade.unsplit += min;
+    }
 
     // Polish throughput for the same window, keyed off the QC timestamp. Its own
     // try/catch so a QC-side problem degrades these four numbers to zero rather
@@ -159,6 +177,11 @@ export async function getShiftReport(anchor: string, shift: "A" | "B" | "C"): Pr
       hoursLogged: uniq(rows.map((r) => r.hour)).length, hoursTotal: hours.length,
       slabs: Math.round(slabs), delayMin: Math.round(delayMin),
       delayByType: Object.fromEntries(Object.entries(delayByType).map(([k, v]) => [k, Math.round(v)])),
+      breakdownByTrade: {
+        electrical: Math.round(breakdownByTrade.electrical),
+        mechanical: Math.round(breakdownByTrade.mechanical),
+        unsplit: Math.round(breakdownByTrade.unsplit),
+      },
       batches: uniq(rows.map((r) => r.batch)), designs: uniq(rows.map((r) => r.design)),
       areas: uniq(rows.flatMap((r) => r.areaOfProblem ?? [])),
       polished, gradeA, gradeB, gradeC, lastPolishedDesign, lastPolishedBatch,

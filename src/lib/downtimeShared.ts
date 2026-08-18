@@ -81,3 +81,36 @@ export function sortTickets<T extends QueueItem>(rows: readonly T[]): T[] {
     return ac ? bt - at : at - bt;
   });
 }
+
+// ---------------------------------------------------------------------------
+// Breakdown trade attribution
+// ---------------------------------------------------------------------------
+// MIS records breakdown as ONE minutes column — "mechanical OR electrical",
+// the trades are not split in the data, which is also why the scoreboard
+// measures both incharges on the same figure. The only trade signal an hour
+// carries is its typed reasons ("ELECTRICAL - MACHINE FAILURE",
+// "MECHANICAL - BELT ISSUE"), so any split is an ATTRIBUTION from those, not a
+// measurement — and it must say so when it cannot tell.
+//
+// Keywords follow classifyReason's conventions in downtime.ts: HMI and supply
+// faults are the electrician's; belts are the fitter's.
+const ELEC_HINTS = ["ELECTRICAL", "HMI", "SUPPLY", "FAULT ALARM"];
+const MECH_HINTS = ["MECHANICAL", "BELT"];
+
+export type BreakdownTrade = "electrical" | "mechanical" | "mixed" | "unknown";
+
+/** Which trade an hour's breakdown minutes belong to, judged from its reasons.
+ *  "mixed" = reasons name BOTH trades (one minutes figure, two culprits — the
+ *  hour cannot be split honestly). "unknown" = no trade-naming reason at all. */
+export function classifyBreakdownTrade(reasons: readonly string[]): BreakdownTrade {
+  let elec = false, mech = false;
+  for (const r of reasons) {
+    const u = String(r ?? "").toUpperCase();
+    if (ELEC_HINTS.some((h) => u.includes(h))) elec = true;
+    if (MECH_HINTS.some((h) => u.includes(h))) mech = true;
+  }
+  if (elec && mech) return "mixed";
+  if (elec) return "electrical";
+  if (mech) return "mechanical";
+  return "unknown";
+}

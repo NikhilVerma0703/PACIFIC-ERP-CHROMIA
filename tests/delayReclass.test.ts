@@ -324,3 +324,36 @@ test("an impossible reconstruction is detectable, not silently shown as history"
   assert.equal(reconstructionSound(before), false);
   assert.equal(reconstructionSound({ process: 0, cleaning: 20, breakdown: 0, powerout: 5 }), true);
 });
+
+// ---------------------------------------------------------------------------
+// Breakdown trade attribution (classifyBreakdownTrade)
+// ---------------------------------------------------------------------------
+// MIS stores ONE breakdown minutes column; the trade is attributed from the
+// hour's typed reasons. These pin the vocabulary the live data actually uses.
+import { classifyBreakdownTrade } from "../src/lib/downtimeShared.ts";
+
+test("the live reason vocabulary lands on the right trade", () => {
+  assert.equal(classifyBreakdownTrade(["ELECTRICAL - MACHINE FAILURE"]), "electrical");
+  assert.equal(classifyBreakdownTrade(["ELECTRICAL - SUPPLY ISSUE"]), "electrical");
+  assert.equal(classifyBreakdownTrade(["HMI ISSUE"]), "electrical");
+  assert.equal(classifyBreakdownTrade(["MECHANICAL - MACHINE ISSUE"]), "mechanical");
+  assert.equal(classifyBreakdownTrade(["MECHANICAL - BELT ISSUE"]), "mechanical");
+});
+
+test("both trades on one hour is mixed — one figure cannot be split honestly", () => {
+  assert.equal(
+    classifyBreakdownTrade(["ELECTRICAL - MACHINE FAILURE", "MECHANICAL - MACHINE ISSUE"]),
+    "mixed",
+  );
+});
+
+test("no trade-naming reason is unknown, not a silent default", () => {
+  assert.equal(classifyBreakdownTrade([]), "unknown");
+  assert.equal(classifyBreakdownTrade(["FILM DAMAGE"]), "unknown");
+  assert.equal(classifyBreakdownTrade(["PROCESS DELAY"]), "unknown");
+});
+
+test("a trade reason plus an unrelated reason still attributes cleanly", () => {
+  assert.equal(classifyBreakdownTrade(["ELECTRICAL - MACHINE FAILURE", "PROCESS DELAY"]), "electrical");
+  assert.equal(classifyBreakdownTrade(["MECHANICAL - MACHINE ISSUE", "Robo 4"]), "mechanical");
+});
