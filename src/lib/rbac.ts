@@ -26,6 +26,7 @@ export const ROLE_LABEL: Record<string, string> = {
   OPERATOR: "Operator", INCHARGE: "Incharge", LINE_MANAGER: "Line Manager", ADMIN: "Administrator",
   FINANCE: "Finance", ACCOUNTS: "Accounts", SALES: "Sales", COMMERCIAL: "Commercial", STORE: "Store Incharge", MAINTENANCE: "Maintenance Manager",
   ROBO: "Robo Operator",
+  CHROMIA: "Chromia Operator",
 };
 
 /** Fabrication shares the ONE role hierarchy with Shop Floor (LINE_MANAGER /
@@ -117,7 +118,10 @@ export function creatableRoles(role?: string | null, branch?: string | null): Ro
   const r = rankOf(role);
   if (branch === "OFFICE") return r >= ROLE_RANK.ADMIN ? (["FINANCE", "ACCOUNTS", "SALES", "COMMERCIAL"] as RoleName[]) : [];
   if (branch === "FABRICATION") return (["LINE_MANAGER", "INCHARGE", "OPERATOR"] as RoleName[]).filter((x) => ROLE_RANK[x] < r);
-  return (["LINE_MANAGER", "INCHARGE", "OPERATOR", "STORE", "MAINTENANCE", "ROBO"] as RoleName[]).filter((x) => ROLE_RANK[x] < r);
+  // CHROMIA sits before ROBO deliberately: UserAdmin defaults the Role dropdown
+  // to the LAST creatable role, so appending would silently change what an
+  // admin creates when they don't touch the dropdown.
+  return (["LINE_MANAGER", "INCHARGE", "OPERATOR", "STORE", "MAINTENANCE", "CHROMIA", "ROBO"] as RoleName[]).filter((x) => ROLE_RANK[x] < r);
 }
 
 /** Store Incharge (or incharge+) manage the two-tier RM store (upload + assign). */

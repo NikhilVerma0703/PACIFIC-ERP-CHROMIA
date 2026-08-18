@@ -126,6 +126,23 @@ export function Nav({
     ...(spAccess   ? [{ href: "/sales/settings",   icon: I.planning, label: "Settings" }] : []),
   ];
 
+  // Chromia module — the module's own nine screens (lib/chromia/config/navigation.ts),
+  // re-rooted under /chromia. Declared once and used twice: as the whole nav for
+  // the dedicated CHROMIA tablet role below, and as a Shop Floor section for
+  // admins, who reach every department. Icons mirror Robo's where the screen is
+  // the same idea, so the two shop-floor modules read as one family.
+  const chromiaItems = [
+    { href: "/chromia/dashboard",              icon: I.overview, label: "Dashboard" },
+    { href: "/chromia/operator",               icon: I.factory,  label: "Operator Entry" },
+    { href: "/chromia/slabs",                  icon: I.batch,    label: "Slab Records" },
+    { href: "/chromia/stockyard",              icon: I.samples,  label: "Stockyard" },
+    { href: "/chromia/recalibrations",         icon: I.spanner,  label: "Recalibration" },
+    { href: "/chromia/recalibration-tracking", icon: I.live,     label: "Recal. Tracking" },
+    { href: "/chromia/reports",                icon: I.ceo,      label: "Summary" },
+    { href: "/chromia/downloads",              icon: I.box,      label: "Downloads" },
+    { href: "/chromia/import",                 icon: I.entry,    label: "Import" },
+  ];
+
   if (role === "STORE")
     return <nav className="flex flex-col gap-1">{STORE_TABS.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}</nav>;
   if (role === "COMMERCIAL")
@@ -150,6 +167,15 @@ export function Nav({
         <NavLink href="/robo/downloads" icon={I.box} label="Downloads" path={path} />
         <NavLink href="/robo/import" icon={I.entry} label="Import" path={path} />
         <NavLink href="/robo/masters" icon={I.tables} label="Master Lists" path={path} />
+      </nav>
+    );
+  if (role === "CHROMIA" || (!isAdmin && branch === "CHROMIA"))
+    // chromia line tablet — the chromia module is their whole ERP. The branch
+    // arm covers logins left on the retired CHROMIA department, which
+    // middleware caps to this module too; it goes with them.
+    return (
+      <nav className="flex flex-col gap-1">
+        {chromiaItems.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}
       </nav>
     );
   if (role === "OPERATOR" && branch !== "FABRICATION")
@@ -226,6 +252,9 @@ export function Nav({
       {isProd && <Section label="Production" items={production} path={path} />}
       {isProd && <Section label="Lookups &amp; Reports" items={reports} path={path} />}
       {isFab  && <Section label="Fabrication" items={fabrication} path={path} />}
+      {/* Shop Floor -> Chromia. Admins only: the CHROMIA role gets the whole-nav
+          takeover above, and no other role may open the module (middleware). */}
+      {isAdmin && <Section label="Chromia" items={chromiaItems} path={path} />}
       {inventory && <Section label="Inventory" items={[{ href: "/inventory", icon: I.box, label: "Finished Goods" }]} path={path} />}
       {consumables && <Section label="Consumables" items={[{ href: "/consumables", icon: I.box, label: "Consumables" }]} path={path} />}
       {intlSales && <Section label="International Sales" items={intlSalesItems} path={path} />}

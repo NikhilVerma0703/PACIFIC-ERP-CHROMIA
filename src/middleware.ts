@@ -60,6 +60,28 @@ export default auth((req) => {
     }
   }
 
+  // ---- Chromia module: the same shape as the robo gate directly above, for
+  // the same reasons. Only the dedicated shop-floor CHROMIA role (and admins,
+  // who span every dept) may use the Chromia screens and APIs, and this must
+  // run BEFORE the branch blocks below — their generic `/api` allowances would
+  // otherwise let other departments reach Chromia data. The CHROMIA role itself
+  // is capped to this module further down. Tier differences inside the module
+  // are NOT decided here: middleware only knows the path prefix, so the layout
+  // and every /api/chromia route gate themselves with chromiaGate()
+  // (lib/chromia/access.ts).
+  //
+  // `branch === "CHROMIA"` is a transitional allowance for logins created by
+  // the retired department-style integration, so they keep working until
+  // scripts/0045-migrate-chromia-branch-users.sql moves them to the role. The
+  // cap below contains them meanwhile. Remove both clauses after that runs. ----
+  if (p.startsWith("/chromia") || p.startsWith("/api/chromia")) {
+    if (!isAdmin && role !== "CHROMIA" && branch !== "CHROMIA") {
+      return p.startsWith("/api")
+        ? new Response("Forbidden", { status: 403 })
+        : Response.redirect(new URL("/", nextUrl));
+    }
+  }
+
   // ---- Shift scoreboard: ADMIN only. It ranks named individuals and drives an
   // incentive payout, so it must not be visible to the people it scores. ----
   if (p.startsWith("/scoreboard")) {
@@ -280,6 +302,25 @@ export default auth((req) => {
       return p.startsWith("/api")
         ? new Response("Forbidden", { status: 403 })
         : Response.redirect(new URL("/robo", nextUrl));
+    }
+  }
+  if (role === "CHROMIA" || (!isAdmin && branch === "CHROMIA")) {
+    // Chromia line tablet: the Chromia screens and THEIR APIs — nothing else.
+    // Deliberately the narrow allowlist form the ROBO block above documents,
+    // not the generic `p.startsWith("/api")` the branch blocks use: the module
+    // carries its own dashboard, records, reports and import, so there is
+    // nothing outside /chromia a Chromia login needs. /api/auth is unaffected —
+    // it returns as public long before this block.
+    //
+    // The branch arm is the other half of the transitional allowance above: a
+    // login left on the retired CHROMIA department stays contained here instead
+    // of falling through to full Shop Floor access. Both go once
+    // scripts/0045-migrate-chromia-branch-users.sql has run.
+    const ok = p.startsWith("/chromia") || p.startsWith("/api/chromia") || STATIC_FILE.test(p);
+    if (!ok) {
+      return p.startsWith("/api")
+        ? new Response("Forbidden", { status: 403 })
+        : Response.redirect(new URL("/chromia", nextUrl));
     }
   }
 });
