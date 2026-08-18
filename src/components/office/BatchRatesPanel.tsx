@@ -98,15 +98,10 @@ const FAMILY_NOTE: Record<string, string> = {
 /** Items that are one value per batch rather than a split quantity. */
 const SINGLE_VALUE = new Set(["inr-per-usd"]);
 
-/** The two ways TiO2 has been dosed. The percentage supersedes the per-charge
- *  rule and the report reads the older one ONLY when no percentage exists —
- *  which was the one thing this screen never said out loud, leaving two rows
- *  that look like two dials when they are one dial and its fallback. */
-//  The copy below says "the percentage above" and "the rule below", which is a
-//  claim about RATE_ITEMS order — the percentage is listed first. Reorder the
-//  catalogue and this text has to move with it.
+/** TiO2 is dosed on resin weight like the other three. The per-charge rule that
+ *  used to sit beside this one is gone, so there is no longer a second dial to
+ *  disambiguate — every dosing rule on this panel is the one in force. */
 const TIO2_PCT = "tio2-pct-of-resin";
-const TIO2_LEGACY = "tio2-kg-per-charge";
 
 /** Chemical -> the dosing rule that produces its quantity. The inverse of
  *  dosedItem(), and the reason a chemical row can say WHERE its kilograms came
@@ -276,7 +271,7 @@ export function BatchRatesPanel({
    *  how it is dosed, so the line can name what the number produces rather than
    *  leaving "TiO2 dose" to be read as a material in its own right. */
   const dosedItem = (c: CatalogueItem): CatalogueItem | undefined => {
-    const key = c.item.replace(/-(pct-of-resin|kg-per-charge)$/, "");
+    const key = c.item.replace(/-pct-of-resin$/, "");
     return key === c.item ? undefined : data.catalogue.find((x) => x.item === key);
   };
 
@@ -313,12 +308,11 @@ export function BatchRatesPanel({
    *
    * "a dosing factor - card Rs 9.14" was wrong in both halves: the number is a
    * percentage of resin weight, not rupees, and nothing on the line said what
-   * it produces or which of the two TiO2 rules the sheet actually reads. Five
-   * rows of that is a screen you cannot set without knowing the answer already.
+   * it produces. Five rows of that is a screen you cannot set without knowing
+   * the answer already.
    *
-   * So the line states the factor in force, the kilograms it works out to for
-   * THIS batch, and - for the superseded per-charge rule - whether it is being
-   * used at all.
+   * So the line states the factor in force and the kilograms it works out to
+   * for THIS batch.
    */
   const doseSummary = (c: CatalogueItem): string => {
     const chem = dosedItem(c);
@@ -331,24 +325,9 @@ export function BatchRatesPanel({
       ? ` — ${num.format(made.qty)} ${made.unit} of ${name} in this batch`
       : "";
 
-    if (c.item === TIO2_LEGACY) {
-      if (doseInForce(TIO2_PCT) != null) {
-        return `The old way of writing the ${name} dose. Not in use — the percentage above is set.`;
-      }
-      const legacy = doseInForce(c.item);
-      return legacy == null
-        ? `The old way of writing the ${name} dose. Neither this nor the percentage above is set, so ${name} is reported unpriced.`
-        : `In use, because the percentage above is not set: ${factor.format(legacy.value)} kg of ${name} per mixer charge${gives}.`;
-    }
-
     const f = doseInForce(c.item);
     if (f == null) {
-      // TiO2 is the one rule whose absence is not fatal: the per-charge rule
-      // below still costs it, and telling somebody it is unpriced when it is
-      // not would send them looking for a problem that is not there.
-      return c.item === TIO2_PCT && doseInForce(TIO2_LEGACY) != null
-        ? `Not set — ${name} still costs from the old per-charge rule below. Enter the percent of resin weight to move it here.`
-        : `Not set — ${name} is reported unpriced until somebody enters the percent of resin weight it is dosed at.`;
+      return `Not set — ${name} is reported unpriced until somebody enters the percent of resin weight it is dosed at.`;
     }
 
     // "for this batch" has to come from the SAME resolution that produced the
@@ -385,17 +364,10 @@ export function BatchRatesPanel({
     return { ok: !(saved.length > 1 || saved.some((r) => r.qty != null)), lines: saved.length };
   };
 
-  /**
-   * Which of the two TiO₂ rules carries the price box: the one actually costing
-   * the batch. Both rows dose the same pigment at the same per-kg price, so two
-   * boxes would be two ways to write one number — and the day they disagreed,
-   * the screen would show a price the sheet is not using.
-   */
-  const rulePricesChem = (c: CatalogueItem): boolean => {
-    if (c.item === TIO2_PCT) return doseInForce(TIO2_PCT) != null || doseInForce(TIO2_LEGACY) == null;
-    if (c.item === TIO2_LEGACY) return doseInForce(TIO2_PCT) == null;
-    return true;
-  };
+  /** Every dosing rule now carries its chemical's price box. There used to be
+   *  two TiO₂ rules and only one could own it; with the per-charge rule gone
+   *  there is one rule per chemical and no ambiguity to resolve. */
+  const rulePricesChem = (_c: CatalogueItem): boolean => true;
 
   /** One item's lines, saved as the whole set the route expects. */
   const postLines = async (
@@ -586,8 +558,7 @@ export function BatchRatesPanel({
     };
 
     // Live, from what is in the box — falling back to the card, which is what
-    // an empty box means. The per-charge rule cannot be recomputed here (the
-    // charge count is not on this payload), so it shows the server's figure.
+    // an empty box means.
     const typed = Number(pctDraft);
     const effPct = pctDraft.trim() !== "" && Number.isFinite(typed) && typed > 0 ? typed : cardPct;
     const resin = resinKg();
@@ -716,19 +687,10 @@ export function BatchRatesPanel({
     const rule = DOSED_BY[c.item];
     if (!rule) return `mixer weighed ${num.format(m.qty)} ${m.unit}`;
 
-    // TiO₂ resolves the way report.ts resolves it: the percentage wins, and the
-    // superseded per-charge rule is only reached when no percentage is set.
     const pct = doseInForce(rule);
     if (pct) {
       return `${factor.format(pct.value)}% of resin weight${pct.fromBatch ? " (set on this batch)" : ""}`
         + ` = ${num.format(m.qty)} ${m.unit}`;
-    }
-    if (c.item === "tio2") {
-      const legacy = doseInForce(TIO2_LEGACY);
-      if (legacy) {
-        return `${factor.format(legacy.value)} kg per mixer charge, the old rule`
-          + ` = ${num.format(m.qty)} ${m.unit}`;
-      }
     }
     return `${num.format(m.qty)} ${m.unit}, dosed on resin weight`;
   };

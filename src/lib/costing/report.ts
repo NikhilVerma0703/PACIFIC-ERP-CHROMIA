@@ -294,20 +294,12 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
     }
     materials.push({ group, item, basis: basisOf(d), qty, unit: "kg", rate, estimated: true });
   };
-  // TiO₂ is dosed on resin weight like the other three. The per-charge rule it
-  // used to follow came from how the Simply White sheet wrote it, not from how
-  // the line runs; it stays as a fallback so a plant that has only ever set
-  // that figure keeps costing until the percentage is entered.
-  if (pricing.dosing["tio2-pct-of-resin"] !== undefined
-      || card.rates["tio2-pct-of-resin"] !== undefined) {
-    dose("tio2-pct-of-resin", "tio2", "TiO₂",
-      (d) => (c.resinKg * d) / 100, (d) => `${d}% of resin weight (dosing rule)`, "pigment");
-  } else {
-    dose("tio2-kg-per-charge", "tio2", "TiO₂",
-      (d) => d * c.mixerCharges,
-      (d) => `${d} kg × ${c.mixerCharges} mixer charges (legacy per-charge rule)`,
-      "pigment");
-  }
+  // TiO₂ is dosed on resin weight, like the other three. There is no fallback:
+  // the per-charge rule is gone, so a card without tio2-pct-of-resin reports
+  // TiO₂ unpriced and says which rate it needs, exactly as it would for any
+  // other material nobody has set a rate for.
+  dose("tio2-pct-of-resin", "tio2", "TiO₂",
+    (d) => (c.resinKg * d) / 100, (d) => `${d}% of resin weight (dosing rule)`, "pigment");
   dose("silane-pct-of-resin", "silane", "Silane",
     (d) => (c.resinKg * d) / 100, (d) => `${d}% of resin weight (dosing rule)`, "chemical");
   dose("cobalt-pct-of-resin", "cobalt", "Cobalt",

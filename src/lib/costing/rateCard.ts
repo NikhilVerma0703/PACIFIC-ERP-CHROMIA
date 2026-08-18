@@ -65,16 +65,13 @@ export const RATE_ITEMS: readonly RateItemDef[] = [
   // other - revising one re-costs every batch it applies to.
   { item: "tio2-pct-of-resin", category: "DOSING", label: "TiO₂ dose", unit: "pct",
     hint: "Percent of resin weight, like the other three." },
-  // LEGACY, and kept only so nothing goes unpriced mid-switch. TiO₂ was
-  // modelled as kilograms per mixer charge because that is how the Simply White
-  // sheet wrote it; the line says it is dosed on resin like silane, cobalt and
-  // catalyst. The two agree on the reference batch — 9.14 × 279 charges is
-  // 2,549 kg, which is 6.09% of that run's 41,873 kg of resin — so this is a
-  // change of derivation, not of quantity. The report prefers the percentage
-  // and falls back here, so a plant that has only ever set the per-charge
-  // figure keeps costing until somebody enters the percentage.
-  { item: "tio2-kg-per-charge", category: "DOSING", label: "TiO₂ dose (old, per charge)", unit: "kg",
-    hint: "Superseded by the percentage above. Used only if that is not set." },
+  // The per-charge TiO₂ rule is GONE. It modelled TiO₂ as kilograms per mixer
+  // charge because that is how the Simply White sheet wrote it, and it was kept
+  // as a fallback through the switch. The plant doses on resin weight, so the
+  // fallback was describing a derivation nobody uses — and it disagreed with
+  // the percentage by up to 14% depending on how much resin a charge carried
+  // (6.09% of resin on the reference batch, 6.94% on 1414). Two rules that
+  // disagree, one of them wrong, is worse than one rule that has to be set.
   { item: "silane-pct-of-resin", category: "DOSING", label: "Silane dose", unit: "pct",
     hint: "Percent of resin weight." },
   { item: "cobalt-pct-of-resin", category: "DOSING", label: "Cobalt dose", unit: "pct",
@@ -317,7 +314,6 @@ export const STARTER_RATES: ReadonlyArray<{
   // note before it prices a container — every other dosing rate here was
   // back-derived the same way and carries the same caveat.
   { item: "tio2-pct-of-resin", rate: 6.0874, note: "Back-derived: 2,549 kg on 41,873.4 kg resin" },
-  { item: "tio2-kg-per-charge", rate: 9.14, note: "Legacy: 9.14 kg × mixer charges" },
   { item: "silane-pct-of-resin", rate: 1.2143, note: "Back-derived: 508.46 kg on 41,873 kg resin" },
   { item: "cobalt-pct-of-resin", rate: 0.0857, note: "Back-derived: 35.89 kg on 41,873 kg resin" },
   { item: "catalyst-pct-of-resin", rate: 1, note: "Simply White sheet: 1% of resin weight" },

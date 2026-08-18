@@ -87,34 +87,27 @@ async function mixerQuantities(batchKey: string): Promise<Record<string, { qty: 
     const d = dose(key);
     if (d !== undefined) out[item] = { qty: (c.resinKg * d) / 100, unit: "kg" };
   }
-  // The legacy per-charge rule, in the same order of preference report.ts uses,
-  // so the two never show different TiO₂.
-  const perCharge = dose("tio2-kg-per-charge");
-  if (out.tio2 === undefined && perCharge !== undefined) {
-    out.tio2 = { qty: perCharge * c.mixerCharges, unit: "kg" };
-  }
-
   return out;
 }
 
 /**
  * Suppliers to suggest in this batch's assignment boxes.
  *
- * THIS BATCH ONLY, plus the resin suppliers named on its own rate card. An
- * earlier version pooled every description ever typed plant-wide, which was
- * wrong for what this screen asserts: a line here is a statement that THIS run
- * bought that material from that supplier. Offering names carried in from other
- * batches makes the likeliest mistake - accepting a suggestion that was true
- * somewhere else - the easiest thing to do.
+ * PLANT-WIDE, plus the resin suppliers named on this batch's own rate card.
+ * The plant buys from the same handful of suppliers batch after batch, so a
+ * list scoped to one batch would be empty exactly when it is first needed and
+ * would let the same supplier be spelled four ways across four runs - which is
+ * the thing that makes a year of splits impossible to group afterwards.
  *
- * The card's own resin suppliers are legitimate because they are this batch's
- * card, resolved for its own run date.
+ * It suggests; it does not fill anything in. Nothing here is written to a line
+ * that somebody did not choose.
  */
-async function suggestedSuppliers(batchKey: string, card: { resinBySupplier: Record<string, number> }): Promise<string[]> {
+async function suggestedSuppliers(card: { resinBySupplier: Record<string, number> }): Promise<string[]> {
   const rows = await prisma.costingBatchMaterial.findMany({
-    where: { batchKey, description: { not: null } },
+    where: { description: { not: null } },
     select: { description: true },
     distinct: ["description"],
+    take: 500,
   });
   const seen = new Set<string>();
   const out: string[] = [];
@@ -172,7 +165,7 @@ export async function GET(req: NextRequest) {
     mixerQuantities(batchKey),
   ]);
   const [descriptions, signoff] = await Promise.all([
-    suggestedSuppliers(batchKey, card),
+    suggestedSuppliers(card),
     verification(batchKey, card, rows),
   ]);
 
