@@ -98,6 +98,11 @@ const FAMILY_NOTE: Record<string, string> = {
 /** Items that are one value per batch rather than a split quantity. */
 const SINGLE_VALUE = new Set(["inr-per-usd"]);
 
+/** The families the mixer NEVER weighs. Their kilograms come from the dosing
+ *  rules, so "did the mixer record any" is the wrong question to ask of them —
+ *  and asking it is what put a batch's pigment behind "none in this batch". */
+const DOSED_FAMILIES = new Set(["PIGMENT", "CHEMICAL"]);
+
 /** TiO2 is dosed on resin weight like the other three. The per-charge rule that
  *  used to sit beside this one is gone, so there is no longer a second dial to
  *  disambiguate — every dosing rule on this panel is the one in force. */
@@ -187,7 +192,14 @@ export function BatchRatesPanel({
       // which is both false and the opposite of useful. The exchange rate is
       // the same: every batch has one, and it is the whole point that it is
       // asked for per batch.
-      const alwaysApplies = c.category === "DOSING" || SINGLE_VALUE.has(c.item);
+      // Pigment and the chemicals are in exactly the same position as the
+      // dosing rules: the mixer cannot weigh them, so a batch that used TiO2
+      // still has no mixer quantity against it. Judging them by "did the mixer
+      // weigh any" filed a material the run certainly consumed under "none in
+      // this batch", and a material nobody can see is a material nobody can
+      // price — which is the whole job of this panel.
+      const alwaysApplies = c.category === "DOSING"
+        || DOSED_FAMILIES.has(c.category) || SINGLE_VALUE.has(c.item);
       (hasQty || priced || alwaysApplies ? slot.used : slot.unused).push(c);
       byFamily.set(c.category, slot);
     }
@@ -246,25 +258,6 @@ export function BatchRatesPanel({
     }
     const v = data.card.rates[c.item];
     return Number.isFinite(v) ? v : null;
-  };
-
-  /** What the card says, in words. Resin is the one item the card holds per
-   *  supplier, and "not on the card" was a lie for it — the rates are there,
-   *  there is just more than one.
-   *
-   *  It used to print every supplier and its price on the summary line. That is
-   *  the one row where the price is not a single fact: which rate applies
-   *  depends on how the tanks are proportioned, so a list of them side by side
-   *  invited the reader to pick one. The count says the rates exist; the split
-   *  editor below says what they are, against the quantity they apply to. */
-  const cardSummary = (c: CatalogueItem): string => {
-    if (c.item === "resin") {
-      const n = Object.keys(data.card.resinBySupplier).length;
-      if (!n) return "not on the card";
-      return `card: ${n} supplier rate${n === 1 ? "" : "s"}`;
-    }
-    const v = cardRateFor(c);
-    return v == null ? "not on the card" : `card ₹${money.format(v)}`;
   };
 
   /** The chemical a dosing rule doses. A rule's key is the chemical's key plus
@@ -755,8 +748,14 @@ export function BatchRatesPanel({
                 <>
                   {mixer
                     ? quantityBasis(c)
-                    : splittable ? "not used in this batch" : "one value for this batch"}
-                  {" · "}{cardSummary(c)}
+                    // The card price is off this line deliberately. It is a
+                    // plant-wide rate carried in from whenever it was last
+                    // revised, and read next to THIS batch's quantity it was
+                    // taken for this batch's price. The split editor still
+                    // shows it, against the quantity it actually applies to.
+                    : DOSED_BY[c.item]
+                      ? "no dose set — set the rule below and this fills in"
+                      : splittable ? "not used in this batch" : "one value for this batch"}
                 </>
               )}
             </span>
@@ -1027,9 +1026,11 @@ export function BatchRatesPanel({
                     ? `${used.length} rule${used.length === 1 ? "" : "s"}`
                     : family === "BASIS"
                       ? "set per batch"
-                      : used.length
-                      ? `${used.length} in this batch`
-                      : "none in this batch"}
+                      : DOSED_FAMILIES.has(family)
+                        ? `${used.length} material${used.length === 1 ? "" : "s"}`
+                        : used.length
+                        ? `${used.length} in this batch`
+                        : "none in this batch"}
                 </span>
                 {FAMILY_NOTE[family] && (
                   <span className="text-xs text-gray-400">· {FAMILY_NOTE[family]}</span>
