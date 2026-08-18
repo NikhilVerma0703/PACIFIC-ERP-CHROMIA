@@ -13,6 +13,11 @@ export interface LastShiftReport {
   shift: "A" | "B" | "C"; date: string; window: string;
   prodIncharge: string | null; elecIncharge: string | null; mechIncharge: string | null; submitters: string[];
   hoursLogged: number; hoursTotal: number; slabs: number; delayMin: number;
+  /** delayMin split by the four buckets, keyed by DELAY_FIELDS keys. Kept
+   *  beside the total rather than replacing it: every existing consumer reads
+   *  the total, and the Telegram /shift report needed the split — "2h 0m" says
+   *  the line stopped, the split says whose problem it was. */
+  delayByType: Record<string, number>;
   batches: string[]; designs: string[]; areas: string[];
   /** QC'd in the same window. Polish is downstream of the press, so these are
    *  not the same slabs that were pressed this shift — they are two separate
@@ -103,8 +108,13 @@ export async function getShiftReport(anchor: string, shift: "A" | "B" | "C"): Pr
         return a + (r.endingSlabNumber - r.startingSlabNumber + 1 - n(r.numberOfJumpedSlabs));
       return a;
     }, 0);
-    const delayMin = rows.reduce((a, r) => a + n(r.processDelayDurationMinutes) + n(r.cleaningDelayDurationMinutes)
-      + n(r.breakdownDelayDurationMechanicalOrElectricalMinutes) + n(r.poweroutDelayDurationMinutes), 0);
+    const delayByType: Record<string, number> = {
+      process: rows.reduce((a, r) => a + n(r.processDelayDurationMinutes), 0),
+      cleaning: rows.reduce((a, r) => a + n(r.cleaningDelayDurationMinutes), 0),
+      breakdown: rows.reduce((a, r) => a + n(r.breakdownDelayDurationMechanicalOrElectricalMinutes), 0),
+      powerout: rows.reduce((a, r) => a + n(r.poweroutDelayDurationMinutes), 0),
+    };
+    const delayMin = Object.values(delayByType).reduce((a, b) => a + b, 0);
 
     // Polish throughput for the same window, keyed off the QC timestamp. Its own
     // try/catch so a QC-side problem degrades these four numbers to zero rather
@@ -148,6 +158,7 @@ export async function getShiftReport(anchor: string, shift: "A" | "B" | "C"): Pr
       submitters: uniq(rows.map((r) => r.submittedBy)),
       hoursLogged: uniq(rows.map((r) => r.hour)).length, hoursTotal: hours.length,
       slabs: Math.round(slabs), delayMin: Math.round(delayMin),
+      delayByType: Object.fromEntries(Object.entries(delayByType).map(([k, v]) => [k, Math.round(v)])),
       batches: uniq(rows.map((r) => r.batch)), designs: uniq(rows.map((r) => r.design)),
       areas: uniq(rows.flatMap((r) => r.areaOfProblem ?? [])),
       polished, gradeA, gradeB, gradeC, lastPolishedDesign, lastPolishedBatch,

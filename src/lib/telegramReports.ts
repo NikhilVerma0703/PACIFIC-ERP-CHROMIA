@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { getShiftReport } from "@/lib/misShift";
 import { shiftOfHour, SHIFT_WINDOW } from "@/lib/misShiftHours";
 import { getDowntimeReport, fmtDur } from "@/lib/downtime";
+import { DELAY_FIELDS } from "@/lib/downtimeShared";
 import { esc } from "@/lib/telegram";
 
 const db = prisma as any;
@@ -94,6 +95,19 @@ export async function hourlyMessage(bucket: string, date: string): Promise<strin
   return lines.join("\n");
 }
 
+/** " (breakdown 50m · cleaning 40m · process 16m)" — or "" when nothing to split. */
+function breakdownSplit(byType: Record<string, number> | undefined): string {
+  if (!byType) return "";
+  const parts = DELAY_FIELDS
+    .map((d) => ({ label: d.label.replace(" (mech/elec)", "").toLowerCase(), min: byType[d.key] ?? 0 }))
+    .filter((x) => x.min > 0)
+    .sort((a, b) => b.min - a.min)
+    .map((x) => `${x.label} ${fmtDur(x.min)}`);
+  // Even a single bucket is worth naming: "50m" and "50m (breakdown 50m)" are
+  // different messages — the second says whose problem it was.
+  return parts.length > 0 ? ` (${parts.join(" · ")})` : "";
+}
+
 /** Shift-end report (like the Downtime page's Last Shift card). */
 export async function shiftMessage(anchor: string, shift: "A" | "B" | "C"): Promise<string> {
   const r = await getShiftReport(anchor, shift).catch(() => null);
@@ -101,7 +115,11 @@ export async function shiftMessage(anchor: string, shift: "A" | "B" | "C"): Prom
   const lines = [
     `📋 <b>Shift ${shift} report</b> · ${r.date} · ${r.window}`,
     `Slabs pressed: <b>${r.slabs}</b> · hours logged ${r.hoursLogged}/${r.hoursTotal}`,
-    `Downtime: <b>${r.delayMin > 0 ? fmtDur(r.delayMin) : "none"}</b>`,
+    // The total alone hides whose problem the stoppage was — "2h 0m" reads the
+    // same whether the line was being cleaned or was broken. The split is what
+    // the maintenance manager actually acts on, so it rides in brackets, worst
+    // bucket first, zero buckets omitted.
+    `Downtime: <b>${r.delayMin > 0 ? fmtDur(r.delayMin) : "none"}</b>${breakdownSplit(r.delayByType)}`,
   ];
   if (r.batches.length || r.designs.length) lines.push(`Batch/design: ${esc([...r.batches, ...r.designs].slice(0, 6).join(", "))}`);
   if (r.areas.length) lines.push(`Problem areas: ${esc(r.areas.join(", "))}`);
