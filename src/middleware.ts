@@ -72,7 +72,7 @@ export default auth((req) => {
   //
   // `branch === "CHROMIA"` is a transitional allowance for logins created by
   // the retired department-style integration, so they keep working until
-  // scripts/0045-migrate-chromia-branch-users.sql moves them to the role. The
+  // scripts/0047-migrate-chromia-branch-users.sql moves them to the role. The
   // cap below contains them meanwhile. Remove both clauses after that runs. ----
   if (p.startsWith("/chromia") || p.startsWith("/api/chromia")) {
     if (!isAdmin && role !== "CHROMIA" && branch !== "CHROMIA") {
@@ -171,7 +171,7 @@ export default auth((req) => {
     //
     // The branch arm is TRANSITIONAL: it keeps a login left on the retired
     // CHROMIA department working inside the module until
-    // scripts/0045-migrate-chromia-branch-users.sql moves it onto the role.
+    // scripts/0047-migrate-chromia-branch-users.sql moves it onto the role.
     // Remove it, the escape in auth.config.ts, the branch arm in Nav.tsx and
     // the one in lib/chromia/tier.ts together, once that has run.
     const ok = p.startsWith("/chromia") || p.startsWith("/api/chromia") || STATIC_FILE.test(p);

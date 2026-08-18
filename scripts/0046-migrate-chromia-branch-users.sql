@@ -1,5 +1,5 @@
--- 0045 — Move any login left on the retired CHROMIA department onto the new
--- role. Run AFTER 0044: it is 0044 that adds 'CHROMIA' to the Role enum, and
+-- 0046 — Move any login left on the retired CHROMIA department onto the new
+-- role. Run AFTER 0045: it is 0045 that adds 'CHROMIA' to the Role enum, and
 -- PostgreSQL will not let a new enum value be used in the transaction that
 -- added it.
 --
@@ -15,7 +15,7 @@
 -- this runs — do not leave them on the old branch.
 --
 -- Apply with:
---   npx prisma db execute --file scripts/0045-migrate-chromia-branch-users.sql --schema prisma/schema.prisma
+--   npx prisma db execute --file scripts/0047-migrate-chromia-branch-users.sql --schema prisma/schema.prisma
 --
 -- Idempotent: after the first run there is nothing left matching the WHERE.
 
@@ -47,4 +47,4 @@ COMMIT;
 --   tests/chromiaAccess.test.ts — the transitional test
 --   src/lib/branch.ts  — the CHROMIA member of BranchName and BRANCH_LABEL
 --   prisma/schema.prisma — CHROMIA in enum Branch (then the DB-side recipe in
---                          the footer of 0043)
+--                          the footer of 0044)

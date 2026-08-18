@@ -44,7 +44,7 @@ export const authConfig = {
       // TRANSITIONAL: the retired Chromia department. A CHROMIA-branch login
       // capped to /entry by the role check below would be bounced back to
       // /chromia by middleware — the exact FABRICATION loop described above,
-      // one branch value later. Goes when scripts/0045-migrate-chromia-branch-users.sql
+      // one branch value later. Goes when scripts/0047-migrate-chromia-branch-users.sql
       // has moved the last of them onto role CHROMIA.
       if (branch === "CHROMIA") return true;
 

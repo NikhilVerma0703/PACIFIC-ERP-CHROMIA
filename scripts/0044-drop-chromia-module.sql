@@ -1,10 +1,10 @@
--- 0043 — Drop the previous (department-style) Chromia integration.
+-- 0044 — Drop the previous (department-style) Chromia integration.
 --
 -- 0039 created 33 chromia_* tables and 19 chromia_* enum types on 2026-08-14 for
 -- an integration wired as a DEPARTMENT (Branch.CHROMIA), which is not how a
 -- shop-floor module is mounted in this ERP — Robo is a capped ROLE. That
 -- integration has been removed from the codebase; this removes it from Neon so
--- 0044 can create the module fresh.
+-- 0045 can create the module fresh.
 --
 -- DESTRUCTIVE. Every chromia_* row goes, including any master data (locations,
 -- stage definitions, defect types, recalibration reasons) that was hand-seeded.
@@ -12,7 +12,7 @@
 -- cannot quietly delete work; if you mean it, export first, then comment the
 -- guard out.
 --
--- Run order: 0043 (this) -> 0044 (create) -> 0045 (move any legacy CHROMIA-branch
+-- Run order: 0044 (this) -> 0045 (create) -> 0046 (move any legacy CHROMIA-branch
 -- logins onto the new role). Nothing here depends on the application being
 -- stopped: the new code never reads these tables, and the old code is gone.
 --
@@ -27,8 +27,8 @@
 -- Expected and harmless; the explicit form is there for psql.)
 --
 -- Apply with either:
---   npx prisma db execute --file scripts/0043-drop-chromia-module.sql --schema prisma/schema.prisma
---   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/0043-drop-chromia-module.sql
+--   npx prisma db execute --file scripts/0045-drop-chromia-module.sql --schema prisma/schema.prisma
+--   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/0045-drop-chromia-module.sql
 --
 -- Nothing outside the chromia_* namespace is named here. In particular the
 -- legacy Airtable mirrors chromia_1 and chromia_par_1 (models Chromia1 /
@@ -39,12 +39,12 @@ BEGIN;
 
 -- Notice — logins left on the retired CHROMIA department. They keep working
 -- (Branch.CHROMIA is deliberately still in the Prisma enum, and middleware
--- contains them to /chromia), but they should move to the new role. 0045 does
--- that, and must run after 0044 has added the role.
+-- contains them to /chromia), but they should move to the new role. 0046 does
+-- that, and must run after 0045 has added the role.
 DO $$ DECLARE n bigint; BEGIN
   SELECT count(*) INTO n FROM "users" WHERE "branch"::text = 'CHROMIA';
   IF n > 0 THEN
-    RAISE NOTICE '% user(s) still on branch CHROMIA — run scripts/0045-migrate-chromia-branch-users.sql after 0044.', n;
+    RAISE NOTICE '% user(s) still on branch CHROMIA — run scripts/0047-migrate-chromia-branch-users.sql after 0045.', n;
   END IF;
 END $$;
 
@@ -165,7 +165,7 @@ COMMIT;
 -- (BRANCHES and the admin assignable lists no longer contain it), so no new one
 -- can be created.
 --
--- Once 0045 has run and `SELECT count(*) FROM users WHERE branch::text='CHROMIA'`
+-- Once 0046 has run and `SELECT count(*) FROM users WHERE branch::text='CHROMIA'`
 -- is 0, the value can be retired from both sides — code first (src/lib/branch.ts
 -- + the Branch enum in schema.prisma), then, in its own maintenance window, the
 -- database (the DROP/SET DEFAULT pair is required: users.branch is NOT NULL

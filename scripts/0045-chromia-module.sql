@@ -1,11 +1,11 @@
--- 0044 — Chromia module, created fresh: 33 tables + 19 enum types (all
+-- 0045 — Chromia module, created fresh: 33 tables + 19 enum types (all
 -- chromia_-prefixed) and the CHROMIA value on the Role enum. Ported from the
 -- CHROMIA_MODULE standalone app; the Prisma models live at the foot of
 -- prisma/schema.prisma under the CHROMIA MODULE banner.
 --
--- RUN 0043-drop-chromia-module.sql FIRST. This is the second half of replacing
+-- RUN 0045-drop-chromia-module.sql FIRST. This is the second half of replacing
 -- the earlier department-style integration, not an upgrade of it — and because
--- the old tables are shaped identically, skipping 0043 leaves its rows in place
+-- the old tables are shaped identically, skipping 0044 leaves its rows in place
 -- while every statement here quietly no-ops. The guard below catches that.
 --
 -- WHY a script and not db push / migrate dev: the live Neon DB is the source of
@@ -22,7 +22,7 @@
 -- but unused: logins are ERP users with role CHROMIA.
 --
 -- Apply with:
---   npx prisma db execute --file scripts/0044-chromia-module.sql --schema prisma/schema.prisma
+--   npx prisma db execute --file scripts/0046-chromia-module.sql --schema prisma/schema.prisma
 -- then load the module's master data:
 --   npm run db:seed:chromia
 --
@@ -34,9 +34,9 @@
 -- one implicit transaction (prisma db execute sends the whole file as a single
 -- command), and a new enum value cannot be USED in the transaction that adds it.
 -- Nothing here uses 'CHROMIA' — and nothing appended to this file may either.
--- That is why moving the legacy logins is a separate script (0045).
+-- That is why moving the legacy logins is a separate script (0046).
 
--- Guard — 0043 must have run first. The old integration's tables are shaped
+-- Guard — 0044 must have run first. The old integration's tables are shaped
 -- identically to these, so every CREATE below would no-op against them and this
 -- script would report success while leaving the old rows in place. The check is
 -- deliberately narrow: it fires only when chromia_slab still holds rows AND the
@@ -48,7 +48,7 @@ DO $$ DECLARE n bigint; BEGIN
                      WHERE t.typname = 'Role' AND e.enumlabel = 'CHROMIA') THEN
     EXECUTE 'SELECT count(*) FROM chromia_slab' INTO n;
     IF n > 0 THEN
-      RAISE EXCEPTION 'chromia_slab still holds % rows from the previous integration — run scripts/0043-drop-chromia-module.sql first.', n;
+      RAISE EXCEPTION 'chromia_slab still holds % rows from the previous integration — run scripts/0045-drop-chromia-module.sql first.', n;
     END IF;
   END IF;
 END $$;
@@ -59,7 +59,7 @@ ALTER TYPE "Role" ADD VALUE IF NOT EXISTS 'CHROMIA';
 -- The retired department value. 0039 added it and the live database has it;
 -- prisma/schema.prisma still declares it so that logins the old integration
 -- created still decode. Kept here too so a database rebuilt from scripts/
--- matches the schema. It is offered nowhere in the UI, and 0045 empties it.
+-- matches the schema. It is offered nowhere in the UI, and 0046 empties it.
 ALTER TYPE "Branch" ADD VALUE IF NOT EXISTS 'CHROMIA';
 
 DO $$ BEGIN

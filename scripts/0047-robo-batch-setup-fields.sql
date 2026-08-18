@@ -1,4 +1,4 @@
--- 0046 — Production date and batch number on the Robo setup.
+-- 0047 — Production date and batch number on the Robo setup.
 --
 -- Two fields the operator now writes at the top of Batch setup, before Design:
 -- the date the run was produced (RoboShift.date is when the tablet was opened,
@@ -11,7 +11,7 @@
 -- recorded as a fact.
 --
 -- Apply with:
---   npx prisma db execute --file scripts/0046-robo-batch-setup-fields.sql --schema prisma/schema.prisma
+--   npx prisma db execute --file scripts/0047-robo-batch-setup-fields.sql --schema prisma/schema.prisma
 --
 -- Idempotent: IF NOT EXISTS on both.
 

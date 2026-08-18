@@ -51,7 +51,7 @@ enum Branch {
   OFFICE
   FABRICATION
   INTERNATIONAL_SALES
-  CHROMIA // RETIRED department, kept only so logins the old integration created still decode — offered nowhere in the UI; scripts/0045 empties it
+  CHROMIA // RETIRED department, kept only so logins the old integration created still decode — offered nowhere in the UI; scripts/0046 empties it
 }
 
 model User {
@@ -4144,9 +4144,9 @@ model CostingBatchVerification {
 // Decimal(18,3) measurements, createdAt/updatedAt everywhere, soft-delete
 // deletedAt on business entities, append-only ChromiaSlabEvent.
 //
-// Neon: scripts/0043-drop-chromia-module.sql drops the previous integration's
-// tables, then scripts/0044-chromia-module.sql creates these, then
-// scripts/0045-migrate-chromia-branch-users.sql moves any login left on the
+// Neon: scripts/0045-drop-chromia-module.sql drops the previous integration's
+// tables, then scripts/0046-chromia-module.sql creates these, then
+// scripts/0047-migrate-chromia-branch-users.sql moves any login left on the
 // retired CHROMIA department onto the role (NOT db push).
 // ============================================================================
 enum ChromiaRole {
