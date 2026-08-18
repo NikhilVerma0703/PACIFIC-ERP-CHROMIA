@@ -93,6 +93,32 @@ async function mixerQuantities(batchKey: string): Promise<Record<string, { qty: 
   return out;
 }
 
+/**
+ * Every description anybody has typed against a costing line, deduplicated.
+ *
+ * The description column is what makes a split readable six months later -
+ * "Aypols", "PO 4471", "trial drum" - and it was a bare text box, so the same
+ * supplier got typed four ways and none of them grouped. This turns it into a
+ * list that grows: type a new one and it is a suggestion for everyone next
+ * time, with no master table to maintain and nothing to administer.
+ *
+ * Not scoped to the batch. The point is to reuse what the PLANT has already
+ * called things; a per-batch list would suggest only what this batch already
+ * says, which is the one place the answer is already on screen.
+ */
+async function knownDescriptions(): Promise<string[]> {
+  const rows = await prisma.costingBatchMaterial.findMany({
+    where: { description: { not: null } },
+    select: { description: true },
+    distinct: ["description"],
+    orderBy: { description: "asc" },
+    take: 500,
+  });
+  return rows
+    .map((r) => (r.description ?? "").trim())
+    .filter((d) => d.length > 0);
+}
+
 export async function GET(req: NextRequest) {
   if (!(await isAdmin())) return json({ error: "Admins only." }, 403);
 
@@ -104,12 +130,13 @@ export async function GET(req: NextRequest) {
   // batch against today's card would report a difference that is just the
   // passage of time.
   const c = await loadBatchConsumption(batchKey);
-  const [card, mixer] = await Promise.all([
+  const [card, mixer, descriptions] = await Promise.all([
     effectiveRateCard(c?.firstPress ?? new Date()),
     mixerQuantities(batchKey),
+    knownDescriptions(),
   ]);
 
-  return json({ batchKey, catalogue: SETTABLE, rows, card, mixer });
+  return json({ batchKey, catalogue: SETTABLE, rows, card, mixer, descriptions });
 }
 
 interface PostedLine {

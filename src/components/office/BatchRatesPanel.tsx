@@ -53,6 +53,8 @@ interface Payload {
   card: CardShape;
   /** item -> what the mixer weighed, in the item's own unit. */
   mixer: Record<string, { qty: number; unit: string }>;
+  /** Every description already used on a costing line, plant-wide. */
+  descriptions?: string[];
 }
 
 /** A row being edited. Blank qty means "the rest". */
@@ -719,6 +721,35 @@ export function BatchRatesPanel({
     return `${num.format(m.qty)} ${m.unit}, dosed on resin weight`;
   };
 
+  /**
+   * What to suggest in a description box.
+   *
+   * Descriptions the plant has already used, plus this batch's own resin
+   * suppliers from the card - so the list is useful on the very first split of
+   * a fresh database rather than empty until somebody seeds it by hand.
+   *
+   * A <datalist> rather than a <select> because the field must stay free text:
+   * "PO 4471" and "trial drum, second delivery" are legitimate values that no
+   * dropdown could hold. Typing a new one saves it like any other, and because
+   * this list is read back from what has been saved, it is in the dropdown for
+   * everybody the next time the panel loads. Nothing to administer.
+   */
+  const descriptionOptions = (): string[] => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const d of [...Object.keys(data.card.resinBySupplier), ...(data.descriptions ?? [])]) {
+      const v = d.trim();
+      if (!v) continue;
+      const key = v.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(v);
+    }
+    return out.sort((a, b) => a.localeCompare(b));
+  };
+
+  const DESC_LIST_ID = "costing-description-options";
+
   /** One material: the summary strip, and its split editor when open. */
   const materialRow = (c: CatalogueItem, dimmed: boolean) => {
     const lines = lineOf(c.item);
@@ -829,6 +860,8 @@ export function BatchRatesPanel({
                               onChange={(e) => setLines(c.item,
                                 lines.map((x, j) => j === i ? { ...x, description: e.target.value } : x))}
                               placeholder="supplier, PO number, what this was"
+                              list={DESC_LIST_ID}
+                              autoComplete="off"
                               className={inp}
                             />
                           </td>
@@ -891,6 +924,20 @@ export function BatchRatesPanel({
                 onClick={() => setLines(c.item, [...lines, { qty: "", rate: "", description: "" }])}>
                 {lines.length ? "Add another line" : splittable ? "Add a line" : "Set a value"}
               </button>
+              {/* The remainder, prefilled.
+                  A material is only fully described once its lines add up to
+                  what the mixer weighed, and the arithmetic to get there was
+                  the user's to do: read the unallocated figure below, subtract,
+                  type it back in. Getting it wrong by a kilo leaves a silent
+                  remainder priced at the card. One click is the same intent
+                  without the subtraction. */}
+              {splittable && mixer && left != null && left > 0.005 && !hasRest && (
+                <button type="button" className={btnGhost}
+                  onClick={() => setLines(c.item,
+                    [...lines, { qty: String(left), rate: "", description: "" }])}>
+                  Add the remaining {num.format(left)} {mixer.unit}
+                </button>
+              )}
               <button type="button" className={btn} disabled={busy === c.item}
                 onClick={() => void save(c)}>
                 {busy === c.item ? "Saving…" : "Save"}
@@ -937,6 +984,12 @@ export function BatchRatesPanel({
           {note.text}
         </div>
       )}
+
+      {/* One list for every description box on the panel. Rendered once: a
+          datalist per row would be forty copies of the same options. */}
+      <datalist id={DESC_LIST_ID}>
+        {descriptionOptions().map((d) => <option key={d} value={d} />)}
+      </datalist>
 
       <div className="space-y-5">
         {families.map(({ family, used, unused }) => {
