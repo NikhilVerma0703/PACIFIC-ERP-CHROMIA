@@ -338,6 +338,63 @@ export function BatchRatesPanel({
     return `${factor.format(f.value)}% of resin weight ${f.fromBatch ? "for this batch" : "on the card"}${gives}.`;
   };
 
+  /** The resin the mixer weighed — what every percentage rule is measured
+   *  against, and the only reason this screen can show a dose in kilograms
+   *  while somebody is still typing it. */
+  const resinKg = (): number | null => {
+    const m = data.mixer["resin"];
+    return m && Number.isFinite(m.qty) ? m.qty : null;
+  };
+
+  /**
+   * Whether a dosing row may set its chemical's price.
+   *
+   * The price is stored on the CHEMICAL, never on the dosing rule — one source
+   * of truth, and the Chemicals row keeps working for a delivery split. That is
+   * exactly why this has to refuse the split case: the route saves an item's
+   * lines as a SET, so writing one price from here would replace them. A batch
+   * with 300 kg from one supplier and the rest from another would lose that
+   * split the moment somebody corrected the percentage.
+   */
+  const priceHere = (chem: CatalogueItem | undefined): { ok: boolean; lines: number } => {
+    if (!chem) return { ok: false, lines: 0 };
+    const saved = data.rows.filter((r) => r.item === chem.item);
+    return { ok: !(saved.length > 1 || saved.some((r) => r.qty != null)), lines: saved.length };
+  };
+
+  /**
+   * Which of the two TiO₂ rules carries the price box: the one actually costing
+   * the batch. Both rows dose the same pigment at the same per-kg price, so two
+   * boxes would be two ways to write one number — and the day they disagreed,
+   * the screen would show a price the sheet is not using.
+   */
+  const rulePricesChem = (c: CatalogueItem): boolean => {
+    if (c.item === TIO2_PCT) return doseInForce(TIO2_PCT) != null || doseInForce(TIO2_LEGACY) == null;
+    if (c.item === TIO2_LEGACY) return doseInForce(TIO2_PCT) == null;
+    return true;
+  };
+
+  /** One item's lines, saved as the whole set the route expects. */
+  const postLines = async (
+    item: string,
+    lines: Array<{ seq: number; qty: number | null; rate: number; description: string }>,
+  ): Promise<string | null> => {
+    const r = await fetch(API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ batchKey, item, lines }),
+    });
+    const res = await readJson<{ error?: string }>(r);
+    return res.ok ? null : (res.error ?? `Save failed (${res.status})`);
+  };
+
+  const deleteLines = async (item: string): Promise<string | null> => {
+    const qs = new URLSearchParams({ batchKey, item });
+    const r = await fetch(`${API}?${qs}`, { method: "DELETE" });
+    const res = await readJson<{ error?: string }>(r);
+    return res.ok ? null : (res.error ?? `Could not clear (${res.status})`);
+  };
+
   const save = async (c: CatalogueItem) => {
     setBusy(c.item); setNote(null);
     const lines = lineOf(c.item)
@@ -383,6 +440,239 @@ export function BatchRatesPanel({
     } catch (e) {
       setNote({ text: e instanceof Error ? e.message : String(e), ok: false });
     } finally { setBusy(""); }
+  };
+
+  /**
+   * Save a dosing rule and, where this row owns it, the price of what it doses.
+   *
+   * Two writes, because they are two items — but ONE action, because setting a
+   * dose and pricing what it produces is one thought. The percentage goes
+   * first: if it fails there is nothing to price, and stopping there leaves the
+   * batch exactly as it was rather than half-changed.
+   */
+  const saveDose = async (c: CatalogueItem) => {
+    const chem = dosedItem(c);
+    setBusy(c.item); setNote(null);
+    try {
+      const raw = lineOf(c.item)[0]?.rate.trim() ?? "";
+      const pct = Number(raw);
+      if (raw === "" || !Number.isFinite(pct) || pct <= 0) {
+        setNote({
+          text: `${c.label} needs a figure above zero — use “the card instead” to unset it.`,
+          ok: false,
+        });
+        return;
+      }
+      const err = await postLines(c.item, [{ seq: 0, qty: null, rate: pct, description: "" }]);
+      if (err) { setNote({ text: err, ok: false }); return; }
+
+      let priced = "";
+      if (chem && rulePricesChem(c) && priceHere(chem).ok) {
+        const rawPrice = lineOf(chem.item)[0]?.rate.trim() ?? "";
+        const had = data.rows.some((r) => r.item === chem.item);
+        if (rawPrice === "") {
+          // Blank means the card, and the row said so. Only ever a delete of the
+          // single line this editor writes — priceHere() has already refused to
+          // touch a split.
+          if (had) {
+            const e2 = await deleteLines(chem.item);
+            if (e2) { setNote({ text: e2, ok: false }); return; }
+            priced = ` ${chem.label} falls back to the card.`;
+          }
+        } else {
+          const price = Number(rawPrice);
+          if (!Number.isFinite(price) || price <= 0) {
+            setNote({
+              text: `${chem.label} needs a price above zero, or none at all to use the card.`,
+              ok: false,
+            });
+            return;
+          }
+          // qty null is "the rest" — which for a chemical nobody weighed is the
+          // whole derived weight, priced at this rate.
+          const e2 = await postLines(chem.item, [{ seq: 0, qty: null, rate: price, description: "" }]);
+          if (e2) { setNote({ text: e2, ok: false }); return; }
+          priced = ` ${chem.label} at ₹${money.format(price)} per kg.`;
+        }
+      }
+
+      setNote({
+        text: `${c.label}: ${factor.format(pct)}${doseUnitShort(c)}.${priced} The batch has been re-costed.`,
+        ok: true,
+      });
+      await load();
+      onSaved();
+    } catch (e) {
+      setNote({ text: e instanceof Error ? e.message : String(e), ok: false });
+    } finally { setBusy(""); }
+  };
+
+  /** Both halves back to the card — the button sits under both boxes, so
+   *  clearing only one of them would leave the row half-set. */
+  const clearDose = async (c: CatalogueItem) => {
+    const chem = dosedItem(c);
+    setBusy(c.item); setNote(null);
+    try {
+      const e1 = await deleteLines(c.item);
+      if (e1) { setNote({ text: e1, ok: false }); return; }
+      setLines(c.item, []);
+
+      let also = "";
+      if (chem && rulePricesChem(c) && priceHere(chem).ok
+          && data.rows.some((r) => r.item === chem.item)) {
+        const e2 = await deleteLines(chem.item);
+        if (!e2) { setLines(chem.item, []); also = ` ${chem.label}’s price too.`; }
+      }
+      setNote({ text: `${c.label} falls back to the ${data.card.onDate} card.${also}`, ok: true });
+      await load();
+      onSaved();
+    } catch (e) {
+      setNote({ text: e instanceof Error ? e.message : String(e), ok: false });
+    } finally { setBusy(""); }
+  };
+
+  /** The unit, in the few words that fit after a number. */
+  const doseUnitShort = (c: CatalogueItem): string =>
+    c.unit === "pct" ? "% of resin weight" : " kg per mixer charge";
+
+  /**
+   * A dosing rule, set the way somebody actually thinks about it: the
+   * percentage, and the price of the kilograms it produces.
+   *
+   * Both halves were always settable — but on two rows, in two different
+   * families, with the weight that connects them shown on neither. Setting a
+   * dose meant knowing that the Silane row up under Chemicals was where the
+   * money went. So this row now carries both boxes and does the arithmetic out
+   * loud between them, while it is being typed.
+   */
+  const doseEditor = (c: CatalogueItem) => {
+    const chem = dosedItem(c);
+    const pctDraft = lineOf(c.item)[0]?.rate ?? "";
+    const priceDraft = chem ? lineOf(chem.item)[0]?.rate ?? "" : "";
+    const cardPct = cardRateFor(c);
+    const cardPrice = chem ? cardRateFor(chem) : null;
+    const carries = rulePricesChem(c);
+    const split = priceHere(chem);
+    const saved = savedItems.includes(c.item);
+    const isPct = c.unit === "pct";
+
+    const setPct = (v: string) => setLines(c.item, [{ qty: "", rate: v, description: "" }]);
+    const setPrice = (v: string) => {
+      if (chem) setLines(chem.item, [{ qty: "", rate: v, description: "" }]);
+    };
+
+    // Live, from what is in the box — falling back to the card, which is what
+    // an empty box means. The per-charge rule cannot be recomputed here (the
+    // charge count is not on this payload), so it shows the server's figure.
+    const typed = Number(pctDraft);
+    const effPct = pctDraft.trim() !== "" && Number.isFinite(typed) && typed > 0 ? typed : cardPct;
+    const resin = resinKg();
+    const kg = isPct && resin != null && effPct != null
+      ? (resin * effPct) / 100
+      : chem ? data.mixer[chem.item]?.qty ?? null : null;
+
+    const typedPrice = Number(priceDraft);
+    const effPrice = priceDraft.trim() !== "" && Number.isFinite(typedPrice) && typedPrice > 0
+      ? typedPrice : cardPrice;
+    const cost = kg != null && effPrice != null ? kg * effPrice : null;
+
+    return (
+      <div className="mt-3 border-t border-gray-200 pt-3">
+        <div className="flex flex-wrap items-start gap-4">
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500">
+              {isPct ? "% of resin weight" : "kg per mixer charge"}
+            </span>
+            <input
+              type="number" step="0.0001" min="0" inputMode="decimal"
+              value={pctDraft} onChange={(e) => setPct(e.target.value)}
+              placeholder={cardPct != null ? factor.format(cardPct) : "not set"}
+              className={`${inp} max-w-[10rem]`}
+            />
+            <span className="mt-1 block text-xs text-gray-400">
+              {cardPct != null
+                ? `card: ${factor.format(cardPct)}${isPct ? "%" : " kg"}`
+                : "nothing on the card"}
+            </span>
+          </label>
+
+          {carries && chem && split.ok && (
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500">
+                ₹ per kg of {chem.label}
+              </span>
+              <input
+                type="number" step="0.0001" min="0" inputMode="decimal"
+                value={priceDraft} onChange={(e) => setPrice(e.target.value)}
+                placeholder={cardPrice != null ? money.format(cardPrice) : "not set"}
+                className={`${inp} max-w-[10rem]`}
+              />
+              <span className="mt-1 block text-xs text-gray-400">
+                {cardPrice != null ? `card: ₹${money.format(cardPrice)}` : "nothing on the card"}
+                {" · blank uses the card"}
+              </span>
+            </label>
+          )}
+        </div>
+
+        {/* The arithmetic, out loud. This is the whole point of the row: the
+            percentage and the price are two numbers nobody can multiply in
+            their head against 41,873 kg of resin. */}
+        <p className="mt-3 text-sm text-gray-600">
+          {kg == null ? (
+            isPct
+              ? "The weight appears once this batch has a resin figure and a percentage."
+              : "The weight appears once this rule is saved."
+          ) : (
+            <>
+              {isPct && resin != null && effPct != null
+                ? `${factor.format(effPct)}% of ${num.format(resin)} kg resin = `
+                : ""}
+              <span className="font-medium text-gray-900">{num.format(kg)} kg</span>
+              {chem ? ` of ${chem.label}` : ""}
+              {cost != null && effPrice != null ? (
+                <>
+                  {" × ₹"}{money.format(effPrice)}{" = "}
+                  <span className="font-medium text-gray-900">₹{money.format(cost)}</span>
+                  {" on this batch."}
+                </>
+              ) : (
+                <span className="text-amber-700">
+                  {" — with no price on the card or here, it is reported unpriced."}
+                </span>
+              )}
+            </>
+          )}
+        </p>
+
+        {carries && chem && !split.ok && (
+          <p className="mt-2 text-xs text-amber-700">
+            {chem.label} is split into {split.lines} lines, so its price is set there — open
+            {" "}{chem.label} under {(FAMILY_LABEL[chem.category] ?? chem.category).toLowerCase()} above.
+            One price typed here would replace that split.
+          </p>
+        )}
+        {!carries && (
+          <p className="mt-2 text-xs text-gray-400">
+            {chem?.label ?? "This chemical"} is priced on whichever rule is costing the batch —
+            the one {c.item === TIO2_PCT ? "below" : "above"}.
+          </p>
+        )}
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button type="button" className={btn} disabled={busy === c.item}
+            onClick={() => void saveDose(c)}>
+            {busy === c.item ? "Saving…" : "Save"}
+          </button>
+          {saved && (
+            <button type="button" className={btnGhost} disabled={busy === c.item}
+              onClick={() => void clearDose(c)}>
+              {carries && chem && split.ok ? "Use the card for both" : "Use the card instead"}
+            </button>
+          )}
+        </div>
+      </div>
+    );
   };
 
   /** One material: the summary strip, and its split editor when open. */
@@ -447,7 +737,7 @@ export function BatchRatesPanel({
           </button>
         </div>
 
-        {isOpen && (
+        {isOpen && (isDosing ? doseEditor(c) : (
           <div className="mt-3 border-t border-gray-200 pt-3">
             {lines.length === 0 && (
               <p className="mb-2 text-sm text-gray-500">
@@ -570,14 +860,12 @@ export function BatchRatesPanel({
               )}
               {!splittable && (
                 <span className="text-xs text-gray-400">
-                  {SINGLE_VALUE.has(c.item)
-                    ? "One value for the whole batch. Leave it unset to use the plant default."
-                    : "A dosing rule is one value — there is nothing to split."}
+                  One value for the whole batch. Leave it unset to use the plant default.
                 </span>
               )}
             </div>
           </div>
-        )}
+        ))}
       </div>
     );
   };
