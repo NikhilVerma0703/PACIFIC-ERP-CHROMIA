@@ -73,7 +73,10 @@ const unitLabel = (c: CatalogueItem) =>
       : UNIT_LABELS[c.unit] ?? c.unit;
 
 const fmtRate = (n: number) => n.toLocaleString("en-IN", { maximumFractionDigits: 2 });
-const todayStr = () => new Date().toISOString().slice(0, 10);
+// IST, not UTC: toISOString() alone dates an early-morning edit to YESTERDAY
+// (UTC is 5h30 behind the plant until 05:29), and effectiveFrom decides which
+// batches a rate applies to — a silent one-day backdate is a real error here.
+const todayStr = () => new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
 
 export function RateCardEditor() {
   const [state, setState] = useState<State | null>(null);
@@ -243,8 +246,14 @@ export function RateCardEditor() {
               <input value={d.rate} onChange={(e) => setDraft(k, { rate: e.target.value })}
                 placeholder={`new ${unitLabel(c)}`} inputMode="decimal" className={inp} />
             </div>
+            {/* No date picker. The owner asked for the date to select itself, and
+                today (IST) is the only value anyone ever chose here — a new rate
+                takes effect from the day it is typed. The API still accepts an
+                explicit effectiveFrom, so backdating remains possible through it
+                if a correction ever genuinely needs one; it is just not a box on
+                this row any more. The revisions list keeps showing every date. */}
             <div className="sm:col-span-2">
-              <input type="date" value={d.from} onChange={(e) => setDraft(k, { from: e.target.value })} className={inp} />
+              <p className="pt-2 text-xs text-gray-500">from today · {d.from}</p>
             </div>
             <div className="flex items-center gap-1.5 sm:col-span-1">
               <button type="button" onClick={() => saveDraft(c.item)}
