@@ -14,11 +14,11 @@ interface SlabRecord {
   status: string;
   remarks: string | null;
   shift: { date: string; shiftNumber: number } | null;
-  batchRecipe: { designName: string } | null;
+  batchRecipe: { designName: string; batchNo: string | null } | null;
   delayLogs: (DelayLike & { id: string })[];
 }
 
-const EMPTY = { date: "", slabNumber: "", designName: "" };
+const EMPTY = { date: "", batchNo: "", slabNumber: "", designName: "" };
 
 export function SlabsBrowser({ canDelete = false }: {
   /** Whether the signed-in user may delete a slab. A courtesy so a ROBO
@@ -54,6 +54,7 @@ export function SlabsBrowser({ canDelete = false }: {
     setLoading(true);
     const qs = new URLSearchParams();
     if (f.date.trim()) qs.set("date", f.date.trim());
+    if (f.batchNo.trim()) qs.set("batchNo", f.batchNo.trim());
     if (f.slabNumber.trim()) qs.set("slabNumber", f.slabNumber.trim());
     if (f.designName.trim()) qs.set("designName", f.designName.trim());
     const hasFilters = qs.toString().length > 0;
@@ -101,10 +102,15 @@ export function SlabsBrowser({ canDelete = false }: {
       <Card>
         <form onSubmit={search}>
           <h2 className="mb-4 font-semibold text-gray-800">Find a Slab</h2>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
             <div>
               <label className="mb-1 block text-sm font-medium text-gray-700">Production Date</label>
               <input type="date" value={filters.date} onChange={e => set("date", e.target.value)} className={inp} />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">Batch No.</label>
+              <input value={filters.batchNo} onChange={e => set("batchNo", e.target.value)}
+                placeholder="e.g. B-1042" className={inp} />
             </div>
             <div>
               <label className="mb-1 block text-sm font-medium text-gray-700">Slab Number</label>

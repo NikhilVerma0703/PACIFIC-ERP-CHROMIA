@@ -1,29 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { slabSearchWhere } from "@/lib/robo/slabSearch";
 import { SLAB_COMPLETED, SLAB_IN_PROCESSING } from "@/lib/robo/utils";
 
 /**
  * GET /api/robo/production
  * Filters (all optional, combinable):
- *   shiftId, date (production date from the shift), slabNumber, designName
+ *   shiftId, date (production date from the shift), slabNumber, designName,
+ *   batchNo (the batch number on the setup the slab was logged against)
  * With no filters the latest 25 records are returned.
+ *
+ * The where clause is built in lib/robo/slabSearch.ts rather than here, because
+ * designName and batchNo both narrow the same related setup and an inline
+ * second assignment would silently drop the first — see that file.
  */
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
-  const shiftId = sp.get("shiftId")?.trim() || "";
-  const date = sp.get("date")?.trim() || "";
-  const slabNumber = sp.get("slabNumber")?.trim() || "";
-  const designName = sp.get("designName")?.trim() || "";
   const limitParam = Number(sp.get("limit"));
 
-  const where: Prisma.RoboProductionRecordWhereInput = {};
-  if (shiftId) where.shiftId = shiftId;
-  if (date) where.shift = { date };
-  if (slabNumber) where.slabNumber = { contains: slabNumber };
-  if (designName) where.batchRecipe = { designName: { contains: designName } };
+  const { where, hasFilters } = slabSearchWhere({
+    shiftId: sp.get("shiftId"),
+    date: sp.get("date"),
+    slabNumber: sp.get("slabNumber"),
+    designName: sp.get("designName"),
+    batchNo: sp.get("batchNo"),
+  });
 
-  const hasFilters = !!(shiftId || date || slabNumber || designName);
   const take = limitParam > 0 ? Math.min(limitParam, 500) : hasFilters ? 200 : 25;
 
   const data = await prisma.roboProductionRecord.findMany({
