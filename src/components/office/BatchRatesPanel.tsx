@@ -81,8 +81,8 @@ const FAMILY_NOTE: Record<string, string> = {
   RESIN: "Weighed by the mixer.",
   GRIT: "Weighed per charge, by size band.",
   FILLER: "Weighed by the mixer.",
-  PIGMENT: "Not weighed — dosed on resin weight.",
-  CHEMICAL: "Not weighed — dosed on resin weight.",
+  PIGMENT: "Never weighed — the quantity is a percentage of resin weight, set below.",
+  CHEMICAL: "Never weighed — the quantities are a percentage of resin weight, set below.",
   DOSING: "The percentages that turn resin weight into the quantities above. One value each, nothing to split.",
   BASIS: "The rate this batch was quoted at. Leave it and the plant default is used.",
 };
@@ -99,6 +99,16 @@ const SINGLE_VALUE = new Set(["inr-per-usd"]);
 //  catalogue and this text has to move with it.
 const TIO2_PCT = "tio2-pct-of-resin";
 const TIO2_LEGACY = "tio2-kg-per-charge";
+
+/** Chemical -> the dosing rule that produces its quantity. The inverse of
+ *  dosedItem(), and the reason a chemical row can say WHERE its kilograms came
+ *  from instead of claiming the mixer weighed them. */
+const DOSED_BY: Readonly<Record<string, string>> = {
+  tio2: TIO2_PCT,
+  silane: "silane-pct-of-resin",
+  cobalt: "cobalt-pct-of-resin",
+  catalyst: "catalyst-pct-of-resin",
+};
 
 export function BatchRatesPanel({
   batchKey, batchLabel, onSaved,
@@ -675,6 +685,40 @@ export function BatchRatesPanel({
     );
   };
 
+  /**
+   * Where a material's quantity came from, said out loud.
+   *
+   * "mixer: 272.051 kg" was a claim the panel's own family note contradicted
+   * two lines above it — the mixer weighs resin, grit and filler and does NOT
+   * weigh the four chemicals. Their kilograms are a percentage of resin weight,
+   * computed, and a row that presents a derived figure in the same words as a
+   * weighed one gives the reader no way to tell which is which. The one they
+   * would want to argue with is the derived one.
+   */
+  const quantityBasis = (c: CatalogueItem): string | null => {
+    const m = data.mixer[c.item];
+    if (!m) return null;
+
+    const rule = DOSED_BY[c.item];
+    if (!rule) return `mixer weighed ${num.format(m.qty)} ${m.unit}`;
+
+    // TiO₂ resolves the way report.ts resolves it: the percentage wins, and the
+    // superseded per-charge rule is only reached when no percentage is set.
+    const pct = doseInForce(rule);
+    if (pct) {
+      return `${factor.format(pct.value)}% of resin weight${pct.fromBatch ? " (set on this batch)" : ""}`
+        + ` = ${num.format(m.qty)} ${m.unit}`;
+    }
+    if (c.item === "tio2") {
+      const legacy = doseInForce(TIO2_LEGACY);
+      if (legacy) {
+        return `${factor.format(legacy.value)} kg per mixer charge, the old rule`
+          + ` = ${num.format(m.qty)} ${m.unit}`;
+      }
+    }
+    return `${num.format(m.qty)} ${m.unit}, dosed on resin weight`;
+  };
+
   /** One material: the summary strip, and its split editor when open. */
   const materialRow = (c: CatalogueItem, dimmed: boolean) => {
     const lines = lineOf(c.item);
@@ -713,9 +757,8 @@ export function BatchRatesPanel({
               {isDosing ? doseSummary(c) : (
                 <>
                   {mixer
-                    ? `mixer: ${num.format(mixer.qty)} ${mixer.unit}`
-                    : splittable ? "not used in this batch"
-                      : SINGLE_VALUE.has(c.item) ? "one value for this batch" : "a dosing factor"}
+                    ? quantityBasis(c)
+                    : splittable ? "not used in this batch" : "one value for this batch"}
                   {" · "}{cardSummary(c)}
                 </>
               )}
