@@ -1703,23 +1703,23 @@ model DowntimeResponse {
 /// the stated reason are all needed months later when a payout is argued about,
 /// and a boolean on the Mis row answers none of those questions.
 model MisDelayReclass {
-  id  String @id
+  id              String   @id
   /// The Mis hourly row corrected. No hard FK, matching downtime_response.
-  misId String @map("mis_id")
+  misId           String   @map("mis_id")
   /// DELAY_FIELDS keys from src/lib/downtimeShared.ts: process | cleaning |
   /// breakdown | powerout. Text, not an enum, so the vocabulary stays owned by
   /// that one file rather than being half here and half there.
-  fromType String @map("from_type")
-  toType   String @map("to_type")
+  fromType        String   @map("from_type")
+  toType          String   @map("to_type")
   /// Whole minutes moved, always > 0. Float only to match the delay columns it
   /// moves between (all `Float?` on Mis); delayReclass.ts refuses non-integers.
-  minutes Float
+  minutes         Float
   /// Required, min 4 chars — the same bar as the finance duplicate-override.
   /// An unexplained move of paid minutes is indistinguishable from a mistake.
-  reason String
+  reason          String
   /// Display name or email, for the tooltip. Nullable only because a session can
   /// carry neither; the action falls back to the user id rather than writing NULL.
-  changedBy String? @map("changed_by")
+  changedBy       String?  @map("changed_by")
   /// User.id as well as the name: attribution has to survive a rename or a
   /// leaver, because this is an edit to somebody's own incentive input.
   changedByUserId String?  @map("changed_by_user_id")
@@ -4058,9 +4058,9 @@ model CostingBatchMaterial {
   /// is left of the mixer's quantity" — the common case when someone splits
   /// off one known drum and lets the remainder fall through. Always null for
   /// DOSING, which is a factor with nothing to split.
-  qty      Float?
-  unit     String
-  rate     Float
+  qty         Float?
+  unit        String
+  rate        Float
   /// Supplier, PO number, "trial drum" — what this part of the quantity was.
   /// This is the column that makes a split readable six months later.
   description String?
@@ -4073,6 +4073,40 @@ model CostingBatchMaterial {
   @@unique([batchKey, item, seq])
   @@index([batchKey])
   @@map("costing_batch_material")
+}
+
+/// One person's sign-off on one half of a batch.
+///
+/// The costed sheet is ADMIN-only and stays that way. What this table records
+/// is the two checks made either side of it: the production manager confirming
+/// the weights the mixer recorded, and the store incharge confirming the prices
+/// those weights are costed at. Neither verifier can see the other's half and
+/// neither sees a total — see src/lib/costing/verification.ts.
+model CostingBatchVerification {
+  id       String @id @default(cuid())
+  /// mixer_cycle.batch_key, same key the costing dashboard picks by. No FK for
+  /// the same reason as costing_batch_material: batch_key is a string across
+  /// several import tables, not a table.
+  batchKey String @map("batch_key")
+  /// WEIGHTS | COSTS. Text rather than an enum so this migrates on a database
+  /// where `prisma migrate` is applied by hand.
+  side     String
+
+  /// What the side's numbers hashed to when the button was pressed.
+  ///
+  /// Stored rather than a bare boolean because the weights are edited on half a
+  /// dozen other screens and the prices move whenever the rate card is revised.
+  /// Hooking every write path that could invalidate a sign-off means finding
+  /// all of them, and missing one leaves a batch marked checked over numbers
+  /// that changed after the check. Comparing the numbers cannot miss one.
+  fingerprint String
+
+  verifiedBy String   @map("verified_by")
+  verifiedAt DateTime @default(now()) @map("verified_at")
+
+  @@unique([batchKey, side])
+  @@index([batchKey])
+  @@map("costing_batch_verification")
 }
 
 // ============================================================================
