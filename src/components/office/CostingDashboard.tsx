@@ -53,6 +53,9 @@ interface Report {
   };
   unpriced: Array<{ item: string; qty: number | null; unit: string; needs: string }>;
   blockedBy: string[];
+  /** Materials consumed here with no price entered on this batch. Non-empty
+   *  withholds the sheet, same as blockedBy. */
+  needsBatchRates: string[];
   variance: {
     lines: Array<{ item: string; primaryQty: number; checkQty: number; unit: string; delta: number; costEffect: number }>;
     totalAbsEffect: number; netDeltaTonnes: number;
@@ -289,10 +292,28 @@ export function CostingDashboard() {
           ) : (
             <p className="mt-1 text-red-700">
               {report.basis.rowsInForce} revision(s) were in force on {report.rateDate}, so the rest
-              of the card resolved — only what is listed above is outstanding. Quantities are shown
-              below, so the batch is still inspectable.
+              of the card resolved — only what is listed above is outstanding. The variance panel
+              and the basis below still show, so the run stays inspectable meanwhile.
             </p>
           )}
+        </div>
+      )}
+
+      {/* Priced, but at the plant's card rather than at what this run paid. The
+          sheet is withheld rather than annotated: a total nobody can tell apart
+          from this batch's own is the one a container gets priced from. */}
+      {report && report.needsBatchRates.length > 0 && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+          <p className="font-medium">
+            No sheet yet — these were bought for this batch but have no price entered against it:{" "}
+            {report.needsBatchRates.join(", ")}.
+          </p>
+          <p className="mt-1 text-red-700">
+            The rate card would price them, but at whatever was last set for the whole plant, which
+            is another run&rsquo;s cost wearing this one&rsquo;s name. Enter what this batch actually
+            paid, in the panel above, and the sheet computes. The variance panel and the basis
+            below still show, so the run stays inspectable meanwhile.
+          </p>
         </div>
       )}
 

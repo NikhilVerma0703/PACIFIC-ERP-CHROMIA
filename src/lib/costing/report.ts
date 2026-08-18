@@ -50,6 +50,18 @@ export interface CostingReport {
   unpriced: UnpricedLine[];
   /** Rate-card items (conversion/basis) missing, blocking the sheet. */
   blockedBy: string[];
+  /**
+   * Materials this run consumed that have no rate entered ON THIS BATCH, and
+   * would otherwise have been priced from the standing card.
+   *
+   * The card is the last rate anybody typed, for the whole plant. Charging this
+   * run at it produces a total that looks like this batch's cost and is in fact
+   * some earlier batch's — the reader cannot tell the two apart, and the number
+   * is what a container gets priced from. So the sheet is withheld until
+   * somebody states what this run actually paid, exactly as it is withheld for
+   * a missing conversion figure.
+   */
+  needsBatchRates: string[];
   variance: VariancePanel;
   basis: {
     assumptions: string[];
@@ -99,7 +111,7 @@ export async function buildCostingReport(batchKey: string): Promise<CostingRepor
   const pricing = await pricingForBatch(batchKey, rateDate);
   const card = pricing.card;
 
-  const { materials, unpriced, assumptions } = buildMaterialLines(c, card, pricing);
+  const { materials, unpriced, assumptions, fromCard } = buildMaterialLines(c, card, pricing);
 
   // Conversion and basis are all-or-nothing: a sheet with electricity
   // silently at zero reads as a cheap batch, not an unconfigured card.
@@ -140,8 +152,17 @@ export async function buildCostingReport(batchKey: string): Promise<CostingRepor
   // Off the calendar, not off the card.
   const daysPerMonth = daysInMonthOf(rateDate);
 
+  // EVERY MATERIAL MUST BE STATED FOR THIS RUN. The card's rate is the last one
+  // anybody typed for the whole plant; charging this batch at it yields a total
+  // that reads as this batch's cost and is really some earlier batch's, which is
+  // indistinguishable to the reader and is the figure a container gets priced
+  // from. Conversion is exempt because nothing can set it per batch — see
+  // OVERRIDABLE_CATEGORIES in batchRates.ts — so requiring it would withhold
+  // every sheet forever.
+  const needsBatchRates = fromCard;
+
   let sheet: CostingSheet | null = null;
-  if (blockedBy.length === 0) {
+  if (blockedBy.length === 0 && needsBatchRates.length === 0) {
     sheet = computeSheet(materials, {
       slabs3cm: c.slabs3cm,
       slabs2cm: c.slabs2cm,
@@ -169,6 +190,7 @@ export async function buildCostingReport(batchKey: string): Promise<CostingRepor
     sheet,
     unpriced,
     blockedBy,
+    needsBatchRates,
     variance: buildVariance(c, card),
     basis: {
       assumptions: pricing.overridden.length
@@ -194,11 +216,15 @@ export async function buildCostingReport(batchKey: string): Promise<CostingRepor
 }
 
 function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricing: BatchPricing): {
-  materials: MaterialLine[]; unpriced: UnpricedLine[]; assumptions: string[];
+  materials: MaterialLine[]; unpriced: UnpricedLine[]; assumptions: string[]; fromCard: string[];
 } {
   const materials: MaterialLine[] = [];
   const unpriced: UnpricedLine[] = [];
   const assumptions: string[] = [];
+  /** Consumed, priced, but priced from the card rather than from this batch.
+   *  A Set because grit reaches the fallback once per band and resin once per
+   *  tank, and the reader wants the material named once. */
+  const fromCard = new Set<string>();
 
   /**
    * Price one material from the batch's own lines when it has any.
@@ -254,6 +280,9 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
       "so the supplier split is a stated fact here rather than an inference.",
     );
   } else {
+  // The tank map prices resin from the card's per-supplier rates. Whatever else
+  // it is, it is not what this run was invoiced.
+  if (c.resinKg > 0) fromCard.add("Resin");
   // -- resin, one line per daily tank ---------------------------------------
   for (const t of c.resinByTank) {
     const supplier = RESIN_TANK_SUPPLIER[t.tank];
@@ -302,6 +331,7 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
       unpriced.push({ item, qty: r1(qty), unit: "kg", needs: `a price for ${labelOf(rateKey)}` });
       return;
     }
+    if (qty > 0) fromCard.add(item);
     materials.push({ group, item, basis: basisOf(d), qty, unit: "kg", rate, estimated: true });
   };
   // TiO₂ is dosed on resin weight, like the other three. There is no fallback:
@@ -341,6 +371,7 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
       unpriced.push({ item: label, qty: r2(e.kg / 1000), unit: "t", needs: `a price for ${labelOf(gritItemKey(band))}` });
       continue;
     }
+    if (e.kg > 0) fromCard.add(label);
     materials.push({ group: "grit", item: label, basis, qty: e.kg / 1000, unit: "t", rate });
   }
   if (c.gritUnresolvedKg > 0) {
@@ -356,6 +387,7 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
     if (fillerRate === undefined) {
       unpriced.push({ item: "Filler 400#", qty: r2(c.fillerKg / 1000), unit: "t", needs: `a price for ${labelOf("filler-400")}` });
     } else {
+      if (c.fillerKg > 0) fromCard.add("Filler 400#");
       materials.push({
         group: "filler", item: "Filler 400# pm", basis: "Filler A · Buffer B",
         qty: c.fillerKg / 1000, unit: "t", rate: fillerRate,
@@ -374,7 +406,7 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
   );
   assumptions.push("No provision for wastage, rejection, depreciation, consumables or overheads beyond manpower and electricity.");
 
-  return { materials, unpriced, assumptions };
+  return { materials, unpriced, assumptions, fromCard: [...fromCard] };
 }
 
 /**
