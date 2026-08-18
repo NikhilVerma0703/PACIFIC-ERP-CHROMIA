@@ -8,7 +8,6 @@ import type { ReclassRecord } from "@/lib/delayReclass";
 import { photosForRecords } from "@/lib/entryPhoto";
 import { canRespondDowntime } from "@/lib/rbac";
 import { DowntimeLogCard } from "./DowntimeLogCard";
-import { MisHourlyLogCard } from "./MisHourlyLogCard";
 import { getLastShiftReport, getCurrentShiftReport, getPreviousShiftReport, currentShiftAnchor } from "@/lib/misShift";
 import { SHIFT_WINDOW } from "@/lib/misShiftHours";
 import { ShiftCard } from "@/components/ShiftCard";
@@ -263,26 +262,16 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
             )}
           </Card>
 
-          {/* The hour-by-hour ledger of the four delay buckets, and the maintenance
-              manager's correction control. Above the incident log on purpose: this is
-              the raw classification, that is the story told about it. Both are fed the
-              same rows and the same reclass log, so a corrected hour is marked in both
-              — the owner asked for the mark in both places, and one screen quietly
-              missing it is how a moved figure gets argued about later. */}
-          <MisHourlyLogCard
-            rows={r.incidents.map((i) => ({
-              id: i.id, date: i.date, hour: i.hour, batch: i.batch,
-              minutes: i.minutes, over: i.over, minutesByType: i.minutesByType,
-            }))}
-            rowsTotal={r.incidentsTotal}
-            canReclass={canReclass}
-            reclass={reclass}
-            reclassFailed={reclassFailed}
-          />
-
-          {/* Type filtering happens inside the card, client-side — a chip click must not
-              navigate (the searchParams change re-keys the segment, the root loading
-              skeleton swaps in, and the collapse throws the scroll to the top). */}
+          {/* ONE downtime table. There used to be an "MIS hourly log" card above this
+              one — same r.incidents rows, four delay buckets as columns, the
+              Reclassify control beside them — and the owner read the pair as one table
+              printed twice. The log card absorbed it: the four buckets are explicit
+              columns there now, the correction stays inside DowntimeRespond, and both
+              headers can no longer show the same count twice because there is only one
+              header. Type filtering happens inside the card, client-side — a chip
+              click must not navigate (the searchParams change re-keys the segment, the
+              root loading skeleton swaps in, and the collapse throws the scroll to the
+              top). */}
           <DowntimeLogCard
             incidents={r.incidents}
             incidentsTotal={r.incidentsTotal}

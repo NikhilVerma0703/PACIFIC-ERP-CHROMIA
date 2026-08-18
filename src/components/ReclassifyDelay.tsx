@@ -1,10 +1,12 @@
 "use client";
 // The maintenance manager's DELAY-TYPE CORRECTION, and the mark it leaves behind.
-// One component, used by both screens the owner named — the Breakdown & deviation log
-// (src/app/mis/DowntimeLogCard.tsx, via DowntimeRespond) and the MIS hourly log
-// (src/app/mis/MisHourlyLogCard.tsx) — because two hand-written copies of a control
-// that edits an incentive input is how the two screens end up enforcing different
-// rules, and the screen with the weaker one becomes the way in.
+// One component, one screen today: the Breakdown & deviation log
+// (src/app/mis/DowntimeLogCard.tsx, via DowntimeRespond). It used to render on a
+// second card too — the MIS hourly log, since merged into that table — and the rule
+// that kept it a single component stands for the same reason it was written: two
+// hand-written copies of a control that edits an incentive input is how two screens
+// end up enforcing different rules, and the screen with the weaker one becomes the
+// way in.
 //
 // WHAT IT IS FOR. The production incharge fills the MIS form and books the stoppage
 // under the wrong delay type — most often charging maintenance for what was really a
@@ -102,8 +104,10 @@ export interface ReclassifyDelayProps {
   minutesByType: Record<string, number>;
   /** Every correction applied to this hour, oldest first. */
   records: readonly ReclassRecord[];
-  /** Render the moves as text under the badge (the MIS hourly log has the width for
-   *  it); otherwise they live in the badge's tooltip only. */
+  /** Render the moves as text under the badge, for a host with the width for it;
+   *  otherwise they live in the badge's tooltip only. (The merged downtime log keeps
+   *  its response column narrow, so no current caller sets this — kept because the
+   *  rendering is tested behaviour and the next wide host will want it back.) */
   showLines?: boolean;
 }
 

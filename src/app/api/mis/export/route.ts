@@ -31,17 +31,20 @@ export async function GET(request: Request) {
     // "Maint." columns read as "nobody responded" — that file outlives the glitch.
     if (resp === null) return Response.json({ error: "Could not load the maintenance responses — try the download again." }, { status: 503 });
 
-    // Same per-type view the page shows: under a type filter, minutes/reasons are THAT
-    // type's share (the row set is already filtered); in the All view a multi-type row
-    // spells out each type's duration. The file must match the screen it came from.
+    // The merged on-screen table shows the four delay buckets as columns, so the file
+    // does too — one numeric minutes column per bucket, always all four, exactly like
+    // the screen (a type chip narrows the ROWS, never the columns). "Down (min)" is
+    // therefore always the hour's TOTAL, as on screen: the per-type share the old
+    // single-figure export showed under a filter now has its own column. Reasons stay
+    // per-type under a filter, and Type(s) keeps the flattened summary string — a
+    // pivot-friendly label the bucket columns don't replace.
     const photoMap = await photosForRecords("Mis", r.incidents.map((i) => i.id));
-    const header = ["Date", "Hour", "Batch", "Down (min)", "Down", "Over 60m", "Type(s)", "Reason(s)", "Details", "RCA", "Action", "Spares", "Electrical incharge", "Mechanical incharge", "Maint. status", "Maint. note", "Responded by", "Responded at", "Photos"];
+    const header = ["Date", "Hour", "Batch", ...DELAY_FIELDS.map((d) => `${d.label} (min)`), "Down (min)", "Down", "Over 60m", "Type(s)", "Reason(s)", "Details", "RCA", "Action", "Spares", "Electrical incharge", "Mechanical incharge", "Maint. status", "Maint. note", "Responded by", "Responded at", "Photos"];
     const data: (string | number)[][] = [header];
     // incidents arrive unfiltered (the page filters client-side); apply the view's type here
     const incidents = r.typeFilter ? r.incidents.filter((i) => i.typeKeys.includes(r.typeFilter as string)) : r.incidents;
     for (const i of incidents) {
       const m = resp.get(i.id);
-      const mins = r.typeFilter ? (i.minutesByType[r.typeFilter] ?? 0) : i.minutes;
       const types = r.typeFilter
         ? (DELAY_LABEL[r.typeFilter] ?? "")
         : Object.keys(i.minutesByType).length > 1
@@ -50,7 +53,8 @@ export async function GET(request: Request) {
       const reasons = (r.typeFilter ? (i.reasonsByType[r.typeFilter] ?? []) : i.reasons).join(", ");
       data.push([
         i.date ?? "", i.hour ?? "", i.batch ?? "",
-        mins || 0, mins > 0 ? fmtDur(mins) : "", i.over ? "YES" : "",
+        ...DELAY_FIELDS.map((d) => i.minutesByType[d.key] ?? 0),
+        i.minutes || 0, i.minutes > 0 ? fmtDur(i.minutes) : "", i.over ? "YES" : "",
         types, reasons,
         i.details ?? "", i.rca ?? "", i.action ?? "", i.spares ?? "",
         i.elecIncharge ?? "", i.mechIncharge ?? "",
@@ -60,7 +64,7 @@ export async function GET(request: Request) {
     }
 
     const ws = XLSX.utils.aoa_to_sheet(data);
-    ws["!cols"] = [{ wch: 11 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 8 }, { wch: 22 }, { wch: 30 }, { wch: 40 }, { wch: 8 }, { wch: 24 }, { wch: 16 }, { wch: 18 }, { wch: 18 }, { wch: 13 }, { wch: 30 }, { wch: 16 }, { wch: 16 }, { wch: 34 }, { wch: 16 }, { wch: 7 }];
+    ws["!cols"] = [{ wch: 11 }, { wch: 8 }, { wch: 10 }, { wch: 14 }, { wch: 10 }, { wch: 20 }, { wch: 12 }, { wch: 10 }, { wch: 8 }, { wch: 8 }, { wch: 22 }, { wch: 30 }, { wch: 40 }, { wch: 8 }, { wch: 24 }, { wch: 16 }, { wch: 18 }, { wch: 18 }, { wch: 13 }, { wch: 30 }, { wch: 16 }, { wch: 16 }, { wch: 7 }];
     ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: data.length - 1, c: header.length - 1 } }) };
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Downtime log");
