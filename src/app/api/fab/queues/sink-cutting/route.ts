@@ -1,0 +1,22 @@
+import { prisma } from "@/lib/prisma";
+import { fabGate } from "@/lib/fab/access";
+
+export async function GET() {
+  const g = await fabGate("EMPLOYEE");
+  if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+
+  const pieces = await prisma.fabPiece.findMany({
+    where: { hasSink: true, sinkCompleted: false, status: { not: "PENDING" } },
+    include: {
+      project: { select: { projectCode: true, customerName: true } },
+      drawing: { select: { drawingNumber: true } },
+      requirement: { select: { pieceLabel: true, description: true, length: true, width: true, sinkModel: true, sinkCuts: true } },
+      slab: { select: { slabCode: true, colour: true } },
+      pieceOperations: { where: { operationType: "CUTTING" } },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const ready = pieces.filter(p => p.pieceOperations.some(op => op.isCompleted));
+  return Response.json(ready);
+}

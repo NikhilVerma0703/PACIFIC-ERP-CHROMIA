@@ -1,0 +1,33 @@
+-- 0033: mark every table as ERP-owned, which permanently disarms scripts/import.ts.
+--
+-- WHY THIS EXISTS
+-- The Airtable sync feature was removed on 2026-07-25 (commit c0ea817): the engine, the
+-- /api/sync endpoint, the admin cutover page and the CLI are all gone. scripts/import.ts,
+-- the original one-off importer, was deliberately kept - but removing the engine took
+-- setSource() with it, and setSource was the ONLY writer of sync_state.source. That left
+-- the importer's own safety guard permanently unarmable:
+--
+--   // scripts/import.ts - CUTOVER GUARD: tables whose source of truth is the ERP are
+--   // never touched.
+--   const st = await prisma.$queryRaw`SELECT source FROM sync_state WHERE model = ${...}`;
+--   if (st[0]?.source === "ERP") { ...skipped... }
+--   await delegate(def.model).deleteMany({ where: { airtableId: { startsWith: "rec" } } });
+--
+-- Every row read 'AIRTABLE', so the guard never fired and `npm run import` would delete
+-- and re-pull every Airtable-origin row across all 46 tables - 5,236 in mis alone,
+-- undoing scripts/0030, 0031 and 0032 and every ERP-side edit made since the cutover.
+-- On 2026-07-25 that command was actually run; it failed only because AIRTABLE_BASE_ID
+-- is unset. A missing environment variable is not a safeguard.
+--
+-- This flips all 46 rows to 'ERP', so the guard the importer already checks now fires for
+-- every table and the script reports "cut over to ERP, skipped" instead of deleting.
+-- Verified before running: fieldmap.json holds exactly 46 models and sync_state holds
+-- exactly 46 matching rows - no model can slip through for want of a row.
+--
+-- Nothing else reads sync_state.source; the removal audit confirmed no read or write path
+-- in the app consults it. This is purely the importer's brake.
+--
+-- Idempotent. To genuinely re-import a table one day, set that single row back to
+-- 'AIRTABLE' by hand - which is the point: it should take a deliberate act.
+
+UPDATE sync_state SET source = 'ERP' WHERE source <> 'ERP';

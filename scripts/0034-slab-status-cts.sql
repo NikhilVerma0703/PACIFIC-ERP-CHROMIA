@@ -1,0 +1,29 @@
+-- 0034: add CTS (cut to size) to the SlabStatus enum.
+--
+-- A slab committed to being cut to size rather than sold as a full slab. It is still
+-- physically in the bay, so the stock-on-hand figures in the summary and KPI endpoints
+-- keep counting it: those read `status <> 'DISPATCHED'`, which CTS satisfies. Two places
+-- are NOT of that shape and were checked by hand: kpi/route.ts gained an explicit
+-- ctsStatus count, and telegramAsk.ts:58 uses an inclusion list (`status = 'AVAILABLE'`),
+-- so a CTS slab drops out of its "currently available" line - correct, but not automatic.
+--
+-- Reachable from AVAILABLE / RESERVED / PACKED (mirroring dispatch). Deliberately NOT in
+-- dispatch.from - a slab being cut does not ship as a full slab - so the way out matters:
+-- `uncts` returns it to AVAILABLE and is available to the same roles that can apply cts,
+-- Commercial included. `release` also accepts it, for Finance and Admin. See TRANSITIONS
+-- in src/lib/inventory/grading.ts.
+--
+-- DISTINCT FROM THE CTS *GRADE*, which already existed and is untouched: canonicalGrade
+-- lists A/A2/B/C/CTS/Printing, and the summary endpoint has a `cts` tile counting
+-- `grade = 'CTS'` (0 slabs today). A slab may carry the grade, the status, both or
+-- neither. If that ambiguity ever bites, the tile is the thing to rename - not this.
+--
+-- ONE-WAY: Postgres has no DROP VALUE for an enum. Undoing this means recreating the type
+-- and rewriting every dependent column. IF NOT EXISTS makes it safe to re-run, but not to
+-- reverse.
+--
+-- Must run BEFORE the deploy that ships the matching Prisma enum: the app writing 'CTS'
+-- against a type that lacks it fails with 22P02 invalid_text_representation. Running it
+-- early is harmless - no code writes the value until the deploy lands.
+
+ALTER TYPE "SlabStatus" ADD VALUE IF NOT EXISTS 'CTS';

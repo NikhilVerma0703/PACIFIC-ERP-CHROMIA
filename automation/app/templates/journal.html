@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block body %}
+{% set icons = {'ingest':('info','Intake'),'rescue':('ok','Rescued'),
+                'auto_approve':('ok','Auto-approved'),'auto_post':('ok','Auto-posted'),
+                'anomaly':('warn','Anomaly'),'tune':('info','Self-tuned'),
+                'sync':('info','Tally sync'),'digest':('grey','Digest'),
+                'error':('bad','Problem')} %}
+<div class="card">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+    <h1 style="margin:0">Agent journal</h1>
+    <span class="muted">Everything the system did on its own initiative.</span>
+    <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">
+      <a class="btn ghost" href="/journal" {% if not filter %}style="border-color:var(--accent);color:var(--accent)"{% endif %}>All</a>
+      {% for k in kinds %}
+      <a class="btn ghost" href="/journal?kind={{ k }}"
+         {% if filter==k %}style="border-color:var(--accent);color:var(--accent)"{% endif %}>{{ icons.get(k, ('grey',k))[1] }}</a>
+      {% endfor %}
+    </div>
+  </div>
+
+  {% if not events %}
+    <p class="muted" style="margin-top:14px">Nothing yet. The journal fills up as the agent
+    ingests from the inbox, rescues failed reads, auto-approves trusted bills, writes
+    vouchers, flags anomalies and syncs with Tally.</p>
+  {% else %}
+  <table style="margin-top:12px">
+    <thead><tr><th style="width:150px">When</th><th style="width:120px">What</th>
+      <th>Detail</th><th style="width:60px"></th></tr></thead>
+    <tbody>
+    {% for e in events %}
+      {% set cls, label = icons.get(e['kind'], ('grey', e['kind'])) %}
+      <tr>
+        <td class="muted mono">{{ e['created_at'][:16] }}</td>
+        <td><span class="pill {{ cls }}">{{ label }}</span></td>
+        <td>{{ e['message'] }}</td>
+        <td>{% if e['bill_id'] %}<a class="row" href="/bill/{{ e['bill_id'] }}">#{{ e['bill_id'] }}</a>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endblock %}

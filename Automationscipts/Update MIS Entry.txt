@@ -1,0 +1,151 @@
+// Helper to check if a value is truly empty
+function isEmpty(value) {
+    if (value === null || value === undefined) return true;
+    if (Array.isArray(value) && value.length === 0) return true;
+    if (typeof value === "string" && value.trim() === "") return true;
+    if (typeof value === "object" && Object.keys(value).length === 0) return true;
+    return false;
+}
+
+// Get tables
+let misTable = base.getTable("MIS");
+let qcTable = base.getTable("Polish QC");
+let pressTable = base.getTable("Change Parameters Press");
+
+console.log("Fetching records from all tables...");
+
+// 1. Fetch all records upfront
+let [misRecords, qcRecords, pressRecords] = await Promise.all([
+    misTable.selectRecordsAsync({
+        fields: [
+            "STARTING SLAB NUMBER", "ENDING SLAB NUMBER", "NUMBER OF SLABS PRODUCED",
+            "A CATEGORY", "B CATEGORY", "C CATEGORY", "DESIGN", "BATCH"
+        ]
+    }),
+    qcTable.selectRecordsAsync({
+        fields: ["Slab Number", "Quality Grade"]
+    }),
+    pressTable.selectRecordsAsync({
+        fields: ["Effective from slab number", "Design name", "Batch"]
+    })
+]);
+
+console.log(`Fetched ${misRecords.records.length} MIS, ${qcRecords.records.length} QC, and ${pressRecords.records.length} Press records.`);
+
+// --- OPTIMIZATION 1: Pre-process QC data for fast lookups ---
+// Create a Map for O(1) access to quality grades by slab number.
+console.log("Processing QC records into a lookup map...");
+const qcGradeMap = new Map();
+for (let qc of qcRecords.records) {
+    const slabNum = qc.getCellValue("Slab Number");
+    const gradeObj = qc.getCellValue("Quality Grade");
+    if (typeof slabNum === "number" && gradeObj && gradeObj.name) {
+        qcGradeMap.set(slabNum, gradeObj.name.trim().toUpperCase());
+    }
+}
+
+// --- OPTIMIZATION 2: Pre-sort Press data for efficient matching ---
+// Sort the press records once, so we don't have to re-sort inside the loop.
+console.log("Sorting Press records for efficient matching...");
+const sortedPressRecords = pressRecords.records
+    .filter(rec => typeof rec.getCellValue("Effective from slab number") === "number")
+    .sort((a, b) => b.getCellValue("Effective from slab number") - a.getCellValue("Effective from slab number"));
+
+let updates = []; // Array to hold all the updates we need to make.
+
+console.log("Processing MIS records...");
+
+// --- Main Loop ---
+for (let mis of misRecords.records) {
+    let start = mis.getCellValue("STARTING SLAB NUMBER");
+    let end = mis.getCellValue("ENDING SLAB NUMBER");
+    let produced = mis.getCellValue("NUMBER OF SLABS PRODUCED");
+
+    // Basic validation for the MIS record itself
+    if (typeof start !== "number" || typeof end !== "number" || typeof produced !== "number") {
+        continue;
+    }
+
+    // Check if the record is already complete
+    let aCat = mis.getCellValue("A CATEGORY") || 0;
+    let bCat = mis.getCellValue("B CATEGORY") || 0;
+    let cCat = mis.getCellValue("C CATEGORY") || 0;
+    let design = mis.getCellValue("DESIGN");
+    let batch = mis.getCellValue("BATCH");
+    
+    let categoriesFilled = (aCat + bCat + cCat) === produced;
+    let detailsFilled = !isEmpty(design) && !isEmpty(batch);
+
+    if (categoriesFilled && detailsFilled) {
+        // console.log(`⏭️ Skipping MIS ID ${mis.id} — already complete`);
+        continue;
+    }
+
+    let updateData = {};
+
+    // --- FASTER CATEGORY COUNTING ---
+    // Only calculate if categories are not filled
+    if (!categoriesFilled) {
+        let a = 0, b = 0, c = 0;
+        // Loop from start to end slab number and use the fast map lookup
+        for (let slabNum = start; slabNum <= end; slabNum++) {
+            const grade = qcGradeMap.get(slabNum);
+            switch (grade) {
+                case "A": a++; break;
+                case "B": b++; break;
+                case "C": c++; break;
+            }
+        }
+        
+        // Only add to update payload if we found QC data
+        if (a + b + c > 0) {
+            updateData["A CATEGORY"] = a;
+            updateData["B CATEGORY"] = b;
+            updateData["C CATEGORY"] = c;
+        }
+    }
+
+    // --- FASTER DESIGN/BATCH LOOKUP ---
+    // Only find details if they are not filled
+    if (!detailsFilled) {
+        // Use .find() on the pre-sorted array. This is much faster.
+        const matchedPress = sortedPressRecords.find(rec => rec.getCellValue("Effective from slab number") <= start);
+
+        if (matchedPress) {
+            const designObj = matchedPress.getCellValue("Design name");
+            const matchedDesign = designObj && designObj.name ? designObj.name : null;
+            const matchedBatch = matchedPress.getCellValue("Batch");
+
+            if (isEmpty(design) && !isEmpty(matchedDesign)) {
+                updateData["DESIGN"] = matchedDesign;
+            }
+            if (isEmpty(batch) && !isEmpty(matchedBatch)) {
+                updateData["BATCH"] = matchedBatch;
+            }
+        }
+    }
+    
+    // If there's anything to update, add it to our batch array
+    if (Object.keys(updateData).length > 0) {
+        updates.push({
+            id: mis.id,
+            fields: updateData
+        });
+    }
+}
+
+// --- OPTIMIZATION 3: Perform batched updates ---
+// Update records in chunks of 50 (Airtable API limit)
+console.log(`Found ${updates.length} records to update. Batching requests...`);
+
+for (let i = 0; i < updates.length; i += 50) {
+    const chunk = updates.slice(i, i + 50);
+    try {
+        await misTable.updateRecordsAsync(chunk);
+        console.log(`✅ Successfully updated a batch of ${chunk.length} records.`);
+    } catch (error) {
+        console.error("❌ Error updating a batch of records:", error);
+    }
+}
+
+console.log("🏁 Script finished.");

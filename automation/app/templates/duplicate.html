@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="card" style="max-width:660px">
+  <h1>Already uploaded</h1>
+  {% for d in result.duplicates %}
+  <div class="note bad"><b>Blocked.</b> {{ d.detail }}</div>
+  {% endfor %}
+  <p class="muted">
+    This is an exact file match, so it is blocked rather than warned about — there is no
+    legitimate reason to process the same file twice. If this really is a different
+    expense, photograph the bill again and upload the new image.
+  </p>
+  <div style="display:flex;gap:9px">
+    <a class="btn" href="/bill/{{ result.bill_id }}">Open the original</a>
+    <a class="btn sec" href="/upload">Upload something else</a>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="card">
+  <h1>What the system knows about itself</h1>
+  <div class="sub">Every number below is counted from recorded decisions — nothing is estimated.</div>
+  <div style="margin:4px 0 14px">
+    <button class="btn sec" id="sync-now" type="button">Sync ledgers &amp; people from Tally now</button>
+    <span class="muted" id="sync-result" style="margin-left:10px"></span>
+  </div>
+  <script>
+  document.getElementById('sync-now').addEventListener('click', async function () {
+    const out = document.getElementById('sync-result');
+    out.textContent = 'Contacting Tally…';
+    try {
+      const r = await fetch('/api/sync-ledgers', {method: 'POST'});
+      const d = await r.json();
+      out.textContent = d.ok
+        ? `Synced ${d.ledgers} ledgers, ${d.people} people. New names are usable immediately.`
+        : (d.error || 'Sync failed');
+    } catch (e) { out.textContent = 'Could not reach the app server.'; }
+  });
+  </script>
+  <div>
+    <div class="stat"><b>{{ d.confirmed_total }}</b><span>Bills confirmed</span></div>
+    {% if d.confirm_rate is not none %}
+    <div class="stat"><b>{{ d.confirm_rate }}%</b><span>Accepted unchanged</span></div>
+    {% endif %}
+    <div class="stat"><b>{{ d.auto_approved }}</b><span>Auto-approved</span></div>
+    <div class="stat"><b>{{ d.memory.trusted_vendors }}</b><span>Trusted vendors</span></div>
+    <div class="stat"><b>{{ d.memory.people }}</b><span>People learned</span></div>
+    <div class="stat"><b>{{ d.memory.tokens }}</b><span>Token weights</span></div>
+  </div>
+</div>
+
+{% if d.correction_hotspots %}
+<div class="card">
+  <h2>Where clerks keep correcting the suggestion</h2>
+  <div class="sub">Each repeated row is a systematic miss, not bad luck. Three or more of the same correction usually means a missing alias or a mis-mapped vendor.</div>
+  <table>
+    <thead><tr><th>System suggested</th><th>Clerk chose</th><th style="text-align:right">Times</th></tr></thead>
+    <tbody>
+    {% for r in d.correction_hotspots %}
+      <tr><td class="muted">{{ r.suggested }}</td><td><b>{{ r.chosen }}</b></td>
+          <td style="text-align:right">{{ r.n }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if d.alias_suggestions %}
+<div class="card">
+  <h2>Vocabulary the system has taught itself</h2>
+  <div class="sub">
+    Words that confirmed bills keep associating with a ledger, but which the matcher's
+    vocabulary doesn't contain yet. Adding them to SEED_ALIASES in app/ledgers.py makes the
+    <i>first</i> bill from a new vendor classify correctly — not just repeats. Proposed here
+    for a human to review, never applied silently.
+  </div>
+  <table>
+    <thead><tr><th>Word on bills</th><th>Keeps landing in</th><th style="text-align:right">Weight</th></tr></thead>
+    <tbody>
+    {% for r in d.alias_suggestions %}
+      <tr><td class="mono">{{ r.token }}</td><td>{{ r.ledger }}</td>
+          <td style="text-align:right">{{ '%.0f'|format(r.weight) }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if d.variant_wins %}
+<div class="card">
+  <h2>Which OCR preprocessing wins on your bills</h2>
+  <div class="sub">If one variant dominates after a few hundred bills, remove the others from
+    <span class="mono">ocr.variants</span> in config.yaml for a ~3× speedup.</div>
+  <table>
+    <thead><tr><th>Variant</th><th style="text-align:right">Wins</th><th style="text-align:right">Avg confidence</th></tr></thead>
+    <tbody>
+    {% for r in d.variant_wins %}
+      <tr><td class="mono">{{ r.ocr_variant }}</td>
+          <td style="text-align:right">{{ r.n }}</td>
+          <td style="text-align:right">{{ r.avg_conf }}%</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if d.missing_ledgers %}
+<div class="card">
+  <h2>Ledgers Tally uses that the dropdown cannot offer</h2>
+  <div class="sub">Found in your Journal Register import but missing from the ledger master —
+    re-export the trial balance in detailed view, or sync from Tally's gateway.</div>
+  <table>
+    <thead><tr><th>Ledger</th><th style="text-align:right">Journal lines</th></tr></thead>
+    <tbody>
+    {% for r in d.missing_ledgers %}
+      <tr><td>{{ r.ledger }}</td><td style="text-align:right">{{ r.count }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

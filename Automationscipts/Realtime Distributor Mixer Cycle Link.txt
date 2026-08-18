@@ -1,0 +1,120 @@
+// Tables
+let distributorTable = base.getTable("Distributor");
+let mixerCycleTable = base.getTable("Mixer Cycle");
+let changeParamsTable = base.getTable("Change Parameters Distributor");
+
+// Input
+let inputConfig = input.config();
+let createdRecordId = inputConfig.recordId;
+
+// Helper to normalize batch name
+function normalize(value) {
+    if (!value) return "";
+    return String(value).toLowerCase().replace(/\s+/g, "");
+}
+
+// Get the created Distributor record
+let distributorRecord = await distributorTable.selectRecordAsync(createdRecordId);
+if (!distributorRecord) {
+    console.log("❌ Distributor record not found.");
+    return;
+}
+
+// Exit if "Last Slab?" is checked
+if (distributorRecord.getCellValue("Last Slab?")) {
+    console.log("⛔ 'Last Slab?' is checked. Skipping execution.");
+    return;
+}
+
+let currentSlabNumber = distributorRecord.getCellValue("Slab Number");
+if (currentSlabNumber == null) {
+    console.log("❌ Slab Number missing. Exiting.");
+    return;
+}
+
+// 1. Get batch name from Change Parameters Distributor using effective slab logic
+let changeParamsQuery = await changeParamsTable.selectRecordsAsync({
+    fields: [
+        "Batch", 
+        "Effective from slab number", 
+        "No. of slabs per Mixer Cycle"  // ✅ updated field name
+    ]
+});
+
+let matchedChangeParam = changeParamsQuery.records
+    .filter(r => {
+        let eff = r.getCellValue("Effective from slab number");
+        return eff != null && eff <= currentSlabNumber;
+    })
+    .sort((a, b) => b.getCellValue("Effective from slab number") - a.getCellValue("Effective from slab number"))[0];
+
+if (!matchedChangeParam) {
+    console.log("❌ No matching Change Parameters record found for this slab.");
+    return;
+}
+
+let rawBatchName = matchedChangeParam.getCellValue("Batch");
+if (!rawBatchName) {
+    console.log("❌ Batch field is empty in Change Parameters record.");
+    return;
+}
+let batchName = normalize(rawBatchName);
+let slabsPerCycle = matchedChangeParam.getCellValue("No. of slabs per Mixer Cycle") || 1;
+
+console.log(`🎯 Using Batch "${rawBatchName}" [normalized: "${batchName}"]`);
+
+// 2. Get all slabs matching the batch
+let distributorQuery = await distributorTable.selectRecordsAsync({
+    fields: ["Batch", "Slab Number"]
+});
+let slabs = distributorQuery.records
+    .filter(r => normalize(r.getCellValue("Batch")) === batchName)
+    .sort((a, b) => (a.getCellValue("Slab Number") || 0) - (b.getCellValue("Slab Number") || 0));
+
+if (slabs.length === 0) {
+    console.log("⚠️ No slabs found for this batch.");
+    return;
+}
+
+// 3. Get mixer cycles for the batch
+let mixerQuery = await mixerCycleTable.selectRecordsAsync({
+    fields: ["Batch", "Cycle", "Total Cycle Weight"]
+});
+let mixerCycles = mixerQuery.records
+    .filter(r => normalize(r.getCellValue("Batch")) === batchName);
+
+// Sort cycles by cycle number
+let getCycleNum = r => r.getCellValue("Cycle") || 0;
+mixerCycles.sort((a, b) => getCycleNum(a) - getCycleNum(b));
+
+// 4. Assign slabs to mixer cycles based on count
+let updates = [];
+let cycleIdx = 0;
+let count = 0;
+
+for (let slab of slabs) {
+    let cycleId = null;
+    if (mixerCycles[cycleIdx]) {
+        cycleId = mixerCycles[cycleIdx].id;
+        count++;
+        if (count >= slabsPerCycle) {
+            cycleIdx++;
+            count = 0;
+        }
+    }
+
+    updates.push({
+        id: slab.id,
+        fields: {
+            "Mixer Cycle": cycleId ? [{ id: cycleId }] : []
+        }
+    });
+}
+
+// 5. Push updates in batches
+while (updates.length > 0) {
+    await distributorTable.updateRecordsAsync(updates.slice(0, 50));
+    updates = updates.slice(50);
+}
+
+console.log("✅ Slabs assigned to Mixer Cycles based on count.");

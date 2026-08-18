@@ -1,0 +1,2738 @@
+[
+ {
+  "value": "Pacific Engineered Surfaces Pvt Ltd- FAB",
+  "indent": 0,
+  "debit": null,
+  "credit": null
+ },
+ {
+  "value": "Sy # 73/2b, 82/1b,",
+  "indent": 0,
+  "debit": null,
+  "credit": null
+ },
+ {
+  "value": "Off N.H.7, Nallaganakothapalli Village",
+  "indent": 0,
+  "debit": null,
+  "credit": null
+ },
+ {
+  "value": "Krishnagiri Road, Hosur",
+  "indent": 0,
+  "debit": null,
+  "credit": null
+ },
+ {
+  "value": "Tamilnadu",
+  "indent": 0,
+  "debit": null,
+  "credit": null
+ },
+ {
+  "value": "Contact : 9845164342",
+  "indent": 0,
+  "debit": null,
+  "credit": null
+ },
+ {
+  "value": "Trial Balance",
+  "indent": 0,
+  "debit": null,
+  "credit": null
+ },
+ {
+  "value": "1-Apr-25 to 10-Mar-28",
+  "indent": 0,
+  "debit": null,
+  "credit": null
+ },
+ {
+  "value": "",
+  "indent": 2,
+  "debit": "Pacific Engineered Surfaces Pvt Ltd- FAB - (from 1-Apr-21) - (from 1-Apr-22) - (from 1-Apr-23)",
+  "credit": null
+ },
+ {
+  "value": "Particulars",
+  "indent": 2,
+  "debit": "1-Apr-25 to 10-Mar-28",
+  "credit": null
+ },
+ {
+  "value": "",
+  "indent": 2,
+  "debit": "Closing Balance",
+  "credit": null
+ },
+ {
+  "value": "",
+  "indent": 2,
+  "debit": "Debit",
+  "credit": "Credit"
+ },
+ {
+  "value": "Capital Account",
+  "indent": 0,
+  "debit": null,
+  "credit": 1281161136.41
+ },
+ {
+  "value": "Retained Earnings (Reserves & Surplus)",
+  "indent": 2,
+  "debit": null,
+  "credit": 1081161136.41
+ },
+ {
+  "value": "General Reserve",
+  "indent": 3,
+  "debit": null,
+  "credit": 781161136.41
+ },
+ {
+  "value": "Share Premium",
+  "indent": 3,
+  "debit": null,
+  "credit": 300000000
+ },
+ {
+  "value": "Equity- Share Capital",
+  "indent": 2,
+  "debit": null,
+  "credit": 200000000
+ },
+ {
+  "value": "Equity Share-Pacific Granites India Pvt Ltd",
+  "indent": 4,
+  "debit": null,
+  "credit": 15346250
+ },
+ {
+  "value": "Equity Shares - Devender Kumar",
+  "indent": 4,
+  "debit": null,
+  "credit": 10000000
+ },
+ {
+  "value": "Equity Shares - Kanta Somani",
+  "indent": 4,
+  "debit": null,
+  "credit": 44160000
+ },
+ {
+  "value": "Equity Shares - Mayank Mundra",
+  "indent": 4,
+  "debit": null,
+  "credit": 5000000
+ },
+ {
+  "value": "Equity Shares - Mohanlal Somani",
+  "indent": 4,
+  "debit": null,
+  "credit": 28522500
+ },
+ {
+  "value": "Equity Shares - Pacific Stones Pvt Ltd",
+  "indent": 4,
+  "debit": null,
+  "credit": 240000
+ },
+ {
+  "value": "Equity Shares - Pawan Kumar Mundra",
+  "indent": 4,
+  "debit": null,
+  "credit": 5000000
+ },
+ {
+  "value": "Equity Shares - Rajani Somani",
+  "indent": 4,
+  "debit": null,
+  "credit": 38000000
+ },
+ {
+  "value": "Equity Shares - Santosh Mundra",
+  "indent": 4,
+  "debit": null,
+  "credit": 10000000
+ },
+ {
+  "value": "Equity Shares - Varun Mundra",
+  "indent": 4,
+  "debit": null,
+  "credit": 10000000
+ },
+ {
+  "value": "Equity Shares - Varun Somani",
+  "indent": 4,
+  "debit": null,
+  "credit": 31731250
+ },
+ {
+  "value": "Mohanlal Somani - HUF- Shares",
+  "indent": 4,
+  "debit": null,
+  "credit": 1000000
+ },
+ {
+  "value": "Varun Somani - HUF-Shares",
+  "indent": 4,
+  "debit": null,
+  "credit": 1000000
+ },
+ {
+  "value": "Loans (Liability)",
+  "indent": 0,
+  "debit": null,
+  "credit": 1374941220.73
+ },
+ {
+  "value": "Secured Loans",
+  "indent": 2,
+  "debit": null,
+  "credit": 672585046.42
+ },
+ {
+  "value": "BC Capital Goods",
+  "indent": 3,
+  "debit": null,
+  "credit": null
+ },
+ {
+  "value": "EPCS Loan",
+  "indent": 3,
+  "debit": null,
+  "credit": null
+ },
+ {
+  "value": "LC - Capital Goods",
+  "indent": 3,
+  "debit": null,
+  "credit": 14210980
+ },
+ {
+  "value": "LC-0002NMLC0012826",
+  "indent": 5,
+  "debit": null,
+  "credit": 14210980
+ },
+ {
+  "value": "LC-Consumable",
+  "indent": 3,
+  "debit": null,
+  "credit": 32549429.8
+ },
+ {
+  "value": "LC- Consumables",
+  "indent": 5,
+  "debit": null,
+  "credit": 10426585.8
+ },
+ {
+  "value": "LC - 0422ILF251041102",
+  "indent": 6,
+  "debit": null,
+  "credit": null
+ },
+ {
+  "value": "LC - 0002NMLC0001627",
+  "indent": 6,
+  "debit": null,
+  "credit": 6187238.4
+ },
+ {
+  "value": "LC - 0002NMLC0008727",
+  "indent": 6,
+  "debit": null,
+  "credit": 4239347.4
+ },
+ {
+  "value": "LC - 0002NMLC0010127",
+  "indent": 5,
+  "debit": null,
+  "credit": 20048904
+ },
+ {
+  "value": "LC-0002NMLC0041526",
+  "indent": 5,
+  "debit": null,
+  "credit": 2073940
+ },
+ {
+  "value": "LC - Raw Material",
+  "indent": 3,
+  "debit": null,
+  "credit": 8933043.6
+ },
+ {
+  "value": "LC - 0002NMLC0009127",
+  "indent": 5,
+  "debit": null,
+  "credit": 6380193.6
+ },
+ {
+  "value": "LC - 0002NMLC0009927",
+  "indent": 5,
+  "debit": null,
+  "credit": 2552850
+ },
+ {
+  "value": "LC Spares",
+  "indent": 3,
+  "debit": null,
+  "credit": 9663862.61
+ },
+ {
+  "value": "LC- 0002NMLC0003627",
+  "indent": 5,
+  "debit": null,
+  "credit": 9663862.61
+ },
+ {
+  "value": "Term Loan",
+  "indent": 3,
+  "debit": null,
+  "credit": 417227730.41
+ },
+ {
+  "value": "Vehicle Loan",
+  "indent": 3,
+  "debit": null,
+  "credit": null
+ },
+ {
+  "value": "WCDL",
+  "indent": 2,
+  "debit": null,
+  "credit": 190000000
+ },
+ {
+  "value": "WCDL A/c - 000260004142",
+  "indent": 5,
+  "debit": null,
+  "credit": 45000000
+ },
+ {
+  "value": "WCDL A/c - 000260004202",
+  "indent": 5,
+  "debit": null,
+  "credit": 50000000
+ },
+ {
+  "value": "WCDL A/c - 000260004270",
+  "indent": 5,
+  "debit": null,
+  "credit": 65000000
+ },
+ {
+  "value": "WCDL A/c - 000260004354",
+  "indent": 5,
+  "debit": null,
+  "credit": 10000000
+ },
+ {
+  "value": "WCDL A/c - 000260004451",
+  "indent": 5,
+  "debit": null,
+  "credit": 10000000
+ },
+ {
+  "value": "WCDL A/c - 000260004454",
+  "indent": 5,
+  "debit": null,
+  "credit": 10000000
+ },
+ {
+  "value": "Unsecured Loans",
+  "indent": 2,
+  "debit": null,
+  "credit": 702356174.31
+ },
+ {
+  "value": "Loan From Others",
+  "indent": 3,
+  "debit": null,
+  "credit": 21173712
+ },
+ {
+  "value": "Loan From Related Parties",
+  "indent": 4,
+  "debit": null,
+  "credit": 681182462.31
+ },
+ {
+  "value": "Loan From Director Relative Companies",
+  "indent": 6,
+  "debit": null,
+  "credit": 511422462.31
+ },
+ {
+  "value": "Ambey Builders Pvt Ltd",
+  "indent": 6,
+  "debit": null,
+  "credit": 22595975
+ },
+ {
+  "value": "Haritag Exports Pvt Ltd- Loans",
+  "indent": 7,
+  "debit": null,
+  "credit": 53064525
+ },
+ {
+  "value": "KAMLESH MERCANTILE CREDIT PVT LTD",
+  "indent": 7,
+  "debit": null,
+  "credit": 28725230
+ },
+ {
+  "value": "Pacific Granites India Pvt Ltd-Loans",
+  "indent": 7,
+  "debit": null,
+  "credit": 161293463.31
+ },
+ {
+  "value": "PACIFIC STONES PVT LTD",
+  "indent": 6,
+  "debit": null,
+  "credit": 45926810
+ },
+ {
+  "value": "PRESTIGE STONES",
+  "indent": 6,
+  "debit": null,
+  "credit": 6076301
+ },
+ {
+  "value": "SINGH WAHINI MOULDERS & HOLDING PVT LTD",
+  "indent": 7,
+  "debit": null,
+  "credit": 133740159
+ },
+ {
+  "value": "SK Mercantile Credit Pvt Ltd.,",
+  "indent": 6,
+  "debit": null,
+  "credit": 59999999
+ },
+ {
+  "value": "Loan From Director Relatives",
+  "indent": 5,
+  "debit": null,
+  "credit": 72100000
+ },
+ {
+  "value": "Anuradha Mundra",
+  "indent": 5,
+  "debit": null,
+  "credit": 1600000
+ },
+ {
+  "value": "Mayank Mundra",
+  "indent": 5,
+  "debit": null,
+  "credit": 28000000
+ },
+ {
+  "value": "Puneet Soni",
+  "indent": 5,
+  "debit": null,
+  "credit": 42500000
+ },
+ {
+  "value": "Loan From Directors",
+  "indent": 5,
+  "debit": null,
+  "credit": 97660000
+ },
+ {
+  "value": "Devendra Kumar Soni",
+  "indent": 6,
+  "debit": null,
+  "credit": 45500000
+ },
+ {
+  "value": "Kanta Somani",
+  "indent": 5,
+  "debit": null,
+  "credit": 180000
+ },
+ {
+  "value": "Mohanlal Somani",
+  "indent": 5,
+  "debit": null,
+  "credit": 5000000
+ },
+ {
+  "value": "Pawan Kumar Mundra",
+  "indent": 6,
+  "debit": null,
+  "credit": 30000000
+ },
+ {
+  "value": "Rajani Somani",
+  "indent": 5,
+  "debit": null,
+  "credit": 1180000
+ },
+ {
+  "value": "Varun Mundra - Loans",
+  "indent": 6,
+  "debit": null,
+  "credit": 11800000
+ },
+ {
+  "value": "Varun Somani",
+  "indent": 5,
+  "debit": null,
+  "credit": 4000000
+ },
+ {
+  "value": "Current Liabilities",
+  "indent": 0,
+  "debit": 189871197.02,
+  "credit": 877316959.25
+ },
+ {
+  "value": "Duties & Taxes",
+  "indent": 2,
+  "debit": 76038681.27,
+  "credit": 46663651.82
+ },
+ {
+  "value": "GST Adjustment",
+  "indent": 3,
+  "debit": null,
+  "credit": 3457745.13
+ },
+ {
+  "value": "Cgst Input Excess Taken",
+  "indent": 5,
+  "debit": null,
+  "credit": 528650.39
+ },
+ {
+  "value": "Igst Excess Claim",
+  "indent": 5,
+  "debit": null,
+  "credit": 2400444.35
+ },
+ {
+  "value": "Sgst Inputs Excess Taken",
+  "indent": 5,
+  "debit": null,
+  "credit": 528650.39
+ },
+ {
+  "value": "GST Credit Ledger",
+  "indent": 3,
+  "debit": 22346063,
+  "credit": null
+ },
+ {
+  "value": "CGST C/F",
+  "indent": 4,
+  "debit": 3046947,
+  "credit": null
+ },
+ {
+  "value": "IGST C/F",
+  "indent": 3,
+  "debit": 16252169,
+  "credit": null
+ },
+ {
+  "value": "SGST C/F",
+  "indent": 4,
+  "debit": 3046947,
+  "credit": null
+ },
+ {
+  "value": "GST INPUT",
+  "indent": 3,
+  "debit": 51150181.05,
+  "credit": null
+ },
+ {
+  "value": "CGST INPUT",
+  "indent": 4,
+  "debit": 6144075.72,
+  "credit": null
+ },
+ {
+  "value": "INPUT CGST @ 2.5%",
+  "indent": 6,
+  "debit": 120945.05,
+  "credit": null
+ },
+ {
+  "value": "Input CGST @ 6%",
+  "indent": 6,
+  "debit": 27,
+  "credit": null
+ },
+ {
+  "value": "INPUT CGST @ 9%",
+  "indent": 6,
+  "debit": 6023103.67,
+  "credit": null
+ },
+ {
+  "value": "IGST INPUT",
+  "indent": 4,
+  "debit": 38859522.24,
+  "credit": null
+ },
+ {
+  "value": "INPUT - GST Import Input",
+  "indent": 6,
+  "debit": 1342905,
+  "credit": null
+ },
+ {
+  "value": "INPUT IGST @ 18%",
+  "indent": 6,
+  "debit": 33301277.49,
+  "credit": null
+ },
+ {
+  "value": "INPUT IGST @ 28%",
+  "indent": 6,
+  "debit": 26880,
+  "credit": null
+ },
+ {
+  "value": "INPUT IGST @ 5%",
+  "indent": 6,
+  "debit": 4188459.75,
+  "credit": null
+ },
+ {
+  "value": "SGST INPUT",
+  "indent": 4,
+  "debit": 6146583.09,
+  "credit": null
+ },
+ {
+  "value": "INPUT SGST @ 2.5%",
+  "indent": 6,
+  "debit": 120943.95,
+  "credit": null
+ },
+ {
+  "value": "Input SGST @ 6%",
+  "indent": 5,
+  "debit": 3992.49,
+  "credit": null
+ },
+ {
+  "value": "INPUT SGST @ 9%",
+  "indent": 6,
+  "debit": 6021646.65,
+  "credit": null
+ },
+ {
+  "value": "GST Not Claimed",
+  "indent": 3,
+  "debit": null,
+  "credit": 232591
+ },
+ {
+  "value": "CGST Not Claimed",
+  "indent": 5,
+  "debit": null,
+  "credit": 89542
+ },
+ {
+  "value": "IGST Not Claimed",
+  "indent": 5,
+  "debit": null,
+  "credit": 53507
+ },
+ {
+  "value": "SGST Not Claimed",
+  "indent": 5,
+  "debit": null,
+  "credit": 89542
+ },
+ {
+  "value": "GST Output",
+  "indent": 3,
+  "debit": null,
+  "credit": 42466199.55
+ },
+ {
+  "value": "OUTPUT CGST @ 2.5%",
+  "indent": 5,
+  "debit": null,
+  "credit": 7700.96
+ },
+ {
+  "value": "OUTPUT CGST @ 9%",
+  "indent": 5,
+  "debit": null,
+  "credit": 1010874.26
+ },
+ {
+  "value": "OUTPUT IGST @ 18%",
+  "indent": 5,
+  "debit": null,
+  "credit": 40383566.41
+ },
+ {
+  "value": "OUTPUT IGST @ 5%",
+  "indent": 5,
+  "debit": null,
+  "credit": 45482.7
+ },
+ {
+  "value": "OUTPUT SGST @ 2.5%",
+  "indent": 5,
+  "debit": null,
+  "credit": 7700.96
+ },
+ {
+  "value": "OUTPUT SGST @ 9%",
+  "indent": 5,
+  "debit": null,
+  "credit": 1010874.26
+ },
+ {
+  "value": "GST RCM",
+  "indent": 3,
+  "debit": 1371265.14,
+  "credit": 146800.14
+ },
+ {
+  "value": "Input RCM",
+  "indent": 4,
+  "debit": 1344627.1,
+  "credit": null
+ },
+ {
+  "value": "INPUT CGST @ 2.5% RCM",
+  "indent": 6,
+  "debit": 20616.61,
+  "credit": null
+ },
+ {
+  "value": "INPUT CGST @ 9% RCM",
+  "indent": 6,
+  "debit": 304630.74,
+  "credit": null
+ },
+ {
+  "value": "Input IGST @ 18% RCM",
+  "indent": 6,
+  "debit": 33300,
+  "credit": null
+ },
+ {
+  "value": "Input IGST @ 5% -RCM",
+  "indent": 6,
+  "debit": 660616.4,
+  "credit": null
+ },
+ {
+  "value": "INPUT SGST @ 2.5% RCM",
+  "indent": 6,
+  "debit": 21426.61,
+  "credit": null
+ },
+ {
+  "value": "INPUT SGST @ 9% RCM",
+  "indent": 6,
+  "debit": 304036.74,
+  "credit": null
+ },
+ {
+  "value": "Output RCM",
+  "indent": 4,
+  "debit": 26638.04,
+  "credit": 146800.14
+ },
+ {
+  "value": "OUTPUT CGST @ 2.5 % RCM",
+  "indent": 7,
+  "debit": 4971.39,
+  "credit": null
+ },
+ {
+  "value": "OUTPUT CGST @ 9% RCM",
+  "indent": 6,
+  "debit": null,
+  "credit": 19408.74
+ },
+ {
+  "value": "Output IGST @ 18% RCM",
+  "indent": 6,
+  "debit": 14400,
+  "credit": null
+ },
+ {
+  "value": "Output IGST @ 5% - RCM",
+  "indent": 6,
+  "debit": null,
+  "credit": 127391.4
+ },
+ {
+  "value": "OUTPUT SGST @ 2.5 % RCM",
+  "indent": 6,
+  "debit": 5771.39,
+  "credit": null
+ },
+ {
+  "value": "OUTPUT SGST @ 9% RCM",
+  "indent": 6,
+  "debit": 1495.26,
+  "credit": null
+ },
+ {
+  "value": "Not in GSTR2B",
+  "indent": 3,
+  "debit": 1169449.66,
+  "credit": 85332.94
+ },
+ {
+  "value": "Cgst Not Reflected in GSTR2B",
+  "indent": 5,
+  "debit": 584725.81,
+  "credit": null
+ },
+ {
+  "value": "Igst Not Reflected in GSTR2B",
+  "indent": 5,
+  "debit": null,
+  "credit": 85332.94
+ },
+ {
+  "value": "Sgst Not Reflected in GSTR2B",
+  "indent": 5,
+  "debit": 584723.85,
+  "credit": null
+ },
+ {
+  "value": "GST Cash Ledger",
+  "indent": 3,
+  "debit": null,
+  "credit": 274983.06
+ },
+ {
+  "value": "GSTR2B ITC Claimed",
+  "indent": 4,
+  "debit": 1722.42,
+  "credit": null
+ },
+ {
+  "value": "Short Term Provisions",
+  "indent": 2,
+  "debit": 517365,
+  "credit": 127500074
+ },
+ {
+  "value": "SALARY, WAGES, EL & GRATUITY PAYABLE",
+  "indent": 4,
+  "debit": 517365,
+  "credit": 66500074
+ },
+ {
+  "value": "Income Tax Payable",
+  "indent": 3,
+  "debit": null,
+  "credit": 61000000
+ },
+ {
+  "value": "Sundry Creditors",
+  "indent": 2,
+  "debit": 105959841.75,
+  "credit": 221362733.01
+ },
+ {
+  "value": "Other Current Liabilities",
+  "indent": 2,
+  "debit": 38518,
+  "credit": 61143088.14
+ },
+ {
+  "value": "STATUTORY PAYABLES",
+  "indent": 4,
+  "debit": null,
+  "credit": 15880733.14
+ },
+ {
+  "value": "TCS Account",
+  "indent": 4,
+  "debit": null,
+  "credit": 13503.82
+ },
+ {
+  "value": "TCS ON SCRAP - 394(1) (Old Sec- 206CE) @ 2%",
+  "indent": 7,
+  "debit": null,
+  "credit": 13503.82
+ },
+ {
+  "value": "T D S Account",
+  "indent": 4,
+  "debit": null,
+  "credit": 15745378.32
+ },
+ {
+  "value": "TDS Payable - Commission -1006 (Old Sec.-194H) @ 2%",
+  "indent": 8,
+  "debit": null,
+  "credit": 27940
+ },
+ {
+  "value": "TDS Payable-Contractors -1023(Old Sec.-194C) @1%",
+  "indent": 7,
+  "debit": null,
+  "credit": 66785.69
+ },
+ {
+  "value": "TDS Payable -Contractors - 1024 (Old Sec.-194C) @2%",
+  "indent": 7,
+  "debit": null,
+  "credit": 200208.34
+ },
+ {
+  "value": "TDS Payable - Contractors 1024 -(Old Sec.94C)@0.87%",
+  "indent": 7,
+  "debit": null,
+  "credit": 4819.62
+ },
+ {
+  "value": "TDS Payable - Professional 1026 (Old Sec-194J) @2%",
+  "indent": 7,
+  "debit": null,
+  "credit": 720
+ },
+ {
+  "value": "TDS Payable - Professional 1027 (Old Sec-194J) @10%",
+  "indent": 7,
+  "debit": null,
+  "credit": 45300
+ },
+ {
+  "value": "TDS Payable - Purchase -1031(Old Sec.-194Q) @ 0.1%",
+  "indent": 7,
+  "debit": null,
+  "credit": 79687.67
+ },
+ {
+  "value": "TDS Payable - Rent - 1009 (Old Sec.-194I) @ 10%",
+  "indent": 7,
+  "debit": null,
+  "credit": 22950
+ },
+ {
+  "value": "TDS Payable-Salary - 1002 (Old Sec.-192B)",
+  "indent": 7,
+  "debit": null,
+  "credit": 15296967
+ },
+ {
+  "value": "PROFESSIONAL TAX PAYABLE",
+  "indent": 5,
+  "debit": null,
+  "credit": 121851
+ },
+ {
+  "value": "CSR Payable",
+  "indent": 3,
+  "debit": null,
+  "credit": 7105000
+ },
+ {
+  "value": "Deferred Tax Liability",
+  "indent": 4,
+  "debit": null,
+  "credit": 38053378
+ },
+ {
+  "value": "EPFO - Employees Contribution",
+  "indent": 4,
+  "debit": null,
+  "credit": 103977
+ },
+ {
+  "value": "ESIC - Employees Contribution",
+  "indent": 4,
+  "debit": 38518,
+  "credit": null
+ },
+ {
+  "value": "Interest on CC Payable",
+  "indent": 2,
+  "debit": 7316791,
+  "credit": null
+ },
+ {
+  "value": "Term Loan Payable (0422TL0100000711)",
+  "indent": 2,
+  "debit": null,
+  "credit": 420647412.28
+ },
+ {
+  "value": "Fixed Assets",
+  "indent": 0,
+  "debit": 2976191803.33,
+  "credit": 694821420.65
+ },
+ {
+  "value": "Electrical Installations",
+  "indent": 2,
+  "debit": 47430940.72,
+  "credit": null
+ },
+ {
+  "value": "Electrical Installations",
+  "indent": 4,
+  "debit": 41289344.22,
+  "credit": null
+ },
+ {
+  "value": "Electrical Transformer 2500KVA",
+  "indent": 4,
+  "debit": 4866721,
+  "credit": null
+ },
+ {
+  "value": "GROUND FLOOR MOTORS Box",
+  "indent": 4,
+  "debit": 1274875.5,
+  "credit": null
+ },
+ {
+  "value": "Furnitures & Fixtures",
+  "indent": 2,
+  "debit": 3469830.47,
+  "credit": null
+ },
+ {
+  "value": "Fixtures & Fittings - A Frame",
+  "indent": 4,
+  "debit": 1869207.5,
+  "credit": null
+ },
+ {
+  "value": "FURNITURE & FITTINGS",
+  "indent": 4,
+  "debit": 393622.82,
+  "credit": null
+ },
+ {
+  "value": "Kitchen Vessels",
+  "indent": 3,
+  "debit": 935000.15,
+  "credit": null
+ },
+ {
+  "value": "STAINELLSS STEEL - SS304 TANK ASSEMBLY",
+  "indent": 4,
+  "debit": 272000,
+  "credit": null
+ },
+ {
+  "value": "Intangible Assets",
+  "indent": 2,
+  "debit": 5266073,
+  "credit": null
+ },
+ {
+  "value": "Software",
+  "indent": 3,
+  "debit": 4564157,
+  "credit": null
+ },
+ {
+  "value": "Tally Prime - Gold",
+  "indent": 3,
+  "debit": 103500,
+  "credit": null
+ },
+ {
+  "value": "ZOHO SOFTWARE",
+  "indent": 3,
+  "debit": 598416,
+  "credit": null
+ },
+ {
+  "value": "Office Equipments",
+  "indent": 2,
+  "debit": 5496672.99,
+  "credit": null
+ },
+ {
+  "value": "Computers & Peripherals",
+  "indent": 4,
+  "debit": 4137229.22,
+  "credit": null
+ },
+ {
+  "value": "Laptop",
+  "indent": 3,
+  "debit": 2374072.69,
+  "credit": null
+ },
+ {
+  "value": "APPLE MACBOOK",
+  "indent": 6,
+  "debit": 72299,
+  "credit": null
+ },
+ {
+  "value": "Laptop Dell",
+  "indent": 4,
+  "debit": 2221011.7,
+  "credit": null
+ },
+ {
+  "value": "Laptop HP",
+  "indent": 4,
+  "debit": 80761.99,
+  "credit": null
+ },
+ {
+  "value": "BROTHER DCP-L2640 PRINTER",
+  "indent": 5,
+  "debit": 20339,
+  "credit": null
+ },
+ {
+  "value": "Computer - MSI MAG PANO 100R PZ WHITE",
+  "indent": 6,
+  "debit": 580509,
+  "credit": null
+ },
+ {
+  "value": "Computers & Printers Asset",
+  "indent": 5,
+  "debit": 781909.85,
+  "credit": null
+ },
+ {
+  "value": "IPAD",
+  "indent": 3,
+  "debit": 111022.04,
+  "credit": null
+ },
+ {
+  "value": "Lenovo Tab M11",
+  "indent": 4,
+  "debit": 109229.18,
+  "credit": null
+ },
+ {
+  "value": "PRINTER HP M126nw Laserjet",
+  "indent": 5,
+  "debit": 18200,
+  "credit": null
+ },
+ {
+  "value": "TAB - Apple I PAD",
+  "indent": 5,
+  "debit": 129660.17,
+  "credit": null
+ },
+ {
+  "value": "Zebra ZD230t Desktop Printer",
+  "indent": 5,
+  "debit": 12287.29,
+  "credit": null
+ },
+ {
+  "value": "AIR CONDITIONER",
+  "indent": 3,
+  "debit": 478035,
+  "credit": null
+ },
+ {
+  "value": "Biometric",
+  "indent": 3,
+  "debit": 50600,
+  "credit": null
+ },
+ {
+  "value": "Camera",
+  "indent": 3,
+  "debit": 444870.93,
+  "credit": null
+ },
+ {
+  "value": "CCTV",
+  "indent": 2,
+  "debit": 269005,
+  "credit": null
+ },
+ {
+  "value": "LED Smart Android TV",
+  "indent": 4,
+  "debit": 49999,
+  "credit": null
+ },
+ {
+  "value": "Mobiles",
+  "indent": 3,
+  "debit": 27633.84,
+  "credit": null
+ },
+ {
+  "value": "USHA Pedestal Fan",
+  "indent": 3,
+  "debit": 10800,
+  "credit": null
+ },
+ {
+  "value": "Walkie Talkie",
+  "indent": 3,
+  "debit": 28500,
+  "credit": null
+ },
+ {
+  "value": "PLANT & MACHINERY - FIXED ASSETS",
+  "indent": 2,
+  "debit": 2217420806.49,
+  "credit": null
+ },
+ {
+  "value": "SYLOMER SHEET",
+  "indent": 3,
+  "debit": 3354799.74,
+  "credit": null
+ },
+ {
+  "value": "GETZNER JOINTING TAPE ROLL 50MM X 50M",
+  "indent": 6,
+  "debit": 993334.32,
+  "credit": null
+ },
+ {
+  "value": "SYLOMER SHEET SR 11",
+  "indent": 5,
+  "debit": 654959.3,
+  "credit": null
+ },
+ {
+  "value": "SYLOMER SHEET SR110 SHEET",
+  "indent": 5,
+  "debit": 853253.06,
+  "credit": null
+ },
+ {
+  "value": "SYLOMER SHEET SR28 SHEET",
+  "indent": 5,
+  "debit": 853253.06,
+  "credit": null
+ },
+ {
+  "value": "AARDWOLF LIFTER",
+  "indent": 3,
+  "debit": 170000,
+  "credit": null
+ },
+ {
+  "value": "AIR COMPRESSOR",
+  "indent": 3,
+  "debit": 3254229,
+  "credit": null
+ },
+ {
+  "value": "CNC BRIDGE CUTTING MACHINE",
+  "indent": 4,
+  "debit": 3100000,
+  "credit": null
+ },
+ {
+  "value": "CONCIAL PIGMENT MIXER",
+  "indent": 4,
+  "debit": 455000,
+  "credit": null
+ },
+ {
+  "value": "Conveyor Belts",
+  "indent": 3,
+  "debit": 28055834.62,
+  "credit": null
+ },
+ {
+  "value": "Digital Barcol Hardness Tester",
+  "indent": 4,
+  "debit": 57000,
+  "credit": null
+ },
+ {
+  "value": "Drill Bit",
+  "indent": 2,
+  "debit": 665347.45,
+  "credit": null
+ },
+ {
+  "value": "ENGINEERING QUARTZ SLABS PROCESSING PLANT",
+  "indent": 4,
+  "debit": 1663797304.56,
+  "credit": null
+ },
+ {
+  "value": "EOT CRANE BEAM",
+  "indent": 3,
+  "debit": 22276531.57,
+  "credit": null
+ },
+ {
+  "value": "EOT Overhead Cranes",
+  "indent": 4,
+  "debit": 29820747.04,
+  "credit": null
+ },
+ {
+  "value": "Forklift",
+  "indent": 2,
+  "debit": 2591600,
+  "credit": null
+ },
+ {
+  "value": "Hand Pallet Truck 3 Ton",
+  "indent": 4,
+  "debit": 45000,
+  "credit": null
+ },
+ {
+  "value": "Hoppers",
+  "indent": 3,
+  "debit": 9609342.46,
+  "credit": null
+ },
+ {
+  "value": "Jet Pulse Filtre System",
+  "indent": 4,
+  "debit": 30829979.58,
+  "credit": null
+ },
+ {
+  "value": "JIB CRANE UNIT SECOND HAND",
+  "indent": 4,
+  "debit": 200000,
+  "credit": null
+ },
+ {
+  "value": "KREOS SUPER JUMBO EQUIPMENT WITH CHESSBOARD SYSTEM",
+  "indent": 4,
+  "debit": 221492545.05,
+  "credit": null
+ },
+ {
+  "value": "Machinery",
+  "indent": 3,
+  "debit": 58750777.05,
+  "credit": null
+ },
+ {
+  "value": "Machinery Foundation",
+  "indent": 4,
+  "debit": 25270929.39,
+  "credit": null
+ },
+ {
+  "value": "Material Conveying System",
+  "indent": 4,
+  "debit": 10013460.21,
+  "credit": null
+ },
+ {
+  "value": "Ms Tank",
+  "indent": 3,
+  "debit": 3349700,
+  "credit": null
+ },
+ {
+  "value": "N.1 5 AXIS CNC SAWING MACHINE MODEL KOSMOS",
+  "indent": 4,
+  "debit": 8393185.54,
+  "credit": null
+ },
+ {
+  "value": "Nr.1 ONE AXIS CALIBRATING (EDGE POLISHING MACHINE MODEL MUSA 7 +4 (FULLY EQUIPPED))",
+  "indent": 4,
+  "debit": 6984240,
+  "credit": null
+ },
+ {
+  "value": "Plant & Machinery",
+  "indent": 3,
+  "debit": 65120736.83,
+  "credit": null
+ },
+ {
+  "value": "POWDER SILOS",
+  "indent": 3,
+  "debit": 2240179.8,
+  "credit": null
+ },
+ {
+  "value": "Ratchet Chain Hoist Lift",
+  "indent": 4,
+  "debit": 1029397.75,
+  "credit": null
+ },
+ {
+  "value": "S.S.STORAGS TANK",
+  "indent": 4,
+  "debit": 4551000,
+  "credit": null
+ },
+ {
+  "value": "Waste Water Treatment Plant",
+  "indent": 4,
+  "debit": 10489788.34,
+  "credit": null
+ },
+ {
+  "value": "WEIGHING MACHINE",
+  "indent": 4,
+  "debit": 1307008.51,
+  "credit": null
+ },
+ {
+  "value": "Weighing Scale",
+  "indent": 3,
+  "debit": 33340,
+  "credit": null
+ },
+ {
+  "value": "Welding Machine",
+  "indent": 3,
+  "debit": 21000,
+  "credit": null
+ },
+ {
+  "value": "WM 35 PRESSURE TANK 435LTR",
+  "indent": 4,
+  "debit": 90802,
+  "credit": null
+ },
+ {
+  "value": "Pre Operative Expenses",
+  "indent": 2,
+  "debit": 41223,
+  "credit": null
+ },
+ {
+  "value": "Customs Duty",
+  "indent": 3,
+  "debit": 41223,
+  "credit": null
+ },
+ {
+  "value": "VEHICLE",
+  "indent": 2,
+  "debit": 5643840,
+  "credit": null
+ },
+ {
+  "value": "ACE ELECTRICAL TRUCK",
+  "indent": 4,
+  "debit": 1280000,
+  "credit": null
+ },
+ {
+  "value": "Bolero Camper MUV - Mahindr (BOLERO - LCV 2544613)",
+  "indent": 4,
+  "debit": 1059330,
+  "credit": null
+ },
+ {
+  "value": "CAR -CRETA",
+  "indent": 3,
+  "debit": 1299540,
+  "credit": null
+ },
+ {
+  "value": "TATA TIAGO EV XT",
+  "indent": 3,
+  "debit": 976792,
+  "credit": null
+ },
+ {
+  "value": "TN70AP8934 (TIAGO EV XT - TATA CAR)",
+  "indent": 4,
+  "debit": 1028178,
+  "credit": null
+ },
+ {
+  "value": "WIP",
+  "indent": 1,
+  "debit": 423250744.06,
+  "credit": null
+ },
+ {
+  "value": "Building WIP",
+  "indent": 3,
+  "debit": 16705831.47,
+  "credit": null
+ },
+ {
+  "value": "Capital Work in Progress",
+  "indent": 5,
+  "debit": 16705831.47,
+  "credit": null
+ },
+ {
+  "value": "PLANT & MACHINERY - WIP",
+  "indent": 4,
+  "debit": 404840912.59,
+  "credit": null
+ },
+ {
+  "value": "WIP - Air Conditioner",
+  "indent": 4,
+  "debit": 1704000,
+  "credit": null
+ },
+ {
+  "value": "Building",
+  "indent": 2,
+  "debit": 197109042.6,
+  "credit": null
+ },
+ {
+  "value": "Depreciation - Fixed Assets",
+  "indent": 2,
+  "debit": null,
+  "credit": 694821420.65
+ },
+ {
+  "value": "DG SET SR.NO: 1901053070 (Electric Generating Set , 1010 KVA)",
+  "indent": 2,
+  "debit": 7075000,
+  "credit": null
+ },
+ {
+  "value": "Land",
+  "indent": 1,
+  "debit": 63987630,
+  "credit": null
+ },
+ {
+  "value": "Current Assets",
+  "indent": 0,
+  "debit": 1867078509.07,
+  "credit": 409196205.74
+ },
+ {
+  "value": "Opening Stock",
+  "indent": 2,
+  "debit": 497645931.27,
+  "credit": null
+ },
+ {
+  "value": "Deposits (Asset)",
+  "indent": 2,
+  "debit": 13793315,
+  "credit": null
+ },
+ {
+  "value": "Coffee Day Global Limted - Deposit",
+  "indent": 4,
+  "debit": 25000,
+  "credit": null
+ },
+ {
+  "value": "MCD Refundable - TNEB",
+  "indent": 4,
+  "debit": 7088,
+  "credit": null
+ },
+ {
+  "value": "TNEB - Deposit",
+  "indent": 3,
+  "debit": 13352702,
+  "credit": null
+ },
+ {
+  "value": "TNEB - Earnest Money Deposit",
+  "indent": 4,
+  "debit": 397500,
+  "credit": null
+ },
+ {
+  "value": "TNEB - Meter Caution Deposit",
+  "indent": 4,
+  "debit": 11025,
+  "credit": null
+ },
+ {
+  "value": "Loans & Advances (Asset)",
+  "indent": 2,
+  "debit": 48809698.72,
+  "credit": null
+ },
+ {
+  "value": "RENT ADVANCE",
+  "indent": 3,
+  "debit": 429400,
+  "credit": null
+ },
+ {
+  "value": "Income Tax Paid - Advance",
+  "indent": 4,
+  "debit": 40000000,
+  "credit": null
+ },
+ {
+  "value": "Pacific Polska - Advance",
+  "indent": 4,
+  "debit": 7590500,
+  "credit": null
+ },
+ {
+  "value": "Prepaid Insurance Premium",
+  "indent": 4,
+  "debit": 789798.72,
+  "credit": null
+ },
+ {
+  "value": "Sundry Debtors",
+  "indent": 2,
+  "debit": 1137135942.29,
+  "credit": 10672313.16
+ },
+ {
+  "value": "Cash-in-Hand",
+  "indent": 2,
+  "debit": 434019,
+  "credit": null
+ },
+ {
+  "value": "Cash",
+  "indent": 2,
+  "debit": 434019,
+  "credit": null
+ },
+ {
+  "value": "Bank Accounts",
+  "indent": 2,
+  "debit": 18952922.21,
+  "credit": 398523892.58
+ },
+ {
+  "value": "ICICI Bank  -020405012473 Bangalore",
+  "indent": 4,
+  "debit": 583824,
+  "credit": null
+ },
+ {
+  "value": "ICICI Bank - 020406000034 USD",
+  "indent": 4,
+  "debit": 18120416.22,
+  "credit": null
+ },
+ {
+  "value": "ICICI Bank - 478851000001 CC",
+  "indent": 4,
+  "debit": null,
+  "credit": 7472841.85
+ },
+ {
+  "value": "Kotak Mahindra Bank - 3214292773 CC",
+  "indent": 4,
+  "debit": null,
+  "credit": 358635903.74
+ },
+ {
+  "value": "Kotak Mahindra Bank - 3247531825 USD",
+  "indent": 4,
+  "debit": null,
+  "credit": 32415146.99
+ },
+ {
+  "value": "Kotak Mahindra Bank - 3247531832 EURO",
+  "indent": 4,
+  "debit": 248681.99,
+  "credit": null
+ },
+ {
+  "value": "Deposits with Bank",
+  "indent": 2,
+  "debit": 81491943.82,
+  "credit": null
+ },
+ {
+  "value": "FD - 020413046715 (ICICI BANK)",
+  "indent": 4,
+  "debit": 44979532,
+  "credit": null
+ },
+ {
+  "value": "FD - 478810000194 (ICICI BANK)",
+  "indent": 4,
+  "debit": 1330468,
+  "credit": null
+ },
+ {
+  "value": "FD - 478810000202 (ICICI BANK)",
+  "indent": 4,
+  "debit": 832000,
+  "credit": null
+ },
+ {
+  "value": "FD - 478813000461 (ICICI BANK)",
+  "indent": 4,
+  "debit": 221000,
+  "credit": null
+ },
+ {
+  "value": "FD - 478813000508 (ICICI BANK)",
+  "indent": 4,
+  "debit": 4979237.5,
+  "credit": null
+ },
+ {
+  "value": "TD 3247378550",
+  "indent": 3,
+  "debit": 120000,
+  "credit": null
+ },
+ {
+  "value": "TD - 3247482721",
+  "indent": 3,
+  "debit": 1526000,
+  "credit": null
+ },
+ {
+  "value": "TD -  3247524100",
+  "indent": 3,
+  "debit": 2840000,
+  "credit": null
+ },
+ {
+  "value": "TD - 3247531948",
+  "indent": 3,
+  "debit": 190000,
+  "credit": null
+ },
+ {
+  "value": "TD - 3247551939",
+  "indent": 3,
+  "debit": 971300,
+  "credit": null
+ },
+ {
+  "value": "TD - 3247559959_x000D_\n",
+  "indent": 3,
+  "debit": 2540000,
+  "credit": null
+ },
+ {
+  "value": "TD - 3248405453",
+  "indent": 3,
+  "debit": 1080000,
+  "credit": null
+ },
+ {
+  "value": "TD - 3248449877",
+  "indent": 3,
+  "debit": 540507.7,
+  "credit": null
+ },
+ {
+  "value": "TD - 3248499711",
+  "indent": 3,
+  "debit": 500000,
+  "credit": null
+ },
+ {
+  "value": "TD - 3248610963",
+  "indent": 3,
+  "debit": 647846.62,
+  "credit": null
+ },
+ {
+  "value": "TD - 3248654783",
+  "indent": 3,
+  "debit": 96000,
+  "credit": null
+ },
+ {
+  "value": "TD - 3248711967",
+  "indent": 3,
+  "debit": 614000,
+  "credit": null
+ },
+ {
+  "value": "TD -3249720715",
+  "indent": 3,
+  "debit": 6150000,
+  "credit": null
+ },
+ {
+  "value": "TD - 3249733623",
+  "indent": 3,
+  "debit": 874500,
+  "credit": null
+ },
+ {
+  "value": "TD - 3249808628",
+  "indent": 3,
+  "debit": 68000,
+  "credit": null
+ },
+ {
+  "value": "TD - 3249903071",
+  "indent": 3,
+  "debit": 380000,
+  "credit": null
+ },
+ {
+  "value": "TD -3249931326",
+  "indent": 3,
+  "debit": 140000,
+  "credit": null
+ },
+ {
+  "value": "TD - 3249971483",
+  "indent": 3,
+  "debit": 346038,
+  "credit": null
+ },
+ {
+  "value": "TD-3249987385",
+  "indent": 3,
+  "debit": 3309009,
+  "credit": null
+ },
+ {
+  "value": "TD -3249990972",
+  "indent": 3,
+  "debit": 1761,
+  "credit": null
+ },
+ {
+  "value": "TD-3250614553",
+  "indent": 3,
+  "debit": 1170948,
+  "credit": null
+ },
+ {
+  "value": "TD  3250635787",
+  "indent": 3,
+  "debit": 536575,
+  "credit": null
+ },
+ {
+  "value": "TD - 3250654443",
+  "indent": 3,
+  "debit": 4507221,
+  "credit": null
+ },
+ {
+  "value": "STATUTORY RECEIVABLE",
+  "indent": 2,
+  "debit": 68471707.76,
+  "credit": null
+ },
+ {
+  "value": "GST Refund",
+  "indent": 3,
+  "debit": 40163524.76,
+  "credit": null
+ },
+ {
+  "value": "GST Refund Receivable",
+  "indent": 5,
+  "debit": 40163524.76,
+  "credit": null
+ },
+ {
+  "value": "Other Statutory Current Assets",
+  "indent": 4,
+  "debit": 28308183,
+  "credit": null
+ },
+ {
+  "value": "Duty Drawback Receivable",
+  "indent": 5,
+  "debit": 1766964,
+  "credit": null
+ },
+ {
+  "value": "GST DRC 03",
+  "indent": 4,
+  "debit": 712654,
+  "credit": null
+ },
+ {
+  "value": "RoDTEP Receivable",
+  "indent": 5,
+  "debit": 24758422,
+  "credit": null
+ },
+ {
+  "value": "TCS - Receivable",
+  "indent": 5,
+  "debit": 378405,
+  "credit": null
+ },
+ {
+  "value": "TDS Receivable",
+  "indent": 4,
+  "debit": 691738,
+  "credit": null
+ },
+ {
+  "value": "Prepaid Expenses - DISH",
+  "indent": 2,
+  "debit": 158400,
+  "credit": null
+ },
+ {
+  "value": "Prepaid Expenses - TNPCB",
+  "indent": 2,
+  "debit": 184629,
+  "credit": null
+ },
+ {
+  "value": "Branch / Divisions",
+  "indent": 0,
+  "debit": 19154,
+  "credit": null
+ },
+ {
+  "value": "Monolith Surfaces INC ( Capital)",
+  "indent": 2,
+  "debit": 19154,
+  "credit": null
+ },
+ {
+  "value": "Sales Accounts",
+  "indent": 0,
+  "debit": null,
+  "credit": 2653246100.93
+ },
+ {
+  "value": "DTA-Sales",
+  "indent": 2,
+  "debit": null,
+  "credit": 1577007.16
+ },
+ {
+  "value": "DTA - Sales Slabs",
+  "indent": 2,
+  "debit": null,
+  "credit": 140929235.92
+ },
+ {
+  "value": "DTA SALES- TRADING",
+  "indent": 2,
+  "debit": null,
+  "credit": 180100
+ },
+ {
+  "value": "DTA- Scrap Sales",
+  "indent": 2,
+  "debit": null,
+  "credit": 4424892.01
+ },
+ {
+  "value": "Export Without Payment of Taxes",
+  "indent": 2,
+  "debit": null,
+  "credit": 1676214938.8
+ },
+ {
+  "value": "Export Withpayment of Tax IGST",
+  "indent": 2,
+  "debit": null,
+  "credit": 792742566.01
+ },
+ {
+  "value": "Job Work",
+  "indent": 2,
+  "debit": null,
+  "credit": 1113928
+ },
+ {
+  "value": "SALES - THIRD PARTY",
+  "indent": 2,
+  "debit": null,
+  "credit": 36063433.03
+ },
+ {
+  "value": "Purchase Accounts",
+  "indent": 0,
+  "debit": 1095885415.06,
+  "credit": null
+ },
+ {
+  "value": "Purchase Bills to Come",
+  "indent": 2,
+  "debit": -50850,
+  "credit": null
+ },
+ {
+  "value": "PURCHASE - CONSUMABLES",
+  "indent": 2,
+  "debit": 203490856.49,
+  "credit": null
+ },
+ {
+  "value": "Lab Materials",
+  "indent": 3,
+  "debit": 16033,
+  "credit": null
+ },
+ {
+  "value": "Purchase of Consumables",
+  "indent": 4,
+  "debit": 71526778.27,
+  "credit": null
+ },
+ {
+  "value": "Purchase of Consumables - Import",
+  "indent": 4,
+  "debit": 97618754.76,
+  "credit": null
+ },
+ {
+  "value": "Purchase  -  Oil, Spares and Tools",
+  "indent": 4,
+  "debit": 4216655.98,
+  "credit": null
+ },
+ {
+  "value": "Purchase  - Packing Material",
+  "indent": 4,
+  "debit": 26985554.4,
+  "credit": null
+ },
+ {
+  "value": "Purchase - Spares & Tools - Import",
+  "indent": 4,
+  "debit": 3097350.08,
+  "credit": null
+ },
+ {
+  "value": "Sanitary Items",
+  "indent": 3,
+  "debit": 29730,
+  "credit": null
+ },
+ {
+  "value": "PURCHASE - QUARTZ SLABS",
+  "indent": 2,
+  "debit": 16207102.91,
+  "credit": null
+ },
+ {
+  "value": "Purchase of Quartz Slabs",
+  "indent": 4,
+  "debit": 16207102.91,
+  "credit": null
+ },
+ {
+  "value": "PURCHASE - RAW MATERIAL",
+  "indent": 2,
+  "debit": 876118305.66,
+  "credit": null
+ },
+ {
+  "value": "Purchase of Raw Material",
+  "indent": 4,
+  "debit": 765079759.11,
+  "credit": null
+ },
+ {
+  "value": "Purchase of Raw Material- IMPORT",
+  "indent": 4,
+  "debit": 111038546.55,
+  "credit": null
+ },
+ {
+  "value": "PURCHASE OF GRANITES SLABS",
+  "indent": 2,
+  "debit": 120000,
+  "credit": null
+ },
+ {
+  "value": "Income (Direct) (Direct Incomes)",
+  "indent": 0,
+  "debit": null,
+  "credit": 6440812.78
+ },
+ {
+  "value": "Operating Revenue",
+  "indent": 2,
+  "debit": null,
+  "credit": 6440812.78
+ },
+ {
+  "value": "Customs Clearence Charges",
+  "indent": 4,
+  "debit": null,
+  "credit": 2080937.5
+ },
+ {
+  "value": "Duty @ 2.67%",
+  "indent": 3,
+  "debit": null,
+  "credit": 420703.55
+ },
+ {
+  "value": "Tariff @ 25%",
+  "indent": 3,
+  "debit": null,
+  "credit": 3939171.73
+ },
+ {
+  "value": "Expenses (Direct) (Direct Expenses)",
+  "indent": 0,
+  "debit": 226284885.84,
+  "credit": null
+ },
+ {
+  "value": "FACTORY EXPENSES",
+  "indent": 2,
+  "debit": 160533288.74,
+  "credit": null
+ },
+ {
+  "value": "Contract Labour Wages",
+  "indent": 4,
+  "debit": 27949231.83,
+  "credit": null
+ },
+ {
+  "value": "Electricity Charges - Factory",
+  "indent": 4,
+  "debit": 82540861.29,
+  "credit": null
+ },
+ {
+  "value": "Jcb / Crane Hire Charges",
+  "indent": 4,
+  "debit": 187937,
+  "credit": null
+ },
+ {
+  "value": "Labour Charges- Mfg.",
+  "indent": 4,
+  "debit": 6263756,
+  "credit": null
+ },
+ {
+  "value": "Lab Testing Charges",
+  "indent": 4,
+  "debit": 464525.62,
+  "credit": null
+ },
+ {
+  "value": "Slurry Shifting Charges",
+  "indent": 4,
+  "debit": 1911100,
+  "credit": null
+ },
+ {
+  "value": "Wages-Confirmed",
+  "indent": 3,
+  "debit": 41215877,
+  "credit": null
+ },
+ {
+  "value": "FREIGHT INWARDS",
+  "indent": 2,
+  "debit": 62024193.64,
+  "credit": null
+ },
+ {
+  "value": "Freight Inward",
+  "indent": 3,
+  "debit": 44066444.07,
+  "credit": null
+ },
+ {
+  "value": "Loading & Unloading Charges",
+  "indent": 4,
+  "debit": 29198.08,
+  "credit": null
+ },
+ {
+  "value": "Packing & Forwarding - Inward",
+  "indent": 4,
+  "debit": 52501.07,
+  "credit": null
+ },
+ {
+  "value": "Shipping & Freight Charges Import",
+  "indent": 4,
+  "debit": 17876050.42,
+  "credit": null
+ },
+ {
+  "value": "Discount Allowed",
+  "indent": 2,
+  "debit": 225350.46,
+  "credit": null
+ },
+ {
+  "value": "Royalty",
+  "indent": 2,
+  "debit": 3502053,
+  "credit": null
+ },
+ {
+  "value": "Income (Indirect) (Indirect Incomes)",
+  "indent": 0,
+  "debit": 203930021.68,
+  "credit": 175828980.13
+ },
+ {
+  "value": "NON OPERATIVE INCOME",
+  "indent": 2,
+  "debit": 203930021.68,
+  "credit": 175828980.13
+ },
+ {
+  "value": "Discount Received",
+  "indent": 3,
+  "debit": null,
+  "credit": 3993418.9
+ },
+ {
+  "value": "Duty Drawback Received",
+  "indent": 4,
+  "debit": null,
+  "credit": 13695530
+ },
+ {
+  "value": "Forex Gain / Loss A/c",
+  "indent": 4,
+  "debit": 73909745.6,
+  "credit": null
+ },
+ {
+  "value": "Forex Gain / Loss A/c - Payables",
+  "indent": 4,
+  "debit": 130020276.08,
+  "credit": null
+ },
+ {
+  "value": "Forex Gain / Loss A/c - Receivables",
+  "indent": 4,
+  "debit": null,
+  "credit": 116135875.57
+ },
+ {
+  "value": "Interest Received",
+  "indent": 3,
+  "debit": null,
+  "credit": 5011272
+ },
+ {
+  "value": "Liabilities Written Back",
+  "indent": 4,
+  "debit": null,
+  "credit": 538454.66
+ },
+ {
+  "value": "RODTEP",
+  "indent": 3,
+  "debit": null,
+  "credit": 36454429
+ },
+ {
+  "value": "Expenses (Indirect) (Indirect Expenses)",
+  "indent": 0,
+  "debit": 1006747728.37,
+  "credit": 89091166.03
+ },
+ {
+  "value": "ADMINISTRATION EXPENSES",
+  "indent": 2,
+  "debit": 39907492.8,
+  "credit": 965803.22
+ },
+ {
+  "value": "FUEL EXPENSES VEHICLE",
+  "indent": 4,
+  "debit": 1332620.13,
+  "credit": null
+ },
+ {
+  "value": "Boarding & Lodging Expenses",
+  "indent": 4,
+  "debit": 1636283.22,
+  "credit": null
+ },
+ {
+  "value": "Car Hire Charges",
+  "indent": 3,
+  "debit": 3329013.04,
+  "credit": null
+ },
+ {
+  "value": "Consultancy Charges",
+  "indent": 4,
+  "debit": null,
+  "credit": 963356.93
+ },
+ {
+  "value": "Courier Charges",
+  "indent": 3,
+  "debit": 6609145.9,
+  "credit": null
+ },
+ {
+  "value": "Donation",
+  "indent": 3,
+  "debit": 25000,
+  "credit": null
+ },
+ {
+  "value": "Factory Maintenance",
+  "indent": 3,
+  "debit": 1190577.47,
+  "credit": null
+ },
+ {
+  "value": "Fuel Expenses - DG Set",
+  "indent": 4,
+  "debit": 1245788,
+  "credit": null
+ },
+ {
+  "value": "Garden Maintenance",
+  "indent": 3,
+  "debit": 837647,
+  "credit": null
+ },
+ {
+  "value": "GSuite-Email Operation",
+  "indent": 4,
+  "debit": 435380,
+  "credit": null
+ },
+ {
+  "value": "House Rent",
+  "indent": 3,
+  "debit": 927639,
+  "credit": null
+ },
+ {
+  "value": "Insurance",
+  "indent": 3,
+  "debit": 1611625.33,
+  "credit": null
+ },
+ {
+  "value": "Internet Charges",
+  "indent": 3,
+  "debit": 830329,
+  "credit": null
+ },
+ {
+  "value": "Late Fee on GST",
+  "indent": 3,
+  "debit": 100,
+  "credit": null
+ },
+ {
+  "value": "Legal and Technical Charges",
+  "indent": 4,
+  "debit": 2502760.26,
+  "credit": null
+ },
+ {
+  "value": "Pooja Expenses",
+  "indent": 3,
+  "debit": 69259,
+  "credit": null
+ },
+ {
+  "value": "Printing & Stationery",
+  "indent": 3,
+  "debit": 4251156.1,
+  "credit": null
+ },
+ {
+  "value": "Professional  Fees",
+  "indent": 3,
+  "debit": 6414753.46,
+  "credit": null
+ },
+ {
+  "value": "Rent",
+  "indent": 2,
+  "debit": 1663845,
+  "credit": null
+ },
+ {
+  "value": "Rent - Gas",
+  "indent": 3,
+  "debit": 182000,
+  "credit": null
+ },
+ {
+  "value": "Roc Charges",
+  "indent": 3,
+  "debit": 50000,
+  "credit": null
+ },
+ {
+  "value": "Rounded Off",
+  "indent": 3,
+  "debit": null,
+  "credit": 2446.29
+ },
+ {
+  "value": "Security Service Charges",
+  "indent": 4,
+  "debit": 3155888.29,
+  "credit": null
+ },
+ {
+  "value": "Subscription",
+  "indent": 3,
+  "debit": 1286930.42,
+  "credit": null
+ },
+ {
+  "value": "Telephone Expenses",
+  "indent": 4,
+  "debit": 232321.18,
+  "credit": null
+ },
+ {
+  "value": "Vehicle Insurance",
+  "indent": 3,
+  "debit": 87431,
+  "credit": null
+ },
+ {
+  "value": "EMPLOYEE BENEFIT EXPENSES",
+  "indent": 2,
+  "debit": 174482701.99,
+  "credit": 5457275
+ },
+ {
+  "value": "FINANCE COST",
+  "indent": 2,
+  "debit": 193527245.26,
+  "credit": null
+ },
+ {
+  "value": "BANK CHARGES",
+  "indent": 3,
+  "debit": 13457560.12,
+  "credit": null
+ },
+ {
+  "value": "BANK INTEREST",
+  "indent": 3,
+  "debit": 130023594.72,
+  "credit": null
+ },
+ {
+  "value": "Interest on BC",
+  "indent": 4,
+  "debit": 17313331.49,
+  "credit": null
+ },
+ {
+  "value": "Interest on CC",
+  "indent": 4,
+  "debit": 28366235,
+  "credit": null
+ },
+ {
+  "value": "Interest on EPC Loan",
+  "indent": 5,
+  "debit": 6928578.27,
+  "credit": null
+ },
+ {
+  "value": "Interest on Term Loan",
+  "indent": 5,
+  "debit": 68373056.52,
+  "credit": null
+ },
+ {
+  "value": "Interest on WCDL",
+  "indent": 5,
+  "debit": 8215452.52,
+  "credit": null
+ },
+ {
+  "value": "Intrest on PCFC Loan M3196550",
+  "indent": 5,
+  "debit": 826940.92,
+  "credit": null
+ },
+ {
+  "value": "INTEREST PAID - OTHERS",
+  "indent": 4,
+  "debit": 47501788.46,
+  "credit": null
+ },
+ {
+  "value": "BANK CHARGES - GST",
+  "indent": 5,
+  "debit": 2427.06,
+  "credit": null
+ },
+ {
+  "value": "INTEREST ON GST",
+  "indent": 5,
+  "debit": 4287,
+  "credit": null
+ },
+ {
+  "value": "Interest on TDS /Others",
+  "indent": 5,
+  "debit": 591542,
+  "credit": null
+ },
+ {
+  "value": "Interest Paid - Others",
+  "indent": 5,
+  "debit": 56171.4,
+  "credit": null
+ },
+ {
+  "value": "Interest - Unsecured Loans",
+  "indent": 5,
+  "debit": 46847361,
+  "credit": null
+ },
+ {
+  "value": "Intrest on Term Loan",
+  "indent": 3,
+  "debit": 2544301.96,
+  "credit": null
+ },
+ {
+  "value": "GST Ineligible",
+  "indent": 2,
+  "debit": null,
+  "credit": null
+ },
+ {
+  "value": "LICENCE, RATES & TAXES",
+  "indent": 2,
+  "debit": 9019312.67,
+  "credit": null
+ },
+ {
+  "value": "BCD 10% Paid",
+  "indent": 3,
+  "debit": 401876.8,
+  "credit": null
+ },
+ {
+  "value": "Licence, Rates & Taxes",
+  "indent": 4,
+  "debit": 7703540.07,
+  "credit": null
+ },
+ {
+  "value": "Pollution Control Board Consent",
+  "indent": 4,
+  "debit": 184629,
+  "credit": null
+ },
+ {
+  "value": "Property Tax",
+  "indent": 3,
+  "debit": 612000,
+  "credit": null
+ },
+ {
+  "value": "SWS @10% Paid",
+  "indent": 3,
+  "debit": 117266.8,
+  "credit": null
+ },
+ {
+  "value": "REPAIRS & MAINTENANCE",
+  "indent": 2,
+  "debit": 13201552.95,
+  "credit": null
+ },
+ {
+  "value": "SELLING & DISTRIBUTION EXPENSES",
+  "indent": 2,
+  "debit": 218596726.81,
+  "credit": 82498087.81
+ },
+ {
+  "value": "Advertisement Expenses",
+  "indent": 4,
+  "debit": 42068,
+  "credit": null
+ },
+ {
+  "value": "Business Development & Marketing Support",
+  "indent": 4,
+  "debit": 13755072.94,
+  "credit": null
+ },
+ {
+  "value": "Business Promotion Expenses",
+  "indent": 4,
+  "debit": 28031678.92,
+  "credit": null
+ },
+ {
+  "value": "Commission",
+  "indent": 3,
+  "debit": 6895267.7,
+  "credit": null
+ },
+ {
+  "value": "Container Packing",
+  "indent": 3,
+  "debit": 1266850,
+  "credit": null
+ },
+ {
+  "value": "Discount on Early Pay",
+  "indent": 4,
+  "debit": 1029152.56,
+  "credit": null
+ },
+ {
+  "value": "Duty @ 3.75%",
+  "indent": 3,
+  "debit": null,
+  "credit": 1709788.79
+ },
+ {
+  "value": "Foreign Travelling Expenses - Others",
+  "indent": 4,
+  "debit": 70471.9,
+  "credit": null
+ },
+ {
+  "value": "Forwarding Charges",
+  "indent": 3,
+  "debit": 2000,
+  "credit": null
+ },
+ {
+  "value": "Freight Outward",
+  "indent": 3,
+  "debit": 372099.5,
+  "credit": null
+ },
+ {
+  "value": "Fumigation Charges",
+  "indent": 3,
+  "debit": 886350,
+  "credit": null
+ },
+ {
+  "value": "Ocean Freight Charges - Export",
+  "indent": 4,
+  "debit": null,
+  "credit": 39086111.43
+ },
+ {
+  "value": "Packing & Loading Charges",
+  "indent": 4,
+  "debit": 1200,
+  "credit": null
+ },
+ {
+  "value": "Provision for Additional Expenses (OK Stone)",
+  "indent": 4,
+  "debit": null,
+  "credit": 18067886.21
+ },
+ {
+  "value": "Reimbursement - Export Expenses",
+  "indent": 4,
+  "debit": null,
+  "credit": 19074857.37
+ },
+ {
+  "value": "Shipping & Freight Charges Export",
+  "indent": 4,
+  "debit": 151189399.65,
+  "credit": null
+ },
+ {
+  "value": "Stand - Display",
+  "indent": 3,
+  "debit": 9176.3,
+  "credit": null
+ },
+ {
+  "value": "Tariff@ 10%",
+  "indent": 3,
+  "debit": null,
+  "credit": 4559444.01
+ },
+ {
+  "value": "Trade Sample",
+  "indent": 3,
+  "debit": 383483.9,
+  "credit": null
+ },
+ {
+  "value": "Transportation Charges",
+  "indent": 4,
+  "debit": 617694,
+  "credit": null
+ },
+ {
+  "value": "Travelling Expenses",
+  "indent": 3,
+  "debit": 14044761.44,
+  "credit": null
+ },
+ {
+  "value": "CSR Expenses",
+  "indent": 2,
+  "debit": 6295000,
+  "credit": null
+ },
+ {
+  "value": "Deferred Tax",
+  "indent": 2,
+  "debit": null,
+  "credit": 170000
+ },
+ {
+  "value": "Depreciation",
+  "indent": 2,
+  "debit": 279434657.89,
+  "credit": null
+ },
+ {
+  "value": "Income Tax",
+  "indent": 2,
+  "debit": 2449,
+  "credit": null
+ },
+ {
+  "value": "Income Tax Provision",
+  "indent": 2,
+  "debit": 61000000,
+  "credit": null
+ },
+ {
+  "value": "Interest Paid  - Income Tax",
+  "indent": 2,
+  "debit": 11280589,
+  "credit": null
+ },
+ {
+  "value": "Unadjusted Forex Gain/Loss",
+  "indent": 0,
+  "debit": 555936.48,
+  "credit": 4520648.2
+ },
+ {
+  "value": "Grand Total",
+  "indent": 2,
+  "debit": 7566564650.85,
+  "credit": 7566564650.85
+ }
+]

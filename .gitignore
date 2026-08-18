@@ -1,0 +1,57 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env files
+.env
+.env.local
+.env*.local
+
+# typescript
+*.tsbuildinfo
+
+# prisma
+/prisma/*.db
+
+# docker volumes
+/pgdata
+
+.vercel
+.env*
+
+# codegraph index (local, rebuildable with `codegraph init`)
+/.codegraph/
+
+# python bytecode (scripts/gen-schema.py, make-incentive-notice-pdf.py)
+__pycache__/
+*.pyc
+
+# throwaway probes and one-off scripts. Named *-tmp or __probe_* by convention
+# precisely so they can be matched here — anything you want to keep must not
+# carry those names. These are local scratch, never part of the repo.
+*-tmp.cjs
+*-tmp.mjs
+*-tmp.ts
+*-tmp.js
+__probe_*.ts
+
+# local database dumps taken before a destructive migration. Real backups —
+# ignored so they stay out of git, NOT because they are disposable.
+/db-archives/

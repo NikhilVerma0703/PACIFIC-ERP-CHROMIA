@@ -1,0 +1,59 @@
+{
+  "name": "pacific-erp",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "prisma generate && next build",
+    "db:migrate": "prisma migrate dev",
+    "db:push": "prisma db push",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:seed:chromia": "tsx prisma/seed-chromia.ts",
+    "db:seed:robo": "tsx prisma/seed-robo.ts",
+    "dev": "next dev",
+    "gen:schema": "python3 scripts/gen-schema.py scripts/airtable-schema.json prisma/schema.prisma scripts/fieldmap.json && prisma format",
+    "import": "tsx scripts/import.ts",
+    "postinstall": "prisma generate",
+    "prisma:generate": "prisma generate",
+    "start": "next start",
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/*.test.ts",
+    "test:chromia": "vitest run"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@prisma/client": "^6.2.1",
+    "bcryptjs": "^2.4.3",
+    "clsx": "^2.1.1",
+    "next": "^15.1.4",
+    "next-auth": "5.0.0-beta.31",
+    "nodemailer": "^7.0.0",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.2.108",
+    "pdfmake": "^0.2.10",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "recharts": "^2.13.3",
+    "sharp": "^0.35.2",
+    "tailwind-merge": "^3.3.1",
+    "tesseract.js": "^7.0.0",
+    "xlsx": "^0.18.5",
+    "xlsx-js-style": "^1.2.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^22.10.5",
+    "@types/nodemailer": "^6.4.14",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "prisma": "^6.2.1",
+    "tailwindcss": "^3.4.17",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.4"
+  }
+}
