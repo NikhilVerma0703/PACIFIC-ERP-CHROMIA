@@ -64,6 +64,10 @@ const btnGhost = "rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-med
 
 const num = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 3 });
 const money = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 });
+// Dosing factors are small and exact — cobalt is 0.0857% of resin weight — and
+// two decimals on the way to the screen shows a different rule than the one in
+// force. Four is enough for every factor the card holds.
+const factor = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 4 });
 
 const SPLITTABLE = new Set(["RESIN", "GRIT", "FILLER", "PIGMENT", "CHEMICAL"]);
 
@@ -85,6 +89,16 @@ const FAMILY_NOTE: Record<string, string> = {
 
 /** Items that are one value per batch rather than a split quantity. */
 const SINGLE_VALUE = new Set(["inr-per-usd"]);
+
+/** The two ways TiO2 has been dosed. The percentage supersedes the per-charge
+ *  rule and the report reads the older one ONLY when no percentage exists —
+ *  which was the one thing this screen never said out loud, leaving two rows
+ *  that look like two dials when they are one dial and its fallback. */
+//  The copy below says "the percentage above" and "the rule below", which is a
+//  claim about RATE_ITEMS order — the percentage is listed first. Reorder the
+//  catalogue and this text has to move with it.
+const TIO2_PCT = "tio2-pct-of-resin";
+const TIO2_LEGACY = "tio2-kg-per-charge";
 
 export function BatchRatesPanel({
   batchKey, batchLabel, onSaved,
@@ -235,6 +249,95 @@ export function BatchRatesPanel({
     return v == null ? "not on the card" : `card ₹${money.format(v)}`;
   };
 
+  /** The chemical a dosing rule doses. A rule's key is the chemical's key plus
+   *  how it is dosed, so the line can name what the number produces rather than
+   *  leaving "TiO2 dose" to be read as a material in its own right. */
+  const dosedItem = (c: CatalogueItem): CatalogueItem | undefined => {
+    const key = c.item.replace(/-(pct-of-resin|kg-per-charge)$/, "");
+    return key === c.item ? undefined : data.catalogue.find((x) => x.item === key);
+  };
+
+  /**
+   * The factor actually in force for a rule, and where it came from.
+   *
+   * This MIRRORS dosingOverrides() and the order report.ts reads them — a batch
+   * that redosed wins over the card, and among a batch's own lines the LAST by
+   * seq wins. The route caps a dosing rule at one line, so today there is only
+   * ever one; taking the first anyway would mean that the day an import or an
+   * older row breaks that assumption, this line quietly describes a factor the
+   * sheet is not costing with. A description that disagrees with the number is
+   * worse than the jargon it replaced.
+   */
+  const doseInForce = (item: string): { value: number; fromBatch: boolean } | null => {
+    let own: number | null = null;
+    for (const r of [...data.rows].filter((r) => r.item === item).sort((a, b) => a.seq - b.seq)) {
+      const n = Number(r.rate);
+      if (Number.isFinite(n) && n > 0) own = n;
+    }
+    if (own != null) return { value: own, fromBatch: true };
+    const v = data.card.rates[item];
+    return Number.isFinite(v) ? { value: v, fromBatch: false } : null;
+  };
+
+  /** A dosing rule's unit, in words. "per pct" named the column in the database,
+   *  not the thing being typed — and what somebody setting a dose needs to know
+   *  is that the number is measured against the resin the mixer weighed. */
+  const doseUnit = (c: CatalogueItem): string =>
+    c.unit === "pct" ? "% of resin weight" : `${c.unit} per mixer charge`;
+
+  /**
+   * What a dosing rule means, for somebody setting one for the first time.
+   *
+   * "a dosing factor - card Rs 9.14" was wrong in both halves: the number is a
+   * percentage of resin weight, not rupees, and nothing on the line said what
+   * it produces or which of the two TiO2 rules the sheet actually reads. Five
+   * rows of that is a screen you cannot set without knowing the answer already.
+   *
+   * So the line states the factor in force, the kilograms it works out to for
+   * THIS batch, and - for the superseded per-charge rule - whether it is being
+   * used at all.
+   */
+  const doseSummary = (c: CatalogueItem): string => {
+    const chem = dosedItem(c);
+    const name = chem?.label ?? "this chemical";
+    const made = chem ? data.mixer[chem.item] : undefined;
+    // Only ever appended to a branch where THIS rule is the one that produced
+    // the quantity. The mixer map follows the same precedence the report does,
+    // so hanging it off the losing rule would credit it with the winner's kg.
+    const gives = made
+      ? ` — ${num.format(made.qty)} ${made.unit} of ${name} in this batch`
+      : "";
+
+    if (c.item === TIO2_LEGACY) {
+      if (doseInForce(TIO2_PCT) != null) {
+        return `The old way of writing the ${name} dose. Not in use — the percentage above is set.`;
+      }
+      const legacy = doseInForce(c.item);
+      return legacy == null
+        ? `The old way of writing the ${name} dose. Neither this nor the percentage above is set, so ${name} is reported unpriced.`
+        : `In use, because the percentage above is not set: ${factor.format(legacy.value)} kg of ${name} per mixer charge${gives}.`;
+    }
+
+    const f = doseInForce(c.item);
+    if (f == null) {
+      // TiO2 is the one rule whose absence is not fatal: the per-charge rule
+      // below still costs it, and telling somebody it is unpriced when it is
+      // not would send them looking for a problem that is not there.
+      return c.item === TIO2_PCT && doseInForce(TIO2_LEGACY) != null
+        ? `Not set — ${name} still costs from the old per-charge rule below. Enter the percent of resin weight to move it here.`
+        : `Not set — ${name} is reported unpriced until somebody enters the percent of resin weight it is dosed at.`;
+    }
+
+    // "for this batch" has to come from the SAME resolution that produced the
+    // number, not a separate "does a row exist" test: a saved row this helper
+    // rejected would otherwise label the card's factor as the batch's own.
+    const card = cardRateFor(c);
+    if (f.fromBatch && card != null) {
+      return `${factor.format(f.value)}% of resin weight, set here against the card's ${factor.format(card)}%${gives}.`;
+    }
+    return `${factor.format(f.value)}% of resin weight ${f.fromBatch ? "for this batch" : "on the card"}${gives}.`;
+  };
+
   const save = async (c: CatalogueItem) => {
     setBusy(c.item); setNote(null);
     const lines = lineOf(c.item)
@@ -288,6 +391,7 @@ export function BatchRatesPanel({
     const mixer = data.mixer[c.item];
     const cardRate = cardRateFor(c);
     const splittable = SPLITTABLE.has(c.category) && !SINGLE_VALUE.has(c.item);
+    const isDosing = c.category === "DOSING";
     const isOpen = expanded === c.item;
     const saved = savedItems.includes(c.item);
 
@@ -311,14 +415,20 @@ export function BatchRatesPanel({
             className="min-w-0 flex-1 text-left">
             <span className={`block text-sm font-medium ${dimmed ? "text-gray-500" : "text-gray-900"}`}>
               {c.label}
-              <span className="ml-2 text-xs font-normal text-gray-400">per {c.unit}</span>
+              <span className="ml-2 text-xs font-normal text-gray-400">
+                {isDosing ? doseUnit(c) : `per ${c.unit}`}
+              </span>
             </span>
             <span className="block text-xs text-gray-500">
-              {mixer
-                ? `mixer: ${num.format(mixer.qty)} ${mixer.unit}`
-                : splittable ? "not used in this batch"
-                  : SINGLE_VALUE.has(c.item) ? "one value for this batch" : "a dosing factor"}
-              {" · "}{cardSummary(c)}
+              {isDosing ? doseSummary(c) : (
+                <>
+                  {mixer
+                    ? `mixer: ${num.format(mixer.qty)} ${mixer.unit}`
+                    : splittable ? "not used in this batch"
+                      : SINGLE_VALUE.has(c.item) ? "one value for this batch" : "a dosing factor"}
+                  {" · "}{cardSummary(c)}
+                </>
+              )}
             </span>
           </button>
 
