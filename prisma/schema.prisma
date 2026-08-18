@@ -4117,6 +4117,7 @@ model CostingBatchVerification {
   @@unique([batchKey, side])
   @@index([batchKey])
   @@map("costing_batch_verification")
+}
 
 // ============================================================================
 // CHROMIA MODULE — Chromia line slab lifecycle (ported from the CHROMIA_MODULE
@@ -4144,9 +4145,9 @@ model CostingBatchVerification {
 // Decimal(18,3) measurements, createdAt/updatedAt everywhere, soft-delete
 // deletedAt on business entities, append-only ChromiaSlabEvent.
 //
-// Neon: scripts/0045-drop-chromia-module.sql drops the previous integration's
-// tables, then scripts/0046-chromia-module.sql creates these, then
-// scripts/0047-migrate-chromia-branch-users.sql moves any login left on the
+// Neon: scripts/0044-drop-chromia-module.sql drops the previous integration's
+// tables, then scripts/0045-chromia-module.sql creates these, then
+// scripts/0046-migrate-chromia-branch-users.sql moves any login left on the
 // retired CHROMIA department onto the role (NOT db push).
 // ============================================================================
 enum ChromiaRole {

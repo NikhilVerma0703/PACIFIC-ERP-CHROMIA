@@ -27,8 +27,8 @@
 -- Expected and harmless; the explicit form is there for psql.)
 --
 -- Apply with either:
---   npx prisma db execute --file scripts/0045-drop-chromia-module.sql --schema prisma/schema.prisma
---   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/0045-drop-chromia-module.sql
+--   npx prisma db execute --file scripts/0044-drop-chromia-module.sql --schema prisma/schema.prisma
+--   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/0044-drop-chromia-module.sql
 --
 -- Nothing outside the chromia_* namespace is named here. In particular the
 -- legacy Airtable mirrors chromia_1 and chromia_par_1 (models Chromia1 /
@@ -44,7 +44,7 @@ BEGIN;
 DO $$ DECLARE n bigint; BEGIN
   SELECT count(*) INTO n FROM "users" WHERE "branch"::text = 'CHROMIA';
   IF n > 0 THEN
-    RAISE NOTICE '% user(s) still on branch CHROMIA — run scripts/0047-migrate-chromia-branch-users.sql after 0045.', n;
+    RAISE NOTICE '% user(s) still on branch CHROMIA — run scripts/0046-migrate-chromia-branch-users.sql after 0045.', n;
   END IF;
 END $$;
 

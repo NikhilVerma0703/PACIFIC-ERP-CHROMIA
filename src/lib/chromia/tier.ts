@@ -25,7 +25,7 @@ export function chromiaTierOf(user: unknown): ChromiaTier | null {
   if (role === "CHROMIA") return "OPERATOR";
   // TRANSITIONAL: logins created by the retired department-style integration
   // (branch CHROMIA, shared shop-floor ranks). They keep the module until
-  // scripts/0047-migrate-chromia-branch-users.sql moves them onto the role;
+  // scripts/0046-migrate-chromia-branch-users.sql moves them onto the role;
   // middleware caps them to it meanwhile. Remove with the other three arms.
   if (String((user as { branch?: string | null }).branch ?? "") === "CHROMIA") return "OPERATOR";
   return null;

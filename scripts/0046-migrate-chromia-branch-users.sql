@@ -15,7 +15,7 @@
 -- this runs — do not leave them on the old branch.
 --
 -- Apply with:
---   npx prisma db execute --file scripts/0047-migrate-chromia-branch-users.sql --schema prisma/schema.prisma
+--   npx prisma db execute --file scripts/0046-migrate-chromia-branch-users.sql --schema prisma/schema.prisma
 --
 -- Idempotent: after the first run there is nothing left matching the WHERE.
 

@@ -27,7 +27,7 @@ test("no other role on any live branch reaches the module", () => {
 test("the retired CHROMIA department still reaches the module — transitional", () => {
   // The old integration made Chromia a department. Those logins keep the module
   // (and nothing else — middleware caps them) until
-  // scripts/0047-migrate-chromia-branch-users.sql moves them onto the role.
+  // scripts/0046-migrate-chromia-branch-users.sql moves them onto the role.
   // Delete this test with the four transitional arms it covers.
   assert.equal(chromiaTierOf({ role: "OPERATOR", branch: "CHROMIA" }), "OPERATOR");
   assert.equal(chromiaTierOf({ role: "LINE_MANAGER", branch: "CHROMIA" }), "OPERATOR");

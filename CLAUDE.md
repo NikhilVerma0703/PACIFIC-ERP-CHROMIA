@@ -158,8 +158,8 @@ docs/             PACIFIC-ERP-CONTEXT-2026-08-03.md is the module handover recor
   the standalone CHROMIA_MODULE app ported in whole and mounted the way Robo is: a
   capped `CHROMIA` **role**, routes under `/chromia`, APIs under `/api/chromia`,
   models `Chromia*`, module code under `src/lib/chromia` + `src/components/chromia`.
-  Neon: `scripts/0045-drop-chromia-module.sql` (destructive) → `0046-chromia-module.sql`
-  → `0047-migrate-chromia-branch-users.sql`. Not yet production-live.
+  Neon: `scripts/0044-drop-chromia-module.sql` (destructive) → `0045-chromia-module.sql`
+  → `0046-migrate-chromia-branch-users.sql`. Not yet production-live.
 - `Branch.CHROMIA` is retained **only** so logins created by the old integration
   still decode; it is offered nowhere in the UI. `middleware.ts`, `Nav.tsx` and
   `branch.ts` carry clearly-marked transitional clauses that go once 0046 has run

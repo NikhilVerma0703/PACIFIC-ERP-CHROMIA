@@ -3,7 +3,7 @@
 -- CHROMIA_MODULE standalone app; the Prisma models live at the foot of
 -- prisma/schema.prisma under the CHROMIA MODULE banner.
 --
--- RUN 0045-drop-chromia-module.sql FIRST. This is the second half of replacing
+-- RUN 0044-drop-chromia-module.sql FIRST. This is the second half of replacing
 -- the earlier department-style integration, not an upgrade of it — and because
 -- the old tables are shaped identically, skipping 0044 leaves its rows in place
 -- while every statement here quietly no-ops. The guard below catches that.
@@ -22,7 +22,7 @@
 -- but unused: logins are ERP users with role CHROMIA.
 --
 -- Apply with:
---   npx prisma db execute --file scripts/0046-chromia-module.sql --schema prisma/schema.prisma
+--   npx prisma db execute --file scripts/0045-chromia-module.sql --schema prisma/schema.prisma
 -- then load the module's master data:
 --   npm run db:seed:chromia
 --
@@ -48,7 +48,7 @@ DO $$ DECLARE n bigint; BEGIN
                      WHERE t.typname = 'Role' AND e.enumlabel = 'CHROMIA') THEN
     EXECUTE 'SELECT count(*) FROM chromia_slab' INTO n;
     IF n > 0 THEN
-      RAISE EXCEPTION 'chromia_slab still holds % rows from the previous integration — run scripts/0045-drop-chromia-module.sql first.', n;
+      RAISE EXCEPTION 'chromia_slab still holds % rows from the previous integration — run scripts/0044-drop-chromia-module.sql first.', n;
     END IF;
   END IF;
 END $$;
