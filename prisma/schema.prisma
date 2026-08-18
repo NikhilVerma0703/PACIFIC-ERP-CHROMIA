@@ -30,6 +30,7 @@ enum Role {
   STORE
   MAINTENANCE
   ROBO
+  CHROMIA // Chromia line tablet role — capped to /chromia + /api/chromia, exactly like ROBO
 }
 
 enum Station {
@@ -50,7 +51,7 @@ enum Branch {
   OFFICE
   FABRICATION
   INTERNATIONAL_SALES
-  CHROMIA // Chromia line department — same OPERATOR/INCHARGE/LINE_MANAGER ranks, Chromia display labels (lib/rbac.ts CHROMIA_ROLE_LABEL)
+  CHROMIA // RETIRED department, kept only so logins the old integration created still decode — offered nowhere in the UI; scripts/0046 empties it
 }
 
 model User {
@@ -3664,6 +3665,15 @@ model RoboBatchRecipe {
   id                String                 @id @default(cuid())
   shiftId           String
   shift             RoboShift              @relation(fields: [shiftId], references: [id])
+  // The two the operator writes at the top of the setup. productionDate is a
+  // plain yyyy-mm-dd string, the same convention RoboShift.date already uses —
+  // the shift's own date is when the tablet was opened, and a run entered late
+  // or corrected the next morning belongs to the day it was produced, not the
+  // day it was typed. batchNo is the plant's own number for the run, free text
+  // because it is theirs to format. Both optional: setups saved before this
+  // existed have neither, and the form does not force either.
+  productionDate    String?
+  batchNo           String?
   designId          String?
   design            RoboDesign?            @relation(fields: [designId], references: [id])
   programId         String?
@@ -4173,36 +4183,36 @@ model CostingBatchVerification {
 }
 
 // ============================================================================
-// CHROMIA MODULE — Chromia line slab lifecycle (merged from CHROMIA_MODULE
+// CHROMIA MODULE — Chromia line slab lifecycle (ported from the CHROMIA_MODULE
 // standalone app). Intake -> ten processing stages -> QC -> grade ->
 // recalibration loop (max 5 attempts) -> dispatch / stock / sample cutting /
 // waste, plus the legacy Excel register importer.
 //
 // Namespacing: every model is Chromia-prefixed and every table/type is
-// chromia_-prefixed, matching the Robo precedent — in a 111-model schema a
-// bare `Slab` or `Machine` would say nothing about which line owns it. Only
-// four of the module's names actually collided (User and SlabEvent models;
-// Role and SlabStatus enums), but the full prefix is what a reader expects
-// after seeing Robo*. NOTE: the pre-existing Chromia1 / ChromiaPar1 models
-// above are legacy Airtable mirrors of this same line (tables chromia_1 /
-// chromia_par_1) — they are untouched and no name here collides with them.
+// chromia_-prefixed, matching the Robo precedent — in a 111-model schema a bare
+// `Slab` or `Machine` would say nothing about which line owns it. NOTE: the
+// pre-existing Chromia1 / ChromiaPar1 models above are legacy Airtable mirrors
+// of this same line (tables chromia_1 / chromia_par_1) — untouched, and no name
+// here collides with them.
 //
-// User attribution: the module shipped its own User model and FK'd every
-// action to it. Logins here are ERP users (branch CHROMIA, see lib/rbac.ts),
-// so every *ById / userId / operatorId / inspectorId column below is a plain
-// String? holding an ERP users.id with NO foreign key — the same pattern the
-// Sales module uses for checkedById ("-> users.id (no hard FK)"). The
-// ChromiaUser table is carried across dormant so the module's employee-code
-// directory has a home if the line ever wants it; nothing references it and
-// nothing should write to it while sign-in is owned by the ERP.
+// User attribution: the module shipped its own User model and FK'd every action
+// to it. Logins here are ERP users (role CHROMIA, gated exactly like Robo — see
+// lib/chromia/tier.ts), so every *ById / userId / operatorId / inspectorId
+// column below is a plain String? holding an ERP users.id with NO foreign key —
+// the Sales precedent. The ChromiaUser table is carried across dormant as the
+// module's employee directory; nothing references it and nothing should write
+// to it while sign-in is owned by the ERP.
 //
 // Hand-maintained; NOT touched by gen-schema.py. Conventions kept from the
 // module: snake_case tables/columns via @@map/@map, uuid() ids,
 // Decimal(18,3) measurements, createdAt/updatedAt everywhere, soft-delete
 // deletedAt on business entities, append-only ChromiaSlabEvent.
-// Applied to Neon via scripts/0039-chromia-module.sql (NOT db push).
+//
+// Neon: scripts/0044-drop-chromia-module.sql drops the previous integration's
+// tables, then scripts/0045-chromia-module.sql creates these, then
+// scripts/0046-migrate-chromia-branch-users.sql moves any login left on the
+// retired CHROMIA department onto the role (NOT db push).
 // ============================================================================
-
 enum ChromiaRole {
   ADMIN
   PRODUCTION_MANAGER

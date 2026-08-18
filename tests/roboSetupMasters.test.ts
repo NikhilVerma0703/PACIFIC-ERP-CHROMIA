@@ -112,16 +112,29 @@ test("rebuildsEntries separates a full setup save from the old notes-only PATCH"
 });
 
 test("setupScalarData trims the design and never carries shiftId", () => {
-  const data = setupScalarData({ designName: "  BANYAN ", targetSlabs: "120", thickness: "2", notes: "run 2" });
-  assert.deepEqual(data, { designName: "BANYAN", targetSlabs: 120, thickness: 2, notes: "run 2" });
+  const data = setupScalarData({ productionDate: "2026-08-18", batchNo: " B-1042 ", designName: "  BANYAN ", targetSlabs: "120", thickness: "2", notes: "run 2" });
+  assert.deepEqual(data, { productionDate: "2026-08-18", batchNo: "B-1042", designName: "BANYAN", targetSlabs: 120, thickness: 2, notes: "run 2" });
   // Moving a setup between shifts would count its slabs under a shift they
   // were not made in, so the key must not exist for a caller to set.
   assert.equal("shiftId" in data, false);
 });
 
+test("setupScalarData carries the production date and batch number, blanked when unset", () => {
+  // Both are the operator's own record of the run, so they are trimmed and
+  // blank-to-null exactly like notes — a setup corrected with the batch number
+  // cleared must read as "not set", not as "".
+  assert.deepEqual(
+    setupScalarData({ productionDate: "  2026-08-01  ", batchNo: "  42 " }),
+    { productionDate: "2026-08-01", batchNo: "42", designName: "", targetSlabs: null, thickness: null, notes: null },
+  );
+  const blank = setupScalarData({ productionDate: "   ", batchNo: "" });
+  assert.equal(blank.productionDate, null);
+  assert.equal(blank.batchNo, null);
+});
+
 test("setupScalarData blanks empty targets rather than storing zero", () => {
   const data = setupScalarData({ designName: "", targetSlabs: "", thickness: null, notes: "" });
-  assert.deepEqual(data, { designName: "", targetSlabs: null, thickness: null, notes: null });
+  assert.deepEqual(data, { productionDate: null, batchNo: null, designName: "", targetSlabs: null, thickness: null, notes: null });
   // 0 is not a target anyone types; the form sends "" and this keeps them the
   // same "not set" so a corrected setup does not read as "target 0 slabs".
   assert.equal(setupScalarData({ targetSlabs: 0, thickness: 0 }).targetSlabs, null);

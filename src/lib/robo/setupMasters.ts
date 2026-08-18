@@ -27,6 +27,8 @@ export interface SetupEntryInput {
 
 /** The setup's own fields, as they arrive from the form or a direct API call. */
 export interface SetupScalarInput {
+  productionDate?: string | null;
+  batchNo?: string | null;
   designName?: string | null;
   targetSlabs?: number | string | null;
   thickness?: number | string | null;
@@ -102,6 +104,11 @@ export function entryCreateData(entries: readonly SetupEntryInput[]) {
  */
 export function setupScalarData(body: SetupScalarInput) {
   return {
+    // Blank-to-null like every other optional here, so a setup saved with the
+    // date cleared reads as "not set" rather than as the empty string — the
+    // same reason targetSlabs 0 is not stored below.
+    productionDate: body.productionDate?.trim() || null,
+    batchNo:     body.batchNo?.trim() || null,
     designName:  body.designName?.trim() || "",
     targetSlabs: body.targetSlabs ? Number(body.targetSlabs) : null,
     thickness:   body.thickness ? Number(body.thickness) : null,

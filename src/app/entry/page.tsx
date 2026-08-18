@@ -38,6 +38,10 @@ const SECTIONS: Section[] = [
   { title: "Robo", items: [
     { href: "/robo", label: "Robo entry (batch + slab)", kind: "entry", model: "Robo" },
   ]},
+  { title: "Chromia", items: [
+    { href: "/chromia/operator", label: "Chromia operator entry", kind: "entry", model: "Chromia" },
+    { href: "/chromia/dashboard", label: "Chromia dashboard", kind: "guided", model: "Chromia" },
+  ]},
   { title: "Jot", items: [
     { href: "/entry/slab/Jot", label: "Jot entry", kind: "entry", model: "Jot" },
   ]},
@@ -86,9 +90,12 @@ export default async function EntryIndex() {
   // nav is the robo form anyway) and admins may open /robo — hide it from
   // everyone else so the grid never shows a dead link.
   const roboOk = (m: string) => m !== "Robo" || myRole === "ADMIN" || myRole === "ROBO";
+  // Chromia is gated the same way, for the same reason.
+  const chromiaOk = (m: string) => m !== "Chromia" || myRole === "ADMIN" || myRole === "CHROMIA";
+  const gateOk = (m: string) => rankOk(m) && roboOk(m) && chromiaOk(m);
   const sections = (models === null
-    ? SECTIONS.map((sec) => ({ ...sec, items: sec.items.filter((it) => !OFFICE_MODELS.has(it.model) && rankOk(it.model) && roboOk(it.model)) }))
-    : SECTIONS.map((sec) => ({ ...sec, items: sec.items.filter((it) => models.includes(it.model) && rankOk(it.model) && roboOk(it.model)) }))
+    ? SECTIONS.map((sec) => ({ ...sec, items: sec.items.filter((it) => !OFFICE_MODELS.has(it.model) && gateOk(it.model)) }))
+    : SECTIONS.map((sec) => ({ ...sec, items: sec.items.filter((it) => models.includes(it.model) && gateOk(it.model)) }))
   ).filter((sec) => sec.items.length > 0);
   return (
     <Shell>

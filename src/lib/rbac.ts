@@ -26,6 +26,7 @@ export const ROLE_LABEL: Record<string, string> = {
   OPERATOR: "Operator", INCHARGE: "Incharge", LINE_MANAGER: "Line Manager", ADMIN: "Administrator",
   FINANCE: "Finance", ACCOUNTS: "Accounts", SALES: "Sales", COMMERCIAL: "Commercial", STORE: "Store Incharge", MAINTENANCE: "Maintenance Manager",
   ROBO: "Robo Operator",
+  CHROMIA: "Chromia Operator",
 };
 
 /** Fabrication shares the ONE role hierarchy with Shop Floor (LINE_MANAGER /
@@ -42,26 +43,12 @@ export const FAB_ROLE_LABEL: Record<string, string> = {
   INCHARGE: "Fabrication Supervisor",
   OPERATOR: "Fabrication Machine Operator",
 };
-/** Chromia takes the Fabrication pattern verbatim: same ONE role hierarchy
- * (LINE_MANAGER / INCHARGE / OPERATOR), a branch value to say which line the
- * user belongs to, and display names so an admin creating a login can find
- * "Chromia Manager" by name instead of guessing that generic "Line Manager"
- * means the Chromia line. The module itself shipped seven roles (ADMIN,
- * PRODUCTION_MANAGER, SUPERVISOR, OPERATOR, QUALITY_INSPECTOR, STORE_KEEPER,
- * VIEWER) — those map onto these three ranks in lib/chromia/access.ts rather
- * than widening the Role enum; see that file for the mapping and why. */
-export const CHROMIA_ROLE_LABEL: Record<string, string> = {
-  LINE_MANAGER: "Chromia Manager",
-  INCHARGE: "Chromia Supervisor",
-  OPERATOR: "Chromia Machine Operator",
-};
-/** Role label, department-aware: Fabrication and Chromia use their own label
- * maps for the roles they share with Shop Floor; every other branch (and any
- * role with no department-specific name) falls back to the generic ROLE_LABEL. */
+/** Role label, department-aware: Fabrication uses its own label map for the
+ * roles it shares with Shop Floor; every other branch (and any role with no
+ * department-specific name) falls back to the generic ROLE_LABEL. */
 export function roleLabelFor(role?: string | null, branch?: string | null): string {
   const r = String(role ?? "");
   if (branch === "FABRICATION" && FAB_ROLE_LABEL[r]) return FAB_ROLE_LABEL[r];
-  if (branch === "CHROMIA" && CHROMIA_ROLE_LABEL[r]) return CHROMIA_ROLE_LABEL[r];
   return ROLE_LABEL[r] ?? r;
 }
 
@@ -130,8 +117,15 @@ export async function canManageUsers(): Promise<boolean> {
 export function creatableRoles(role?: string | null, branch?: string | null): RoleName[] {
   const r = rankOf(role);
   if (branch === "OFFICE") return r >= ROLE_RANK.ADMIN ? (["FINANCE", "ACCOUNTS", "SALES", "COMMERCIAL"] as RoleName[]) : [];
-  if (branch === "FABRICATION" || branch === "CHROMIA") return (["LINE_MANAGER", "INCHARGE", "OPERATOR"] as RoleName[]).filter((x) => ROLE_RANK[x] < r);
-  return (["LINE_MANAGER", "INCHARGE", "OPERATOR", "STORE", "MAINTENANCE", "ROBO"] as RoleName[]).filter((x) => ROLE_RANK[x] < r);
+  if (branch === "FABRICATION") return (["LINE_MANAGER", "INCHARGE", "OPERATOR"] as RoleName[]).filter((x) => ROLE_RANK[x] < r);
+  // CHROMIA is a retired department (the module is a role now). Existing logins
+  // there stay visible and usable; nothing new may be created on it, and it
+  // must not fall through to the Shop Floor superset below.
+  if (branch === "CHROMIA") return [];
+  // CHROMIA sits before ROBO deliberately: UserAdmin defaults the Role dropdown
+  // to the LAST creatable role, so appending would silently change what an
+  // admin creates when they don't touch the dropdown.
+  return (["LINE_MANAGER", "INCHARGE", "OPERATOR", "STORE", "MAINTENANCE", "CHROMIA", "ROBO"] as RoleName[]).filter((x) => ROLE_RANK[x] < r);
 }
 
 /** Store Incharge (or incharge+) manage the two-tier RM store (upload + assign). */

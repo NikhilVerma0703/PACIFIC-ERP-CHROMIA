@@ -10,10 +10,12 @@ Deployed on Vercel.
 npm run dev            # next dev
 npm run build          # prisma generate && next build
 npm test               # node --test over tests/*.test.ts
+npm run test:chromia   # vitest over tests/chromia/** (the Chromia module's own suite)
 npm run db:push        # prisma db push
 npm run db:migrate     # prisma migrate dev
 npm run db:seed        # tsx prisma/seed.ts
 npm run db:seed:robo   # tsx prisma/seed-robo.ts
+npm run db:seed:chromia # tsx prisma/seed-chromia.ts (Chromia master data)
 npm run import         # tsx scripts/import.ts
 ```
 
@@ -64,6 +66,26 @@ Machine change-parameter models: `ChangeParametersDistributor` 689 ·
 `RoboShift` 3266 · `RoboBatchRecipe` 3285 · `RoboBatchRecipeEntry` 3303 ·
 `RoboProductionRecord` 3320 · `RoboDelayLog` 3339 · `RoboImportLog` ~3357
 
+### Chromia module (namespaced `Chromia*`, tables `chromia_*`)
+Mounted at `/chromia` — Shop Floor → Chromia. Ported from the CHROMIA_MODULE
+standalone app; gated by the `CHROMIA` role exactly like Robo. Not to be confused
+with the legacy Airtable mirrors `Chromia1` / `ChromiaPar1` below.
+
+Masters: `ChromiaUser` 4338 *(dormant)* · `ChromiaAuditLog` 4359 · `ChromiaBaseMaterial` 4379 ·
+`ChromiaDesign` 4400 · `ChromiaMachine` 4422 · `ChromiaLocation` 4444 · `ChromiaStageDefinition` 4474 ·
+`ChromiaDefectType` 4492 · `ChromiaRecalibrationReason` 4513 · `ChromiaSupplier` 4531 · `ChromiaCustomer` 4550
+
+Core: `ChromiaBatch` 4571 · `ChromiaSlab` 4599 *(the hub)* · `ChromiaProcessCycle` 4678 ·
+`ChromiaStageRecord` 4729 · `ChromiaSlabEvent` 4779 *(append-only)* · `ChromiaSlabMovement` 4811
+
+Stage details: `ChromiaIncomingDetail` 4837 · `ChromiaPrimerDetail` 4858 · `ChromiaPrintingDetail` 4878 ·
+`ChromiaMouldingDetail` 4905 · `ChromiaCoolingDetail` 4923 · `ChromiaPolishingDetail` 4941 ·
+`ChromiaUvPolishingDetail` 4958
+
+Outcome: `ChromiaQcRecord` 4981 · `ChromiaQcDefect` 5017 · `ChromiaGradeDecision` 5037 ·
+`ChromiaRecalibrationCycle` 5072 · `ChromiaDispatch` 5137 · `ChromiaStockEntry` 5163 ·
+`ChromiaSampleCutting` 5185 · `ChromiaWasteRecord` 5207 · `ChromiaImportBatch` 5236
+
 ### Quality / lab / polish
 `Lab` 1138 · `Jot` 1188 · `PolishEntry` 543 · `PolishQc` 573 · `Chromia1` 1901 ·
 `ChromiaPar1` 1933 · `NazzBhai` 1877
@@ -104,15 +126,19 @@ Machine change-parameter models: `ChangeParametersDistributor` 689 ·
 src/app/          22 route groups: (dash) admin api batch consumables cutting entry fab
                   inventory live login mis office records report resin robo sales silo
                   slab store tables
-src/components/   shared UI + consumables/ inventory/ office/ robo/
-src/lib/          domain logic + consumables/ fab/ inventory/ sales/
+src/components/   shared UI + chromia/ consumables/ inventory/ office/ robo/
+src/lib/          domain logic + chromia/ consumables/ fab/ inventory/ sales/
+                  chromia/ holds the whole ported module: config/ constants/ types/
+                  validation/ server/{actions,services,repositories,exports} plus the
+                  seams db.ts, current-user.ts, logger.ts, actors.ts, access.ts, tier.ts
 src/types/
-prisma/           schema.prisma, seed.ts, seed-robo.ts (no migrations dir — schema
+prisma/           schema.prisma, seed.ts, seed-robo.ts, seed-chromia.ts (no migrations dir — schema
                   changes go to Neon out-of-band; db push is BLOCKED by drift, see note)
 automation/       Bill Automation finance engine (Tally XML, OCR); data/ holds MASTER.xml,
                   finance.db, ledgers.json — runtime data, not code
 scripts/          import.ts, gen-schema.py, fieldmap.json
-tests/            node --test, *.test.ts
+tests/            node --test, *.test.ts; tests/chromia/ is the module's own
+                  vitest suite (26 files, 352 assertions) — `npm run test:chromia`
 docs/             PACIFIC-ERP-CONTEXT-2026-08-03.md is the module handover record
 ```
 
@@ -125,6 +151,19 @@ docs/             PACIFIC-ERP-CONTEXT-2026-08-03.md is the module handover recor
 
 - Robo module and Bill Automation are merged (`9d36ae7`, `3af8ec1`) but **not production-live**.
   See `docs/PACIFIC-ERP-CONTEXT-2026-08-03.md` §9 for remaining items.
+- **Chromia replaced its earlier integration.** The first attempt wired it as a
+  department (`Branch.CHROMIA`, the Fabrication shape): 10 hand-written pages, its
+  own `src/lib/chromia` domain layer, `scripts/0039-chromia-module.sql`, a
+  provisioning script and a GitHub workflow. All of that is gone. The module is now
+  the standalone CHROMIA_MODULE app ported in whole and mounted the way Robo is: a
+  capped `CHROMIA` **role**, routes under `/chromia`, APIs under `/api/chromia`,
+  models `Chromia*`, module code under `src/lib/chromia` + `src/components/chromia`.
+  Neon: `scripts/0044-drop-chromia-module.sql` (destructive) → `0045-chromia-module.sql`
+  → `0046-migrate-chromia-branch-users.sql`. Not yet production-live.
+- `Branch.CHROMIA` is retained **only** so logins created by the old integration
+  still decode; it is offered nowhere in the UI. `middleware.ts`, `Nav.tsx` and
+  `branch.ts` carry clearly-marked transitional clauses that go once 0046 has run
+  and no user carries that branch.
 - `chk4-tmp.cjs`, `pi-tmp.cjs`, `db-archives/` are untracked local files, not part of the repo.
 - Neon database holds all schema changes already; it is independent of this working copy.
 - **Schema drift is reconciled as of 2026-08-12 — `db push` no longer proposes anything

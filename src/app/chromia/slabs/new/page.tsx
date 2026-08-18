@@ -1,41 +1,81 @@
-import type { Metadata } from "next";
-import Link from "next/link";
-import { redirect } from "next/navigation";
-import { Shell } from "@/components/Shell";
-import { chromiaGate, CHROMIA_MIN_TIER } from "@/lib/chromia/access";
-import { referenceData } from "@/lib/chromia/store";
-import { IntakeForm } from "./IntakeForm";
+import type { Metadata } from 'next';
+import Link from 'next/link';
 
-export const dynamic = "force-dynamic";
-export const metadata: Metadata = { title: "Receive slabs | Pacific ERP" };
+import { EmptyState, PageHeader } from '@/components/chromia/ui';
+import { APP_ROUTES } from '@/lib/chromia/constants/app';
+import { listRecalibrationReasons } from '@/lib/chromia/server/repositories/recalibration-repository';
+import { loadSlabForIntake } from '@/lib/chromia/server/repositories/slab-repository';
+
+import { IntakeForm } from './intake-form';
+
+export const metadata: Metadata = { title: 'Slab Intake' };
+export const dynamic = 'force-dynamic';
+
+function toDateInput(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
 
 /**
- * Slab intake. Reached from the register, not from the menu.
+ * Slab intake.
  *
- * That is the module's own decision, kept: "the form is not a place you visit;
- * it is what opens when you click a slab that still needs finishing. Leaving it
- * in the menu invited someone to open a blank one and type a slab the operator
- * had already entered."
+ * Always opened on a slab the operator already started — `?slab=<id>` from the
+ * slab number in any table. The register half of the record is already written
+ * by then, so this page asks only for the printed date and the QC decision.
+ * Without an id, or on a slab that has already been graded, there is nothing
+ * to finish, so it points back at the slab list.
  */
-export default async function ChromiaSlabIntakePage() {
-  const gate = await chromiaGate(CHROMIA_MIN_TIER.production);
-  if (!gate.ok) redirect("/");
+export default async function SlabIntakePage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const raw = params.slab;
+  const slabId = Array.isArray(raw) ? raw[0] : raw;
 
-  const refs = await referenceData();
+  const [recalibrationReasons, existingSlab] = await Promise.all([
+    listRecalibrationReasons(),
+    slabId ? loadSlabForIntake(slabId) : Promise.resolve(null),
+  ]);
+
+  if (!existingSlab) {
+    return (
+      <div className="mx-auto max-w-3xl">
+        <PageHeader title="Slab intake" />
+        <EmptyState>
+          Open a slab from the{' '}
+          <Link href={APP_ROUTES.slabs} className="text-brand-700 font-medium underline">
+            Slabs
+          </Link>{' '}
+          list to record its QC.
+        </EmptyState>
+      </div>
+    );
+  }
+
+  const existing = {
+    id: existingSlab.id,
+    slabNo: existingSlab.slabNo,
+    batchNo: existingSlab.batchNo,
+    baseMaterial: existingSlab.baseMaterial,
+    designFileName: existingSlab.designFileName,
+    thicknessCm: existingSlab.thicknessCm === null ? '' : String(existingSlab.thicknessCm),
+    receivedDate: toDateInput(existingSlab.receivedDate),
+    fullyPrintedDate: existingSlab.fullyPrintedDate
+      ? toDateInput(existingSlab.fullyPrintedDate)
+      : '',
+  };
 
   return (
-    <Shell>
-      <div className="mb-6">
-        <Link href="/chromia/slabs" className="text-sm text-gray-400 hover:text-brand">
-          ← All slabs
-        </Link>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-gray-900">Receive slabs</h1>
-        <p className="mt-1 max-w-2xl text-sm text-gray-500">
-          A slab is created once, here, and keeps its number for the rest of its life — through
-          every pass and every recalibration.
-        </p>
-      </div>
-      <IntakeForm designs={refs.designs} locations={refs.locations} />
-    </Shell>
+    <div className="mx-auto max-w-3xl">
+      <PageHeader title={`Slab intake — ${existing.slabNo}`} />
+
+      <IntakeForm
+        recalibrationReasons={recalibrationReasons}
+        today={toDateInput(new Date())}
+        existing={existing}
+      />
+    </div>
   );
 }

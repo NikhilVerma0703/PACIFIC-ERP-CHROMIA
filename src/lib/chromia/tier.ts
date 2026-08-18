@@ -1,39 +1,37 @@
-// Chromia tier mapping — the PURE half of lib/chromia/access.ts, split out
-// (like fab/routing.ts) so node --test can import it: no auth, no aliases at
-// runtime beyond lib/roles.ts, which is itself import-free. The server gate
-// (chromiaGate, currentUser) stays in access.ts.
+// Chromia access tiers — pure, import-free apart from the role-rank table.
 //
-// See access.ts for the full guard-group mapping table and its reasoning;
-// this file is only the mechanics.
-// Explicit .ts extension, as extract.ts does for ./gstin.ts: node's strict ESM
-// resolver does not add one, so the extensionless form makes this module
-// unimportable from node --test — which is the only reason it exists.
+// Alias-free (and importing `../roles.ts` with an explicit extension) for the
+// same reason lib/fab/routing.ts is: `node --test` resolves neither the `@/`
+// alias nor next-auth, so the logic that decides who may open the module has to
+// live somewhere a test can import. tests/chromiaAccess.test.ts is that test.
+//
+// The module is gated exactly like Robo: ONE dedicated shop-floor role owns it,
+// and admins span every department. The standalone app shipped seven roles of
+// its own (ADMIN, PRODUCTION_MANAGER, SUPERVISOR, OPERATOR, QUALITY_INSPECTOR,
+// STORE_KEEPER, VIEWER); those are not roles in this ERP and are NOT added to
+// the Role enum — they collapse onto the two tiers below, which is all the
+// module's screens actually distinguish.
 import { rankOf, ROLE_RANK } from "../roles.ts";
 
-export type ChromiaTier = "EMPLOYEE" | "SUPERVISOR" | "MANAGER" | "ADMIN";
-export const CHROMIA_TIER_RANK: Record<ChromiaTier, number> = { EMPLOYEE: 1, SUPERVISOR: 2, MANAGER: 3, ADMIN: 4 };
+export type ChromiaTier = "OPERATOR" | "ADMIN";
 
-/** The chromia tier for a user (from branch + role rank), or null if not Chromia staff. */
+export const CHROMIA_TIER_RANK: Record<ChromiaTier, number> = { OPERATOR: 1, ADMIN: 2 };
+
+/** The Chromia tier for a user, or null if the module is not theirs to open. */
 export function chromiaTierOf(user: unknown): ChromiaTier | null {
   if (!user) return null;
-  const u = user as { role?: string | null; branch?: string | null };
-  const role = String(u.role ?? "");
-  if (rankOf(role) >= ROLE_RANK.ADMIN) return "ADMIN";            // admins span all departments
-  if (String(u.branch ?? "") !== "CHROMIA") return null;
-  const r = rankOf(role);
-  if (r >= ROLE_RANK.LINE_MANAGER) return "MANAGER";
-  if (r >= ROLE_RANK.INCHARGE) return "SUPERVISOR";
-  if (r >= ROLE_RANK.OPERATOR) return "EMPLOYEE";
+  const role = String((user as { role?: string | null }).role ?? "");
+  if (rankOf(role) >= ROLE_RANK.ADMIN) return "ADMIN"; // admins span every department
+  if (role === "CHROMIA") return "OPERATOR";
+  // TRANSITIONAL: logins created by the retired department-style integration
+  // (branch CHROMIA, shared shop-floor ranks). They keep the module until
+  // scripts/0046-migrate-chromia-branch-users.sql moves them onto the role;
+  // middleware caps them to it meanwhile. Remove with the other three arms.
+  if (String((user as { branch?: string | null }).branch ?? "") === "CHROMIA") return "OPERATOR";
   return null;
 }
 
-// The module's four guard groups, expressed as minimum tiers. Route handlers
-// and actions say chromiaGate(CHROMIA_MIN_TIER.quality) rather than repeating
-// the mapping table in access.ts — ONE place to change when QC/store get real
-// roles.
-export const CHROMIA_MIN_TIER: Record<"management" | "production" | "quality" | "store", ChromiaTier> = {
-  management: "SUPERVISOR", // module MANAGEMENT_ROLES (dashboards, masters, imports)
-  production: "EMPLOYEE",   // module PRODUCTION_ROLES (stage progress on the floor)
-  quality:    "SUPERVISOR", // module QUALITY_ROLES — approximation until a QC role exists
-  store:      "SUPERVISOR", // module STORE_ROLES — approximation until a store role exists
-};
+/** Destructive or history-rewriting actions (delete a slab, import a register). */
+export function chromiaCanManage(user: unknown): boolean {
+  return chromiaTierOf(user) === "ADMIN";
+}

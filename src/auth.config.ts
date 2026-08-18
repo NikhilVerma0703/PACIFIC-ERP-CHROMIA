@@ -41,9 +41,11 @@ export const authConfig = {
       // capped role in Fabrication would reopen the same loop.
       const branch = (auth?.user as { branch?: string } | undefined)?.branch;
       if (branch === "FABRICATION") return true;
-      // Chromia is the same shape: a CHROMIA OPERATOR capped to /entry by the
-      // role check below would be bounced back to /chromia by middleware —
-      // the exact FABRICATION loop described above, one branch value later.
+      // TRANSITIONAL: the retired Chromia department. A CHROMIA-branch login
+      // capped to /entry by the role check below would be bounced back to
+      // /chromia by middleware — the exact FABRICATION loop described above,
+      // one branch value later. Goes when scripts/0046-migrate-chromia-branch-users.sql
+      // has moved the last of them onto role CHROMIA.
       if (branch === "CHROMIA") return true;
 
       const role = (auth?.user as { role?: string } | undefined)?.role;

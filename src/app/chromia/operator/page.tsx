@@ -1,56 +1,177 @@
-import type { Metadata } from "next";
-import { redirect } from "next/navigation";
-import { Shell } from "@/components/Shell";
-import { chromiaGate, CHROMIA_MIN_TIER } from "@/lib/chromia/access";
-import { operatorQueue } from "@/lib/chromia/store";
-import { CHROMIA_TIER_RANK } from "@/lib/chromia/tier";
-import { OperatorBoard, type OperatorSlab } from "./OperatorBoard";
+import type { Metadata } from 'next';
+import Link from 'next/link';
 
-export const dynamic = "force-dynamic";
-export const metadata: Metadata = { title: "Chromia operator entry | Pacific ERP" };
+import { EmptyState, PageHeader } from '@/components/chromia/ui';
+import { dataTable, SectionCard } from '@/components/chromia/ui/form';
+import { DispositionBadge, StatusBadge } from '@/components/chromia/ui/status';
+import { APP_ROUTES } from '@/lib/chromia/constants/app';
+import { toDateInput, toTimeInput } from '@/lib/chromia/operator-register';
+import { link } from '@/lib/chromia/ui';
+import {
+  loadBaseMaterialNames,
+  loadDesignFileNames,
+  loadRecentBatchNos,
+  loadRegisterForDate,
+} from '@/lib/chromia/server/services/operator-service';
+
+import { EntryForm } from './entry-form';
+
+export const metadata: Metadata = { title: 'Operator Entry' };
+export const dynamic = 'force-dynamic';
+
+const timeFmt = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+const dateFmt = new Intl.DateTimeFormat('en-GB', {
+  day: '2-digit',
+  month: 'short',
+  year: 'numeric',
+});
+
+const dayFmt = new Intl.DateTimeFormat('en-GB', {
+  weekday: 'short',
+  day: '2-digit',
+  month: 'short',
+  year: 'numeric',
+});
+
+const navButton =
+  'border-line surface hover:border-line-strong inline-flex h-11 items-center justify-center rounded-lg border px-4 text-sm font-medium transition-colors hover:bg-[var(--surface-muted)]';
+
+const { th, td } = dataTable;
+
+/** `?date=` if it is a real date, otherwise today. */
+function resolveDay(raw: string | string[] | undefined): Date {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (value && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const parsed = new Date(`${value}T00:00:00`);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return new Date();
+}
+
+function shiftDay(day: Date, days: number): string {
+  const copy = new Date(day);
+  copy.setDate(copy.getDate() + days);
+  return toDateInput(copy);
+}
 
 /**
- * Stage progress captured at the point of work, not re-keyed at end of shift
- * (CHROMIA_PROCESS.md section 2.3).
+ * Operator entry — the shop-floor register, digitised.
  *
- * Gated at the production tier — every Chromia rank reaches this. Grading is
- * gated separately inside: the board only offers the QC panel to a user whose
- * tier clears the quality group, and recordQc re-checks it server-side, because
- * a hidden button is not a permission.
+ * The register shows exactly what the operator entered: S.No., Production Date,
+ * Batch No., Slab No., Base Material / Slab Name, File Name / Planned Design,
+ * Thickness and In-time. The operator does not record individual stages — the slab goes
+ * into Base Primer and comes out three to four hours later, and is next looked
+ * at during QC, which is the in-charge's screen.
  */
-export default async function ChromiaOperatorPage() {
-  const gate = await chromiaGate(CHROMIA_MIN_TIER.production);
-  if (!gate.ok) redirect("/");
+export default async function OperatorPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const day = resolveDay(params.date);
+  const dayValue = toDateInput(day);
+  const isToday = dayValue === toDateInput(new Date());
 
-  const clears = (group: keyof typeof CHROMIA_MIN_TIER) =>
-    gate.tier != null && CHROMIA_TIER_RANK[gate.tier] >= CHROMIA_TIER_RANK[CHROMIA_MIN_TIER[group]];
-
-  const canGrade = clears("quality");
-  const canDispose = clears("store");
-
-  const rows = await operatorQueue();
-  const slabs: OperatorSlab[] = rows.map((r) => ({
-    id: r.id,
-    slabNo: r.slabNo,
-    batchNo: r.batch.batchNo,
-    status: r.status,
-    currentStage: r.currentStage,
-    cycleNumber: r.currentCycleNumber,
-    recalibrationCount: r.recalibrationCount,
-    grade: r.currentGrade,
-    location: r.currentLocation?.name ?? null,
-  }));
+  const [rows, baseMaterials, fileNames, batchNos] = await Promise.all([
+    loadRegisterForDate(day),
+    loadBaseMaterialNames(),
+    loadDesignFileNames(),
+    loadRecentBatchNos(),
+  ]);
 
   return (
-    <Shell>
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Operator entry</h1>
-        <p className="mt-1 max-w-2xl text-sm text-gray-500">
-          Stamp a slab in when it enters processing, move it stage by stage, and stamp it out when
-          the six production stages are done. Each tap writes a timed, attributed event.
-        </p>
-      </div>
-      <OperatorBoard slabs={slabs} canGrade={canGrade} canDispose={canDispose} />
-    </Shell>
+    <>
+      <PageHeader
+        eyebrow="Shop floor"
+        title="Operator entry"
+        description={dayFmt.format(day)}
+        actions={
+          <>
+            <Link href={`${APP_ROUTES.operator}?date=${shiftDay(day, -1)}`} className={navButton}>
+              Previous day
+            </Link>
+            {isToday ? null : (
+              <Link href={APP_ROUTES.operator} className={navButton}>
+                Today
+              </Link>
+            )}
+          </>
+        }
+      />
+
+      <EntryForm
+        baseMaterials={baseMaterials}
+        entryDate={dayValue}
+        nowTime={toTimeInput(new Date())}
+        nextSerialNo={rows.length + 1}
+        fileNames={fileNames}
+        batchNos={batchNos}
+      />
+
+      <SectionCard
+        title="Today's register"
+        accent="brand"
+        padded={rows.length === 0}
+        actions={
+          <span className="border-line surface text-muted rounded-full border px-3 py-1 text-xs font-medium">
+            <span className="text-foreground font-semibold tabular-nums">{rows.length}</span>{' '}
+            {rows.length === 1 ? 'entry' : 'entries'}
+          </span>
+        }
+      >
+        {rows.length === 0 ? (
+          <EmptyState>Nothing entered for this day yet.</EmptyState>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className={dataTable.root}>
+              <thead className={dataTable.head}>
+                <tr>
+                  <th className={`${th} w-20`}>S. No.</th>
+                  <th className={th}>Production Date</th>
+                  <th className={th}>Batch No.</th>
+                  <th className={th}>Slab No.</th>
+                  <th className={th}>Base Material / Slab Name</th>
+                  <th className={th}>File Name / Planned Design</th>
+                  <th className={`${th} text-right`}>Thickness (cm)</th>
+                  <th className={`${th} text-right`}>In-time</th>
+                  <th className={th}>Status</th>
+                  <th className={th}>Outcome</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr key={row.id} className={dataTable.row}>
+                    <td className={`${td} text-muted tabular-nums`}>{row.serialNo}</td>
+                    <td className={`${td} whitespace-nowrap`}>{dateFmt.format(row.receivedDate)}</td>
+                    <td className={`${td} font-mono`}>{row.batchNo}</td>
+                    <td className={td}>
+                      <Link href={`${APP_ROUTES.slabIntake}?slab=${row.id}`} className={`${link} font-mono`}>
+                        {row.slabNo}
+                      </Link>
+                    </td>
+                    <td className={td}>{row.baseMaterial}</td>
+                    <td className={td}>{row.fileName ?? '—'}</td>
+                    <td className={`${td} text-right tabular-nums`}>
+                      {row.thicknessCm === null ? '—' : row.thicknessCm}
+                    </td>
+                    <td className={`${td} text-right tabular-nums`}>
+                      {row.inTime ? timeFmt.format(row.inTime) : '—'}
+                    </td>
+                    <td className={td}>
+                      <StatusBadge status={row.status} disposition={row.currentDisposition} />
+                    </td>
+                    <td className={td}>
+                      <DispositionBadge disposition={row.currentDisposition} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </SectionCard>
+    </>
   );
 }

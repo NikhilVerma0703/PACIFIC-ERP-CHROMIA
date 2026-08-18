@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/*.test.ts",
+    "test:chromia": "vitest run",
     "build": "prisma generate && next build",
     "start": "next start",
     "postinstall": "prisma generate",
@@ -12,6 +13,7 @@
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
+    "db:seed:chromia": "tsx prisma/seed-chromia.ts",
     "db:seed:robo": "tsx prisma/seed-robo.ts",
     "db:seed:qc": "tsx prisma/seed-qc.ts",
     "gen:schema": "python3 scripts/gen-schema.py scripts/airtable-schema.json prisma/schema.prisma scripts/fieldmap.json && prisma format",
@@ -24,6 +26,7 @@
     "@google/generative-ai": "^0.24.1",
     "@prisma/client": "^6.2.1",
     "bcryptjs": "^2.4.3",
+    "clsx": "^2.1.1",
     "next": "^15.1.4",
     "next-auth": "5.0.0-beta.31",
     "nodemailer": "^7.0.0",
@@ -34,8 +37,10 @@
     "react-dom": "^19.0.0",
     "recharts": "^2.13.3",
     "sharp": "^0.35.2",
+    "tailwind-merge": "^3.3.1",
     "tesseract.js": "^7.0.0",
     "xlsx": "^0.18.5",
+    "xlsx-js-style": "^1.2.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
@@ -49,6 +54,7 @@
     "prisma": "^6.2.1",
     "tailwindcss": "^3.4.17",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.4"
   }
 }

@@ -60,17 +60,22 @@ export default auth((req) => {
     }
   }
 
-  // ---- Chromia module: the Chromia department (branch CHROMIA) and admins,
-  // who span every dept. Same ordering rule as the robo gate above — this
-  // must run BEFORE the branch blocks below, because their generic `/api`
-  // allowances would otherwise let other departments reach Chromia data.
-  // Tier differences inside the module (operator vs supervisor vs manager)
-  // are NOT decided here — middleware only knows the path prefix; the pages
-  // and /api/chromia routes gate themselves with chromiaGate()
-  // (lib/chromia/access.ts). CHROMIA-branch users are capped to this module
-  // further down. ----
+  // ---- Chromia module: the same shape as the robo gate directly above, for
+  // the same reasons. Only the dedicated shop-floor CHROMIA role (and admins,
+  // who span every dept) may use the Chromia screens and APIs, and this must
+  // run BEFORE the branch blocks below — their generic `/api` allowances would
+  // otherwise let other departments reach Chromia data. The CHROMIA role itself
+  // is capped to this module further down. Tier differences inside the module
+  // are NOT decided here: middleware only knows the path prefix, so the layout
+  // and every /api/chromia route gate themselves with chromiaGate()
+  // (lib/chromia/access.ts).
+  //
+  // `branch === "CHROMIA"` is a transitional allowance for logins created by
+  // the retired department-style integration, so they keep working until
+  // scripts/0046-migrate-chromia-branch-users.sql moves them to the role. The
+  // cap below contains them meanwhile. Remove both clauses after that runs. ----
   if (p.startsWith("/chromia") || p.startsWith("/api/chromia")) {
-    if (!isAdmin && branch !== "CHROMIA") {
+    if (!isAdmin && role !== "CHROMIA" && branch !== "CHROMIA") {
       return p.startsWith("/api")
         ? new Response("Forbidden", { status: 403 })
         : Response.redirect(new URL("/", nextUrl));
@@ -150,15 +155,25 @@ export default auth((req) => {
     }
   }
 
-  if (!isAdmin && branch === "CHROMIA") {
-    // Chromia staff: the Chromia module is their whole ERP — every rank.
-    // Unlike Fabrication (whose managers also get Overview "/"), the cap is
-    // deliberately total: the module carries its own dashboard and reports,
-    // so there is nothing outside /chromia a Chromia login needs. The API
-    // clause is an allowlist (only /api/chromia), NOT the generic
-    // `p.startsWith("/api")` the other branch blocks use — the ROBO block
-    // below documents how that generic form handed a shop-floor tablet every
-    // API in the ERP. /api/auth is unaffected — it returns as public above.
+  if (role === "CHROMIA" || (!isAdmin && branch === "CHROMIA")) {
+    // Chromia line tablet: the Chromia screens and THEIR APIs — nothing else.
+    // Deliberately the narrow allowlist form the ROBO cap at the foot of this
+    // file documents, not the generic `p.startsWith("/api")` the branch blocks
+    // use: the module carries its own dashboard, records, reports and import,
+    // so there is nothing outside /chromia a Chromia login needs. /api/auth is
+    // unaffected — it returns as public above.
+    //
+    // It sits HERE, with the branch caps and above them, for two reasons: the
+    // terminal `return` makes the cap final (a block appended below must not
+    // silently also apply to a tablet), and a CHROMIA-branch login of any role
+    // must be capped before its own role cap redirects it somewhere this block
+    // would only redirect it back from.
+    //
+    // The branch arm is TRANSITIONAL: it keeps a login left on the retired
+    // CHROMIA department working inside the module until
+    // scripts/0046-migrate-chromia-branch-users.sql moves it onto the role.
+    // Remove it, the escape in auth.config.ts, the branch arm in Nav.tsx and
+    // the one in lib/chromia/tier.ts together, once that has run.
     const ok = p.startsWith("/chromia") || p.startsWith("/api/chromia") || STATIC_FILE.test(p);
     if (!ok) {
       return p.startsWith("/api")

@@ -47,8 +47,14 @@ export default async function UsersPage() {
   }
 
   const assignable = rankOf(role) >= ROLE_RANK.ADMIN
-    ? (myBranch === "OFFICE" ? ["OFFICE"] : ["SHOP_FLOOR", "FABRICATION", "CHROMIA"])
+    ? (myBranch === "OFFICE" ? ["OFFICE"] : ["SHOP_FLOOR", "FABRICATION"])
     : [myBranch];
+  // What may be SEEN is not what may be CREATED. CHROMIA is a retired
+  // department — no new login may be put there — but any that the old
+  // integration created must stay visible here, or there is no way to
+  // deactivate or reset one. Drop this once
+  // scripts/0046-migrate-chromia-branch-users.sql has emptied the branch.
+  const visible = rankOf(role) >= ROLE_RANK.ADMIN && myBranch !== "OFFICE" ? [...assignable, "CHROMIA"] : assignable;
   const creatableUnion = [...new Set(assignable.flatMap((b) => creatableRoles(role, b)))];
   // Per-branch breakdown so the client can filter the Role dropdown to match
   // whichever Department is currently selected (e.g. Fabrication only offers
@@ -58,7 +64,7 @@ export default async function UsersPage() {
   let rows: { id: string; email: string; name: string | null; role: string; station: string | null; active: boolean; branch: string; createdAt: string; createdByName: string | null }[] = [];
   let migrateNeeded = false;
   try {
-    const users = await listUsersRows(assignable);
+    const users = await listUsersRows(visible);
     rows = users.map((u) => ({ ...u, createdAt: u.createdAt.toISOString() }));
   } catch {
     migrateNeeded = true;

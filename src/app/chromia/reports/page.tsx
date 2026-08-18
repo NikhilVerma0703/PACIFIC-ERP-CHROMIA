@@ -1,143 +1,225 @@
-import type { Metadata } from "next";
-import { redirect } from "next/navigation";
-import { Shell } from "@/components/Shell";
-import { Card, Empty, Kpi } from "@/components/ui";
-import { chromiaGate, CHROMIA_MIN_TIER } from "@/lib/chromia/access";
-import { summary } from "@/lib/chromia/store";
-import { DISPOSITION_LABEL, GRADE_LABEL, type Disposition, type SlabGrade } from "@/lib/chromia/process";
+import type { Metadata } from 'next';
 
-export const dynamic = "force-dynamic";
-export const metadata: Metadata = { title: "Chromia summary | Pacific ERP" };
+import { GroupedBars } from '@/components/chromia/charts/grouped-bars';
+import { TrendBars } from '@/components/chromia/charts/trend-bars';
+import { PieShare } from '@/components/chromia/charts/pie-share';
+import { EmptyState, Field, PageHeader, Stat } from '@/components/chromia/ui';
+import { dataTable, field as fieldClass, SectionCard } from '@/components/chromia/ui/form';
+import { parseRange } from '@/lib/chromia/reports';
+import { loadProductionSummary } from '@/lib/chromia/server/repositories/report-repository';
 
-const iso = (d: Date) => d.toISOString().slice(0, 10);
+export const metadata: Metadata = { title: 'Production Summary' };
+export const dynamic = 'force-dynamic';
 
-/**
- * The monthly output picture the workbook used to be — grades, outcomes, print
- * results and recalibration flow for a window.
- *
- * The figures come from the CYCLE, not the slab: a slab graded C on cycle 1 and
- * A on cycle 2 counts once in each month it finished in, which is what a
- * production output report means. Counting slabs instead would make a
- * recalibrated slab disappear from the month it was first rejected in.
- */
-export default async function ChromiaReportsPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ from?: string; to?: string }>;
-}) {
-  const gate = await chromiaGate(CHROMIA_MIN_TIER.management);
-  if (!gate.ok) redirect("/");
+const { th, td, tdNum } = dataTable;
 
-  const sp = await searchParams;
-  const today = new Date();
-  const defaultFrom = new Date(today.getFullYear(), today.getMonth(), 1);
+const dateFmt = new Intl.DateTimeFormat('en-GB', {
+  day: '2-digit',
+  month: 'short',
+  year: 'numeric',
+});
 
-  const from = sp.from ? new Date(`${sp.from}T00:00:00`) : defaultFrom;
-  // Inclusive of the end date: someone typing today's date means "up to and
-  // including today", not "up to midnight this morning".
-  const to = sp.to ? new Date(`${sp.to}T23:59:59.999`) : today;
-
-  const s = await summary(from, to);
-  const nothing = s.cyclesCompleted === 0 && s.recalibrationsSent === 0;
-
-  return (
-    <Shell>
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Summary</h1>
-        <p className="mt-1 max-w-2xl text-sm text-gray-500">
-          What the line produced in a window, by grade and outcome.
-        </p>
-      </div>
-
-      <Card className="mb-5">
-        <form method="get" className="flex flex-wrap items-end gap-3">
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-gray-600">From</span>
-            <input
-              type="date" name="from" defaultValue={sp.from ?? iso(defaultFrom)}
-              className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm"
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-gray-600">To</span>
-            <input
-              type="date" name="to" defaultValue={sp.to ?? iso(today)}
-              className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm"
-            />
-          </label>
-          <button
-            type="submit"
-            className="rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-white hover:bg-brand/90"
-          >
-            Show
-          </button>
-        </form>
-      </Card>
-
-      {nothing ? (
-        <Card><Empty>Nothing finished in that window.</Empty></Card>
-      ) : (
-        <>
-          <div className="mb-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <Kpi label="Passes completed" value={s.cyclesCompleted} sub="stamped out" />
-            <Kpi
-              label="Avg processing"
-              value={s.avgProcessingMinutes == null ? "—" : `${Math.round(s.avgProcessingMinutes)}m`}
-              sub="in-time to out-time"
-            />
-            <Kpi label="Sent to recalibration" value={s.recalibrationsSent} />
-            <Kpi label="Came back" value={s.recalibrationsReturned} />
-          </div>
-
-          <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
-            <Breakdown
-              title="By grade"
-              rows={s.grades.map((g) => ({
-                label: GRADE_LABEL[g.label as SlabGrade] ?? g.label,
-                value: g.value,
-              }))}
-            />
-            <Breakdown
-              title="By outcome"
-              rows={s.dispositions.map((d) => ({
-                label: DISPOSITION_LABEL[d.label as Disposition] ?? d.label,
-                value: d.value,
-              }))}
-            />
-            <Breakdown
-              title="Print result"
-              rows={s.prints.map((p) => ({
-                label: p.label.replace(/_/g, " ").toLowerCase(),
-                value: p.value,
-              }))}
-            />
-          </div>
-        </>
-      )}
-    </Shell>
-  );
+function iso(date: Date): string {
+  return date.toISOString().slice(0, 10);
 }
 
-function Breakdown({ title, rows }: { title: string; rows: { label: string; value: number }[] }) {
-  const total = rows.reduce((s, r) => s + r.value, 0);
+function longDay(day: string): string {
+  const parsed = new Date(`${day}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? day : dateFmt.format(parsed);
+}
+
+/**
+ * Production summary.
+ *
+ * One page, one question: how did the plant do over this period? Headline
+ * figures, a daily trend, the outcome mix, the recalibration funnel, and two
+ * tables — the day-by-day diary and the per-material breakdown. Nothing here
+ * repeats what Slabs, Downloads or Recalibration Tracking already answer at
+ * row level; this page never names a slab.
+ */
+export default async function ReportsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const first = (value: string | string[] | undefined) =>
+    Array.isArray(value) ? (value[0] ?? '') : (value ?? '');
+
+  const range = parseRange(first(params.from), first(params.to));
+  const summary = await loadProductionSummary(range);
+  const { headline } = summary;
+
+  const empty = headline.received === 0;
+
   return (
-    <Card>
-      <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">{title}</h2>
-      {rows.length === 0 ? (
-        <Empty>Nothing recorded.</Empty>
-      ) : (
-        <div className="space-y-2">
-          {rows.map((r) => (
-            <div key={r.label} className="flex items-center gap-3 text-sm">
-              <span className="min-w-0 flex-1 truncate capitalize text-gray-600">{r.label}</span>
-              <span className="font-medium text-gray-900">{r.value}</span>
-              <span className="w-12 text-right text-xs text-gray-400">
-                {total ? `${Math.round((r.value / total) * 100)}%` : "—"}
-              </span>
-            </div>
-          ))}
+    <>
+      <PageHeader
+        eyebrow="Overview"
+        title="Production summary"
+        description={`${dateFmt.format(range.from)} – ${dateFmt.format(range.to)}`}
+      />
+
+      {/* --------------------------------------------------------- period --- */}
+      <SectionCard title="Period" accent="active" padded={false}>
+        <form method="get" className="flex flex-wrap items-end gap-4 px-7 py-5">
+          <Field label="Date From" htmlFor="from" className="w-44">
+            <input
+              id="from"
+              name="from"
+              type="date"
+              defaultValue={iso(range.from)}
+              className={fieldClass}
+            />
+          </Field>
+          <Field label="Date To" htmlFor="to" className="w-44">
+            <input
+              id="to"
+              name="to"
+              type="date"
+              defaultValue={iso(range.to)}
+              className={fieldClass}
+            />
+          </Field>
+          <button
+            type="submit"
+            className="bg-brand-600 hover:bg-brand-700 inline-flex h-11 items-center justify-center rounded-lg px-6 text-sm font-semibold text-white shadow-[0_1px_2px_rgba(16,24,40,0.12)] transition-colors"
+          >
+            Apply
+          </button>
+        </form>
+      </SectionCard>
+
+      {empty ? (
+        <div className="mt-6">
+          <EmptyState>No slabs were received in this period.</EmptyState>
         </div>
+      ) : (
+        <>
+          {/* ----------------------------------------------------- headline --- */}
+          <section className="mt-8 mb-8">
+            <h2 className="text-muted mb-3 text-[11px] font-semibold tracking-[0.14em] uppercase">
+              Headline
+            </h2>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <Stat label="Slabs received" value={headline.received} tone="active" />
+              <Stat label="Still in process" value={headline.inProcess} tone="neutral" />
+              <Stat label="Dispatched" value={headline.dispatched} tone="done" />
+              <Stat label="Stock" value={headline.stocked} tone="active" />
+              <Stat label="Sample cutting" value={headline.sampleCut} tone="hold" />
+              <Stat label="Recalibration" value={headline.recalibrated} tone="recalibration" />
+            </div>
+          </section>
+
+          {/* --------------------------------------------- outcome mix --- */}
+          <div className="mb-6">
+            <SectionCard title="Where the slabs went" accent="active">
+              <PieShare segments={summary.outcomes} />
+            </SectionCard>
+          </div>
+
+          {/* ------------------------------------------ chart 1: trend --- */}
+          <div className="mt-8 mb-6">
+            <SectionCard title="Production Trend" accent="active">
+              <TrendBars days={summary.daily} />
+            </SectionCard>
+          </div>
+
+          {/* ---------------------------------------------- table 1: daily --- */}
+          <div className="mb-6">
+            <SectionCard title="Day by day" padded={false}>
+              <div className="overflow-x-auto">
+                <table className={dataTable.root}>
+                  <thead className={dataTable.head}>
+                    <tr>
+                      <th className={th}>Date</th>
+                      <th className={`${th} text-right`}>Received</th>
+                      <th className={`${th} text-right`}>Processing done</th>
+                      <th className={`${th} text-right`}>Dispatched</th>
+                      <th className={`${th} text-right`}>Stock</th>
+                      <th className={`${th} text-right`}>Sample cutting</th>
+                      <th className={`${th} text-right`}>Recalibration</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.daily.map((row) => (
+                      <tr key={row.day} className={dataTable.row}>
+                        <td className={`${td} font-medium whitespace-nowrap`}>
+                          {longDay(row.day)}
+                        </td>
+                        <td className={`${tdNum} text-right`}>{row.received}</td>
+                        <td className={`${tdNum} text-right`}>{row.processingDone}</td>
+                        <td className={`${tdNum} text-right`}>{row.dispatched}</td>
+                        <td className={`${tdNum} text-right`}>{row.stocked}</td>
+                        <td className={`${tdNum} text-right`}>{row.sampleCut}</td>
+                        <td className={`${tdNum} text-right`}>{row.recalibration}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot className="border-line-strong surface-muted border-t font-semibold">
+                    <tr>
+                      <td className={td}>Total</td>
+                      <td className={`${tdNum} text-right`}>{summary.dailyTotal.received}</td>
+                      <td className={`${tdNum} text-right`}>{summary.dailyTotal.processingDone}</td>
+                      <td className={`${tdNum} text-right`}>{summary.dailyTotal.dispatched}</td>
+                      <td className={`${tdNum} text-right`}>{summary.dailyTotal.stocked}</td>
+                      <td className={`${tdNum} text-right`}>{summary.dailyTotal.sampleCut}</td>
+                      <td className={`${tdNum} text-right`}>{summary.dailyTotal.recalibration}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </SectionCard>
+          </div>
+
+          {/* -------------------------------- chart 2: base material --- */}
+          <div className="mb-6">
+            <SectionCard title="Base Material Performance" accent="grade">
+              <GroupedBars materials={summary.materials} />
+            </SectionCard>
+          </div>
+
+          {/* ------------------------------------------- table 2: material --- */}
+          <SectionCard title="By base material" accent="grade" padded={false}>
+            <div className="overflow-x-auto">
+              <table className={dataTable.root}>
+                <thead className={dataTable.head}>
+                  <tr>
+                    <th className={th}>Base Material</th>
+                    <th className={`${th} text-right`}>Received</th>
+                    <th className={`${th} text-right`}>Dispatched</th>
+                    <th className={`${th} text-right`}>Stocked</th>
+                    <th className={`${th} text-right`}>Sample cut</th>
+                    <th className={`${th} text-right`}>Recalibrated</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {summary.materials.map((row) => (
+                    <tr key={row.name} className={dataTable.row}>
+                      <td className={`${td} font-medium`}>{row.name}</td>
+                      <td className={`${tdNum} text-right`}>{row.received}</td>
+                      <td className={`${tdNum} text-right`}>{row.dispatched}</td>
+                      <td className={`${tdNum} text-right`}>{row.stocked}</td>
+                      <td className={`${tdNum} text-right`}>{row.sampleCut}</td>
+                      <td className={`${tdNum} text-right`}>{row.recalibrated}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot className="border-line-strong surface-muted border-t font-semibold">
+                  <tr>
+                    <td className={td}>{summary.materialTotal.name}</td>
+                    <td className={`${tdNum} text-right`}>{summary.materialTotal.received}</td>
+                    <td className={`${tdNum} text-right`}>{summary.materialTotal.dispatched}</td>
+                    <td className={`${tdNum} text-right`}>{summary.materialTotal.stocked}</td>
+                    <td className={`${tdNum} text-right`}>{summary.materialTotal.sampleCut}</td>
+                    <td className={`${tdNum} text-right`}>{summary.materialTotal.recalibrated}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </SectionCard>
+        </>
       )}
-    </Card>
+    </>
   );
 }
