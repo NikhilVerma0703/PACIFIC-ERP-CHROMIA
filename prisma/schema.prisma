@@ -2325,6 +2325,7 @@ model FabProject {
   pieces         FabPiece[]
   requirements   FabRequirement[]
   drawings       FabDrawing[]
+  pos            FabPo[]
 
   @@map("fab_project")
 }
@@ -2369,6 +2370,8 @@ model FabSlab {
   assignedDrawings       FabDrawing[]               @relation("DrawingDefaultSlab")
   residuals              FabResidualBag[]
 
+  /// The slab board reads every slab of one project. See scripts/0045.
+  @@index([projectId])
   @@map("fab_slab")
 }
 
@@ -2389,7 +2392,38 @@ model FabSlabJob {
   kerfMm          Float?                  @default(3) @map("kerf_mm")
   createdAt       DateTime                @default(now()) @map("created_at")
 
+  /// "Has this slab already gone to the cutter?" — asked before every edit
+  /// on the slab board and by approve-slab's idempotency check, always
+  /// filtered on status as well. See scripts/0045.
+  @@index([slabId, status])
+  /// "Which slabs were cut between these two dates?" — the CLO half of the
+  /// cutting number on the CEO dashboard. The other index leads on slab_id and
+  /// cannot serve a scan by status and time. See scripts/0046.
+  @@index([status, endTime])
   @@map("fab_slab_job")
+}
+
+/// A customer purchase order under a project. A project may hold several POs;
+/// the piece rows of each PO's PDF become fab_requirement rows carrying po_id.
+/// See scripts/0044-fab-po.sql.
+model FabPo {
+  id            String           @id @default(cuid())
+  projectId     String           @map("project_id")
+  project       FabProject       @relation(fields: [projectId], references: [id])
+  poNumber      String           @map("po_number")
+  /// The uploaded PO PDF's file name, so a manager can tell which document a
+  /// set of requirements came from. Null until the PDF is imported.
+  pdfFileName   String?          @map("pdf_file_name")
+  pdfImportedAt DateTime?        @map("pdf_imported_at")
+  createdAt     DateTime         @default(now()) @map("created_at")
+  requirements  FabRequirement[]
+
+  /// Unique WITHIN a project, not globally: two customers may legitimately
+  /// send the same external PO number. Also the index for "find this PO".
+  @@unique([projectId, poNumber])
+  /// The PO list on a project page: where project_id = ? order by created_at desc.
+  @@index([projectId, createdAt])
+  @@map("fab_po")
 }
 
 model FabRequirement {
@@ -2398,6 +2432,10 @@ model FabRequirement {
   project             FabProject                 @relation(fields: [projectId], references: [id])
   drawingId           String?                    @map("drawing_id")
   drawing             FabDrawing?                @relation(fields: [drawingId], references: [id])
+  /// The purchase order this row came off, when it came from a PO PDF.
+  /// Nullable: every requirement created before the PO intake existed has none.
+  poId                String?                    @map("po_id")
+  po                  FabPo?                     @relation(fields: [poId], references: [id])
   pieceLabel          String?                    @map("piece_label")
   description         String?
   slabCode            String                     @map("slab_code")
@@ -2409,6 +2447,12 @@ model FabRequirement {
   sinkRequired        Boolean                    @default(false) @map("sink_required")
   fabricationRequired Boolean                    @default(false) @map("fabrication_required")
   polishRequired      Boolean                    @default(false) @map("polish_required")
+  // How many of `quantity` pieces get a sink — the supervisor's call, per row,
+  // replacing the sheet's sink_cuts column. NULL = he has not looked at this row
+  // yet, 0 = he looked and said none; both route to no sink. Equal to quantity
+  // means all of them. See scripts/0043-fab-requirement-sink-quantity.sql and
+  // resolveSinkQuantity() in src/lib/fab/requirement-derive.ts.
+  sinkQuantity        Int?                       @map("sink_quantity")
   sinkModel           String?                    @map("sink_model")
   sinkCuts            Int?                       @default(0) @map("sink_cuts")
   faucetCount         Int?                       @default(0) @map("faucet_count")
@@ -2424,6 +2468,13 @@ model FabRequirement {
   pieces              FabPiece[]
   allocations         FabRequirementAllocation[]
 
+  /// The PO detail screen reads every requirement of one PO. Postgres does
+  /// not index a foreign key for you, and without this the lookup is a
+  /// sequential scan of every requirement in the system.
+  @@index([poId])
+  /// Both supervisor boards, and release-project, read every requirement of
+  /// one project. See scripts/0045.
+  @@index([projectId])
   @@map("fab_requirement")
 }
 
@@ -2436,6 +2487,13 @@ model FabRequirementAllocation {
   allocatedQuantity Int            @map("allocated_quantity")
   createdAt         DateTime       @default(now()) @map("created_at")
 
+  /// "Everything this piece row is allocated to, across slabs" — the sum the
+  /// no-over-allocation rule is checked against, re-read inside a transaction
+  /// on every assignment. See scripts/0045.
+  @@index([requirementId])
+  /// "The rows on this slab" — the slab cards and the loss recomputation in
+  /// approve-slab.
+  @@index([slabId])
   @@map("fab_requirement_allocation")
 }
 
@@ -2515,6 +2573,11 @@ model FabPieceOperation {
   operation     FabOperation?    @relation(fields: [operationId], references: [id])
   createdAt     DateTime         @default(now()) @map("created_at")
 
+  /// "What was finished between these two dates?" — the CEO dashboard's
+  /// single-day strip, its date-wise stage breakdown (up to 92 days, grouped
+  /// in the database) and its 30-minute idle window all ask exactly this, and
+  /// the table carried no index at all until now. See scripts/0046.
+  @@index([isCompleted, completedAt])
   @@map("fab_piece_operation")
 }
 

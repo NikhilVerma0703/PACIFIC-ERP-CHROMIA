@@ -1,8 +1,26 @@
 // POST /api/fab/queues/cutting/complete-job
 // Body: { slabJobId: string }
-// Marks a CLO FabSlabJob as COMPLETED and cascades.
-// AUTO-CREATE: If no FabPiece records exist (CLO project that skipped release-project),
-// creates them from FabRequirementAllocation data and marks CUTTING as completed.
+// Marks a CLO FabSlabJob as COMPLETED and cascades: every piece of that slab has
+// its CUTTING operation completed and moves to CUT.
+//
+// IT NO LONGER CREATES PIECES, and that is the point of the change that removed
+// the branch. It used to carry an AUTO-CREATE path — "if this slab has no
+// fab_piece rows, mint them from its allocations" — written because a slab
+// really could reach the cut queue with nothing on it: the only thing that
+// created pieces was /api/fab/supervisor/release-project, called from the
+// requirement-first PlanningBoard, which was retired 2026-08 with nothing put in
+// its place. The branch minted pieces under its OWN code format,
+// `{projectCode}-{label}-{NNN}-{slabSuffix}`, against release's
+// `{projectCode}-{NNNN}`, so the same shop floor carried two incompatible
+// numbering schemes depending on which door a piece came through, and only one
+// of them was numbered per project.
+//
+// /api/fab/approve-slab now creates a slab's pieces at the moment the supervisor
+// sends it to the cutter — in the same transaction as the job, and it refuses to
+// send a slab that would have none. The state this branch existed for is
+// therefore unreachable, and it is deleted rather than left standing as a second
+// way to make a piece. A job that still somehow has none completes and SAYS so,
+// rather than silently inventing the work.
 
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
@@ -24,12 +42,11 @@ export async function POST(req: Request) {
         include: {
           pieces: { select: { id: true } },
           requirementAllocations: {
-            include: {
+            select: {
               requirement: {
-                include: {
+                select: {
                   // select slabId so we can filter to THIS slab only
                   pieces: { select: { id: true, slabId: true } },
-                  project: { select: { projectCode: true } },
                 },
               },
             },
@@ -55,17 +72,14 @@ export async function POST(req: Request) {
       if (p.slabId === slabJob.slabId) pieceIdSet.add(p.id);
     }
   }
-  let pieceIds = [...pieceIdSet];
-  let piecesCreated = 0;
+  const pieceIds = [...pieceIdSet];
 
-  // ALREADY DONE? STOP. Without this the whole cascade below re-runs on a
-  // double-click or a retried request: the auto-create branch would mint a
-  // second full set of FabPieceOperation rows (fabPiece.upsert is idempotent,
-  // but the five creates under it are not, and there is no unique constraint on
-  // pieceId+operationType to catch it). The result is a piece carrying two
-  // CUTTING rows, two PACKAGING rows, and queue counts that never reconcile.
+  // ALREADY DONE? STOP. The cascade below is idempotent on its own now that the
+  // auto-create branch is gone — it only completes CUTTING rows that are still
+  // open — but the compare-and-set inside the transaction is what actually makes
+  // a double-click safe, and this saves the round-trip.
   if (slabJob.status === "COMPLETED") {
-    return Response.json({ success: true, alreadyCompleted: true, piecesUpdated: 0, piecesCreated: 0 });
+    return Response.json({ success: true, alreadyCompleted: true, piecesUpdated: 0 });
   }
 
   // Set false by the transaction when another request won the race, so the
@@ -87,86 +101,7 @@ export async function POST(req: Request) {
     });
     if (done.count === 0) { applied = false; return; }   // another request got there first
 
-    if (pieceIds.length === 0 && slabJob.slab.requirementAllocations.length > 0) {
-      // AUTO-CREATE pieces for CLO projects that skipped release-project
-      const newPieceIds: string[] = [];
-      const slabSuffix = slabJob.slabId.slice(-4);
-      let reqIdx = 0;
-
-      for (const alloc of slabJob.slab.requirementAllocations) {
-        const req         = alloc.requirement;
-        const projectCode = req.project?.projectCode ?? "CLO";
-        const labelBase   = req.pieceLabel ?? String(reqIdx + 1).padStart(3, "0");
-        reqIdx++;
-
-        for (let i = 0; i < alloc.allocatedQuantity; i++) {
-          const pieceCode = `${projectCode}-${labelBase}-${String(i + 1).padStart(3, "0")}-${slabSuffix}`;
-
-          // upsert: idempotent on retry — if pieceCode already exists just return it
-          const piece = await tx.fabPiece.upsert({
-            where: { pieceCode },
-            create: {
-              pieceCode,
-              projectId:           req.projectId,
-              requirementId:       req.id,
-              slabId:              slabJob.slabId,
-              drawingId:           req.drawingId ?? undefined,
-              length:              req.length,
-              width:               req.width,
-              shapeType:           req.shapeType ?? "RECTANGLE",
-              hasSink:             req.sinkRequired,
-              polishRequired:      req.polishRequired,
-              fabricationRequired: req.fabricationRequired,
-              status:              "CUT",
-            },
-            // Only reset status if still PENDING — don't regress an already-advanced piece
-            update: {},
-          });
-          newPieceIds.push(piece.id);
-
-          // The upsert above is idempotent; the creates below are NOT, and
-          // fab_piece_operation has no unique key on (pieceId, operationType) to
-          // stop a second set landing. If this pieceCode already had its
-          // operations built — a partial run, or a piece created by
-          // release-project — advance the existing CUTTING row instead of
-          // laying down a duplicate route.
-          const existingOps = await tx.fabPieceOperation.count({ where: { pieceId: piece.id } });
-          if (existingOps > 0) {
-            await tx.fabPieceOperation.updateMany({
-              where: { pieceId: piece.id, operationType: "CUTTING", isCompleted: false },
-              data:  { isCompleted: true, completedAt: now },
-            });
-            continue;
-          }
-
-          let seq = 1;
-          await tx.fabPieceOperation.create({
-            data: { pieceId: piece.id, operationType: "CUTTING", sequence: seq++, isRequired: true, isCompleted: true, completedAt: now },
-          });
-          if (req.polishRequired) {
-            await tx.fabPieceOperation.create({
-              data: { pieceId: piece.id, operationType: "POLISHING", sequence: seq++, isRequired: true },
-            });
-          }
-          if (req.sinkRequired) {
-            await tx.fabPieceOperation.create({
-              data: { pieceId: piece.id, operationType: "SINK_CUTTING", sequence: seq++, isRequired: true },
-            });
-          }
-          if (req.fabricationRequired) {
-            await tx.fabPieceOperation.create({
-              data: { pieceId: piece.id, operationType: "FABRICATION", sequence: seq++, isRequired: true },
-            });
-          }
-          await tx.fabPieceOperation.create({
-            data: { pieceId: piece.id, operationType: "PACKAGING", sequence: seq, isRequired: true },
-          });
-        }
-      }
-
-      pieceIds      = newPieceIds;
-      piecesCreated = newPieceIds.length;
-    } else if (pieceIds.length > 0) {
+    if (pieceIds.length > 0) {
       // Update existing pieces
       await tx.fabPieceOperation.updateMany({
         where: { pieceId: { in: pieceIds }, operationType: "CUTTING", isCompleted: false },
@@ -180,6 +115,26 @@ export async function POST(req: Request) {
     }
   });
 
-  if (!applied) return Response.json({ success: true, alreadyCompleted: true, piecesUpdated: 0, piecesCreated: 0 });
-  return Response.json({ success: true, piecesUpdated: pieceIds.length, piecesCreated });
+  if (!applied) return Response.json({ success: true, alreadyCompleted: true, piecesUpdated: 0 });
+
+  // A job with nothing on it is now a fact worth stating rather than a cue to
+  // invent pieces. It can only be a slab that was sent to the cutter before
+  // approve-slab started creating them; release it with
+  // /api/fab/supervisor/release-project, or send the slab again once it has
+  // been put back on the board.
+  //
+  // LOGGED as well as returned. The cut queue's only alert slot reads "Not
+  // saved. <message>", which would be a lie here — the job IS complete — so the
+  // field is carried for a screen that can word it properly and the server log
+  // is what makes the case findable in the meantime.
+  if (pieceIds.length === 0) {
+    const warning =
+      `Slab ${slabJob.slab.slabCode} is marked cut, but no pieces are recorded against it, ` +
+      `so nothing moved on to polishing. It was sent to the cutter before pieces were created ` +
+      `at send-to-cutting — tell the supervisor before the stone leaves the saw.`;
+    console.warn("[cutting/complete-job] completed a slab job with no pieces", { slabJobId, slabId: slabJob.slabId, warning });
+    return Response.json({ success: true, piecesUpdated: 0, warning });
+  }
+
+  return Response.json({ success: true, piecesUpdated: pieceIds.length });
 }

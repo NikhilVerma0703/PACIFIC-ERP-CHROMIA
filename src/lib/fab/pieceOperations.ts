@@ -13,6 +13,13 @@
 // cut the sink hole, hand-finish (fabricate) that hole, then pack. Fabrication
 // is the outsourced polish of the sink cutout, so it can only follow the sink
 // cut — see requirement-derive.ts, where fabricationRequired === sinkRequired.
+//
+// The FLAGS are what changed under this function, not the order. Newly released
+// pieces always arrive with polishRequired true (every piece is edge-polished
+// now) and with sinkRequired set per piece rather than per requirement — only
+// the first N pieces of a row carry the supervisor's sink. The polish-less
+// branch below stays because admin/fix-cascade replays route sheets for rows
+// created under the old rules, and those really do have polishRequired false.
 
 export type FabOperationTypeName =
   | "CUTTING"

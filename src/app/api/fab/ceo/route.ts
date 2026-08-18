@@ -1,6 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
 import { expireStaleSessions } from "@/lib/fab/expireStaleSessions";
+import {
+  resolveRange, buildStageSeries, dayKeyOf, MAX_RANGE_DAYS,
+  type StageOpBucket, type StageCutBucket,
+} from "@/lib/fab/stageSeries";
 
 const IDLE_MS = 30 * 60 * 1000;
 
@@ -21,6 +25,45 @@ export async function GET(req: Request) {
   endOfDay.setHours(23, 59, 59, 999);
   const now = new Date();
 
+  // ── Date-wise stage series: the range ─────────────────────────────────────
+  // PURELY ADDITIVE. ?date= keeps meaning exactly what it meant — every block
+  // below still reads startOfDay/endOfDay and nothing else. ?from=&?to= only
+  // widen the new stageSeries field. A caller that sends neither still gets a
+  // series: the default window ends on the day it asked about, so the last row
+  // of the table equals the dailyThroughput strip built from the same day.
+  const stageRange = resolveRange({
+    from:   searchParams.get("from"),
+    to:     searchParams.get("to"),
+    anchor: dayKeyOf(startOfDay),
+  });
+  // Built the same way as startOfDay above, deliberately: same new Date(key),
+  // same setHours, so the window edges of the series and of ?date= cannot
+  // drift apart. (new Date("2026-08-18") is UTC midnight and setHours then
+  // takes the LOCAL day — a pre-existing quirk that is invisible on Vercel,
+  // where the runtime is UTC. Mirroring it beats quietly fixing it here.)
+  const rangeStart = new Date(stageRange.from);
+  rangeStart.setHours(0, 0, 0, 0);
+  const rangeEnd = new Date(stageRange.to);
+  rangeEnd.setHours(23, 59, 59, 999);
+
+  // The buckets are cut in SQL, so SQL has to agree with the local-midnight
+  // boundaries above. Prisma stores DateTime as `timestamp` (no zone) holding
+  // UTC, so to_char() alone would bucket by UTC day — identical on Vercel
+  // (runtime TZ = UTC, offset 0, no shift emitted at all) but a day out on a
+  // developer's machine in IST. The offset comes from getTimezoneOffset(), is
+  // an integer by construction, and is re-checked before it is interpolated;
+  // no request input reaches the statement except as a bound parameter.
+  const tzOffsetMin = -rangeStart.getTimezoneOffset();
+  const tzShift = Number.isInteger(tzOffsetMin) && tzOffsetMin !== 0
+    ? ` + interval '${tzOffsetMin} minutes'`
+    : "";
+  const onQueryFail = (what: string) => (e: unknown) => {
+    // A new panel must not be able to take down the twelve blocks that were
+    // working before it. Log loudly, return null, let the page say so.
+    console.error(`[fab/ceo] stage series ${what} query failed`, e);
+    return null;
+  };
+
   const STD_SLAB_AREA = (137 * 25.4) * (79 * 25.4);
 
   const [
@@ -31,6 +74,8 @@ export async function GET(req: Request) {
     pieceOpsDay,
     projectSlabs,
     allMachines,
+    stageOpBuckets,
+    stageCutBuckets,
   ] = await Promise.all([
     prisma.fabMachineSession.findMany({
       where: { isActive: true },
@@ -89,6 +134,43 @@ export async function GET(req: Request) {
       select: { id: true, name: true, type: true, code: true },
       orderBy: { type: "asc" },
     }),
+    // ── Stage completions per day, counted in the database ──────────────────
+    // GROUP BY, not findMany-then-count-in-JS: this page auto-refreshes every
+    // 30 seconds and the window is up to 92 days, so what comes back is at
+    // most (days x 5) small rows instead of every operation row in the range.
+    // Needs fab_piece_operation (is_completed, completed_at) — scripts/0046.
+    prisma.$queryRawUnsafe(
+      `SELECT to_char(completed_at${tzShift}, 'YYYY-MM-DD') AS day,
+              operation_type::text                          AS stage,
+              COUNT(*)::int                                 AS count
+         FROM fab_piece_operation
+        WHERE is_completed = TRUE
+          AND completed_at >= $1
+          AND completed_at <= $2
+        GROUP BY 1, 2`,
+      rangeStart, rangeEnd,
+    ).then((r: unknown) => r as StageOpBucket[]).catch(onQueryFail("piece operation")),
+    // The OTHER half of cutting. A slab cut through the CLO round-trip never
+    // produces a CUTTING piece-operation row; its pieces are the
+    // allocated_quantity on the slab's allocations, and the single-day strip
+    // below adds them (dailyCutLegacy + dailyCutClo). The day a job belongs to
+    // is COALESCE(end_time, created_at) — the same fallback the existing
+    // cloJobsToday filter uses for jobs completed without an end_time.
+    // Joining every allocation and summing is exactly the per-job reduce it
+    // replaces: each job contributes the full allocation sum of its slab.
+    // Needs fab_slab_job (status, end_time) — scripts/0046. The join side,
+    // fab_requirement_allocation (slab_id), was indexed by scripts/0045.
+    prisma.$queryRawUnsafe(
+      `SELECT to_char(COALESCE(j.end_time, j.created_at)${tzShift}, 'YYYY-MM-DD') AS day,
+              COALESCE(SUM(a.allocated_quantity), 0)::int                         AS pieces
+         FROM fab_slab_job j
+         LEFT JOIN fab_requirement_allocation a ON a.slab_id = j.slab_id
+        WHERE j.status = 'COMPLETED'
+          AND ( (j.end_time >= $1 AND j.end_time <= $2)
+             OR (j.end_time IS NULL AND j.created_at >= $1 AND j.created_at <= $2) )
+        GROUP BY 1`,
+      rangeStart, rangeEnd,
+    ).then((r: unknown) => r as StageCutBucket[]).catch(onQueryFail("CLO cutting")),
   ]);
 
   // ── Piece funnel (total state) ─────────────────────────────────────────────
@@ -502,6 +584,21 @@ export async function GET(req: Request) {
     packaging:   pieceOpsDay.filter(op => op.operationType === "PACKAGING").length,
   };
 
+  // ── Date-wise, stage-wise breakdown (range-filtered) ──────────────────────
+  // One row per calendar day including the days nothing was completed, plus
+  // the totals for the range. If EITHER query failed the whole panel goes
+  // null rather than half-reported: a cutting column missing its CLO half is a
+  // wrong number, and a wrong number on a CEO dashboard is worse than a gap.
+  const stageSeries = stageOpBuckets && stageCutBuckets
+    ? buildStageSeries({
+        from: stageRange.from,
+        to:   stageRange.to,
+        ops:  stageOpBuckets,
+        cuts: stageCutBuckets,
+        maxDays: MAX_RANGE_DAYS,
+      })
+    : null;
+
   return Response.json({
     activeSessions: activeSessions.map(s => ({
       id:              s.id,
@@ -521,6 +618,7 @@ export async function GET(req: Request) {
     slabWastage,
     idleAlerts,
     dailyThroughput,
+    stageSeries,
     operatorsToday,
   });
 }

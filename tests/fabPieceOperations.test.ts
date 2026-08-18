@@ -71,6 +71,54 @@ test("nullish flags are treated as not required", () => {
   assert.deepEqual(types({ polishRequired: null, sinkRequired: undefined }), ["CUTTING", "PACKAGING"]);
 });
 
+/* -- The two route sheets release now produces ------------------------------ */
+
+// Polish stopped being a decision the upload makes (every piece is edge-polished)
+// and the sink became a per-piece quantity the supervisor sets, so a released
+// requirement now yields exactly two shapes: the first N pieces with a sink, the
+// rest without. The numbering rules above are unchanged and still cover all
+// eight flag combinations — these pin the two that actually get written.
+
+test("a released piece without a sink is cut, polished, packed", () => {
+  const flags = { polishRequired: true, sinkRequired: false, fabricationRequired: false };
+  assert.deepEqual(types(flags), ["CUTTING", "POLISHING", "PACKAGING"]);
+  assert.deepEqual(seqs(flags), [1, 2, 3]);
+});
+
+test("a released piece with a sink visits all five stations", () => {
+  const flags = { polishRequired: true, sinkRequired: true, fabricationRequired: true };
+  assert.deepEqual(types(flags), ["CUTTING", "POLISHING", "SINK_CUTTING", "FABRICATION", "PACKAGING"]);
+  assert.deepEqual(seqs(flags), [1, 2, 3, 4, 5]);
+});
+
+test("splitting a requirement 3-of-10 gives 3 five-stop sheets and 7 three-stop ones", () => {
+  const quantity = 10;
+  const sinkQuantity = 3;
+  const sheets = Array.from({ length: quantity }, (_, i) =>
+    planPieceOperations({
+      polishRequired: true,
+      sinkRequired: i < sinkQuantity,
+      fabricationRequired: i < sinkQuantity,
+    }),
+  );
+
+  assert.equal(sheets.filter(s => s.length === 5).length, 3);
+  assert.equal(sheets.filter(s => s.length === 3).length, 7);
+  // POLISHING is on every sheet and always sequence 2 — the station cannot be
+  // skipped, and its number cannot move depending on the sink.
+  for (const s of sheets) {
+    const polish = s.find(o => o.operationType === "POLISHING");
+    assert.ok(polish, "every piece is polished");
+    assert.equal(polish.sequence, 2);
+    assert.equal(s[0].operationType, "CUTTING");
+    assert.equal(s[s.length - 1].operationType, "PACKAGING");
+    assert.deepEqual(s.map(o => o.sequence), s.map((_, i) => i + 1));
+  }
+  // Sink work only ever appears on the first three.
+  const hasSinkWork = sheets.map(s => s.some(o => o.operationType === "SINK_CUTTING"));
+  assert.deepEqual(hasSinkWork, [true, true, true, false, false, false, false, false, false, false]);
+});
+
 /* -- The blocked-release message ------------------------------------------- */
 
 // "7 requirement(s) have no slab" on a 198-line board is a scavenger hunt. The
@@ -114,4 +162,44 @@ test("a long list is capped but still reports how many there really are", () => 
   // Named up to the cap, and no further.
   assert.ok(msg.includes("D-1 piece 8"), "should name the 8th");
   assert.ok(!msg.includes("D-1 piece 9,"), "should not name the 9th");
+});
+
+// A requirement that came off a PO PDF has drawing_id NULL — there is no
+// drawing to name it by, and the drawing-default escape hatch the message used
+// to offer does not exist for it. Its handle is the customer's PO number and
+// the PDF row number.
+
+test("a PO row is named by its purchase order, not left as a bare row number", () => {
+  assert.equal(describeRequirement({ poNumber: "10026", pieceLabel: "Row 7" }), "PO 10026 Row 7");
+  assert.equal(describeRequirement({ poNumber: "10026" }), "PO 10026");
+  // A project holds several POs, so "piece Row 7" on its own names one row per
+  // purchase order and points at none of them.
+  assert.notEqual(describeRequirement({ poNumber: "10026", pieceLabel: "Row 7" }), "piece Row 7");
+  // A drawing still wins if a row somehow carries both, so nothing about the
+  // old intake's wording changes.
+  assert.equal(
+    describeRequirement({ drawingNumber: "D-101", poNumber: "10026", pieceLabel: "2B" }),
+    "D-101 piece 2B",
+  );
+});
+
+test("blocked release on a PO project does not offer the drawing default", () => {
+  const msg = describeUnresolvedRequirements([
+    { poNumber: "10026", pieceLabel: "Row 7" },
+    { poNumber: "10026", pieceLabel: "Row 8" },
+    { poNumber: "10031", pieceLabel: "Row 2" },
+  ]);
+  assert.match(msg, /^3 piece types have no slab: PO 10026 Row 7, PO 10026 Row 8, PO 10031 Row 2\./);
+  // There is no drawing on any of these rows, so sending him to look for a
+  // drawing's default slab is sending him to a screen that cannot help.
+  assert.doesNotMatch(msg, /default slab/);
+  assert.match(msg, /slab board/);
+});
+
+test("a project with drawings still gets the drawing-default advice", () => {
+  const msg = describeUnresolvedRequirements([
+    { drawingNumber: "D-101", pieceLabel: "2B" },
+    { poNumber: "10026", pieceLabel: "Row 7" },
+  ]);
+  assert.match(msg, /default slab/);
 });

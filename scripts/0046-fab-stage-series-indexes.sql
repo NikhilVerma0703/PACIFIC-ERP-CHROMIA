@@ -1,0 +1,61 @@
+-- 0046: two indexes for the CEO dashboard's date-wise, stage-wise breakdown.
+--
+-- NOT YET APPLIED. Run with:
+--   npx prisma db execute --url "$DATABASE_URL" --file scripts/0046-fab-stage-series-indexes.sql
+-- (NOT `prisma db push`. This repo keeps several model-less tables and
+-- raw-SQL-only columns that push proposes dropping -- see the note at the top
+-- of the sales section in schema.prisma and scripts/0040/0043/0044/0045.)
+--
+-- NO NEW TABLES, NO NEW COLUMNS, NO BACKFILL. Everything the new panel reads
+-- already exists and is already written: fab_piece_operation.completed_at is
+-- set by every queue's complete route, and fab_slab_job.end_time by the CLO
+-- round-trip. This script is two indexes and nothing else.
+--
+-- PURELY ADDITIVE AND IDEMPOTENT. No UPDATE, no DROP, no DEFAULT, nothing
+-- rewritten. Re-running it is a no-op, and applying it changes no row and no
+-- result -- only how fast they are found.
+--
+-- WHY NOW. The dashboard grew a per-day series: five stage counts for every
+-- calendar day in a range of up to 92, refreshed every 30 seconds by an open
+-- browser tab. Both queries behind it are GROUP BYs over a date window, and
+-- neither window was indexable.
+--
+-- Each index, and the query that needs it:
+--
+--   fab_piece_operation_is_completed_completed_at_idx
+--       "what was finished between these two dates?" -- the range GROUP BY
+--       behind the new breakdown. fab_piece_operation had NO index of any kind
+--       before this line, not even on its foreign keys, so every one of these
+--       was a sequential scan of the whole table. Two more long-standing reads
+--       land on the same index for free: the single-day pieceOpsDay fetch that
+--       feeds the existing "Today's throughput" strip and the leaderboard
+--       (same predicate, one day wide), and the 30-minute idle-detection
+--       window, which runs on every dashboard load. is_completed leads because
+--       every one of those callers pins it to TRUE, which makes the composite
+--       a near-perfect match; completed_at follows because it is the range.
+--
+--   fab_slab_job_status_end_time_idx
+--       "which slabs were cut between these two dates?" -- the CLO half of the
+--       cutting number. Cutting has two sources and this is the one that does
+--       not produce a piece-operation row, so it cannot be dropped without
+--       under-reporting every slab cut through the CLO. 0045 already indexed
+--       this table as (slab_id, status), which a scan by status and time
+--       cannot use: a composite btree is only useful from its leading column,
+--       and these queries do not know the slab.
+--
+-- The join side of the second query, fab_requirement_allocation (slab_id), was
+-- already indexed by scripts/0045 -- nothing further is needed for it.
+--
+-- The names are Prisma's own defaults for the matching @@index lines added to
+-- prisma/schema.prisma alongside this file, so `prisma migrate diff` stays
+-- clean after it is applied (same discipline as scripts/0038, 0044 and 0045).
+--
+-- Sizing: both tables are small-to-mid, so plain CREATE INDEX (no
+-- CONCURRENTLY -- db execute runs in a transaction) is fine; each build takes
+-- a brief write lock and well under a second.
+
+CREATE INDEX IF NOT EXISTS "fab_piece_operation_is_completed_completed_at_idx"
+  ON "fab_piece_operation" ("is_completed", "completed_at");
+
+CREATE INDEX IF NOT EXISTS "fab_slab_job_status_end_time_idx"
+  ON "fab_slab_job" ("status", "end_time");

@@ -2,7 +2,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
 import { buildReleasePlan, describeUnresolvedRequirements } from "@/lib/fab/releasePlan";
-import { deriveRoutingFlags } from "@/lib/fab/requirement-derive";
+import { deriveRoutingFlags, resolveSinkQuantity } from "@/lib/fab/requirement-derive";
 import { planPieceOperations } from "@/lib/fab/pieceOperations";
 
 // Release turns a planned project into physical work: one fab_piece per ordered
@@ -70,6 +70,11 @@ export async function POST(req: Request) {
     where: { projectId },
     include: {
       drawing: { include: { defaultSlab: true } },
+      // A requirement from a PO PDF has drawing_id NULL — the PO number and the
+      // PDF row number are the only handle the supervisor has on it. Pulled in
+      // for the blocked-release message below, which would otherwise name four
+      // indistinguishable "Row 7"s on a project holding four purchase orders.
+      po: { select: { poNumber: true } },
       allocations: { include: { slab: true }, orderBy: { createdAt: "asc" } },
     },
     // Deterministic, so a retry numbers the pieces the same way it did before.
@@ -79,6 +84,14 @@ export async function POST(req: Request) {
     return Response.json({ error: "No requirements. Upload Excel first." }, { status: 400 });
   }
 
+  // THE GUARD STANDS IN THE NEW FLOW TOO, and it now blocks more than it used
+  // to. A PO project has no drawings, so the `drawing.defaultSlabId` escape
+  // hatch is never available and every single requirement must carry its own
+  // allocation. That is correct rather than unfortunate: a piece with no slab
+  // cannot be cut, and releasing it would create a fab_piece with slab_id NULL
+  // that appears in no cutter's queue and is found at the packing bench. What
+  // changed is the message — it names the rows (with their PO) instead of
+  // counting them.
   const unresolved = requirements.filter(r => !r.allocations[0]?.slabId && !r.drawing?.defaultSlabId);
   if (unresolved.length) {
     // Name them. A bare count on a 198-line project is a scavenger hunt.
@@ -87,6 +100,7 @@ export async function POST(req: Request) {
         error: describeUnresolvedRequirements(
           unresolved.map(r => ({
             drawingNumber: r.drawing?.drawingNumber,
+            poNumber: r.po?.poNumber,
             pieceLabel: r.pieceLabel,
             description: r.description,
           })),
@@ -122,7 +136,16 @@ export async function POST(req: Request) {
 
   for (const r of requirements) {
     const fallbackSlabId = r.allocations[0]?.slabId ?? r.drawing?.defaultSlabId ?? null;
-    const { polishRequired, fabricationRequired, sinkRequired } = deriveRoutingFlags(r);
+    // polishRequired is now true for every piece — polish stopped being a
+    // decision the upload makes. Still routed through deriveRoutingFlags so the
+    // rule stays written down in exactly one place.
+    const { polishRequired } = deriveRoutingFlags(r);
+
+    // The sink is per PIECE now, not per requirement: the supervisor says "3 of
+    // these 10 get a sink" and the FIRST 3 in cut order are the ones that do.
+    // Clamped to the ordered quantity — a stale sink_quantity left over from a
+    // larger order would otherwise mark pieces that no longer exist.
+    const sinkQuantity = resolveSinkQuantity(r.sinkQuantity, r.quantity);
 
     // A piece belongs to the slab it will be cut FROM, and one requirement can
     // be split across several — see buildReleasePlan for the rule and its tests.
@@ -139,12 +162,16 @@ export async function POST(req: Request) {
       );
     }
 
-    const ops = planPieceOperations({ polishRequired, sinkRequired, fabricationRequired });
+    // Two route sheets cover the whole row — with a sink and without — so the
+    // plan is still built once per requirement, not once per piece.
+    const sinkOps = planPieceOperations({ polishRequired, sinkRequired: true, fabricationRequired: true });
+    const plainOps = planPieceOperations({ polishRequired, sinkRequired: false, fabricationRequired: false });
 
-    for (const slabId of plan.slabIds) {
+    plan.slabIds.forEach((slabId, pieceIndex) => {
+      const hasSink = pieceIndex < sinkQuantity;
       planned.push({
         slabId,
-        ops,
+        ops: hasSink ? sinkOps : plainOps,
         piece: {
           pieceCode: `${prefix}${String(counter++).padStart(4, "0")}`,
           projectId,
@@ -154,12 +181,14 @@ export async function POST(req: Request) {
           length: r.length,
           width: r.width,
           shapeType: r.shapeType ?? "RECTANGLE",
-          hasSink: sinkRequired,
+          hasSink,
           polishRequired,
-          fabricationRequired,
+          // Fabrication is the hand-polish of the sink cutout, so it follows the
+          // sink piece by piece exactly as it used to follow it row by row.
+          fabricationRequired: hasSink,
         },
       });
-    }
+    });
   }
 
   /* -- Write ----------------------------------------------------------------- */

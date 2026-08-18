@@ -144,12 +144,33 @@ export default async function FabLayout({ children }: { children: React.ReactNod
               label="Samples" />
 
             <p className="text-[10px] font-semibold text-slate-400 px-3 mt-4 mb-1">Projects</p>
-            {/* The manager gets the Planning Board link too — they create the
-                project and are the ones asked whether it reached the supervisor. */}
+            {/* Was labelled "Planning Board". /fab/supervisor carried two tabs,
+                Planning and Cut Queue; the Planning tab (the requirement-first
+                PlanningBoard) was retired 2026-08 and the page is the cut queue now,
+                so the label follows it. The link itself is not dead and stays -- the
+                manager gets it too, since they are the ones asked whether a slab
+                reached the cutter. Planning proper is the next entry down. */}
             {(isSupervisor || isManager) && (
               <SLink href="/fab/supervisor"
                 icon="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"
-                label="Planning Board" />
+                label="Cut Queue" />
+            )}
+            {/* The board of the new PO flow, and there is only one of it now.
+                It is the slab-first replacement for the Planning Board's
+                requirement-first table, and it carries the sink decision the
+                flat PO sheet no longer holds — worked slab by slab: pick the
+                slab, add its pieces, mark their sinks, send it to cutting.
+                /fab/supervisor/sinks was the second entry here and is now a
+                redirect to this one, so old bookmarks still land somewhere. */}
+            {(isSupervisor || isManager) && (
+              <SLink href="/fab/supervisor/slabs"
+                icon="M3 7l9-4 9 4-9 4-9-4zM3 12l9 4 9-4M3 17l9 4 9-4"
+                label="Slab & Sink Assignment" />
+            )}
+            {isManager && (
+              <SLink href="/fab/manager"
+                icon="M3 3h18v4H3zM3 10h18v4H3zM3 17h18v4H3z"
+                label="Manager Dashboard" />
             )}
             {isManager && (
               <SLink href="/fab/projects"

@@ -31,6 +31,12 @@ export interface PostResult {
 import { isJsonBody } from "../httpJson.ts";
 export { isJsonBody };
 
+/** Offline, or the tablet dropped the shop-floor wifi mid-cut. Say so plainly
+ *  rather than leaving the screen looking like nothing happened. */
+const NO_CONNECTION: PostResult = {
+  ok: false, status: 0, error: "No connection — the change was not saved. Try again.", data: null,
+};
+
 export async function postJson(url: string, body: unknown): Promise<PostResult> {
   let res: Response;
   try {
@@ -40,11 +46,70 @@ export async function postJson(url: string, body: unknown): Promise<PostResult> 
       body: JSON.stringify(body),
     });
   } catch {
-    // Offline, or the tablet dropped the shop-floor wifi mid-cut. Say so plainly
-    // rather than leaving the screen looking like nothing happened.
-    return { ok: false, status: 0, error: "No connection — the change was not saved. Try again.", data: null };
+    return NO_CONNECTION;
   }
+  return readReply(res);
+}
 
+/**
+ * The same contract for a multipart upload — a PDF or a workbook, where the
+ * body cannot be JSON.
+ *
+ * Content-Type is NOT set: the browser has to write it itself so the multipart
+ * boundary matches the body it generated. Setting it by hand is the classic way
+ * to make every upload arrive as an unparseable blob.
+ */
+export async function postForm(url: string, form: FormData): Promise<PostResult> {
+  let res: Response;
+  try {
+    res = await fetch(url, { method: "POST", body: form });
+  } catch {
+    return NO_CONNECTION;
+  }
+  return readReply(res);
+}
+
+/**
+ * The same contract for a DELETE — taking a piece row off a slab, an empty slab
+ * off the board.
+ *
+ * It exists because the screens that needed one hand-rolled `fetch` with half
+ * of this logic each: res.ok checked, the expired-session trap not. A DELETE
+ * that reaches the login page comes back 200 with an HTML body, and the board
+ * then paints the row as removed while it is still there. The id goes in the
+ * query string, which is what the fab routes read, so there is no body.
+ */
+export async function deleteJson(url: string): Promise<PostResult> {
+  let res: Response;
+  try {
+    res = await fetch(url, { method: "DELETE" });
+  } catch {
+    return NO_CONNECTION;
+  }
+  return readReply(res);
+}
+
+/**
+ * PATCH with a JSON body — changing a quantity that is already there, as
+ * opposed to creating one.
+ */
+export async function patchJson(url: string, body: unknown): Promise<PostResult> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    return NO_CONNECTION;
+  }
+  return readReply(res);
+}
+
+/** Everything these helpers do once the response is in hand. Shared so an upload
+ *  screen cannot report an expired session differently from a station screen. */
+async function readReply(res: Response): Promise<PostResult> {
   // A body is not guaranteed: 500s from the framework come back as HTML.
   const data = await res.json().catch(() => null);
 
