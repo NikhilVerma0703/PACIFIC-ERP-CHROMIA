@@ -155,7 +155,7 @@ function Row({ u, stations, sales = false, myRole, myId, onChange }: { u: UserRo
       </td>
       <td className="py-2 pr-4">{sales && u.salesRole ? (DUTY_LABEL[u.salesRole] ?? u.salesRole) : roleLabelFor(u.role, u.branch)}</td>
       {!sales && <td className="py-2 pr-4">
-        {u.role === "OPERATOR" && u.branch !== "FABRICATION" ? (
+        {u.role === "OPERATOR" && u.branch !== "FABRICATION" && u.branch !== "CHROMIA" ? (
           <select defaultValue={u.station ?? ""} disabled={pending}
             onChange={(e) => act(() => setStation(u.id, e.target.value || null))}
             className="rounded-md border border-gray-300 px-2 py-1 text-xs">

@@ -54,7 +54,7 @@ export default async function UsersPage() {
   // integration created must stay visible here, or there is no way to
   // deactivate or reset one. Drop this once
   // scripts/0045-migrate-chromia-branch-users.sql has emptied the branch.
-  const visible = assignable.includes("SHOP_FLOOR") ? [...assignable, "CHROMIA"] : assignable;
+  const visible = rankOf(role) >= ROLE_RANK.ADMIN && myBranch !== "OFFICE" ? [...assignable, "CHROMIA"] : assignable;
   const creatableUnion = [...new Set(assignable.flatMap((b) => creatableRoles(role, b)))];
   // Per-branch breakdown so the client can filter the Role dropdown to match
   // whichever Department is currently selected (e.g. Fabrication only offers
