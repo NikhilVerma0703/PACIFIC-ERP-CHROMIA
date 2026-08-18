@@ -2,8 +2,10 @@ import { auth } from "@/auth";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import Link from "next/link";
-import { CutPlanUpload } from "../CutPlanUpload";
-import { ExcelToCsvExport } from "../ExcelToCsvExport";
+// RETIRED 2026-08: the CLO Optimizer round-trip widgets. See ../CutPlanUpload.tsx
+// and ../ExcelToCsvExport.tsx; replaced by /fab/supervisor/slabs.
+// import { CutPlanUpload } from "../CutPlanUpload";
+// import { ExcelToCsvExport } from "../ExcelToCsvExport";
 import { SlabAllocationView } from "../SlabAllocationView";
 import { fabTierOf } from "@/lib/fab/access";
 
@@ -57,8 +59,9 @@ export default async function FabProjectDetailPage({
   const canApproveSlab =
     tier === "SUPERVISOR" || tier === "MANAGER" || tier === "ADMIN";
 
-  const canUploadPlan =
-    tier === "MANAGER" || tier === "ADMIN";
+  // RETIRED 2026-08 with the manager tools block below -- its only reader.
+//   const canUploadPlan =
+//     tier === "MANAGER" || tier === "ADMIN";
 
   return (
     <div>
@@ -97,13 +100,22 @@ export default async function FabProjectDetailPage({
         ))}
       </div>
 
-      {/* Manager tools: CLO export + cut plan upload */}
+      {/* RETIRED 2026-08: the manager tools block (its label comment read
+          "Manager tools: CLO export + cut plan upload"; spelled out rather than
+          reproduced, because its terminator would close this comment).
+
+          Both widgets drove the CLO Optimizer round-trip -- export the requirements,
+          nest them outside the ERP, upload the allocation workbook back. That whole
+          round-trip was replaced by the supervisor slab screen at /fab/supervisor/slabs,
+          which assigns pieces to slabs in the app.
+
       {canUploadPlan && (
         <div className="mb-6 space-y-4">
           <ExcelToCsvExport projectCode={project.projectCode} projectId={id} />
           <CutPlanUpload projectId={id} />
         </div>
       )}
+      */}
 
       {/* Slab allocation — supervisor sees ONLY this; manager sees it + drawing table below */}
       <div className="mb-6">

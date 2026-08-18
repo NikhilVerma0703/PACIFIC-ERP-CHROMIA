@@ -14,6 +14,21 @@ function todayStr() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 }
+/** n days before/after a 'YYYY-MM-DD' key. UTC arithmetic, because the key is a
+ *  label and a label has no 23- or 25-hour variant. Mirrors addDays() in
+ *  src/lib/fab/stageSeries.ts, which the API uses on the same strings. */
+function shiftDayStr(key: string, n: number) {
+  const [y, m, d] = key.split("-").map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d) + n * 86400000);
+  return `${t.getUTCFullYear()}-${String(t.getUTCMonth()+1).padStart(2,"0")}-${String(t.getUTCDate()).padStart(2,"0")}`;
+}
+/** 'Mon 18 Aug' from a day key. Formatted in UTC on purpose: the key is parsed
+ *  as UTC midnight, so letting the browser's zone re-interpret it would print
+ *  the day before for anyone west of Greenwich. */
+function fmtDayLabel(key: string) {
+  return new Date(`${key}T00:00:00Z`).toLocaleDateString("en-GB",
+    { weekday: "short", day: "2-digit", month: "short", timeZone: "UTC" });
+}
 function fmtDuration(mins: number) {
   if (mins < 60) return `${mins}m`;
   return `${Math.floor(mins / 60)}h ${mins % 60}m`;
@@ -28,6 +43,14 @@ interface OperatorDay {
   sessions: Array<{ machineName: string; machineType: string; loginTime: string; logoutTime: string | null; isActive: boolean; durationMinutes: number }>;
   totalMinutes: number; piecesByType: Record<string, number>;
 }
+interface StageCounts { cutting: number; polishing: number; sinkCutting: number; fabrication: number; packaging: number; total: number }
+interface StageDayRow extends StageCounts { date: string }
+/** Date-wise, stage-wise completions. `rows` always covers every calendar day
+ *  in [from, to] — a day nothing happened on is a row of zeros, not a gap.
+ *  Null when the API could not build it; the panel says so rather than
+ *  rendering blanks that would read as a quiet day. */
+interface StageSeries { from: string; to: string; days: number; rows: StageDayRow[]; totals: StageCounts }
+
 interface CeoData {
   activeSessions: Array<{ id: string; user: { name: string | null }; machine: { name: string; type: string; code: string }; shift: string; loginTime: string; durationMinutes: number }>;
   pieceFunnel: { total: number; pending: number; cut: number; polishing: number; sinkCutting: number; fabrication: number; packaged: number };
@@ -40,8 +63,20 @@ interface CeoData {
   slabWastage: SlabWastage[];
   idleAlerts: Array<{ sessionId: string; operatorName: string; machineType: string; machineName: string; idleMinutes: number; hasPendingJobs: boolean; pendingCount: number; lastActivity: string }>;
   dailyThroughput: { cutting: number; polishing: number; sinkCutting: number; fabrication: number; packaging: number };
+  stageSeries: StageSeries | null;
   operatorsToday: OperatorDay[];
 }
+
+/** The five stages as the breakdown prints them, sharing the tile colours the
+ *  throughput strip already uses so the two panels read as one thing. */
+const STAGE_COLS = [
+  { key: "cutting"     as const, label: "Cut",    bar: "bg-blue-500",   text: "text-blue-600"   },
+  { key: "polishing"   as const, label: "Polish", bar: "bg-purple-500", text: "text-purple-600" },
+  { key: "sinkCutting" as const, label: "Sink",   bar: "bg-orange-500", text: "text-orange-600" },
+  { key: "fabrication" as const, label: "Fab",    bar: "bg-rose-500",   text: "text-rose-600"   },
+  { key: "packaging"   as const, label: "Pack",   bar: "bg-green-500",  text: "text-green-600"  },
+];
+const RANGE_CHOICES = [7, 14, 30];
 
 /* ─────────────────────────────── Operator Modal ─────────────────────────── */
 function OperatorModal({ op, machineLeaderboard, onClose }: {
@@ -217,13 +252,23 @@ export default function CeoDashboard() {
   const [error,       setError]       = useState("");
   const [tab,           setTab]           = useState<"overview"|"flow"|"slabs"|"operators">("overview");
   const [dateFilter,    setDateFilter]    = useState(todayStr());
+  // Two working weeks ending on the selected date — see DEFAULT_RANGE_DAYS in
+  // src/lib/fab/stageSeries.ts for why. Only the new breakdown reads this;
+  // every other block on the page stays on dateFilter alone.
+  const [rangeDays,     setRangeDays]     = useState(14);
   const [selectedOp,    setSelectedOp]    = useState<{ operatorId: string; operatorName: string } | null>(null);
-  const [fixingCascade, setFixingCascade] = useState(false);
-  const [fixResult,     setFixResult]     = useState<string | null>(null);
+  // RETIRED 2026-08 with the cascade-fix panel: nothing else on this page reads
+  // fixingCascade or fixResult.
+//   const [fixingCascade, setFixingCascade] = useState(false);
+//   const [fixResult,     setFixResult]     = useState<string | null>(null);
 
-  const load = useCallback(async (date: string) => {
+  const load = useCallback(async (date: string, days: number) => {
     try {
-      const res = await fetch(`/api/fab/ceo?date=${date}`);
+      // date= is unchanged and still drives everything else on this page;
+      // from=/to= only widen the date-wise breakdown, and the window ends on
+      // the selected date so its last row matches the throughput strip.
+      const from = shiftDayStr(date, -(days - 1));
+      const res = await fetch(`/api/fab/ceo?date=${date}&from=${from}&to=${date}`);
       if (!res.ok) { setError("Failed to load"); return; }
       setData(await res.json());
       setLastRefresh(new Date());
@@ -233,43 +278,47 @@ export default function CeoDashboard() {
   }, []);
 
   useEffect(() => {
-    load(dateFilter);
-    const t = setInterval(() => load(dateFilter), 30000);
+    load(dateFilter, rangeDays);
+    const t = setInterval(() => load(dateFilter, rangeDays), 30000);
     return () => clearInterval(t);
-  }, [load, dateFilter]);
+  }, [load, dateFilter, rangeDays]);
 
-  async function runCascadeFix() {
-    setFixingCascade(true);
-    setFixResult(null);
-    try {
-      const res = await fetch("/api/fab/admin/fix-cascade", { method: "POST" });
-      const json = await res.json();
-      if (res.ok) {
-        const created = json.piecesCreated ?? 0;
-        const unstuck = json.piecesFixed ?? 0;
-        const jobs    = json.jobsFixed ?? 0;
-        if (created + unstuck === 0) {
-          setFixResult("All up to date — nothing to fix");
-        } else {
-          setFixResult(`Fixed ${jobs} job(s): created ${created} piece(s), unstuck ${unstuck} piece(s)`);
-        }
-        load(dateFilter);
-      } else {
-        setFixResult(json.error ?? "Fix failed");
-      }
-    } catch {
-      setFixResult("Network error");
-    } finally {
-      setFixingCascade(false);
-    }
-  }
+  // RETIRED 2026-08 with POST /api/fab/admin/fix-cascade -- see the panel below.
+//   async function runCascadeFix() {
+//     setFixingCascade(true);
+//     setFixResult(null);
+//     try {
+//       const res = await fetch("/api/fab/admin/fix-cascade", { method: "POST" });
+//       const json = await res.json();
+//       if (res.ok) {
+//         const created = json.piecesCreated ?? 0;
+//         const unstuck = json.piecesFixed ?? 0;
+//         const jobs    = json.jobsFixed ?? 0;
+//         if (created + unstuck === 0) {
+//           setFixResult("All up to date — nothing to fix");
+//         } else {
+//           setFixResult(`Fixed ${jobs} job(s): created ${created} piece(s), unstuck ${unstuck} piece(s)`);
+//         }
+//         load(dateFilter);
+//       } else {
+//         setFixResult(json.error ?? "Fix failed");
+//       }
+//     } catch {
+//       setFixResult("Network error");
+//     } finally {
+//       setFixingCascade(false);
+//     }
+//   }
 
   if (loading) return <div className="flex items-center justify-center h-64 text-slate-400 text-sm">Loading dashboard…</div>;
   if (error)   return <div className="flex items-center justify-center h-64 text-red-400 text-sm">{error}</div>;
   if (!data)   return null;
 
-  const { activeSessions, pieceFunnel, projectProgress, machineLeaderboard, machineStats, pendingByType, cloSlabsPending, slabWastage, idleAlerts, dailyThroughput, operatorsToday } = data;
+  const { activeSessions, pieceFunnel, projectProgress, machineLeaderboard, machineStats, pendingByType, cloSlabsPending, slabWastage, idleAlerts, dailyThroughput, stageSeries, operatorsToday } = data;
   const isToday = dateFilter === todayStr();
+  // Busiest day in the range, so every bar below is drawn to the same scale.
+  // Hoisted out of the row loop: the range can be 92 days.
+  const stagePeak = stageSeries ? Math.max(1, ...stageSeries.rows.map(r => r.total)) : 1;
 
   const funnelSteps = [
     { label: "Pending",     count: pieceFunnel.pending,     color: "#94a3b8" },
@@ -297,7 +346,14 @@ export default function CeoDashboard() {
         <div className="flex items-center gap-3">
           <input type="date" value={dateFilter} onChange={e => setDateFilter(e.target.value)}
             className="text-sm border border-slate-200 rounded-lg px-3 py-2 text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-200" />
-          <button onClick={() => load(dateFilter)}
+          {/* Range for the date-wise breakdown only. Everything else on this
+              page still shows the single day picked above. */}
+          <select value={rangeDays} onChange={e => setRangeDays(Number(e.target.value))}
+            title="Range for the date-wise breakdown"
+            className="text-sm border border-slate-200 rounded-lg px-3 py-2 text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-200">
+            {RANGE_CHOICES.map(d => <option key={d} value={d}>Last {d} days</option>)}
+          </select>
+          <button onClick={() => load(dateFilter, rangeDays)}
             className="flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-slate-900 bg-white border border-slate-200 rounded-lg px-3 py-2 transition">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
@@ -435,7 +491,13 @@ export default function CeoDashboard() {
                   ))}
                 </div>
               </div>
-              {/* Fix stuck pieces */}
+              {/* RETIRED 2026-08: the "Fix Now" cascade-fix panel (it was preceded by
+                  a {/ * Fix stuck pieces * /} label comment, spelled out here because a
+                  real one would close this comment). It called
+                  POST /api/fab/admin/fix-cascade, which existed only to repair the damage
+                  caused by two competing piece-creation paths; the second path went with
+                  the CLO round-trip, so there is nothing left to repair.
+
               <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
                 <p className="text-[11px] text-slate-400">Pieces stuck in Pending after cutting? Run cascade fix.</p>
                 <button onClick={runCascadeFix} disabled={fixingCascade}
@@ -446,6 +508,7 @@ export default function CeoDashboard() {
               {fixResult && (
                 <p className="text-xs text-emerald-600 mt-1 font-medium">{fixResult}</p>
               )}
+              */}
             </div>
 
             <div className="bg-white rounded-xl border border-slate-100 p-5">
@@ -454,6 +517,96 @@ export default function CeoDashboard() {
               </h2>
               <MachineLeaderboard machineLeaderboard={machineLeaderboard} onSelectOperator={setSelectedOp} />
             </div>
+          </div>
+
+          {/* ── Date-wise, stage-wise completions ──────────────────────────────
+              The strip above is one day. This is the same five stages across
+              the selected range, one row per day, with the range totals. Its
+              last row is the day the strip shows, so the two agree on screen.
+              A day nothing was completed on prints a row of zeros: the API
+              fills every calendar day in the range, because a trend that drops
+              its empty days closes ranks and reads as consecutive. */}
+          <div className="bg-white rounded-xl border border-slate-100 p-5">
+            <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">Completed by Day and Stage</h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {stageSeries
+                    ? `${fmtDayLabel(stageSeries.from)} to ${fmtDayLabel(stageSeries.to)} · ${stageSeries.days} days`
+                    : "Pieces finished at each stage, per day"}
+                </p>
+              </div>
+              {stageSeries && stageSeries.totals.total > 0 && (
+                <div className="flex items-center gap-3 text-xs">
+                  {STAGE_COLS.map(c => (
+                    <span key={c.key} className="flex items-center gap-1.5">
+                      <span className={`w-2 h-2 rounded-full ${c.bar}`}></span>
+                      <span className="text-slate-500">{c.label}</span>
+                      <span className="font-semibold text-slate-700">{stageSeries.totals[c.key]}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {!stageSeries ? (
+              <p className="text-sm text-slate-400 text-center py-8">Breakdown unavailable — the rest of this page is unaffected.</p>
+            ) : stageSeries.rows.length === 0 ? (
+              <p className="text-sm text-slate-400 text-center py-8">No days in range</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs text-slate-400 border-b border-slate-100">
+                      <th className="text-left font-medium pb-2 pl-1">Date</th>
+                      {STAGE_COLS.map(c => <th key={c.key} className="text-right font-medium pb-2 w-16">{c.label}</th>)}
+                      <th className="text-right font-medium pb-2 w-16">Total</th>
+                      <th className="pb-2 pl-4 w-2/5"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {stageSeries.rows.map(r => {
+                      // Bar widths are relative to the busiest day in the
+                      // range (stagePeak), drawn with plain divs — the same way
+                      // the funnel and project bars on this page already are.
+                      // No chart library is involved.
+                      const quiet = r.total === 0;
+                      return (
+                        <tr key={r.date} className={quiet ? "bg-slate-50/50" : ""}>
+                          <td className="py-1.5 pl-1 text-xs text-slate-600 whitespace-nowrap">{fmtDayLabel(r.date)}</td>
+                          {STAGE_COLS.map(c => (
+                            <td key={c.key} className={`py-1.5 text-right tabular-nums ${r[c.key] > 0 ? `font-medium ${c.text}` : "text-slate-300"}`}>
+                              {r[c.key]}
+                            </td>
+                          ))}
+                          <td className={`py-1.5 text-right font-bold tabular-nums ${quiet ? "text-slate-300" : "text-slate-800"}`}>{r.total}</td>
+                          <td className="py-1.5 pl-4">
+                            <div className="flex h-3 rounded-full overflow-hidden bg-slate-100" style={{ width: `${(r.total / stagePeak) * 100}%`, minWidth: r.total > 0 ? "2px" : "0" }}>
+                              {STAGE_COLS.map(c => r[c.key] > 0 && (
+                                <div key={c.key} className={c.bar} style={{ width: `${(r[c.key] / r.total) * 100}%` }}
+                                  title={`${c.label} ${r[c.key]}`}></div>
+                              ))}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t-2 border-slate-200 font-bold text-slate-900">
+                      <td className="pt-2 pl-1 text-xs">Total</td>
+                      {STAGE_COLS.map(c => (
+                        <td key={c.key} className="pt-2 text-right tabular-nums">{stageSeries.totals[c.key]}</td>
+                      ))}
+                      <td className="pt-2 text-right tabular-nums">{stageSeries.totals.total}</td>
+                      <td className="pt-2 pl-4 text-xs font-normal text-slate-400">
+                        {Math.round((stageSeries.totals.total / Math.max(1, stageSeries.days)) * 10) / 10} / day avg
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
           </div>
 
           <div className="bg-white rounded-xl border border-slate-100 p-5">

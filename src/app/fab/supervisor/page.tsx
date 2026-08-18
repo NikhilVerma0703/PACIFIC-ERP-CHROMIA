@@ -1,7 +1,9 @@
 "use client";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
-import { PlanningBoard } from "./PlanningBoard";
+// RETIRED 2026-08: the requirement-first PlanningBoard, replaced by the slab-first
+// screen at /fab/supervisor/slabs. See ./PlanningBoard.tsx.
+// import { PlanningBoard } from "./PlanningBoard";
 import { FabAlerts } from "@/components/fab/FabAlerts";
 import { useQcSlabs } from "@/lib/fab/qcSlabs";
 
@@ -394,21 +396,23 @@ function CutQueue() {
     await load();
   }
 
-  const [fixingCascade,  setFixingCascade]  = useState(false);
+  // RETIRED 2026-08 with the fix-cascade endpoint (see the button below).
+  // `fixResult` on the next line but one is NOT retired: End All Sessions writes it.
+//   const [fixingCascade,  setFixingCascade]  = useState(false);
   const [endingSessions, setEndingSessions] = useState(false);
   const [fixResult,     setFixResult]     = useState<string | null>(null);
-  async function runCascadeFix() {
-    setFixingCascade(true);
-    setFixResult(null);
-    try {
-      const res  = await fetch("/api/fab/admin/fix-cascade", { method: "POST" });
-      const data = await res.json();
-      setFixResult(data.message ?? (data.error ? `Error: ${data.error}` : "Done"));
-    } catch {
-      setFixResult("Request failed");
-    }
-    setFixingCascade(false);
-  }
+//   async function runCascadeFix() {
+//     setFixingCascade(true);
+//     setFixResult(null);
+//     try {
+//       const res  = await fetch("/api/fab/admin/fix-cascade", { method: "POST" });
+//       const data = await res.json();
+//       setFixResult(data.message ?? (data.error ? `Error: ${data.error}` : "Done"));
+//     } catch {
+//       setFixResult("Request failed");
+//     }
+//     setFixingCascade(false);
+//   }
 
   async function endAllSessions() {
     if (!confirm("Force-logout all machine operators? (Use at shift end or if operators forgot to log out)")) return;
@@ -460,11 +464,20 @@ function CutQueue() {
             className="text-xs text-gray-500 border border-gray-200 hover:border-gray-300 px-3 py-1.5 rounded-lg transition">
             Refresh
           </button>
-          <button onClick={runCascadeFix} disabled={fixingCascade}
-            title="Fix pieces stuck in Pending after slabs were marked Cut"
-            className="text-xs text-orange-600 border border-orange-200 hover:bg-orange-50 disabled:opacity-50 px-3 py-1.5 rounded-lg transition font-medium">
-            {fixingCascade ? "Fixing..." : "Fix Pending Queues"}
-          </button>
+          {/* RETIRED 2026-08: the "Fix Pending Queues" button. It called
+              POST /api/fab/admin/fix-cascade, which existed only to repair the
+              damage caused by two competing piece-creation paths; the second path
+              went with the CLO round-trip, so there is nothing left to repair.
+
+              Commented, not deleted -- and as a JSX comment, not with "//": these
+              lines sit in child position, where "//" is text and would render.
+
+              <button onClick={runCascadeFix} disabled={fixingCascade}
+                title="Fix pieces stuck in Pending after slabs were marked Cut"
+                className="text-xs text-orange-600 border border-orange-200 hover:bg-orange-50 disabled:opacity-50 px-3 py-1.5 rounded-lg transition font-medium">
+                {fixingCascade ? "Fixing..." : "Fix Pending Queues"}
+              </button>
+          */}
           <button onClick={endAllSessions} disabled={endingSessions}
             title="Force-logout all machine operators (use at shift end)"
             className="text-xs text-red-600 border border-red-200 hover:bg-red-50 disabled:opacity-50 px-3 py-1.5 rounded-lg transition font-medium">
@@ -545,7 +558,9 @@ function CutQueue() {
       {filtered.length === 0 ? (
         <div className="text-center py-16 text-gray-400 text-sm bg-white rounded-2xl border border-gray-200">
           {filter === "all"
-            ? "Nothing to cut yet. Slabs land here once a project is planned on the Planning Board (or a CLO allocation Excel is applied)."
+            // Was: "...once a project is planned on the Planning Board (or a CLO
+            // allocation Excel is applied)." Both of those were retired 2026-08.
+            ? "Nothing to cut yet. Slabs land here once the supervisor has built them on Slab & Sink Assignment."
             : "No slabs in this state."}
         </div>
       ) : (
@@ -566,28 +581,40 @@ function CutQueue() {
 }
 
 /* -- Main page ------------------------------------------------------------- */
-// Two tabs, because the supervisor has two distinct jobs and only the second one
-// had a screen. PLANNING is where a project lands the moment the manager creates
-// it — pieces get slabs and the project is released. CUT QUEUE is what comes
-// after: a physical QC slab per cut sheet, then send to the cutter.
+// One screen, not two. This page used to carry a Planning tab (the
+// requirement-first PlanningBoard) alongside the Cut Queue; the Planning tab was
+// retired 2026-08 and replaced by the slab-first screen at /fab/supervisor/slabs.
+// The tab strip went with it -- a strip with one tab in it is a strip that reads
+// like something is missing. What is left is the Cut Queue: a physical QC slab per
+// cut sheet, then send to the cutter.
+//
+// The retired version:
+//
+// export default function FabSupervisorPage() {
+//   const [tab, setTab] = useState<"planning" | "queue">("planning");
+//
+//   return (
+//     // The planning tables carry seven columns; the cut queue is a card list.
+//     <div className={tab === "planning" ? "max-w-6xl" : "max-w-4xl"}>
+//       <div className="flex items-center gap-1 mb-6 bg-slate-100 rounded-xl p-1 w-fit">
+//         {([["planning", "Planning"], ["queue", "Cut Queue"]] as const).map(([id, label]) => (
+//           <button key={id} onClick={() => setTab(id)}
+//             className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${
+//               tab === id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"
+//             }`}>
+//             {label}
+//           </button>
+//         ))}
+//       </div>
+//
+//       {tab === "planning" ? <PlanningBoard /> : <CutQueue />}
+//     </div>
+//   );
+// }
 export default function FabSupervisorPage() {
-  const [tab, setTab] = useState<"planning" | "queue">("planning");
-
   return (
-    // The planning tables carry seven columns; the cut queue is a card list.
-    <div className={tab === "planning" ? "max-w-6xl" : "max-w-4xl"}>
-      <div className="flex items-center gap-1 mb-6 bg-slate-100 rounded-xl p-1 w-fit">
-        {([["planning", "Planning"], ["queue", "Cut Queue"]] as const).map(([id, label]) => (
-          <button key={id} onClick={() => setTab(id)}
-            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${
-              tab === id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"
-            }`}>
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {tab === "planning" ? <PlanningBoard /> : <CutQueue />}
+    <div className="max-w-4xl">
+      <CutQueue />
     </div>
   );
 }

@@ -66,9 +66,12 @@ export default async function FabProjectsPage({
           <h1 className="text-2xl font-bold text-slate-900">Projects</h1>
           <p className="text-sm text-slate-400 mt-0.5">{total} total · {inProd} in production</p>
         </div>
+        {/* "+ New Project" pointed at /fab/projects/new (the Drawing Summary intake),
+            retired 2026-08. /fab/manager is the purchase-order intake that replaced it,
+            and it admits exactly the tiers canCreate admits -- MANAGER and ADMIN. */}
         {canCreate && (
           <Link
-            href="/fab/projects/new"
+            href="/fab/manager"
             className="bg-slate-900 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-700 transition"
           >
             + New Project
@@ -162,9 +165,12 @@ export default async function FabProjectsPage({
                   </div>
 
                   <div className="flex flex-col gap-2 flex-shrink-0">
+                    {/* "Plan" pointed at /fab/supervisor, whose Planning tab (the
+                        requirement-first PlanningBoard) was retired 2026-08. Planning
+                        is now the slab-first screen at /fab/supervisor/slabs. */}
                     {(p.status === "PLANNING" || p.status === "ALLOCATED") && (
                       <Link
-                        href="/fab/supervisor"
+                        href="/fab/supervisor/slabs"
                         className="text-xs font-medium text-amber-600 hover:text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg px-3 py-1.5 transition text-center"
                       >
                         Plan →

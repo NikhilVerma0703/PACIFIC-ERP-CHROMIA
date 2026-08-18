@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import {
   isReadyForPackaging, pendingStages, statusFromFlags,
 } from "../src/lib/fab/routing.ts";
-import { deriveRoutingFlags, inchToMm, INCH_TO_MM } from "../src/lib/fab/requirement-derive.ts";
+import {
+  deriveRoutingFlags, resolveSinkQuantity, inchToMm, INCH_TO_MM,
+} from "../src/lib/fab/requirement-derive.ts";
 import { normalizeLabel, buildValidLabels, snapLabel } from "../src/lib/fab/labelMatch.ts";
 
 // The fabrication module had no tests at all. These cover the rules that decide
@@ -74,29 +76,96 @@ test("statusFromFlags: the furthest stage still ticked, never a regression", () 
   assert.equal(statusFromFlags({ polishingCompleted: true, sinkCompleted: true, fabricationCompleted: false }), "SINK_CUT");
 });
 
-test("deriveRoutingFlags: fabrication follows the sink, polish follows DE&P", () => {
-  // Nothing asked for.
+// THE RULES CHANGED HERE. The old sheet carried a DE&P (edge polish) length and
+// a sink-cut count per row and routing was read off them; the new flat piece
+// list carries neither. Polish is now unconditional and the sink is a quantity
+// the supervisor sets. The three assertions below replace the DE&P-driven and
+// sinkCuts/sinkModel-driven ones that used to live here.
+
+test("deriveRoutingFlags: every piece is polished, and fabrication follows the sink", () => {
+  // Nothing asked for — and polish STILL comes out true. This is the change:
+  // the old rule was polishRequired = depLength > 0, so this used to be false.
   assert.deepEqual(deriveRoutingFlags({}), {
-    sinkRequired: false, polishRequired: false, fabricationRequired: false,
+    sinkRequired: false, polishRequired: true, fabricationRequired: false,
   });
+
   // A sink drags fabrication with it — fabrication here is the outsourced
   // hand-polish of the cutout, so it cannot exist without one.
-  assert.deepEqual(deriveRoutingFlags({ sinkCuts: 1 }), {
-    sinkRequired: true, polishRequired: false, fabricationRequired: true,
+  assert.deepEqual(deriveRoutingFlags({ sinkQuantity: 1, quantity: 10 }), {
+    sinkRequired: true, polishRequired: true, fabricationRequired: true,
   });
-  // A named model counts as a sink even with no cut count.
-  assert.equal(deriveRoutingFlags({ sinkModel: "SS-304" }).sinkRequired, true);
-  // ...but whitespace is not a model.
-  assert.equal(deriveRoutingFlags({ sinkModel: "   " }).sinkRequired, false);
-  assert.equal(deriveRoutingFlags({ sinkModel: "" }).sinkRequired, false);
-  // Zero cuts is no sink.
-  assert.equal(deriveRoutingFlags({ sinkCuts: 0 }).sinkRequired, false);
-  // Polish keys off DE&P length only.
-  assert.equal(deriveRoutingFlags({ depLength: 96 }).polishRequired, true);
-  assert.equal(deriveRoutingFlags({ depLength: 0 }).polishRequired, false);
-  assert.equal(deriveRoutingFlags({ depLength: null }).polishRequired, false);
-  // fabricationRequired tracks the sink exactly, never the polish.
-  for (const dep of [0, 96]) assert.equal(deriveRoutingFlags({ depLength: dep }).fabricationRequired, false);
+
+  // sinkRequired is now the supervisor's quantity and nothing else. Zero, null
+  // and "not looked at yet" all mean no sink.
+  assert.equal(deriveRoutingFlags({ sinkQuantity: 0, quantity: 10 }).sinkRequired, false);
+  assert.equal(deriveRoutingFlags({ sinkQuantity: null, quantity: 10 }).sinkRequired, false);
+  assert.equal(deriveRoutingFlags({ quantity: 10 }).sinkRequired, false);
+  assert.equal(deriveRoutingFlags({ sinkQuantity: 10, quantity: 10 }).sinkRequired, true);
+
+  // Polish is never false, whatever the sink says.
+  for (const sinkQuantity of [null, 0, 1, 10])
+    assert.equal(deriveRoutingFlags({ sinkQuantity, quantity: 10 }).polishRequired, true);
+
+  // fabricationRequired === sinkRequired, exhaustively. Unchanged rule, and the
+  // one the packaging gate and the route sheet both depend on.
+  for (const sinkQuantity of [null, 0, 1, 5, 10, 999]) {
+    const f = deriveRoutingFlags({ sinkQuantity, quantity: 10 });
+    assert.equal(f.fabricationRequired, f.sinkRequired, `sinkQuantity=${sinkQuantity}`);
+  }
+});
+
+test("resolveSinkQuantity: whole pieces, never more than were ordered", () => {
+  assert.equal(resolveSinkQuantity(3, 10), 3);
+  assert.equal(resolveSinkQuantity(10, 10), 10);
+
+  // Absent, null and zero are all "no sinks". NULL means the supervisor has not
+  // looked at the row yet and 0 means he said none — a distinction the column
+  // keeps and routing deliberately does not.
+  assert.equal(resolveSinkQuantity(null, 10), 0);
+  assert.equal(resolveSinkQuantity(undefined, 10), 0);
+  assert.equal(resolveSinkQuantity(0, 10), 0);
+
+  // A stale count left behind after someone cut the order down must not mark
+  // pieces that no longer exist.
+  assert.equal(resolveSinkQuantity(40, 10), 10);
+  // Nothing ordered, nothing to put a sink in.
+  assert.equal(resolveSinkQuantity(5, 0), 0);
+
+  // Junk degrades to no sink rather than to NaN pieces.
+  assert.equal(resolveSinkQuantity(-3, 10), 0);
+  assert.equal(resolveSinkQuantity(NaN, 10), 0);
+  assert.equal(resolveSinkQuantity(2.7, 10), 2);
+
+  // No quantity given is "no cap known", not "cap of zero" — asking whether a
+  // row has sinks at all must not require producing the ordered quantity.
+  assert.equal(resolveSinkQuantity(3), 3);
+  assert.equal(resolveSinkQuantity(3, null), 3);
+});
+
+test("the first N pieces get the sink, the rest do not, and all of them are polished", () => {
+  // The rule /api/fab/supervisor/release-project applies when it expands a
+  // requirement into pieces: 3 of 10 means pieces 1-3, in cut order.
+  const quantity = 10;
+  const sinkQuantity = resolveSinkQuantity(3, quantity);
+  const pieces = Array.from({ length: quantity }, (_, i) => ({
+    hasSink: i < sinkQuantity,
+    polishRequired: true,
+    fabricationRequired: i < sinkQuantity,
+  }));
+
+  assert.equal(pieces.filter(p => p.hasSink).length, 3);
+  assert.deepEqual(pieces.map(p => p.hasSink), [
+    true, true, true, false, false, false, false, false, false, false,
+  ]);
+  // Fabrication is welded to the sink piece by piece, not row by row.
+  for (const p of pieces) assert.equal(p.fabricationRequired, p.hasSink);
+  // And nothing skips polish.
+  assert.ok(pieces.every(p => p.polishRequired));
+
+  // The default when the supervisor picks a row is the whole quantity.
+  assert.equal(resolveSinkQuantity(quantity, quantity), 10);
+  // A row he never touched produces no sink pieces at all.
+  assert.equal(resolveSinkQuantity(null, quantity), 0);
 });
 
 test("inchToMm: Excel is inches, production is mm, and 0 is not missing", () => {
