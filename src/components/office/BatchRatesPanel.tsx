@@ -38,9 +38,13 @@ interface CatalogueItem {
 }
 interface SavedLine {
   id: string; item: string; seq: number; category: string;
-  qty: number | null; rate: number; description: string; unit: string;
+  qty: number | null; rate: number; description: string; note: string | null; unit: string;
   savedBy: string; savedAt: string;
 }
+type SignState =
+  | { status: "unverified" }
+  | { status: "verified"; by: string; at: string }
+  | { status: "stale"; by: string; at: string };
 interface CardShape {
   onDate: string;
   resinBySupplier: Record<string, number>;
@@ -53,12 +57,14 @@ interface Payload {
   card: CardShape;
   /** item -> what the mixer weighed, in the item's own unit. */
   mixer: Record<string, { qty: number; unit: string }>;
-  /** Every description already used on a costing line, plant-wide. */
+  /** Suppliers to suggest — this batch's own, plus its card's resin suppliers. */
   descriptions?: string[];
+  /** Whether production and the store have signed this batch off. */
+  signoff?: { WEIGHTS: SignState; COSTS: SignState };
 }
 
-/** A row being edited. Blank qty means "the rest". */
-interface DraftLine { qty: string; rate: string; description: string }
+/** A row being edited. Blank qty means "whatever is left". */
+interface DraftLine { qty: string; rate: string; description: string; note: string }
 
 const inp = "w-full rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-sm shadow-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
 const btn = "rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transition hover:bg-brand/90 disabled:opacity-60";
@@ -129,8 +135,6 @@ export function BatchRatesPanel({
   // no better than one that was never saved.
   const [open, setOpen] = useState<boolean | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
-  /** Families whose unused materials the user has asked to see. */
-  const [showUnused, setShowUnused] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     try {
@@ -149,6 +153,7 @@ export function BatchRatesPanel({
           qty: row.qty == null ? "" : String(row.qty),
           rate: String(row.rate),
           description: row.description ?? "",
+          note: row.note ?? "",
         });
       }
       setDrafts(d);
@@ -422,6 +427,7 @@ export function BatchRatesPanel({
         qty: l.qty.trim() === "" ? null : Number(l.qty),
         rate: Number(l.rate),
         description: l.description,
+        note: l.note,
       }));
     try {
       const r = await fetch(API, {
@@ -574,9 +580,9 @@ export function BatchRatesPanel({
     const saved = savedItems.includes(c.item);
     const isPct = c.unit === "pct";
 
-    const setPct = (v: string) => setLines(c.item, [{ qty: "", rate: v, description: "" }]);
+    const setPct = (v: string) => setLines(c.item, [{ qty: "", rate: v, description: "", note: "" }]);
     const setPrice = (v: string) => {
-      if (chem) setLines(chem.item, [{ qty: "", rate: v, description: "" }]);
+      if (chem) setLines(chem.item, [{ qty: "", rate: v, description: "", note: "" }]);
     };
 
     // Live, from what is in the box — falling back to the card, which is what
@@ -730,9 +736,10 @@ export function BatchRatesPanel({
   /**
    * What to suggest in a description box.
    *
-   * Descriptions the plant has already used, plus this batch's own resin
-   * suppliers from the card - so the list is useful on the very first split of
-   * a fresh database rather than empty until somebody seeds it by hand.
+   * THIS BATCH's own supplier names, plus the resin suppliers on its own rate
+   * card. Deliberately not pooled across batches: a line here asserts that this
+   * run bought that material from that supplier, and offering names carried in
+   * from other batches makes the likeliest error the easiest click.
    *
    * A <datalist> rather than a <select> because the field must stay free text:
    * "PO 4471" and "trial drum, second delivery" are legitimate values that no
@@ -741,17 +748,8 @@ export function BatchRatesPanel({
    * everybody the next time the panel loads. Nothing to administer.
    */
   const descriptionOptions = (): string[] => {
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const d of [...Object.keys(data.card.resinBySupplier), ...(data.descriptions ?? [])]) {
-      const v = d.trim();
-      if (!v) continue;
-      const key = v.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(v);
-    }
-    return out.sort((a, b) => a.localeCompare(b));
+    // Already deduplicated, sorted and scoped to this batch by the route.
+    return data.descriptions ?? [];
   };
 
   const DESC_LIST_ID = "costing-description-options";
@@ -813,7 +811,7 @@ export function BatchRatesPanel({
             </span>
           )}
           <button type="button" onClick={() => setExpanded(isOpen ? null : c.item)} className={btnGhost}>
-            {isOpen ? "Done" : saved ? "Edit" : splittable ? "Split" : "Set"}
+            {isOpen ? "Done" : saved ? "Edit" : splittable ? "Assign" : "Set"}
           </button>
         </div>
 
@@ -831,9 +829,10 @@ export function BatchRatesPanel({
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-xs uppercase tracking-wide text-gray-400">
-                      {splittable && <th className="pb-1 pr-3 font-medium">Quantity ({c.unit})</th>}
-                      <th className="pb-1 pr-3 font-medium">Description</th>
+                      {splittable && <th className="pb-1 pr-3 font-medium">How much ({c.unit})</th>}
+                      <th className="pb-1 pr-3 font-medium">Supplier</th>
                       <th className="pb-1 pr-3 font-medium">₹ per {c.unit}</th>
+                      <th className="pb-1 pr-3 font-medium">Note</th>
                       <th className="pb-1 pr-3 font-medium">Amount</th>
                       <th className="pb-1 font-medium" />
                     </tr>
@@ -865,7 +864,7 @@ export function BatchRatesPanel({
                               value={l.description}
                               onChange={(e) => setLines(c.item,
                                 lines.map((x, j) => j === i ? { ...x, description: e.target.value } : x))}
-                              placeholder="supplier, PO number, what this was"
+                              placeholder="who it was bought from"
                               list={DESC_LIST_ID}
                               autoComplete="off"
                               className={inp}
@@ -879,6 +878,15 @@ export function BatchRatesPanel({
                                 lines.map((x, j) => j === i ? { ...x, rate: e.target.value } : x))}
                               placeholder="rate"
                               className={`${inp} max-w-[8rem]`}
+                            />
+                          </td>
+                          <td className="py-1.5 pr-3">
+                            <input
+                              value={l.note}
+                              onChange={(e) => setLines(c.item,
+                                lines.map((x, j) => j === i ? { ...x, note: e.target.value } : x))}
+                              placeholder="PO number, short delivery, anything worth remembering"
+                              className={inp}
                             />
                           </td>
                           <td className="py-1.5 pr-3 text-gray-700">
@@ -927,8 +935,8 @@ export function BatchRatesPanel({
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <button type="button" className={btnGhost}
                 disabled={!splittable && lines.length >= 1}
-                onClick={() => setLines(c.item, [...lines, { qty: "", rate: "", description: "" }])}>
-                {lines.length ? "Add another line" : splittable ? "Add a line" : "Set a value"}
+                onClick={() => setLines(c.item, [...lines, { qty: "", rate: "", description: "", note: "" }])}>
+                {lines.length ? "Add another supplier" : splittable ? "Assign a supplier" : "Set the value"}
               </button>
               {/* The remainder, prefilled.
                   A material is only fully described once its lines add up to
@@ -940,7 +948,7 @@ export function BatchRatesPanel({
               {splittable && mixer && left != null && left > 0.005 && !hasRest && (
                 <button type="button" className={btnGhost}
                   onClick={() => setLines(c.item,
-                    [...lines, { qty: String(left), rate: "", description: "" }])}>
+                    [...lines, { qty: String(left), rate: "", description: "", note: "" }])}>
                   Add the remaining {num.format(left)} {mixer.unit}
                 </button>
               )}
@@ -973,12 +981,20 @@ export function BatchRatesPanel({
           <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
             Materials for this batch · {savedItems.length} priced here
           </h2>
-          <p className="mt-1 max-w-3xl text-sm text-gray-500">
-            Quantities come from the mixer. Split a material into what was actually bought —
-            each line gets its own quantity, description and price. Leave one line&rsquo;s
-            quantity blank to mean &ldquo;the rest&rdquo;. A material with no lines prices whole
-            at the card.
-          </p>
+          <div className="mt-1 max-w-3xl space-y-1 text-sm text-gray-500">
+            <p>
+              <span className="font-medium text-gray-700">You are setting two things per material:</span>{" "}
+              <span className="font-medium text-gray-700">how much</span> came from each supplier,
+              and <span className="font-medium text-gray-700">the price per {"\u20B9"}/unit</span> you
+              paid them. Either on its own is fine — leave the quantity blank and that supplier
+              takes whatever is left of what the mixer weighed.
+            </p>
+            <p>
+              The mixer already knows the total. A material you assign nothing to is priced
+              whole at the rate card, which is the normal case — only assign the ones that
+              came from more than one place, or at a price the card does not have.
+            </p>
+          </div>
         </div>
         <button type="button" onClick={() => setOpen(false)} className={btnGhost}>Close</button>
       </div>
@@ -991,6 +1007,45 @@ export function BatchRatesPanel({
         </div>
       )}
 
+      {/* Who has checked this batch.
+          Shown to the admin editing the rates because the person about to
+          change one is exactly the person who needs to know it has already
+          been signed off - and that saving will send it back for re-checking.
+          Read-only: admin sees both and signs neither. */}
+      {data.signoff && (
+        <div className="mb-3 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-gray-200 px-4 py-2.5 text-xs">
+          {([
+            ["WEIGHTS", "Weights", "production"],
+            ["COSTS", "Prices", "the store"],
+          ] as const).map(([side, label, who]) => {
+            const st = data.signoff![side];
+            return (
+              <span key={side} className="flex flex-wrap items-center gap-2">
+                <span className="font-medium text-gray-500">{label}</span>
+                {st.status === "verified" && (
+                  <>
+                    <Badge tone="green">Accepted</Badge>
+                    <span className="text-gray-500">by {st.by}</span>
+                  </>
+                )}
+                {st.status === "stale" && (
+                  <>
+                    <Badge tone="amber">Changed since accepted</Badge>
+                    <span className="text-amber-700">{st.by} accepted an earlier version</span>
+                  </>
+                )}
+                {st.status === "unverified" && (
+                  <>
+                    <Badge tone="amber">Not yet accepted</Badge>
+                    <span className="text-gray-400">waiting on {who}</span>
+                  </>
+                )}
+              </span>
+            );
+          })}
+        </div>
+      )}
+
       {/* One list for every description box on the panel. Rendered once: a
           datalist per row would be forty copies of the same options. */}
       <datalist id={DESC_LIST_ID}>
@@ -998,8 +1053,7 @@ export function BatchRatesPanel({
       </datalist>
 
       <div className="space-y-5">
-        {families.map(({ family, used, unused }) => {
-          const revealed = showUnused.has(family);
+        {families.map(({ family, used }) => {
           return (
             <section key={family}>
               <div className="mb-1.5 flex flex-wrap items-baseline gap-2">
@@ -1023,32 +1077,12 @@ export function BatchRatesPanel({
               <div className="space-y-2">
                 {used.map((c) => materialRow(c, false))}
 
-                {used.length === 0 && !revealed && (
+                {used.length === 0 && (
                   <p className="rounded-xl border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-400">
                     The mixer recorded none of these for {batchLabel}.
                   </p>
                 )}
 
-                {revealed && unused.map((c) => materialRow(c, true))}
-
-                {unused.length > 0 && (
-                  // Never removed, only tucked away: a size the mixer did not
-                  // record can still have been bought for this run, and hiding
-                  // it outright would make that unpriceable.
-                  <button
-                    type="button"
-                    onClick={() => setShowUnused((p) => {
-                      const n = new Set(p);
-                      if (n.has(family)) n.delete(family); else n.add(family);
-                      return n;
-                    })}
-                    className="text-xs text-brand hover:underline"
-                  >
-                    {revealed
-                      ? `Hide the ${unused.length} not used in this batch`
-                      : `Show ${unused.length} not used in this batch`}
-                  </button>
-                )}
               </div>
             </section>
           );

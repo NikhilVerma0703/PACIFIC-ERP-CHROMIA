@@ -28,8 +28,12 @@ import { isAdmin, currentUser } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 import {
   effectiveRateCard, listBatchMaterials, RATE_ITEM_BY_KEY, RATE_ITEMS,
+  type EffectiveRateCard, type SavedMaterialLine,
 } from "@/lib/costing/rateCard";
 import { dosingOverrides, isOverridable, isSplittable } from "@/lib/costing/batchRates";
+import {
+  costsFingerprint, verifyState, weightsFingerprint, type VerifySide,
+} from "@/lib/costing/verification";
 import { loadBatchConsumption } from "@/lib/costing/batchData";
 import { bandOf, gritItemKey } from "@/lib/costing/batchData";
 
@@ -94,29 +98,62 @@ async function mixerQuantities(batchKey: string): Promise<Record<string, { qty: 
 }
 
 /**
- * Every description anybody has typed against a costing line, deduplicated.
+ * Suppliers to suggest in this batch's assignment boxes.
  *
- * The description column is what makes a split readable six months later -
- * "Aypols", "PO 4471", "trial drum" - and it was a bare text box, so the same
- * supplier got typed four ways and none of them grouped. This turns it into a
- * list that grows: type a new one and it is a suggestion for everyone next
- * time, with no master table to maintain and nothing to administer.
+ * THIS BATCH ONLY, plus the resin suppliers named on its own rate card. An
+ * earlier version pooled every description ever typed plant-wide, which was
+ * wrong for what this screen asserts: a line here is a statement that THIS run
+ * bought that material from that supplier. Offering names carried in from other
+ * batches makes the likeliest mistake - accepting a suggestion that was true
+ * somewhere else - the easiest thing to do.
  *
- * Not scoped to the batch. The point is to reuse what the PLANT has already
- * called things; a per-batch list would suggest only what this batch already
- * says, which is the one place the answer is already on screen.
+ * The card's own resin suppliers are legitimate because they are this batch's
+ * card, resolved for its own run date.
  */
-async function knownDescriptions(): Promise<string[]> {
+async function suggestedSuppliers(batchKey: string, card: { resinBySupplier: Record<string, number> }): Promise<string[]> {
   const rows = await prisma.costingBatchMaterial.findMany({
-    where: { description: { not: null } },
+    where: { batchKey, description: { not: null } },
     select: { description: true },
     distinct: ["description"],
-    orderBy: { description: "asc" },
-    take: 500,
   });
-  return rows
-    .map((r) => (r.description ?? "").trim())
-    .filter((d) => d.length > 0);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const v of [...Object.keys(card.resinBySupplier), ...rows.map((r) => r.description ?? "")]) {
+    const t = v.trim();
+    if (!t || seen.has(t.toLowerCase())) continue;
+    seen.add(t.toLowerCase());
+    out.push(t);
+  }
+  return out.sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Whether the two sign-offs on this batch still stand.
+ *
+ * Shown on the admin panel because the person changing a rate is exactly the
+ * person who needs to know that somebody has already checked it - and that
+ * their change is about to invalidate that check. Read-only here: admin sees
+ * both and signs neither.
+ */
+async function verification(batchKey: string, card: EffectiveRateCard, lines: SavedMaterialLine[]) {
+  const c = await loadBatchConsumption(batchKey);
+  const fp: Record<VerifySide, string> = {
+    WEIGHTS: c ? weightsFingerprint(c) : "",
+    COSTS: costsFingerprint({
+      lines: lines.map((l) => ({ item: l.item, seq: l.seq, qty: l.qty, rate: l.rate })),
+      cardRates: card.rates,
+      resinBySupplier: card.resinBySupplier,
+    }),
+  };
+  const rows = await prisma.costingBatchVerification.findMany({ where: { batchKey } });
+  const by = new Map(rows.map((r) => [r.side, {
+    side: r.side as VerifySide, fingerprint: r.fingerprint,
+    verifiedBy: r.verifiedBy, verifiedAt: r.verifiedAt.toISOString(),
+  }]));
+  return {
+    WEIGHTS: verifyState(by.get("WEIGHTS"), fp.WEIGHTS),
+    COSTS: verifyState(by.get("COSTS"), fp.COSTS),
+  };
 }
 
 export async function GET(req: NextRequest) {
@@ -130,17 +167,20 @@ export async function GET(req: NextRequest) {
   // batch against today's card would report a difference that is just the
   // passage of time.
   const c = await loadBatchConsumption(batchKey);
-  const [card, mixer, descriptions] = await Promise.all([
+  const [card, mixer] = await Promise.all([
     effectiveRateCard(c?.firstPress ?? new Date()),
     mixerQuantities(batchKey),
-    knownDescriptions(),
+  ]);
+  const [descriptions, signoff] = await Promise.all([
+    suggestedSuppliers(batchKey, card),
+    verification(batchKey, card, rows),
   ]);
 
-  return json({ batchKey, catalogue: SETTABLE, rows, card, mixer, descriptions });
+  return json({ batchKey, catalogue: SETTABLE, rows, card, mixer, descriptions, signoff });
 }
 
 interface PostedLine {
-  seq?: unknown; qty?: unknown; rate?: unknown; description?: unknown;
+  seq?: unknown; qty?: unknown; rate?: unknown; description?: unknown; note?: unknown;
 }
 
 export async function POST(req: NextRequest) {
@@ -169,10 +209,10 @@ export async function POST(req: NextRequest) {
 
   // Validate the whole set before writing any of it — a half-applied save
   // leaves a batch priced on a split nobody chose.
-  const lines: Array<{ seq: number; qty: number | null; rate: number; description: string }> = [];
+  const lines: Array<{ seq: number; qty: number | null; rate: number; description: string; note: string }> = [];
   let restLines = 0;
   posted.forEach((p, i) => {
-    lines.push({ seq: typeof p.seq === "number" ? p.seq : i, qty: null, rate: 0, description: "" });
+    lines.push({ seq: typeof p.seq === "number" ? p.seq : i, qty: null, rate: 0, description: "", note: "" });
   });
 
   for (let i = 0; i < posted.length; i++) {
@@ -213,6 +253,9 @@ export async function POST(req: NextRequest) {
       qty,
       rate,
       description: typeof p.description === "string" ? p.description.trim().slice(0, 200) : "",
+      // Free text, and longer: the description names the supplier, the note is
+      // where "short delivery, balance invoiced next month" goes.
+      note: typeof p.note === "string" ? p.note.trim().slice(0, 500) : "",
     };
   }
 
@@ -226,7 +269,7 @@ export async function POST(req: NextRequest) {
       data: lines.map((l) => ({
         batchKey, item, category: def.category, unit: def.unit,
         seq: l.seq, qty: l.qty, rate: l.rate,
-        description: l.description || null, createdBy: user,
+        description: l.description || null, note: l.note || null, createdBy: user,
       })),
     });
   });
