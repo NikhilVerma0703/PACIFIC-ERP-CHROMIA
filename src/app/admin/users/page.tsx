@@ -47,7 +47,7 @@ export default async function UsersPage() {
   }
 
   const assignable = rankOf(role) >= ROLE_RANK.ADMIN
-    ? (myBranch === "OFFICE" ? ["OFFICE"] : ["SHOP_FLOOR", "FABRICATION", "CHROMIA"])
+    ? (myBranch === "OFFICE" ? ["OFFICE"] : ["SHOP_FLOOR", "FABRICATION"])
     : [myBranch];
   const creatableUnion = [...new Set(assignable.flatMap((b) => creatableRoles(role, b)))];
   // Per-branch breakdown so the client can filter the Role dropdown to match

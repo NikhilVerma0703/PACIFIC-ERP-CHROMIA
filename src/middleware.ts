@@ -60,23 +60,6 @@ export default auth((req) => {
     }
   }
 
-  // ---- Chromia module: the Chromia department (branch CHROMIA) and admins,
-  // who span every dept. Same ordering rule as the robo gate above — this
-  // must run BEFORE the branch blocks below, because their generic `/api`
-  // allowances would otherwise let other departments reach Chromia data.
-  // Tier differences inside the module (operator vs supervisor vs manager)
-  // are NOT decided here — middleware only knows the path prefix; the pages
-  // and /api/chromia routes gate themselves with chromiaGate()
-  // (lib/chromia/access.ts). CHROMIA-branch users are capped to this module
-  // further down. ----
-  if (p.startsWith("/chromia") || p.startsWith("/api/chromia")) {
-    if (!isAdmin && branch !== "CHROMIA") {
-      return p.startsWith("/api")
-        ? new Response("Forbidden", { status: 403 })
-        : Response.redirect(new URL("/", nextUrl));
-    }
-  }
-
   // ---- Shift scoreboard: ADMIN only. It ranks named individuals and drives an
   // incentive payout, so it must not be visible to the people it scores. ----
   if (p.startsWith("/scoreboard")) {
@@ -148,24 +131,6 @@ export default auth((req) => {
         ? new Response("Forbidden", { status: 403 })
         : Response.redirect(new URL("/", nextUrl));
     }
-  }
-
-  if (!isAdmin && branch === "CHROMIA") {
-    // Chromia staff: the Chromia module is their whole ERP — every rank.
-    // Unlike Fabrication (whose managers also get Overview "/"), the cap is
-    // deliberately total: the module carries its own dashboard and reports,
-    // so there is nothing outside /chromia a Chromia login needs. The API
-    // clause is an allowlist (only /api/chromia), NOT the generic
-    // `p.startsWith("/api")` the other branch blocks use — the ROBO block
-    // below documents how that generic form handed a shop-floor tablet every
-    // API in the ERP. /api/auth is unaffected — it returns as public above.
-    const ok = p.startsWith("/chromia") || p.startsWith("/api/chromia") || STATIC_FILE.test(p);
-    if (!ok) {
-      return p.startsWith("/api")
-        ? new Response("Forbidden", { status: 403 })
-        : Response.redirect(new URL("/chromia", nextUrl));
-    }
-    return;
   }
   if (!isAdmin && branch === "FABRICATION") {
     // Fabrication staff: fab pages + Overview + API only — never production pages.

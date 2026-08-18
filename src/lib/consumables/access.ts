@@ -15,11 +15,10 @@ export function consumablesTierOf(user: unknown): ConsumablesTier | null {
   const role = String(u.role ?? "");
   if (!ALLOWED.has(role)) return null;
   if (rankOf(role) >= ROLE_RANK.ADMIN) return "ADMIN"; // admins span every department
-  // Fabrication and Chromia staff are department-locked by the middleware —
-  // showing them the section (or letting the API through) would be a dead
-  // link / mismatch.
+  // Fabrication staff are department-locked by the middleware — showing them
+  // the section (or letting the API through) would be a dead link / mismatch.
   const b = String(u.branch ?? "");
-  if (b === "FABRICATION" || b === "CHROMIA") return null;
+  if (b === "FABRICATION") return null;
   return "WRITE"; // Store/Incharge/Line Manager both see and log
 }
 

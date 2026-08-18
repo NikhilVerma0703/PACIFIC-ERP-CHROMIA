@@ -3,9 +3,9 @@
 // Split out of lib/rbac.ts (which re-exports it, so nothing else changed) for
 // one reason: rbac.ts imports @/auth, and node --test resolves neither the
 // alias nor next-auth — so any pure logic living there is untestable, the
-// same reason fab/routing.ts is alias-free. The chromia tier mapping
-// (lib/chromia/tier.ts) and its tests both import THIS module, so the tests
-// exercise the real table rather than a copy that drifts.
+// same reason fab/routing.ts is alias-free. Pure per-module logic (e.g. a
+// module's access-tier mapping) and its tests both import THIS module, so the
+// tests exercise the real table rather than a copy that drifts.
 //
 // Role hierarchy (low -> high). Kept as string-typed so this compiles even
 // before `prisma generate` refreshes the @prisma/client enum.

@@ -80,7 +80,7 @@ export async function createUser(_prev: string | undefined, fd: FormData): Promi
 
   const branchRaw = String(fd.get("branch") || "").trim();
   const assignable = rankOf(myRole) >= ROLE_RANK.ADMIN
-    ? (myBranch === "OFFICE" ? ["OFFICE"] : ["SHOP_FLOOR", "FABRICATION", "CHROMIA"])
+    ? (myBranch === "OFFICE" ? ["OFFICE"] : ["SHOP_FLOOR", "FABRICATION"])
     : [myBranch];
   const branch = assignable.includes(branchRaw) ? branchRaw : myBranch;
   const allowed = creatableRoles(myRole, branch);
@@ -89,10 +89,8 @@ export async function createUser(_prev: string | undefined, fd: FormData): Promi
   // Fabrication has no shop-floor machine/station of its own — a fab
   // employee picks their machine at /fab/session (a cookie), not via this
   // column — so don't require (or accept) a Press/Oven/… station for them.
-  // Chromia likewise: its machines live in chromia_machine (the module's own
-  // master list), not the shop-floor Station enum.
   let station: string | null = null;
-  if (role === "OPERATOR" && branch !== "FABRICATION" && branch !== "CHROMIA") {
+  if (role === "OPERATOR" && branch !== "FABRICATION") {
     if (!stationRaw || !STATIONS.includes(stationRaw as any)) return "Operators must be assigned a machine/station.";
     station = stationRaw;
   }

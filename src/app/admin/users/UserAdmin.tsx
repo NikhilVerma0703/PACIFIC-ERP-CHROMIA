@@ -44,9 +44,8 @@ export function UserAdmin({ users, creatable, creatableByBranch = {}, stations, 
   // Fabrication machine assignment happens later at /fab/session (a cookie
   // picked at login time), not via the Shop Floor `station` column — so the
   // Shop Floor machine/station field below neither applies nor should be
-  // required for a Fabrication Machine Operator. Chromia is the same: its
-  // machines are chromia_machine rows, not Station enum values.
-  const isFabrication = !sales && (branch === "FABRICATION" || branch === "CHROMIA");
+  // required for a Fabrication Machine Operator.
+  const isFabrication = !sales && branch === "FABRICATION";
   const [globalPending, startGlobal] = useTransition();
   const [globalNote, setGlobalNote] = useState<string | null>(null);
   const router = useRouter();
@@ -156,7 +155,7 @@ function Row({ u, stations, sales = false, myRole, myId, onChange }: { u: UserRo
       </td>
       <td className="py-2 pr-4">{sales && u.salesRole ? (DUTY_LABEL[u.salesRole] ?? u.salesRole) : roleLabelFor(u.role, u.branch)}</td>
       {!sales && <td className="py-2 pr-4">
-        {u.role === "OPERATOR" && u.branch !== "FABRICATION" && u.branch !== "CHROMIA" ? (
+        {u.role === "OPERATOR" && u.branch !== "FABRICATION" ? (
           <select defaultValue={u.station ?? ""} disabled={pending}
             onChange={(e) => act(() => setStation(u.id, e.target.value || null))}
             className="rounded-md border border-gray-300 px-2 py-1 text-xs">
