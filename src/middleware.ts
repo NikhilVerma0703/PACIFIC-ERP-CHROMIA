@@ -130,6 +130,26 @@ export default auth((req) => {
     }
   }
 
+  // ---- Batch verification: the two sign-offs either side of the costing
+  // sheet. A named production manager confirms the weights the mixer recorded;
+  // the store incharge confirms the prices they are costed at. Deliberately a
+  // SEPARATE path from /office/costing above, which stays admin-only: widening
+  // that gate to admit two more roles would put the whole cost base - manpower,
+  // electricity, supplier rates, the computed sheet - behind a door that was
+  // opened to let somebody check a resin weight.
+  //
+  // This is the coarse gate. WHICH HALF a caller sees is decided in the route
+  // itself from the session, because a middleware that can only say yes or no
+  // to a path cannot say "weights but not prices". ----
+  if (p.startsWith("/office/batch-verify") || p.startsWith("/api/office/batch-verify")) {
+    const verifyOk = isAdmin || role === "STORE" || role === "LINE_MANAGER";
+    if (!verifyOk) {
+      return p.startsWith("/api")
+        ? new Response("Forbidden", { status: 403 })
+        : Response.redirect(new URL("/", nextUrl));
+    }
+  }
+
   if (!isAdmin && branch === "CHROMIA") {
     // Chromia staff: the Chromia module is their whole ERP — every rank.
     // Unlike Fabrication (whose managers also get Overview "/"), the cap is
@@ -204,7 +224,15 @@ export default auth((req) => {
 
   if (role === "STORE") {
     // /tables is allowed but capped to RM tables (canSeeModel -> STORE_MODELS).
-    const ok = p === "/live" || p.startsWith("/store") || p.startsWith("/tables") || p.startsWith("/consumables") || p.startsWith("/api");
+    //
+    // /office/batch-verify is the ONE office path this role reaches: the store
+    // incharge signs off the prices a batch is costed at. Without it here the
+    // gate above would admit the role and this block would bounce it to /live -
+    // the page would exist, be granted, and still be unreachable. Exact-or-
+    // subpath rather than a bare prefix, so a future /office/batch-verify-admin
+    // is not opened by accident; the rest of /office stays closed.
+    const verify = p === "/office/batch-verify" || p.startsWith("/office/batch-verify/");
+    const ok = p === "/live" || verify || p.startsWith("/store") || p.startsWith("/tables") || p.startsWith("/consumables") || p.startsWith("/api");
     if (!ok) return Response.redirect(new URL("/live", nextUrl));
   }
   if (role === "OPERATOR") {
