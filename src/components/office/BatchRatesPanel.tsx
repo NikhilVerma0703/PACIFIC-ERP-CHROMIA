@@ -815,7 +815,10 @@ export function BatchRatesPanel({
                                 value={l.qty}
                                 onChange={(e) => setLines(c.item,
                                   lines.map((x, j) => j === i ? { ...x, qty: e.target.value } : x))}
-                                placeholder="the rest"
+                                // Under a heading that reads "How much (kg)",
+                                // "the rest" looked like a value somebody had
+                                // typed rather than what leaving it empty does.
+                                placeholder="blank = the rest"
                                 className={`${inp} max-w-[9rem]`}
                               />
                             </td>
