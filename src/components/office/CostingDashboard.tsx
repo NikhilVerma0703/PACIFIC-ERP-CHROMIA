@@ -73,6 +73,24 @@ interface Report {
     resinCycles: number; mixerCharges: number; runHours: number; wallClockHours: number;
     stoppages: { count: number; hours: number }; pressSlabs: number;
   };
+  /** The "View batch data & edit history" drawer payload — see report.ts. */
+  detail: {
+    consumption: {
+      resinKg: number;
+      resinByTank: Array<{ tank: string; cycles: number; kg: number }>;
+      gritCharges: Array<{ silo: string; band: string; label: string; kg: number }>;
+      gritUnresolvedKg: number;
+      fillerKg: number;
+      slabs3cm: number;
+      slabs2cm: number;
+    };
+    batchLines: Array<{
+      item: string; label: string; seq: number; qty: number | null; unit: string;
+      rate: number; description: string; savedBy: string; savedAt: string;
+    }>;
+    marks: Record<"WEIGHTS" | "COSTS", Array<{ status: "verified" | "stale"; by: string; at: string }>>;
+    changes: Array<{ at: string; actor: string | null; summary: string }>;
+  };
 }
 
 const inr = (n: number) => "₹" + n.toLocaleString("en-IN", { maximumFractionDigits: 2 });
@@ -139,13 +157,16 @@ function MaterialTable({ lines, totalLabel, total }: { lines: PricedLine[]; tota
 
 export function CostingDashboard() {
   const [batches, setBatches] = useState<BatchEntry[] | null>(null);
-  const [days, setDays] = useState(60);
   const [selected, setSelected] = useState("");
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   /** Why the batch list could not be read. Distinct from "no batches". */
   const [listError, setListError] = useState("");
+  /** The "View batch data & edit history" drawer. Closed on batch change —
+   *  history from one batch shown over another's sheet is how a wrong "who
+   *  changed this" gets quoted in an argument. */
+  const [showDetail, setShowDetail] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -156,7 +177,12 @@ export function CostingDashboard() {
     // looked like a plant that had never run. The same trap the fabrication
     // queues had: "empty" and "failed" must never draw the same.
     setListError("");
-    fetch(`${API}?days=${days}`, { cache: "no-store" })
+    // days=365 — the API's own cap, and today it covers every mixer_cycle row
+    // there is (the table starts 2026-06). The "look back N days" control is
+    // gone on the owner's instruction; it only ever bounded THIS PICKER LIST.
+    // The per-batch pull (loadBatchConsumption) filters by batch_key alone, so
+    // selecting a batch always fetched everything regardless of the control.
+    fetch(`${API}?days=365`, { cache: "no-store" })
       .then(async (r) => {
         const res = await readJson<{ batches: BatchEntry[] }>(r);
         // The old guard caught a bad body but then said "Could not list
@@ -171,9 +197,12 @@ export function CostingDashboard() {
         setListError(e instanceof Error ? e.message : String(e));
       });
     return () => { live = false; };
-  }, [days]);
+  }, []);
 
   const load = useCallback(async (key: string) => {
+    // A reload of the SAME batch (after a rate save) keeps the drawer as the
+    // user left it; picking a different batch closes it.
+    if (key !== selected) setShowDetail(false);
     setSelected(key);
     setReport(null);
     setError("");
@@ -192,7 +221,7 @@ export function CostingDashboard() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selected]);
 
   const s = report?.sheet ?? null;
 
@@ -212,7 +241,6 @@ export function CostingDashboard() {
    * than annotated, and the panel says which figure is missing.
    */
   const notCostable = !!s && s.output.totalSlabs <= 0;
-  const onThisBatch = new Set(report?.basis.batchRates ?? []);
 
   return (
     <div className="space-y-5">
@@ -228,20 +256,11 @@ export function CostingDashboard() {
               </option>
             ))}
           </select>
-          <label className="flex items-center gap-2 text-xs text-gray-500">
-            Look back
-            <select value={days} onChange={(e) => setDays(Number(e.target.value))} className={selCls}>
-              <option value={30}>30 days</option>
-              <option value={60}>60 days</option>
-              <option value={120}>120 days</option>
-              <option value={365}>a year</option>
-            </select>
-          </label>
           {batches === null && <span className="text-xs text-gray-400">Loading batches…</span>}
           {/* "Nothing ran" and "the list would not load" are different facts and
               must not share a sentence. */}
           {batches?.length === 0 && !listError && (
-            <span className="text-xs text-gray-400">No batches with mixer records in this window.</span>
+            <span className="text-xs text-gray-400">No batches with mixer records in the last year.</span>
           )}
           {listError && (
             <span className="rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700">
@@ -249,6 +268,15 @@ export function CostingDashboard() {
             </span>
           )}
           {loading && <span className="text-xs text-gray-400">Computing…</span>}
+          {report && (
+            <button
+              type="button"
+              onClick={() => setShowDetail((v) => !v)}
+              className="ml-auto self-center text-center text-sm font-medium text-brand hover:underline"
+            >
+              {showDetail ? "Hide batch data & edit history" : "View batch data & edit history"}
+            </button>
+          )}
         </div>
         {report && (
           <p className="mt-2 text-xs text-gray-400">
@@ -257,6 +285,142 @@ export function CostingDashboard() {
           </p>
         )}
         {error && <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+
+        {/* ---- batch data & edit history drawer ----
+            The consumption figures repeat what the sheet below prices — the
+            owner said redundancy is fine to trim, so this keeps the raw
+            mixer-side facts (what ran, what was weighed, slab counts) and puts
+            its weight on THE CHANGES: who set which price when, who marked
+            what correct, off the append-only action log. */}
+        {report && showDetail && (
+          <div className="mt-4 space-y-5 border-t border-gray-200 pt-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <Kpi label="Mixer cycles ran" value={num(report.stats.resinCycles, 0)} sub={`${num(report.stats.mixerCharges, 0)} mixer charges`} />
+              <Kpi label="Slabs · 2 cm" value={num(report.detail.consumption.slabs2cm, 0)} />
+              <Kpi label="Slabs · 3 cm" value={num(report.detail.consumption.slabs3cm, 0)} />
+              <Kpi label="Run" value={`${num(report.stats.runHours, 1)} h`} sub={`${num(report.stats.stoppages.hours, 1)} h stopped · ${report.stats.pressSlabs} pressed`} />
+            </div>
+
+            <div>
+              <p className="mb-1 text-xs font-medium text-gray-500">Consumption at the mixer</p>
+              <div className="overflow-x-auto">
+                <table className="w-full max-w-2xl text-sm">
+                  <thead><tr className={thead}>
+                    <th className={th}>Material</th><th className={th}>Where</th>
+                    <th className={`${th} text-right`}>Quantity</th>
+                  </tr></thead>
+                  <tbody>
+                    {report.detail.consumption.resinByTank.map((t) => (
+                      <tr key={t.tank} className={row}>
+                        <td className={td}>Resin</td>
+                        <td className={`${td} text-xs text-gray-500`}>tank {t.tank} · {t.cycles} cycles</td>
+                        <td className={`${td} text-right`}>{num(t.kg, 1)} kg</td>
+                      </tr>
+                    ))}
+                    {report.detail.consumption.gritCharges.map((g, i) => (
+                      <tr key={`${g.silo}-${g.band}-${i}`} className={row}>
+                        <td className={td}>{g.label}</td>
+                        <td className={`${td} text-xs text-gray-500`}>silo {g.silo}</td>
+                        <td className={`${td} text-right`}>{num(g.kg, 1)} kg</td>
+                      </tr>
+                    ))}
+                    <tr className={row}>
+                      <td className={td}>Filler 400#</td>
+                      <td className={`${td} text-xs text-gray-500`}>mixer</td>
+                      <td className={`${td} text-right`}>{num(report.detail.consumption.fillerKg, 1)} kg</td>
+                    </tr>
+                    {report.detail.consumption.gritUnresolvedKg > 0 && (
+                      <tr className={row}>
+                        <td className={`${td} text-amber-700`}>Grit with no silo link</td>
+                        <td className={`${td} text-xs text-gray-500`}>unresolved</td>
+                        <td className={`${td} text-right text-amber-700`}>{num(report.detail.consumption.gritUnresolvedKg, 1)} kg</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div>
+              <p className="mb-1 text-xs font-medium text-gray-500">Prices set on this batch — by whom, and when</p>
+              {report.detail.batchLines.length === 0 ? (
+                <p className="text-sm text-gray-500">None — everything prices at the card.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead><tr className={thead}>
+                      <th className={th}>Material</th><th className={`${th} text-right`}>Quantity</th>
+                      <th className={`${th} text-right`}>Rate</th><th className={th}>Supplier</th>
+                      <th className={th}>Set by</th><th className={th}>When</th>
+                    </tr></thead>
+                    <tbody>
+                      {report.detail.batchLines.map((l, i) => (
+                        <tr key={i} className={row}>
+                          <td className={`${td} text-gray-900`}>{l.label}</td>
+                          <td className={`${td} text-right`}>{l.qty == null ? "the rest" : `${num(l.qty, 3)} ${l.unit}`}</td>
+                          <td className={`${td} text-right`}>{inr(l.rate)}</td>
+                          <td className={`${td} text-xs text-gray-500`}>{l.description || "—"}</td>
+                          <td className={td}>{l.savedBy}</td>
+                          <td className={`${td} text-xs text-gray-500`}>
+                            {new Date(l.savedAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <p className="mb-1 text-xs font-medium text-gray-500">Verification — who marked what correct</p>
+              <div className="space-y-1 text-sm">
+                {(["WEIGHTS", "COSTS"] as const).map((side) => {
+                  const marks = report.detail.marks[side];
+                  const what = side === "WEIGHTS" ? "Consumption" : "Prices";
+                  return (
+                    <div key={side} className="flex flex-wrap items-center gap-2">
+                      <span className="w-24 text-xs font-medium text-gray-500">{what}</span>
+                      {marks.length === 0 ? (
+                        <Badge tone="amber">not yet marked</Badge>
+                      ) : marks.map((m) => (
+                        <span key={m.by} className="flex items-center gap-1.5">
+                          <Badge tone={m.status === "verified" ? "green" : "amber"}>
+                            {m.status === "verified" ? "correct" : "changed since"}
+                          </Badge>
+                          <span className="text-xs text-gray-500">
+                            {m.by} · {new Date(m.at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}
+                          </span>
+                        </span>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
+              <p className="mb-1 text-xs font-medium text-gray-500">Edit history — every change, newest first</p>
+              {report.detail.changes.length === 0 ? (
+                <p className="text-sm text-gray-500">
+                  No recorded changes yet. Price sets, clears and verification marks land here
+                  from now on; rate-card revisions keep their own history on the card above.
+                </p>
+              ) : (
+                <ul className="space-y-1 text-sm">
+                  {report.detail.changes.map((ch, i) => (
+                    <li key={i} className="flex flex-wrap items-baseline gap-2">
+                      <span className="text-xs text-gray-400">
+                        {new Date(ch.at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}
+                      </span>
+                      <span className="text-gray-700">{ch.summary}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        )}
       </Card>
 
       {/* ---- rates for this batch ---- */}
@@ -265,6 +429,12 @@ export function CostingDashboard() {
           key={report.batchKey}
           batchKey={report.batchKey}
           batchLabel={report.batch}
+          // The unpriced flags live INLINE beside this panel's heading now
+          // (owner, 2026-08-18) — the two standalone banner blocks that used to
+          // sit below are gone. The guard itself is untouched: report.ts still
+          // withholds the sheet while either list is non-empty.
+          needsBatchRates={report.needsBatchRates}
+          unpriced={report.unpriced.map((u) => u.item)}
           // Re-read the sheet rather than patching it: the report is computed
           // from mixer records and the card on every read, so recomputing is
           // the only way the totals, shares and per-sqft lines all move
@@ -293,40 +463,17 @@ export function CostingDashboard() {
             <p className="mt-1 text-red-700">
               {report.basis.rowsInForce} revision(s) were in force on {report.rateDate}, so the rest
               of the card resolved — only what is listed above is outstanding. The variance panel
-              and the basis below still show, so the run stays inspectable meanwhile.
+              below still shows, so the run stays inspectable meanwhile.
             </p>
           )}
         </div>
       )}
 
-      {/* Priced, but at the plant's card rather than at what this run paid. The
-          sheet is withheld rather than annotated: a total nobody can tell apart
-          from this batch's own is the one a container gets priced from. */}
-      {report && report.needsBatchRates.length > 0 && (
-        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-          <p className="font-medium">
-            No sheet yet — these were bought for this batch but have no price entered against it:{" "}
-            {report.needsBatchRates.join(", ")}.
-          </p>
-          <p className="mt-1 text-red-700">
-            The rate card would price them, but at whatever was last set for the whole plant, which
-            is another run&rsquo;s cost wearing this one&rsquo;s name. Enter what this batch actually
-            paid, in the panel above, and the sheet computes. The variance panel and the basis
-            below still show, so the run stays inspectable meanwhile.
-          </p>
-        </div>
-      )}
-
-      {report && report.unpriced.length > 0 && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          <p className="font-medium">Used in this batch but not priced. None of it is in the totals below:</p>
-          <ul className="mt-1 list-inside list-disc">
-            {report.unpriced.map((u, i) => (
-              <li key={i}>{u.item}{u.qty != null ? ` — ${num(u.qty)} ${u.unit}` : ""} · needs {u.needs}</li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {/* The standalone "no sheet yet" and "used but not priced" banners are
+          gone (owner, 2026-08-18): both facts are flagged inline beside the
+          "Materials for this batch" heading in the panel above, which is also
+          where the fix happens. report.ts still withholds the sheet — this
+          removed two renderings of the same warning, not the guard. */}
 
       {/* ---- not costable yet: say what is missing, print nothing ---- */}
       {s && notCostable && (
@@ -347,7 +494,8 @@ export function CostingDashboard() {
           {report!.unpriced.length > 0 && (
             <p className="mt-2 text-sm text-amber-700">
               Worth fixing while you wait: {report!.unpriced.length} consumed material
-              {report!.unpriced.length === 1 ? " has" : "s have"} no rate, listed above.
+              {report!.unpriced.length === 1 ? " has" : "s have"} no rate — set
+              {report!.unpriced.length === 1 ? " it" : " them"} in the materials panel above.
               Those quantities stay out of the total even once slabs are recorded.
             </p>
           )}
@@ -502,47 +650,12 @@ export function CostingDashboard() {
         </Section>
       )}
 
-      {/* ---- 6 · basis ---- */}
-      {report && (
-        <Section title="Basis — every assumption, printed">
-          <ul className="list-inside list-disc space-y-1 text-sm text-gray-700">
-            {report.basis.assumptions.map((a, i) => <li key={i}>{a}</li>)}
-          </ul>
-          <div className="mt-3 border-t border-gray-100 pt-3">
-            <p className="mb-1 text-xs font-medium text-gray-500">Rates used, and since when</p>
-            {/* A rate set on this batch is toned differently from one that came
-                off the card. Both are legitimate; showing them identically is
-                what would let a reader take a hand-typed number for the
-                month's published rate. */}
-            <div className="flex flex-wrap gap-1.5">
-              {Object.entries(report.basis.effectiveFrom).map(([k, v]) => (
-                <Badge key={k} tone={onThisBatch.has(k) ? "amber" : "brand"}>
-                  {k}: {v}
-                </Badge>
-              ))}
-            </div>
-            {onThisBatch.size > 0 && (
-              <p className="mt-2 text-xs text-amber-700">
-                {onThisBatch.size} rate{onThisBatch.size === 1 ? " is" : "s are"} set on this batch
-                (amber) and override the {report.rateDate} card.
-              </p>
-            )}
-            {/* Anything the split and the mixer disagreed about is spelled out
-                in the assumptions above, not summarised here — a refusal
-                reduced to a chip is a refusal nobody reads. */}
-            <p className="mt-2 text-xs text-gray-500">
-              Monthly figures divided by {report.basis.daysPerMonth ?? "—"} days, the length of the
-              month this run started in.
-            </p>
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-gray-500 sm:grid-cols-4">
-            <span>{report.stats.resinCycles} resin cycles</span>
-            <span>{report.stats.mixerCharges} mixer charges</span>
-            <span>{num(report.stats.runHours, 1)} h run · {num(report.stats.stoppages.hours, 1)} h stopped</span>
-            <span>{report.stats.pressSlabs} slabs pressed</span>
-          </div>
-        </Section>
-      )}
+      {/* The "Basis — every assumption, printed" section is REMOVED on the
+          owner's instruction (2026-08-18). The data behind it still ships in
+          the payload untouched: basis.rowsInForce / earliestRevision drive the
+          blockedBy banner above, and stats feeds the batch-data drawer on the
+          picker card. Removing the rendering removed nothing other screens or
+          the computation rely on. */}
     </div>
   );
 }

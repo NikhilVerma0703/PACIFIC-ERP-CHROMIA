@@ -2,13 +2,13 @@
 
 // One batch, one or two halves, and a button that means something.
 //
-// The screen shows only what the person signing it needs to look at. A
-// production manager gets the weighed quantities and no rupee figure anywhere;
-// a store incharge gets unit prices and no quantity to multiply them by. That
-// separation is enforced in the API — this component renders whatever arrives
-// and never asks for the other half — but it is also the point of the design,
-// so the copy says which half you are looking at rather than leaving a blank
-// column to be read as missing data.
+// The screen shows only what the person signing it needs to look at. Both
+// verifiers — the store incharge and the named production verifier — now see
+// and sign BOTH halves (owner, 2026-08-18; verification.ts records the
+// widening): the weighed quantities and the unit prices. What is still never
+// here is a total or a computed sheet — nothing multiplied — and that boundary
+// is enforced in the API; this component renders whatever arrives and asks for
+// nothing more.
 //
 // "Verified" is never a bare tick. It carries who signed and when, and it
 // lapses on its own when the numbers move underneath it, because a sign-off
@@ -33,10 +33,9 @@ interface BatchRow {
   batchKey: string; batch: string; design: string; slabs: number; cycles: number;
   firstPress: string | null; lastPress: string | null;
 }
-type State =
-  | { status: "unverified" }
-  | { status: "verified"; by: string; at: string }
-  | { status: "stale"; by: string; at: string };
+/** One person's mark. A side's marks are a LIST now — both verifiers can hold
+ *  one each — and an empty list is "not verified". */
+interface Mark { status: "verified" | "stale"; by: string; at: string }
 
 interface Weights {
   resinKg: number; resinCycles: number;
@@ -57,7 +56,9 @@ interface Prices {
 interface Detail {
   batchKey: string; batch: string; design: string;
   can: Side[]; sign: Side[];
-  verification: Record<Side, State>;
+  /** The signed-in name — how the screen tells your mark from the other verifier's. */
+  me?: string;
+  verification: Record<Side, Mark[]>;
   weights?: Weights;
   prices?: Prices;
 }
@@ -65,27 +66,32 @@ interface Detail {
 const when = (iso: string) =>
   new Date(iso).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
 
-/** The state strip for one half — who signed it, and whether it still holds. */
-function Verdict({ state }: { state: State }) {
-  if (state.status === "verified") {
-    return (
-      <span className="flex flex-wrap items-center gap-2">
-        <Badge tone="green">Verified</Badge>
-        <span className="text-xs text-gray-500">by {state.by} · {when(state.at)}</span>
-      </span>
-    );
-  }
-  if (state.status === "stale") {
-    return (
-      <span className="flex flex-wrap items-center gap-2">
-        <Badge tone="amber">Needs checking again</Badge>
-        <span className="text-xs text-amber-700">
-          {state.by} verified this on {when(state.at)}, and the numbers have changed since.
+/** The state strip for one half — every signature it carries, each with who
+ *  and when, and whether it still holds. One entry per person: the marks are
+ *  per verifier now, so one going stale does not unsay the other. */
+function Verdict({ marks }: { marks: Mark[] }) {
+  if (marks.length === 0) return <Badge tone="amber">Not verified</Badge>;
+  return (
+    <span className="flex flex-col items-end gap-1">
+      {marks.map((m) => (
+        <span key={m.by} className="flex flex-wrap items-center gap-2">
+          {m.status === "verified" ? (
+            <>
+              <Badge tone="green">Verified</Badge>
+              <span className="text-xs text-gray-500">by {m.by} · {when(m.at)}</span>
+            </>
+          ) : (
+            <>
+              <Badge tone="amber">Needs checking again</Badge>
+              <span className="text-xs text-amber-700">
+                {m.by} verified this on {when(m.at)}, and the numbers have changed since.
+              </span>
+            </>
+          )}
         </span>
-      </span>
-    );
-  }
-  return <Badge tone="amber">Not verified</Badge>;
+      ))}
+    </span>
+  );
 }
 
 export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
@@ -176,7 +182,7 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
             <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
               Weights — what the mixer recorded
             </h2>
-            <Verdict state={detail.verification.WEIGHTS} />
+            <Verdict marks={detail.verification.WEIGHTS} />
           </div>
 
           <div className="grid gap-3 sm:grid-cols-3">
@@ -254,24 +260,29 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
             )}
           </div>
 
-          {sign.includes("WEIGHTS") && (
-            <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3">
-              <button type="button" className={btn} disabled={busy === "WEIGHTS"}
-                onClick={() => void act("WEIGHTS", false)}>
-                {busy === "WEIGHTS" ? "Saving…"
-                  : detail.verification.WEIGHTS.status === "verified" ? "Verified" : "Mark weights verified"}
-              </button>
-              {detail.verification.WEIGHTS.status !== "unverified" && (
-                <button type="button" className={btnGhost} disabled={busy === "WEIGHTS"}
-                  onClick={() => void act("WEIGHTS", true)}>
-                  Withdraw
+          {sign.includes("WEIGHTS") && (() => {
+            // Your OWN mark decides the button — the other verifier's does not
+            // make this "Verified" for you, and withdrawing only removes yours.
+            const mine = detail.verification.WEIGHTS.find((m) => m.by === detail.me);
+            return (
+              <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3">
+                <button type="button" className={btn} disabled={busy === "WEIGHTS"}
+                  onClick={() => void act("WEIGHTS", false)}>
+                  {busy === "WEIGHTS" ? "Saving…"
+                    : mine?.status === "verified" ? "Verified by you" : "Mark consumption correct"}
                 </button>
-              )}
-              <span className="text-xs text-gray-400">
-                You are confirming these are the quantities the batch actually consumed.
-              </span>
-            </div>
-          )}
+                {mine && (
+                  <button type="button" className={btnGhost} disabled={busy === "WEIGHTS"}
+                    onClick={() => void act("WEIGHTS", true)}>
+                    Withdraw
+                  </button>
+                )}
+                <span className="text-xs text-gray-400">
+                  You are confirming these are the quantities the batch actually consumed.
+                </span>
+              </div>
+            );
+          })()}
         </Card>
       )}
 
@@ -281,7 +292,7 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
             <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
               Prices — the rates this batch is costed at
             </h2>
-            <Verdict state={detail.verification.COSTS} />
+            <Verdict marks={detail.verification.COSTS} />
           </div>
 
           <p className="mb-3 text-sm text-gray-500">
@@ -351,24 +362,27 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
             </p>
           )}
 
-          {sign.includes("COSTS") && (
-            <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3">
-              <button type="button" className={btn} disabled={busy === "COSTS"}
-                onClick={() => void act("COSTS", false)}>
-                {busy === "COSTS" ? "Saving…"
-                  : detail.verification.COSTS.status === "verified" ? "Verified" : "Mark prices verified"}
-              </button>
-              {detail.verification.COSTS.status !== "unverified" && (
-                <button type="button" className={btnGhost} disabled={busy === "COSTS"}
-                  onClick={() => void act("COSTS", true)}>
-                  Withdraw
+          {sign.includes("COSTS") && (() => {
+            const mine = detail.verification.COSTS.find((m) => m.by === detail.me);
+            return (
+              <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3">
+                <button type="button" className={btn} disabled={busy === "COSTS"}
+                  onClick={() => void act("COSTS", false)}>
+                  {busy === "COSTS" ? "Saving…"
+                    : mine?.status === "verified" ? "Verified by you" : "Mark prices correct"}
                 </button>
-              )}
-              <span className="text-xs text-gray-400">
-                You are confirming these are the rates the batch should be costed at.
-              </span>
-            </div>
-          )}
+                {mine && (
+                  <button type="button" className={btnGhost} disabled={busy === "COSTS"}
+                    onClick={() => void act("COSTS", true)}>
+                    Withdraw
+                  </button>
+                )}
+                <span className="text-xs text-gray-400">
+                  You are confirming these are the rates the batch should be costed at.
+                </span>
+              </div>
+            );
+          })()}
         </Card>
       )}
 
@@ -376,7 +390,7 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
         <Card>
           <p className="text-sm text-gray-500">
             You can read both halves and sign neither. A verification is one named person saying
-            they checked it — production signs the weights, the store signs the prices.
+            they checked it — each of the two verifiers marks both the consumption and the prices.
           </p>
         </Card>
       )}

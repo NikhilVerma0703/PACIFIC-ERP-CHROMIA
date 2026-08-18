@@ -31,33 +31,29 @@ export default async function BatchVerifyPage() {
   const sign = signableSides(role, email, raw);
   if (!can.length) redirect("/");
 
-  const onlyWeights = can.length === 1 && can[0] === "WEIGHTS";
-  const onlyPrices = can.length === 1 && can[0] === "COSTS";
+  // Both verifiers now read and sign BOTH halves (owner, 2026-08-18), so the
+  // old one-sided descriptions collapsed into one. Admin still reads both and
+  // signs neither.
+  const signer = sign.length > 0;
 
   return (
     <Shell>
       <div className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Verify a batch</h1>
         <p className="mt-1 max-w-2xl text-sm text-gray-500">
-          {onlyWeights && (
+          {signer ? (
             <>
-              What the mixer weighed for each batch — resin, grit by silo, filler and the
-              charge count. Check it against the floor and mark it verified. If a record is
-              corrected afterwards the batch comes back here needing a fresh check.
+              Both halves of a batch check: the consumption the mixer recorded — resin, grit by
+              silo, filler and the charge count — and the unit prices the batch is costed at.
+              Check each against the floor and the invoices and mark it correct; your mark sits
+              beside the other verifier&rsquo;s, named and timed. If a record or a rate changes
+              afterwards, your mark lapses and the batch comes back here needing a fresh check.
             </>
-          )}
-          {onlyPrices && (
+          ) : (
             <>
-              The unit prices each batch is costed at — what the rate card holds and anything
-              set on the batch itself. Check them and mark them verified. If a rate is revised
-              afterwards the batch comes back here needing a fresh check.
-            </>
-          )}
-          {!onlyWeights && !onlyPrices && (
-            <>
-              Both halves of a batch check, as the two people who sign them see it. Weights are
-              confirmed by production, prices by the store. You can read both and sign neither —
-              a verification is one named person saying they checked it.
+              Both halves of a batch check, as the two people who sign them see it. Each of the
+              two verifiers marks both the consumption and the prices. You can read both and
+              sign neither — a verification is a named person saying they checked it.
             </>
           )}
         </p>

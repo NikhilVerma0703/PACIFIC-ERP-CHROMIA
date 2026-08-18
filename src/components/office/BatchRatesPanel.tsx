@@ -41,10 +41,9 @@ interface SavedLine {
   qty: number | null; rate: number; description: string; note: string | null; unit: string;
   savedBy: string; savedAt: string;
 }
-type SignState =
-  | { status: "unverified" }
-  | { status: "verified"; by: string; at: string }
-  | { status: "stale"; by: string; at: string };
+/** One person's sign-off mark. A side carries a LIST of these now — both
+ *  verifiers can hold one each — and an empty list means nobody has yet. */
+interface SignMark { status: "verified" | "stale"; by: string; at: string }
 interface CardShape {
   onDate: string;
   resinBySupplier: Record<string, number>;
@@ -59,8 +58,8 @@ interface Payload {
   mixer: Record<string, { qty: number; unit: string }>;
   /** Suppliers to suggest — this batch's own, plus its card's resin suppliers. */
   descriptions?: string[];
-  /** Whether production and the store have signed this batch off. */
-  signoff?: { WEIGHTS: SignState; COSTS: SignState };
+  /** Who has signed this batch off — every mark, per side. */
+  signoff?: { WEIGHTS: SignMark[]; COSTS: SignMark[] };
 }
 
 /** A row being edited. Blank qty means "whatever is left". */
@@ -119,10 +118,16 @@ const DOSED_BY: Readonly<Record<string, string>> = {
 };
 
 export function BatchRatesPanel({
-  batchKey, batchLabel, onSaved,
+  batchKey, batchLabel, needsBatchRates = [], unpriced = [], onSaved,
 }: {
   batchKey: string;
   batchLabel: string;
+  /** Materials consumed here but priced only from the plant card — the sheet
+   *  is withheld until they get a price on THIS batch. Flagged inline beside
+   *  the heading (owner, 2026-08-18) instead of as standalone banners. */
+  needsBatchRates?: string[];
+  /** Materials consumed here with no rate anywhere — out of the totals. */
+  unpriced?: string[];
   onSaved: () => void;
 }) {
   const [data, setData] = useState<Payload | null>(null);
@@ -212,6 +217,19 @@ export function BatchRatesPanel({
     return [...known, ...rest].map((f) => ({ family: f, ...byFamily.get(f)! }));
   }, [data]);
 
+  // The one inline flag that replaced two standalone banner blocks (owner,
+  // 2026-08-18): anything consumed here that the sheet cannot honestly total —
+  // no price on this batch, or no rate anywhere — is named right beside the
+  // heading of the panel where the fix happens. Deduped because a material can
+  // reach both lists, and the reader wants it named once.
+  const flagged = [...new Set([...needsBatchRates, ...unpriced])];
+  const priceFlag = flagged.length > 0 ? (
+    <p className="mt-1 text-sm font-medium text-amber-700">
+      ⚠ {flagged.join(", ")} — used in this batch but not priced yet. To see the
+      summary, please set the prices.
+    </p>
+  ) : null;
+
   if (open === false || open === null) {
     return (
       <Card>
@@ -220,6 +238,7 @@ export function BatchRatesPanel({
             <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
               Materials for this batch
             </h2>
+            {priceFlag}
             {savedItems.length > 0 ? (
               <p className="mt-1 text-sm text-gray-700">
                 <span className="font-medium">
@@ -945,6 +964,7 @@ export function BatchRatesPanel({
           <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
             Materials for this batch · {savedItems.length} priced here
           </h2>
+          {priceFlag}
           <div className="mt-1 max-w-3xl space-y-1 text-sm text-gray-500">
             <p>
               <span className="font-medium text-gray-700">You are setting two things per material:</span>{" "}
@@ -979,31 +999,32 @@ export function BatchRatesPanel({
       {data.signoff && (
         <div className="mb-3 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-gray-200 px-4 py-2.5 text-xs">
           {([
-            ["WEIGHTS", "Weights", "production"],
-            ["COSTS", "Prices", "the store"],
-          ] as const).map(([side, label, who]) => {
-            const st = data.signoff![side];
+            ["WEIGHTS", "Consumption"],
+            ["COSTS", "Prices"],
+          ] as const).map(([side, label]) => {
+            // A LIST per side now: both verifiers can hold a mark, each of
+            // which lapses on its own when the numbers move under it.
+            const marks = data.signoff![side];
             return (
               <span key={side} className="flex flex-wrap items-center gap-2">
                 <span className="font-medium text-gray-500">{label}</span>
-                {st.status === "verified" && (
-                  <>
-                    <Badge tone="green">Accepted</Badge>
-                    <span className="text-gray-500">by {st.by}</span>
-                  </>
-                )}
-                {st.status === "stale" && (
-                  <>
-                    <Badge tone="amber">Changed since accepted</Badge>
-                    <span className="text-amber-700">{st.by} accepted an earlier version</span>
-                  </>
-                )}
-                {st.status === "unverified" && (
+                {marks.length === 0 && (
                   <>
                     <Badge tone="amber">Not yet accepted</Badge>
-                    <span className="text-gray-400">waiting on {who}</span>
+                    <span className="text-gray-400">waiting on the verifiers</span>
                   </>
                 )}
+                {marks.map((m) => m.status === "verified" ? (
+                  <span key={m.by} className="flex items-center gap-1.5">
+                    <Badge tone="green">Accepted</Badge>
+                    <span className="text-gray-500">by {m.by}</span>
+                  </span>
+                ) : (
+                  <span key={m.by} className="flex items-center gap-1.5">
+                    <Badge tone="amber">Changed since accepted</Badge>
+                    <span className="text-amber-700">{m.by} accepted an earlier version</span>
+                  </span>
+                ))}
               </span>
             );
           })}

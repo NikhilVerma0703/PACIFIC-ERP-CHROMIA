@@ -1,15 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  canVerifyCosts, canVerifyWeights, costsFingerprint, isVerifySide, readableSides,
-  signableSides, verifyState, weightsFingerprint, weightsVerifiers,
+  canVerifyCosts, canVerifyWeights, costsFingerprint, isBatchVerifier, isVerifySide,
+  readableSides, signableSides, verifyMarks, verifyState, weightsFingerprint,
+  weightsVerifiers,
   type PricedShape, type VerificationRow, type WeighedShape,
 } from "../src/lib/costing/verification.ts";
 
-// Two people sign a batch off and neither sees the other's half. The rules that
-// matter are the ones a browser cannot demonstrate: that a sign-off lapses when
-// the numbers move, that an unset env var locks the door rather than opening
-// it, and that an admin who can see both halves can still sign neither.
+// Two people sign a batch off — and since 2026-08-18 each of them signs BOTH
+// halves, one mark per person. The rules that matter are the ones a browser
+// cannot demonstrate: that a sign-off lapses when the numbers move, that one
+// person's mark lapsing does not unsay the other's, that an unset env var
+// locks the door rather than opening it, and that an admin who can see both
+// halves can still sign neither.
 
 const weighed = (over: Partial<WeighedShape> = {}): WeighedShape => ({
   resinKg: 41873,
@@ -147,19 +150,32 @@ test("a blank or missing email never matches, even against a populated list", ()
   assert.equal(canVerifyWeights("   ", raw), false);
 });
 
-test("the store incharge signs prices; no other role does", () => {
+test("the store incharge is a verifier by role; no other role is", () => {
   assert.equal(canVerifyCosts("STORE"), true);
   for (const r of ["ADMIN", "LINE_MANAGER", "INCHARGE", "OPERATOR", "FINANCE", null, undefined]) {
-    assert.equal(canVerifyCosts(r), false, `${r} must not sign prices`);
+    assert.equal(canVerifyCosts(r), false, `${r} must not be a verifier by role`);
   }
 });
 
-test("each verifier reads only the half they sign", () => {
+test("both verifiers read and sign BOTH halves (owner, 2026-08-18)", () => {
   const raw = "satyadev@thepacific.group";
-  assert.deepEqual(readableSides("LINE_MANAGER", "satyadev@thepacific.group", raw), ["WEIGHTS"]);
-  assert.deepEqual(readableSides("STORE", "store@thepacific.group", raw), ["COSTS"]);
-  // A Line Manager who is not the named person gets nothing at all.
+  // The named production verifier: both sides.
+  assert.deepEqual(readableSides("LINE_MANAGER", "satyadev@thepacific.group", raw), ["WEIGHTS", "COSTS"]);
+  assert.deepEqual(signableSides("LINE_MANAGER", "satyadev@thepacific.group", raw), ["WEIGHTS", "COSTS"]);
+  // The store incharge: both sides.
+  assert.deepEqual(readableSides("STORE", "store@thepacific.group", raw), ["WEIGHTS", "COSTS"]);
+  assert.deepEqual(signableSides("STORE", "store@thepacific.group", raw), ["WEIGHTS", "COSTS"]);
+  // A Line Manager who is not the named person still gets nothing at all.
   assert.deepEqual(readableSides("LINE_MANAGER", "other@thepacific.group", raw), []);
+  assert.deepEqual(signableSides("LINE_MANAGER", "other@thepacific.group", raw), []);
+});
+
+test("isBatchVerifier matches by role or by allowlist, and nobody else", () => {
+  const raw = "satyadev@thepacific.group";
+  assert.equal(isBatchVerifier("STORE", "store@thepacific.group", raw), true);
+  assert.equal(isBatchVerifier("LINE_MANAGER", "satyadev@thepacific.group", raw), true);
+  assert.equal(isBatchVerifier("LINE_MANAGER", "other@thepacific.group", raw), false);
+  assert.equal(isBatchVerifier("ADMIN", "boss@thepacific.group", raw), false);
 });
 
 test("admin reads both halves and signs neither", () => {
@@ -168,10 +184,42 @@ test("admin reads both halves and signs neither", () => {
   assert.deepEqual(signableSides("ADMIN", "boss@thepacific.group", raw), []);
 });
 
-test("being named on the allowlist does not also let you sign prices", () => {
-  const raw = "satyadev@thepacific.group";
-  assert.deepEqual(signableSides("LINE_MANAGER", "satyadev@thepacific.group", raw), ["WEIGHTS"]);
-  assert.deepEqual(signableSides("STORE", "satyadev@thepacific.group", raw), ["WEIGHTS", "COSTS"]);
+// ---- verifyMarks: one mark per person, each lapsing on its own ----
+
+const marksFixture = (fpNow: string): VerificationRow[] => [
+  { side: "WEIGHTS", fingerprint: fpNow, verifiedBy: "Satya", verifiedAt: "2026-08-18T06:00:00Z" },
+  { side: "WEIGHTS", fingerprint: "old-numbers", verifiedBy: "Thiru", verifiedAt: "2026-08-17T09:00:00Z" },
+  { side: "COSTS", fingerprint: fpNow, verifiedBy: "Thiru", verifiedAt: "2026-08-18T07:00:00Z" },
+];
+
+test("verifyMarks keeps both people's marks on one side, oldest first", () => {
+  const fp = "current";
+  const marks = verifyMarks(marksFixture(fp), "WEIGHTS", fp);
+  assert.equal(marks.length, 2);
+  assert.deepEqual(marks[0], { status: "stale", by: "Thiru", at: "2026-08-17T09:00:00Z" });
+  assert.deepEqual(marks[1], { status: "verified", by: "Satya", at: "2026-08-18T06:00:00Z" });
+});
+
+test("one person's mark lapsing does not unsay the other's", () => {
+  const fp = "current";
+  const marks = verifyMarks(marksFixture(fp), "WEIGHTS", fp);
+  assert.equal(marks.find((m) => m.by === "Satya")?.status, "verified");
+  assert.equal(marks.find((m) => m.by === "Thiru")?.status, "stale");
+});
+
+test("verifyMarks filters by side and an unmarked side is an empty list", () => {
+  const fp = "current";
+  assert.deepEqual(
+    verifyMarks(marksFixture(fp), "COSTS", fp),
+    [{ status: "verified", by: "Thiru", at: "2026-08-18T07:00:00Z" }],
+  );
+  assert.deepEqual(verifyMarks([], "WEIGHTS", fp), []);
+});
+
+test("every mark lapses together when the numbers move under all of them", () => {
+  const marks = verifyMarks(marksFixture("what-they-signed"), "WEIGHTS", "numbers-changed");
+  assert.equal(marks.length, 2);
+  for (const m of marks) assert.equal(m.status, "stale");
 });
 
 test("only the two sides are sides", () => {

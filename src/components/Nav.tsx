@@ -94,9 +94,13 @@ function Section({ label, items, path }: { label: string; items: { href: string;
 
 /* Main Nav export — flat, access-filtered sections (no dropdowns) */
 export function Nav({
-  showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false, intlSales = false, salesDuty = "",
+  showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false, intlSales = false, salesDuty = "", batchVerify = false,
 }: {
   showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; inventory?: boolean; consumables?: boolean; intlSales?: boolean; salesDuty?: string;
+  /** This login signs batch verifications (/office/batch-verify): the store
+   *  incharge by role, the production verifier by WEIGHTS_VERIFIER_EMAILS.
+   *  Computed in Shell — this client component must not read the env var. */
+  batchVerify?: boolean;
 }) {
   const path    = usePathname();
   const office  = branch === "OFFICE";
@@ -144,7 +148,15 @@ export function Nav({
   ];
 
   if (role === "STORE")
-    return <nav className="flex flex-col gap-1">{STORE_TABS.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}</nav>;
+    // Batch Sign-off is the ONE office path this role reaches (middleware caps
+    // the rest of /office away). It was granted there and linked nowhere — the
+    // store incharge could not find the screen built for them.
+    return (
+      <nav className="flex flex-col gap-1">
+        {STORE_TABS.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}
+        {batchVerify && <NavLink href="/office/batch-verify" icon={I.report} label="Batch Sign-off" path={path} />}
+      </nav>
+    );
   if (role === "COMMERCIAL")
     return (
       <nav className="flex flex-col gap-1">
@@ -214,6 +226,10 @@ export function Nav({
     { href: "/report", icon: I.report, label: "Production Report" },
     { href: "/mis",    icon: I.mis,    label: "Downtime" },
     { href: "/maintenance", icon: I.spanner, label: "Maintenance Log" },
+    // Only for the named production verifier (WEIGHTS_VERIFIER_EMAILS) — a
+    // shop-floor Line Manager who is not on that list never sees this, exactly
+    // as the page itself would bounce them home.
+    ...(batchVerify ? [{ href: "/office/batch-verify", icon: I.samples, label: "Batch Sign-off" }] : []),
   ];
   const fabrication = [
     ...(mgmt ? [{ href: "/fab/projects", icon: I.manager, label: "Manager View" }] : []),

@@ -82,6 +82,11 @@ export function RateCardEditor() {
   const [showHistory, setShowHistory] = useState(false);
   /** item|variant -> draft {rate, from, note} for the revision being typed. */
   const [drafts, setDrafts] = useState<Record<string, { rate: string; from: string; note: string }>>({});
+  /** Which rows have their revision boxes open. Default is the READ view
+   *  (owner, 2026-08-18): always-editable boxes made every glance at the card
+   *  look like an edit in progress. Edit opens one row's boxes; Save or Cancel
+   *  closes them. */
+  const [editing, setEditing] = useState<Record<string, boolean>>({});
 
   const refresh = useCallback(async () => {
     try {
@@ -178,15 +183,36 @@ export function RateCardEditor() {
     const d = draft(item);
     const rate = Number(d.rate);
     if (!Number.isFinite(rate) || rate <= 0) { setError("The rate must be a number above zero."); return; }
-    void save([{ item, rate, effectiveFrom: d.from, note: d.note || undefined }]);
+    void save([{ item, rate, effectiveFrom: d.from, note: d.note || undefined }])
+      .then(() => setEditing((p) => ({ ...p, [item]: false })));
   };
 
-  /** One editable line: current rate + the revision inputs. */
+  /** Who set the revision currently in force for an item.
+   *
+   *  Derived from the full revision list rather than sent separately: the row
+   *  in force is exactly the one whose effective_from the resolved card
+   *  reports for the item, and rows already carry createdBy. Rates here have
+   *  no variants (materials moved to the batch panel), so item + date is
+   *  enough to name the row. */
+  const setBy = (item: string): string | null => {
+    const since = state?.today.effectiveFrom[item];
+    if (!since) return null;
+    return state?.rows.find((r) => r.item === item && r.effectiveFrom === since)?.createdBy ?? null;
+  };
+
+  /**
+   * One line: a READ row — value, when it was last set and by whom — with an
+   * Edit button that opens the revision boxes (owner, 2026-08-18). Save closes
+   * them again; Cancel walks away without touching the card.
+   */
   const line = (c: CatalogueItem) => {
     const k = c.item;
     const current = state?.today.rates[c.item];
     const since = state?.today.effectiveFrom[c.item];
+    const who = setBy(c.item);
     const d = draft(k);
+    const isEditing = !!editing[k];
+
     return (
       <div key={k} className="grid grid-cols-1 items-center gap-2 border-b border-gray-50 py-2 last:border-0 sm:grid-cols-12">
         <div className="sm:col-span-4">
@@ -195,20 +221,41 @@ export function RateCardEditor() {
         </div>
         <div className="sm:col-span-3">
           {current !== undefined
-            ? <p className="text-sm font-medium text-gray-900">{fmtRate(current)} <span className="text-xs font-normal text-gray-400">{unitLabel(c)} · since {since}</span></p>
+            ? <p className="text-sm font-medium text-gray-900">{fmtRate(current)} <span className="text-xs font-normal text-gray-400">{unitLabel(c)}</span></p>
             : <p className="text-sm text-red-500">not set</p>}
         </div>
-        <div className="sm:col-span-2">
-          <input value={d.rate} onChange={(e) => setDraft(k, { rate: e.target.value })}
-            placeholder={`new ${unitLabel(c)}`} inputMode="decimal" className={inp} />
-        </div>
-        <div className="sm:col-span-2">
-          <input type="date" value={d.from} onChange={(e) => setDraft(k, { from: e.target.value })} className={inp} />
-        </div>
-        <div className="sm:col-span-1">
-          <button type="button" onClick={() => saveDraft(c.item)}
-            disabled={busy || !d.rate} className={btnGhost}>Save</button>
-        </div>
+        {!isEditing ? (
+          <>
+            <div className="sm:col-span-2">
+              <p className="text-xs text-gray-500">{since ? <>last set {since}</> : "—"}</p>
+            </div>
+            <div className="sm:col-span-2">
+              <p className="text-xs text-gray-500">{who ? <>by {who}</> : "—"}</p>
+            </div>
+            <div className="sm:col-span-1">
+              <button type="button" onClick={() => setEditing((p) => ({ ...p, [k]: true }))}
+                disabled={busy} className={btnGhost}>Edit</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="sm:col-span-2">
+              <input value={d.rate} onChange={(e) => setDraft(k, { rate: e.target.value })}
+                placeholder={`new ${unitLabel(c)}`} inputMode="decimal" className={inp} />
+            </div>
+            <div className="sm:col-span-2">
+              <input type="date" value={d.from} onChange={(e) => setDraft(k, { from: e.target.value })} className={inp} />
+            </div>
+            <div className="flex items-center gap-1.5 sm:col-span-1">
+              <button type="button" onClick={() => saveDraft(c.item)}
+                disabled={busy || !d.rate} className={btnGhost}>Save</button>
+              <button type="button"
+                onClick={() => setEditing((p) => ({ ...p, [k]: false }))}
+                disabled={busy}
+                className="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
+            </div>
+          </>
+        )}
       </div>
     );
   };

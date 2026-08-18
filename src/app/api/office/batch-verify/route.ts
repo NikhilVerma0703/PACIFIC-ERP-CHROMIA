@@ -1,11 +1,12 @@
-// Two sign-offs on a batch, and only the half you sign.
+// Two sign-offs on a batch — both people, both halves, one mark per person.
 //
-// THE FILTERING IS HERE, NOT IN THE COMPONENT. /office/costing hands the whole
-// rate card to the browser in one payload because everyone who can open it is
-// an admin. This route is opened by two more logins, so the same shortcut would
-// put the plant's cost base one devtools tab away from a production manager who
-// is only meant to confirm that the mixer weighed 41,873 kg of resin. What a
-// caller may not read is never sent.
+// Originally each verifier saw and signed exactly one half ("only the half you
+// sign"). The owner widened that on 2026-08-18: the store incharge and the
+// named production verifier each mark BOTH the prices and the consumption as
+// correct, so both halves are now served to both of them, and each side holds
+// one mark PER PERSON (scripts/0048 swapped the unique to include verified_by).
+// What a caller may not read is still never sent — a login that is neither
+// admin nor one of the two verifiers gets nothing.
 //
 // Neither half carries a total. The weights side is what the mixer recorded and
 // nothing derived from a rate; the prices side is unit rates and nothing
@@ -19,8 +20,8 @@ import { prisma } from "@/lib/prisma";
 import { loadBatchConsumption, listCostableBatches } from "@/lib/costing/batchData";
 import { effectiveRateCard, listBatchMaterials, RATE_ITEMS } from "@/lib/costing/rateCard";
 import {
-  costsFingerprint, isVerifySide, readableSides, signableSides, verifyState,
-  weightsFingerprint, type VerificationRow, type VerifySide,
+  costsFingerprint, isVerifySide, readableSides, signableSides, verifyMarks,
+  weightsFingerprint, SIDE_LABEL, type VerificationRow, type VerifySide,
 } from "@/lib/costing/verification";
 
 export const runtime = "nodejs";
@@ -62,19 +63,19 @@ async function fingerprints(batchKey: string) {
   };
 }
 
+/** Every mark on the batch, per side — a LIST per side now that both people
+ *  can hold one. An empty list is "unverified". */
 async function statesFor(batchKey: string, fp: Record<VerifySide, string>) {
-  const rows = await prisma.costingBatchVerification.findMany({ where: { batchKey } });
-  const by = new Map<string, VerificationRow>(
-    rows.map((r) => [r.side, {
-      side: r.side as VerifySide,
-      fingerprint: r.fingerprint,
-      verifiedBy: r.verifiedBy,
-      verifiedAt: r.verifiedAt.toISOString(),
-    }]),
-  );
+  const stored = await prisma.costingBatchVerification.findMany({ where: { batchKey } });
+  const rows: VerificationRow[] = stored.map((r) => ({
+    side: r.side as VerifySide,
+    fingerprint: r.fingerprint,
+    verifiedBy: r.verifiedBy,
+    verifiedAt: r.verifiedAt.toISOString(),
+  }));
   return {
-    WEIGHTS: verifyState(by.get("WEIGHTS"), fp.WEIGHTS),
-    COSTS: verifyState(by.get("COSTS"), fp.COSTS),
+    WEIGHTS: verifyMarks(rows, "WEIGHTS", fp.WEIGHTS),
+    COSTS: verifyMarks(rows, "COSTS", fp.COSTS),
   };
 }
 
@@ -98,6 +99,9 @@ export async function GET(req: NextRequest) {
     design: f.consumption.design,
     can: me.can,
     sign: me.sign,
+    // The signed-in name, so the screen can tell "you have signed this" from
+    // "the other verifier has" — marks are per person now.
+    me: me.name,
     verification: state,
   };
 
@@ -177,25 +181,37 @@ export async function POST(req: NextRequest) {
 
   if (!me.sign.includes(side)) {
     return json({
-      error: side === "WEIGHTS"
-        ? "Only the named production manager signs the weights off."
-        : "Only the store incharge signs the prices off.",
+      error: "Only the two batch verifiers — the store incharge and the named " +
+        "production verifier — sign a batch off.",
     }, 403);
   }
 
   const f = await fingerprints(batchKey);
   if (!f) return json({ error: "No mixer records for that batch." }, 404);
 
+  // Keyed per PERSON: the other verifier's mark on the same side stands.
   await prisma.costingBatchVerification.upsert({
-    where: { batchKey_side: { batchKey, side } },
+    where: { batchKey_side_verifiedBy: { batchKey, side, verifiedBy: me.name } },
     create: { batchKey, side, fingerprint: f[side], verifiedBy: me.name },
-    update: { fingerprint: f[side], verifiedBy: me.name, verifiedAt: new Date() },
+    update: { fingerprint: f[side], verifiedAt: new Date() },
+  });
+
+  // The mark itself lives in costing_batch_verification, but that table only
+  // holds the CURRENT marks — a withdrawal or a re-sign erases the trail. The
+  // owner asked for the marks to be visible in the batch's edit history, so
+  // each act is also appended to action_log, which nothing deletes from.
+  await prisma.actionLog.create({
+    data: {
+      actor: me.name, batchKey, kind: "costing-verify", model: "CostingBatchVerification",
+      summary: `${me.name} marked the ${SIDE_LABEL[side].toLowerCase()} correct`,
+      payload: { side, fingerprint: f[side] },
+    },
   });
 
   return json({ ok: true, side, verifiedBy: me.name });
 }
 
-/** Withdraw a sign-off — only your own half, and only the one you could give. */
+/** Withdraw a sign-off — only your OWN mark; the other verifier's stands. */
 export async function DELETE(req: NextRequest) {
   const me = await whoAmI();
   const sp = new URL(req.url).searchParams;
@@ -203,9 +219,22 @@ export async function DELETE(req: NextRequest) {
   const side = sp.get("side")?.trim() ?? "";
 
   if (!batchKey || !isVerifySide(side)) return json({ error: "Pass ?batchKey= and ?side=" }, 400);
-  if (!me.sign.includes(side)) return json({ error: "That is not your half to withdraw." }, 403);
+  if (!me.sign.includes(side)) return json({ error: "That is not yours to withdraw." }, 403);
 
-  const gone = await prisma.costingBatchVerification.deleteMany({ where: { batchKey, side } });
-  if (!gone.count) return json({ error: "That half was not signed off." }, 404);
+  // Scoped to verifiedBy: without it this would erase the OTHER person's mark
+  // too, which is exactly the overwrite the per-person key exists to prevent.
+  const gone = await prisma.costingBatchVerification.deleteMany({
+    where: { batchKey, side, verifiedBy: me.name },
+  });
+  if (!gone.count) return json({ error: "You have no mark on that side to withdraw." }, 404);
+
+  await prisma.actionLog.create({
+    data: {
+      actor: me.name, batchKey, kind: "costing-verify", model: "CostingBatchVerification",
+      summary: `${me.name} withdrew their mark on the ${SIDE_LABEL[side].toLowerCase()}`,
+      payload: { side, withdrawn: true },
+    },
+  });
+
   return json({ ok: true, side });
 }

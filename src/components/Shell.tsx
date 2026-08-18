@@ -11,6 +11,7 @@ import { salesDutyFor } from "@/lib/sales/session";
 import { MobileNav } from "./MobileNav";
 import { ROLE_LABEL, STATION_LABEL, rankOf, ROLE_RANK } from "@/lib/rbac";
 import { BRANCH_LABEL } from "@/lib/branch";
+import { signableSides } from "@/lib/costing/verification";
 
 export async function Shell({ children }: { children: ReactNode }) {
   // sessionOnce = request-cached auth(): Shell's own auth() call plus the one
@@ -35,6 +36,18 @@ export async function Shell({ children }: { children: ReactNode }) {
   const salesDuty = salesTier
     ? await salesDutyFor(String((user as { id?: string } | undefined)?.id ?? ""), salesTier)
     : "";
+  // Whether this login SIGNS batch verifications — the store incharge (STORE
+  // role) and the named production verifier (WEIGHTS_VERIFIER_EMAILS). Decided
+  // HERE because Nav is a client component and must not read the env var; and
+  // on signableSides rather than readableSides so admins — who read the verify
+  // screen but sign nothing — do not grow a nav entry for it. Neither user had
+  // ANY link to /office/batch-verify before this; the page existed, middleware
+  // admitted them, and nothing on screen said so.
+  const batchVerify = signableSides(
+    user?.role as string | undefined,
+    user?.email,
+    process.env.WEIGHTS_VERIFIER_EMAILS,
+  ).length > 0;
 
   return (
     <div className="flex min-h-screen">
@@ -48,7 +61,7 @@ export async function Shell({ children }: { children: ReactNode }) {
           </div>
         </div>
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
-          <Nav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} />
+          <Nav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} />
         </div>
         <div className="mt-3 shrink-0 rounded-xl border border-gray-200 bg-white p-3">
           <div className="flex items-center gap-2.5">
@@ -69,7 +82,7 @@ export async function Shell({ children }: { children: ReactNode }) {
         {/* Mobile top bar */}
         <header className="flex items-center justify-between gap-3 border-b border-gray-200/70 bg-white/70 px-5 py-2 backdrop-blur md:hidden">
           <div className="flex items-center gap-3">
-            <MobileNav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} />
+            <MobileNav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} />
             <span className="text-base font-semibold text-brand">Pacific ERP</span>
           </div>
           <form action={logout}><button className="min-h-[44px] text-sm text-gray-500">Sign out</button></form>

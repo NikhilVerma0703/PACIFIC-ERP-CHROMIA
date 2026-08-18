@@ -51,8 +51,11 @@ export const RATE_ITEMS: readonly RateItemDef[] = [
     hint: "Glass, silo-fed like quartz grit. Some batches run tonnes of it." },
   { item: "filler-400", category: "FILLER", label: "Filler 400#", unit: "t",
     hint: "Filler A and Buffer B are priced as one." },
+  // Hint corrected 2026-08-18: it still said "per mixer cycle" from before the
+  // dosing switch, but TiO₂ is dosed on resin weight like the other three —
+  // the per-charge rule is gone (see the DOSING note below).
   { item: "tio2", category: "PIGMENT", label: "TiO₂", unit: "kg",
-    hint: "Dosed per mixer cycle." },
+    hint: "Dosed on resin weight." },
   { item: "silane", category: "CHEMICAL", label: "Silane", unit: "kg",
     hint: "Dosed on resin." },
   { item: "cobalt", category: "CHEMICAL", label: "Cobalt", unit: "kg",
@@ -60,9 +63,10 @@ export const RATE_ITEMS: readonly RateItemDef[] = [
   { item: "catalyst", category: "CHEMICAL", label: "Catalyst", unit: "kg",
     hint: "Roughly 1% of resin weight." },
   // Dosing rules. The mixer records weigh resin, grit and filler but NOT the
-  // chemicals, so their quantities are computed: TiO₂ per mixer charge, the
-  // rest as a percentage of resin weight. These factors are rates like any
-  // other - revising one re-costs every batch it applies to.
+  // chemicals, so their quantities are computed — all four, TiO₂ included, as
+  // a percentage of resin weight (the old TiO₂ per-charge rule is gone, see
+  // report.ts). These factors are rates like any other - revising one re-costs
+  // every batch it applies to.
   { item: "tio2-pct-of-resin", category: "DOSING", label: "TiO₂ dose", unit: "pct",
     hint: "Percent of resin weight, like the other three." },
   // The per-charge TiO₂ rule is GONE. It modelled TiO₂ as kilograms per mixer

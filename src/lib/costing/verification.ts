@@ -1,10 +1,16 @@
 // Who has checked a batch, and whether the numbers have moved since they did.
 //
 // Two people sign a batch off and neither of them is the one who priced it: the
-// production manager confirms the weights the mixer recorded, the store incharge
-// confirms the prices those weights are costed at. Neither sees the other's
-// half, and neither sees a total — the costed sheet stays where it was, behind
-// the ADMIN-only /office/costing gate.
+// production manager and the store incharge EACH confirm BOTH halves — the
+// weights the mixer recorded (consumption) and the prices those weights are
+// costed at. That is a deliberate widening, ordered by the owner on 2026-08-18:
+// the original design gave each person exactly one half and hid the other
+// ("neither sees the other's half"); the owner wants both people to be able to
+// mark both the price and the consumption as correct, with every mark carrying
+// a name and a time. What has NOT changed: neither of them sees a total or a
+// computed sheet — those stay behind the ADMIN-only /office/costing gate. The
+// verify screen still ships unit rates and raw quantities only, never anything
+// multiplied.
 //
 // NO IMPORTS, deliberately. Same reason as lib/roles.ts: `node --test` resolves
 // neither the "@/" alias nor Prisma, and a verification rule that can only be
@@ -103,6 +109,38 @@ export type VerifyState =
   | { status: "verified"; by: string; at: string }
   | { status: "stale"; by: string; at: string };
 
+/** One person's mark on one side — "unverified" has no row, so a list of these
+ *  is never padded with it; an empty list IS unverified. */
+export interface VerifyMark {
+  status: "verified" | "stale";
+  by: string;
+  at: string;
+}
+
+/**
+ * Every mark on one side, oldest first.
+ *
+ * A LIST, not a single state, because two people may now both hold a mark on
+ * the same side and each lapses independently: the store incharge's mark can
+ * stand while the production manager's has gone stale under a corrected mixer
+ * row they signed before. Collapsing that to one state would either hide a
+ * signature or report a staleness that belongs to somebody else's.
+ */
+export function verifyMarks(
+  rows: readonly VerificationRow[],
+  side: VerifySide,
+  current: string,
+): VerifyMark[] {
+  return rows
+    .filter((r) => r.side === side)
+    .sort((a, b) => a.verifiedAt.localeCompare(b.verifiedAt))
+    .map((r) => ({
+      status: r.fingerprint === current ? "verified" as const : "stale" as const,
+      by: r.verifiedBy,
+      at: r.verifiedAt,
+    }));
+}
+
 /**
  * What to show for one side.
  *
@@ -146,9 +184,19 @@ export function canVerifyWeights(email: string | null | undefined, raw: string |
   return weightsVerifiers(raw).includes(who);
 }
 
-/** The store incharge signs off prices. STORE is that role — see ROLE_LABEL. */
+/** The store incharge is a batch verifier by ROLE. STORE is that role — see
+ *  ROLE_LABEL. (The other verifier is named by email, above.) */
 export function canVerifyCosts(role: string | null | undefined): boolean {
   return role === "STORE";
+}
+
+/** Whether this login is one of the two batch verifiers at all. */
+export function isBatchVerifier(
+  role: string | null | undefined,
+  email: string | null | undefined,
+  raw: string | undefined | null,
+): boolean {
+  return canVerifyWeights(email, raw) || canVerifyCosts(role);
 }
 
 /**
@@ -156,8 +204,14 @@ export function canVerifyCosts(role: string | null | undefined): boolean {
  *
  * Admin reads both because admin already reads the costed sheet next door;
  * hiding a rate here that /office/costing prints in full would be theatre.
- * Everybody else reads exactly the half they sign, which is what keeps the
- * plant's cost base off a screen that two more logins can now open.
+ *
+ * BOTH verifiers now read BOTH halves. This supersedes the original
+ * one-half-each separation on the owner's instruction (2026-08-18): both the
+ * store incharge and the named production verifier must be able to mark both
+ * the price AND the consumption as correct, and nobody can check what they
+ * cannot see. The cost this accepts, knowingly: each verifier now sees the
+ * other half's raw numbers (unit rates for one, quantities for the other).
+ * Still no totals, no computed sheet — that boundary stands.
  */
 export function readableSides(
   role: string | null | undefined,
@@ -165,10 +219,7 @@ export function readableSides(
   raw: string | undefined | null,
 ): VerifySide[] {
   if (role === "ADMIN") return ["WEIGHTS", "COSTS"];
-  const out: VerifySide[] = [];
-  if (canVerifyWeights(email, raw)) out.push("WEIGHTS");
-  if (canVerifyCosts(role)) out.push("COSTS");
-  return out;
+  return isBatchVerifier(role, email, raw) ? ["WEIGHTS", "COSTS"] : [];
 }
 
 /**
@@ -178,14 +229,14 @@ export function readableSides(
  * verification is one named person saying they checked it, and an admin able to
  * tick both boxes turns the pair of signatures into a formality that one login
  * can produce on its own.
+ *
+ * Both verifiers sign both sides (owner, 2026-08-18) — each mark is stored per
+ * PERSON, so one signing does not stand in for the other having checked.
  */
 export function signableSides(
   role: string | null | undefined,
   email: string | null | undefined,
   raw: string | undefined | null,
 ): VerifySide[] {
-  const out: VerifySide[] = [];
-  if (canVerifyWeights(email, raw)) out.push("WEIGHTS");
-  if (canVerifyCosts(role)) out.push("COSTS");
-  return out;
+  return isBatchVerifier(role, email, raw) ? ["WEIGHTS", "COSTS"] : [];
 }

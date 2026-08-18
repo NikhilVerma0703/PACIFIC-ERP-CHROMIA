@@ -32,7 +32,8 @@ import {
 } from "@/lib/costing/rateCard";
 import { dosingOverrides, isOverridable, isSplittable } from "@/lib/costing/batchRates";
 import {
-  costsFingerprint, verifyState, weightsFingerprint, type VerifySide,
+  costsFingerprint, verifyMarks, weightsFingerprint,
+  type VerificationRow, type VerifySide,
 } from "@/lib/costing/verification";
 import { loadBatchConsumption } from "@/lib/costing/batchData";
 import { bandOf, gritItemKey } from "@/lib/costing/batchData";
@@ -138,14 +139,16 @@ async function verification(batchKey: string, card: EffectiveRateCard, lines: Sa
       resinBySupplier: card.resinBySupplier,
     }),
   };
-  const rows = await prisma.costingBatchVerification.findMany({ where: { batchKey } });
-  const by = new Map(rows.map((r) => [r.side, {
+  const stored = await prisma.costingBatchVerification.findMany({ where: { batchKey } });
+  const rows: VerificationRow[] = stored.map((r) => ({
     side: r.side as VerifySide, fingerprint: r.fingerprint,
     verifiedBy: r.verifiedBy, verifiedAt: r.verifiedAt.toISOString(),
-  }]));
+  }));
+  // A LIST per side: both verifiers may hold a mark on the same side now
+  // (owner, 2026-08-18), and each lapses on its own.
   return {
-    WEIGHTS: verifyState(by.get("WEIGHTS"), fp.WEIGHTS),
-    COSTS: verifyState(by.get("COSTS"), fp.COSTS),
+    WEIGHTS: verifyMarks(rows, "WEIGHTS", fp.WEIGHTS),
+    COSTS: verifyMarks(rows, "COSTS", fp.COSTS),
   };
 }
 
@@ -265,6 +268,17 @@ export async function POST(req: NextRequest) {
         description: l.description || null, note: l.note || null, createdBy: user,
       })),
     });
+    // The edit trail. costing_batch_material only remembers its CURRENT lines
+    // — the wholesale replace above wipes who set what before — so each save is
+    // also appended to action_log, which nothing deletes from. This is what the
+    // costing dashboard's "edit history" drawer reads.
+    await tx.actionLog.create({
+      data: {
+        actor: user, batchKey, kind: "costing-batch-rate", model: "CostingBatchMaterial",
+        summary: `${user} set ${def.label}: ${lines.length} line${lines.length === 1 ? "" : "s"}`,
+        payload: { item, lines },
+      },
+    });
   });
 
   return json({ ok: true, item, lines: lines.length });
@@ -273,6 +287,7 @@ export async function POST(req: NextRequest) {
 /** Remove every line for one material, so it falls back to the card again. */
 export async function DELETE(req: NextRequest) {
   if (!(await isAdmin())) return json({ error: "Admins only." }, 403);
+  const user = (await currentUser())?.name ?? "admin";
 
   const sp = new URL(req.url).searchParams;
   const batchKey = sp.get("batchKey")?.trim() ?? "";
@@ -281,5 +296,17 @@ export async function DELETE(req: NextRequest) {
 
   const gone = await prisma.costingBatchMaterial.deleteMany({ where: { batchKey, item } });
   if (!gone.count) return json({ error: "That batch has no lines for that material." }, 404);
+
+  // Same trail as the save: a clear changes what the batch costs just as much
+  // as a set does, and the drawer must show who did it and when.
+  const label = RATE_ITEM_BY_KEY.get(item)?.label ?? item;
+  await prisma.actionLog.create({
+    data: {
+      actor: user, batchKey, kind: "costing-batch-rate", model: "CostingBatchMaterial",
+      summary: `${user} cleared ${label} — it prices at the card again`,
+      payload: { item, cleared: gone.count },
+    },
+  });
+
   return json({ ok: true, fellBackToCard: item, removed: gone.count });
 }

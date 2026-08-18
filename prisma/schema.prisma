@@ -4148,6 +4148,35 @@ model CostingBatchMaterial {
   @@map("costing_batch_material")
 }
 
+/// RETIRED — modelled only so `prisma db push` stops proposing to DROP it.
+///
+/// The first shape of per-batch pricing (scripts/0040, restored by 0042 after
+/// a push dropped it once already): one flat rate per (batch, item, variant),
+/// superseded by costing_batch_material's split lines above. The table sits
+/// in Neon with 0 rows (verified 2026-08-18) and no code reads or writes it.
+/// Every attribute below describes the column exactly as it already exists —
+/// including updated_at's plain CURRENT_TIMESTAMP default, deliberately NOT
+/// Prisma's @updatedAt, so the diff stays empty. Do not reuse; drop it some
+/// day with a numbered script, not with db push.
+model CostingBatchRate {
+  id       String @id
+  batchKey String @map("batch_key")
+  category String
+  item     String
+  variant  String @default("")
+  unit     String
+  rate     Float
+  note     String?
+
+  createdBy String   @default("system") @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @map("updated_at")
+
+  @@unique([batchKey, item, variant], map: "costing_batch_rate_batch_item_variant_key")
+  @@index([batchKey], map: "costing_batch_rate_batch_idx")
+  @@map("costing_batch_rate")
+}
+
 /// One person's sign-off on one half of a batch.
 ///
 /// The costed sheet is ADMIN-only and stays that way. What this table records
@@ -4177,7 +4206,10 @@ model CostingBatchVerification {
   verifiedBy String   @map("verified_by")
   verifiedAt DateTime @default(now()) @map("verified_at")
 
-  @@unique([batchKey, side])
+  /// Per PERSON per side, not per side: both verifiers may hold a mark on the
+  /// same side of the same batch (owner, 2026-08-18 — scripts/0048). The old
+  /// (batchKey, side) unique made the second signature overwrite the first.
+  @@unique([batchKey, side, verifiedBy])
   @@index([batchKey])
   @@map("costing_batch_verification")
 }

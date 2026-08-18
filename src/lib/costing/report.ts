@@ -6,6 +6,7 @@ import "server-only";
 // (supplier split, chemical doses, missing rates) is surfaced as text the
 // reader sees, never a silent zero.
 
+import { prisma } from "@/lib/prisma";
 import {
   computeSheet, varianceLines, type CostingSheet, type MaterialLine, type VariancePanel,
 } from "./compute";
@@ -13,9 +14,15 @@ import {
   bandOf, GRIT_BAND_LABELS, gritItemKey, listCostableBatches, loadBatchConsumption,
   RESIN_TANK_SUPPLIER, type BatchConsumption, type BatchListEntry,
 } from "./batchData";
-import { pricingForBatch, RATE_ITEM_BY_KEY, type BatchPricing } from "./rateCard";
+import {
+  listBatchMaterials, pricingForBatch, RATE_ITEM_BY_KEY, type BatchPricing,
+} from "./rateCard";
 import { daysInMonthOf, splitMaterial } from "./batchRates";
 import type { EffectiveRateCard } from "./rateCard";
+import {
+  costsFingerprint, verifyMarks, weightsFingerprint,
+  type VerificationRow, type VerifyMark, type VerifySide,
+} from "./verification";
 
 /**
  * A catalogue key in the words the screens already use for it.
@@ -90,6 +97,36 @@ export interface CostingReport {
     stoppages: { count: number; hours: number };
     pressSlabs: number;
   };
+  /**
+   * The "View batch data & edit history" drawer, in one payload.
+   *
+   * ADMIN-ONLY like everything else on this route, so shipping the raw
+   * consumption and the provenance of every price is not a leak — it is the
+   * same data the sheet above is computed from, plus who touched it and when.
+   */
+  detail: {
+    /** What the mixer recorded, verbatim — the drawer's consumption table. */
+    consumption: {
+      resinKg: number;
+      resinByTank: Array<{ tank: string; cycles: number; kg: number }>;
+      gritCharges: Array<{ silo: string; band: string; label: string; kg: number }>;
+      gritUnresolvedKg: number;
+      fillerKg: number;
+      slabs3cm: number;
+      slabs2cm: number;
+    };
+    /** Prices entered on this batch — each line with who saved it and when. */
+    batchLines: Array<{
+      item: string; label: string; seq: number; qty: number | null; unit: string;
+      rate: number; description: string; savedBy: string; savedAt: string;
+    }>;
+    /** Every verification mark standing, per side, name + time + staleness. */
+    marks: { WEIGHTS: VerifyMark[]; COSTS: VerifyMark[] };
+    /** The append-only change log — who set/cleared which price, who marked
+     *  what correct, newest first. Read from action_log, which nothing
+     *  deletes from; the tables above only remember their current state. */
+    changes: Array<{ at: string; actor: string | null; summary: string }>;
+  };
 }
 
 const r1 = (n: number) => Math.round(n * 10) / 10;
@@ -108,8 +145,37 @@ export async function buildCostingReport(batchKey: string): Promise<CostingRepor
   // lib/costing/batchRates.ts for why a run needs them and why only materials
   // may be set.
   const rateDate = c.firstPress ?? new Date();
-  const pricing = await pricingForBatch(batchKey, rateDate);
+  // The drawer's reads ride alongside the pricing: the saved lines carry the
+  // who/when the sheet itself does not need, the verification rows are the two
+  // people's marks, and action_log is the append-only trail of every price set,
+  // clear and mark — the tables themselves only remember their current state.
+  const [pricing, savedLines, verifRows, logRows] = await Promise.all([
+    pricingForBatch(batchKey, rateDate),
+    listBatchMaterials(batchKey),
+    prisma.costingBatchVerification.findMany({ where: { batchKey } }),
+    prisma.actionLog.findMany({
+      where: { batchKey, kind: { in: ["costing-batch-rate", "costing-verify"] } },
+      orderBy: { createdAt: "desc" },
+      take: 200,
+      select: { createdAt: true, actor: true, summary: true },
+    }),
+  ]);
   const card = pricing.card;
+
+  // Marks lapse by fingerprint, exactly as the verify screen judges them — the
+  // drawer must not call "verified" what /office/batch-verify calls stale.
+  const fp: Record<VerifySide, string> = {
+    WEIGHTS: weightsFingerprint(c),
+    COSTS: costsFingerprint({
+      lines: savedLines.map((l) => ({ item: l.item, seq: l.seq, qty: l.qty, rate: l.rate })),
+      cardRates: card.rates,
+      resinBySupplier: card.resinBySupplier,
+    }),
+  };
+  const markRows: VerificationRow[] = verifRows.map((r) => ({
+    side: r.side as VerifySide, fingerprint: r.fingerprint,
+    verifiedBy: r.verifiedBy, verifiedAt: r.verifiedAt.toISOString(),
+  }));
 
   const { materials, unpriced, assumptions, fromCard } = buildMaterialLines(c, card, pricing);
 
@@ -211,6 +277,33 @@ export async function buildCostingReport(batchKey: string): Promise<CostingRepor
       wallClockHours: r2(c.wallClockHours),
       stoppages: { count: c.runStoppages.count, hours: r2(c.runStoppages.hours) },
       pressSlabs: c.pressSlabs,
+    },
+    detail: {
+      consumption: {
+        resinKg: r2(c.resinKg),
+        resinByTank: c.resinByTank.map((t) => ({ tank: t.tank, cycles: t.cycles, kg: r2(t.kg) })),
+        gritCharges: c.gritCharges.map((g) => ({
+          silo: g.silo, band: g.band,
+          label: GRIT_BAND_LABELS[g.band] ?? `Grit ${g.band}`, kg: r2(g.kg),
+        })),
+        gritUnresolvedKg: r2(c.gritUnresolvedKg),
+        fillerKg: r2(c.fillerKg),
+        slabs3cm: c.slabs3cm,
+        slabs2cm: c.slabs2cm,
+      },
+      batchLines: savedLines.map((l) => ({
+        item: l.item,
+        label: RATE_ITEM_BY_KEY.get(l.item)?.label ?? l.item,
+        seq: l.seq, qty: l.qty, unit: l.unit, rate: l.rate,
+        description: l.description, savedBy: l.savedBy, savedAt: l.savedAt,
+      })),
+      marks: {
+        WEIGHTS: verifyMarks(markRows, "WEIGHTS", fp.WEIGHTS),
+        COSTS: verifyMarks(markRows, "COSTS", fp.COSTS),
+      },
+      changes: logRows.map((r) => ({
+        at: r.createdAt.toISOString(), actor: r.actor, summary: r.summary,
+      })),
     },
   };
 }
