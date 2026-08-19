@@ -151,10 +151,27 @@ function getMaintenance(hours: HourRow[]) {
   // An hour whose reasons say POWER had its minutes booked to the breakdown
   // column but was a grid cut, not a machine fault. Counting it here would put
   // 181 minutes of "breakdown" on this page against 79 on page one and hand
-  // maintenance a problem they do not have. An hour the in-charge actually
-  // flagged as a breakdown counts even if its notes also mention power.
-  const events = hours.filter((x) =>
-    x.breakdown || (x.delay.breakdown > 0 && !x.reasons.some((r) => /POWER/i.test(r))));
+  // maintenance a problem they do not have.
+  //
+  // POWER HOURS LEAVE THIS TABLE ENTIRELY. Even a power hour the in-charge
+  // flagged as a breakdown (the flag is how the sheet says "we stopped") is
+  // not a maintenance event — nothing failed in the plant — so it moves to its
+  // own table below rather than sitting among the machine faults with a dash
+  // for minutes. An hour can appear in both tables only when it genuinely lost
+  // time both ways (a fault booked to breakdown and a cut booked to power);
+  // the minutes come from different columns, so nothing is counted twice.
+  const isPower = (x: HourRow) => x.reasons.some((r) => /POWER/i.test(r));
+  const events = hours.filter((x) => (x.breakdown || x.delay.breakdown > 0) && !isPower(x));
+  const powerRows = hours
+    .filter((x) => x.delay.power > 0 || (isPower(x) && (x.delay.breakdown > 0 || x.breakdown)))
+    .map((x) => ({
+      hour: x.hour, shift: x.shift,
+      // page one's rule, verbatim: the hour's own power minutes, plus its
+      // breakdown minutes when the reasons name the grid as the cause
+      minutes: x.delay.power + (isPower(x) ? x.delay.breakdown : 0),
+      note: x.details ?? null,
+      reasons: x.reasons,
+    }));
   const byArea = new Map<string, { area: string; events: number; minutes: number; hours: string[] }>();
   for (const x of events) {
     const area = x.area.length ? x.area.join(" / ") : "Not recorded";
@@ -164,6 +181,7 @@ function getMaintenance(hours: HourRow[]) {
   }
   return {
     events,
+    powerCuts: { rows: powerRows, minutes: powerRows.reduce((a, x) => a + x.minutes, 0) },
     byArea: [...byArea.values()].sort((a, b) => b.minutes - a.minutes || b.events - a.events),
     minutes: events.reduce((a, x) => a + x.delay.breakdown, 0),
     spares: events.filter((x) => x.spares),
@@ -252,11 +270,25 @@ async function getQuality(from: Date, to: Date) {
     else d.ungraded++;
   }
 
+  // The headline pair reads wrong at first glance — inspected can exceed
+  // polished — and the explanation is queues, not a bug: polishing and QC are
+  // separate stations, so QC also clears slabs polished on earlier days while
+  // the day's last-polished slabs have not reached it yet. The distinct slab
+  // numbers are intersected here so the page can state that split instead of
+  // asserting it; rows with no slab number cannot be matched and are left out.
+  const polishedSlabs = new Set(entries.map((e) => e.slabNumber).filter((n): n is number => n != null));
+  const inspectedSlabs = new Set(qc.map((r) => r.slabNumber).filter((n): n is number => n != null));
+  const slabsInBoth = [...polishedSlabs].filter((n) => inspectedSlabs.has(n)).length;
+
   const pick = (t: [string, number][], k: string) => t.find(([x]) => x === k)?.[1] ?? 0;
   const repolish = tally(qc, (r) => r.repolishStatus ?? "Not recorded");
 
   return {
     polished: entries.length, inspected: qc.length,
+    polishedSlabs: polishedSlabs.size, inspectedSlabs: inspectedSlabs.size,
+    slabsInBoth,
+    polishedNotInspected: polishedSlabs.size - slabsInBoth,
+    inspectedNotPolished: inspectedSlabs.size - slabsInBoth,
     passed: passed.length, graded: graded.length,
     passRate: graded.length ? (100 * passed.length) / graded.length : null,
     gradeA: count(qc, (r) => r.qualityGrade === "A"),

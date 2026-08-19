@@ -293,8 +293,20 @@ function SheetQuality({ r }: { r: DailyReport }) {
     <div className={s.sheet}>
       <Mast title="Polishing and Quality" date={r.date} />
       <Kpis tiles={[
-        [String(q.polished), "Slabs polished"],
-        [String(q.inspected), "Slabs inspected"],
+        [String(q.polished), "Slabs polished",
+          <InfoDot key="s" label="the polished count">
+            Slabs that came off the polishing line today. {q.slabsInBoth} of them were also
+            inspected today; {q.polishedNotInspected} await inspection at the QC station.
+            {q.polished !== q.polishedSlabs &&
+              ` The headline counts ${q.polished} entries, covering ${q.polishedSlabs} distinct slabs.`}
+          </InfoDot>],
+        [String(q.inspected), "Slabs inspected",
+          <InfoDot key="i" label="the inspected count">
+            Slabs quality-checked today, including ones polished on earlier days. {q.slabsInBoth} were
+            polished today as well; {q.inspectedNotPolished} came to inspection from the earlier backlog.
+            {q.inspected !== q.inspectedSlabs &&
+              ` The headline counts ${q.inspected} entries, covering ${q.inspectedSlabs} distinct slabs.`}
+          </InfoDot>],
         [String(q.passed), "Passed inspection"],
         [pct1(q.passRate), "Pass rate, graded slabs",
           <InfoDot key="p" label="the pass rate">
@@ -588,6 +600,35 @@ function SheetMaintenance({ r }: { r: DailyReport }) {
                 <td className={s.muted}>Named on every hour of the day</td></tr>
               <tr><td className={s.key}>Mechanical</td><td>{m.mechanical.join(", ") || DASH}</td>
                 <td className={s.muted}>Named on every hour of the day</td></tr>
+            </tbody>
+          </table>
+        </>
+      )}
+
+      {m.powerCuts.rows.length > 0 && (
+        <>
+          <Section name="Power cuts from the grid" />
+          <p className={s.prose}>
+            The grid went down in {m.powerCuts.rows.length} {m.powerCuts.rows.length === 1 ? "hour" : "hours"}, costing{" "}
+            <strong>{m.powerCuts.minutes} minutes</strong>. These are not maintenance events {DASH} nothing failed in the
+            plant {DASH} so they sit apart from the breakdown tables above and match the power-cut row on page one.
+          </p>
+          <table className={s.t}>
+            <thead><tr>
+              <th>Hour</th><th>Shift</th><th className={s.num}>Lost</th><th>What the log says</th>
+            </tr></thead>
+            <tbody>
+              {m.powerCuts.rows.map((x) => (
+                <tr key={x.hour}>
+                  <td className={s.key}>{x.hour}</td><td>{x.shift ?? DASH}</td>
+                  <td className={s.num}>{x.minutes ? `${x.minutes} m` : NDASH}</td>
+                  <td className={s.muted}>{x.note ? cap(tidy(x.note)) : x.reasons.filter((rr) => /POWER/i.test(rr)).join(", ") || DASH}</td>
+                </tr>
+              ))}
+              <tr className={s.total}>
+                <td>Total</td><td /><td className={s.num}>{m.powerCuts.minutes} m</td>
+                <td>Booked to power on page one, not to maintenance</td>
+              </tr>
             </tbody>
           </table>
         </>
