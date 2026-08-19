@@ -45,7 +45,7 @@ export function CollapsibleSidebar({ subtitle, children }: { subtitle: string; c
         </button>
       )}
       <aside
-        className={`sticky top-0 hidden h-screen shrink-0 overflow-hidden border-r bg-white/70 backdrop-blur transition-[width] duration-200 md:flex ${
+        className={`sticky top-0 hidden h-screen shrink-0 overflow-hidden border-r bg-white/70 backdrop-blur transition-[width] duration-200 md:flex print:hidden ${
           hidden ? "w-0 border-transparent" : "w-64 border-gray-200/70"
         }`}
       >

@@ -74,7 +74,9 @@ export async function Shell({ children }: { children: ReactNode }) {
       {/* Main */}
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Mobile top bar */}
-        <header className="flex items-center justify-between gap-3 border-b border-gray-200/70 bg-white/70 px-5 py-2 backdrop-blur md:hidden">
+        {/* print:hidden explicitly — in print the page width can compute below md,
+            which put this bar (hamburger, Sign out) at the top of printed reports */}
+        <header className="flex items-center justify-between gap-3 border-b border-gray-200/70 bg-white/70 px-5 py-2 backdrop-blur md:hidden print:hidden">
           <div className="flex items-center gap-3">
             <MobileNav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} />
             <span className="text-base font-semibold text-brand">Pacific ERP</span>
