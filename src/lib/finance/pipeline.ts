@@ -369,8 +369,16 @@ function loadPdfjs(): Promise<PdfjsModule> {
   // Memoised per lambda instance: the module is a few megabytes to evaluate and
   // pdf.js resolves its fake-worker handler exactly once, on first use.
   pdfjsPromise ??= (async () => {
-    const worker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
-    (globalThis as Record<string, unknown>).pdfjsWorker = worker;
+    // Optional, for the reason given in src/lib/fab/poPdf.ts. It matters more
+    // here: a hard failure sends a perfectly readable bill down the OCR path
+    // as though it were a scan, so letting pdf.js resolve its own worker is
+    // the better of the two outcomes whenever this import is the thing broken.
+    try {
+      (globalThis as Record<string, unknown>).pdfjsWorker =
+        await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+    } catch (err) {
+      console.warn("[finance/pipeline] worker module unavailable, falling back to pdf.js's own:", err);
+    }
     return (await import("pdfjs-dist/legacy/build/pdf.mjs")) as unknown as PdfjsModule;
   })().catch((err) => {
     // A rejection must not be what gets memoised — see the same guard in

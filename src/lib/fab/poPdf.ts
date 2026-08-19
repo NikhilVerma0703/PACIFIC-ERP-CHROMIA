@@ -37,8 +37,18 @@ let pdfjsPromise: Promise<PdfjsModule> | null = null;
 
 function loadPdfjs(): Promise<PdfjsModule> {
   pdfjsPromise ??= (async () => {
-    const worker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
-    (globalThis as Record<string, unknown>).pdfjsWorker = worker;
+    // THE WORKER IS AN OPTIMISATION, NOT A REQUIREMENT. Seeding it up front
+    // stops pdf.js reaching for the worker module by a relative path that does
+    // not survive bundling — but if this import is itself what fails, pdf.js
+    // can still resolve its own fake worker, and refusing to read the PDF at
+    // all would be choosing the worse outcome. Warn and carry on; only the
+    // main module is load-bearing.
+    try {
+      (globalThis as Record<string, unknown>).pdfjsWorker =
+        await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+    } catch (err) {
+      console.warn("[fab/poPdf] worker module unavailable, falling back to pdf.js's own:", err);
+    }
     return (await import("pdfjs-dist/legacy/build/pdf.mjs")) as unknown as PdfjsModule;
   })().catch((err) => {
     // NEVER MEMOISE A REJECTION. `??=` keeps whatever the first call produced,
