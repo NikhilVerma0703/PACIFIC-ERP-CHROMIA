@@ -121,11 +121,47 @@
 .infoRow + .infoRow { margin-top: 2px; }
 .infoSum { border-top: 1px solid rgba(255,255,255,0.28); margin-top: 5px; padding-top: 4px; font-weight: 700; }
 
+/* click-to-explain --------------------------------------------------------- */
+/* No icon. The "i" is kept only where it already sits, on the figures band;
+ * putting one on every explainable number turned the page into a rash of
+ * glyphs. Everything else carries a hairline underneath instead and opens on
+ * click — which a touch screen can do and a hover cannot, and which stays
+ * open while you check it against the table underneath. */
+.hoverWrap { position: relative; border: 0; padding: 0; background: none; font: inherit; color: inherit;
+  text-align: inherit; border-bottom: 0.8px dotted var(--grey); cursor: pointer; }
+.hoverWrap:hover { border-bottom-color: var(--ink); color: var(--ink); }
+.hoverWrap[aria-expanded="true"] { border-bottom-color: var(--ink); color: var(--ink); }
+.hoverTip {
+  display: none; position: absolute; z-index: 30; bottom: calc(100% + 7px); left: 0;
+  width: 250px; padding: 9px 11px;
+  background: var(--ink); color: #fff; border-radius: 5px;
+  font-size: 7.4pt; font-style: normal; font-weight: 400; line-height: 1.45;
+  text-align: left; white-space: normal;
+  box-shadow: 0 12px 28px -10px rgba(15, 23, 32, 0.55);
+}
+.hoverWrap[aria-expanded="true"] .hoverTip { display: block; }
+/* the little pointer down to the figure it explains */
+.hoverTip::after {
+  content: ""; position: absolute; top: 100%; left: 14px;
+  border: 5px solid transparent; border-top-color: var(--ink);
+}
+.hoverTitle { display: block; font-weight: 700; margin-bottom: 4px; }
+.hoverField { display: block; color: #9BA6B2; font-size: 6.9pt; margin-top: 5px; }
+
+/* the hint at the foot of a sheet. Screen only: a printed page cannot be
+ * hovered, so telling the reader to hover would be a dead instruction. */
+.hint {
+  font-size: 6.7pt; font-style: italic; color: var(--grey);
+  margin-top: 8px; padding-top: 6px; border-top: 0.35px solid var(--rule);
+}
+
 /* screen-only chrome ------------------------------------------------------ */
 .bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 auto 12px; width: 210mm; max-width: 100%; }
 
 @media print {
-  .bar, .info { display: none !important; }
+  .bar, .info, .hint { display: none !important; }
+  .hoverWrap { border-bottom: 0; cursor: auto; }
+  .hoverTip { display: none !important; }
   .sheet { box-shadow: none; margin: 0; width: auto; min-height: 0; padding: 0; }
   .sheet + .sheet { page-break-before: always; }
   .doc { color: #000; }

@@ -1,6 +1,6 @@
 import { Shell } from "@/components/Shell";
 import { getDailyReport, type DailyReport } from "@/lib/dailyReport";
-import { InfoDot, Line, Sum } from "./InfoDot";
+import { InfoDot, Explain, Line, Sum } from "./InfoDot";
 import { PrintButton } from "./PrintButton";
 import s from "./report.module.css";
 
@@ -227,6 +227,7 @@ function SheetProduction({ r }: { r: DailyReport }) {
         The figures on this page come from the hourly shift log signed by the production in-charges; the press
         station&apos;s own entries for this day have not been entered into the system.
       </p>
+      <p className={s.hint}>On screen, any figure with a dotted underline opens its own working when clicked, as does the &quot;i&quot; beside the headline numbers. Neither is shown on the printed sheet.</p>
       <Foot date={r.date} page={1} />
     </div>
   );
@@ -258,12 +259,22 @@ function SheetQuality({ r }: { r: DailyReport }) {
   // the 133 that passed inspection. They are not the same slabs and not the
   // same question: seven slabs that cleared the polishing line were graded B
   // or C afterwards.
-  const polishRows: [string, number][] = [
-    ["No repolish needed", p.noRepolish],
-    ["Passed after polishing", p.passedAfter],
-    ["Repolish done", p.repolishDone],
-    ["Still needs repolishing", p.needsRepolish],
-    ["Not recorded", p.notRecorded],
+  const cleared = p.noRepolish + p.passedAfter;
+  const polishRows: [React.ReactNode, number, string][] = [
+    [
+      <Explain key="c" label="the cleared figure" tip={<>
+        <span className={s.hoverTitle}>Cleared the polishing line</span>
+        Two values of the QC record&apos;s <b>repolish status</b>, both meaning the slab came off the line good.
+        <Line of="Direct Ok — needed no polish" is={String(p.noRepolish)} />
+        <Line of="Polish Ok — good after a polish" is={String(p.passedAfter)} />
+        <Sum of="Cleared" is={String(cleared)} />
+        <span className={s.hoverField}>Field: polish_qc.repolish_status</span>
+      </>}>Cleared the polishing line</Explain>,
+      cleared, "cleared",
+    ],
+    ["Repolish done", p.repolishDone, "rd"],
+    ["Still needs repolishing", p.needsRepolish, "nr"],
+    ["Not recorded", p.notRecorded, "nrec"],
   ];
   const half = Math.ceil(q.faultsAll.length / 2);
   const faultCol = (rows: [string, number][], total: number, withTotal: boolean) => (
@@ -337,8 +348,8 @@ function SheetQuality({ r }: { r: DailyReport }) {
           <table className={s.t}>
             <thead><tr><th>Did it need repolishing?</th><th className={s.num}>Slabs</th><th className={s.num}>Share</th></tr></thead>
             <tbody>
-              {polishRows.filter(([, n]) => n > 0).map(([k, n]) => (
-                <tr key={k}><td className={s.key}>{k}</td><td className={s.num}>{n}</td><td className={`${s.num} ${s.muted}`}>{share(n, q.inspected)}</td></tr>
+              {polishRows.filter(([, n]) => n > 0).map(([k, n, id]) => (
+                <tr key={id}><td className={s.key}>{k}</td><td className={s.num}>{n}</td><td className={`${s.num} ${s.muted}`}>{share(n, q.inspected)}</td></tr>
               ))}
               <tr className={s.total}><td>Total</td><td className={s.num}>{q.inspected}</td><td className={s.num}>100%</td></tr>
             </tbody>
@@ -350,7 +361,21 @@ function SheetQuality({ r }: { r: DailyReport }) {
             <thead><tr><th>Did it need rework?</th><th className={s.num}>Slabs</th><th className={s.num}>Share</th></tr></thead>
             <tbody>
               {q.rework.map(([k, n]) => (
-                <tr key={k}><td className={s.key}>{REWORK_LABEL[k] ?? k}</td><td className={s.num}>{n}</td><td className={`${s.num} ${s.muted}`}>{share(n, q.inspected)}</td></tr>
+                <tr key={k}>
+                  <td className={s.key}>
+                    {k === "Direct Ok" ? (
+                      <Explain label="passed straight through" tip={<>
+                        <span className={s.hoverTitle}>Passed straight through</span>
+                        Slabs that never needed rework {DASH} a different question from the {q.passed} that
+                        passed inspection, and a different set of slabs.
+                        {q.reworkClearByGrade.map(([g, c]) => <Line key={g} of={`Graded ${g}`} is={String(c)} />)}
+                        <Sum of="Needed no rework" is={String(n)} />
+                        <span className={s.hoverField}>Field: polish_qc.rw_status = &quot;Direct Ok&quot;</span>
+                      </>}>{REWORK_LABEL[k] ?? k}</Explain>
+                    ) : (REWORK_LABEL[k] ?? k)}
+                  </td>
+                  <td className={s.num}>{n}</td><td className={`${s.num} ${s.muted}`}>{share(n, q.inspected)}</td>
+                </tr>
               ))}
               <tr className={s.total}><td>Total</td><td className={s.num}>{q.inspected}</td><td className={s.num}>100%</td></tr>
             </tbody>
@@ -449,6 +474,7 @@ function SheetQuality({ r }: { r: DailyReport }) {
         from the grade table {DASH} that counts the {q.inspected} inspected, a different set from the {q.polished}{" "}
         polished. Polishing runs behind the press, so this page is not the same slabs as page one.
       </p>
+      <p className={s.hint}>On screen, any figure with a dotted underline opens its own working when clicked, as does the &quot;i&quot; beside the headline numbers. Neither is shown on the printed sheet.</p>
       <Foot date={r.date} page={2} />
     </div>
   );
@@ -573,6 +599,7 @@ function SheetMaintenance({ r }: { r: DailyReport }) {
         day or any other, so nothing here comes from it. Until tickets are raised, an RCA column of dashes means the
         analysis was never recorded, not that the cause was obvious.
       </p>
+      <p className={s.hint}>On screen, any figure with a dotted underline opens its own working when clicked, as does the &quot;i&quot; beside the headline numbers. Neither is shown on the printed sheet.</p>
       <Foot date={r.date} page={3} />
     </div>
   );

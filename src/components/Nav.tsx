@@ -221,9 +221,9 @@ export function Nav({
     { href: "/tables", icon: I.tables, label: "Tables" },
   ];
   const reports = [
+    { href: "/report/ceo", icon: I.ceo, label: "CEO Report" },
     { href: "/batch",  icon: I.batch,  label: "Batch Lookup" },
     { href: "/slab",   icon: I.batch,  label: "Slab Lookup" },
-    { href: "/report/ceo", icon: I.ceo, label: "CEO Report" },
     { href: "/report", icon: I.report, label: "Production Report" },
     { href: "/mis",    icon: I.mis,    label: "Downtime" },
     { href: "/maintenance", icon: I.spanner, label: "Maintenance Log" },

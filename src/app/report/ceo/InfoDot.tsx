@@ -38,6 +38,43 @@ export function InfoDot({ label, children }: { label: string; children: ReactNod
   );
 }
 
+/** Click-to-explain without an icon: the figure itself is the control, marked
+ *  by a hairline under it. Used everywhere the "i" is not — the band at the top
+ *  of each sheet keeps its "i", and putting one on every explainable number in
+ *  the tables turned the page into a rash of glyphs.
+ *
+ *  Click rather than hover, for the same reasons the "i" uses click: a touch
+ *  screen cannot hover, and a panel that vanishes when the pointer moves cannot
+ *  be read against the row it explains. */
+export function Explain({ label, tip, children }: { label: string; tip: ReactNode; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", esc); };
+  }, [open]);
+
+  return (
+    <span ref={box} style={{ position: "relative" }}>
+      <button
+        type="button"
+        className={s.hoverWrap}
+        aria-expanded={open}
+        aria-label={`How ${label} is arrived at`}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {children}
+        {open && <span className={s.hoverTip} role="note">{tip}</span>}
+      </button>
+    </span>
+  );
+}
+
 /** One line of a working: a description on the left, its value on the right. */
 export function Line({ of, is }: { of: string; is: string }) {
   return <span className={s.infoRow}><span>{of}</span><b>{is}</b></span>;

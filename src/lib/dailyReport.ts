@@ -278,6 +278,10 @@ async function getQuality(from: Date, to: Date) {
       notRecorded: pick(repolish, "Not recorded"),
     },
     rework: tally(qc, (r) => r.rwStatus ?? "Not recorded"),
+    // What the slabs that never needed rework were actually graded. This is the
+    // whole reason 137 and 133 differ, so the page has to be able to say it
+    // rather than assert the gap and leave the reader to trust it.
+    reworkClearByGrade: tally(qc.filter((r) => r.rwStatus === "Direct Ok"), (r) => r.qualityGrade ?? "Not recorded"),
     faultsAll: faultsOf(qc), faultsBC: faultsOf(bc),
     faultSlabs: count(qc, (r) => (r.qualityIssue ?? []).length > 0),
     faultTotal: qc.reduce((a, r) => a + (r.qualityIssue ?? []).length, 0),
