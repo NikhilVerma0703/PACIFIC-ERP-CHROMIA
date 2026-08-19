@@ -55,3 +55,27 @@ __probe_*.ts
 # local database dumps taken before a destructive migration. Real backups —
 # ignored so they stay out of git, NOT because they are disposable.
 /db-archives/
+
+# Agent worktrees. `.claude/worktrees/<name>` is a SECOND FULL CHECKOUT of this
+# repo on disk; committing one puts the whole codebase inside itself. 536 files
+# of it reached a branch on 2026-08-19 via `git add .`.
+/.claude/worktrees/
+/.lensverify/
+
+# One-off audit and verification probes. The `*-tmp.*` convention above only
+# catches names chosen for it; these are the prefixes actually used in practice.
+/zz*.ts
+/zz*.mts
+/zz*.mjs
+/zz*.js
+/zz*.json
+/lv-*.mts
+/lv-*.mjs
+
+# Generated deliverables. The daily report is rebuilt from the database by
+# scripts/make-daily-report-pdf.mjs, so the PDF is output, not source.
+/Daily-Report-*.pdf
+
+# Business documents dropped in the working folder. They are not code and the
+# repo is not where they belong.
+/*.docx

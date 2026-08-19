@@ -49,6 +49,7 @@ import { PDFDocument } from "pdf-lib";
 
 import { prisma } from "@/lib/prisma";
 import { serverProvider, type OcrProvider, type OcrResult } from "@/lib/ocr";
+import { installPdfjsDomMatrix } from "@/lib/pdf/domMatrix";
 
 import { AGENT, CLASSIFY, DEDUPE, INGEST, QUALITY } from "./config";
 import { buildQueryText, Memory, vendorKey, type Suggestion } from "./classify";
@@ -379,6 +380,13 @@ function loadPdfjs(): Promise<PdfjsModule> {
     } catch (err) {
       console.warn("[finance/pipeline] worker module unavailable, falling back to pdf.js's own:", err);
     }
+    // Must run before the main module and not after it: pdf.mjs constructs a
+    // DOMMatrix at module scope and the lambda has none to give it, for the
+    // reason set out in src/lib/pdf/domMatrix.ts. Without this the import
+    // below throws, and the catch at the bottom of pdfTextLayers() cannot tell
+    // that apart from a bill with no text layer — every readable invoice would
+    // go to OCR as though it were a scan.
+    installPdfjsDomMatrix();
     return (await import("pdfjs-dist/legacy/build/pdf.mjs")) as unknown as PdfjsModule;
   })().catch((err) => {
     // A rejection must not be what gets memoised — see the same guard in

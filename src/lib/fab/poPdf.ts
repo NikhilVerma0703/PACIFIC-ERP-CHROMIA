@@ -28,6 +28,8 @@
 // columns by horizontal centre, so both numbers have to arrive unrounded and in
 // the producer's own units (PDF points). Nothing here normalises them.
 
+import { installPdfjsDomMatrix } from "@/lib/pdf/domMatrix";
+
 import { parsePoPieceTable, type PoPage, type PoPieceTableResult, type PoTextItem } from "./poParser";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -49,6 +51,13 @@ function loadPdfjs(): Promise<PdfjsModule> {
     } catch (err) {
       console.warn("[fab/poPdf] worker module unavailable, falling back to pdf.js's own:", err);
     }
+    // BEFORE THE MAIN MODULE, NOT AFTER. pdf.mjs constructs a DOMMatrix at
+    // module scope, and in the lambda it has none to construct — the package
+    // it would get one from is loaded through a runtime require the Next
+    // tracer cannot see, so it is never shipped. See src/lib/pdf/domMatrix.ts;
+    // without this the import below throws ReferenceError and no purchase
+    // order can be read at all. The worker import above needs nothing.
+    installPdfjsDomMatrix();
     return (await import("pdfjs-dist/legacy/build/pdf.mjs")) as unknown as PdfjsModule;
   })().catch((err) => {
     // NEVER MEMOISE A REJECTION. `??=` keeps whatever the first call produced,
