@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { Card, H2, Kpi, Badge } from "@/components/ui";
 import { canRaiseMaintenance, canRespondDowntime, canSeeMaintenanceLog } from "@/lib/rbac";
+import { listPmEntries } from "@/lib/preventiveMaintenance";
 import { redirect } from "next/navigation";
 import { listTickets, PRIORITIES, DOWNTIME_STATUSES } from "@/lib/maintenanceLog";
 import { getDowntimeReport } from "@/lib/downtime";
@@ -73,10 +74,13 @@ export default async function MaintenancePage({
   const from = sp.from?.trim() || def.from;
   const to = sp.to?.trim() || def.to;
 
-  const [canRaise, canAnswer, tickets] = await Promise.all([
+  const [canRaise, canAnswer, tickets, pmEntries] = await Promise.all([
     canRaiseMaintenance(),
     canRespondDowntime(),
     listTickets(),
+    // The register reads over the same window as the queue; a failed read
+    // shows an empty register rather than killing the whole page.
+    listPmEntries(from, to).catch(() => []),
   ]);
 
   // The downtime side, assembled exactly the way /mis assembles it — same
@@ -268,6 +272,8 @@ export default async function MaintenancePage({
         reclass={reclass}
         priorities={[...PRIORITIES]}
         statuses={[...DOWNTIME_STATUSES]}
+        canFillPreventive={canAnswer}
+        pmEntries={pmEntries}
         hidden={counts.hidden}
         total={counts.total}
       />

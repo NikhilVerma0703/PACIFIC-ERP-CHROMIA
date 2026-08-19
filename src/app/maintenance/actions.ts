@@ -3,6 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { canRaiseMaintenance, canRespondDowntime, currentUser } from "@/lib/rbac";
 import { answerTicket, raiseTicket, type NewTicket } from "@/lib/maintenanceLog";
+import { addPmEntry } from "@/lib/preventiveMaintenance";
+import { validatePmEntry, type NewPmEntry } from "@/lib/preventiveMaintenanceShared";
 
 export interface ActionRes { ok: boolean; message: string }
 
@@ -66,4 +68,26 @@ export async function answer(id: string, status: string, response: string): Prom
   // response, so the MIS card is now stale in the cache.
   revalidatePath("/mis");
   return { ok: true, message: "Saved." };
+}
+
+/**
+ * Log preventive maintenance. MAINTENANCE MANAGER OR ADMIN — the same gate as
+ * answering, because the register is maintenance's own diary: it records what
+ * the team did, so only the team (or an admin) writes in it. An incharge who
+ * wants maintenance somewhere raises a fault; they do not write history into
+ * the register on maintenance's behalf.
+ */
+export async function logPreventive(input: NewPmEntry): Promise<ActionRes> {
+  if (!(await canRespondDowntime())) return { ok: false, message: "Only Maintenance Manager or Admin can fill the register." };
+  const bad = validatePmEntry(input);
+  if (bad) return { ok: false, message: bad };
+  try {
+    const u = await currentUser();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await addPmEntry(input, await actor(), ((u as any)?.id as string | undefined) ?? null);
+    revalidatePath("/maintenance");
+    return { ok: true, message: `Logged: ${input.minutes} min at ${input.station.trim()} on ${input.date}, ${input.hour}.` };
+  } catch (e) {
+    return { ok: false, message: `Could not log it: ${String((e as Error)?.message ?? e)}` };
+  }
 }

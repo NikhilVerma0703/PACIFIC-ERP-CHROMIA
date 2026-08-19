@@ -1805,6 +1805,25 @@ model MaintenanceTicket {
   @@map("maintenance_ticket")
 }
 
+/// Preventive maintenance register — planned work the maintenance team did,
+/// logged by the Maintenance Manager after the fact: this day, this hour,
+/// this many minutes, at this station, doing this. Not a fault and not a
+/// stoppage: nothing here implies the line was down.
+model PreventiveMaintenance {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  date        DateTime @map("date") @db.Date
+  hour        String   @map("hour") // the plant's hour vocabulary, "06 - 07"
+  minutes     Int      @map("minutes")
+  station     String   @map("station")
+  description String   @map("description")
+  actor       String?  @map("actor")
+  enteredById String?  @map("entered_by_user_id")
+
+  @@index([date])
+  @@map("preventive_maintenance")
+}
+
 /// Optional photo attached to a shop-floor entry record — bytea in Postgres
 /// because Vercel has no disk (like FinanceBillImage). Saved best-effort from
 /// createRow/saveRow; (model, record_id) points at the owning row. See src/lib/entryPhoto.ts.

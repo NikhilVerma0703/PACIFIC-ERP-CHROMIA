@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState, useTransition } from "react";
 import { Card, H2, Badge } from "@/components/ui";
-import { raise, answer } from "./actions";
+import { raise, answer, logPreventive } from "./actions";
 import type { Ticket } from "@/lib/maintenanceLog";
 import type { IncidentRow } from "@/lib/downtime";
 import type { DowntimeResp } from "@/lib/downtimeResponse";
@@ -13,6 +13,7 @@ import { fmtDur, DELAY_FIELDS } from "@/lib/downtimeShared";
 import { DowntimeRespond } from "@/components/DowntimeRespond";
 import { ReclassBadge } from "@/components/ReclassifyDelay";
 import { describeReclass, RECLASS_TONE } from "@/lib/delayReclass";
+import { PM_HOURS, PM_MAX_MINUTES, type PmEntry } from "@/lib/preventiveMaintenanceShared";
 
 const inp = "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm transition focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
 const label = "mb-1 block text-xs font-medium text-gray-600";
@@ -61,6 +62,7 @@ export type BoardItem = InboxItem<IncidentRow, Ticket>;
 export function MaintenanceBoard({
   items, canRaise, canAnswer, canRespond, canReclass, respFailed, reclassFailed,
   responses, photos, reclass, priorities, statuses, hidden = 0, total,
+  canFillPreventive, pmEntries,
 }: {
   items: BoardItem[];
   /** Queue items counted but NOT sent to this component (the render cap in
@@ -81,17 +83,35 @@ export function MaintenanceBoard({
   reclass: Record<string, ReclassRecord[]>;
   priorities: string[];
   statuses: string[];
+  /** May write the preventive register — the answer gate, not the raise gate:
+   *  the register records what maintenance DID, so only maintenance (or an
+   *  admin) writes in it. Everyone who sees the page reads it. */
+  canFillPreventive: boolean;
+  pmEntries: PmEntry[];
 }) {
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [showClosed, setShowClosed] = useState(false);
   const [type, setType] = useState<string | null>(null);
 
+  // Both entry forms live behind buttons — the page opens on the queue, and a
+  // person opens the one form they came to fill. null = neither.
+  const [openForm, setOpenForm] = useState<null | "fault" | "pm">(null);
+
   // Raise form
   const [title, setTitle] = useState("");
   const [area, setArea] = useState("");
   const [detail, setDetail] = useState("");
   const [priority, setPriority] = useState("Normal");
+
+  // Preventive register form. Date defaults to today in IST — the register is
+  // usually filled the same day the work was done.
+  const todayIST = () => new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
+  const [pmDate, setPmDate] = useState(todayIST);
+  const [pmHour, setPmHour] = useState(PM_HOURS[0]);
+  const [pmMinutes, setPmMinutes] = useState("");
+  const [pmStation, setPmStation] = useState("");
+  const [pmDesc, setPmDesc] = useState("");
 
   // Which ticket is being answered, and with what
   const [openId, setOpenId] = useState<string | null>(null);
@@ -120,6 +140,13 @@ export function MaintenanceBoard({
       if (r.ok) { setTitle(""); setArea(""); setDetail(""); setPriority("Normal"); }
     });
 
+  const submitPm = () =>
+    start(async () => {
+      const r = await logPreventive({ date: pmDate, hour: pmHour, minutes: Number(pmMinutes), station: pmStation, description: pmDesc });
+      setMsg({ ok: r.ok, text: r.message });
+      if (r.ok) { setPmMinutes(""); setPmStation(""); setPmDesc(""); }
+    });
+
   const submitAnswer = (id: string) =>
     start(async () => {
       const r = await answer(id, status, reply);
@@ -137,7 +164,28 @@ export function MaintenanceBoard({
         </div>
       )}
 
-      {canRaise && (
+      {/* Both forms live behind buttons, so the page opens on the queue and
+          stays put — the register button only exists for those who may write
+          the register (see canFillPreventive). Pressing the open form's own
+          button folds it away again. */}
+      {(canRaise || canFillPreventive) && (
+        <div className="flex flex-wrap gap-2">
+          {canRaise && (
+            <button type="button" onClick={() => setOpenForm(openForm === "fault" ? null : "fault")}
+              className={openForm === "fault" ? btn : "rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"}>
+              Report a fault
+            </button>
+          )}
+          {canFillPreventive && (
+            <button type="button" onClick={() => setOpenForm(openForm === "pm" ? null : "pm")}
+              className={openForm === "pm" ? btn : "rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"}>
+              Log preventive maintenance
+            </button>
+          )}
+        </div>
+      )}
+
+      {canRaise && openForm === "fault" && (
         <Card>
           <H2>Report a fault</H2>
           <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
@@ -169,6 +217,47 @@ export function MaintenanceBoard({
           <p className="mt-2 text-xs text-gray-400">
             It does not have to have stopped the line. If it did, log the stoppage in MIS too — that hour then appears in
             this same queue as a downtime incident, and answering either one answers both.
+          </p>
+        </Card>
+      )}
+
+      {canFillPreventive && openForm === "pm" && (
+        <Card>
+          <H2>Log preventive maintenance</H2>
+          <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
+            <div>
+              <span className={label}>Day the work was done</span>
+              <input type="date" value={pmDate} onChange={(e) => setPmDate(e.target.value)} className={inp} />
+            </div>
+            <div>
+              <span className={label}>Hour</span>
+              <select value={pmHour} onChange={(e) => setPmHour(e.target.value)} className={inp}>
+                {PM_HOURS.map((h) => <option key={h} value={h}>{h}</option>)}
+              </select>
+            </div>
+            <div>
+              <span className={label}>Minutes spent</span>
+              <input type="number" min={1} max={PM_MAX_MINUTES} value={pmMinutes} onChange={(e) => setPmMinutes(e.target.value)} className={inp}
+                placeholder="45" />
+            </div>
+            <div>
+              <span className={label}>Station or machine</span>
+              <input value={pmStation} onChange={(e) => setPmStation(e.target.value)} className={inp} placeholder="Press" />
+            </div>
+            <div className="col-span-2 md:col-span-3">
+              <span className={label}>What was done</span>
+              <textarea value={pmDesc} onChange={(e) => setPmDesc(e.target.value)} rows={2} className={inp}
+                placeholder="Greased press guide rails, checked vacuum lines, replaced worn distributor belt edge." />
+            </div>
+            <div className="flex items-end">
+              <button type="button" onClick={submitPm}
+                disabled={pending || !pmMinutes || !pmStation.trim() || !pmDesc.trim()} className={`${btn} w-full`}>
+                {pending ? "Saving…" : "Add to register"}
+              </button>
+            </div>
+          </div>
+          <p className="mt-2 text-xs text-gray-400">
+            Planned work only — a breakdown you attended is answered on its incident below, not written here.
           </p>
         </Card>
       )}
@@ -294,6 +383,45 @@ export function MaintenanceBoard({
             queue is ordered open, then urgent, then oldest, so the {hidden} not listed are the least pressing (mostly
             already answered). They are still counted in the figures above. Narrow the dates to work through them.
           </p>
+        )}
+      </Card>
+
+      {/* The register itself is read by everyone who can see this page — the
+          point of writing it down is that the plant can see the planned work
+          happened. Same date window as the queue above. */}
+      <Card>
+        <H2>Preventive maintenance register · {pmEntries.length}</H2>
+        {pmEntries.length === 0 ? (
+          <p className="mt-2 text-sm text-gray-500">Nothing logged in this window yet.</p>
+        ) : (
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full min-w-[720px] text-sm">
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-wider text-gray-500">
+                  <th className="px-3 py-2">Day</th><th className="px-3 py-2">Hour</th>
+                  <th className="px-3 py-2 text-right">Minutes</th><th className="px-3 py-2">Station</th>
+                  <th className="px-3 py-2">What was done</th><th className="px-3 py-2">By</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pmEntries.map((e) => (
+                  <tr key={e.id} className="border-t border-gray-100 align-top">
+                    <td className="whitespace-nowrap px-3 py-2">{e.date}</td>
+                    <td className="whitespace-nowrap px-3 py-2">{e.hour}</td>
+                    <td className="px-3 py-2 text-right font-medium">{e.minutes}</td>
+                    <td className="px-3 py-2">{e.station}</td>
+                    <td className="px-3 py-2 text-gray-600">{e.description}</td>
+                    <td className="whitespace-nowrap px-3 py-2 text-gray-400">{e.actor ?? "—"}</td>
+                  </tr>
+                ))}
+                <tr className="border-t-2 border-gray-300 bg-gray-50 font-semibold text-gray-800">
+                  <td className="px-3 py-2" colSpan={2}>Total in this window</td>
+                  <td className="px-3 py-2 text-right">{pmEntries.reduce((a, e) => a + e.minutes, 0)}</td>
+                  <td className="px-3 py-2" colSpan={3}>minutes of preventive work</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
     </div>
