@@ -98,7 +98,14 @@ export async function readPoPdfPages(bytes: Uint8Array): Promise<PoPdfReadResult
   let pdfjs: PdfjsModule;
   try {
     pdfjs = await loadPdfjs();
-  } catch {
+  } catch (err) {
+    // LOG THE REASON. This message told a manager to "tell IT" and told IT
+    // nothing — the actual cause was invisible for as long as it took someone
+    // to read the source. It was a Node version: pdfjs-dist 6.x requires
+    // >=22.13 and the deploy ran an older runtime, so the import threw before
+    // a single byte was read. package.json now pins engines.node, but the next
+    // reason will be a different one, and it should not have to be guessed at.
+    console.error("[fab/poPdf] pdfjs failed to load:", err);
     return { pages: [], error: "The PDF reader could not be started on the server. Nothing was imported — tell IT." };
   }
 

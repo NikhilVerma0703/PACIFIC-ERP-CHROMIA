@@ -348,7 +348,14 @@ async function pdfTextLayers(bytes: Uint8Array, count: number): Promise<Array<st
     } finally {
       await task.destroy();
     }
-  } catch {
+  } catch (err) {
+    // Same swallow that hid the fab PO failure for a week: a PDF whose text
+    // layer cannot be read is ordinary (a scan), so returning `empty` is right
+    // — the caller falls through to OCR. But the LOADER failing is not
+    // ordinary, and silence here meant nobody could tell "this bill is a scan"
+    // from "pdfjs will not start on this runtime, so every bill looks like a
+    // scan". It costs one log line to keep those apart.
+    console.error("[finance/pipeline] PDF text layer read failed:", err);
     return empty;
   }
 }
