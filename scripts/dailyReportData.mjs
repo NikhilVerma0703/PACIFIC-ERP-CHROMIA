@@ -18,6 +18,24 @@
 // which is the only timestamp that still moves. If `created` ever starts
 // populating again, prefer it — but check coverage first, do not assume.
 import { PrismaClient } from "@prisma/client";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Next loads .env.local for the app; a plain `node scripts/...` run does not,
+// and this is meant to be run by hand. dotenv is only here as somebody else's
+// transitive dependency, so it is not something to rely on — read the file.
+if (!process.env.DATABASE_URL) {
+  const root = dirname(dirname(fileURLToPath(import.meta.url)));
+  for (const f of [".env.local", ".env"]) {
+    try {
+      for (const line of readFileSync(join(root, f), "utf8").split(/\r?\n/)) {
+        const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)$/.exec(line);
+        if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
+      }
+    } catch { /* not there is fine — the variable may come from the environment */ }
+  }
+}
 
 const IST_OFFSET_MIN = 330;
 const SHIFTS = [
