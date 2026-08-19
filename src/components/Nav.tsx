@@ -62,12 +62,17 @@ function NavIcon({ d, size = 18 }: { d: string; size?: number }) {
 }
 
 /* L0 flat link */
-function NavLink({ href, icon, label, path, office }: {
+function NavLink({ href, icon, label, path, office, exact }: {
   href: string; icon: string; label: string; path: string; office?: boolean;
+  // exact: this link's sub-pages are nav items of their own, so the prefix
+  // rule would light two rows at once (/report/ceo lit Production Report too).
+  // Prefix matching stays the default because most sections WANT it — a
+  // drill-down like /batch/slabs has no nav row and should keep Batch Lookup lit.
+  exact?: boolean;
 }) {
   const active = office && href === "/office"
     ? SHOP_PATHS.some(p => (p === "/" ? path === "/" : path.startsWith(p)))
-    : href === "/" || href === "/sales" ? path === href : path.startsWith(href);
+    : href === "/" || href === "/sales" || exact ? path === href : path.startsWith(href);
   return (
     <Link href={href}
       className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
@@ -80,13 +85,13 @@ function NavLink({ href, icon, label, path, office }: {
 }
 
 /* Section — a labelled, non-collapsible group of links (same look as the app tabs) */
-function Section({ label, items, path }: { label: string; items: { href: string; icon: string; label: string }[]; path: string }) {
+function Section({ label, items, path }: { label: string; items: { href: string; icon: string; label: string; exact?: boolean }[]; path: string }) {
   if (!items.length) return null;
   return (
     <div className="mt-4 first:mt-0">
       <p className="mb-1 px-3 text-[10px] font-bold uppercase tracking-[0.12em] text-gray-400">{label}</p>
       <div className="flex flex-col gap-0.5">
-        {items.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}
+        {items.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} exact={t.exact} />)}
       </div>
     </div>
   );
@@ -173,7 +178,7 @@ export function Nav({
     // robo line operator — the robo module is their whole ERP
     return (
       <nav className="flex flex-col gap-1">
-        <NavLink href="/robo" icon={I.factory} label="Robo Entry" path={path} />
+        <NavLink href="/robo" icon={I.factory} label="Robo Entry" path={path} exact />
         <NavLink href="/robo/slabs" icon={I.batch} label="Slab Records" path={path} />
         <NavLink href="/robo/reports" icon={I.ceo} label="Reports" path={path} />
         <NavLink href="/robo/downloads" icon={I.box} label="Downloads" path={path} />
@@ -224,7 +229,7 @@ export function Nav({
     { href: "/report/ceo", icon: I.ceo, label: "CEO Report" },
     { href: "/batch",  icon: I.batch,  label: "Batch Lookup" },
     { href: "/slab",   icon: I.batch,  label: "Slab Lookup" },
-    { href: "/report", icon: I.report, label: "Production Report" },
+    { href: "/report", icon: I.report, label: "Production Report", exact: true },
     { href: "/mis",    icon: I.mis,    label: "Downtime" },
     { href: "/maintenance", icon: I.spanner, label: "Maintenance Log" },
     // Only for the named production verifier (WEIGHTS_VERIFIER_EMAILS) — a
