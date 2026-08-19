@@ -622,7 +622,9 @@ function SheetMaintenance({ r }: { r: DailyReport }) {
                 <tr key={x.hour}>
                   <td className={s.key}>{x.hour}</td><td>{x.shift ?? DASH}</td>
                   <td className={s.num}>{x.minutes ? `${x.minutes} m` : NDASH}</td>
-                  <td className={s.muted}>{x.note ? cap(tidy(x.note)) : x.reasons.filter((rr) => /POWER/i.test(rr)).join(", ") || DASH}</td>
+                  <td className={s.muted}>{x.reasonsSayPower
+                    ? (x.note ? cap(tidy(x.note)) : x.reasons.filter((rr) => /POWER/i.test(rr)).join(", ") || DASH)
+                    : <>Minutes entered in the hour{"’"}s power-out column{x.alsoMachineFault && <> {DASH} the same hour{"’"}s machine stop is listed above</>}</>}</td>
                 </tr>
               ))}
               <tr className={s.total}>

@@ -171,6 +171,14 @@ function getMaintenance(hours: HourRow[]) {
       minutes: x.delay.power + (isPower(x) ? x.delay.breakdown : 0),
       note: x.details ?? null,
       reasons: x.reasons,
+      // Whether the hour's own words are ABOUT the cut. When the reasons name
+      // POWER, the note narrates the cut and can be printed beside it. When
+      // the row is here only because minutes were typed into the power-out
+      // column, the note belongs to the hour's machine stop (09-10 on 18 Aug:
+      // 50 m of vacuum-cylinder work AND 10 m of power-out) — printing it
+      // here would caption a grid cut with a repair story.
+      reasonsSayPower: isPower(x),
+      alsoMachineFault: (x.breakdown || x.delay.breakdown > 0) && !isPower(x),
     }));
   const byArea = new Map<string, { area: string; events: number; minutes: number; hours: string[] }>();
   for (const x of events) {
