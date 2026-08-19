@@ -2,6 +2,7 @@ import { Shell } from "@/components/Shell";
 import { getDailyReport, type DailyReport } from "@/lib/dailyReport";
 import { InfoDot, Explain, Line, Sum } from "./InfoDot";
 import { PrintButton } from "./PrintButton";
+import { WidthToggle } from "./WidthToggle";
 import s from "./report.module.css";
 
 export const dynamic = "force-dynamic";
@@ -674,6 +675,7 @@ export default async function CeoReportPage({ searchParams }: { searchParams: Pr
             Show
           </button>
           <span className="flex-1" />
+          <WidthToggle />
           <PrintButton />
         </form>
 

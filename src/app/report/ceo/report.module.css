@@ -158,6 +158,16 @@
 /* screen-only chrome ------------------------------------------------------ */
 .bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 auto 12px; width: 210mm; max-width: 100%; }
 
+/* Full-width view (WidthToggle stamps data-report-wide on <html>). Screen
+   only — the print block below still owns the printed geometry, so the PDF
+   is A4 whichever view the screen is in. */
+@media screen {
+  /* the shell's own max-width is lifted in globals.css — a CSS module may not
+     carry a selector with no local class in it */
+  :global(html[data-report-wide]) .sheet { width: auto; max-width: none; }
+  :global(html[data-report-wide]) .bar { width: auto; }
+}
+
 @media print {
   .bar, .info, .hint { display: none !important; }
   .hoverWrap { border-bottom: 0; cursor: auto; }

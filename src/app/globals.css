@@ -167,3 +167,10 @@ body {
   .chromia-root .overflow-x-auto { scrollbar-width: none; }
   .chromia-root .overflow-x-auto::-webkit-scrollbar { height: 0; }
 }
+
+/* CEO report full-width view (WidthToggle stamps the attribute; removed on
+   leaving the page). Lives here because report.module.css cannot carry a
+   selector without a local class. Screen only — print stays A4. */
+@media screen {
+  html[data-report-wide] main { max-width: none; }
+}
