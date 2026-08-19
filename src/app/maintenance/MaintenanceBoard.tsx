@@ -13,7 +13,8 @@ import { fmtDur, DELAY_FIELDS } from "@/lib/downtimeShared";
 import { DowntimeRespond } from "@/components/DowntimeRespond";
 import { ReclassBadge } from "@/components/ReclassifyDelay";
 import { describeReclass, RECLASS_TONE } from "@/lib/delayReclass";
-import { PM_HOURS, PM_MAX_MINUTES, type PmEntry } from "@/lib/preventiveMaintenanceShared";
+import { PM_HOURS, PM_MAX_MINUTES } from "@/lib/preventiveMaintenanceShared";
+import type { PmRegister } from "@/lib/preventiveMaintenance";
 
 const inp = "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm transition focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
 const label = "mb-1 block text-xs font-medium text-gray-600";
@@ -62,7 +63,7 @@ export type BoardItem = InboxItem<IncidentRow, Ticket>;
 export function MaintenanceBoard({
   items, canRaise, canAnswer, canRespond, canReclass, respFailed, reclassFailed,
   responses, photos, reclass, priorities, statuses, hidden = 0, total,
-  canFillPreventive, pmEntries,
+  canFillPreventive, pmRegister,
 }: {
   items: BoardItem[];
   /** Queue items counted but NOT sent to this component (the render cap in
@@ -87,7 +88,9 @@ export function MaintenanceBoard({
    *  the register records what maintenance DID, so only maintenance (or an
    *  admin) writes in it. Everyone who sees the page reads it. */
   canFillPreventive: boolean;
-  pmEntries: PmEntry[];
+  /** null = the register could not be read this load — shown as that, never
+   *  as "nothing logged" (the page's failed-lookup rule). */
+  pmRegister: PmRegister | null;
 }) {
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -390,8 +393,12 @@ export function MaintenanceBoard({
           point of writing it down is that the plant can see the planned work
           happened. Same date window as the queue above. */}
       <Card>
-        <H2>Preventive maintenance register · {pmEntries.length}</H2>
-        {pmEntries.length === 0 ? (
+        <H2>Preventive maintenance register{pmRegister ? <> · {pmRegister.total}</> : null}</H2>
+        {!pmRegister ? (
+          <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            The register could not be read just now — what is shown elsewhere on this page is unaffected. Reload to try again.
+          </p>
+        ) : pmRegister.entries.length === 0 ? (
           <p className="mt-2 text-sm text-gray-500">Nothing logged in this window yet.</p>
         ) : (
           <div className="mt-3 overflow-x-auto">
@@ -404,23 +411,30 @@ export function MaintenanceBoard({
                 </tr>
               </thead>
               <tbody>
-                {pmEntries.map((e) => (
+                {pmRegister.entries.map((e) => (
                   <tr key={e.id} className="border-t border-gray-100 align-top">
                     <td className="whitespace-nowrap px-3 py-2">{e.date}</td>
                     <td className="whitespace-nowrap px-3 py-2">{e.hour}</td>
                     <td className="px-3 py-2 text-right font-medium">{e.minutes}</td>
-                    <td className="px-3 py-2">{e.station}</td>
-                    <td className="px-3 py-2 text-gray-600">{e.description}</td>
+                    <td className="max-w-[200px] break-words px-3 py-2">{e.station}</td>
+                    <td className="max-w-[420px] break-words px-3 py-2 text-gray-600 [overflow-wrap:anywhere]">{e.description}</td>
                     <td className="whitespace-nowrap px-3 py-2 text-gray-400">{e.actor ?? "—"}</td>
                   </tr>
                 ))}
                 <tr className="border-t-2 border-gray-300 bg-gray-50 font-semibold text-gray-800">
                   <td className="px-3 py-2" colSpan={2}>Total in this window</td>
-                  <td className="px-3 py-2 text-right">{pmEntries.reduce((a, e) => a + e.minutes, 0)}</td>
-                  <td className="px-3 py-2" colSpan={3}>minutes of preventive work</td>
+                  {/* the true sum over ALL rows in the window, not the fetched page */}
+                  <td className="px-3 py-2 text-right">{pmRegister.totalMinutes}</td>
+                  <td className="px-3 py-2" colSpan={3}>minutes of preventive work, across all {pmRegister.total} entries</td>
                 </tr>
               </tbody>
             </table>
+            {pmRegister.entries.length < pmRegister.total && (
+              <p className="mt-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                Showing the newest <b>{pmRegister.entries.length}</b> of <b>{pmRegister.total}</b> entries in this window —
+                the totals above cover all of them. Narrow the dates to see the rest.
+              </p>
+            )}
           </div>
         )}
       </Card>

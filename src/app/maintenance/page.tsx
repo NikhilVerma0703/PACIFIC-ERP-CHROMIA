@@ -78,9 +78,10 @@ export default async function MaintenancePage({
     canRaiseMaintenance(),
     canRespondDowntime(),
     listTickets(),
-    // The register reads over the same window as the queue; a failed read
-    // shows an empty register rather than killing the whole page.
-    listPmEntries(from, to).catch(() => []),
+    // The register reads over the same window as the queue. A failed read is
+    // NULL, never an empty register — this page's own rule: a lookup that
+    // failed must not be reported as work done or as nothing done.
+    listPmEntries(from, to).catch(() => null),
   ]);
 
   // The downtime side, assembled exactly the way /mis assembles it — same
@@ -273,7 +274,7 @@ export default async function MaintenancePage({
         priorities={[...PRIORITIES]}
         statuses={[...DOWNTIME_STATUSES]}
         canFillPreventive={canAnswer}
-        pmEntries={pmEntries}
+        pmRegister={pmEntries}
         hidden={counts.hidden}
         total={counts.total}
       />

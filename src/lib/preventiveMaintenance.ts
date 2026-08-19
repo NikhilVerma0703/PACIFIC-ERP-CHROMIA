@@ -24,16 +24,31 @@ export async function addPmEntry(e: NewPmEntry, actor: string | null, enteredByI
   });
 }
 
+export interface PmRegister {
+  entries: PmEntry[];
+  /** True row count in the window — entries is capped at 500, and the board
+   *  says so when they differ, the same way the queue discloses its cap. */
+  total: number;
+  /** True minutes sum over ALL rows in the window, not just the fetched page,
+   *  so the total row cannot silently under-report on a wide window. */
+  totalMinutes: number;
+}
+
 /** Entries for the page's window (from/to are "YYYY-MM-DD", both inclusive),
  *  newest work first. Same window the incident list uses, so the register and
  *  the queue always describe the same span of days. */
-export async function listPmEntries(from: string, to: string): Promise<PmEntry[]> {
-  const rows = await prisma.preventiveMaintenance.findMany({
-    where: { date: { gte: new Date(`${from}T00:00:00.000Z`), lte: new Date(`${to}T00:00:00.000Z`) } },
-    orderBy: [{ date: "desc" }, { hour: "desc" }, { createdAt: "desc" }],
-    take: 500,
-  });
-  return rows.map((r) => ({
+export async function listPmEntries(from: string, to: string): Promise<PmRegister> {
+  const where = { date: { gte: new Date(`${from}T00:00:00.000Z`), lte: new Date(`${to}T00:00:00.000Z`) } };
+  const [rows, total, agg] = await Promise.all([
+    prisma.preventiveMaintenance.findMany({
+      where,
+      orderBy: [{ date: "desc" }, { hour: "desc" }, { createdAt: "desc" }],
+      take: 500,
+    }),
+    prisma.preventiveMaintenance.count({ where }),
+    prisma.preventiveMaintenance.aggregate({ where, _sum: { minutes: true } }),
+  ]);
+  const entries = rows.map((r) => ({
     id: r.id,
     date: r.date.toISOString().slice(0, 10),
     hour: r.hour,
@@ -43,4 +58,5 @@ export async function listPmEntries(from: string, to: string): Promise<PmEntry[]
     actor: r.actor,
     createdAt: r.createdAt.toISOString(),
   }));
+  return { entries, total, totalMinutes: agg._sum.minutes ?? 0 };
 }
