@@ -10,6 +10,17 @@
 // is enforced in the API; this component renders whatever arrives and asks for
 // nothing more.
 //
+// The verifiers also ENTER the batch here now (owner, 2026-08-19): the same
+// materials panel the admin has on /office/costing — supplier splits, prices,
+// doses — is rendered below the picker for anyone who can sign. The panel came
+// to them rather than them to /office/costing, because that page carries the
+// computed sheet and the whole cost base and stays admin-only. And a mark is
+// REFUSED until the batch is fully entered — every price resolving, every dose
+// set, every split covering the mixer total. The refusal is the API's
+// (completeness.ts, checked in the POST); the disabled buttons and the blocker
+// list beside them are this screen repeating the API's answer so the verifier
+// knows exactly what to finish.
+//
 // "Verified" is never a bare tick. It carries who signed and when, and it
 // lapses on its own when the numbers move underneath it, because a sign-off
 // that survives the thing it signed off is worse than no sign-off at all.
@@ -17,6 +28,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Badge, Card, Empty } from "@/components/ui";
 import { readJson } from "@/lib/readJson";
+import { BatchRatesPanel } from "@/components/office/BatchRatesPanel";
 
 const API = "/api/office/batch-verify";
 
@@ -59,6 +71,9 @@ interface Detail {
   /** The signed-in name — how the screen tells your mark from the other verifier's. */
   me?: string;
   verification: Record<Side, Mark[]>;
+  /** What still has to be entered before the API will accept a mark — the
+   *  same answer the POST enforces, shipped so the buttons can say why. */
+  completeness?: { ok: boolean; blockers: string[] };
   weights?: Weights;
   prices?: Prices;
 }
@@ -91,6 +106,28 @@ function Verdict({ marks }: { marks: Mark[] }) {
         </span>
       ))}
     </span>
+  );
+}
+
+/**
+ * What still has to be entered, listed beside the disabled mark button.
+ *
+ * The list is the API's own answer (completeness.blockers), not a client-side
+ * re-derivation: the POST refuses a mark on an unfinished batch, and a screen
+ * that computed its own version of the rule would eventually disagree with
+ * the one that decides. Disabling the button without saying why would just
+ * send the verifier hunting through the materials panel row by row.
+ */
+function StillToEnter({ blockers }: { blockers: string[] }) {
+  return (
+    <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5">
+      <p className="text-xs font-semibold text-amber-800">
+        This batch cannot be marked correct yet — still to finish in the materials panel above:
+      </p>
+      <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-amber-700">
+        {blockers.map((b) => <li key={b}>{b}</li>)}
+      </ul>
+    </div>
   );
 }
 
@@ -174,6 +211,22 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
         }`}>
           {note.text}
         </div>
+      )}
+
+      {/* The SAME materials panel the admin has on /office/costing — the one
+          component, not a copy, talking to the same batch-rates API (which now
+          admits the two verifiers; the route is the gate). Signers only: an
+          admin reading this page signs nothing and already has the panel next
+          door with the computed sheet under it. Saving re-reads the detail
+          below, because an edit can lapse a mark and always moves the
+          completeness answer the buttons obey. */}
+      {detail && sign.length > 0 && (
+        <BatchRatesPanel
+          key={detail.batchKey}
+          batchKey={detail.batchKey}
+          batchLabel={detail.batch}
+          onSaved={() => void load(picked)}
+        />
       )}
 
       {detail && can.includes("WEIGHTS") && detail.weights && (
@@ -264,22 +317,30 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
             // Your OWN mark decides the button — the other verifier's does not
             // make this "Verified" for you, and withdrawing only removes yours.
             const mine = detail.verification.WEIGHTS.find((m) => m.by === detail.me);
+            // An unfinished batch cannot be marked (the API refuses; this
+            // disable is the courtesy). Withdrawing stays open — taking a
+            // signature BACK off an incomplete batch is the right direction.
+            const gaps = detail.completeness && !detail.completeness.ok
+              ? detail.completeness.blockers : null;
             return (
-              <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3">
-                <button type="button" className={btn} disabled={busy === "WEIGHTS"}
-                  onClick={() => void act("WEIGHTS", false)}>
-                  {busy === "WEIGHTS" ? "Saving…"
-                    : mine?.status === "verified" ? "Verified by you" : "Mark consumption correct"}
-                </button>
-                {mine && (
-                  <button type="button" className={btnGhost} disabled={busy === "WEIGHTS"}
-                    onClick={() => void act("WEIGHTS", true)}>
-                    Withdraw
+              <div className="mt-4 border-t border-gray-200 pt-3">
+                {gaps && <StillToEnter blockers={gaps} />}
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" className={btn} disabled={busy === "WEIGHTS" || !!gaps}
+                    onClick={() => void act("WEIGHTS", false)}>
+                    {busy === "WEIGHTS" ? "Saving…"
+                      : mine?.status === "verified" ? "Verified by you" : "Mark consumption correct"}
                   </button>
-                )}
-                <span className="text-xs text-gray-400">
-                  You are confirming these are the quantities the batch actually consumed.
-                </span>
+                  {mine && (
+                    <button type="button" className={btnGhost} disabled={busy === "WEIGHTS"}
+                      onClick={() => void act("WEIGHTS", true)}>
+                      Withdraw
+                    </button>
+                  )}
+                  <span className="text-xs text-gray-400">
+                    You are confirming these are the quantities the batch actually consumed.
+                  </span>
+                </div>
               </div>
             );
           })()}
@@ -364,22 +425,30 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
 
           {sign.includes("COSTS") && (() => {
             const mine = detail.verification.COSTS.find((m) => m.by === detail.me);
+            // Same rule as the weights side, deliberately: "the prices are
+            // right" is as much a claim about a fully-entered batch as "the
+            // consumption is right", so one unfinished split blocks both.
+            const gaps = detail.completeness && !detail.completeness.ok
+              ? detail.completeness.blockers : null;
             return (
-              <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3">
-                <button type="button" className={btn} disabled={busy === "COSTS"}
-                  onClick={() => void act("COSTS", false)}>
-                  {busy === "COSTS" ? "Saving…"
-                    : mine?.status === "verified" ? "Verified by you" : "Mark prices correct"}
-                </button>
-                {mine && (
-                  <button type="button" className={btnGhost} disabled={busy === "COSTS"}
-                    onClick={() => void act("COSTS", true)}>
-                    Withdraw
+              <div className="mt-4 border-t border-gray-200 pt-3">
+                {gaps && <StillToEnter blockers={gaps} />}
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" className={btn} disabled={busy === "COSTS" || !!gaps}
+                    onClick={() => void act("COSTS", false)}>
+                    {busy === "COSTS" ? "Saving…"
+                      : mine?.status === "verified" ? "Verified by you" : "Mark prices correct"}
                   </button>
-                )}
-                <span className="text-xs text-gray-400">
-                  You are confirming these are the rates the batch should be costed at.
-                </span>
+                  {mine && (
+                    <button type="button" className={btnGhost} disabled={busy === "COSTS"}
+                      onClick={() => void act("COSTS", true)}>
+                      Withdraw
+                    </button>
+                  )}
+                  <span className="text-xs text-gray-400">
+                    You are confirming these are the rates the batch should be costed at.
+                  </span>
+                </div>
               </div>
             );
           })()}

@@ -23,6 +23,7 @@ import {
   costsFingerprint, isVerifySide, readableSides, signableSides, verifyMarks,
   weightsFingerprint, SIDE_LABEL, type VerificationRow, type VerifySide,
 } from "@/lib/costing/verification";
+import { batchCompleteness, type BatchCompleteness } from "@/lib/costing/completeness";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,6 +33,30 @@ const json = (body: unknown, status = 200) => NextResponse.json(body, { status }
 /** The catalogue labels the prices side needs, without shipping the catalogue's
  *  hints and categories to a screen that does not use them. */
 const LABEL = new Map(RATE_ITEMS.map((d) => [d.item, { label: d.label, unit: d.unit }]));
+
+/** Item -> label for the completeness blockers, so they name materials the way
+ *  the panels do ("TiO₂", not "tio2") — the reader is about to go fix them. */
+const BLOCKER_LABELS: Record<string, string> =
+  Object.fromEntries(RATE_ITEMS.map((d) => [d.item, d.label]));
+
+/**
+ * Whether this batch is finished being entered — the gate in front of a mark.
+ *
+ * Computed from the SAME reads the fingerprints come from, so the answer and
+ * the signature always describe the same numbers. The rule itself is the pure
+ * function in completeness.ts (owner, 2026-08-19: no approval until every
+ * price, dose and split is in, and splits cover the full mixer total).
+ */
+function completenessOf(
+  f: NonNullable<Awaited<ReturnType<typeof fingerprints>>>,
+): BatchCompleteness {
+  return batchCompleteness(
+    f.consumption,
+    f.lines,
+    { rates: f.card.rates, resinBySupplier: f.card.resinBySupplier },
+    BLOCKER_LABELS,
+  );
+}
 
 async function whoAmI() {
   const u = await currentUser();
@@ -103,6 +128,11 @@ export async function GET(req: NextRequest) {
     // "the other verifier has" — marks are per person now.
     me: me.name,
     verification: state,
+    // What still has to be entered before a mark is accepted. The POST below
+    // is the control; this is the courtesy that lets the screen disable the
+    // buttons and say WHY, instead of teaching people that clicking sometimes
+    // errors for reasons the page kept to itself.
+    completeness: completenessOf(f),
   };
 
   // ---- the weighed half: what the mixer recorded, nothing derived ----
@@ -188,6 +218,23 @@ export async function POST(req: NextRequest) {
 
   const f = await fingerprints(batchKey);
   if (!f) return json({ error: "No mixer records for that batch." }, 404);
+
+  // NO MARK ON AN UNFINISHED BATCH (owner, 2026-08-19). Refused HERE, not just
+  // greyed out on the screen: the disabled button is a courtesy, this check is
+  // the control — a stale tab or curl reaches this line too. Either side is
+  // blocked by the same rule, because "the prices are right" and "the
+  // consumption is right" are both claims about a batch whose entry is still
+  // open. EXISTING marks are untouched: this runs only when a NEW mark is
+  // being made; what was signed before the rule stands (or lapses on its own
+  // fingerprint), and withdrawing is always allowed.
+  const complete = completenessOf(f);
+  if (!complete.ok) {
+    return json({
+      error: "This batch is not fully entered yet — finish the materials panel first: "
+        + complete.blockers.join("; "),
+      blockers: complete.blockers,
+    }, 409);
+  }
 
   // Keyed per PERSON: the other verifier's mark on the same side stands.
   await prisma.costingBatchVerification.upsert({

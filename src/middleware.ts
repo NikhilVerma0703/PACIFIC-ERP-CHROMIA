@@ -122,12 +122,33 @@ export default auth((req) => {
     }
   }
 
+  // ---- Per-batch material rates: the ONE costing-admin surface the two batch
+  // verifiers reach (owner, 2026-08-19). They enter the supplier splits, the
+  // prices and the doses for a batch themselves now — on their own page,
+  // /office/batch-verify, which renders the same materials panel the admin has
+  // — so the API that panel talks to must admit them. Carved out HERE because
+  // the path sits under the /api/office/costing prefix the next block closes
+  // to ADMIN, and the carve-out is the API path ONLY: the /office/costing PAGE
+  // — the computed sheet, manpower, electricity, the whole cost base — stays
+  // admin-only below.
+  //
+  // Same coarse set as batch-verify (ADMIN | STORE | LINE_MANAGER), because
+  // the verifiers are the same two people: the store incharge by role, the
+  // named production verifier by email. The email check needs the session and
+  // an env var, so it lives in the route (isBatchVerifier); this gate only
+  // keeps the door shut to everyone who could never qualify. ----
+  const batchRatesApi = p.startsWith("/api/office/costing-admin/batch-rates");
+  if (batchRatesApi) {
+    const ok = isAdmin || role === "STORE" || role === "LINE_MANAGER";
+    if (!ok) return new Response("Forbidden", { status: 403 });
+  }
+
   // ---- Batch costing: ADMIN only. It prices the plant's whole cost base -
   // manpower, electricity, supplier rates - which is exactly the information
   // a rate negotiation or a payroll grievance would love to have. Same
   // ordering rule as finance: before the branch blocks, so Commercial's
   // `/office` allowance cannot leak it. ----
-  if (p.startsWith("/office/costing") || p.startsWith("/api/office/costing")) {
+  if (!batchRatesApi && (p.startsWith("/office/costing") || p.startsWith("/api/office/costing"))) {
     if (!isAdmin) {
       return p.startsWith("/api")
         ? new Response("Forbidden", { status: 403 })

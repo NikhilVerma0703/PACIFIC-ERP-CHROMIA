@@ -1,7 +1,18 @@
 // How a batch's materials were bought — the write surface.
 //
-// ADMIN ONLY, like the rate card next door. These lines change what a run cost,
-// which is what a container is priced from; not a clerk's field.
+// ADMIN plus the TWO BATCH VERIFIERS — the store incharge (STORE role) and the
+// named production verifier (WEIGHTS_VERIFIER_EMAILS). It was admin-only, like
+// the rate card next door; the owner widened it on 2026-08-19 so the two people
+// who sign a batch off can enter its splits, prices and doses themselves, from
+// their own page (/office/batch-verify renders the same materials panel). What
+// did NOT widen: the plant-wide rate card, the computed sheet and the rest of
+// /office/costing stay behind the ADMIN gate — this route is per-batch lines
+// only, and the middleware carve-out is scoped to exactly this path.
+//
+// The verifier check is HERE, not just in middleware: middleware admits the
+// coarse roles (STORE, LINE_MANAGER) because it cannot read the env var, but
+// "Line Manager" is a rank and the production verifier is one named person —
+// a LINE_MANAGER not on the list gets a 403 from this route.
 //
 // A material's lines are saved as a SET, not one at a time: the request carries
 // every line for that item and this route replaces them. Anything else and
@@ -35,6 +46,7 @@ import {
   costsFingerprint, verifyMarks, weightsFingerprint,
   type VerificationRow, type VerifySide,
 } from "@/lib/costing/verification";
+import { isBatchVerifier } from "@/lib/costing/verification";
 import { loadBatchConsumption } from "@/lib/costing/batchData";
 import { bandOf, gritItemKey } from "@/lib/costing/batchData";
 
@@ -42,6 +54,34 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status });
+
+/**
+ * Who may price a batch, and the name their writes are attributed to.
+ *
+ * Admin, or one of the two batch verifiers (see the header). ONE resolution
+ * for both questions because they must never disagree: every mutation below
+ * logs to action_log with this name, and the batch history drawer reads that
+ * log — a write the gate allowed under one identity and the log recorded
+ * under another would be an edit nobody made.
+ *
+ * Null means "not yours to touch"; the caller turns it into the 403.
+ */
+async function rateEditor(): Promise<{ name: string } | null> {
+  const u = await currentUser();
+  if (!u) return null;
+  const role = (u as { role?: string }).role ?? null;
+  const email = (u as { email?: string }).email ?? null;
+  const ok = (await isAdmin())
+    || isBatchVerifier(role, email, process.env.WEIGHTS_VERIFIER_EMAILS);
+  if (!ok) return null;
+  // Name over email over "unknown" — the drawer shows people, not addresses,
+  // and the old `?? "admin"` fallback would file a verifier's edit under a
+  // name that is now provably wrong.
+  return { name: (u as { name?: string }).name ?? email ?? "unknown" };
+}
+
+const FORBIDDEN =
+  "Only an admin or one of the two batch verifiers can price a batch.";
 
 /** The catalogue a batch may set — materials, the dosing rules, and ₹ per USD. */
 const SETTABLE = RATE_ITEMS.filter((d) => isOverridable(d.category, d.item));
@@ -153,7 +193,7 @@ async function verification(batchKey: string, card: EffectiveRateCard, lines: Sa
 }
 
 export async function GET(req: NextRequest) {
-  if (!(await isAdmin())) return json({ error: "Admins only." }, 403);
+  if (!(await rateEditor())) return json({ error: FORBIDDEN }, 403);
 
   const batchKey = new URL(req.url).searchParams.get("batchKey")?.trim() ?? "";
   if (!batchKey) return json({ error: "Which batch? Pass ?batchKey=" }, 400);
@@ -180,8 +220,9 @@ interface PostedLine {
 }
 
 export async function POST(req: NextRequest) {
-  if (!(await isAdmin())) return json({ error: "Admins only." }, 403);
-  const user = (await currentUser())?.name ?? "admin";
+  const editor = await rateEditor();
+  if (!editor) return json({ error: FORBIDDEN }, 403);
+  const user = editor.name;
 
   let body: { batchKey?: unknown; item?: unknown; lines?: PostedLine[] };
   try {
@@ -286,8 +327,9 @@ export async function POST(req: NextRequest) {
 
 /** Remove every line for one material, so it falls back to the card again. */
 export async function DELETE(req: NextRequest) {
-  if (!(await isAdmin())) return json({ error: "Admins only." }, 403);
-  const user = (await currentUser())?.name ?? "admin";
+  const editor = await rateEditor();
+  if (!editor) return json({ error: FORBIDDEN }, 403);
+  const user = editor.name;
 
   const sp = new URL(req.url).searchParams;
   const batchKey = sp.get("batchKey")?.trim() ?? "";
