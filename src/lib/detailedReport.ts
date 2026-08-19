@@ -55,7 +55,7 @@ export async function getDetailedReport(input: string): Promise<DetailedReport> 
     cycleSelect[`mixer${n}`] = true;
     cycleSelect[`m${n}FW`] = true;
     cycleSelect[`m${n}RW`] = true;
-    for (let g = 1; g <= 5; g++) {
+    for (let g = 1; g <= 8; g++) {
       cycleSelect[`m${n}W${g}`] = true;
       cycleSelect[`m${n}G${g}Sn`] = true;
       cycleSelect[`m${n}G${g}Ids`] = true;
@@ -87,7 +87,7 @@ export async function getDetailedReport(input: string): Promise<DetailedReport> 
     const w: [number, number, number, number] = [0, 0, 0, 0];
     for (let n = 1; n <= 4; n++) {
       let sum = 0;
-      for (let g = 1; g <= 5; g++) {
+      for (let g = 1; g <= 8; g++) {
         const v = c[`m${n}W${g}`] ?? 0;
         sum += v;
         const sn = c[`m${n}G${g}Sn`];

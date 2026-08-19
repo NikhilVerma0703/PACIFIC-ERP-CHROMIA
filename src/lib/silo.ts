@@ -74,7 +74,7 @@ async function recentlyActiveSilos(): Promise<Set<string>> {
   const active = new Set<string>();
   try {
     const sel: Record<string, boolean> = { fillerSiloBuffer: true };
-    for (let m = 1; m <= 4; m++) for (let g = 1; g <= 5; g++) sel[`m${m}G${g}Sn`] = true;
+    for (let m = 1; m <= 4; m++) for (let g = 1; g <= 8; g++) sel[`m${m}G${g}Sn`] = true;
     const [fills, cycles] = await Promise.all([
       prisma.silo.findMany({ where: { importedAt: { gte: cutoff }, siloNo: { not: null } }, select: { siloNo: true } }),
       (prisma as any).mixerCycle.findMany({ where: { importedAt: { gte: cutoff } }, select: sel }),

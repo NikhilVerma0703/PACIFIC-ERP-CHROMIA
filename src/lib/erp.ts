@@ -421,10 +421,10 @@ export async function getBatch(input: string, scope?: BatchScope): Promise<Batch
         where: mixWhere,
         select: {
           totalCycleWeight: true,
-          m1W1: true, m1W2: true, m1W3: true, m1W4: true, m1W5: true, m1FW: true, m1RW: true,
-          m2W1: true, m2W2: true, m2W3: true, m2W4: true, m2W5: true, m2FW: true, m2RW: true,
-          m3W1: true, m3W2: true, m3W3: true, m3W4: true, m3W5: true, m3FW: true, m3RW: true,
-          m4W1: true, m4W2: true, m4W3: true, m4W4: true, m4W5: true, m4FW: true, m4RW: true,
+          m1W1: true, m1W2: true, m1W3: true, m1W4: true, m1W5: true, m1W6: true, m1W7: true, m1W8: true, m1FW: true, m1RW: true,
+          m2W1: true, m2W2: true, m2W3: true, m2W4: true, m2W5: true, m2W6: true, m2W7: true, m2W8: true, m2FW: true, m2RW: true,
+          m3W1: true, m3W2: true, m3W3: true, m3W4: true, m3W5: true, m3W6: true, m3W7: true, m3W8: true, m3FW: true, m3RW: true,
+          m4W1: true, m4W2: true, m4W3: true, m4W4: true, m4W5: true, m4W6: true, m4W7: true, m4W8: true, m4FW: true, m4RW: true,
         },
       }),
       prisma.press.findMany({ where, select: { slabWeight: true } }),
@@ -443,17 +443,17 @@ export async function getBatch(input: string, scope?: BatchScope): Promise<Batch
 
   const rawCycleWeight = (m: Record<string, unknown>) => {
     let t = 0;
-    for (let x = 1; x <= 4; x++) { for (let g = 1; g <= 5; g++) t += num(m[`m${x}W${g}`]); t += num(m[`m${x}FW`]) + num(m[`m${x}RW`]); }
+    for (let x = 1; x <= 4; x++) { for (let g = 1; g <= 8; g++) t += num(m[`m${x}W${g}`]); t += num(m[`m${x}FW`]) + num(m[`m${x}RW`]); }
     return t;
   };
   const totalMixWeight = mixer.reduce((a, m) => a + (num(m.totalCycleWeight) || rawCycleWeight(m as Record<string, unknown>)), 0);
   const totalSlabWeight = press.reduce((a, p) => a + (p.slabWeight ?? 0), 0);
   const perMixer: [number, number, number, number] = [0, 0, 0, 0];
   for (const m of mixer) {
-    perMixer[0] += (m.m1W1 ?? 0) + (m.m1W2 ?? 0) + (m.m1W3 ?? 0) + (m.m1W4 ?? 0) + (m.m1W5 ?? 0) + (m.m1FW ?? 0);
-    perMixer[1] += (m.m2W1 ?? 0) + (m.m2W2 ?? 0) + (m.m2W3 ?? 0) + (m.m2W4 ?? 0) + (m.m2W5 ?? 0) + (m.m2FW ?? 0);
-    perMixer[2] += (m.m3W1 ?? 0) + (m.m3W2 ?? 0) + (m.m3W3 ?? 0) + (m.m3W4 ?? 0) + (m.m3W5 ?? 0) + (m.m3FW ?? 0);
-    perMixer[3] += (m.m4W1 ?? 0) + (m.m4W2 ?? 0) + (m.m4W3 ?? 0) + (m.m4W4 ?? 0) + (m.m4W5 ?? 0) + (m.m4FW ?? 0);
+    perMixer[0] += (m.m1W1 ?? 0) + (m.m1W2 ?? 0) + (m.m1W3 ?? 0) + (m.m1W4 ?? 0) + (m.m1W5 ?? 0) + (m.m1W6 ?? 0) + (m.m1W7 ?? 0) + (m.m1W8 ?? 0) + (m.m1FW ?? 0);
+    perMixer[1] += (m.m2W1 ?? 0) + (m.m2W2 ?? 0) + (m.m2W3 ?? 0) + (m.m2W4 ?? 0) + (m.m2W5 ?? 0) + (m.m2W6 ?? 0) + (m.m2W7 ?? 0) + (m.m2W8 ?? 0) + (m.m2FW ?? 0);
+    perMixer[2] += (m.m3W1 ?? 0) + (m.m3W2 ?? 0) + (m.m3W3 ?? 0) + (m.m3W4 ?? 0) + (m.m3W5 ?? 0) + (m.m3W6 ?? 0) + (m.m3W7 ?? 0) + (m.m3W8 ?? 0) + (m.m3FW ?? 0);
+    perMixer[3] += (m.m4W1 ?? 0) + (m.m4W2 ?? 0) + (m.m4W3 ?? 0) + (m.m4W4 ?? 0) + (m.m4W5 ?? 0) + (m.m4W6 ?? 0) + (m.m4W7 ?? 0) + (m.m4W8 ?? 0) + (m.m4FW ?? 0);
   }
 
   // mixFamilyWide: the mix belongs to the whole run but the slab weight is
@@ -839,7 +839,7 @@ export async function getMixerCycles(input: string, scope?: BatchScope): Promise
     const gritSiloSet = new Set<string>();
     let gritKg = 0, fillerKg = 0, resinKg = 0;
     for (const m of [1, 2, 3, 4]) {
-      for (const g of [1, 2, 3, 4, 5]) {
+      for (const g of [1, 2, 3, 4, 5, 6, 7, 8]) {
         const w = num(r[`m${m}W${g}`]);
         const snRaw = r[`m${m}G${g}Sn`];
         const silo = snRaw != null && String(snRaw).trim() !== "" ? String(snRaw).trim() : null;

@@ -133,9 +133,9 @@ export interface BatchConsumption {
   lastPress: Date | null;
 }
 
-/** The 20 (weight, silo, links) slot triplets, unpivoted in SQL. */
+/** The 32 (weight, silo, links) slot triplets, unpivoted in SQL. */
 const GRIT_SLOTS = Array.from({ length: 4 }, (_, mi) =>
-  Array.from({ length: 5 }, (_, gi) => ({
+  Array.from({ length: 8 }, (_, gi) => ({
     w: `m${mi + 1}_w${gi + 1}`, sn: `m${mi + 1}_g${gi + 1}_sn`, ids: `m${mi + 1}_g${gi + 1}`,
   }))).flat();
 
@@ -155,7 +155,7 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
     FROM mixer_cycle WHERE batch_key = ${batchKey}
     GROUP BY 1 ORDER BY 2 DESC`;
 
-  // Grit: unpivot the 20 slots, resolve each charge's silo fill-records to a
+  // Grit: unpivot the 32 slots, resolve each charge's silo fill-records to a
   // size band. The per-charge link is authoritative - silos swap bands
   // mid-run, and the whole-silo shortcut is exactly the mistake the variance
   // panel exists to catch.

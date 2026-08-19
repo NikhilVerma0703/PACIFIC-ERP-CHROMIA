@@ -315,7 +315,7 @@ const QUALITY_RE = /defect|reject|qc|grade|param|why|cause|analy|compare/i;
 // temperature column, entry_hour_ist is derived from imported_at.
 const PRESS_NUM_COLS = ["in_time", "slab_weight", "temp_c", "no_of_vacuum_pumps", "no_of_stages", "vacuum_delay_in_seconds", "lowe_chamber_vacuum_in_mbar", "pinhole_cycle_delay", "phase_1_rev", "phase_2_rev", "phase_3_rev", "phase_4_rev", "phase_5_rev", "phase_1_pressing_time", "phase_2_pressing_time", "phase_3_pressing_time", "phase_4_pressing_time", "phase_5_pressing_time", "phase_1_acceleration_time", "phase_2_acceleration_time", "phase_3_acceleration_time", "phase_4_acceleration_time", "phase_5_acceleration_time", "phase_1_pressure", "phase_2_pressure", "phase_3_pressure", "phase_4_pressure", "phase_5_pressure", "cycle_time_sec", "entry_hour_ist"];
 const JOT_NUM_COLS = ["thickness_at_1", "thickness_at_2", "thickness_at_3", "thickness_at_4", "thickness_at_5", "thickness_at_6", "thickness_at_7", "thickness_at_8", "bend_mm"];
-const MIXER_NUM_COLS = ["loc", "m1_f_w", "m2_f_w", "m3_f_w", "m4_f_w", "m1_w1", "m1_w2", "m1_w3", "m1_w4", "m1_w5", "m2_w1", "m2_w2", "m2_w3", "m2_w4", "m2_w5", "m3_w1", "m3_w2", "m3_w3", "m3_w4", "m3_w5", "m4_w1", "m4_w2", "m4_w3", "m4_w4", "m4_w5", "m1_r_w", "m2_r_w", "m3_r_w", "m4_r_w", "total_cycle_weight"];
+const MIXER_NUM_COLS = ["loc", "m1_f_w", "m2_f_w", "m3_f_w", "m4_f_w", "m1_w1", "m1_w2", "m1_w3", "m1_w4", "m1_w5", "m1_w6", "m1_w7", "m1_w8", "m2_w1", "m2_w2", "m2_w3", "m2_w4", "m2_w5", "m2_w6", "m2_w7", "m2_w8", "m3_w1", "m3_w2", "m3_w3", "m3_w4", "m3_w5", "m3_w6", "m3_w7", "m3_w8", "m4_w1", "m4_w2", "m4_w3", "m4_w4", "m4_w5", "m4_w6", "m4_w7", "m4_w8", "m1_r_w", "m2_r_w", "m3_r_w", "m4_r_w", "total_cycle_weight"];
 const DIST_NUM_COLS = ["loading_material_p1_w", "loading_material_p2_w", "vein_dropped", "vein_remaining", "crusher_loading_belt_loading_speed", "crusher_loading_belt_unloading_speed", "roller_1_rpm", "roller_2_rpm", "lump_crusher_gap", "s1", "e1", "s2", "e2", "distributor_vein_1_batcher_rpm", "distributor_vein_2_batcher_rpm", "distributor_loading_belt_loading_speed", "distributor_loading_belt_unloading_speed", "distributor_material_unloading_speed", "distributor_fractionator_speed", "distributor_hopper_gap", "distributor_hopper_weight", "distributor_manual_roller_height", "shuttle_speed_p1", "shuttle_speed_p2"];
 const KREOS_NUM_COLS = ["slab_weight", "load_on_mobile_roller_rx_side_kg", "load_on_mobile_roller_lx_side_kg", "crusher_loading_belt_speed_in_m_min", "crusher_unloading_belt_speed_in_m_min_copy", "roller_1_rpm", "roller_2_rpm", "lump_crusher_gap", "gev_1_slot_size", "gev_1_rpm", "gev_2_slot_size", "gev_2_rpm", "gev_3_slot_size", "gev_3_rpm", "kreos_working_position_in_mm", "slab_set_weight", "lamination_speed", "belt_rotation_k1", "fixed_roller_rotation_k2", "mobile_roller_rotation_k3", "distributor_loading_belt_loading_speed", "distributor_loading_belt_unloading_speed", "chessboard_body_percentage"];
 
@@ -472,9 +472,9 @@ async function qualityComparisonPack(key: string): Promise<string> {
     + [...hrs.entries()].sort((a, b) => b[1] - a[1]).map(([h, n]) => `${String(h).padStart(2, "0")}:00×${n}`).join(" "));
   try { // batch-level context: mixer weights, line settings, silo bags fed
     const [mixer, dist, kreos]: any[][] = await Promise.all([
-      db.$queryRaw`SELECT loc, m1_f_w, m2_f_w, m3_f_w, m4_f_w, m1_w1, m1_w2, m1_w3, m1_w4, m1_w5,
-          m2_w1, m2_w2, m2_w3, m2_w4, m2_w5, m3_w1, m3_w2, m3_w3, m3_w4, m3_w5,
-          m4_w1, m4_w2, m4_w3, m4_w4, m4_w5, m1_r_w, m2_r_w, m3_r_w, m4_r_w,
+      db.$queryRaw`SELECT loc, m1_f_w, m2_f_w, m3_f_w, m4_f_w, m1_w1, m1_w2, m1_w3, m1_w4, m1_w5, m1_w6, m1_w7, m1_w8,
+          m2_w1, m2_w2, m2_w3, m2_w4, m2_w5, m2_w6, m2_w7, m2_w8, m3_w1, m3_w2, m3_w3, m3_w4, m3_w5, m3_w6, m3_w7, m3_w8,
+          m4_w1, m4_w2, m4_w3, m4_w4, m4_w5, m4_w6, m4_w7, m4_w8, m1_r_w, m2_r_w, m3_r_w, m4_r_w,
           (total_cycle_weight#>>'{}')::float8 total_cycle_weight
         FROM mixer_cycle WHERE batch_key = ${key} LIMIT 300`,
       db.$queryRaw`SELECT loading_material_p1_w, loading_material_p2_w, vein_dropped, vein_remaining,
@@ -498,8 +498,10 @@ async function qualityComparisonPack(key: string): Promise<string> {
   } catch { /* batch-level context is optional */ }
   try { // silo bags consumed: mixer grit/filler id arrays -> silo rows
     const sids: any[] = await db.$queryRaw`
-      SELECT DISTINCT unnest(m1_g1 || m1_g2 || m1_g3 || m1_g4 || m1_g5 || m2_g1 || m2_g2 || m2_g3 || m2_g4 || m2_g5
-        || m3_g1 || m3_g2 || m3_g3 || m3_g4 || m3_g5 || m4_g1 || m4_g2 || m4_g3 || m4_g4 || m4_g5 || filler_silo_id) aid
+      SELECT DISTINCT unnest(m1_g1 || m1_g2 || m1_g3 || m1_g4 || m1_g5 || m1_g6 || m1_g7 || m1_g8
+        || m2_g1 || m2_g2 || m2_g3 || m2_g4 || m2_g5 || m2_g6 || m2_g7 || m2_g8
+        || m3_g1 || m3_g2 || m3_g3 || m3_g4 || m3_g5 || m3_g6 || m3_g7 || m3_g8
+        || m4_g1 || m4_g2 || m4_g3 || m4_g4 || m4_g5 || m4_g6 || m4_g7 || m4_g8 || filler_silo_id) aid
       FROM mixer_cycle WHERE batch_key = ${key}`;
     const aids = sids.map((r) => String(r.aid)).filter(Boolean).slice(0, 200);
     if (aids.length) {

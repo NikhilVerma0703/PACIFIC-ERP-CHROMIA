@@ -229,12 +229,12 @@ export async function getSlabReport(input: string | number, opts: SlabReportOpti
 
   // ---- batch RM consumption stream (FIFO order: cycle → slot → bags) ----
   const cycleSel: Record<string, boolean> = { id: true, cycle: true, fillerSiloIdIds: true, fillerSiloBuffer: true };
-  for (let n = 1; n <= 4; n++) { cycleSel[`m${n}FW`] = true; cycleSel[`m${n}RW`] = true; cycleSel[`m${n}RIdIds`] = true; for (let g = 1; g <= 5; g++) { cycleSel[`m${n}W${g}`] = true; cycleSel[`m${n}G${g}Ids`] = true; cycleSel[`m${n}G${g}Sn`] = true; } }
+  for (let n = 1; n <= 4; n++) { cycleSel[`m${n}FW`] = true; cycleSel[`m${n}RW`] = true; cycleSel[`m${n}RIdIds`] = true; for (let g = 1; g <= 8; g++) { cycleSel[`m${n}W${g}`] = true; cycleSel[`m${n}G${g}Ids`] = true; cycleSel[`m${n}G${g}Sn`] = true; } }
   const cycles: any[] = await db.mixerCycle.findMany({ where: { batchKey }, select: cycleSel, orderBy: { cycle: "asc" } });
 
   const bagIds = new Set<string>();
   for (const c of cycles) {
-    for (let n = 1; n <= 4; n++) { for (let g = 1; g <= 5; g++) (c[`m${n}G${g}Ids`] ?? []).forEach((i: string) => bagIds.add(i)); }
+    for (let n = 1; n <= 4; n++) { for (let g = 1; g <= 8; g++) (c[`m${n}G${g}Ids`] ?? []).forEach((i: string) => bagIds.add(i)); }
     (c.fillerSiloIdIds ?? []).forEach((i: string) => bagIds.add(i));
   }
 
@@ -291,7 +291,7 @@ export async function getSlabReport(input: string | number, opts: SlabReportOpti
 
   for (const c of cycles) {
     for (let n = 1; n <= 4; n++) {
-      for (let g = 1; g <= 5; g++) {
+      for (let g = 1; g <= 8; g++) {
         const w = c[`m${n}W${g}`] ?? 0;
         if (!w) continue;
         const alloc = allocMap.get(`${c.id}:m${n}G${g}Ids`);

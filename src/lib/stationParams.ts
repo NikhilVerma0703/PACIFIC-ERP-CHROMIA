@@ -177,7 +177,7 @@ export async function getMixerCycleLog(input: string): Promise<MixerCycleLog | n
   for (let n = 1; n <= 4; n++) {
     select[`m${n}FW`] = true;
     select[`m${n}RW`] = true;
-    for (let g = 1; g <= 5; g++) select[`m${n}W${g}`] = true;
+    for (let g = 1; g <= 8; g++) select[`m${n}W${g}`] = true;
   }
   const rows: any[] = await (prisma as any).mixerCycle
     .findMany({ where: { batchKey: key }, select, orderBy: { cycle: "asc" } })
@@ -190,7 +190,7 @@ export async function getMixerCycleLog(input: string): Promise<MixerCycleLog | n
     for (let n = 1; n <= 4; n++) {
       filler += r[`m${n}FW`] ?? 0;
       resin += r[`m${n}RW`] ?? 0;
-      for (let g = 1; g <= 5; g++) grit += r[`m${n}W${g}`] ?? 0;
+      for (let g = 1; g <= 8; g++) grit += r[`m${n}W${g}`] ?? 0;
     }
     return { cycle: typeof r.cycle === "number" ? r.cycle : 0, grit, filler, resin };
   });

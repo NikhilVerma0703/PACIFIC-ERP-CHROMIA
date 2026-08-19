@@ -75,14 +75,14 @@ export interface SharedMixReport {
 // evidence panel did, or the split would apportion a different total than was confirmed.
 export const W_SELECT: Record<string, boolean> = (() => {
   const o: Record<string, boolean> = { batchKey: true, totalCycleWeight: true, mixerStartTime: true, mixerEndTime: true };
-  for (let x = 1; x <= 4; x++) { for (let g = 1; g <= 5; g++) o[`m${x}W${g}`] = true; o[`m${x}FW`] = true; o[`m${x}RW`] = true; }
+  for (let x = 1; x <= 4; x++) { for (let g = 1; g <= 8; g++) o[`m${x}W${g}`] = true; o[`m${x}FW`] = true; o[`m${x}RW`] = true; }
   return o;
 })();
 export function cycleKg(m: Record<string, unknown>): number {
   const t = num(m.totalCycleWeight);
   if (t) return t;
   let s = 0;
-  for (let x = 1; x <= 4; x++) { for (let g = 1; g <= 5; g++) s += num(m[`m${x}W${g}`]); s += num(m[`m${x}FW`]) + num(m[`m${x}RW`]); }
+  for (let x = 1; x <= 4; x++) { for (let g = 1; g <= 8; g++) s += num(m[`m${x}W${g}`]); s += num(m[`m${x}FW`]) + num(m[`m${x}RW`]); }
   return s;
 }
 const pct = (mixKg: number, slabKg: number) => (mixKg > 0 && slabKg > 0 ? ((mixKg - slabKg) / mixKg) * 100 : null);

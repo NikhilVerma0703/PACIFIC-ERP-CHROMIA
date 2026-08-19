@@ -58,7 +58,7 @@ export interface CorrectionDiff {
 // ---------------- loading ----------------
 function cycleSelect() {
   const sel: Record<string, boolean> = { id: true, airtableId: true, batch: true, cycle: true, createTime: true, mixerStartTime: true, importedAt: true, fillerSiloBuffer: true, fillerSiloIdIds: true };
-  for (let m = 1; m <= 4; m++) { sel[`m${m}FW`] = true; for (let g = 1; g <= 5; g++) { sel[`m${m}W${g}`] = true; sel[`m${m}G${g}Sn`] = true; sel[`m${m}G${g}Ids`] = true; } }
+  for (let m = 1; m <= 4; m++) { sel[`m${m}FW`] = true; for (let g = 1; g <= 8; g++) { sel[`m${m}W${g}`] = true; sel[`m${m}G${g}Sn`] = true; sel[`m${m}G${g}Ids`] = true; } }
   return sel;
 }
 // Only the cycles that can possibly reference this silo (by station-number
@@ -68,7 +68,7 @@ function cycleSelect() {
 function cycleWhere(siloNo: string, bagAids: string[]) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const or: any[] = [];
-  for (let m = 1; m <= 4; m++) for (let g = 1; g <= 5; g++) {
+  for (let m = 1; m <= 4; m++) for (let g = 1; g <= 8; g++) {
     or.push({ [`m${m}G${g}Sn`]: siloNo });
     if (bagAids.length) or.push({ [`m${m}G${g}Ids`]: { hasSome: bagAids } });
   }
@@ -98,7 +98,7 @@ function collectDraws(siloNo: string, bags: any[], cycles: any[]): Draw[] {
     // fallback stamped app-entered cycles as 1970 and broke the replay order.
     const ts = r.createTime ?? r.mixerStartTime ?? r.importedAt;
     const t = ts ? new Date(ts).getTime() : parseBatchNumber(r.batch) * 1e6 + num(r.cycle);
-    for (let m = 1; m <= 4; m++) for (let g = 1; g <= 5; g++) {
+    for (let m = 1; m <= 4; m++) for (let g = 1; g <= 8; g++) {
       const lf = `m${m}G${g}Ids`; const ids = (r[lf] ?? []) as string[];
       const w = num(r[`m${m}W${g}`]); const snHit = (r[`m${m}G${g}Sn`] ?? "").toString().trim() === siloNo;
       if (w > 0 && !ids.some((x) => writtenOff.has(x)) && (ids.some((x) => bagSet.has(x)) || snHit)) draws.push({ uid: `${r.id}:${lf}`, cycleId: r.id, cycleAirtableId: r.airtableId, batch: r.batch ?? null, cycleNo: num(r.cycle), linkField: lf, weight: w, time: t });
@@ -319,6 +319,8 @@ export async function applyCorrection(siloNo: string, op: Op): Promise<{ ok: boo
     const rev: Record<string, Set<string>> = {};
     for (const d of draws2) { const a = after.drawAlloc.get(d.uid) ?? []; if (a.some((x) => x.aid === aid)) { const cyc = cyById.get(d.cycleId); if (cyc) (rev[d.linkField] ||= new Set()).add(cyc.airtableId); } }
     const data: Record<string, string[]> = {};
+    // Capped at G5 on purpose: the Silo model only carries reverse-link columns
+    // for slots 1-5, so a slot 6-8 draw has no silo-side mirror to refresh.
     for (let m = 1; m <= 4; m++) for (let g = 1; g <= 5; g++) { const lf = `m${m}G${g}Ids`; if (rev[lf]) data[lf] = [...rev[lf]]; }
     if (rev.fillerSiloIdIds) data.fillerSiloIdIds = [...rev.fillerSiloIdIds];
     if (Object.keys(data).length) await db.silo.update({ where: { id: bag.id }, data });
@@ -354,7 +356,7 @@ export async function batchDrawAllocations(bagAids: string[]): Promise<Map<strin
 
     // every cycle that links any of these bags (any batch — bags can span batches)
     const linkFields: string[] = [];
-    for (let m = 1; m <= 4; m++) for (let g = 1; g <= 5; g++) linkFields.push(`m${m}G${g}Ids`);
+    for (let m = 1; m <= 4; m++) for (let g = 1; g <= 8; g++) linkFields.push(`m${m}G${g}Ids`);
     linkFields.push("fillerSiloIdIds");
     const cycles: any[] = await db.mixerCycle.findMany({ where: { OR: linkFields.map((f) => ({ [f]: { hasSome: aids } })) }, select: cycleSelect() });
 
@@ -363,7 +365,7 @@ export async function batchDrawAllocations(bagAids: string[]): Promise<Map<strin
     for (const r of cycles) {
       const ts = r.createTime ?? r.mixerStartTime ?? r.importedAt;
       const t = ts ? new Date(ts).getTime() : parseBatchNumber(r.batch) * 1e6 + num(r.cycle);
-      for (let m = 1; m <= 4; m++) for (let g = 1; g <= 5; g++) {
+      for (let m = 1; m <= 4; m++) for (let g = 1; g <= 8; g++) {
         const lf = `m${m}G${g}Ids`; const ids = ((r[lf] ?? []) as string[]).filter((x) => pos.has(x) || x.startsWith("deficit_"));
         const w = num(r[`m${m}W${g}`]);
         if (w > 0 && ids.length) draws.push({ uid: `${r.id}:${lf}`, t, w, links: ids });

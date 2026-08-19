@@ -21,7 +21,7 @@ export const UNBACKED_LABEL = "⚠ UNBACKED — backfill pending";
 export const WRITTEN_OFF_LABEL = "✕ WRITTEN OFF";
 
 const GRIT_LINK_FIELDS: string[] = [];
-for (let m = 1; m <= 4; m++) for (let g = 1; g <= 5; g++) GRIT_LINK_FIELDS.push(`m${m}G${g}Ids`);
+for (let m = 1; m <= 4; m++) for (let g = 1; g <= 8; g++) GRIT_LINK_FIELDS.push(`m${m}G${g}Ids`);
 const SILO_LINK_FIELDS = [...GRIT_LINK_FIELDS, "fillerSiloIdIds"];
 const RESIN_LINK_FIELDS = ["m1RIdIds", "m2RIdIds", "m3RIdIds", "m4RIdIds"];
 

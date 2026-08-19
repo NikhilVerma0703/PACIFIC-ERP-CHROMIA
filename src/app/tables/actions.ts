@@ -66,7 +66,7 @@ function stampMixerTotals(model: string, data: Record<string, unknown>) {
   let total = 0, m1 = 0;
   for (let m = 1; m <= 4; m++) {
     let mix = 0;
-    for (let g = 1; g <= 5; g++) mix += n(data[`m${m}W${g}`]);
+    for (let g = 1; g <= 8; g++) mix += n(data[`m${m}W${g}`]);
     mix += n(data[`m${m}FW`]) + n(data[`m${m}RW`]);
     total += mix;
     if (m === 1) m1 = mix;
@@ -346,7 +346,7 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
     if (model === "MixerCycle") {
       // recompute the formula totals from the full row after the edit
       const sel: Record<string, boolean> = {};
-      for (let m = 1; m <= 4; m++) { sel[`m${m}FW`] = true; sel[`m${m}RW`] = true; for (let g = 1; g <= 5; g++) sel[`m${m}W${g}`] = true; }
+      for (let m = 1; m <= 4; m++) { sel[`m${m}FW`] = true; sel[`m${m}RW`] = true; for (let g = 1; g <= 8; g++) sel[`m${m}W${g}`] = true; }
       const row = await delegateOf(model).findUnique({ where: { id }, select: sel });
       if (row) { const t: Record<string, unknown> = { ...row }; stampMixerTotals(model, t); await delegateOf(model).update({ where: { id }, data: { totalCycleWeight: t.totalCycleWeight ?? null, totalMixer1Weight: t.totalMixer1Weight ?? null } }); }
     }

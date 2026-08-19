@@ -43,6 +43,27 @@ function load(): Record<string, TableMeta> {
       press.fields.splice(i >= 0 ? i + 1 : press.fields.length, 0, fm);
     }
   }
+  // Native addition: mixer grit slots 6-8 (the mixers take eight charges now).
+  // Airtable only ever had five slots, so the generated fieldmap.json cannot
+  // supply these; appended after each mixer's W5 so they sit with their mixer
+  // group, mirroring the G5/W5 entries so editability matches. The G/W link and
+  // bag-lookup columns are NOT added: the automations write m{m}G{g}Ids by
+  // prisma field name (no FieldMeta involved), and nothing populates the
+  // Airtable-lookup Bags mirrors for native slots.
+  {
+    const mc = out["MixerCycle"];
+    if (mc && !mc.fields.some((f) => f.prismaField === "m1G6Sn")) {
+      for (let m = 1; m <= 4; m++) {
+        const add: FieldMeta[] = [];
+        for (let g = 6; g <= 8; g++) {
+          add.push({ prismaField: `m${m}G${g}Sn`, airtableName: `M${m}_G${g}_SN`, airtableType: "singleSelect", kind: "scalar", editable: true, column: `m${m}_g${g}_sn` });
+          add.push({ prismaField: `m${m}W${g}`, airtableName: `M${m}_W${g}`, airtableType: "number", kind: "number", editable: true, column: `m${m}_w${g}` });
+        }
+        const i = mc.fields.findIndex((f) => f.prismaField === `m${m}W5`);
+        mc.fields.splice(i >= 0 ? i + 1 : mc.fields.length, 0, ...add);
+      }
+    }
+  }
   // Two-tier RM: the bulk, bag-less "unassigned pool" is a native table (not an
   // Airtable mirror), surfaced here so it's browsable alongside the assigned RM.
   out["UnassignedRm"] = {

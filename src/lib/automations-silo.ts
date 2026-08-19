@@ -76,7 +76,7 @@ function mixerSelect() {
   const sel: Record<string, boolean> = { id: true, batch: true, cycle: true, fillerSiloBuffer: true, fillerSiloIdIds: true };
   for (let m = 1; m <= 4; m++) {
     sel[`m${m}FW`] = true;
-    for (let g = 1; g <= 5; g++) { sel[`m${m}W${g}`] = true; sel[`m${m}G${g}Sn`] = true; sel[`m${m}G${g}Ids`] = true; }
+    for (let g = 1; g <= 8; g++) { sel[`m${m}W${g}`] = true; sel[`m${m}G${g}Sn`] = true; sel[`m${m}G${g}Ids`] = true; }
   }
   return sel;
 }
@@ -91,7 +91,7 @@ export async function runGritFillerAllocator(opts: { dryRun?: boolean } = {}): P
   for (const r of mixer) {
     const batchNum = parseBatchNumber(r.batch);
     const cycle = r.cycle ?? 0;
-    for (let m = 1; m <= 4; m++) for (let g = 1; g <= 5; g++) {
+    for (let m = 1; m <= 4; m++) for (let g = 1; g <= 8; g++) {
       const weight = r[`m${m}W${g}`] ?? 0;
       const siloNo = (r[`m${m}G${g}Sn`] ?? "").toString().trim();
       const link = r[`m${m}G${g}Ids`] as string[] | null;
@@ -174,8 +174,8 @@ export async function allocateMixerCycle(recordId: string): Promise<MixerAllocRe
     return left <= 1e-9;
   };
 
-  // Grit slots M1..M4 G1..G5
-  for (let m = 1; m <= 4; m++) for (let g = 1; g <= 5; g++) {
+  // Grit slots M1..M4 G1..G8
+  for (let m = 1; m <= 4; m++) for (let g = 1; g <= 8; g++) {
     const weight = rec[`m${m}W${g}`] ?? 0;
     const sn = (rec[`m${m}G${g}Sn`] ?? "").toString().trim();
     const link = rec[`m${m}G${g}Ids`] as string[] | null;

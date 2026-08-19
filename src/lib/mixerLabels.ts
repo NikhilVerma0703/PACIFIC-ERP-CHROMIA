@@ -12,8 +12,8 @@ export function classifyMixer(prismaField: string): MixerFieldInfo | null {
   const mixer = Number(m[1]);
   const rest = m[2];
   let g;
-  if ((g = rest.match(/^G([1-5])Sn$/))) return { mixer, grit: Number(g[1]), kind: "silo" };
-  if ((g = rest.match(/^W([1-5])$/))) return { mixer, grit: Number(g[1]), kind: "weight" };
+  if ((g = rest.match(/^G([1-8])Sn$/))) return { mixer, grit: Number(g[1]), kind: "silo" };
+  if ((g = rest.match(/^W([1-8])$/))) return { mixer, grit: Number(g[1]), kind: "weight" };
   if (rest === "FW") return { mixer, grit: null, kind: "filler" };
   if (rest === "RW") return { mixer, grit: null, kind: "resinWeight" };
   if (rest === "RDtn") return { mixer, grit: null, kind: "resinDtn" };
