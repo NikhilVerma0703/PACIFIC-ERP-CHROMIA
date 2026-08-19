@@ -40,10 +40,37 @@ function loadPdfjs(): Promise<PdfjsModule> {
     const worker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
     (globalThis as Record<string, unknown>).pdfjsWorker = worker;
     return (await import("pdfjs-dist/legacy/build/pdf.mjs")) as unknown as PdfjsModule;
-  })();
+  })().catch((err) => {
+    // NEVER MEMOISE A REJECTION. `??=` keeps whatever the first call produced,
+    // and a rejected promise is a permanent answer: every upload for the rest
+    // of that lambda instance's life would fail with the first one's reason,
+    // so "try again" could not succeed even after the cause had gone. Throw
+    // the memo away and let the next upload load the module for itself.
+    pdfjsPromise = null;
+    throw err;
+  });
   return pdfjsPromise;
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
+
+/**
+ * The one line about a loader failure worth putting in front of a person.
+ *
+ * "Tell IT" is not a fault report. A manager who can read back
+ * `ERR_MODULE_NOT_FOUND: Cannot find package 'pdfjs-dist'` has handed IT the
+ * whole diagnosis; a manager who can only say "it said tell you" has handed
+ * them a morning of guessing. The code (or class) and the first line of the
+ * message are enough to name the cause and carry no stack and no paths.
+ */
+function describeLoadFailure(err: unknown): string {
+  const e = err as { code?: unknown; name?: unknown; message?: unknown } | null;
+  const code = typeof e?.code === "string" && e.code ? e.code
+    : typeof e?.name === "string" && e.name ? e.name
+    : "Error";
+  const first = String(e?.message ?? err ?? "").split("\n")[0]!.trim();
+  const text = first ? `${code}: ${first}` : code;
+  return text.length > 300 ? `${text.slice(0, 297)}…` : text;
+}
 
 export interface PoPdfReadResult {
   pages: PoPage[];
@@ -99,14 +126,17 @@ export async function readPoPdfPages(bytes: Uint8Array): Promise<PoPdfReadResult
   try {
     pdfjs = await loadPdfjs();
   } catch (err) {
-    // LOG THE REASON. This message told a manager to "tell IT" and told IT
-    // nothing — the actual cause was invisible for as long as it took someone
-    // to read the source. It was a Node version: pdfjs-dist 6.x requires
-    // >=22.13 and the deploy ran an older runtime, so the import threw before
-    // a single byte was read. package.json now pins engines.node, but the next
-    // reason will be a different one, and it should not have to be guessed at.
+    // SAY WHY, ON SCREEN. The first version of this told the manager to "tell
+    // IT" and told IT nothing, and the cause then had to be guessed at from
+    // the outside — which produced one wrong fix (a Node version that was
+    // never the problem; the runtime was already 24.x) before anyone thought
+    // to make the failure report itself. The reason goes both to the log, for
+    // whoever can read it, and to the screen, for whoever cannot.
     console.error("[fab/poPdf] pdfjs failed to load:", err);
-    return { pages: [], error: "The PDF reader could not be started on the server. Nothing was imported — tell IT." };
+    return {
+      pages: [],
+      error: `The PDF reader could not be started on the server. Nothing was imported — tell IT: ${describeLoadFailure(err)}`,
+    };
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

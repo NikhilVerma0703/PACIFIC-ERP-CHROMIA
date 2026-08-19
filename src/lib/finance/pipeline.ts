@@ -372,7 +372,15 @@ function loadPdfjs(): Promise<PdfjsModule> {
     const worker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
     (globalThis as Record<string, unknown>).pdfjsWorker = worker;
     return (await import("pdfjs-dist/legacy/build/pdf.mjs")) as unknown as PdfjsModule;
-  })();
+  })().catch((err) => {
+    // A rejection must not be what gets memoised — see the same guard in
+    // src/lib/fab/poPdf.ts. Here it would be worse than a failed upload: a
+    // bill whose text layer could not be read is indistinguishable from a
+    // scanned one, so a single early failure would silently send every
+    // later bill on that instance down the OCR path.
+    pdfjsPromise = null;
+    throw err;
+  });
   return pdfjsPromise;
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
