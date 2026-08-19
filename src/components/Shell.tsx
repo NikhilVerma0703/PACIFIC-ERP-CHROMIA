@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { currentUser, sessionOnce } from "@/lib/rbac";
 import { logout } from "@/app/actions";
 import { Nav } from "./Nav";
+import { CollapsibleSidebar } from "./CollapsibleSidebar";
 import { fabTierOf } from "@/lib/fab/access";
 import { hasInventoryAccess } from "@/lib/inventory/access";
 import { consumablesTierOf } from "@/lib/consumables/access";
@@ -51,15 +52,8 @@ export async function Shell({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex min-h-screen">
-      {/* Sidebar */}
-      <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-r border-gray-200/70 bg-white/70 px-4 py-5 backdrop-blur md:flex">
-        <div className="mb-6 flex shrink-0 items-center gap-2.5 px-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-pacific-dark shadow-sm"><img src="/logo-white.png" alt="Pacific Surfaces" className="h-5 w-5 object-contain" /></div>
-          <div className="leading-tight">
-            <div className="text-sm font-semibold text-gray-900">Pacific ERP</div>
-            <div className="text-[11px] text-gray-400">{BRANCH_LABEL[branch] ?? "Production system"}</div>
-          </div>
-        </div>
+      {/* Sidebar — the logo tile hides it, and brings it back (CollapsibleSidebar) */}
+      <CollapsibleSidebar subtitle={BRANCH_LABEL[branch] ?? "Production system"}>
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
           <Nav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} />
         </div>
@@ -75,7 +69,7 @@ export async function Shell({ children }: { children: ReactNode }) {
             <button className="w-full rounded-md border border-gray-200 px-2 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">Sign out</button>
           </form>
         </div>
-      </aside>
+      </CollapsibleSidebar>
 
       {/* Main */}
       <div className="flex min-w-0 flex-1 flex-col">
