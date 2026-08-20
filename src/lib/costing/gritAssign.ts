@@ -359,3 +359,73 @@ export function gritAssignBlockers(rows: readonly GritSiloLine[], label?: (size:
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Keys, labels and the sentences the sheet prints
+// ---------------------------------------------------------------------------
+
+/**
+ * The rate-card item key for one silo's grit on one batch.
+ *
+ * DELIBERATELY EXCLUDES THE SIZE. A price is typed against a silo, and the size
+ * is a separate fact about that silo which the verifier can correct afterwards.
+ * Folding the size into the key would orphan the price the moment he did —
+ * the money would vanish from the sheet with nothing to say why.
+ *
+ * The cost of that choice is real and is paid elsewhere: because the key does
+ * not move when the size does, nothing about the stored price changes either,
+ * which is exactly why the size had to go into costsFingerprint.
+ */
+export const gritSiloItemKey = (silo: string) => `grit-silo-${String(silo).trim()}`;
+
+/** How a silo's grit reads on the sheet and in a blocker. */
+export function gritSiloLabel(silo: string, size: string): string {
+  const s = String(size ?? "").trim();
+  return s ? `Grit ${s} — silo ${silo}` : `Grit — silo ${silo}`;
+}
+
+/** The shape gritFlagSentences needs. Structural, so a loader row satisfies it
+ *  without this module importing anything. */
+export interface GritSiloFlagInput {
+  silo: string;
+  size: string;
+  suppliers: readonly { supplier: string; kg: number }[];
+  recordedSizes: readonly string[];
+  recordedSuppliers: readonly string[];
+}
+
+/**
+ * Every disagreement between what was assigned and what the bags record, in
+ * words, for the sheet's assumptions block.
+ *
+ * REPORTS ONLY. The assigned value is what the batch is costed at, in every one
+ * of these sentences — none of them is a correction, a suggestion to change the
+ * silo, or a reason to refuse anything. That is the difference between a flag
+ * and a blocker, and it is the rule the whole feature rests on.
+ */
+export function gritFlagSentences(rows: readonly GritSiloFlagInput[]): string[] {
+  const out: string[] = [];
+  for (const r of rows) {
+    const size = matchSize(r.size, r.recordedSizes);
+    if (size.verdict === "mismatch") {
+      out.push(
+        `Silo ${r.silo}: the bags record ${r.recordedSizes.join(", ")}, and ${r.size} was assigned — ` +
+        `the batch is costed at ${r.size}.`,
+      );
+    } else if (size.verdict === "match-of-conflict") {
+      out.push(
+        `Silo ${r.silo}: the bags record two sizes (${r.recordedSizes.join(", ")}), which cannot both be ` +
+        `true of one silo in one batch. ${r.size} was assigned and is what the batch is costed at.`,
+      );
+    }
+    for (const p of r.suppliers) {
+      const sup = matchSupplier(p.supplier, r.recordedSuppliers);
+      if (sup.verdict !== "mismatch") continue;
+      out.push(
+        `Silo ${r.silo}: the bags came from ${r.recordedSuppliers.join(", ")}, and ${p.supplier} was ` +
+        `assigned to ${Math.round(p.kg)} kg of it.`,
+      );
+    }
+  }
+  return out;
+}

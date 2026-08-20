@@ -43,6 +43,16 @@ export interface WeighedShape {
   mixerCharges: number;
   gritUnresolvedKg: number;
   gritCharges: ReadonlyArray<{ silo: string; band: string; kg: number }>;
+  /**
+   * Silo-wise grit, present ONLY on a batch somebody has assigned.
+   *
+   * OMITTED — not empty — on every batch that has not, and the guard below
+   * depends on that distinction being kept all the way from the loader.
+   */
+  gritSilos?: ReadonlyArray<{
+    silo: string; size: string; kg: number;
+    suppliers: ReadonlyArray<{ seq: number; supplier: string; kg: number }>;
+  }> | null;
 }
 
 /**
@@ -58,13 +68,30 @@ export function weightsFingerprint(c: WeighedShape): string {
     .map((g) => `${g.silo}|${g.band}|${round3(g.kg)}`)
     .sort()
     .join(";");
-  return [
+  const parts = [
     `resin=${round3(c.resinKg)}`,
     `filler=${round3(c.fillerKg)}`,
     `charges=${c.mixerCharges}`,
     `unresolved=${round3(c.gritUnresolvedKg)}`,
     `grit=${grit}`,
-  ].join("&");
+  ];
+  // THE GUARD IS THE WHOLE TRICK, and it is why this is appended rather than
+  // woven into the five parts above. A batch nobody has assigned produces a
+  // BYTE-IDENTICAL string to the one it produced before this field existed, so
+  // not one standing sign-off lapses on the day this deploys. A mark lapses the
+  // first time somebody assigns a silo on that batch — locally caused, expected,
+  // and exactly what the mechanism is for.
+  //
+  // `?.length` and not `!= null`: an empty array must behave as "unassigned",
+  // because a loader that returned [] instead of null would otherwise silently
+  // move every fingerprint in the plant.
+  if (c.gritSilos?.length) {
+    parts.push("assign=" + c.gritSilos.map((s) =>
+      `${s.silo}~${s.size}~${round3(s.kg)}~` +
+      [...s.suppliers].map((p) => `${p.seq}:${p.supplier}:${round3(p.kg)}`).sort().join(","),
+    ).sort().join(";"));
+  }
+  return parts.join("&");
 }
 
 /** The priced side — this batch's own lines, plus the card they fall back to. */
@@ -72,6 +99,15 @@ export interface PricedShape {
   lines: ReadonlyArray<{ item: string; seq: number; qty: number | null; rate: number }>;
   cardRates: Readonly<Record<string, number>>;
   resinBySupplier: Readonly<Record<string, number>>;
+  /**
+   * The assigned SIZES, and only the sizes. Present only on an assigned batch.
+   *
+   * A size is a claim about WHICH PRICE the sheet reads, so it belongs in the
+   * prices fingerprint as well as the weights one. Supplier and kilogram changes
+   * do not: they move provenance on the weights side without changing what any
+   * typed rupee figure applies to.
+   */
+  gritSizes?: ReadonlyArray<{ silo: string; size: string }> | null;
 }
 
 /**
@@ -92,7 +128,22 @@ export function costsFingerprint(p: PricedShape): string {
     .map((k) => `${k}=${round3(p.cardRates[k])}`).join(";");
   const resin = Object.keys(p.resinBySupplier).sort()
     .map((k) => `${k}=${round3(p.resinBySupplier[k])}`).join(";");
-  return `lines[${lines}]&card[${card}]&resin[${resin}]`;
+  // Sizes belong here, and leaving them out was the defect the review caught.
+  //
+  // Without this: the store incharge prices grit-silo-103 and marks COSTS
+  // correct; next morning the size is changed to one she never saw. The weights
+  // fingerprint moves, so the WEIGHTS mark lapses — but this function hashes
+  // only the saved lines, the card and resin, and the assignment touched none of
+  // them. The item key deliberately excludes the size so a re-assignment cannot
+  // orphan a price, so the price line does not move either. The sheet then
+  // prints the new size under a COSTS signature that still reads "verified".
+  //
+  // Appended, and guarded on length, for the same byte-identical reason as the
+  // weights side: an unassigned batch hashes exactly as it always did.
+  const assign = p.gritSizes?.length
+    ? `&assign[${p.gritSizes.map((s) => `${s.silo}=${s.size}`).sort().join(";")}]`
+    : "";
+  return `lines[${lines}]&card[${card}]&resin[${resin}]${assign}`;
 }
 
 /** One stored sign-off. */

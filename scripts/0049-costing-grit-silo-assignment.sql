@@ -4,7 +4,16 @@
 -- The verifiers assign size and supplier on /office/batch-verify; the price is
 -- typed afterwards on the costing panel, in rupees per tonne.
 --
+--   cd ~/Pacific-ERP        <-- FROM THE REPO ROOT. This is not decoration.
 --   npx prisma db execute --url "$DATABASE_URL" --file scripts/0049-costing-grit-silo-assignment.sql
+--
+-- Run from anywhere else and npx finds no local prisma, downloads the LATEST
+-- major instead, and fails with "unknown or unexpected option: --url" — that
+-- flag was dropped in Prisma 7, which reads the datasource from a config file
+-- this repo does not have. The pinned 6.19.3 in node_modules still takes it.
+--
+-- Or paste the statements below into the Neon SQL editor, which needs no CLI,
+-- no DATABASE_URL in your shell and no Prisma at all. That is how 0043 was run.
 --
 -- Not `prisma db push`. Same reason as 0040 through 0043 and 0048, and CLAUDE.md
 -- says it out loud: this repo keeps model-less tables and raw-SQL-only columns

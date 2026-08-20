@@ -229,3 +229,70 @@ test("only the two sides are sides", () => {
     assert.equal(isVerifySide(v), false);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Silo-wise grit in the fingerprints (owner, 2026-08-20)
+// ---------------------------------------------------------------------------
+//
+// The assignment belongs in BOTH fingerprints, and the deploy must move NEITHER.
+// Those two requirements pull against each other, which is why the segment is
+// appended under a length guard rather than woven in — and why the "nothing
+// lapses" half is pinned against stored literals rather than asserted.
+
+const SILOS = [{
+  silo: "103", size: "0.1-0.4", kg: 12480.3,
+  suppliers: [{ seq: 0, supplier: "Vinayaka", kg: 8000.3 }, { seq: 1, supplier: "Aypols", kg: 4480 }],
+}];
+
+test("an UNASSIGNED batch hashes byte-identically to before this feature existed", () => {
+  // These literals are the output of the code as it shipped before silo-wise
+  // grit. If either changes, every standing sign-off in the plant lapses on
+  // deploy — which is the one failure this whole guard exists to prevent.
+  const WEIGHTS_BEFORE = "resin=41873&filler=12000&charges=279&unresolved=0&grit=S1|0.6-1.2|900;S2|1.2-2.5|400";
+  const COSTS_BEFORE = "lines[silane#0|rest|1.21]&card[cobalt=0.086;silane=1.21]&resin[Aypols=161]";
+
+  assert.equal(weightsFingerprint(weighed()), WEIGHTS_BEFORE);
+  assert.equal(costsFingerprint(priced()), COSTS_BEFORE);
+
+  // ...and the three ways "not assigned" can arrive must all agree with it. `[]`
+  // is in here deliberately: a loader returning an empty array instead of null
+  // would otherwise move every fingerprint in the plant silently.
+  for (const g of [undefined, null, []]) {
+    assert.equal(weightsFingerprint({ ...weighed(), gritSilos: g }), WEIGHTS_BEFORE, `gritSilos=${JSON.stringify(g)}`);
+    assert.equal(costsFingerprint({ ...priced(), gritSizes: g as never }), COSTS_BEFORE, `gritSizes=${JSON.stringify(g)}`);
+  }
+});
+
+test("the first assignment on a batch lapses both marks", () => {
+  const before = weightsFingerprint(weighed());
+  const after = weightsFingerprint({ ...weighed(), gritSilos: SILOS });
+  assert.notEqual(before, after);
+  assert.notEqual(costsFingerprint(priced()), costsFingerprint({ ...priced(), gritSizes: [{ silo: "103", size: "0.1-0.4" }] }));
+});
+
+test("CHANGING A SIZE LAPSES THE PRICES MARK — the defect the review caught", () => {
+  // Without sizes in the cost fingerprint: the store incharge prices silo 103
+  // and signs; the size is changed to one she never saw; her mark still reads
+  // "verified" over a sheet printing the new size. The item key excludes the
+  // size on purpose, so the price line does not move either — nothing else
+  // would have caught it.
+  const a = costsFingerprint({ ...priced(), gritSizes: [{ silo: "103", size: "0.1-0.4" }] });
+  const b = costsFingerprint({ ...priced(), gritSizes: [{ silo: "103", size: "0.3-0.7" }] });
+  assert.notEqual(a, b);
+});
+
+test("changing a SUPPLIER moves the weights mark and leaves the prices mark standing", () => {
+  // Provenance changed; what any typed rupee figure applies to did not.
+  const resplit = [{ ...SILOS[0], suppliers: [{ seq: 0, supplier: "Chettinad", kg: 12480.3 }] }];
+  assert.notEqual(weightsFingerprint({ ...weighed(), gritSilos: SILOS }),
+                  weightsFingerprint({ ...weighed(), gritSilos: resplit }));
+  const sizes = [{ silo: "103", size: "0.1-0.4" }];
+  assert.equal(costsFingerprint({ ...priced(), gritSizes: sizes }),
+               costsFingerprint({ ...priced(), gritSizes: sizes }));
+});
+
+test("the assignment segment does not depend on silo or supplier ordering", () => {
+  const flipped = [{ ...SILOS[0], suppliers: [...SILOS[0].suppliers].reverse() }];
+  assert.equal(weightsFingerprint({ ...weighed(), gritSilos: SILOS }),
+               weightsFingerprint({ ...weighed(), gritSilos: flipped }));
+});
