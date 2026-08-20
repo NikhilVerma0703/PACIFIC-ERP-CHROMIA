@@ -1,4 +1,5 @@
 import type { NextAuthConfig } from "next-auth";
+import { storeMayVisit, operatorMayVisit, STORE_HOME, OPERATOR_HOME } from "./lib/routeCaps.ts";
 import type { Role } from "@prisma/client";
 
 // Edge-safe Auth.js config — NO Prisma, NO bcrypt imports here.
@@ -48,17 +49,15 @@ export const authConfig = {
       // has moved the last of them onto role CHROMIA.
       if (branch === "CHROMIA") return true;
 
+      // The caps live in lib/routeCaps so this file and middleware.ts cannot
+      // disagree about them again. They did: this gate allowed the Store
+      // Incharge only /live, /store and /api while middleware also granted
+      // /tables, /consumables and /office/batch-verify — and this one runs
+      // first, so those three screens bounced to /live.
       const role = (auth?.user as { role?: string } | undefined)?.role;
-      if (role === "STORE") {
-        const p = nextUrl.pathname;
-        const ok = p === "/live" || p.startsWith("/store") || p.startsWith("/api");
-        if (!ok) return Response.redirect(new URL("/live", nextUrl));
-      }
-      if (role === "OPERATOR") {
-        const p = nextUrl.pathname;
-        const ok = p.startsWith("/entry") || p === "/live" || p.startsWith("/tables") || p.startsWith("/api");
-        if (!ok) return Response.redirect(new URL("/entry", nextUrl));
-      }
+      const p = nextUrl.pathname;
+      if (role === "STORE" && !storeMayVisit(p)) return Response.redirect(new URL(STORE_HOME, nextUrl));
+      if (role === "OPERATOR" && !operatorMayVisit(p)) return Response.redirect(new URL(OPERATOR_HOME, nextUrl));
       return true;
     },
     jwt({ token, user }) {

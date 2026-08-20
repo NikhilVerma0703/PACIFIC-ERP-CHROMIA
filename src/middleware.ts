@@ -1,5 +1,6 @@
 import NextAuth from "next-auth";
 import { authConfig } from "./auth.config";
+import { storeMayVisit, operatorMayVisit, STORE_HOME, OPERATOR_HOME } from "./lib/routeCaps.ts";
 
 // Edge-safe middleware (Prisma-free config). IMPORTANT: with the auth(fn)
 // wrapper form, Auth.js does NOT auto-redirect — ALL gating is explicit here.
@@ -258,24 +259,14 @@ export default auth((req) => {
     return Response.redirect(new URL("/", nextUrl));
   }
 
-  if (role === "STORE") {
-    // /tables is allowed but capped to RM tables (canSeeModel -> STORE_MODELS).
-    //
-    // /office/batch-verify is the ONE office path this role reaches: the store
-    // incharge signs off the prices a batch is costed at. Without it here the
-    // gate above would admit the role and this block would bounce it to /live -
-    // the page would exist, be granted, and still be unreachable. Exact-or-
-    // subpath rather than a bare prefix, so a future /office/batch-verify-admin
-    // is not opened by accident; the rest of /office stays closed.
-    const verify = p === "/office/batch-verify" || p.startsWith("/office/batch-verify/");
-    const ok = p === "/live" || verify || p.startsWith("/store") || p.startsWith("/tables") || p.startsWith("/consumables") || p.startsWith("/api");
-    if (!ok) return Response.redirect(new URL("/live", nextUrl));
-  }
-  if (role === "OPERATOR") {
-    // operators only use their station's entry forms — nothing else
-    const ok = p.startsWith("/entry") || p === "/live" || p.startsWith("/tables") || p.startsWith("/api");
-    if (!ok) return Response.redirect(new URL("/entry", nextUrl));
-  }
+  // Both caps come from lib/routeCaps, which auth.config.ts imports too. They
+  // were written out separately once and drifted: middleware granted the Store
+  // Incharge /tables, /consumables and /office/batch-verify while auth.config
+  // still allowed only /live, /store and /api — and auth.config runs first, so
+  // the stricter, staler list silently won and three granted screens bounced.
+  if (role === "STORE" && !storeMayVisit(p)) return Response.redirect(new URL(STORE_HOME, nextUrl));
+  if (role === "OPERATOR" && !operatorMayVisit(p)) return Response.redirect(new URL(OPERATOR_HOME, nextUrl));
+
   if (role === "COMMERCIAL") {
     // Commercial: finished-goods slabs, plus READ-ONLY production lookups from the
     // Office branch's Shop Floor tab (slab, and the Office-side batch view). Live
