@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
+import { attachQueueActivity } from "@/lib/fab/queueActivity";
+import { isDroppedFromQueues } from "@/lib/fab/rejectPiece";
 
 export async function GET() {
   const g = await fabGate("EMPLOYEE");
@@ -12,15 +14,14 @@ export async function GET() {
       drawing: { select: { drawingNumber: true } },
       requirement: { select: { pieceLabel: true, description: true, length: true, width: true } },
       slab: { select: { slabCode: true, colour: true } },
-      pieceOperations: { where: { operationType: "CUTTING" } },
+      pieceOperations: { select: { operationType: true, isCompleted: true, completedAt: true } },
     },
-    orderBy: { createdAt: "asc" },
   });
 
-  // Only show pieces that have been cut
   const ready = pieces.filter(p =>
-    p.pieceOperations.some(op => op.isCompleted)
+    !isDroppedFromQueues(p.status) &&
+    p.pieceOperations.some(op => op.operationType === "CUTTING" && op.isCompleted)
   );
 
-  return Response.json(ready);
+  return Response.json(attachQueueActivity(ready, "POLISHING"));
 }

@@ -29,7 +29,10 @@ export async function fabSignOut() {
       });
     }
     const cookieStore = await cookies();
-    for (const name of ["fab_machine_type","fab_machine_id","fab_machine_name","fab_session_id"]) {
+    for (const name of [
+      "fab_machine_type","fab_machine_id","fab_machine_name","fab_session_id",
+      "fab_ps_CUTTING","fab_ps_POLISHING","fab_ps_SINK_CUTTING","fab_ps_FABRICATION","fab_ps_PACKAGING",
+    ]) {
       cookieStore.delete(name);
     }
   }

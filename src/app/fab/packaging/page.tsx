@@ -1,5 +1,8 @@
 "use client";
 import { useEffect, useState, useCallback, useMemo } from "react";
+import { ProcessSessionGate } from "@/components/fab/ProcessSessionGate";
+import { OtherStageChips } from "@/components/fab/OtherStageChips";
+import { RejectPieceButton } from "@/components/fab/RejectPieceButton";
 
 interface Piece {
   id: string; pieceCode: string;
@@ -8,6 +11,8 @@ interface Piece {
   drawing: { drawingNumber: string } | null;
   requirement: { pieceLabel: string | null; length: number | null; width: number | null } | null;
   slab: { slabCode: string; colour: string | null } | null;
+  otherDone?: string[];
+  recent?: boolean;
 }
 
 interface Package {
@@ -22,6 +27,14 @@ interface Package {
 }
 
 export default function FabPackagingPage() {
+  return (
+    <ProcessSessionGate type="PACKAGING">
+      <PackagingQueue />
+    </ProcessSessionGate>
+  );
+}
+
+function PackagingQueue() {
   const [tab, setTab]           = useState<"queue"|"packages">("queue");
   const [pieces, setPieces]     = useState<Piece[]>([]);
   const [packages, setPackages] = useState<Package[]>([]);
@@ -217,20 +230,24 @@ export default function FabPackagingPage() {
                           <th className="text-left px-3 py-2">Drawing</th>
                           <th className="text-left px-3 py-2">Size</th>
                           <th className="text-left px-3 py-2">Slab</th>
+                          <th className="w-20 px-3 py-2"></th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-50">
                         {group.map(p => (
                           <tr key={p.id}
                             onClick={() => togglePiece(p.id)}
-                            className={`cursor-pointer transition ${selected.has(p.id) ? "bg-green-50" : "hover:bg-gray-50"}`}>
+                            className={`cursor-pointer transition ${selected.has(p.id) ? "bg-green-50" : p.recent ? "bg-amber-50/80 hover:bg-amber-50" : "hover:bg-gray-50"}`}>
                             <td className="px-5 py-2.5">
                               <input type="checkbox" checked={selected.has(p.id)}
                                 onChange={() => togglePiece(p.id)}
                                 onClick={e => e.stopPropagation()}
                                 className="w-4 h-4 rounded accent-green-600 cursor-pointer" />
                             </td>
-                            <td className="px-3 py-2.5 font-mono text-xs text-gray-700">{p.pieceCode}</td>
+                            <td className="px-3 py-2.5">
+                              <span className="font-mono text-xs text-gray-700">{p.pieceCode}</span>
+                              <OtherStageChips otherDone={p.otherDone} recent={p.recent} />
+                            </td>
                             <td className="px-3 py-2.5 text-gray-500">{p.requirement?.pieceLabel ?? "—"}</td>
                             <td className="px-3 py-2.5 text-gray-500">{p.drawing?.drawingNumber ?? "—"}</td>
                             <td className="px-3 py-2.5 text-gray-500">
@@ -239,6 +256,17 @@ export default function FabPackagingPage() {
                             </td>
                             <td className="px-3 py-2.5 text-gray-500">
                               {p.slab?.slabCode ?? "—"}{p.slab?.colour ? ` · ${p.slab.colour}` : ""}
+                            </td>
+                            <td className="px-3 py-2.5 text-right" onClick={e => e.stopPropagation()}>
+                              <RejectPieceButton
+                                pieceId={p.id}
+                                processType="PACKAGING"
+                                onDone={() => {
+                                  setSelected(s => { const n = new Set(s); n.delete(p.id); return n; });
+                                  void loadQueue();
+                                }}
+                                onError={setCreateError}
+                              />
                             </td>
                           </tr>
                         ))}

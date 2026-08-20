@@ -55,7 +55,7 @@ const FAB_ROLES = ["OPERATOR", "INCHARGE", "LINE_MANAGER"] as const;
 const FAB_REACHABLE = [
   "/fab/cutting", "/fab/polishing", "/fab/sink-cutting",
   "/fab/fabrication", "/fab/packaging", "/fab/session",
-  "/fab/supervisor", "/fab/projects", "/fab/ceo", "/",
+  "/fab/supervisor", "/fab/supervisor/slabs", "/fab/projects", "/fab/manager", "/fab/ceo", "/",
 ];
 
 // Pages a fab user is NOT entitled to. middleware.ts must be the thing that
@@ -88,7 +88,7 @@ for (const role of FAB_ROLES) {
 test("no fab role can be bounced between the two gates", () => {
   // Direct statement of loop-freedom: whatever middleware.ts picks as a fab
   // user's home, authorized() has to let them land on it.
-  const middlewareHomes = ["/fab/cutting", "/fab/projects", "/fab/supervisor"];
+  const middlewareHomes = ["/fab/cutting", "/fab/manager", "/fab/supervisor/slabs"];
   for (const role of FAB_ROLES) {
     for (const home of middlewareHomes) {
       assert.equal(redirectFor({ role, branch: "FABRICATION" }, home), null,

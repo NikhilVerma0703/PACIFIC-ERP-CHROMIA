@@ -238,14 +238,21 @@ export function Nav({
     ...(batchVerify ? [{ href: "/office/batch-verify", icon: I.samples, label: "Batch Sign-off" }] : []),
   ];
   const fabrication = [
-    ...(mgmt ? [{ href: "/fab/projects", icon: I.manager, label: "Manager View" }] : []),
-    ...(supPlus ? [{ href: "/fab/supervisor", icon: I.planning, label: "Supervisor Board" }] : []),
+    ...(mgmt ? [
+      { href: "/fab/manager", icon: I.manager, label: "Purchase Orders" },
+    ] : []),
+    ...(supPlus ? [
+      { href: "/fab/supervisor/slabs",     icon: I.planning, label: "Slab & Sink Assignment" },
+      { href: "/fab/supervisor/people",    icon: I.users,    label: "People" },
+      { href: "/fab/supervisor/downtime",  icon: I.mis,      label: "Fab Downtime" },
+      { href: "/fab/supervisor",           icon: I.live,     label: "Cut Queue" },
+    ] : []),
     { href: "/fab/cutting",      icon: I.scissors,    label: "Cutting" },
     { href: "/fab/polishing",    icon: I.polishing,   label: "Polishing" },
     { href: "/fab/sink-cutting", icon: I.sink,        label: "Sink Cutting" },
     { href: "/fab/fabrication",  icon: I.fabrication, label: "Fabrication" },
     { href: "/fab/packaging",    icon: I.packaging,   label: "Packaging" },
-    { href: "/cutting",          icon: I.samples,     label: "Samples" },
+    { href: "/fab/supervisor/samples", icon: I.samples, label: "Samples" },
   ];
   const admin = [
     ...(showAdmin ? [{ href: "/admin/users", icon: I.users, label: "Users & Roles" }] : []),

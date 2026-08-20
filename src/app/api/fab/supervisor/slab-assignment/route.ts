@@ -50,6 +50,7 @@ import { fabGate } from "@/lib/fab/access";
 import { decideAllocation } from "@/lib/fab/slabAssignment";
 import { describeRequirement } from "@/lib/fab/releasePlan";
 import { STANDARD_SLAB_MM } from "@/lib/fab/slabLoss";
+import { markQcSlabCts } from "@/lib/fab/markQcSlabCts";
 
 /** A slab in any of these states has left the board. Its rows are the cutter's
  *  instructions now, and changing them behind him is how a piece gets cut off
@@ -142,6 +143,7 @@ async function addSlab(body: Record<string, unknown>) {
     select: { id: true, slabCode: true },
   });
   if (existing) {
+    await markQcSlabCts(pacificQcId);
     return Response.json({ success: true, slabId: existing.id, slabCode: existing.slabCode, created: false });
   }
 
@@ -175,6 +177,7 @@ async function addSlab(body: Record<string, unknown>) {
     },
     select: { id: true, slabCode: true },
   });
+  await markQcSlabCts(qc.id);
 
   return Response.json({ success: true, slabId: slab.id, slabCode: slab.slabCode, created: true });
 }

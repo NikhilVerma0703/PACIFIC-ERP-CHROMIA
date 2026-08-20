@@ -16,8 +16,8 @@ export async function authenticate(
       // Fabrication staff land in their part of the fab module (admins use the main shell)
       redirectTo =
         role === "ADMIN"        ? "/" :
-        role === "LINE_MANAGER" ? "/fab/projects" :
-        role === "INCHARGE"     ? "/fab/supervisor" :
+        role === "LINE_MANAGER" ? "/fab/manager" :
+        role === "INCHARGE"     ? "/fab/supervisor/slabs" :
                                   "/fab/cutting";   // OPERATOR -> straight to work
       // OPERATOR used to land on /fab/session because a machine had to be picked
       // before any queue was reachable. One operator login now covers all five

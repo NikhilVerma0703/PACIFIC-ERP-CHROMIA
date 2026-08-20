@@ -35,6 +35,23 @@ function fmtDuration(mins: number) {
 }
 function mm2ToSqft(mm2: number) { return (mm2 / 92903).toFixed(2); }
 
+type StageFlag = "na" | "pending" | "done" | "rejected";
+interface SlabBoardPiece {
+  pieceCode: string; label: string | null; status: string;
+  stages: { cutting: StageFlag; polishing: StageFlag; sink: StageFlag; fabrication: StageFlag; packaging: StageFlag };
+}
+interface SlabBoard {
+  slabId: string; slabCode: string; colour: string | null; projectCode: string;
+  total: number; packaged: number; rejected: number; waitingCut: number; inProcess: number;
+  pieces: SlabBoardPiece[];
+}
+function StageDot({ flag }: { flag: StageFlag }) {
+  if (flag === "na") return <span className="text-slate-300">—</span>;
+  if (flag === "done") return <span className="text-[11px] font-semibold text-green-700">Done</span>;
+  if (flag === "rejected") return <span className="text-[11px] font-semibold text-red-600">Reject</span>;
+  return <span className="text-[11px] font-semibold text-amber-700">Pending</span>;
+}
+
 interface MachineStat { machineId: string; name: string; type: string; code: string; isActive: boolean; isIdle: boolean; currentOperator: string | null; sessionId: string | null; piecesToday: number; pendingCount: number }
 interface SlabWastage { slabId: string; slabCode: string; pacificQcId: string; projectCode: string; wastePct: number; pieceCount: number; slabAreaMm2: number; piecesAreaMm2: number }
 interface MachineLeaderEntry { operatorId: string; operatorName: string; machineName: string | null; piecesDay: number; slabsDay: number; avgCutMinutes: number | null; fastestCutMinutes: number | null; slowestCutMinutes: number | null }
@@ -50,10 +67,17 @@ interface StageDayRow extends StageCounts { date: string }
  *  Null when the API could not build it; the panel says so rather than
  *  rendering blanks that would read as a quiet day. */
 interface StageSeries { from: string; to: string; days: number; rows: StageDayRow[]; totals: StageCounts }
+interface CeoDowntime {
+  id: string; processType: string; processLabel: string;
+  reason: string; reasonLabel: string; notes: string | null;
+  startedAt: string; endedAt: string | null; shift: string | null;
+  workerName: string | null; machineName: string | null;
+  open: boolean; durationMinutes: number;
+}
 
 interface CeoData {
   activeSessions: Array<{ id: string; user: { name: string | null }; machine: { name: string; type: string; code: string }; shift: string; loginTime: string; durationMinutes: number }>;
-  pieceFunnel: { total: number; pending: number; cut: number; polishing: number; sinkCutting: number; fabrication: number; packaged: number };
+  pieceFunnel: { total: number; pending: number; cut: number; polishing: number; sinkCutting: number; fabrication: number; packaged: number; rejected?: number };
   projectProgress: Array<{ id: string; projectCode: string; customerName: string; status: string; total: number; packaged: number; cut: number; avgWastagePct: number | null; assignedSlabs: number }>;
   leaderboard: Array<{ operatorId: string; operatorName: string | null; machineType: string | null; machineName: string | null; piecesToday: number }>;
   machineLeaderboard: Record<string, MachineLeaderEntry[]>;
@@ -61,10 +85,12 @@ interface CeoData {
   pendingByType: Record<string, number>;
   cloSlabsPending: number;
   slabWastage: SlabWastage[];
+  slabBoard?: SlabBoard[];
   idleAlerts: Array<{ sessionId: string; operatorName: string; machineType: string; machineName: string; idleMinutes: number; hasPendingJobs: boolean; pendingCount: number; lastActivity: string }>;
   dailyThroughput: { cutting: number; polishing: number; sinkCutting: number; fabrication: number; packaging: number };
   stageSeries: StageSeries | null;
   operatorsToday: OperatorDay[];
+  downtimeLog?: CeoDowntime[];
 }
 
 /** The five stages as the breakdown prints them, sharing the tile colours the
@@ -250,7 +276,7 @@ export default function CeoDashboard() {
   const [loading,     setLoading]     = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [error,       setError]       = useState("");
-  const [tab,           setTab]           = useState<"overview"|"flow"|"slabs"|"operators">("overview");
+  const [tab,           setTab]           = useState<"overview"|"flow"|"slabs"|"operators"|"downtime">("overview");
   const [dateFilter,    setDateFilter]    = useState(todayStr());
   // Two working weeks ending on the selected date — see DEFAULT_RANGE_DAYS in
   // src/lib/fab/stageSeries.ts for why. Only the new breakdown reads this;
@@ -314,7 +340,8 @@ export default function CeoDashboard() {
   if (error)   return <div className="flex items-center justify-center h-64 text-red-400 text-sm">{error}</div>;
   if (!data)   return null;
 
-  const { activeSessions, pieceFunnel, projectProgress, machineLeaderboard, machineStats, pendingByType, cloSlabsPending, slabWastage, idleAlerts, dailyThroughput, stageSeries, operatorsToday } = data;
+  const { activeSessions, pieceFunnel, projectProgress, machineLeaderboard, machineStats, pendingByType, cloSlabsPending, slabWastage, slabBoard = [], idleAlerts, dailyThroughput, stageSeries, operatorsToday, downtimeLog = [] } = data;
+  const openDowntime = downtimeLog.filter(d => d.open);
   const isToday = dateFilter === todayStr();
   // Busiest day in the range, so every bar below is drawn to the same scale.
   // Hoisted out of the row loop: the range can be 92 days.
@@ -365,10 +392,14 @@ export default function CeoDashboard() {
 
       {/* Tab switcher */}
       <div className="flex gap-1 bg-slate-100 rounded-xl p-1 w-fit">
-        {(["overview","flow","operators","slabs"] as const).map(t => (
+        {(["overview","slabs","flow","operators","downtime"] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition ${tab === t ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
-            {t === "overview" ? "Overview" : t === "flow" ? "Live Flow" : t === "operators" ? `Operators${operatorsToday.length > 0 ? ` (${operatorsToday.length})` : ""}` : "Slab Wastage"}
+            {t === "overview" ? "Overview"
+              : t === "flow" ? "Live Flow"
+              : t === "slabs" ? `Slabs${slabBoard.length ? ` (${slabBoard.length})` : ""}`
+              : t === "downtime" ? `Downtime${openDowntime.length ? ` (${openDowntime.length} open)` : downtimeLog.length ? ` (${downtimeLog.length})` : ""}`
+              : `Operators${operatorsToday.length > 0 ? ` (${operatorsToday.length})` : ""}`}
           </button>
         ))}
       </div>
@@ -376,6 +407,25 @@ export default function CeoDashboard() {
       {/* ── OVERVIEW TAB ── */}
       {tab === "overview" && (
         <div className="space-y-5">
+          {isToday && openDowntime.length > 0 && (
+            <div className="space-y-2">
+              {openDowntime.map(d => (
+                <div key={d.id} className="flex items-start gap-3 rounded-xl border px-4 py-3 bg-orange-50 border-orange-200">
+                  <span className="flex h-7 w-7 items-center justify-center rounded-full text-sm flex-shrink-0 mt-0.5 bg-orange-100 text-orange-700">⏱</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-orange-900">
+                      {d.processLabel} down — {d.reasonLabel} · {fmtDuration(d.durationMinutes)}
+                    </p>
+                    <p className="text-xs mt-0.5 text-orange-700">
+                      {[d.workerName, d.machineName, d.shift].filter(Boolean).join(" · ") || "No operator named"}
+                      {d.notes ? ` — ${d.notes}` : ""}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {isToday && idleAlerts.length > 0 && (
             <div className="space-y-2">
               {idleAlerts.map(alert => {
@@ -403,7 +453,7 @@ export default function CeoDashboard() {
             {[
               { label: "Active Operators", value: activeSessions.length,                    color: "text-emerald-600", bg: "bg-emerald-50 border-emerald-100" },
               { label: "Total Pieces",     value: pieceFunnel.total,                        color: "text-slate-700",   bg: "bg-white border-slate-100" },
-              { label: "In Production",    value: pieceFunnel.cut + pieceFunnel.polishing + pieceFunnel.sinkCutting + pieceFunnel.fabrication, color: "text-blue-600", bg: "bg-blue-50 border-blue-100" },
+              { label: "In Production",    value: pieceFunnel.cut, color: "text-blue-600", bg: "bg-blue-50 border-blue-100" },
               { label: "Packaged",         value: pieceFunnel.packaged,                     color: "text-green-600",   bg: "bg-green-50 border-green-100" },
             ].map(s => (
               <div key={s.label} className={`rounded-xl border p-4 ${s.bg}`}>
@@ -843,9 +893,115 @@ export default function CeoDashboard() {
         </div>
       )}
 
-      {/* ── SLAB WASTAGE TAB ── */}
+      {/* ── DOWNTIME TAB ── */}
+      {tab === "downtime" && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-3 gap-4">
+            {[
+              { label: "Open now", value: openDowntime.length, color: "text-orange-700", bg: "bg-orange-50 border-orange-100" },
+              { label: "Logged this day", value: downtimeLog.length, color: "text-slate-700", bg: "bg-white border-slate-100" },
+              { label: "Minutes open", value: openDowntime.reduce((s, d) => s + d.durationMinutes, 0), color: "text-red-700", bg: "bg-red-50 border-red-100" },
+            ].map(s => (
+              <div key={s.label} className={`rounded-xl border p-4 ${s.bg}`}>
+                <p className="text-xs font-medium text-slate-500">{s.label}</p>
+                <p className={`text-3xl font-bold mt-1 ${s.color}`}>{s.value}{s.label === "Minutes open" ? "m" : ""}</p>
+              </div>
+            ))}
+          </div>
+          <div className="bg-white rounded-xl border border-slate-100 overflow-hidden">
+            {downtimeLog.length === 0 ? (
+              <p className="text-sm text-slate-400 text-center py-12">No fabrication downtime on this day.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-100">
+                    <th className="px-4 py-3 font-medium">Status</th>
+                    <th className="px-4 py-3 font-medium">Station</th>
+                    <th className="px-4 py-3 font-medium">Reason</th>
+                    <th className="px-4 py-3 font-medium">Who</th>
+                    <th className="px-4 py-3 font-medium">Shift</th>
+                    <th className="px-4 py-3 font-medium">Start</th>
+                    <th className="px-4 py-3 font-medium">End</th>
+                    <th className="px-4 py-3 font-medium text-right">Duration</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {downtimeLog.map(d => (
+                    <tr key={d.id} className={`border-t border-slate-50 ${d.open ? "bg-orange-50/60" : ""}`}>
+                      <td className="px-4 py-3">
+                        {d.open
+                          ? <span className="text-[11px] font-semibold text-orange-700 bg-orange-100 px-2 py-0.5 rounded-full">Open</span>
+                          : <span className="text-[11px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">Closed</span>}
+                      </td>
+                      <td className="px-4 py-3 font-medium text-slate-800">{d.processLabel}{d.machineName ? ` · ${d.machineName}` : ""}</td>
+                      <td className="px-4 py-3 text-slate-700">
+                        {d.reasonLabel}
+                        {d.notes ? <span className="block text-xs text-slate-400 mt-0.5">{d.notes}</span> : null}
+                      </td>
+                      <td className="px-4 py-3 text-slate-600">{d.workerName ?? "—"}</td>
+                      <td className="px-4 py-3 text-slate-600">{d.shift ?? "—"}</td>
+                      <td className="px-4 py-3 text-slate-600 whitespace-nowrap">{new Date(d.startedAt).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</td>
+                      <td className="px-4 py-3 text-slate-600 whitespace-nowrap">{d.endedAt ? new Date(d.endedAt).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
+                      <td className="px-4 py-3 text-right font-semibold text-slate-800">{fmtDuration(d.durationMinutes)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── SLABS TAB ── */}
       {tab === "slabs" && (
         <div className="space-y-4">
+          <div className="space-y-3">
+            {slabBoard.length === 0 ? (
+              <p className="text-sm text-slate-400 text-center py-12 bg-white rounded-xl border border-slate-100">No pieces on slabs yet.</p>
+            ) : slabBoard.map(s => (
+              <details key={s.slabId} className="bg-white rounded-xl border border-slate-100 overflow-hidden" open={s.inProcess + s.waitingCut > 0}>
+                <summary className="px-5 py-3 cursor-pointer hover:bg-slate-50 flex items-center gap-3">
+                  <span className="font-mono text-sm font-bold text-slate-800">Slab {s.slabCode}</span>
+                  {s.colour && <span className="text-xs text-slate-500">{s.colour}</span>}
+                  <span className="text-xs text-slate-400">{s.projectCode}</span>
+                  <span className="ml-auto flex flex-wrap gap-2 text-[11px] font-semibold">
+                    {s.waitingCut > 0 && <span className="text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">{s.waitingCut} waiting cut</span>}
+                    {s.inProcess > 0 && <span className="text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full">{s.inProcess} in process</span>}
+                    {s.packaged > 0 && <span className="text-green-700 bg-green-50 px-2 py-0.5 rounded-full">{s.packaged} packed</span>}
+                    {s.rejected > 0 && <span className="text-red-700 bg-red-50 px-2 py-0.5 rounded-full">{s.rejected} rejected</span>}
+                    <span className="text-slate-500">{s.total} pcs</span>
+                  </span>
+                </summary>
+                <table className="w-full text-sm border-t border-slate-100">
+                  <thead className="bg-slate-50 text-xs text-slate-500">
+                    <tr>
+                      <th className="text-left px-5 py-2">Piece</th>
+                      <th className="text-left px-3 py-2">Label</th>
+                      <th className="text-center px-2 py-2">Cut</th>
+                      <th className="text-center px-2 py-2">Polish</th>
+                      <th className="text-center px-2 py-2">Sink</th>
+                      <th className="text-center px-2 py-2">Fab</th>
+                      <th className="text-center px-2 py-2">Pack</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {s.pieces.map(p => (
+                      <tr key={p.pieceCode}>
+                        <td className="px-5 py-2 font-mono text-xs text-slate-700">{p.pieceCode}</td>
+                        <td className="px-3 py-2 text-slate-500">{p.label ?? "—"}</td>
+                        <td className="px-2 py-2 text-center"><StageDot flag={p.stages.cutting} /></td>
+                        <td className="px-2 py-2 text-center"><StageDot flag={p.stages.polishing} /></td>
+                        <td className="px-2 py-2 text-center"><StageDot flag={p.stages.sink} /></td>
+                        <td className="px-2 py-2 text-center"><StageDot flag={p.stages.fabrication} /></td>
+                        <td className="px-2 py-2 text-center"><StageDot flag={p.stages.packaging} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </details>
+            ))}
+          </div>
+
           <div className="grid grid-cols-4 gap-4">
             {[
               { label: "Assigned Slabs",   value: slabWastage.length,                                                   color: "text-slate-700",  bg: "bg-white border-slate-100" },

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
+import { workersForOperations, workersForSlabJobs } from "@/lib/fab/workerLookups";
 
 export async function GET(req: Request) {
   const g = await fabGate("EMPLOYEE");
@@ -108,6 +109,10 @@ export async function GET(req: Request) {
     });
   }
 
+  const opWorkers = await workersForOperations(
+    ops.map(op => op.operation?.id).filter((id): id is string => !!id),
+  );
+
   const legacyRows = ops.map(op => ({
     flowType:      "legacy" as const,
     opId:          op.id,
@@ -121,7 +126,7 @@ export async function GET(req: Request) {
     slabCode:      op.piece.slab?.slabCode ?? null,
     slabColour:    op.piece.slab?.colour   ?? null,
     machineName:   op.operation?.machine?.name ?? null,
-    operatorName:  op.operation?.operator?.name ?? null,
+    operatorName:  (op.operation && opWorkers.get(op.operation.id)?.name) ?? op.operation?.operator?.name ?? null,
     completedAt:   op.completedAt!.toISOString(),
   }));
 
@@ -167,6 +172,8 @@ export async function GET(req: Request) {
         : []
     );
 
+    const jobWorkers = await workersForSlabJobs(jobs.map(j => j.id));
+
     for (const job of jobs) {
       const qc       = job.slab.pacificQcId ? qcMap.get(job.slab.pacificQcId) : null;
       const totalPcs = job.slab.requirementAllocations.reduce((s, a) => s + a.allocatedQuantity, 0);
@@ -182,7 +189,7 @@ export async function GET(req: Request) {
         totalPcs,
         reqCount:     job.slab.requirementAllocations.length,
         machineName:  job.machine?.name ?? null,
-        operatorName: job.operator?.name ?? null,
+        operatorName: jobWorkers.get(job.id)?.name ?? job.operator?.name ?? null,
         completedAt:  completedAt.toISOString(),
         noEndTime:    job.endTime === null, // flag so UI can show a hint
       });

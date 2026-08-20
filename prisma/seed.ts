@@ -17,6 +17,7 @@ const USERS: Array<{
   { email: "supervisor@thepacific.group",      name: "Fab Supervisor", role: Role.INCHARGE,     branch: "FABRICATION" },
   { email: "cutter@thepacific.group",          name: "Cutter",         role: Role.OPERATOR,     branch: "FABRICATION" },
   { email: "polisher@thepacific.group",        name: "Polisher",       role: Role.OPERATOR,     branch: "FABRICATION" },
+  { email: "operator@thepacific.group",        name: "Fab Operator",   role: Role.OPERATOR,     branch: "FABRICATION" },
 ];
 
 const MACHINES = [

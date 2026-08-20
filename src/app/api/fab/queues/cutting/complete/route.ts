@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
+import { requireProcessSession } from "@/lib/fab/processSessionServer";
+import { stampOperationWorker } from "@/lib/fab/stampWorker";
 
 export async function POST(req: Request) {
   const g = await fabGate("EMPLOYEE");
@@ -9,29 +11,27 @@ export async function POST(req: Request) {
   const { slabId, pieceIds } = await req.json();
   if (!slabId || !pieceIds?.length) return Response.json({ error: "slabId and pieceIds required" }, { status: 400 });
 
-  // Get current user's active machine session for machineId
-  const machineSession = await prisma.fabMachineSession.findFirst({
-    where: { userId, isActive: true },
-    select: { machineId: true },
-  });
-  const machineId = machineSession?.machineId ?? null;
+  const gate = await requireProcessSession("CUTTING");
+  if (!gate.ok) return Response.json({ error: gate.error }, { status: gate.status });
+  const sess = gate.session;
 
   const now = new Date();
 
   await prisma.$transaction(async (tx) => {
     for (const pieceId of pieceIds) {
-      // Create FabOperation so we can track operator + machine
       const op = await tx.fabOperation.create({
         data: {
           pieceId,
           operatorId:    userId,
-          machineId:     machineId ?? undefined,
+          machineId:     sess.machineId,
           operationType: "CUTTING",
           status:        "COMPLETED",
           startTime:     now,
           endTime:       now,
         },
       });
+
+      await stampOperationWorker(tx, op.id, sess.workerId, sess.shift);
 
       // Mark the FabPieceOperation complete, link to FabOperation
       await tx.fabPieceOperation.updateMany({
