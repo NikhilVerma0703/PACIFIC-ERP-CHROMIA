@@ -7,6 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { canEditRoboSetup } from "@/lib/rbac";
 import { RoboEntryForm } from "@/components/robo/RoboEntryForm";
 import { plantDate, setupDate } from "@/lib/robo/setupAge";
+import { productionDateOf } from "@/lib/robo/productionDate";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Edit Slab | Pacific ERP" };
@@ -116,9 +117,15 @@ export default async function EditRoboSlabPage({
           <span className="text-gray-300">/</span>
           <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Edit slab {record.slabNumber}</h1>
         </div>
+        {/* The production date and batch number, not the shift number and the
+            shift's date. Nobody enters a shift: it is a row the schema needs,
+            created silently once a day, so its number and its date said nothing
+            about the run — and on a slab logged for last Thursday the date read
+            as today. Same change as Complete Details §1; see productionDate.ts. */}
         <p className="mt-1 text-sm text-gray-500">
-          Shift {record.shift?.shiftNumber} · {record.shift?.date}
-          {record.shift?.status === "CLOSED" ? " · this shift is closed — the correction still saves" : ""}
+          {productionDateOf(record) || "No production date"}
+          {setup?.batchNo ? ` · Batch ${setup.batchNo}` : ""}
+          {record.shift?.status === "CLOSED" ? " · this run is closed — the correction still saves" : ""}
         </p>
       </div>
 

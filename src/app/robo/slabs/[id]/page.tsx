@@ -6,6 +6,7 @@ import { Card } from "@/components/ui";
 import { prisma } from "@/lib/prisma";
 import { canEditRoboSetup } from "@/lib/rbac";
 import { slabStatusClass, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
+import { productionDateOf } from "@/lib/robo/productionDate";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Slab Details | Pacific ERP" };
@@ -101,13 +102,24 @@ export default async function SlabCompleteDetailsPage({ params }: { params: Prom
           </div>
         </div>
 
-        {/* ── 1. Shift Information ── */}
-        <SectionCard title="1. Shift Information">
+        {/* ── 1. Batch Information ──
+            Was "Shift Information", and listed Shift Number, Start Time and
+            Operator Name. Nobody enters any of those: the RoboShift row is
+            plumbing the schema requires, created silently once a day by the
+            entry form, so its number was always 1/2/3 off the wall clock, its
+            start time was whenever the tablet was first opened and its operator
+            name was blank. Three values that looked like records of something
+            and were records of nothing.
+
+            What the operator DOES write at the top of the batch setup is the
+            production date and the batch number, and those are what this
+            section shows now. The Production Date in particular used to read
+            off the shift as well, which is why it said today on a slab from
+            last Thursday — see productionDate.ts. */}
+        <SectionCard title="1. Batch Information">
           <div className="grid grid-cols-1 gap-x-8 md:grid-cols-2">
-            <Field label="Production Date" value={dash(record.shift?.date)} />
-            <Field label="Shift Number" value={dash(record.shift?.shiftNumber)} />
-            <Field label="Start Time" value={dash(record.shift?.startTime)} />
-            <Field label="Operator Name" value={dash(record.shift?.operatorName)} />
+            <Field label="Production Date" value={dash(productionDateOf(record))} />
+            <Field label="Batch No." value={dash(setup?.batchNo)} />
           </div>
         </SectionCard>
 
