@@ -6,7 +6,10 @@
 // regardless of client regeneration timing.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
-import { canonicalGrade, TRANSITIONS, DEFAULT_RESERVATION_DAYS, type StatusAction } from "./grading";
+import {
+  canonicalGrade, gradeBlocksDispatch, CUT_TO_SIZE_GRADE, TRANSITIONS,
+  DEFAULT_RESERVATION_DAYS, type StatusAction,
+} from "./grading";
 
 export { DEFAULT_RESERVATION_DAYS, type StatusAction } from "./grading";
 
@@ -194,10 +197,17 @@ export async function changeSlabStatus(
   for (const sn of slabNumbers) {
     const slab = await db.finishedSlab.findUnique({
       where: { slabNumber: sn },
-      select: { status: true, reservedForPi: true },
+      select: { status: true, reservedForPi: true, grade: true },
     });
     if (!slab) { res.missing.push(sn); continue; }
     if (!t.from.includes(slab.status)) { res.skipped.push({ slab: sn, reason: `${slab.status} → ${t.to} not allowed` }); continue; }
+    // A slab QC graded cut-to-size is not shipping as a full slab, whatever its
+    // status says. Checked here rather than in TRANSITIONS because that table is
+    // keyed by status alone; this is the second, independent signal.
+    if (action === "dispatch" && gradeBlocksDispatch(slab.grade)) {
+      res.skipped.push({ slab: sn, reason: `graded ${CUT_TO_SIZE_GRADE} — cut to size, not dispatchable as a full slab` });
+      continue;
+    }
 
     const data: Record<string, unknown> = { status: t.to };
     if (action === "reserve") {
@@ -216,7 +226,18 @@ export async function changeSlabStatus(
 
     // guarded write: only flips if the status is still one we validated against
     // (a concurrent action loses the race and is reported as skipped).
-    const n = await db.finishedSlab.updateMany({ where: { slabNumber: sn, status: { in: t.from } }, data });
+    // Guarded write: only flips if the status is STILL one we validated against, and
+    // — for a dispatch — the grade has not become CTS since the read. The OR spells the
+    // null case out rather than relying on `not`, which compares as NULL in SQL and
+    // would silently refuse every ungraded slab.
+    const guard: Record<string, unknown> = { slabNumber: sn, status: { in: t.from } };
+    if (action === "dispatch") {
+      guard.OR = [
+        { grade: null },
+        { NOT: { grade: { equals: CUT_TO_SIZE_GRADE, mode: "insensitive" } } },
+      ];
+    }
+    const n = await db.finishedSlab.updateMany({ where: guard, data });
     if (n.count === 0) { res.skipped.push({ slab: sn, reason: "changed concurrently — retry" }); continue; }
     const effectivePi = opts.pi ?? slab.reservedForPi;
     const detail =

@@ -10,6 +10,34 @@ export const canonicalGrade = (g: unknown): string | null => {
   return t.replace(/\s*\(reject\)\s*$/i, "");
 };
 
+/** The QC grade that means "cut to size" — the same word as the CTS *status*,
+ *  deliberately, because they mean the same thing about the physical slab. */
+export const CUT_TO_SIZE_GRADE = "CTS";
+
+/**
+ * Whether a slab's GRADE forbids dispatching it as a full slab.
+ *
+ * The CTS status has never been dispatchable — it is not in TRANSITIONS.dispatch.from.
+ * The GRADE was a different story: QC writes it on every pass (canonicalGrade, called
+ * from recordQc), nothing ever read it at dispatch time, and the status is a separate
+ * manual action somebody has to remember. So a slab the floor graded cut-to-size stayed
+ * dispatchable until an inventory user thought to also apply the status, and the two
+ * signals were free to disagree — which is how already-cut slabs left as full slabs.
+ *
+ * QC's grade is the floor's statement about the slab; the status is bookkeeping on top
+ * of it. Either one saying cut-to-size is enough to refuse dispatch.
+ *
+ * Runs canonicalGrade first so historical spellings normalise the same way QC's own
+ * writes do, then compares CASE-INSENSITIVELY. canonicalGrade deliberately preserves
+ * case — its own tests assert canonicalGrade("c (reject)") === "c" — so an exact
+ * comparison would let a slab graded "cts" or "Cts" dispatch as a full slab, which is
+ * the precise failure this function exists to prevent.
+ */
+export function gradeBlocksDispatch(grade: unknown): boolean {
+  const g = canonicalGrade(grade);
+  return g != null && g.toUpperCase() === CUT_TO_SIZE_GRADE;
+}
+
 export type StatusAction = "reserve" | "release" | "pack" | "dispatch" | "return" | "cts" | "uncts";
 
 /** Slab lifecycle: which statuses each action may move FROM, and where it lands. */

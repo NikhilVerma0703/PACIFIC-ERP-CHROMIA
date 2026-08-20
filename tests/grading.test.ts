@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { canonicalGrade, TRANSITIONS, DEFAULT_RESERVATION_DAYS } from "../src/lib/inventory/grading.ts";
+import { canonicalGrade, gradeBlocksDispatch, TRANSITIONS, DEFAULT_RESERVATION_DAYS } from "../src/lib/inventory/grading.ts";
 
 test("canonicalGrade normalizes QC grades", () => {
   assert.equal(canonicalGrade("A"), "A");
@@ -69,4 +69,38 @@ test("every action lands on a real SlabStatus", () => {
     assert.ok(STATUSES.includes(t.to), `${action} lands on a real status (${t.to})`);
     for (const f of t.from) assert.ok(STATUSES.includes(f), `${action} accepts a real status (${f})`);
   }
+});
+
+// --- CTS is not dispatchable, by GRADE as well as by status -----------------
+//
+// The status has never been dispatchable (it is absent from dispatch.from). The
+// grade was the hole: QC writes it on every pass, the status is a separate manual
+// action, and nothing read the grade at dispatch time — so a slab the floor had
+// already graded cut-to-size shipped as a full slab whenever nobody remembered to
+// also apply the status.
+
+test("a slab graded CTS is refused dispatch, whatever its case", () => {
+  assert.equal(gradeBlocksDispatch("CTS"), true);
+  assert.equal(gradeBlocksDispatch("cts"), true);
+  assert.equal(gradeBlocksDispatch("Cts"), true);
+  assert.equal(gradeBlocksDispatch("  CTS  "), true);
+});
+
+test("every other grade still dispatches", () => {
+  for (const g of ["A", "A2", "B", "C", "C (Reject)", "c (reject)", "Printing"]) {
+    assert.equal(gradeBlocksDispatch(g), false, `${g} must remain dispatchable`);
+  }
+});
+
+test("an ungraded slab is not blocked — absence of a grade is not a CTS grade", () => {
+  for (const g of [null, undefined, "", "   ", "Not graded yet", "not graded", 7, {}]) {
+    assert.equal(gradeBlocksDispatch(g), false, `${JSON.stringify(g)} must not block`);
+  }
+});
+
+test("the CTS status remains a dead end, independently of grade", () => {
+  // Belt and braces: the two signals are separate and both must hold.
+  assert.equal(TRANSITIONS.dispatch.from.includes("CTS"), false);
+  assert.equal(TRANSITIONS.uncts.from.includes("CTS"), true);
+  assert.equal(TRANSITIONS.uncts.to, "AVAILABLE");
 });
