@@ -15,6 +15,24 @@ import { operatorTableModels } from "@/lib/stationAccess";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * The Airtable "lookup" Json columns hold a one-element array of the linked
+ * record's value — nameFromSupplierMaster is ["Vinayaka"]. Mirrors the helper in
+ * lib/silo.ts:28, which every other reader of these columns already uses. Without
+ * it cell() renders the array as "1 linked", which is how the supplier column
+ * would have arrived even once it was no longer being filtered out.
+ */
+function lookupCell(v: unknown): string {
+  if (v == null) return "—";
+  if (Array.isArray(v)) {
+    const u = [...new Set(v.map((x) => String(x).trim()).filter(Boolean))];
+    return u.length ? u.join(", ") : "—";
+  }
+  if (typeof v === "object" && v !== null && "value" in v) return lookupCell((v as { value: unknown }).value);
+  const t = String(v).trim();
+  return t && t !== "[object Object]" ? t : "—";
+}
+
 function cell(v: unknown): string {
   if (v == null) return "—";
   if (v instanceof Date) return v.toISOString().slice(0, 16).replace("T", " ");
@@ -60,13 +78,33 @@ export default async function TableGrid({ params, searchParams }: { params: Prom
     .filter((f) => ["scalar", "number", "int", "bool", "date", "multiselect"].includes(f.kind))
     .filter((f) => f.prismaField !== "createdTime") // Airtable metadata — empty for app-entered rows
     .slice(0, 6);
+  // ---- Rm: the assigned pool, browsed by the Store Incharge ----
+  //
+  // The generic rule is "first six scalar fields in fieldmap order", which on Rm
+  // spends all six on Date, Empty ID, Tested by, Status, Bag Weight and Remarks —
+  // lab and QC columns — and cuts off at exactly the ones a store incharge opens
+  // the table FOR: Type, Size, Grade, Inv No, Bag No. Supplier never stood a chance
+  // either way: nameFromSupplierMaster is kind "json", which the scalar filter above
+  // drops before the slice is even reached.
+  //
+  // So Rm names its columns rather than taking the first six, the same way Silo
+  // already pins invNoBagNo. Eight, not six: identifying a bag needs the invoice and
+  // bag number, and dropping either to stay at six would just move the complaint.
+  const isRm = model === "Rm";
+  const RM_COLUMNS = ["date", "nameFromSupplierMaster", "type", "size", "grade", "bagWeight", "invNo", "bagNo"];
+  const rmCols = isRm
+    ? (RM_COLUMNS
+        .map((f) => meta.fields.find((x) => x.prismaField === f))
+        .filter(Boolean) as typeof cols)
+    : cols;
+
   let siloCols = cols.filter((c) => c.prismaField !== "sku" && !/sku/i.test(c.airtableName));
   // Silo rows are BAGS — always show which invoice/bag each row is
   if (isSilo && !siloCols.some((c) => c.prismaField === "invNoBagNo")) {
     const invBag = meta.fields.find((f) => f.prismaField === "invNoBagNo");
     if (invBag) siloCols = [siloCols[0], invBag, ...siloCols.slice(1)].slice(0, 6);
   }
-  const mainCols = isSilo ? siloCols : cols;
+  const mainCols = isSilo ? siloCols : isRm ? rmCols : cols;
 
   const silo = sp.silo?.trim();
   // back target: only allow internal paths
@@ -195,7 +233,13 @@ export default async function TableGrid({ params, searchParams }: { params: Prom
                 <tbody>
                   {data.rows.map((row, i) => (
                     <tr key={i} className="border-t border-gray-100">
-                      {mainCols.map((c) => <td key={c.prismaField} className="whitespace-nowrap py-2 pr-4">{cell(row[c.prismaField])}</td>)}
+                      {mainCols.map((c) => (
+                        <td key={c.prismaField} className="whitespace-nowrap py-2 pr-4">
+                          {/* An Airtable lookup column is a Json array; cell() would
+                              print "1 linked" for it. Everything else is unchanged. */}
+                          {c.kind === "json" ? lookupCell(row[c.prismaField]) : cell(row[c.prismaField])}
+                        </td>
+                      ))}
                       {isSilo && <td className="whitespace-nowrap py-2 pr-4">{usedIn(row)}</td>}
                       <td className="py-2 text-right"><Link href={`/tables/${model}/${row.id}`} className="text-brand hover:underline">{writable || (isOperator && (model === "PolishQc" || (myId && (row as { enteredById?: string | null }).enteredById === myId))) ? "Edit →" : "View →"}</Link></td>
                     </tr>
