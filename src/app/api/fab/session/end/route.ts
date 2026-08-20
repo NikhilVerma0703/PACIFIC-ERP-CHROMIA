@@ -1,24 +1,26 @@
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
-import { cookies } from "next/headers";
+import { isFabProcessType } from "@/lib/fab/processSession";
+import { clearProcessSessionCookie, readProcessSession } from "@/lib/fab/processSessionServer";
 
-export async function POST() {
+export async function POST(req: Request) {
   const g = await fabGate("EMPLOYEE");
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
-  await prisma.fabMachineSession.updateMany({
-    where: { userId: g.user.id, isActive: true },
-    data: { isActive: false, logoutTime: new Date() },
-  });
+  const body = await req.json().catch(() => ({}));
+  const processType = (body as { processType?: unknown }).processType;
+  if (!isFabProcessType(processType)) {
+    return Response.json({ error: "processType required" }, { status: 400 });
+  }
 
-  const cookieStore = await cookies();
-  cookieStore.delete("fab_machine_type");
-  cookieStore.delete("fab_machine_id");
-  cookieStore.delete("fab_machine_name");
-  cookieStore.delete("fab_session_id");
+  const existing = await readProcessSession(processType);
+  if (existing) {
+    await prisma.fabMachineSession.updateMany({
+      where: { id: existing.id, isActive: true },
+      data: { isActive: false, logoutTime: new Date() },
+    });
+  }
+  await clearProcessSessionCookie(processType);
 
-  return Response.redirect(
-    new URL("/fab/session", process.env.NEXTAUTH_URL ?? "http://localhost:3000"),
-    303
-  );
+  return Response.json({ success: true });
 }

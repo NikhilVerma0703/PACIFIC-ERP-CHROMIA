@@ -1,83 +1,103 @@
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
-import { cookies } from "next/headers";
 import { expireStaleSessions } from "@/lib/fab/expireStaleSessions";
+import { FAB_PROCESS_LABEL, FAB_SHIFTS, isFabProcessType } from "@/lib/fab/processSession";
+import {
+  clearProcessSessionCookie,
+  readProcessSession,
+  setProcessSessionCookie,
+} from "@/lib/fab/processSessionServer";
+import { getActiveFabWorker } from "@/lib/fab/workersDb";
 
 export async function POST(req: Request) {
   const g = await fabGate("EMPLOYEE");
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
-  // Auto-close sessions left open when operators shut down without logging out
   await expireStaleSessions();
 
-  const { machineId, shift } = await req.json();
-  if (!machineId || !shift) return Response.json({ error: "machineId and shift required" }, { status: 400 });
+  const body = await req.json().catch(() => null);
+  const processType = body?.processType;
+  const workerId = typeof body?.workerId === "string" ? body.workerId.trim() : "";
+  const shift = typeof body?.shift === "string" ? body.shift.trim() : "";
+  const machineIdIn = typeof body?.machineId === "string" ? body.machineId.trim() : "";
 
-  const machine = await prisma.fabMachine.findUnique({ where: { id: machineId } });
-  if (!machine) return Response.json({ error: "Machine not found" }, { status: 404 });
+  if (!isFabProcessType(processType)) {
+    return Response.json({ error: "processType required" }, { status: 400 });
+  }
+  if (!workerId) return Response.json({ error: "Pick a name." }, { status: 400 });
+  if (!FAB_SHIFTS.some(s => s.id === shift)) {
+    return Response.json({ error: "Pick a shift." }, { status: 400 });
+  }
 
-  // Block if another user already has an active session on this machine
+  const worker = await getActiveFabWorker(workerId);
+  if (!worker) return Response.json({ error: "That name is not on the roster." }, { status: 404 });
+
+  const machines = await prisma.fabMachine.findMany({
+    where: { type: processType },
+    orderBy: { code: "asc" },
+  });
+  if (!machines.length) {
+    return Response.json({ error: `No ${FAB_PROCESS_LABEL[processType]} machine is set up.` }, { status: 404 });
+  }
+
+  const machine = machineIdIn
+    ? machines.find(m => m.id === machineIdIn)
+    : machines[0];
+  if (!machine) return Response.json({ error: "That machine is not a " + FAB_PROCESS_LABEL[processType] + " machine." }, { status: 400 });
+
+  const existing = await readProcessSession(processType);
+
   const occupied = await prisma.fabMachineSession.findFirst({
-    where: { machineId, isActive: true, userId: { not: g.user.id } },
-    select: { user: { select: { name: true } } },
+    where: {
+      machineId: machine.id,
+      isActive: true,
+      ...(existing ? { id: { not: existing.id } } : {}),
+    },
+    select: { id: true },
   });
   if (occupied) {
+    const whoRows = await prisma.$queryRaw<Array<{ name: string | null }>>`
+      SELECT w.name FROM fab_machine_session s
+      LEFT JOIN fab_worker w ON w.id = s.worker_id
+      WHERE s.id = ${occupied.id}
+      LIMIT 1
+    `;
+    const who = whoRows[0]?.name ?? "someone else";
     return Response.json(
-      { error: `Machine is already in use by ${occupied.user.name ?? "another operator"}` },
-      { status: 409 }
+      { error: `${machine.name} is already in a session (${who}). End that session first.` },
+      { status: 409 },
     );
   }
 
-  // End any existing active sessions for this user
-  await prisma.fabMachineSession.updateMany({
-    where: { userId: g.user.id, isActive: true },
-    data: { isActive: false, logoutTime: new Date() },
-  });
+  if (existing) {
+    await prisma.fabMachineSession.updateMany({
+      where: { id: existing.id, isActive: true },
+      data: { isActive: false, logoutTime: new Date() },
+    });
+  }
 
-  // Create new session
   const machineSession = await prisma.fabMachineSession.create({
     data: {
-      userId: g.user.id,
-      machineId,
+      userId: g.user.id as string,
+      machineId: machine.id,
       shift,
       isActive: true,
     },
   });
+  await prisma.$executeRaw`
+    UPDATE fab_machine_session SET worker_id = ${worker.id} WHERE id = ${machineSession.id}
+  `;
 
-  // Set cookie: machineType drives routing in middleware
-  const cookieStore = await cookies();
-  cookieStore.set("fab_machine_type", machine.type, {
-    httpOnly: false, // needs to be readable client-side for layout
-    path: "/",
-    maxAge: 60 * 60 * 12, // 12 hours
-    sameSite: "lax",
-  });
-  cookieStore.set("fab_machine_id", machine.id, {
-    httpOnly: false,
-    path: "/",
-    maxAge: 60 * 60 * 12,
-    sameSite: "lax",
-  });
-  cookieStore.set("fab_machine_name", machine.name, {
-    httpOnly: false,
-    path: "/",
-    maxAge: 60 * 60 * 12,
-    sameSite: "lax",
-  });
-  cookieStore.set("fab_session_id", machineSession.id, {
-    httpOnly: true,
-    path: "/",
-    maxAge: 60 * 60 * 12,
-    sameSite: "lax",
-  });
+  await setProcessSessionCookie(processType, machineSession.id);
 
-  const MACHINE_URLS: Record<string, string> = {
-    CUTTING: "/fab/cutting",
-    POLISHING: "/fab/polishing",
-    SINK_CUTTING: "/fab/sink-cutting",
-    FABRICATION: "/fab/fabrication",
-    PACKAGING: "/fab/packaging",
-  };
-
-  return Response.json({ success: true, redirect: MACHINE_URLS[machine.type] ?? "/fab/cutting" });
+  return Response.json({
+    success: true,
+    session: {
+      id: machineSession.id,
+      processType,
+      workerName: worker.name,
+      shift,
+      machineName: machine.name,
+    },
+  });
 }

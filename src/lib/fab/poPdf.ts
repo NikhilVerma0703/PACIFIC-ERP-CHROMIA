@@ -36,11 +36,19 @@ type PdfjsModule = { getDocument: (opts: Record<string, unknown>) => any };
 let pdfjsPromise: Promise<PdfjsModule> | null = null;
 
 function loadPdfjs(): Promise<PdfjsModule> {
+  // A REJECTED PROMISE MUST NOT BE CACHED. `??=` alone keeps the failure for the
+  // life of the lambda, so one bad cold start poisons every later upload with
+  // the same message and no way back short of a redeploy. Clearing it on failure
+  // lets the next request try again — which matters most when the cause was
+  // transient (a cold module evaluation timing out) rather than structural.
   pdfjsPromise ??= (async () => {
     const worker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
     (globalThis as Record<string, unknown>).pdfjsWorker = worker;
     return (await import("pdfjs-dist/legacy/build/pdf.mjs")) as unknown as PdfjsModule;
-  })();
+  })().catch((err: unknown) => {
+    pdfjsPromise = null;
+    throw err;
+  });
   return pdfjsPromise;
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -98,7 +106,11 @@ export async function readPoPdfPages(bytes: Uint8Array): Promise<PoPdfReadResult
   let pdfjs: PdfjsModule;
   try {
     pdfjs = await loadPdfjs();
-  } catch {
+  } catch (err) {
+    // The manager's message stays unactionable on purpose, but the REAL reason
+    // has to reach the server log or this is undiagnosable from the outside —
+    // which is exactly what happened the first time it failed on a deploy.
+    console.error("[fab] pdfjs failed to load for PO import:", err);
     return { pages: [], error: "The PDF reader could not be started on the server. Nothing was imported — tell IT." };
   }
 

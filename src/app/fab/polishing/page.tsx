@@ -2,6 +2,9 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { postJson, getJson } from "@/lib/fab/postJson";
 import { FabAlerts } from "@/components/fab/FabAlerts";
+import { ProcessSessionGate } from "@/components/fab/ProcessSessionGate";
+import { OtherStageChips, activityRowClass } from "@/components/fab/OtherStageChips";
+import { RejectPieceButton } from "@/components/fab/RejectPieceButton";
 
 interface Piece {
   id: string; pieceCode: string; hasSink: boolean;
@@ -9,6 +12,9 @@ interface Piece {
   drawing: { drawingNumber: string } | null;
   requirement: { pieceLabel: string | null; length: number | null; width: number | null } | null;
   slab: { slabCode: string; colour: string | null } | null;
+  otherDone?: string[];
+  recent?: boolean;
+  lastActivityAt?: string | null;
 }
 interface CompletedPiece {
   opId: string; pieceId: string; pieceCode: string; projectCode: string;
@@ -33,15 +39,19 @@ function useElapsed(startMs: number | null) {
   return elapsed;
 }
 
-function PieceRow({ p, startMs, onStart, onComplete, completing }: {
+function PieceRow({ p, startMs, onStart, onComplete, completing, onRejected, onError }: {
   p: Piece; startMs: number | null;
   onStart: () => void; onComplete: () => void; completing: boolean;
+  onRejected: () => void; onError: (msg: string) => void;
 }) {
   const elapsed = useElapsed(startMs);
   const isStarted = startMs !== null;
   return (
-    <tr className={`hover:bg-gray-50 transition ${isStarted ? "bg-violet-50" : ""}`}>
-      <td className="px-5 py-3 font-mono text-xs text-gray-700">{p.pieceCode}</td>
+    <tr className={`hover:bg-gray-50 transition ${activityRowClass(p.recent, isStarted, "bg-violet-50")}`}>
+      <td className="px-5 py-3">
+        <span className="font-mono text-xs text-gray-700">{p.pieceCode}</span>
+        <OtherStageChips otherDone={p.otherDone} recent={p.recent} />
+      </td>
       <td className="px-5 py-3 text-gray-500">{p.requirement?.pieceLabel ?? "—"}</td>
       <td className="px-5 py-3 text-gray-500">{p.drawing?.drawingNumber ?? "—"}</td>
       <td className="px-5 py-3 text-gray-500">
@@ -52,10 +62,13 @@ function PieceRow({ p, startMs, onStart, onComplete, completing }: {
       <td className="px-5 py-3 text-center">{p.hasSink ? <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">Yes</span> : <span className="text-gray-300">—</span>}</td>
       <td className="px-5 py-3 text-right">
         {!isStarted ? (
-          <button onClick={onStart}
-            className="bg-violet-100 hover:bg-violet-200 text-violet-700 px-3 py-1.5 rounded-lg text-xs font-semibold transition">
-            Start
-          </button>
+          <div className="flex items-center justify-end gap-1">
+            <button onClick={onStart}
+              className="bg-violet-100 hover:bg-violet-200 text-violet-700 px-3 py-1.5 rounded-lg text-xs font-semibold transition">
+              Start
+            </button>
+            <RejectPieceButton pieceId={p.id} processType="POLISHING" onDone={onRejected} onError={onError} />
+          </div>
         ) : (
           <div className="flex items-center justify-end gap-2">
             <span className="text-xs font-mono text-violet-600 animate-pulse">{elapsed}</span>
@@ -63,6 +76,7 @@ function PieceRow({ p, startMs, onStart, onComplete, completing }: {
               className="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition">
               {completing ? "…" : "Complete"}
             </button>
+            <RejectPieceButton pieceId={p.id} processType="POLISHING" onDone={onRejected} onError={onError} />
           </div>
         )}
       </td>
@@ -71,6 +85,14 @@ function PieceRow({ p, startMs, onStart, onComplete, completing }: {
 }
 
 export default function FabPolishingPage() {
+  return (
+    <ProcessSessionGate type="POLISHING">
+      <PolishingQueue />
+    </ProcessSessionGate>
+  );
+}
+
+function PolishingQueue() {
   const [tab, setTab]               = useState<"open"|"done">("open");
   const [pieces, setPieces]         = useState<Piece[]>([]);
   const [completed, setCompleted]   = useState<CompletedPiece[]>([]);
@@ -178,7 +200,9 @@ export default function FabPolishingPage() {
                     startMs={started[p.id] ?? null}
                     onStart={() => startPiece(p.id)}
                     onComplete={() => complete(p.id)}
-                    completing={!!completing[p.id]} />
+                    completing={!!completing[p.id]}
+                    onRejected={() => { void loadOpen(); }}
+                    onError={setActionError} />
                 ))}
               </tbody>
             </table>

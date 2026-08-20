@@ -24,6 +24,8 @@
 
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
+import { requireProcessSession } from "@/lib/fab/processSessionServer";
+import { stampSlabJobWorker } from "@/lib/fab/stampWorker";
 
 export async function POST(req: Request) {
   const g = await fabGate("EMPLOYEE");
@@ -57,10 +59,9 @@ export async function POST(req: Request) {
   });
   if (!slabJob) return Response.json({ error: "Slab job not found" }, { status: 404 });
 
-  const machineSession = await prisma.fabMachineSession.findFirst({
-    where: { userId, isActive: true },
-    select: { machineId: true },
-  });
+  const gate = await requireProcessSession("CUTTING");
+  if (!gate.ok) return Response.json({ error: gate.error }, { status: gate.status });
+  const machineSession = gate.session;
 
   // Discover pieces that belong specifically to THIS slab.
   // After the multi-slab fix, requirement.pieces can include pieces from OTHER slabs
@@ -96,10 +97,12 @@ export async function POST(req: Request) {
         status:     "COMPLETED",
         endTime:    now,
         operatorId: userId,
-        machineId:  machineSession?.machineId ?? undefined,
+        machineId:  machineSession.machineId,
       },
     });
     if (done.count === 0) { applied = false; return; }   // another request got there first
+
+    await stampSlabJobWorker(tx, slabJobId, machineSession.workerId);
 
     if (pieceIds.length > 0) {
       // Update existing pieces

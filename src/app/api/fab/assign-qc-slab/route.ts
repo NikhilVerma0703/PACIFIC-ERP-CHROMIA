@@ -5,6 +5,7 @@
 import { NextRequest } from "next/server";
 import { fabGate } from "@/lib/fab/access";
 import { prisma } from "@/lib/prisma";
+import { markQcSlabCts } from "@/lib/fab/markQcSlabCts";
 
 // Standard Pacific slab: 137 x 79 inches
 const SLAB_L_MM = 137 * 25.4; // 3479.8 mm
@@ -41,6 +42,7 @@ export async function POST(req: NextRequest) {
       totalArea:   SLAB_L_MM * SLAB_W_MM,
     },
   });
+  await markQcSlabCts(qc.id);
 
   return Response.json({
     success:      true,

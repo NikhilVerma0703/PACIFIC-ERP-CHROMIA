@@ -5,6 +5,7 @@ import Link from "next/link";
 import { fabTierOf } from "@/lib/fab/access";
 import { NewPoForm } from "./NewPoForm";
 import { PoPdfUpload } from "./PoPdfUpload";
+import { PoRequirementTable } from "./PoRequirementTable";
 
 // One project and its purchase orders. A project holds several POs; each PO's
 // PDF contributes its own piece rows, and each is reconciled against its own
@@ -106,10 +107,14 @@ export default async function FabManagerProjectPage({
               </div>
 
               {po.pdfImportedAt ? (
-                <p className="text-xs text-slate-400 mt-2">
-                  Imported {po.pdfImportedAt.toISOString().slice(0, 10)}. Sinks are assigned by the
-                  supervisor on the planning board.
-                </p>
+                <>
+                  <p className="text-xs text-slate-400 mt-2">
+                    Imported {po.pdfImportedAt.toISOString().slice(0, 10)}. Edit a cell to fix a
+                    row, add one at the bottom, or delete a row that should not have come in.
+                    Sinks are still assigned by the supervisor.
+                  </p>
+                  <PoRequirementTable poId={po.id} />
+                </>
               ) : (
                 <PoPdfUpload poId={po.id} poNumber={po.poNumber} />
               )}

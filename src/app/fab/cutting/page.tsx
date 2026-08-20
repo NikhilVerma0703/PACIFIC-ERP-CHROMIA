@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
 import { postJson, getJson } from "@/lib/fab/postJson";
+import { ProcessSessionGate } from "@/components/fab/ProcessSessionGate";
 
 interface Piece {
   id: string; pieceCode: string;
@@ -179,6 +180,14 @@ function useMachineId(): string | null {
 }
 
 export default function FabCuttingPage() {
+  return (
+    <ProcessSessionGate type="CUTTING">
+      <CuttingQueue />
+    </ProcessSessionGate>
+  );
+}
+
+function CuttingQueue() {
   const [tab,           setTab]          = useState<"open"|"done">("open");
   const [queue,         setQueue]        = useState<QueueEntry[]>([]);
   const [completed,     setCompleted]    = useState<DoneEntry[]>([]);

@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
+import { requireProcessSession } from "@/lib/fab/processSessionServer";
+import { stampOperationWorker } from "@/lib/fab/stampWorker";
 
 // Declared before use. They were below the handler, which works only because
 // the handler runs after module evaluation — a detail nobody should have to
@@ -11,6 +13,10 @@ class DuplicateCode {}
 export async function POST(req: Request) {
   const g = await fabGate("EMPLOYEE");
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+
+  const gate = await requireProcessSession("PACKAGING");
+  if (!gate.ok) return Response.json({ error: gate.error }, { status: gate.status });
+  const sess = gate.session;
 
   const body = await req.json().catch(() => null);
   const { pieceIds: rawIds, packageCode, remarks } = body ?? {};
@@ -64,6 +70,21 @@ export async function POST(req: Request) {
       where: { pieceId: { in: pieceIds }, operationType: "PACKAGING", isCompleted: false },
       data: { isCompleted: true, completedAt: new Date() },
     });
+    const now = new Date();
+    for (const pid of pieceIds) {
+    const op = await tx.fabOperation.create({
+        data: {
+          pieceId: pid,
+          operatorId: g.user.id as string,
+          machineId: sess.machineId,
+          operationType: "PACKAGING",
+          status: "COMPLETED",
+          startTime: now,
+          endTime: now,
+        },
+      });
+      await stampOperationWorker(tx, op.id, sess.workerId, sess.shift);
+    }
     return p;
   }).catch((e: unknown) => {
     if (e instanceof AlreadyPackaged || e instanceof MissingPieces) return e;

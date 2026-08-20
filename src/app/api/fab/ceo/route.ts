@@ -5,6 +5,10 @@ import {
   resolveRange, buildStageSeries, dayKeyOf, MAX_RANGE_DAYS,
   type StageOpBucket, type StageCutBucket,
 } from "@/lib/fab/stageSeries";
+import { workersForPieceOps, workersForSessions, workersForSlabJobs } from "@/lib/fab/workerLookups";
+import { pieceStages, summarizeStages } from "@/lib/fab/pieceStages";
+import { downtimeLabel } from "@/lib/fab/downtimeReasons";
+import { FAB_PROCESS_LABEL, type FabProcessType } from "@/lib/fab/processSession";
 
 const IDLE_MS = 30 * 60 * 1000;
 
@@ -73,9 +77,11 @@ export async function GET(req: Request) {
     projects,
     pieceOpsDay,
     projectSlabs,
+    slabBoardSlabs,
     allMachines,
     stageOpBuckets,
     stageCutBuckets,
+    downtimeRows,
   ] = await Promise.all([
     prisma.fabMachineSession.findMany({
       where: { isActive: true },
@@ -130,6 +136,34 @@ export async function GET(req: Request) {
         },
       },
     }),
+    prisma.fabSlab.findMany({
+      where: {
+        project: { status: { not: "COMPLETED" } },
+        pieces: { some: {} },
+      },
+      select: {
+        id: true,
+        slabCode: true,
+        pacificQcId: true,
+        colour: true,
+        project: { select: { projectCode: true } },
+        pieces: {
+          select: {
+            pieceCode: true,
+            status: true,
+            polishRequired: true,
+            polishingCompleted: true,
+            hasSink: true,
+            sinkCompleted: true,
+            fabricationRequired: true,
+            fabricationCompleted: true,
+            requirement: { select: { pieceLabel: true } },
+          },
+          orderBy: { pieceCode: "asc" },
+        },
+      },
+      orderBy: { slabCode: "asc" },
+    }),
     prisma.fabMachine.findMany({
       select: { id: true, name: true, type: true, code: true },
       orderBy: { type: "asc" },
@@ -171,16 +205,47 @@ export async function GET(req: Request) {
         GROUP BY 1`,
       rangeStart, rangeEnd,
     ).then((r: unknown) => r as StageCutBucket[]).catch(onQueryFail("CLO cutting")),
+    prisma.$queryRaw<{
+      id: string; process_type: string; reason: string; notes: string | null;
+      started_at: Date; ended_at: Date | null; shift: string | null;
+      worker_name: string | null; machine_name: string | null;
+    }[]>`
+      SELECT d.id, d.process_type, d.reason, d.notes, d.started_at, d.ended_at,
+             d.shift, w.name AS worker_name, m.name AS machine_name
+        FROM fab_machine_downtime d
+        LEFT JOIN fab_worker w ON w.id = d.worker_id
+        LEFT JOIN fab_machine m ON m.id = d.machine_id
+       WHERE d.ended_at IS NULL
+          OR (d.started_at <= ${endOfDay}
+              AND COALESCE(d.ended_at, ${endOfDay}) >= ${startOfDay})
+       ORDER BY (d.ended_at IS NULL) DESC, d.started_at DESC
+       LIMIT 80
+    `.catch(onQueryFail("downtime")),
   ]);
 
+  const sessionWorker = await workersForSessions(
+    [...new Set([...activeSessions.map(s => s.id), ...daySessions.map(s => s.id)])],
+  );
+  const pieceOpWorker = await workersForPieceOps(pieceOpsDay.map(o => o.id));
+
+  function sessionPerson(sessionId: string, userId: string, userName: string | null, userEmail: string | null) {
+    const w = sessionWorker.get(sessionId);
+    return {
+      operatorId: w?.workerId ?? userId,
+      operatorName: w?.name ?? userName ?? userEmail ?? "Unknown",
+    };
+  }
+
   // ── Piece funnel (total state) ─────────────────────────────────────────────
+  const dropped = (status: string) => status === "PENDING" || status === "REJECTED";
   const total       = allPieces.length;
+  const rejected    = allPieces.filter(p => p.status === "REJECTED").length;
   const packaged    = allPieces.filter(p => p.status === "PACKAGED").length;
-  const cut         = allPieces.filter(p => p.status !== "PENDING" && p.status !== "PACKAGED").length;
+  const cut         = allPieces.filter(p => p.status !== "PENDING" && p.status !== "PACKAGED" && p.status !== "REJECTED").length;
   const pending     = allPieces.filter(p => p.status === "PENDING").length;
-  const polishing   = allPieces.filter(p => p.polishRequired && !p.polishingCompleted && p.status !== "PENDING").length;
-  const sinkCutting = allPieces.filter(p => p.hasSink && !p.sinkCompleted && p.status !== "PENDING").length;
-  const fabrication = allPieces.filter(p => p.fabricationRequired && !p.fabricationCompleted && p.status !== "PENDING" && p.status !== "PACKAGED").length;
+  const polishing   = allPieces.filter(p => p.polishRequired && !p.polishingCompleted && !dropped(p.status)).length;
+  const sinkCutting = allPieces.filter(p => p.hasSink && !p.sinkCompleted && !dropped(p.status)).length;
+  const fabrication = allPieces.filter(p => p.fabricationRequired && !p.fabricationCompleted && !dropped(p.status) && p.status !== "PACKAGED").length;
 
   // ── Project progress ───────────────────────────────────────────────────────
   const piecesByProject: Record<string, { total: number; packaged: number; cut: number }> = {};
@@ -188,13 +253,16 @@ export async function GET(req: Request) {
     if (!piecesByProject[p.projectId]) piecesByProject[p.projectId] = { total: 0, packaged: 0, cut: 0 };
     piecesByProject[p.projectId].total++;
     if (p.status === "PACKAGED") piecesByProject[p.projectId].packaged++;
-    if (p.status !== "PENDING")  piecesByProject[p.projectId].cut++;
+    if (p.status !== "PENDING" && p.status !== "REJECTED")  piecesByProject[p.projectId].cut++;
   }
 
   // ── Slab wastage ──────────────────────────────────────────────────────────
   // Resolve pacificQcId -> PolishQc.slabNumber so we show the real QC slab
   // number (e.g. "1350") instead of the pre-allocation fab code ("2cm_001")
-  const qcIds = projectSlabs.map(s => s.pacificQcId!).filter(Boolean);
+  const qcIds = [
+    ...projectSlabs.map(s => s.pacificQcId!).filter(Boolean),
+    ...slabBoardSlabs.map(s => s.pacificQcId).filter((id): id is string => !!id),
+  ];
   const qcSlabRows = qcIds.length
     ? await prisma.polishQc.findMany({
         where:  { id: { in: qcIds } },
@@ -245,8 +313,30 @@ export async function GET(req: Request) {
     };
   });
 
+  const slabBoard = slabBoardSlabs.map(s => {
+    const pieces = s.pieces.map(p => {
+      const stages = pieceStages(p);
+      return {
+        pieceCode: p.pieceCode,
+        label: p.requirement?.pieceLabel ?? null,
+        status: p.status,
+        stages,
+      };
+    });
+    const sums = summarizeStages(pieces.map(p => p.stages));
+    return {
+      slabId: s.id,
+      slabCode: (s.pacificQcId && qcSlabNumberMap.get(s.pacificQcId)) || s.slabCode,
+      colour: s.colour,
+      projectCode: s.project.projectCode,
+      ...sums,
+      pieces,
+    };
+  });
+
   // ── Leaderboard (date-filtered) ────────────────────────────────────────────
   const sessionsByType: Record<string, Array<{
+    sessionId: string;
     userId: string; userName: string | null; userEmail: string | null;
     machineId: string; machineName: string; machineType: string;
     loginTime: Date; logoutTime: Date | null; isActive: boolean;
@@ -255,6 +345,7 @@ export async function GET(req: Request) {
     const t = s.machine.type;
     if (!sessionsByType[t]) sessionsByType[t] = [];
     sessionsByType[t].push({
+      sessionId: s.id,
       userId: s.user.id, userName: s.user.name, userEmail: s.user.email,
       machineId: s.machine.id, machineName: s.machine.name, machineType: t,
       loginTime: s.loginTime, logoutTime: s.logoutTime ?? null, isActive: s.isActive,
@@ -276,16 +367,25 @@ export async function GET(req: Request) {
     return opMachineMap[k];
   }
 
-  // Legacy pieces: attribute via session overlap
+  // Completions: prefer the worker stamped on the operation (who stood at the
+  // machine). Fall back to session-window overlap using that session's worker,
+  // not the shared operator login.
   for (const op of pieceOpsDay) {
     if (!op.completedAt || !op.operationType) continue;
+    const stamped = pieceOpWorker.get(op.id);
+    if (stamped) {
+      const entry = getOrCreate(stamped.workerId, stamped.name, op.operationType, null);
+      entry.piecesDay++;
+      continue;
+    }
     const match = (sessionsByType[op.operationType] ?? []).find(s => {
       const started = s.loginTime <= op.completedAt!;
       const ended   = s.logoutTime ? s.logoutTime >= op.completedAt! : s.isActive;
       return started && ended;
     });
     if (!match) continue;
-    const entry = getOrCreate(match.userId, match.userName ?? match.userEmail ?? "Unknown", op.operationType, match.machineName);
+    const person = sessionPerson(match.sessionId, match.userId, match.userName, match.userEmail);
+    const entry = getOrCreate(person.operatorId, person.operatorName, op.operationType, match.machineName);
     entry.piecesDay++;
   }
 
@@ -304,10 +404,13 @@ export async function GET(req: Request) {
       slab:     { include: { requirementAllocations: { select: { allocatedQuantity: true } } } },
     },
   });
+  const cloJobWorker = await workersForSlabJobs(cloJobsToday.map(j => j.id));
   for (const job of cloJobsToday) {
-    if (!job.operatorId || !job.operator) continue;
-    const name  = job.operator.name ?? job.operator.email ?? "Unknown";
-    const entry = getOrCreate(job.operatorId, name, "CUTTING", job.machine?.name ?? null);
+    const stamped = cloJobWorker.get(job.id);
+    const uid  = stamped?.workerId ?? job.operatorId;
+    const name = stamped?.name ?? job.operator?.name ?? job.operator?.email ?? "Unknown";
+    if (!uid) continue;
+    const entry = getOrCreate(uid, name, "CUTTING", job.machine?.name ?? null);
     const pcs   = job.slab.requirementAllocations.reduce((s, a) => s + a.allocatedQuantity, 0);
     entry.piecesDay += pcs;
     entry.slabsDay  += 1;
@@ -351,11 +454,12 @@ export async function GET(req: Request) {
     totalMinutes: number; piecesByType: Record<string, number>;
   }> = {};
   for (const s of daySessions) {
-    const uid = s.user.id;
+    const person = sessionPerson(s.id, s.user.id, s.user.name, s.user.email);
+    const uid = person.operatorId;
     if (!operatorDayMap[uid]) {
       operatorDayMap[uid] = {
         operatorId: uid,
-        operatorName: s.user.name ?? s.user.email ?? "Unknown",
+        operatorName: person.operatorName,
         sessions: [], totalMinutes: 0, piecesByType: {},
       };
     }
@@ -369,7 +473,13 @@ export async function GET(req: Request) {
     operatorDayMap[uid].totalMinutes += mins;
   }
   for (const entry of Object.values(opMachineMap)) {
-    if (!operatorDayMap[entry.operatorId]) continue;
+    if (!operatorDayMap[entry.operatorId]) {
+      operatorDayMap[entry.operatorId] = {
+        operatorId: entry.operatorId,
+        operatorName: entry.operatorName,
+        sessions: [], totalMinutes: 0, piecesByType: {},
+      };
+    }
     operatorDayMap[entry.operatorId].piecesByType[entry.machineType] =
       (operatorDayMap[entry.operatorId].piecesByType[entry.machineType] ?? 0) + entry.piecesDay;
   }
@@ -384,7 +494,9 @@ export async function GET(req: Request) {
     where: { status: "IN_PROGRESS" },
     select: { operatorId: true, machineId: true, startTime: true },
   });
-  const cuttingOperators = new Set(inProgressJobs.map(j => j.operatorId).filter(Boolean) as string[]);
+  const cuttingMachines = new Set(
+    inProgressJobs.map(j => j.machineId).filter(Boolean) as string[],
+  );
 
   // ── Real-time idle detection: per-machine, not per-type or date-filtered ──
   // Fetch ops completed within the IDLE_MS window (always "now", not date filter)
@@ -469,25 +581,24 @@ export async function GET(req: Request) {
     (sum, job) => sum + job.slab.requirementAllocations.reduce((s, a) => s + a.allocatedQuantity, 0), 0);
   const cloSlabsPending = cloJobsWithQty.length;
 
-  const [legacyCuttingPending, polishingPending, sinkPending, fabPending, packPending] = await Promise.all([
+  const [legacyCuttingPending] = await Promise.all([
     prisma.fabSlabAllocation.count({
       where: { piece: { pieceOperations: { some: { operationType: "CUTTING", isCompleted: false } } } },
     }),
-    prisma.fabPiece.count({ where: { polishRequired: true, polishingCompleted: false, status: { not: "PENDING" } } }),
-    prisma.fabPiece.count({ where: { hasSink: true, sinkCompleted: false, status: { not: "PENDING" } } }),
-    prisma.fabPiece.count({ where: { fabricationRequired: true, fabricationCompleted: false, status: { not: "PENDING" }, OR: [{ hasSink: false }, { hasSink: true, sinkCompleted: true }] } }),
-    // Ready for packaging = all required intermediate ops completed, not yet packaged
-    prisma.fabPiece.count({
-      where: {
-        status: { notIn: ["PENDING", "PACKAGED"] },
-        AND: [
-          { OR: [{ polishRequired: false }, { polishingCompleted: true }] },
-          { OR: [{ hasSink: false },        { sinkCompleted: true }] },
-          { OR: [{ fabricationRequired: false }, { fabricationCompleted: true }] },
-        ],
-      },
-    }),
   ]);
+  const polishingPending = polishing;
+  const sinkPending = sinkCutting;
+  const fabPending = allPieces.filter(p =>
+    p.fabricationRequired && !p.fabricationCompleted &&
+    p.status !== "PENDING" && p.status !== "REJECTED" &&
+    (!p.hasSink || p.sinkCompleted)
+  ).length;
+  const packPending = allPieces.filter(p =>
+    p.status !== "PENDING" && p.status !== "PACKAGED" && p.status !== "REJECTED" &&
+    (!p.polishRequired || p.polishingCompleted) &&
+    (!p.hasSink || p.sinkCompleted) &&
+    (!p.fabricationRequired || p.fabricationCompleted)
+  ).length;
   const pendingByType: Record<string, number> = {
     CUTTING:      legacyCuttingPending + cloCuttingPieces,
     POLISHING:    polishingPending,
@@ -525,8 +636,9 @@ export async function GET(req: Request) {
 
   const activeByMachine: Record<string, { operatorName: string; sessionId: string; loginTime: Date }> = {};
   for (const s of activeSessions) {
+    const person = sessionPerson(s.id, s.user.id, s.user.name, s.user.email);
     activeByMachine[s.machine.id] = {
-      operatorName: s.user.name ?? s.user.email ?? "Unknown",
+      operatorName: person.operatorName,
       sessionId: s.id, loginTime: s.loginTime,
     };
   }
@@ -553,7 +665,7 @@ export async function GET(req: Request) {
   const idleAlerts = activeSessions
     .map(s => {
       const mType = s.machine.type;
-      if (mType === "CUTTING" && cuttingOperators.has(s.user.id)) return null;
+      if (mType === "CUTTING" && cuttingMachines.has(s.machine.id)) return null;
       // Per-machine idle check using real-time data
       const lastActivity = lastByMachineId[s.machine.id] ?? s.loginTime;
       const idleMs = now.getTime() - lastActivity.getTime();
@@ -561,7 +673,7 @@ export async function GET(req: Request) {
       const pendingCount = pendingByType[mType] ?? 0;
       return {
         sessionId:      s.id,
-        operatorName:   s.user.name ?? s.user.email ?? "Unknown",
+        operatorName:   sessionPerson(s.id, s.user.id, s.user.name, s.user.email).operatorName,
         machineType:    mType,
         machineName:    s.machine.name,
         idleMinutes:    Math.floor(idleMs / 60000),
@@ -600,15 +712,18 @@ export async function GET(req: Request) {
     : null;
 
   return Response.json({
-    activeSessions: activeSessions.map(s => ({
+    activeSessions: activeSessions.map(s => {
+      const person = sessionPerson(s.id, s.user.id, s.user.name, s.user.email);
+      return {
       id:              s.id,
-      user:            { name: s.user.name ?? s.user.email },
+      user:            { name: person.operatorName },
       machine:         s.machine,
       shift:           s.shift,
       loginTime:       s.loginTime.toISOString(),
       durationMinutes: Math.floor((now.getTime() - s.loginTime.getTime()) / 60000),
-    })),
-    pieceFunnel:      { total, pending, cut, polishing, sinkCutting, fabrication, packaged },
+    };
+    }),
+    pieceFunnel:      { total, pending, cut, polishing, sinkCutting, fabrication, packaged, rejected },
     projectProgress,
     leaderboard,
     machineLeaderboard,
@@ -616,9 +731,30 @@ export async function GET(req: Request) {
     pendingByType,
     cloSlabsPending,
     slabWastage,
+    slabBoard,
     idleAlerts,
     dailyThroughput,
     stageSeries,
     operatorsToday,
+    downtimeLog: (downtimeRows ?? []).map(r => {
+      const ended = r.ended_at;
+      const mins = Math.max(0, Math.floor(((ended ?? now).getTime() - r.started_at.getTime()) / 60000));
+      const processType = r.process_type as FabProcessType;
+      return {
+        id: r.id,
+        processType,
+        processLabel: FAB_PROCESS_LABEL[processType] ?? r.process_type,
+        reason: r.reason,
+        reasonLabel: downtimeLabel(r.reason),
+        notes: r.notes,
+        startedAt: r.started_at.toISOString(),
+        endedAt: ended ? ended.toISOString() : null,
+        shift: r.shift,
+        workerName: r.worker_name,
+        machineName: r.machine_name,
+        open: ended == null,
+        durationMinutes: mins,
+      };
+    }),
   });
 }

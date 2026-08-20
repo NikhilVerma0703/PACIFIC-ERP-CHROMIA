@@ -1,24 +1,9 @@
 import { auth } from "@/auth";
 import { redirect } from "next/navigation";
-import { cookies } from "next/headers";
 import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { fabSignOut } from "./sign-out-action";
-
-const TYPE_META: Record<string, { label: string; dot: string }> = {
-  CUTTING:      { label: "Cutting",      dot: "bg-blue-500"   },
-  POLISHING:    { label: "Polishing",    dot: "bg-violet-500" },
-  SINK_CUTTING: { label: "Sink Cutting", dot: "bg-orange-500" },
-  FABRICATION:  { label: "Fabrication",  dot: "bg-rose-500"   },
-  PACKAGING:    { label: "Packaging",    dot: "bg-green-500"  },
-};
-const MACHINE_URLS: Record<string, string> = {
-  CUTTING:      "/fab/cutting",
-  POLISHING:    "/fab/polishing",
-  SINK_CUTTING: "/fab/sink-cutting",
-  FABRICATION:  "/fab/fabrication",
-  PACKAGING:    "/fab/packaging",
-};
+import { OperatorQueueNav } from "@/components/fab/OperatorQueueNav";
 
 function Icon({ d, size = 15 }: { d: string; size?: number }) {
   return (
@@ -57,14 +42,9 @@ export default async function FabLayout({ children }: { children: React.ReactNod
   if (mainRole === "ADMIN") return <Shell>{children}</Shell>;
   if (fabBranch !== "FABRICATION") redirect("/");
 
-  const cookieStore = await cookies();
-  const machineType = cookieStore.get("fab_machine_type")?.value ?? null;
-  const machineName = cookieStore.get("fab_machine_name")?.value ?? null;
   const isEmployee  = mainRole === "OPERATOR";
   const isManager   = mainRole === "LINE_MANAGER";
   const isSupervisor= mainRole === "INCHARGE";
-  const machineUrl  = machineType ? MACHINE_URLS[machineType] : null;
-  const typeMeta    = machineType ? TYPE_META[machineType]    : null;
   const roleLabel   = isManager ? "Manager" : isSupervisor ? "Supervisor" : "Employee";
 
   const SIGN_OUT_PATH = "M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9";
@@ -78,48 +58,13 @@ export default async function FabLayout({ children }: { children: React.ReactNod
            the work; without one the queues still work. */
         <aside className="w-60 min-h-screen bg-slate-900 flex flex-col p-4">
           <div className="mb-6 p-3 bg-slate-800 rounded-xl border border-slate-700">
-            <div className="flex items-center gap-2.5">
-              {typeMeta && <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${typeMeta.dot}`} />}
-              <div>
-                <p className="text-sm font-semibold text-white leading-tight">{machineName ?? "All stations"}</p>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  {typeMeta ? `${typeMeta.label} Active` : "No machine selected"}
-                </p>
-              </div>
-            </div>
+            <p className="text-sm font-semibold text-white leading-tight">Pacific Fabrication</p>
+            <p className="text-xs text-slate-400 mt-0.5">Operator · pick a process</p>
           </div>
 
-          <nav className="flex flex-col gap-1 flex-1">
-            <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 px-3 mb-1.5">Queues</p>
-            {Object.entries(MACHINE_URLS).map(([type, url]) => {
-              const meta      = TYPE_META[type] ?? { label: type, dot: "bg-slate-500" };
-              const isCurrent = url === machineUrl;
-              return (
-                <Link key={type} href={url}
-                  className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition ${
-                    isCurrent ? "bg-white/10 text-white" : "text-slate-400 hover:text-white hover:bg-white/5"
-                  }`}>
-                  <span className={`w-2 h-2 rounded-full flex-shrink-0 ${meta.dot}`} />
-                  {meta.label}
-                </Link>
-              );
-            })}
-            <Link href="/fab/session"
-              className="mt-2 flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium text-slate-500 hover:text-white hover:bg-white/5 transition">
-              <Icon d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" />
-              {machineName ? "Switch Machine" : "Select Machine"}
-            </Link>
-          </nav>
+          <OperatorQueueNav />
 
           <div className="space-y-1 pt-4 border-t border-slate-800">
-            {machineName && (
-              <form action="/api/fab/session/end" method="POST">
-                <button type="submit" className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium text-amber-400 hover:bg-amber-500/10 transition">
-                  <Icon d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0" />
-                  End Session
-                </button>
-              </form>
-            )}
             <form action={fabSignOut}>
               <button type="submit" className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium text-slate-400 hover:text-slate-200 hover:bg-white/5 transition">
                 <Icon d={SIGN_OUT_PATH} />
@@ -167,15 +112,25 @@ export default async function FabLayout({ children }: { children: React.ReactNod
                 icon="M3 7l9-4 9 4-9 4-9-4zM3 12l9 4 9-4M3 17l9 4 9-4"
                 label="Slab & Sink Assignment" />
             )}
+            {(isSupervisor || isManager) && (
+              <SLink href="/fab/supervisor/people"
+                icon="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 7a4 4 0 100 8 4 4 0 000-8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"
+                label="People" />
+            )}
+            {(isSupervisor || isManager) && (
+              <SLink href="/fab/supervisor/downtime"
+                icon="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                label="Downtime" />
+            )}
+            {isManager && (
+              <SLink href="/fab/ceo"
+                icon="M3 3v18h18"
+                label="Operations Dashboard" />
+            )}
             {isManager && (
               <SLink href="/fab/manager"
                 icon="M3 3h18v4H3zM3 10h18v4H3zM3 17h18v4H3z"
-                label="Manager Dashboard" />
-            )}
-            {isManager && (
-              <SLink href="/fab/projects"
-                icon="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"
-                label="Manager View" />
+                label="Purchase Orders" />
             )}
 
             <SidebarSection label="Queues" />
