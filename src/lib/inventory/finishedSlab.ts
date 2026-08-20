@@ -5,6 +5,7 @@
 // Uses `prisma as any` (like batchRange.ts / downtimeResponse.ts) so it compiles
 // regardless of client regeneration timing.
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { Prisma, type SlabStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
   canonicalGrade, gradeBlocksDispatch, CUT_TO_SIZE_GRADE, TRANSITIONS,
@@ -230,7 +231,18 @@ export async function changeSlabStatus(
     // — for a dispatch — the grade has not become CTS since the read. The OR spells the
     // null case out rather than relying on `not`, which compares as NULL in SQL and
     // would silently refuse every ungraded slab.
-    const guard: Record<string, unknown> = { slabNumber: sn, status: { in: t.from } };
+    // Typed as the real Prisma input, NOT Record<string, unknown>: the compiler is
+    // the only thing that checks this filter's shape, and a where-clause that is
+    // merely plausible fails at runtime on every dispatch rather than at build.
+    // The cast is the one honest looseness here: TRANSITIONS lives in grading.ts,
+    // which imports nothing so `node --test` can reach it, and therefore cannot name
+    // the Prisma SlabStatus enum. Its `from` values ARE that enum's members. Casting
+    // just that array keeps the compiler checking the REST of the clause — which it
+    // was not doing at all while this was Record<string, unknown>.
+    const guard: Prisma.FinishedSlabWhereInput = {
+      slabNumber: sn,
+      status: { in: t.from as SlabStatus[] },
+    };
     if (action === "dispatch") {
       guard.OR = [
         { grade: null },
