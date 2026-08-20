@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  carryEntryNotes,
   entryCreateData,
   rebuildsEntries,
   setupScalarData,
@@ -138,4 +139,35 @@ test("setupScalarData blanks empty targets rather than storing zero", () => {
   // 0 is not a target anyone types; the form sends "" and this keeps them the
   // same "not set" so a corrected setup does not read as "target 0 slabs".
   assert.equal(setupScalarData({ targetSlabs: 0, thickness: 0 }).targetSlabs, null);
+});
+
+/* ── carryEntryNotes ──────────────────────────────────────────────────────
+   The PATCH rebuilds the per-machine rows instead of updating them, and the
+   form has no field for RoboBatchRecipeEntry.notes — so without this, opening
+   a setup and pressing Save with nothing typed erased the note off every
+   machine in the batch, invisibly, because no screen shows the column. */
+
+test("carryEntryNotes puts each machine's note back on the rebuilt row", () => {
+  const rows = entryCreateData([
+    { machineId: "m1", programName: "BANYAN 2" },
+    { machineId: "m2", programName: "ROYMIX A" },
+  ]);
+  const kept = carryEntryNotes(rows, new Map([["m1", "roller re-shimmed 12/07"], ["m2", null]]));
+  assert.equal(kept[0].notes, "roller re-shimmed 12/07");
+  assert.equal(kept[1].notes, null);
+  // and nothing else about the row is disturbed
+  assert.equal(kept[0].machineId, "m1");
+  assert.equal(kept[0].programName, "BANYAN 2");
+});
+
+test("carryEntryNotes gives a newly ticked machine null, not another machine's note", () => {
+  const rows = entryCreateData([{ machineId: "m3", programName: "NEW" }]);
+  const kept = carryEntryNotes(rows, new Map([["m1", "note for m1"]]));
+  assert.equal(kept[0].notes, null);
+});
+
+test("carryEntryNotes with nothing read leaves every row null", () => {
+  const rows = entryCreateData([{ machineId: "m1", programName: "P" }, { machineId: "m2", programName: "Q" }]);
+  const kept = carryEntryNotes(rows, new Map());
+  assert.deepEqual(kept.map((r) => r.notes), [null, null]);
 });
