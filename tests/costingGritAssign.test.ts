@@ -18,6 +18,30 @@ test("one band written five ways is one key", () => {
   }
 });
 
+test("the messy spellings the plant actually types all fold to one key", () => {
+  // Owner, 2026-08-20: "at times there are unnecessary spaces between or before
+  // or after the hyphens and such random errors". These are those errors.
+  const want = sizeKey("0.1-0.4");
+  for (const v of [
+    "0.1 - 0.4", "0.1- 0.4", "0.1 -0.4", "0.1  -  0.4", " 0.1-0.4 ",
+    "0.1–0.4", "0.1 – 0.4",              // en dash, spaced and not
+    "#0.1-0.4", "# 0.1 - 0.4",
+    "0.10-0.40", "0.10 - 0.40", ".1-.4",  // precision written loosely
+    "0.1 to 0.4", "0.1 TO 0.4", "0.1 / 0.4", "0.1x0.4",   // other separators
+    "0.1--0.4", "-0.1-0.4", "0.1-0.4-",   // doubled and stray hyphens
+    "0.1-0.4 mm", "0.1-0.4mm",            // units, spaced and glued
+  ]) {
+    assert.equal(sizeKey(v), want, `${v} should key the same as 0.1-0.4`);
+  }
+});
+
+test("a comma decimal must not become a DIFFERENT band", () => {
+  // The dangerous one. Stripped as punctuation, "0,1-0,4" reads as "1-4" — not a
+  // failure to match but a silent wrong answer that looks like a real band.
+  assert.equal(sizeKey("0,1-0,4"), sizeKey("0.1-0.4"));
+  assert.notEqual(sizeKey("0,1-0,4"), "1-4");
+});
+
 test("different bands stay different — this is what a fuzzy score would break", () => {
   assert.notEqual(sizeKey("0.1-0.4"), sizeKey("0.3-0.7"));
   assert.notEqual(sizeKey("0.6-1.2"), sizeKey("1.2-2.5"));

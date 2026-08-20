@@ -39,12 +39,25 @@ export function sizeKey(v: unknown): string {
     // The dash family. GRIT_BAND_LABELS renders bands with a literal EN DASH
     // ("Grit 0.1 – 0.4"), so one arrives here by copy-paste sooner or later.
     .replace(/[‐-―−﹘﹣－]/g, "-")
-    .replace(/[×x*]/gi, "-")
+    // A COMMA BETWEEN DIGITS IS A DECIMAL POINT. This one is not a near-miss
+    // like the others below — left alone, "0,1-0,4" normalises to "1-4", which
+    // is not a failure to match but a DIFFERENT, entirely legitimate-looking
+    // band. A silent wrong answer beats a visible miss every time, so it is
+    // handled before anything else can strip the comma as punctuation.
+    .replace(/(\d),(\d)/g, "$1.$2")
+    // Separators people type instead of a hyphen. Bounded by digits on both
+    // sides on purpose: an unbounded "to" would eat the letters out of any word
+    // containing it, and these are comparison keys, not display strings.
+    .replace(/(\d)\s*(?:to|[x×*/~])\s*(\d)/g, "$1-$2")
     .replace(/#/g, " ")
-    .replace(/\b(mm|mesh|micron|sm|pm)\b/g, " ")
+    // Units, glued or spaced. No word boundary — "0.1-0.4mm" is written without
+    // one at least as often as with.
+    .replace(/(mm|mesh|micron|sm|pm)/g, " ")
     .replace(/[^a-z0-9.\-]+/g, " ")
     .trim()
     .replace(/\s+/g, "")
+    .replace(/-{2,}/g, "-")        // "0.1--0.4"
+    .replace(/^-+|-+$/g, "")       // a stray hyphen at either end
     // Precision folded LAST, once the string is otherwise canonical:
     //   "0.10-0.40" -> "0.1-0.4",  ".5" -> "0.5",  "8-16" -> "8-16"
     .replace(/\d*\.?\d+/g, (n) => String(Number(n)));
