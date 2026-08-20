@@ -9,9 +9,35 @@
  * Printing, Moulding, Cooling, Polishing, UV Polishing) run as one block —
  * the slab goes into Base Primer and comes out three to four hours later, and
  * is only looked at again at QC. So the operator stamps one in-time and stops.
+ *
+ * The in-time is OPTIONAL. It is the one column of the six that is genuinely
+ * sometimes not known at the moment the row is written — a slab booked in from
+ * a note, or a day being caught up afterwards — and refusing the whole entry
+ * over it only pushed operators into typing a time they were guessing at. A
+ * guessed in-time is worse than a blank one: it is indistinguishable from a
+ * measured one, and the processing window is computed from it.
  */
 
 import { isClockTime } from '@/lib/chromia/clock-time';
+
+/**
+ * The day a register entry belongs to: local midnight of `yyyy-mm-dd`.
+ *
+ * This is what dates the record now, rather than the in-time did. They agree
+ * whenever a time was typed — `startOfDay(combineDateAndTime(d, t))` is this
+ * same instant — but an entry with no in-time still has a production date, and
+ * that date is the one the operator chose.
+ */
+export function registerDay(date: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date.trim());
+  if (!match) return null;
+  const [, year, month, day] = match;
+  const parsed = new Date(Number(year), Number(month) - 1, Number(day));
+  if (Number.isNaN(parsed.getTime())) return null;
+  // Reject 2026-02-31, which the Date constructor rolls forward to March.
+  if (parsed.getMonth() !== Number(month) - 1 || parsed.getDate() !== Number(day)) return null;
+  return parsed;
+}
 
 /** `2026-08-03` + `09:15` → a local Date. */
 export function combineDateAndTime(date: string, time: string): Date | null {
