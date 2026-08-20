@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { Card } from "@/components/ui";
 import { formatSlabRemarks, slabStatusClass, slabStatusLabel, type DelayLike } from "@/lib/robo/utils";
+import { productionDateOf } from "@/lib/robo/productionDate";
 import { DESIGN_SUGGESTIONS } from "@/lib/robo/design-presets";
 
 interface SlabRecord {
@@ -14,7 +15,7 @@ interface SlabRecord {
   status: string;
   remarks: string | null;
   shift: { date: string; shiftNumber: number } | null;
-  batchRecipe: { designName: string; batchNo: string | null } | null;
+  batchRecipe: { designName: string; batchNo: string | null; productionDate: string | null } | null;
   delayLogs: (DelayLike & { id: string })[];
 }
 
@@ -173,7 +174,11 @@ export function SlabsBrowser({ canDelete = false }: {
               )}
               {results.map(r => (
                 <tr key={r.id} className="border-b border-gray-50 transition hover:bg-slate-50">
-                  <td className="whitespace-nowrap px-4 py-3 text-gray-600">{r.shift?.date ?? "-"}</td>
+                  {/* The date the operator entered on the setup, not the shift's
+                      own — that one is the day the tablet was open, so a
+                      register caught up on Monday showed Monday for every slab
+                      of the previous week. See productionDate.ts. */}
+                  <td className="whitespace-nowrap px-4 py-3 text-gray-600">{productionDateOf(r) || "-"}</td>
                   <td className="px-4 py-3 font-medium text-gray-900">{r.slabNumber}</td>
                   <td className="px-4 py-3 text-gray-600">{r.batchRecipe?.designName || "-"}</td>
                   <td className="px-4 py-3 text-gray-600">{r.inTime || "-"}</td>
@@ -193,7 +198,10 @@ export function SlabsBrowser({ canDelete = false }: {
                       </Link>
                       {/* Edit reaches every slab in every shift, closed ones
                           included — this table is the only way back to a slab
-                          once its shift has rolled over. */}
+                          once its shift has rolled over. It opens on two tabs,
+                          Edit slab and Edit setup, because the design and the
+                          machines live on the batch's setup row rather than on
+                          the slab. */}
                       <Link href={`/robo/slabs/${r.id}/edit`}
                         className="inline-flex items-center rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-700 transition hover:bg-gray-50">
                         Edit

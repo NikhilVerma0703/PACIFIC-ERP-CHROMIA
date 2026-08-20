@@ -10,7 +10,15 @@ export const APP_ROUTES = {
   dashboard: '/chromia/dashboard',
   operator: '/chromia/operator',
   slabs: '/chromia/slabs',
-  slabIntake: '/chromia/slabs/new',
+  /**
+   * Where a slab number opens for grading.
+   *
+   * It used to be a page of its own, /chromia/slabs/new. QC now happens on the
+   * operator's own screen, below the entry fields, so this points there with
+   * the slab in the query — one constant, so every table's slab link followed
+   * without being touched. The old path still exists and redirects here.
+   */
+  slabIntake: '/chromia/operator',
   stockyard: '/chromia/stockyard',
   recalibrations: '/chromia/recalibrations',
   recalibrationTracking: '/chromia/recalibration-tracking',

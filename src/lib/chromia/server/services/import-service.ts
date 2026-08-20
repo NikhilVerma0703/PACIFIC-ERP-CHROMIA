@@ -3,6 +3,7 @@ import { MAX_RECALIBRATION_ATTEMPTS } from '@/lib/chromia/constants/process-stag
 import { prisma } from '@/lib/chromia/db';
 import { createLogger } from '@/lib/chromia/logger';
 import { daysBetween, toDateColumn } from '@/lib/chromia/utils/dates';
+import { importStatus, importSummaryLine } from '@/lib/chromia/import/outcome';
 import type { ParsedSlabRow, ParseResult } from '@/lib/chromia/import/pro-register';
 
 const log = createLogger('import');
@@ -11,8 +12,17 @@ export interface ImportSummary {
   importBatchId: string;
   totalRows: number;
   imported: number;
-  skipped: number;
+  /** Slabs already in the ERP, left untouched. */
+  alreadyPresent: number;
+  /** Blank spacer rows the sheet carries. Not slabs. */
+  blankRows: number;
+  /** Rows the parser could not read at all. */
+  unreadable: number;
+  /** Rows that threw while being written. The only real failures. */
   failed: number;
+  /** What happened, in one line — see importSummaryLine. */
+  line: string;
+  /** Everything worth showing: unreadable rows, skips and failures alike. */
   errors: { sourceRow: number; reason: string }[];
 }
 
@@ -75,9 +85,26 @@ export async function importProRegister(
     },
   });
 
-  const errors: { sourceRow: number; reason: string }[] = [...parseResult.issues];
+  /*
+   * Three outcomes, counted separately.
+   *
+   * They used to share one `errors` array, and the status was then decided by
+   * how long that array was — so a SKIP counted as a fault. A skip is the
+   * documented behaviour of this importer ("live data always wins"), and the
+   * register produces them on a first import too, because it repeats a slab
+   * number when a slab comes back from recalibration. The result was a clean
+   * import reported as PARTIAL and a re-import reported as FAILED, both beside
+   * a "Failed: 0" that contradicted them. See lib/chromia/import/outcome.ts.
+   *
+   * `notes` is what the screen lists; the counters are what the status is
+   * decided from. Keeping them apart is the fix.
+   */
+  const notes: { sourceRow: number; reason: string }[] = [...parseResult.issues];
+  const unreadable = parseResult.issues.length;
+  const blankRows = parseResult.skipped;
   let imported = 0;
-  let skipped = parseResult.skipped;
+  let failed = 0;
+  let alreadyPresent = 0;
 
   // Resolve (and create where needed) the master data the sheet references.
   const materialIds = new Map<string, string>();
@@ -128,8 +155,8 @@ export async function importProRegister(
       });
 
       if (existing) {
-        skipped += 1;
-        errors.push({
+        alreadyPresent += 1;
+        notes.push({
           sourceRow: row.sourceRow,
           reason: `Slab ${row.slabNo} already exists — left untouched`,
         });
@@ -282,44 +309,41 @@ export async function importProRegister(
 
       imported += 1;
     } catch (error) {
-      errors.push({
+      failed += 1;
+      notes.push({
         sourceRow: row.sourceRow,
         reason: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   }
 
-  const failed = errors.length - parseResult.issues.length - (skipped - parseResult.skipped);
+  const counts = { imported, alreadyPresent, blankRows, unreadable, failed };
+  const status = importStatus(counts);
+  const line = importSummaryLine(counts);
 
   await prisma.chromiaImportBatch.update({
     where: { id: importBatch.id },
     data: {
-      status:
-        imported === 0
-          ? ImportStatus.FAILED
-          : errors.length > 0
-            ? ImportStatus.PARTIAL
-            : ImportStatus.COMPLETED,
+      status: ImportStatus[status],
       importedRows: imported,
-      skippedRows: skipped,
-      failedRows: Math.max(0, failed),
+      // The column has always been "rows not written". Both halves of that are
+      // reported separately on screen; the stored figure keeps its old meaning
+      // so previous runs stay comparable.
+      skippedRows: alreadyPresent + blankRows,
+      failedRows: failed,
       completedAt: new Date(),
-      errorLog: errors.length > 0 ? errors : undefined,
+      errorLog: notes.length > 0 ? notes : undefined,
     },
   });
 
-  log.info(
-    { sourceFile: meta.sourceFile, imported, skipped, failed: Math.max(0, failed) },
-    'Register import finished',
-  );
+  log.info({ sourceFile: meta.sourceFile, status, ...counts }, 'Register import finished');
 
   return {
     importBatchId: importBatch.id,
     totalRows: parseResult.rows.length,
-    imported,
-    skipped,
-    failed: Math.max(0, failed),
-    errors: errors.slice(0, 50),
+    ...counts,
+    line,
+    errors: notes.slice(0, 50),
   };
 }
 

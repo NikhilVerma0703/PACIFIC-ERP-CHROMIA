@@ -25,11 +25,11 @@ export function needsIntakeQc(status: SlabStatusType): boolean {
 /**
  * Link for a slab row, or null when the number should be plain text.
  *
- * There is exactly one screen a slab number can usefully open — the intake
- * form that finishes it. A slab that is already graded, or one sitting at the
- * recalibration facility, has nothing to open: its work is done or belongs to
- * the Recalibration section. Returning null rather than a dead link keeps the
- * table honest about that.
+ * There is exactly one screen a slab number can usefully open — the operator
+ * screen, which shows the slab's own entry with the QC section under it. A slab
+ * that is already graded, or one sitting at the recalibration facility, has
+ * nothing to open: its work is done or belongs to the Recalibration section.
+ * Returning null rather than a dead link keeps the table honest about that.
  */
 export function slabHref(id: string, status: SlabStatusType): string | null {
   return needsIntakeQc(status) ? `${APP_ROUTES.slabIntake}?slab=${id}` : null;

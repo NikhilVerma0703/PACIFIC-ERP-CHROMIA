@@ -16,10 +16,13 @@ import { CLOCK_TIME_MESSAGE, normaliseClockTime } from '@/lib/chromia/clock-time
  * They are changed where they are made.
  */
 
-const clockTime = z
+/** Optional, exactly as on the entry form — see validation/operator.ts. */
+const optionalClockTime = z
   .string()
   .trim()
+  .optional()
   .transform((value, ctx) => {
+    if (value === undefined || value === '') return undefined;
     const tidied = normaliseClockTime(value);
     if (!tidied) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: CLOCK_TIME_MESSAGE });
@@ -28,21 +31,10 @@ const clockTime = z
     return tidied;
   });
 
-/** `yyyy-mm-dd`, blank allowed and read as "not recorded". */
-const optionalDay = z
-  .string()
-  .trim()
-  .optional()
-  .transform((value) => (value === undefined || value === '' ? undefined : value))
-  .refine(
-    (value) => value === undefined || /^\d{4}-\d{2}-\d{2}$/.test(value),
-    'Enter a valid date',
-  );
-
 export const slabRecordEditSchema = z.object({
   slabId: z.string().uuid('Reopen the slab from Slab Records'),
   receivedDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, 'Enter a valid date'),
-  inTime: clockTime,
+  inTime: optionalClockTime,
   batchNo: z.string().trim().min(1, 'Batch number is required').max(60, 'Batch number is too long'),
   slabNo: z.string().trim().min(1, 'Slab number is required').max(60, 'Slab number is too long'),
   baseMaterial: z
@@ -64,7 +56,6 @@ export const slabRecordEditSchema = z.object({
       const parsed = typeof value === 'number' ? value : Number(value);
       return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
     }),
-  fullyPrintedDate: optionalDay,
   remarks: z
     .string()
     .trim()
@@ -75,9 +66,10 @@ export const slabRecordEditSchema = z.object({
 
 export type SlabRecordEditParsed = z.infer<typeof slabRecordEditSchema>;
 
-/** What the service receives: the day and time already combined. */
+/** What the service receives: the day and time already combined, or null when
+ *  no in-time was recorded. */
 export interface SlabRecordEditInput extends Omit<SlabRecordEditParsed, 'inTime'> {
-  inTime: Date;
+  inTime: Date | null;
 }
 
 export const slabRecordDeleteSchema = z.object({

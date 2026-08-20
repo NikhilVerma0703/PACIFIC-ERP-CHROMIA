@@ -102,7 +102,6 @@ export default async function SlabsPage({
                     <th className={th}>In-time</th>
                     <th className={th}>Status</th>
                     <th className={th}>Outcome</th>
-                    <th className={th}>Fully Printed Date</th>
                     <th className={th}>Grade</th>
                     <th className={th}>Slab Remarks</th>
                     <th className={`${th} text-right`}>Actions</th>
@@ -133,9 +132,6 @@ export default async function SlabsPage({
                       </td>
                       <td className={td}>
                         <DispositionBadge disposition={slab.currentDisposition} />
-                      </td>
-                      <td className={`${tdMuted} whitespace-nowrap`}>
-                        {slab.fullyPrintedDate ? dateFmt.format(slab.fullyPrintedDate) : '—'}
                       </td>
                       <td className={td}>
                         <GradeBadge grade={slab.currentGrade} />

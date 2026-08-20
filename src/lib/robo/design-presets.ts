@@ -77,7 +77,9 @@ export const DESIGN_PRESETS: readonly DesignPreset[] = [
   },
   {
     design: 'COSTA (MILAN)',
-    aliases: ['costa milan', 'costa', 'milan'],
+    // Not 'costa milan': normaliseDesign already reduces the canonical name to
+    // exactly that, so listing it would be a second claim on the same key.
+    aliases: ['costa', 'milan'],
     machines: {
       'Roycut-1': { toolName: 'DISCOFAT', liquidName: 'COSTA BROWN 703', powderName: 'DVCT3' },
       'Roycut-2': { toolName: 'DISCOTHIN', liquidName: 'COSTA BROWN 703', powderName: 'DVCT3' },
@@ -134,6 +136,47 @@ export const DESIGN_SUGGESTIONS: readonly string[] = DESIGN_PRESETS.map((p) => p
 /** Case, spacing and punctuation insensitive key, so "Costa (Milan)" === "costa milan". */
 export function normaliseDesign(name: string): string {
   return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+/** What one machine's three reference fields hold. Blank means "the sheet
+ *  leaves this one empty", which is a value, not an absence. */
+export interface PresetFields {
+  toolName: string;
+  liquidName: string;
+  powderName: string;
+}
+
+const NO_FIELDS: PresetFields = { toolName: "", liquidName: "", powderName: "" };
+
+/**
+ * What the reference sheet says this design puts on this machine — with ""
+ * for every field it leaves blank, and "" across the board for a machine the
+ * design does not use at all.
+ *
+ * THE BLANKS ARE THE POINT. The sheet is a complete statement per design: it
+ * lists all four robots and writes "-" or "na" where one is not used, so a
+ * design does not merely add values, it says what every machine carries.
+ *
+ * Reading a missing entry as "leave whatever is there" is what produced the
+ * wrong mappings on the setup card. Pick BELLAGIO GOLD, then correct the
+ * design to BANYAN: the sheet gives BANYAN no powder on Robo3, and BELLAGIO
+ * GOLD's DVCT4 stayed sitting there. Switch to ALABASTER, whose sheet row uses
+ * neither Robo1 nor Robo2, and the whole of the previous design's Robo1 row —
+ * tool, liquid and powder — stayed. The card then showed a mixture of two
+ * designs, and it was saved as though it were the recipe for one.
+ *
+ * Program name, target cycle time and roller height are NOT here and are never
+ * cleared by a design change: they vary run to run and the sheet does not
+ * cover them.
+ */
+export function presetFieldsFor(preset: DesignPreset | null | undefined, machineName: string): PresetFields {
+  const mp = preset?.machines?.[machineName];
+  if (!mp) return NO_FIELDS;
+  return {
+    toolName: mp.toolName ?? "",
+    liquidName: mp.liquidName ?? "",
+    powderName: mp.powderName ?? "",
+  };
 }
 
 /** The reference row for a typed design name, or null when there isn't one. */

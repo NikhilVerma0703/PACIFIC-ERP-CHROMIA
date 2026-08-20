@@ -36,13 +36,25 @@ export async function recordOutTime(input: RecordOutTimeInput, userId: string) {
   }
 
   const outTime = input.outTime ?? new Date();
-  const inTime = cycle.inTime ?? cycle.startedAt;
 
-  if (outTime < inTime) {
+  /*
+   * No in-time, no duration.
+   *
+   * This used to fall back to cycle.startedAt, which is `@default(now())` —
+   * the instant the row was SAVED. That was harmless while the in-time was
+   * required; now that it is optional, a slab booked in without one would get
+   * a plausible-looking figure measuring the gap between data entry and coming
+   * off the line, written into processingMinutes and into the history note as
+   * if it had been observed. A blank is honest and matches completeSlabIntake,
+   * which has always left it null for the same reason.
+   */
+  const inTime = cycle.inTime;
+
+  if (inTime && outTime < inTime) {
     throw new BusinessRuleViolationError('Out-time cannot be earlier than in-time');
   }
 
-  const processingMinutes = minutesBetween(inTime, outTime);
+  const processingMinutes = inTime ? minutesBetween(inTime, outTime) : null;
 
   const locationId = input.locationId ?? cycle.slab.currentLocationId ?? null;
 
@@ -75,7 +87,11 @@ export async function recordOutTime(input: RecordOutTimeInput, userId: string) {
         locationId,
         userId,
         occurredAt: outTime,
-        note: `Processing complete in ${formatMinutes(processingMinutes)} — awaiting quality check`,
+        // No in-time, no duration to quote — see above.
+        note:
+          processingMinutes === null
+            ? 'Processing complete — awaiting quality check (no in-time was recorded)'
+            : `Processing complete in ${formatMinutes(processingMinutes)} — awaiting quality check`,
       },
     });
 

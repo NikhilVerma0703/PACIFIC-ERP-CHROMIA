@@ -15,11 +15,14 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Card, Badge, Empty } from "@/components/ui";
 import { SearchableSelect, type SsOption } from "./SearchableSelect";
+import { useFieldAdvance } from "./useFieldAdvance";
 import { TimeInput } from "./TimeInput";
 import { isValidTime } from "@/lib/robo/time";
 import { CATEGORY_META, CATEGORY_ORDER, guessCategory, defaultRobotSpecific } from "@/lib/robo/delayCategories";
-import { findDesignPreset } from "@/lib/robo/design-presets";
-import { SLAB_IN_PROCESSING, slabStatusClass, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
+import { findDesignPreset, presetFieldsFor } from "@/lib/robo/design-presets";
+import { SETUP_EDIT_WINDOW_DAYS, daysBetween, describeAge, isSetupStale } from "@/lib/robo/setupAge";
+import { productionDateOf } from "@/lib/robo/productionDate";
+import { SLAB_IN_PROCESSING, formatSlabRemarks, slabStatusClass, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
 
 const MACHINE_ORDER = ["Roycut-1", "Roymix", "Roycut-2", "Roycut-3"];
 
@@ -45,6 +48,9 @@ interface ProdRecord {
   id: string; serialNumber: number | null; slabNumber: string;
   inTime: string | null; outTime: string | null; roymixCycleTime: number | null;
   roymixBodyWeight: number | null; status: string; remarks: string | null; createdAt: string;
+  /** The delays logged against this slab. Present so the Recent slabs table
+   *  can show the same Remarks text Slabs Records does — see that column. */
+  delayLogs?: SavedDelay[];
 }
 interface ActiveShift {
   id: string; shiftNumber: number; date: string; operatorName: string;
@@ -151,19 +157,68 @@ const emptyEntry = (): MachineEntry => ({ programName: "", toolName: "", liquidN
 
 const emptySlab = () => ({ serialNumber: "", slabNumber: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" });
 
-export function RoboEntryForm({ recordId, canDelete = false }: {
+/** What the Recent slabs table prints under Remarks: the slab's own note AND
+ *  its delays, through the same formatter Slabs Records uses, with this
+ *  table's em-dash for nothing rather than the formatter's hyphen. */
+const slabRemarkText = (r: ProdRecord): string => {
+  const text = formatSlabRemarks(r.remarks, r.delayLogs);
+  return text === "-" ? "—" : text;
+};
+
+/**
+ * Everything the Edit setup screen needs, resolved on the server so the cards
+ * are filled on first paint and the form never has to reach for an active
+ * shift it must not touch. See RoboEntryForm's `setupEdit` prop.
+ */
+export interface SetupEditContext {
+  /** The setup as stored. Seeds the machine cards from the prop rather than a
+   *  second round trip — the form still waits on the machine and master lists
+   *  before it can draw them, but it never fetches the setup itself. */
+  setup: BatchRecipe;
+  /** How many slabs were logged against it. Editing changes what all of them
+   *  say they ran under, which is the one thing this screen must be loud about. */
+  slabCount: number;
+  /** Its production date, or its shift's — for the age line. */
+  date: string | null;
+  /** Today, from the server, so the age does not depend on the tablet's clock. */
+  today: string;
+  /** Where Cancel and a saved correction go back to. */
+  backHref: string;
+}
+
+export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
   /** Set by /robo/slabs/[id]/edit — edits that slab instead of logging a new one. */
   recordId?: string;
+  /**
+   * Set by /robo/slabs/[id]/edit?section=setup — edits the SETUP that slab was
+   * logged against, however old it is, instead of the slab itself.
+   *
+   * The mirror image of `recordId`: that prop drops the batch-setup half and
+   * keeps the slab half, this one does the opposite. Both are modes of this
+   * component rather than separate forms, for the reason in the file header —
+   * the fields and the validation an operator learned on the tablet have to
+   * behave identically when an in-charge corrects a run a month later, and two
+   * forms drift apart. The batch-setup half was previously reachable only for
+   * the run the active shift is on, which meant a setup logged under the wrong
+   * design could not be corrected at all once the day rolled over.
+   */
+  setupEdit?: SetupEditContext;
   /** Whether the signed-in user may delete a slab. A courtesy so a ROBO
    *  operator never meets a button that 403s; the real gate is in the route
    *  handler (see canDeleteRoboSlab in src/lib/rbac.ts). */
   canDelete?: boolean;
 }) {
   const router = useRouter();
+  /* Hands the cursor to the next EMPTY field as each one is finished, so a
+     slab is logged on a tablet without a tap between every box. Touch screens
+     only; on a desktop Enter still submits. See useFieldAdvance. */
+  const { formRef: slabFormRef, advanceProps, advanceOnComplete } = useFieldAdvance();
   /** Page-level edit: the whole form is about one existing slab. Distinct from
    *  `editingId`, which is also set when finishing an In-Processing slab from
    *  the Recent slabs table below. */
   const isPageEdit = Boolean(recordId);
+  /** Page-level setup edit: the whole form is about one existing SETUP. */
+  const isSetupEdit = Boolean(setupEdit);
 
   // ---- lookups ----
   const [machines, setMachines] = useState<Machine[]>([]);
@@ -187,8 +242,9 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
   const [entries, setEntries] = useState<Record<string, MachineEntry>>({});
   /** Set while the batch-setup half is REOPENING a saved setup to correct it,
    *  rather than configuring a new run. Save then PATCHes that setup instead
-   *  of POSTing a second one — see saveBatch. */
-  const [editingBatchId, setEditingBatchId] = useState<string | null>(null);
+   *  of POSTing a second one — see saveBatch. On the Edit setup screen it is
+   *  set from the start, because correcting is all that screen does. */
+  const [editingBatchId, setEditingBatchId] = useState<string | null>(setupEdit?.setup.id ?? null);
 
   // ---- slab entry ----
   const [slab, setSlab] = useState(emptySlab());
@@ -250,9 +306,15 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
 
   useEffect(() => {
     (async () => {
-      // Editing one slab needs neither the active shift nor the master lists
-      // that only the batch-setup half uses — that half is not rendered.
-      const shiftLoad = isPageEdit ? Promise.resolve(null) : refetchShift();
+      // Each of the three modes loads only what its half of the form renders.
+      //
+      // The active shift in particular is deliberately NOT fetched on the Edit
+      // setup screen: the setup being corrected belongs to the shift it was
+      // made in, which may have closed weeks ago, and pulling today's shift in
+      // would only give the code something wrong to reach for. The setup
+      // itself arrives already resolved, on `setupEdit`, from the server.
+      const shiftLoad = isPageEdit || isSetupEdit ? Promise.resolve(null) : refetchShift();
+      // The master lists feed the batch-setup half's comboboxes.
       const masterLoads = isPageEdit ? [] : [
         getJson<Design[]>("/api/robo/designs", []).then(setDesigns),
         getJson<Program[]>("/api/robo/programs", []).then(setPrograms),
@@ -260,15 +322,18 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
         getJson<Named[]>("/api/robo/liquids", []).then(setLiquids),
         getJson<Named[]>("/api/robo/powders", []).then(setPowders),
       ];
+      // Delay codes belong to the slab half only.
+      const delayLoad = isSetupEdit ? Promise.resolve(null) :
+        getJson<DelayCode[]>("/api/robo/delay-codes", []).then((codes) => setDelayCodes(sortDelayCodes(codes)));
       const [s] = await Promise.all([
         shiftLoad,
         recordId ? loadRecord(recordId) : Promise.resolve(null),
         getJson<Machine[]>("/api/robo/machines", []).then((ms) =>
           setMachines([...ms].sort((a, b) => MACHINE_ORDER.indexOf(a.name) - MACHINE_ORDER.indexOf(b.name)))),
-        getJson<DelayCode[]>("/api/robo/delay-codes", []).then((codes) => setDelayCodes(sortDelayCodes(codes))),
+        delayLoad,
         ...masterLoads,
       ]);
-      setBatchOpen(!isPageEdit && !(s?.batchRecipes?.length));
+      setBatchOpen(isSetupEdit || (!isPageEdit && !(s?.batchRecipes?.length)));
       setLoading(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -299,7 +364,12 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
    */
   useEffect(() => {
     if (machines.length === 0) return;
-    const saved = editingBatchId ? shift?.batchRecipes?.find((b) => b.id === editingBatchId) ?? null : null;
+    // On the Edit setup screen the setup comes from the server on a prop, not
+    // from the active shift — that shift is not the one this setup is in, and
+    // is not even fetched. Everywhere else it is the one being reopened.
+    const saved = isSetupEdit
+      ? setupEdit!.setup
+      : editingBatchId ? shift?.batchRecipes?.find((b) => b.id === editingBatchId) ?? null : null;
     const e: Record<string, MachineEntry> = {}, a: Record<string, boolean> = {};
     for (const m of machines) {
       const row = saved?.entries.find((x) => x.machine.name === m.name);
@@ -319,10 +389,26 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
     setActiveMachines(a);
     setBatch(saved
       ? {
-          // A setup saved before these two existed has neither; the date falls
-          // back to today so the field is never blank on a correction, and the
-          // batch number stays empty rather than inventing one.
-          productionDate: saved.productionDate ?? localDate(),
+          // A setup saved before these two existed has neither. The batch
+          // number stays empty rather than inventing one; the date falls back
+          // so the field is never blank on a correction — but to WHICH day
+          // depends on which run is being corrected.
+          //
+          // In the shift, today is right: the run being corrected is the one
+          // happening now. On the Edit setup screen it would be a lie. That
+          // setup may be from May, and since the form sends every field back
+          // whether or not it was touched, merely opening it and pressing Save
+          // would stamp a May run as produced today. Older setups genuinely
+          // have no production date — the field postdates them and the
+          // importer never sets it — so this is the common case there, not the
+          // rare one. It falls back to the run's own shift date instead.
+          //
+          // What is STORED wins over that fallback, even when it is not a date
+          // this code can read: setupEdit.date is resolved for arithmetic and
+          // discards anything that is not yyyy-mm-dd, and seeding the field
+          // from it would quietly replace a hand-entered value with the shift
+          // date on the next save.
+          productionDate: (isSetupEdit ? saved.productionDate ?? setupEdit!.date ?? "" : saved.productionDate ?? localDate()),
           batchNo: saved.batchNo ?? "",
           designName: saved.designName ?? "",
           targetSlabs: saved.targetSlabs != null ? String(saved.targetSlabs) : "",
@@ -353,19 +439,57 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
     setBatchOpen(false);
   };
 
-  // suggest the next serial / slab number from what's already logged —
-  // but never while an existing slab is loaded for editing
+  /**
+   * Suggest the next S.No. and slab number — but never while an existing slab
+   * is loaded for editing, where the fields hold that record's own numbers.
+   *
+   * Both come from the server now (/api/robo/production/next-number), counted
+   * across the WHOLE register. They used to be worked out here from
+   * `shift.productionRecords`, i.e. from the ACTIVE SHIFT ONLY, and a shift row
+   * is created silently once per day — so every morning the S.No. restarted at
+   * 1 against a register sitting at 34, and the slab number came up blank
+   * because there was no earlier record in that shift to add one to. Neither is
+   * a per-day count: the S.No. is the register's running row number and the
+   * slab number is the plant's.
+   *
+   * It re-runs on the same three things as before — the shift, the number of
+   * records (so it advances after each save) and leaving edit mode — plus
+   * `loading`, so it does not fire once against a form that has not finished
+   * loading and again the moment the shift arrives, throwing the first answer
+   * away.
+   *
+   * NEITHER FIELD OVERWRITES WHAT THE OPERATOR TYPED. The slab number never
+   * did (`p.slabNumber ||`). The S.No. used to be replaced outright, which was
+   * survivable while it was computed in the browser in the same tick — but it
+   * is a round trip now, so a corrected S.No. could be wiped seconds later by
+   * an answer already in flight, or by the effect re-firing after a delete.
+   * `suggested` remembers what this effect last put there; anything else in the
+   * box was typed by a person and is left alone.
+   */
+  const suggested = useRef<string>("");
   useEffect(() => {
-    if (editingId) return;
-    const maxSerial = records.reduce((m, r) => Math.max(m, r.serialNumber ?? 0), 0);
-    const lastSlab = records[0]?.slabNumber;
-    setSlab((p) => ({
-      ...p,
-      serialNumber: String(maxSerial + 1),
-      slabNumber: p.slabNumber || (lastSlab && /^\d+$/.test(lastSlab) ? String(Number(lastSlab) + 1) : ""),
-    }));
+    if (loading || editingId || isSetupEdit) return;
+    let ignore = false;
+    (async () => {
+      const next = await getJson<{ serialNumber: number | null; slabNumber: string }>(
+        "/api/robo/production/next-number",
+        { serialNumber: null, slabNumber: "" },
+      );
+      if (ignore || next.serialNumber == null) return;
+      const serial = String(next.serialNumber);
+      setSlab((p) => {
+        const mine = p.serialNumber === "" || p.serialNumber === suggested.current;
+        suggested.current = serial;
+        return {
+          ...p,
+          serialNumber: mine ? serial : p.serialNumber,
+          slabNumber: p.slabNumber || next.slabNumber || "",
+        };
+      });
+    })();
+    return () => { ignore = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shift?.id, records.length, editingId]);
+  }, [loading, shift?.id, records.length, editingId]);
 
   /* The setup driving this slab: when editing, the record's OWN batch setup —
      not the shift's latest. A slab logged under the morning's design must keep
@@ -379,9 +503,11 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
         .map((e) => e.machine.name)
         .sort((a, b) => MACHINE_ORDER.indexOf(a) - MACHINE_ORDER.indexOf(b))
     : [];
-  const activeRoycuts = activeMachineNames.filter((n) => n !== "Roymix");
-  const firstMachine = activeRoycuts[0] || activeMachineNames[0] || "";
-  const lastMachine = activeRoycuts[activeRoycuts.length - 1] || activeMachineNames[activeMachineNames.length - 1] || "";
+  // firstMachine / lastMachine went with the In time (Robo3) / Out time (Robo3)
+  // suffixes — the labels are plain now, so the first and last configured
+  // roycut of the run are no longer needed. hasRoymix stays: it decides whether
+  // the Robo2 body-weight and cycle-time fields appear, which is a real
+  // difference in what the slab records.
   const hasRoymix = activeMachineNames.includes("Roymix");
 
   const selectedCode = useMemo(() => delayCodes.find((d) => d.id === delayForm.selectedCodeId) ?? null, [delayCodes, delayForm.selectedCodeId]);
@@ -430,32 +556,74 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
   const setEntry = (machineId: string, field: keyof MachineEntry, value: string) =>
     setEntries((p) => ({ ...p, [machineId]: { ...(p[machineId] ?? emptyEntry()), [field]: value } }));
 
-  /** Design picked → pre-fill tool/liquid/powder per machine from the plant
-   *  in-charge's reference sheet. Never program, CT or roller height (those
-   *  vary run to run), and everything stays editable — the preset is a head
-   *  start, not a rule. */
+  /**
+   * Design picked → set tool/liquid/powder per machine from the plant
+   * in-charge's reference sheet. Never program, CT or roller height (those vary
+   * run to run), and everything stays editable — the preset is a head start,
+   * not a rule.
+   *
+   * IT STATES THE WHOLE PICTURE, blanks included, across every machine. The
+   * sheet lists all four robots per design and writes "-" or "na" where one is
+   * not used, so applying a design has to write those blanks too. It used to
+   * only fill in what the design mentioned, which is what produced the wrong
+   * mappings on the card: correcting BELLAGIO GOLD to BANYAN left BELLAGIO's
+   * DVCT4 on Robo3, because BANYAN's row has no powder there — and switching to
+   * ALABASTER, which uses neither Robo1 nor Robo2, left the previous design's
+   * entire Robo1 row in place. The card then showed two designs mixed together
+   * and saved as if it were one recipe. See presetFieldsFor.
+   *
+   * A design the sheet does not list changes nothing at all: there is no
+   * reference for it, the operator fills the card by hand, and clearing would
+   * throw that away.
+   *
+   * ON THE EDIT SETUP SCREEN IT ONLY FILLS BLANKS. That screen exists mainly to
+   * fix a batch saved against the wrong design, so picking the right one is the
+   * first thing anyone does on it — and the reference sheet would then write
+   * over the tool, liquid and powder the run ACTUALLY used, for a batch that
+   * finished weeks ago, on every slab in it. What a past run used is recorded
+   * fact; a reference sheet is what a future run should use, and it does not
+   * get to overwrite the first. A blank field has no fact to lose, so those are
+   * still filled.
+   *
+   * In the shift the sheet still wins, unchanged: the run is in front of the
+   * operator, the numbers are being set rather than recalled, and re-priming
+   * the cards after a design correction is the point of the feature.
+   *
+   * Only machines whose value actually changed are counted, so the flash cannot
+   * claim to have filled a card it left alone.
+   */
   const applyDesignPreset = (designName: string) => {
     setBatch((p) => ({ ...p, designName }));
     const preset = findDesignPreset(designName);
     if (!preset) return;
+    const fillOnly = isSetupEdit;
     let touched = 0;
     setEntries((prev) => {
       const next = { ...prev };
       for (const m of machines) {
-        const mp = preset.machines[m.name];
-        if (!mp) continue;
+        const sheet = presetFieldsFor(preset, m.name);
         const cur = next[m.id] ?? emptyEntry();
-        next[m.id] = {
+        // fillOnly keeps anything already recorded and writes only into the
+        // blanks — see the note above about correcting a finished run.
+        const pick = (from: string, existing: string) => (fillOnly && existing.trim() ? existing : from);
+        const row = {
           ...cur,
-          toolName: mp.toolName ?? cur.toolName,
-          liquidName: mp.liquidName ?? cur.liquidName,
-          powderName: mp.powderName ?? cur.powderName,
+          toolName: pick(sheet.toolName, cur.toolName),
+          liquidName: pick(sheet.liquidName, cur.liquidName),
+          powderName: pick(sheet.powderName, cur.powderName),
         };
-        touched += 1;
+        if (row.toolName !== cur.toolName || row.liquidName !== cur.liquidName || row.powderName !== cur.powderName) {
+          next[m.id] = row;
+          touched += 1;
+        }
       }
       return next;
     });
-    if (touched > 0) say(`Tool, liquid and powder pre-filled for ${touched} machine(s) from the ${preset.design} reference — check and adjust as needed.`);
+    if (touched > 0) {
+      say(fillOnly
+        ? `Filled the empty tool, liquid and powder fields on ${touched} machine(s) from the ${preset.design} reference. What this run already recorded was left as it is — change it by hand if it is wrong.`
+        : `Tool, liquid and powder set for ${touched} machine(s) from the ${preset.design} reference — machines that design does not use were cleared. Check and adjust as needed.`);
+    }
   };
 
   // ---- the shift row is pure plumbing (schema requires it): reuse today's,
@@ -490,6 +658,26 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
     if (!batch.designName.trim()) { setBatchError("Design is required."); return; }
     const activeList = machines.filter((m) => activeMachines[m.id]);
     if (activeList.length === 0) { setBatchError("At least one machine must be active."); return; }
+    /* The save rebuilds the per-machine rows from the cards on screen, and the
+       cards are built by matching the stored setup's machine NAMES against the
+       current machine list. A stored entry with no card — a robot since renamed
+       or dropped from the list — would therefore be deleted without ever having
+       been shown. Refuse instead. On the run in progress that is a nuisance; on
+       one from three months ago it is the only warning anyone would get, so
+       both edit paths check it. */
+    const editing = isSetupEdit ? setupEdit!.setup : editingBatchId ? shift?.batchRecipes?.find((b) => b.id === editingBatchId) : null;
+    if (editing) {
+      const known = new Set(machines.map((m) => m.name));
+      const missing = editing.entries.map((e) => e.machine.name).filter((n) => !known.has(n));
+      if (missing.length > 0) {
+        setBatchError(
+          `This setup records ${missing.join(", ")}, which ${missing.length === 1 ? "is" : "are"} not in the machine list any more, ` +
+          `so ${missing.length === 1 ? "it has" : "they have"} no card above and saving would drop ${missing.length === 1 ? "it" : "them"} from the run. ` +
+          `Restore the machine in Masters → Machines first.`,
+        );
+        return;
+      }
+    }
     setBatchSaving(true);
     try {
       /* Editing corrects the setup this shift is already running on, so it
@@ -528,6 +716,14 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
         setBatchError(d.error || (isEdit ? "Failed to save the setup." : "Failed to save batch."));
+        return;
+      }
+      // The Edit setup screen has no shift to refetch and no second half to
+      // return to — it goes back to the slab it was opened from, refreshed so
+      // the corrected design is what that page shows.
+      if (isSetupEdit) {
+        router.push(setupEdit!.backHref);
+        router.refresh();
         return;
       }
       await refetchShift();
@@ -752,6 +948,11 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
   const programOptions: SsOption[] = programs.map((p) => ({ id: p.id, name: p.name, hint: p.design?.name ?? undefined }));
   const canLogSlab = isPageEdit ? Boolean(editRecord) : Boolean(shift && activeBatch);
   const shiftClosed = editRecord?.shift?.status === "CLOSED";
+  /* How old the run being corrected is, and whether that is worth a sentence.
+     Both dates come from the server so the answer does not depend on how long
+     the tablet has had the page open, or on its clock being right. */
+  const setupAge = isSetupEdit ? daysBetween(setupEdit!.date, setupEdit!.today) : null;
+  const setupStale = isSetupStale(setupAge);
 
   return (
     <div className="space-y-5">
@@ -759,12 +960,24 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
       {actionError && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{actionError}</div>}
 
       {/* ---- context bar ---- */}
-      {isPageEdit ? (
+      {isSetupEdit ? (
+        <Card className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <Badge tone="amber">Editing setup</Badge>
+          <span className="flex min-w-0 items-center gap-2 text-sm text-gray-600">
+            <span className="font-medium text-gray-900">{setupEdit!.setup.designName || "Untitled setup"}</span>
+            {setupEdit!.setup.batchNo && <span className="text-gray-400">Batch {setupEdit!.setup.batchNo}</span>}
+            <span className="text-gray-400">Run {describeAge(setupAge)}</span>
+          </span>
+          <Link href={setupEdit!.backHref} className={`${btnGhost} ml-auto`}>Cancel</Link>
+        </Card>
+      ) : isPageEdit ? (
         <Card className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <Badge tone="amber">Editing slab</Badge>
           <span className="flex min-w-0 items-center gap-2 text-sm text-gray-600">
             <span className="font-medium text-gray-900">{editRecord?.slabNumber}</span>
-            {editRecord?.shift && <span className="text-gray-400">Shift {editRecord.shift.shiftNumber} · {editRecord.shift.date}</span>}
+            {/* The production date, not the shift's — same reason as
+                Complete Details §1. See productionDate.ts. */}
+            {productionDateOf(editRecord) && <span className="text-gray-400">{productionDateOf(editRecord)}</span>}
             {activeBatch && <span className="truncate text-gray-400">{activeBatch.designName}</span>}
           </span>
           {/* A closed shift is already reported on, so say so plainly rather
@@ -778,12 +991,14 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
           {latestBatch ? (
             <>
               <Badge tone="green">Batch running</Badge>
+              {/* The design, and nothing else. The machine chain, the thickness
+                  and the running slab count were a status line the operator
+                  reads past — all three are on the setup card or the table
+                  below, and the chain in particular restated itself whenever a
+                  robot was ticked. */}
               <span className="flex min-w-0 items-center gap-2 text-sm text-gray-600">
                 <span className="font-medium text-gray-900">{latestBatch.designName}</span>
-                <span className="truncate text-gray-400">{activeMachineNames.map(machineLabel).join(" → ")}</span>
-                {latestBatch.thickness != null && <span className="text-gray-400">{latestBatch.thickness} cm</span>}
               </span>
-              <span className="text-sm text-gray-400">{records.length} slab{records.length === 1 ? "" : "s"} logged</span>
               {/* Two distinct acts, kept as two buttons. "Edit setup" corrects
                   the run in progress; "New batch" starts another one. Offering
                   only the second is what made operators start a duplicate setup
@@ -817,7 +1032,30 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
             <h2 className="text-sm font-semibold text-gray-900">{editingBatchId ? "Edit batch setup" : "Batch setup"}</h2>
             <span className="text-xs text-gray-400">{machines.filter((m) => activeMachines[m.id]).length} of {machines.length} machines active</span>
           </div>
-          {editingBatchId && (
+          {isSetupEdit ? (
+            <>
+              {/* One setup speaks for every slab of its run, so the count is
+                  said before the fields and not after the save. This is the
+                  difference between this screen and the in-shift Edit setup
+                  button: there the run is in front of the operator, here it
+                  may be a batch someone else logged weeks ago. */}
+              <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                Correcting the setup this slab was logged against.{" "}
+                {setupEdit!.slabCount === 1
+                  ? "It is this slab's own setup, and no other slab uses it."
+                  : <>It is shared by <span className="font-semibold">{setupEdit!.slabCount} slabs</span> — every one of them will read the corrected design, thickness and machines.</>}{" "}
+                Unticking a robot restates which machines the run used, so those slabs&rsquo; In/Out labels follow. The
+                slabs themselves — their numbers, times and remarks — are not touched.
+              </div>
+              {setupStale && (
+                <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  This run was {describeAge(setupAge)}, outside the {SETUP_EDIT_WINDOW_DAYS}-day reporting period. It has
+                  most likely been through a monthly report and an export already, so a figure someone has circulated
+                  will stop matching the register. The correction still saves — check it is the right one.
+                </div>
+              )}
+            </>
+          ) : editingBatchId && (
             <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
               Correcting the setup this shift is already running on. The slabs logged against it stay attached and
               are not changed — but unticking a robot restates which machines this run used, so their In/Out
@@ -863,7 +1101,7 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
                       <input type="checkbox" checked={on} onChange={() => setActiveMachines((p) => ({ ...p, [m.id]: !p[m.id] }))}
                         className="h-4 w-4 rounded border-gray-300 text-brand focus:ring-brand/30" />
                       <h3 className="text-sm font-medium text-gray-900">{machineLabel(m.name)}</h3>
-                      {isRoymix && <Badge tone="green">liquid optional · CT varies per slab</Badge>}
+                      {isRoymix && <Badge tone="green">liquid optional</Badge>}
                       {!on && <span className="ml-auto text-xs text-gray-400">Not in use</span>}
                     </div>
                     {on && (
@@ -915,7 +1153,9 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
               <div className="mr-auto w-full max-w-sm">
                 <input value={batch.notes} onChange={(e) => setBatch((p) => ({ ...p, notes: e.target.value }))} placeholder="Batch notes (optional)" className={inp} />
               </div>
-              {latestBatch && <button type="button" className={btnGhost} onClick={closeBatchForm}>Cancel</button>}
+              {isSetupEdit
+                ? <Link href={setupEdit!.backHref} className={btnGhost}>Cancel</Link>
+                : latestBatch && <button type="button" className={btnGhost} onClick={closeBatchForm}>Cancel</button>}
               <button type="submit" disabled={batchSaving} className={btnPrimary}>
                 {batchSaving ? "Saving…" : editingBatchId ? "Save changes" : "Save batch setup"}
               </button>
@@ -924,22 +1164,18 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
         </Card>
       )}
 
-      {/* ---- slab entry (the fast, repeated action) ---- */}
+      {/* ---- slab entry (the fast, repeated action) ----
+           Not rendered on the Edit setup screen: that screen is about the run,
+           and the slab it was opened from is edited on the other tab. */}
+      {!isSetupEdit && (
       <Card className={!canLogSlab ? "opacity-60" : ""}>
         <div className="mb-4 flex items-center justify-between">
+          {/* The per-machine target cycle times used to be restated here as
+              chips. They are the setup's numbers, unchanged for the whole run
+              and already on the setup card — repeating them above every slab
+              was noise the operator cannot act on. Removed deliberately; the
+              values themselves are untouched. */}
           <h2 className="text-sm font-semibold text-gray-900">{isPageEdit ? "Slab details" : "Slab entry"}</h2>
-          {activeBatch && activeBatch.entries.some((e) => e.machine.name !== "Roymix" && e.targetCycleTime) && (
-            <div className="flex gap-2">
-              {activeBatch.entries
-                .filter((e) => e.machine.name !== "Roymix" && e.targetCycleTime)
-                .sort((a, b) => MACHINE_ORDER.indexOf(a.machine.name) - MACHINE_ORDER.indexOf(b.machine.name))
-                .map((e) => (
-                  <span key={e.machine.name} className="rounded-lg bg-gray-50 px-2.5 py-1 text-xs text-gray-500">
-                    {machineLabel(e.machine.name)} CT <span className="font-semibold text-gray-700">{e.targetCycleTime}s</span>
-                  </span>
-                ))}
-            </div>
-          )}
         </div>
 
         {editLoading ? (
@@ -947,7 +1183,7 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
         ) : !canLogSlab ? (
           <Empty>No batch running. Save a batch setup above to start logging slabs.</Empty>
         ) : (
-          <form onSubmit={saveSlab} className="space-y-4">
+          <form ref={slabFormRef} onSubmit={saveSlab} className="space-y-4">
             {editingId && !isPageEdit && (
               <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                 <span>Editing slab <span className="font-semibold">{slab.slabNumber}</span>{editRecord?.status === SLAB_IN_PROCESSING ? " — add the Out time and save to complete it." : "."}</span>
@@ -964,39 +1200,43 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
             <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
               <div>
                 <span className={label}>S.No.</span>
-                <input type="number" value={slab.serialNumber} onChange={(e) => setSlab((p) => ({ ...p, serialNumber: e.target.value }))} className={inp} />
+                <input type="number" value={slab.serialNumber} onChange={(e) => setSlab((p) => ({ ...p, serialNumber: e.target.value }))} className={inp} {...advanceProps("slab")} />
               </div>
               <div>
                 <span className={label}>Slab number <span className="text-red-500">*</span></span>
                 <input value={slab.slabNumber}
                   onChange={(e) => { setSlab((p) => ({ ...p, slabNumber: e.target.value })); if (slabTaken) setSlabTaken(false); }}
                   onBlur={(e) => checkSlabNumber(e.target.value)}
-                  placeholder="e.g. 140748" className={inp} required />
+                  placeholder="e.g. 140748" className={inp} required {...advanceProps("slab")} />
                 {slabTaken && <p className="mt-1 text-xs font-medium text-red-600">Duplicate Slab No. — this slab number already exists.</p>}
               </div>
               <div>
-                <span className={label}>In time{firstMachine ? ` (${machineLabel(firstMachine)})` : ""}</span>
-                <TimeInput value={slab.inTime} onChange={(v) => setSlab((p) => ({ ...p, inTime: v }))} className={inp} />
+                {/* Plain "In time" / "Out time". The machine names used to be
+                    appended (In time (Robo3)) to say which robot the clock was
+                    read off; the line knows that, and the suffix moved with the
+                    setup, so the same column changed its label between runs. */}
+                <span className={label}>In time</span>
+                <TimeInput value={slab.inTime} onChange={(v) => setSlab((p) => ({ ...p, inTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("slab")} />
               </div>
               <div>
-                <span className={label}>Out time{lastMachine ? ` (${machineLabel(lastMachine)})` : ""}</span>
-                <TimeInput value={slab.outTime} onChange={(v) => setSlab((p) => ({ ...p, outTime: v }))} className={inp} />
+                <span className={label}>Out time</span>
+                <TimeInput value={slab.outTime} onChange={(v) => setSlab((p) => ({ ...p, outTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("slab")} />
               </div>
               {hasRoymix && (
                 <>
                   <div>
                     <span className={label}>Robo2 body weight (kg)</span>
-                    <input type="number" step="0.1" value={slab.roymixBodyWeight} onChange={(e) => setSlab((p) => ({ ...p, roymixBodyWeight: e.target.value }))} placeholder="e.g. 42.5" className={inp} />
+                    <input type="number" step="0.1" value={slab.roymixBodyWeight} onChange={(e) => setSlab((p) => ({ ...p, roymixBodyWeight: e.target.value }))} placeholder="e.g. 42.5" className={inp} {...advanceProps("slab")} />
                   </div>
                   <div>
                     <span className={label}>Robo2 cycle time (sec)</span>
-                    <input type="number" value={slab.roymixCycleTime} onChange={(e) => setSlab((p) => ({ ...p, roymixCycleTime: e.target.value }))} placeholder="e.g. 185" className={inp} />
+                    <input type="number" value={slab.roymixCycleTime} onChange={(e) => setSlab((p) => ({ ...p, roymixCycleTime: e.target.value }))} placeholder="e.g. 185" className={inp} {...advanceProps("slab")} />
                   </div>
                 </>
               )}
               <div className={hasRoymix ? "col-span-2" : "col-span-2 md:col-span-4"}>
                 <span className={label}>Remarks</span>
-                <input value={slab.remarks} onChange={(e) => setSlab((p) => ({ ...p, remarks: e.target.value }))} placeholder="Optional notes for this slab" className={inp} />
+                <input value={slab.remarks} onChange={(e) => setSlab((p) => ({ ...p, remarks: e.target.value }))} placeholder="Optional notes for this slab" className={inp} {...advanceProps("slab")} />
               </div>
             </div>
 
@@ -1157,11 +1397,11 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
                 )}
                 <div>
                   <span className={label}>Start <span className="text-red-500">*</span></span>
-                  <TimeInput value={delayForm.startTime} onChange={(v) => setDelayForm((p) => ({ ...p, startTime: v }))} className={inp} />
+                  <TimeInput value={delayForm.startTime} onChange={(v) => setDelayForm((p) => ({ ...p, startTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("delay")} />
                 </div>
                 <div>
                   <span className={label}>End <span className="text-red-500">*</span></span>
-                  <TimeInput value={delayForm.endTime} onChange={(v) => setDelayForm((p) => ({ ...p, endTime: v }))} className={inp} />
+                  <TimeInput value={delayForm.endTime} onChange={(v) => setDelayForm((p) => ({ ...p, endTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("delay")} />
                 </div>
                 <div>
                   <span className={label}>Duration</span>
@@ -1173,7 +1413,7 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
                   </div>
                 </div>
                 <div className="flex items-end gap-2 md:col-span-3">
-                  <input value={delayForm.remarks} onChange={(e) => setDelayForm((p) => ({ ...p, remarks: e.target.value }))} placeholder="Delay remarks (optional)" className={inp} />
+                  <input value={delayForm.remarks} onChange={(e) => setDelayForm((p) => ({ ...p, remarks: e.target.value }))} placeholder="Delay remarks (optional)" className={inp} {...advanceProps("delay")} />
                   <button type="button" onClick={addDelay} className="shrink-0 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-amber-700">+ Add</button>
                 </div>
               </div>
@@ -1191,9 +1431,10 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
           </form>
         )}
       </Card>
+      )}
 
       {/* ---- recently logged slabs ---- */}
-      {!isPageEdit && records.length > 0 && (
+      {!isPageEdit && !isSetupEdit && records.length > 0 && (
         <Card>
           <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">Recent slabs · last {Math.min(records.length, 10)}</h2>
           <div className="overflow-x-auto">
@@ -1225,7 +1466,13 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
                     <td className="py-2 pr-4 text-gray-600">{r.inTime || "—"}{" → "}{r.outTime || "—"}</td>
                     <td className="py-2 pr-4 text-gray-600">{r.roymixCycleTime ? `${r.roymixCycleTime}s` : "—"}</td>
                     <td className="py-2 pr-4 text-gray-600">{r.roymixBodyWeight ? `${r.roymixBodyWeight} kg` : "—"}</td>
-                    <td className="py-2 pr-4 text-gray-500">{r.remarks || ""}</td>
+                    {/* The same text Slabs Records shows: the slab's own
+                        remark AND its delays, through one formatter. This
+                        column used to print r.remarks alone, so a note typed
+                        into the delay panel — which is where most of them go —
+                        appeared on Slabs Records and left this cell blank, on
+                        the very screen the operator had just typed it. */}
+                    <td className="py-2 pr-4 text-gray-500">{slabRemarkText(r)}</td>
                     <td className="py-2 text-right">
                       <div className="flex items-center justify-end gap-2 whitespace-nowrap">
                         {editingId !== r.id && (

@@ -22,7 +22,7 @@ export default async function RoboSlabsPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Slabs Records</h1>
         <p className="mt-1 max-w-2xl text-sm text-gray-500">
-          Browse robo production records — filter by date, slab number or design, then open a slab for its complete details.
+          Browse robo production records — filter by Production Date, Batch No., Slab number or Design Name, then open a slab for its complete details.
         </p>
       </div>
       {undoable && (

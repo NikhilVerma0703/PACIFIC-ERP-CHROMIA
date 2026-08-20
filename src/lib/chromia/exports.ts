@@ -264,7 +264,6 @@ export const BASE_FIELDS = [
   'receivedDate',
   'inTime',
   'outTime',
-  'fullyPrintedDate',
   'status',
   'disposition',
 ] as const;
@@ -281,7 +280,6 @@ const BASE_COLUMN: Record<BaseField, Omit<ExportColumn, 'label'> & { label: stri
   receivedDate: { label: 'Production Date', group: 'timing', width: 16 },
   inTime: { label: 'In-time', group: 'timing', width: 18 },
   outTime: { label: 'Out-time', group: 'timing', width: 18 },
-  fullyPrintedDate: { label: 'Fully Printed Date', group: 'timing', width: 18 },
   status: { label: 'Status', group: 'state', width: 22 },
   disposition: { label: 'Outcome', group: 'state', width: 18 },
 };
@@ -395,7 +393,6 @@ export function productionColumns(): ExportColumn[] {
     { label: 'Thickness (cm)', group: 'product', width: 14 },
     { label: 'In-time', group: 'timing', width: 18 },
     { label: 'Out-time', group: 'timing', width: 18 },
-    { label: 'Fully Printed Date', group: 'timing', width: 18 },
     { label: 'Status', group: 'state', width: 22 },
     { label: 'Outcome', group: 'state', width: 18 },
     { label: 'Recalibrations', group: 'state', width: 15 },

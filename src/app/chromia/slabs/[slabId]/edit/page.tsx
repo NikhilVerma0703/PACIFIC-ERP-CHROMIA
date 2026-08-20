@@ -18,15 +18,6 @@ export const dynamic = 'force-dynamic';
 
 const pad = (value: number) => `${value}`.padStart(2, '0');
 
-/**
- * A `@db.Date` column comes back at UTC midnight; read locally it would show
- * the day before west of Greenwich. Read back the way it was written.
- */
-function dateColumnInput(date: Date | null): string {
-  if (!date) return '';
-  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
-}
-
 export default async function EditSlabPage({
   params,
 }: {
@@ -72,7 +63,6 @@ export default async function EditSlabPage({
           inTime: record.inTime
             ? `${pad(record.inTime.getHours())}:${pad(record.inTime.getMinutes())}`
             : '',
-          fullyPrintedDate: dateColumnInput(record.fullyPrintedDate),
           remarks: record.remarks ?? '',
         }}
         baseMaterials={baseMaterials}

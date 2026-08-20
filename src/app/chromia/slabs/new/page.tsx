@@ -1,31 +1,22 @@
-import type { Metadata } from 'next';
-import Link from 'next/link';
+import { redirect } from 'next/navigation';
 
-import { EmptyState, PageHeader } from '@/components/chromia/ui';
 import { APP_ROUTES } from '@/lib/chromia/constants/app';
-import { listRecalibrationReasons } from '@/lib/chromia/server/repositories/recalibration-repository';
-import { loadSlabForIntake } from '@/lib/chromia/server/repositories/slab-repository';
 
-import { IntakeForm } from './intake-form';
-
-export const metadata: Metadata = { title: 'Slab Intake' };
 export const dynamic = 'force-dynamic';
 
-function toDateInput(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-}
-
 /**
- * Slab intake.
+ * The old slab intake page.
  *
- * Always opened on a slab the operator already started — `?slab=<id>` from the
- * slab number in any table. The register half of the record is already written
- * by then, so this page asks only for the printed date and the QC decision.
- * Without an id, or on a slab that has already been graded, there is nothing
- * to finish, so it points back at the slab list.
+ * QC is done on the operator's own screen now, under the entry the slab was
+ * booked on — see /chromia/operator. Nothing in the app links here any more
+ * (APP_ROUTES.slabIntake moved), but this path has been the destination of
+ * every slab number in every table for months, so it stays and forwards rather
+ * than 404-ing a bookmark or a link somebody pasted into a message.
+ *
+ * The query is carried across unchanged: `?slab=<id>` means the same thing on
+ * the other side.
  */
-export default async function SlabIntakePage({
+export default async function SlabIntakeRedirect({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
@@ -34,48 +25,5 @@ export default async function SlabIntakePage({
   const raw = params.slab;
   const slabId = Array.isArray(raw) ? raw[0] : raw;
 
-  const [recalibrationReasons, existingSlab] = await Promise.all([
-    listRecalibrationReasons(),
-    slabId ? loadSlabForIntake(slabId) : Promise.resolve(null),
-  ]);
-
-  if (!existingSlab) {
-    return (
-      <div className="mx-auto max-w-3xl">
-        <PageHeader title="Slab intake" />
-        <EmptyState>
-          Open a slab from the{' '}
-          <Link href={APP_ROUTES.slabs} className="text-brand-700 font-medium underline">
-            Slabs
-          </Link>{' '}
-          list to record its QC.
-        </EmptyState>
-      </div>
-    );
-  }
-
-  const existing = {
-    id: existingSlab.id,
-    slabNo: existingSlab.slabNo,
-    batchNo: existingSlab.batchNo,
-    baseMaterial: existingSlab.baseMaterial,
-    designFileName: existingSlab.designFileName,
-    thicknessCm: existingSlab.thicknessCm === null ? '' : String(existingSlab.thicknessCm),
-    receivedDate: toDateInput(existingSlab.receivedDate),
-    fullyPrintedDate: existingSlab.fullyPrintedDate
-      ? toDateInput(existingSlab.fullyPrintedDate)
-      : '',
-  };
-
-  return (
-    <div className="mx-auto max-w-3xl">
-      <PageHeader title={`Slab intake — ${existing.slabNo}`} />
-
-      <IntakeForm
-        recalibrationReasons={recalibrationReasons}
-        today={toDateInput(new Date())}
-        existing={existing}
-      />
-    </div>
-  );
+  redirect(slabId ? `${APP_ROUTES.operator}?slab=${encodeURIComponent(slabId)}` : APP_ROUTES.slabs);
 }

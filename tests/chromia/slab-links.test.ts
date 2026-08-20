@@ -4,14 +4,16 @@ import { ChromiaSlabStatus as SlabStatus } from '@prisma/client';
 import { needsIntakeQc, slabHref } from '@/lib/chromia/slab-links';
 
 describe('where a slab number leads', () => {
-  it('opens the intake form while the slab still needs grading', () => {
+  it('opens the operator screen while the slab still needs grading', () => {
     for (const status of [
       SlabStatus.RECEIVED,
       SlabStatus.IN_PROCESS,
       SlabStatus.UNDER_INSPECTION,
     ]) {
       expect(needsIntakeQc(status)).toBe(true);
-      expect(slabHref('abc', status)).toBe('/chromia/slabs/new?slab=abc');
+      // QC moved onto the operator's own screen, under the entry the slab was
+      // booked on. /chromia/slabs/new still exists and redirects here.
+      expect(slabHref('abc', status)).toBe('/chromia/operator?slab=abc');
     }
   });
 

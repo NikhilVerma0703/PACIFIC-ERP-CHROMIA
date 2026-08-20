@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { canEditRoboSetup } from "@/lib/rbac";
 import {
+  carryEntryNotes,
   entryCreateData,
   rebuildsEntries,
   setupScalarData,
@@ -102,13 +103,23 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     await registerTypedMasters(entries, designId);
 
     const updated = await prisma.$transaction(async (tx) => {
+      // Read before deleting: `notes` on an entry is a column no screen in this
+      // ERP sends, so rebuilding the rows from the request body alone erases it
+      // — see carryEntryNotes(). Inside the transaction so the read cannot see
+      // a state the write does not.
+      const existing = await tx.roboBatchRecipeEntry.findMany({
+        where: { batchRecipeId: id },
+        select: { machineId: true, notes: true },
+      });
+      const notesByMachine = new Map(existing.map((e) => [e.machineId, e.notes]));
+
       await tx.roboBatchRecipeEntry.deleteMany({ where: { batchRecipeId: id } });
       return tx.roboBatchRecipe.update({
         where: { id },
         data: {
           designId:  designId,
           ...setupScalarData(body),
-          entries:   { create: entryCreateData(entries) },
+          entries:   { create: carryEntryNotes(entryCreateData(entries), notesByMachine) },
         },
         include: { entries: { include: { machine: true } } },
       });
