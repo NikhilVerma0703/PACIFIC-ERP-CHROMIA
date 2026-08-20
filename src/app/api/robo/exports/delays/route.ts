@@ -2,11 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { prisma } from "@/lib/prisma";
 import { fmtDurationLong, machineLabel } from "@/lib/robo/utils";
+import { delayGrandTotal, delayTotalsByDate } from "@/lib/robo/delayTotals";
+import { delayProductionDateOf, delayProductionDateWhere } from "@/lib/robo/productionDate";
 
 const COLUMNS = [
   "S.No.", "Production Date", "Shift", "Delay Code", "Description", "Category",
   "Machine", "Slab No.", "Start Time", "End Time", "Duration (min)", "Remarks",
 ];
+
+/** The second sheet: one row per production date. See delayTotals.ts. */
+const BY_DATE_COLUMNS = ["Production Date", "Delay Events", "Total Delay (min)", "Total Delay"];
 
 const dash = (v: string | number | null | undefined) =>
   v === null || v === undefined || v === "" ? "-" : v;
@@ -16,19 +21,21 @@ export async function GET(req: NextRequest) {
   const date = req.nextUrl.searchParams.get("date")?.trim() || "";
 
   const delays = await prisma.roboDelayLog.findMany({
-    where: date ? { shift: { date } } : {},
+    // Dated by the slab the delay held up, so a delay and its slab never land
+    // on two different days in the same workbook — see productionDate.ts.
+    where: delayProductionDateWhere(date) ?? {},
     include: {
       shift: true,
       delayCode: true,
       machine: true,
-      productionRecord: true,
+      productionRecord: { include: { batchRecipe: true } },
     },
     orderBy: [{ shift: { date: "asc" } }, { createdAt: "asc" }],
   });
 
   const rows: Record<string, string | number>[] = delays.map((d, i) => ({
     "S.No.":            i + 1,
-    "Production Date":  String(dash(d.shift?.date)),
+    "Production Date":  String(dash(delayProductionDateOf(d))),
     "Shift":            String(dash(d.shift?.shiftNumber)),
     "Delay Code":       d.delayCode.code,
     "Description":      d.delayCode.description,
@@ -42,18 +49,27 @@ export async function GET(req: NextRequest) {
     "Remarks":          String(dash(d.remarks)),
   }));
 
-  const totalMins = delays.reduce((s, d) => s + d.durationMinutes, 0);
+  /* Both totals come off the SAME breakdown, so the second sheet and the
+     bottom of the first can never disagree — which is the first thing anyone
+     compares when a file carries two sets of numbers. */
+  const byDate = delayTotalsByDate(
+    delays.map((d) => ({ date: delayProductionDateOf(d), durationMinutes: d.durationMinutes })),
+  );
+  const overall = delayGrandTotal(byDate);
 
-  // Total delay duration at the end of the sheet — numeric sum plus a readable form.
+  // The overall totals stay at the end of the list sheet, exactly as before.
   rows.push({});
   rows.push({
     "Description":     "TOTAL DELAY DURATION",
-    "Duration (min)":  totalMins,
-    "Remarks":         fmtDurationLong(totalMins),
+    "Duration (min)":  overall.minutes,
+    "Remarks":         fmtDurationLong(overall.minutes),
   });
   rows.push({
     "Description":     "Delay Events",
-    "Duration (min)":  delays.length,
+    "Duration (min)":  overall.events,
+  });
+  rows.push({
+    "Description":     `Date-wise totals for ${byDate.length} production date(s) — see the "Date-wise Totals" sheet`,
   });
 
   const ws = XLSX.utils.json_to_sheet(rows, { header: COLUMNS });
@@ -62,8 +78,30 @@ export async function GET(req: NextRequest) {
     { wch: 13 }, { wch: 12 }, { wch: 11 }, { wch: 11 }, { wch: 15 }, { wch: 28 },
   ];
 
+  /* Second sheet: the same delays totalled per production date. Downloading
+     "All" used to give one figure for the whole period, which is the least
+     useful shape for the download anyone reviewing a month actually takes —
+     it says how much was lost and nothing about which day lost it. */
+  const byDateRows: Record<string, string | number>[] = byDate.map((day) => ({
+    "Production Date":   day.date || "(no date)",
+    "Delay Events":      day.events,
+    "Total Delay (min)": day.minutes,
+    "Total Delay":       fmtDurationLong(day.minutes),
+  }));
+  byDateRows.push({});
+  byDateRows.push({
+    "Production Date":   "TOTAL",
+    "Delay Events":      overall.events,
+    "Total Delay (min)": overall.minutes,
+    "Total Delay":       fmtDurationLong(overall.minutes),
+  });
+
+  const wsByDate = XLSX.utils.json_to_sheet(byDateRows, { header: BY_DATE_COLUMNS });
+  wsByDate["!cols"] = [{ wch: 18 }, { wch: 14 }, { wch: 18 }, { wch: 18 }];
+
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, `Delay List`.slice(0, 31));
+  XLSX.utils.book_append_sheet(wb, wsByDate, "Date-wise Totals");
 
   const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
   const filename = `Delay_List_${date || "All"}.xlsx`;
