@@ -379,9 +379,11 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
         .map((e) => e.machine.name)
         .sort((a, b) => MACHINE_ORDER.indexOf(a) - MACHINE_ORDER.indexOf(b))
     : [];
-  const activeRoycuts = activeMachineNames.filter((n) => n !== "Roymix");
-  const firstMachine = activeRoycuts[0] || activeMachineNames[0] || "";
-  const lastMachine = activeRoycuts[activeRoycuts.length - 1] || activeMachineNames[activeMachineNames.length - 1] || "";
+  // firstMachine / lastMachine went with the In time (Robo3) / Out time (Robo3)
+  // suffixes — the labels are plain now, so the first and last configured
+  // roycut of the run are no longer needed. hasRoymix stays: it decides whether
+  // the Robo2 body-weight and cycle-time fields appear, which is a real
+  // difference in what the slab records.
   const hasRoymix = activeMachineNames.includes("Roymix");
 
   const selectedCode = useMemo(() => delayCodes.find((d) => d.id === delayForm.selectedCodeId) ?? null, [delayCodes, delayForm.selectedCodeId]);
@@ -778,12 +780,14 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
           {latestBatch ? (
             <>
               <Badge tone="green">Batch running</Badge>
+              {/* The design, and nothing else. The machine chain, the thickness
+                  and the running slab count were a status line the operator
+                  reads past — all three are on the setup card or the table
+                  below, and the chain in particular restated itself whenever a
+                  robot was ticked. */}
               <span className="flex min-w-0 items-center gap-2 text-sm text-gray-600">
                 <span className="font-medium text-gray-900">{latestBatch.designName}</span>
-                <span className="truncate text-gray-400">{activeMachineNames.map(machineLabel).join(" → ")}</span>
-                {latestBatch.thickness != null && <span className="text-gray-400">{latestBatch.thickness} cm</span>}
               </span>
-              <span className="text-sm text-gray-400">{records.length} slab{records.length === 1 ? "" : "s"} logged</span>
               {/* Two distinct acts, kept as two buttons. "Edit setup" corrects
                   the run in progress; "New batch" starts another one. Offering
                   only the second is what made operators start a duplicate setup
@@ -863,7 +867,7 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
                       <input type="checkbox" checked={on} onChange={() => setActiveMachines((p) => ({ ...p, [m.id]: !p[m.id] }))}
                         className="h-4 w-4 rounded border-gray-300 text-brand focus:ring-brand/30" />
                       <h3 className="text-sm font-medium text-gray-900">{machineLabel(m.name)}</h3>
-                      {isRoymix && <Badge tone="green">liquid optional · CT varies per slab</Badge>}
+                      {isRoymix && <Badge tone="green">liquid optional</Badge>}
                       {!on && <span className="ml-auto text-xs text-gray-400">Not in use</span>}
                     </div>
                     {on && (
@@ -927,19 +931,12 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
       {/* ---- slab entry (the fast, repeated action) ---- */}
       <Card className={!canLogSlab ? "opacity-60" : ""}>
         <div className="mb-4 flex items-center justify-between">
+          {/* The per-machine target cycle times used to be restated here as
+              chips. They are the setup's numbers, unchanged for the whole run
+              and already on the setup card — repeating them above every slab
+              was noise the operator cannot act on. Removed deliberately; the
+              values themselves are untouched. */}
           <h2 className="text-sm font-semibold text-gray-900">{isPageEdit ? "Slab details" : "Slab entry"}</h2>
-          {activeBatch && activeBatch.entries.some((e) => e.machine.name !== "Roymix" && e.targetCycleTime) && (
-            <div className="flex gap-2">
-              {activeBatch.entries
-                .filter((e) => e.machine.name !== "Roymix" && e.targetCycleTime)
-                .sort((a, b) => MACHINE_ORDER.indexOf(a.machine.name) - MACHINE_ORDER.indexOf(b.machine.name))
-                .map((e) => (
-                  <span key={e.machine.name} className="rounded-lg bg-gray-50 px-2.5 py-1 text-xs text-gray-500">
-                    {machineLabel(e.machine.name)} CT <span className="font-semibold text-gray-700">{e.targetCycleTime}s</span>
-                  </span>
-                ))}
-            </div>
-          )}
         </div>
 
         {editLoading ? (
@@ -975,11 +972,15 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
                 {slabTaken && <p className="mt-1 text-xs font-medium text-red-600">Duplicate Slab No. — this slab number already exists.</p>}
               </div>
               <div>
-                <span className={label}>In time{firstMachine ? ` (${machineLabel(firstMachine)})` : ""}</span>
+                {/* Plain "In time" / "Out time". The machine names used to be
+                    appended (In time (Robo3)) to say which robot the clock was
+                    read off; the line knows that, and the suffix moved with the
+                    setup, so the same column changed its label between runs. */}
+                <span className={label}>In time</span>
                 <TimeInput value={slab.inTime} onChange={(v) => setSlab((p) => ({ ...p, inTime: v }))} className={inp} />
               </div>
               <div>
-                <span className={label}>Out time{lastMachine ? ` (${machineLabel(lastMachine)})` : ""}</span>
+                <span className={label}>Out time</span>
                 <TimeInput value={slab.outTime} onChange={(v) => setSlab((p) => ({ ...p, outTime: v }))} className={inp} />
               </div>
               {hasRoymix && (
