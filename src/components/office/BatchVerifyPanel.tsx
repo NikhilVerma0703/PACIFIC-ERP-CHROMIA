@@ -29,6 +29,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Badge, Card, Empty } from "@/components/ui";
 import { readJson } from "@/lib/readJson";
 import { BatchRatesPanel } from "@/components/office/BatchRatesPanel";
+import { GritAssignPanel } from "@/components/office/GritAssignPanel";
 
 const API = "/api/office/batch-verify";
 
@@ -225,6 +226,18 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
           key={detail.batchKey}
           batchKey={detail.batchKey}
           batchLabel={detail.batch}
+          onSaved={() => void load(picked)}
+        />
+      )}
+
+      {/* Grit, silo by silo — under the materials panel, which is the order the
+          owner described it in: open the batch, then grit. Re-reads the detail
+          on save for the same reason the panel above does: an assignment moves
+          both fingerprints, so a standing mark can lapse the moment it lands. */}
+      {detail && sign.length > 0 && (
+        <GritAssignPanel
+          key={`grit-${detail.batchKey}`}
+          batchKey={detail.batchKey}
           onSaved={() => void load(picked)}
         />
       )}
