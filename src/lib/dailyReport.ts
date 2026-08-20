@@ -304,6 +304,18 @@ async function getQuality(from: Date, to: Date) {
     ungraded: qc.length - graded.length,
     held: graded.length - passed.length,
     openForRework: count(qc, (r) => r.repolishStatus === "Repolish Required" || r.rwStatus === "RW Required and ongoing"),
+    // The mirror of openForRework: slabs that needed work and CAME BACK GOOD.
+    // Counted distinctly, over the two fields, for the same reason the open
+    // figure is — a slab can be marked on both, and adding the two columns
+    // double-counts it. "Repolish Done" and "RW Done Ok" are the two values
+    // that mean the slab was not right, was worked, and then was.
+    //
+    // Deliberately NOT including a recovery from "ungraded": qualityGrade
+    // carries no history, so an ungraded slab that is later graded A leaves no
+    // record that it was ever ungraded. There is nothing to count.
+    recovered: count(qc, (r) => r.repolishStatus === "Repolish Done" || r.rwStatus === "RW Done Ok"),
+    recoveredRepolish: count(qc, (r) => r.repolishStatus === "Repolish Done"),
+    recoveredRework: count(qc, (r) => r.rwStatus === "RW Done Ok"),
     toDispatch: count(qc, (r) => r.goingToDispatch === "Yes"),
     grades,
     dispatchByGrade: Object.fromEntries([...new Set(qc.map((r) => r.qualityGrade))]
