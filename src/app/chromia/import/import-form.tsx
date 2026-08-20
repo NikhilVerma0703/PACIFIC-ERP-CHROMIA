@@ -75,11 +75,21 @@ export function ImportForm() {
       {/* ------------------------------------------------------------ result */}
       {result.summary ? (
         <Card>
-          <h2 className="mb-3 text-sm font-semibold tracking-tight">Import complete</h2>
-          <div className="grid gap-3 sm:grid-cols-4">
+          <h2 className="mb-1 text-sm font-semibold tracking-tight">Import complete</h2>
+          {/* The one-line answer, written by the same module that decides the
+              status — so the sentence and the status can never disagree. It is
+              above the numbers because "nothing new, everything was already
+              here" is the common case and reads as a failure without it. */}
+          <p className="text-muted mb-3 text-sm">{result.summary.line}</p>
+          <div className="grid gap-3 sm:grid-cols-5">
             <Stat label="Rows found" value={result.summary.totalRows} />
             <Stat label="Imported" value={result.summary.imported} tone="done" />
-            <Stat label="Skipped" value={result.summary.skipped} tone="hold" />
+            <Stat label="Already here" value={result.summary.skipped} tone="hold" />
+            <Stat
+              label="Unreadable"
+              value={result.summary.unreadable}
+              tone={result.summary.unreadable > 0 ? 'hold' : 'neutral'}
+            />
             <Stat
               label="Failed"
               value={result.summary.failed}
