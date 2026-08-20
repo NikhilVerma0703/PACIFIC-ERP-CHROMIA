@@ -15,6 +15,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Card, Badge, Empty } from "@/components/ui";
 import { SearchableSelect, type SsOption } from "./SearchableSelect";
+import { useFieldAdvance } from "./useFieldAdvance";
 import { TimeInput } from "./TimeInput";
 import { isValidTime } from "@/lib/robo/time";
 import { CATEGORY_META, CATEGORY_ORDER, guessCategory, defaultRobotSpecific } from "@/lib/robo/delayCategories";
@@ -196,6 +197,10 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
   canDelete?: boolean;
 }) {
   const router = useRouter();
+  /* Hands the cursor to the next EMPTY field as each one is finished, so a
+     slab is logged on a tablet without a tap between every box. Touch screens
+     only; on a desktop Enter still submits. See useFieldAdvance. */
+  const { formRef: slabFormRef, advanceProps, advanceOnComplete } = useFieldAdvance();
   /** Page-level edit: the whole form is about one existing slab. Distinct from
    *  `editingId`, which is also set when finishing an In-Processing slab from
    *  the Recent slabs table below. */
@@ -1133,7 +1138,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
         ) : !canLogSlab ? (
           <Empty>No batch running. Save a batch setup above to start logging slabs.</Empty>
         ) : (
-          <form onSubmit={saveSlab} className="space-y-4">
+          <form ref={slabFormRef} onSubmit={saveSlab} className="space-y-4">
             {editingId && !isPageEdit && (
               <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                 <span>Editing slab <span className="font-semibold">{slab.slabNumber}</span>{editRecord?.status === SLAB_IN_PROCESSING ? " — add the Out time and save to complete it." : "."}</span>
@@ -1150,14 +1155,14 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
             <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
               <div>
                 <span className={label}>S.No.</span>
-                <input type="number" value={slab.serialNumber} onChange={(e) => setSlab((p) => ({ ...p, serialNumber: e.target.value }))} className={inp} />
+                <input type="number" value={slab.serialNumber} onChange={(e) => setSlab((p) => ({ ...p, serialNumber: e.target.value }))} className={inp} {...advanceProps("slab")} />
               </div>
               <div>
                 <span className={label}>Slab number <span className="text-red-500">*</span></span>
                 <input value={slab.slabNumber}
                   onChange={(e) => { setSlab((p) => ({ ...p, slabNumber: e.target.value })); if (slabTaken) setSlabTaken(false); }}
                   onBlur={(e) => checkSlabNumber(e.target.value)}
-                  placeholder="e.g. 140748" className={inp} required />
+                  placeholder="e.g. 140748" className={inp} required {...advanceProps("slab")} />
                 {slabTaken && <p className="mt-1 text-xs font-medium text-red-600">Duplicate Slab No. — this slab number already exists.</p>}
               </div>
               <div>
@@ -1166,27 +1171,27 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                     read off; the line knows that, and the suffix moved with the
                     setup, so the same column changed its label between runs. */}
                 <span className={label}>In time</span>
-                <TimeInput value={slab.inTime} onChange={(v) => setSlab((p) => ({ ...p, inTime: v }))} className={inp} />
+                <TimeInput value={slab.inTime} onChange={(v) => setSlab((p) => ({ ...p, inTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("slab")} />
               </div>
               <div>
                 <span className={label}>Out time</span>
-                <TimeInput value={slab.outTime} onChange={(v) => setSlab((p) => ({ ...p, outTime: v }))} className={inp} />
+                <TimeInput value={slab.outTime} onChange={(v) => setSlab((p) => ({ ...p, outTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("slab")} />
               </div>
               {hasRoymix && (
                 <>
                   <div>
                     <span className={label}>Robo2 body weight (kg)</span>
-                    <input type="number" step="0.1" value={slab.roymixBodyWeight} onChange={(e) => setSlab((p) => ({ ...p, roymixBodyWeight: e.target.value }))} placeholder="e.g. 42.5" className={inp} />
+                    <input type="number" step="0.1" value={slab.roymixBodyWeight} onChange={(e) => setSlab((p) => ({ ...p, roymixBodyWeight: e.target.value }))} placeholder="e.g. 42.5" className={inp} {...advanceProps("slab")} />
                   </div>
                   <div>
                     <span className={label}>Robo2 cycle time (sec)</span>
-                    <input type="number" value={slab.roymixCycleTime} onChange={(e) => setSlab((p) => ({ ...p, roymixCycleTime: e.target.value }))} placeholder="e.g. 185" className={inp} />
+                    <input type="number" value={slab.roymixCycleTime} onChange={(e) => setSlab((p) => ({ ...p, roymixCycleTime: e.target.value }))} placeholder="e.g. 185" className={inp} {...advanceProps("slab")} />
                   </div>
                 </>
               )}
               <div className={hasRoymix ? "col-span-2" : "col-span-2 md:col-span-4"}>
                 <span className={label}>Remarks</span>
-                <input value={slab.remarks} onChange={(e) => setSlab((p) => ({ ...p, remarks: e.target.value }))} placeholder="Optional notes for this slab" className={inp} />
+                <input value={slab.remarks} onChange={(e) => setSlab((p) => ({ ...p, remarks: e.target.value }))} placeholder="Optional notes for this slab" className={inp} {...advanceProps("slab")} />
               </div>
             </div>
 
@@ -1347,11 +1352,11 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                 )}
                 <div>
                   <span className={label}>Start <span className="text-red-500">*</span></span>
-                  <TimeInput value={delayForm.startTime} onChange={(v) => setDelayForm((p) => ({ ...p, startTime: v }))} className={inp} />
+                  <TimeInput value={delayForm.startTime} onChange={(v) => setDelayForm((p) => ({ ...p, startTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("delay")} />
                 </div>
                 <div>
                   <span className={label}>End <span className="text-red-500">*</span></span>
-                  <TimeInput value={delayForm.endTime} onChange={(v) => setDelayForm((p) => ({ ...p, endTime: v }))} className={inp} />
+                  <TimeInput value={delayForm.endTime} onChange={(v) => setDelayForm((p) => ({ ...p, endTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("delay")} />
                 </div>
                 <div>
                   <span className={label}>Duration</span>
@@ -1363,7 +1368,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                   </div>
                 </div>
                 <div className="flex items-end gap-2 md:col-span-3">
-                  <input value={delayForm.remarks} onChange={(e) => setDelayForm((p) => ({ ...p, remarks: e.target.value }))} placeholder="Delay remarks (optional)" className={inp} />
+                  <input value={delayForm.remarks} onChange={(e) => setDelayForm((p) => ({ ...p, remarks: e.target.value }))} placeholder="Delay remarks (optional)" className={inp} {...advanceProps("delay")} />
                   <button type="button" onClick={addDelay} className="shrink-0 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-amber-700">+ Add</button>
                 </div>
               </div>
