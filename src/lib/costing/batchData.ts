@@ -29,25 +29,14 @@ export const RESIN_TANK_SUPPLIER: Readonly<Record<string, string>> = {
   I3: "Aypols",
 };
 
-/** Normalise silo size strings ("# 8-16", "#8-16", " 0.1-0.4 ") to band keys. */
-export function bandOf(raw: string | null): string {
-  const s = (raw ?? "").replace(/\s+/g, "");
-  if (!s) return "";
-  if (s.includes("8-16")) return "8-16";
-  if (/^#?400#?$/.test(s)) return "filler-400";
-  const m = s.match(/^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/);
-  return m ? `${m[1]}-${m[2]}` : s;
-}
 
-/** Rate-card item key for a grit band. */
-export const gritItemKey = (band: string) => `grit-${band}`;
-export const GRIT_BAND_LABELS: Readonly<Record<string, string>> = {
-  "0.1-0.4": "Grit 0.1 – 0.4",
-  "0.3-0.7": "Grit 0.3 – 0.7",
-  "0.6-1.2": "Grit 0.6 – 1.2",
-  "1.2-2.5": "Grit 1.2 – 2.5",
-  "8-16": "Glass grit # 8-16",
-};
+// bandOf, gritItemKey and GRIT_BAND_LABELS moved to ./gritBand — this module
+// imports "server-only" and Prisma, so nothing in it is reachable from
+// `node --test`, which is why the size normaliser carried two defects and no
+// tests. Re-exported here so every existing import site is untouched.
+export { bandOf, gritItemKey, GRIT_BAND_LABELS } from "./gritBand";
+// ...and imported for this module's own use: a re-export does not bind locally.
+import { bandOf, gritItemKey } from "./gritBand";
 
 export interface BatchListEntry {
   batchKey: string;
