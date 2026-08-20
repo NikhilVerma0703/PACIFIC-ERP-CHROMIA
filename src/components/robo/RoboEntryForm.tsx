@@ -19,7 +19,7 @@ import { useFieldAdvance } from "./useFieldAdvance";
 import { TimeInput } from "./TimeInput";
 import { isValidTime } from "@/lib/robo/time";
 import { CATEGORY_META, CATEGORY_ORDER, guessCategory, defaultRobotSpecific } from "@/lib/robo/delayCategories";
-import { findDesignPreset } from "@/lib/robo/design-presets";
+import { findDesignPreset, presetFieldsFor } from "@/lib/robo/design-presets";
 import { SETUP_EDIT_WINDOW_DAYS, daysBetween, describeAge, isSetupStale } from "@/lib/robo/setupAge";
 import { SLAB_IN_PROCESSING, slabStatusClass, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
 
@@ -530,10 +530,24 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     setEntries((p) => ({ ...p, [machineId]: { ...(p[machineId] ?? emptyEntry()), [field]: value } }));
 
   /**
-   * Design picked → pre-fill tool/liquid/powder per machine from the plant
+   * Design picked → set tool/liquid/powder per machine from the plant
    * in-charge's reference sheet. Never program, CT or roller height (those vary
    * run to run), and everything stays editable — the preset is a head start,
    * not a rule.
+   *
+   * IT STATES THE WHOLE PICTURE, blanks included, across every machine. The
+   * sheet lists all four robots per design and writes "-" or "na" where one is
+   * not used, so applying a design has to write those blanks too. It used to
+   * only fill in what the design mentioned, which is what produced the wrong
+   * mappings on the card: correcting BELLAGIO GOLD to BANYAN left BELLAGIO's
+   * DVCT4 on Robo3, because BANYAN's row has no powder there — and switching to
+   * ALABASTER, which uses neither Robo1 nor Robo2, left the previous design's
+   * entire Robo1 row in place. The card then showed two designs mixed together
+   * and saved as if it were one recipe. See presetFieldsFor.
+   *
+   * A design the sheet does not list changes nothing at all: there is no
+   * reference for it, the operator fills the card by hand, and clearing would
+   * throw that away.
    *
    * ON THE EDIT SETUP SCREEN IT ONLY FILLS BLANKS. That screen exists mainly to
    * fix a batch saved against the wrong design, so picking the right one is the
@@ -560,16 +574,16 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     setEntries((prev) => {
       const next = { ...prev };
       for (const m of machines) {
-        const mp = preset.machines[m.name];
-        if (!mp) continue;
+        const sheet = presetFieldsFor(preset, m.name);
         const cur = next[m.id] ?? emptyEntry();
-        const pick = (from: string | undefined, existing: string) =>
-          fillOnly && existing.trim() ? existing : from ?? existing;
+        // fillOnly keeps anything already recorded and writes only into the
+        // blanks — see the note above about correcting a finished run.
+        const pick = (from: string, existing: string) => (fillOnly && existing.trim() ? existing : from);
         const row = {
           ...cur,
-          toolName: pick(mp.toolName, cur.toolName),
-          liquidName: pick(mp.liquidName, cur.liquidName),
-          powderName: pick(mp.powderName, cur.powderName),
+          toolName: pick(sheet.toolName, cur.toolName),
+          liquidName: pick(sheet.liquidName, cur.liquidName),
+          powderName: pick(sheet.powderName, cur.powderName),
         };
         if (row.toolName !== cur.toolName || row.liquidName !== cur.liquidName || row.powderName !== cur.powderName) {
           next[m.id] = row;
@@ -581,7 +595,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     if (touched > 0) {
       say(fillOnly
         ? `Filled the empty tool, liquid and powder fields on ${touched} machine(s) from the ${preset.design} reference. What this run already recorded was left as it is — change it by hand if it is wrong.`
-        : `Tool, liquid and powder pre-filled for ${touched} machine(s) from the ${preset.design} reference — check and adjust as needed.`);
+        : `Tool, liquid and powder set for ${touched} machine(s) from the ${preset.design} reference — machines that design does not use were cleared. Check and adjust as needed.`);
     }
   };
 
