@@ -117,6 +117,7 @@ export function MaintenanceBoard({
   const [pmDesc, setPmDesc] = useState("");
 
   // Which ticket is being answered, and with what
+  const [misId, setMisId] = useState<string>("");
   const [openId, setOpenId] = useState<string | null>(null);
   const [reply, setReply] = useState("");
   const [status, setStatus] = useState("Attended");
@@ -136,11 +137,29 @@ export function MaintenanceBoard({
   const chip = (active: boolean) =>
     `rounded-full border px-3 py-1 text-xs font-medium transition ${active ? "border-brand bg-brand text-white" : "border-gray-200 text-gray-600 hover:bg-gray-50"}`;
 
+  /**
+   * The stopped hours a fault can be attached to.
+   *
+   * Built from `items`, deliberately NOT from `shown`: `shown` is narrowed by
+   * the delay-type chips at the top of the board, and an unrelated chip
+   * silently removing hours from this list would look like the hour was never
+   * logged. Newest first, because a fault is nearly always about today.
+   *
+   * misId has always existed on the ticket — indexed, read back by
+   * ticketsByMisId(), and rendered as the "MT-0007 · Attended" chip on the MIS
+   * card. The only thing missing was a way to SET it without coming in from a
+   * downtime incident, which is what this control is.
+   */
+  const hourOptions = items
+    .filter((it) => it.kind === "incident" && it.incident)
+    .map((it) => it.incident!)
+    .sort((a, b) => `${b.date ?? ""}${b.hour ?? ""}`.localeCompare(`${a.date ?? ""}${a.hour ?? ""}`));
+
   const submitRaise = () =>
     start(async () => {
-      const r = await raise({ title, area, detail, priority });
+      const r = await raise({ title, area, detail, priority, misId: misId || null });
       setMsg({ ok: r.ok, text: r.message });
-      if (r.ok) { setTitle(""); setArea(""); setDetail(""); setPriority("Normal"); }
+      if (r.ok) { setTitle(""); setArea(""); setDetail(""); setPriority("Normal"); setMisId(""); }
     });
 
   const submitPm = () =>
@@ -206,6 +225,24 @@ export function MaintenanceBoard({
               <span className={label}>Detail — what you saw, when, what you already tried</span>
               <textarea value={detail} onChange={(e) => setDetail(e.target.value)} rows={2} className={inp}
                 placeholder="Sticks about one time in five on discharge. Started after the Tuesday clean." />
+            </div>
+            <div className="md:col-span-2">
+              <span className={label}>Which stopped hour is this about — optional</span>
+              <select value={misId} onChange={(e) => setMisId(e.target.value)} className={inp}
+                disabled={hourOptions.length === 0}>
+                <option value="">
+                  {hourOptions.length ? "Not about a particular hour" : "No stopped hours logged in this range"}
+                </option>
+                {hourOptions.map((h) => (
+                  <option key={h.id} value={h.id}>
+                    {h.date ?? "no date"} · {h.hour ?? "no hour"} · {h.minutes} min stopped
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-gray-400">
+                Pick the hour from the MIS log this fault explains. The two are then one item in
+                this queue, and answering either answers both.
+              </p>
             </div>
             <div>
               <span className={label}>Priority</span>
