@@ -21,6 +21,12 @@ import { flatRowLabel } from "@/lib/fab/flatSheetParser";
 import { PO_REQUIREMENT_SLAB_CODE } from "@/lib/fab/poParser";
 import { deriveRoutingFlags } from "@/lib/fab/requirement-derive";
 
+// pdfjs-dist is loaded at request time from its LEGACY build and is listed in
+// next.config.mjs serverExternalPackages. Both facts only hold on the Node
+// runtime, so say so explicitly rather than relying on the App Router default —
+// the finance route that reads PDFs the same way has always declared it.
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 /** Thrown inside the transaction when another confirm got there first. */

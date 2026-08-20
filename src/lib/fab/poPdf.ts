@@ -38,6 +38,11 @@ type PdfjsModule = { getDocument: (opts: Record<string, unknown>) => any };
 let pdfjsPromise: Promise<PdfjsModule> | null = null;
 
 function loadPdfjs(): Promise<PdfjsModule> {
+  // A REJECTED PROMISE MUST NOT BE CACHED. `??=` alone keeps the failure for the
+  // life of the lambda, so one bad cold start poisons every later upload with
+  // the same message and no way back short of a redeploy. Clearing it on failure
+  // lets the next request try again — which matters most when the cause was
+  // transient (a cold module evaluation timing out) rather than structural.
   pdfjsPromise ??= (async () => {
     // THE WORKER IS AN OPTIMISATION, NOT A REQUIREMENT. Seeding it up front
     // stops pdf.js reaching for the worker module by a relative path that does
@@ -59,7 +64,7 @@ function loadPdfjs(): Promise<PdfjsModule> {
     // order can be read at all. The worker import above needs nothing.
     installPdfjsDomMatrix();
     return (await import("pdfjs-dist/legacy/build/pdf.mjs")) as unknown as PdfjsModule;
-  })().catch((err) => {
+  })().catch((err: unknown) => {
     // NEVER MEMOISE A REJECTION. `??=` keeps whatever the first call produced,
     // and a rejected promise is a permanent answer: every upload for the rest
     // of that lambda instance's life would fail with the first one's reason,

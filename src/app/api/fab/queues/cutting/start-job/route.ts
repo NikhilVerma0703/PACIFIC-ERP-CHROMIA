@@ -6,6 +6,8 @@
 
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
+import { requireProcessSession } from "@/lib/fab/processSessionServer";
+import { stampSlabJobWorker } from "@/lib/fab/stampWorker";
 
 export async function POST(req: Request) {
   const g = await fabGate("EMPLOYEE");
@@ -27,10 +29,13 @@ export async function POST(req: Request) {
 
   // The machine this tablet holds. Read BEFORE the conflict checks, because on
   // a shared operator login it is the only thing that can tell two people apart.
-  const machSession = await prisma.fabMachineSession.findFirst({
-    where: { userId, isActive: true },
-    select: { machineId: true, machine: { select: { name: true, code: true } } },
-  });
+  const gate = await requireProcessSession("CUTTING");
+  if (!gate.ok) return Response.json({ error: gate.error }, { status: gate.status });
+  const machSession = {
+    machineId: gate.session.machineId,
+    machine: { name: gate.session.machineName, code: gate.session.machineName },
+    workerId: gate.session.workerId,
+  };
 
   // Already started by someone else → reject
   if (job.status === "IN_PROGRESS" && job.operatorId && job.operatorId !== userId) {
@@ -79,7 +84,7 @@ export async function POST(req: Request) {
       status:     "IN_PROGRESS",
       startTime:  new Date(),
       operatorId: userId,
-      machineId:  machSession?.machineId ?? undefined,
+      machineId:  machSession.machineId,
     },
   });
 
@@ -103,6 +108,8 @@ export async function POST(req: Request) {
       : (now?.operator?.name ?? now?.operator?.email ?? "another operator");
     return Response.json({ error: "locked", lockedBy }, { status: 409 });
   }
+
+  await stampSlabJobWorker(prisma, slabJobId, machSession.workerId);
 
   return Response.json({ success: true });
 }

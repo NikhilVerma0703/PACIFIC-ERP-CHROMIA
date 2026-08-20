@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
+import { workersForSlabJobs } from "@/lib/fab/workerLookups";
 
 export async function GET() {
   const g = await fabGate("EMPLOYEE");
@@ -43,7 +44,7 @@ export async function GET() {
         },
       },
     },
-    orderBy: { createdAt: "asc" },
+    orderBy: [{ status: "desc" }, { createdAt: "desc" }],
   });
 
   // One slab, one row. A project released from the planning board has FabPieces
@@ -71,6 +72,7 @@ export async function GET() {
       })
     : [];
   const qcById = new Map(qcSlabs.map(q => [q.id, q]));
+  const jobWorkers = await workersForSlabJobs(slabJobs.map(j => j.id));
 
   const cloEntries = slabJobs.map(job => {
     const qc = job.slab.pacificQcId ? qcById.get(job.slab.pacificQcId) : null;
@@ -83,13 +85,14 @@ export async function GET() {
       widthIn:       a.requirement.width  ?? null,
       qty:           a.allocatedQuantity,
     }));
+    const worker = jobWorkers.get(job.id);
     return {
       type:         "clo" as const,
       slabJobId:    job.id,
       jobStatus:    job.status,
       startTime:    job.startTime?.toISOString() ?? null,
-      operatorId:   job.operatorId ?? null,
-      operatorName: job.operator?.name ?? job.operator?.email ?? null,
+      operatorId:   worker?.workerId ?? job.operatorId ?? null,
+      operatorName: worker?.name ?? job.operator?.name ?? job.operator?.email ?? null,
       // WHICH MACHINE holds this job, not just which login started it.
       //
       // Fabrication runs on ONE shared operator account, so operatorId is the

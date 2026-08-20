@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
+import { markQcSlabCts } from "@/lib/fab/markQcSlabCts";
 
 async function resolveOrImportSlab(slabId: string, projectId: string | null): Promise<string> {
   if (!slabId.startsWith("qc:")) return slabId;
@@ -12,7 +13,10 @@ async function resolveOrImportSlab(slabId: string, projectId: string | null): Pr
   const existing = await prisma.fabSlab.findFirst({
     where: { pacificQcId: qcId, ...(projectId ? { projectId } : {}) },
   });
-  if (existing) return existing.id;
+  if (existing) {
+    await markQcSlabCts(qcId);
+    return existing.id;
+  }
   const qc = await prisma.polishQc.findUnique({ where: { id: qcId } });
   if (!qc) throw new Error("QC slab not found");
   let pid = projectId;
@@ -27,6 +31,7 @@ async function resolveOrImportSlab(slabId: string, projectId: string | null): Pr
       length: 3200, width: 1600, totalArea: 3200 * 1600, availableArea: 3200 * 1600,
     },
   });
+  await markQcSlabCts(qc.id);
   return slab.id;
 }
 

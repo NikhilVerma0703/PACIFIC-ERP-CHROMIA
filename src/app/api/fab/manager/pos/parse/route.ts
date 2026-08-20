@@ -18,6 +18,12 @@ import { flatRowLabel } from "@/lib/fab/flatSheetParser";
 
 /** Reading a two-page PDF is fast; the ceiling is for a cold lambda that has to
  *  evaluate the pdf.js legacy build first. */
+// pdfjs-dist is loaded at request time from its LEGACY build and is listed in
+// next.config.mjs serverExternalPackages. Both facts only hold on the Node
+// runtime, so say so explicitly rather than relying on the App Router default —
+// the finance route that reads PDFs the same way has always declared it.
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 export async function POST(req: Request) {

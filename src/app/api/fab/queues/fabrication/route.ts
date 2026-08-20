@@ -1,11 +1,12 @@
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
+import { attachQueueActivity } from "@/lib/fab/queueActivity";
+import { isDroppedFromQueues } from "@/lib/fab/rejectPiece";
 
 export async function GET() {
   const g = await fabGate("EMPLOYEE");
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
-  // fabrication unlocks when: sink not required OR sink completed
   const pieces = await prisma.fabPiece.findMany({
     where: {
       fabricationRequired: true,
@@ -21,9 +22,12 @@ export async function GET() {
       drawing: { select: { drawingNumber: true } },
       requirement: { select: { pieceLabel: true, description: true, length: true, width: true, sinkModel: true } },
       slab: { select: { slabCode: true, colour: true } },
+      pieceOperations: { select: { operationType: true, isCompleted: true, completedAt: true } },
     },
-    orderBy: { createdAt: "asc" },
   });
 
-  return Response.json(pieces);
+  return Response.json(attachQueueActivity(
+    pieces.filter(p => !isDroppedFromQueues(p.status)),
+    "FABRICATION",
+  ));
 }

@@ -78,6 +78,7 @@ model User {
   fabMachineSessions FabMachineSession[]
   fabSlabJobs        FabSlabJob[]
   fabOperations      FabOperation[]
+  fabWorkersCreated  FabWorker[]
 
   @@map("users")
 }
@@ -2315,6 +2316,7 @@ enum FabPieceStatus {
   FABRICATION
   FABRICATED
   PACKAGED
+  REJECTED
 }
 
 enum FabMachineType {
@@ -2362,8 +2364,27 @@ model FabMachine {
   sessions   FabMachineSession[]
   operations FabOperation[]
   slabJobs   FabSlabJob[]
+  downtimes  FabMachineDowntime[]
 
   @@map("fab_machine")
+}
+
+/// Floor roster. The operator login is shared; these names are who actually
+/// stood at the machine for a process session. Supervisor creates them.
+model FabWorker {
+  id        String               @id @default(cuid())
+  name      String               @unique
+  active    Boolean              @default(true)
+  createdAt DateTime             @default(now()) @map("created_at")
+  createdById String?            @map("created_by_id")
+  createdBy   User?              @relation(fields: [createdById], references: [id])
+  sessions    FabMachineSession[]
+  operations  FabOperation[]
+  slabJobs    FabSlabJob[]
+  downtimes   FabMachineDowntime[]
+
+  @@index([active])
+  @@map("fab_worker")
 }
 
 model FabMachineSession {
@@ -2372,12 +2393,39 @@ model FabMachineSession {
   user       User       @relation(fields: [userId], references: [id])
   machineId  String     @map("machine_id")
   machine    FabMachine @relation(fields: [machineId], references: [id])
+  /// Who is standing at this process for this session. Null on sessions
+  /// started before the roster existed.
+  workerId   String?    @map("worker_id")
+  worker     FabWorker? @relation(fields: [workerId], references: [id])
   shift      String
   loginTime  DateTime   @default(now()) @map("login_time")
   logoutTime DateTime?  @map("logout_time")
   isActive   Boolean    @default(true) @map("is_active")
 
+  @@index([machineId, isActive])
   @@map("fab_machine_session")
+}
+
+/// Floor stoppage on one machine / process. Start and end are logged while a
+/// process session is open so the name and shift are known.
+model FabMachineDowntime {
+  id          String      @id @default(cuid())
+  machineId   String      @map("machine_id")
+  machine     FabMachine  @relation(fields: [machineId], references: [id])
+  processType String      @map("process_type")
+  reason      String
+  notes       String?
+  startedAt   DateTime    @default(now()) @map("started_at")
+  endedAt     DateTime?   @map("ended_at")
+  workerId    String?     @map("worker_id")
+  worker      FabWorker?  @relation(fields: [workerId], references: [id])
+  shift       String?
+  sessionId   String?     @map("session_id")
+  userId      String      @map("user_id")
+
+  @@index([machineId, endedAt])
+  @@index([processType, endedAt])
+  @@map("fab_machine_downtime")
 }
 
 model FabProject {
@@ -2451,6 +2499,8 @@ model FabSlabJob {
   machine         FabMachine?             @relation(fields: [machineId], references: [id])
   operatorId      String?                 @map("operator_id")
   operator        User?                   @relation(fields: [operatorId], references: [id])
+  workerId        String?                 @map("worker_id")
+  worker          FabWorker?              @relation(fields: [workerId], references: [id])
   status          FabSlabProductionStatus @default(READY)
   startTime       DateTime?               @map("start_time")
   endTime         DateTime?               @map("end_time")
@@ -2592,6 +2642,10 @@ model FabPiece {
   pieceOperations      FabPieceOperation[]
   allocations          FabSlabAllocation[]
   packagePieces        FabPackagePiece[]
+  rejectedAt           DateTime?           @map("rejected_at")
+  rejectReason         String?             @map("reject_reason")
+  rejectNotes          String?             @map("reject_notes")
+  rejectedByWorkerId   String?             @map("rejected_by_worker_id")
 
   @@map("fab_piece")
 }
@@ -2616,6 +2670,9 @@ model FabOperation {
   machine         FabMachine?         @relation(fields: [machineId], references: [id])
   operatorId      String              @map("operator_id")
   operator        User                @relation(fields: [operatorId], references: [id])
+  workerId        String?             @map("worker_id")
+  worker          FabWorker?          @relation(fields: [workerId], references: [id])
+  shift           String?
   operationType   FabOperationType    @map("operation_type")
   pieceOperations FabPieceOperation[]
   startTime       DateTime?           @map("start_time")

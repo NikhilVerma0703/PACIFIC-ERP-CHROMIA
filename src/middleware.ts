@@ -222,14 +222,14 @@ export default auth((req) => {
       // this list is opt-IN, so a fab page added later is not reachable by default.
       const QUEUE_PAGES = [
         "/fab/cutting", "/fab/polishing", "/fab/sink-cutting",
-        "/fab/fabrication", "/fab/packaging",
+        "/fab/fabrication", "/fab/packaging", "/fab/downtime",
       ];
       const ok = QUEUE_PAGES.includes(p) || p === "/fab/session";
       if (!ok) return Response.redirect(new URL("/fab/cutting", nextUrl));
       return;
     }
     // fab MANAGER (LINE_MANAGER) / SUPERVISOR (INCHARGE): any fab page + Overview
-    const fabHome = role === "LINE_MANAGER" ? "/fab/projects" : "/fab/supervisor";
+    const fabHome = role === "LINE_MANAGER" ? "/fab/manager" : "/fab/supervisor/slabs";
     const ok = fabPath || p === "/" || STATIC_FILE.test(p);
     if (!ok) return Response.redirect(new URL(fabHome, nextUrl));
     return;
