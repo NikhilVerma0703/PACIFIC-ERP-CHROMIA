@@ -31,6 +31,25 @@ export interface DatedRecord {
 
 const clean = (v: string | null | undefined): string => (v ?? "").trim();
 
+/** "No production date", as Postgres can hold it: NULL, or the empty string a
+ *  non-app writer may have left. productionDateOf() reads both as absent, so
+ *  the filter has to as well or a row would show a date it cannot be found by. */
+/* ── A NOTE ON THE SHAPES BELOW ───────────────────────────────────────────
+   The OR arrays are returned WITHOUT a type annotation, deliberately.
+
+   Prisma's generated where-inputs use XOR<> and Without<> to keep a relation
+   filter and a null-relation filter apart. A hand-written interface covering
+   both arms — optional `batchRecipe` beside an optional `batchRecipeId?: null`
+   — does not satisfy either, so annotating the array with one makes it
+   unassignable at the call site even though the value itself is fine. Letting
+   TypeScript infer the literal types keeps every branch checked against the
+   real Prisma input where it is used.
+
+   "Unset" is also written as two branches rather than `{ in: [null, ""] }`:
+   Prisma's `in` filter takes `string[]`, not nulls, so that form does not
+   express "IS NULL" at all — it typechecks nowhere and would have matched
+   nothing. NULL and "" both have to be their own branch.                     */
+
 /**
  * The production date to SHOW for a slab (or a setup row): what the operator
  * entered, else the shift's own date, else "".
@@ -56,21 +75,47 @@ export function setupProductionDate(
  *   2. the setup carries none            → match the shift's date
  *   3. there is no setup at all          → match the shift's date
  *
- * Case 2 has to say `productionDate: null` explicitly. Without it a slab whose
- * setup is dated the 3rd would also come back when searching the 5th, because
- * its shift row happens to say the 5th — the very confusion this replaces.
+ * Case 2 has to say `productionDate` is unset EXPLICITLY. Without it a slab
+ * whose setup is dated the 3rd would also come back when searching the 5th,
+ * because its shift row happens to say the 5th — the very confusion this
+ * replaces. And "unset" has to mean NULL or "", one branch each:
+ * productionDateOf() treats a blank string as no date and falls back to the
+ * shift, so a filter that only matched NULL would print a date on a row nothing
+ * could find. The app's own writes blank-to-null (setupScalarData), but rows
+ * arrive from the upstream standalone app and from direct API calls too.
  *
  * Returns undefined for a blank date so callers can spread it unconditionally.
  */
 export function productionDateWhere(date: string | null | undefined) {
   const d = clean(date);
   if (!d) return undefined;
-  const OR: Array<{ batchRecipe?: { productionDate: string | null } | null; shift?: { date: string } }> = [
-    { batchRecipe: { productionDate: d } },
-    { batchRecipe: { productionDate: null }, shift: { date: d } },
-    { batchRecipe: null, shift: { date: d } },
-  ];
-  return { OR };
+  return {
+    OR: [
+      { batchRecipe: { productionDate: d } },
+      { batchRecipe: { productionDate: null }, shift: { date: d } },
+      { batchRecipe: { productionDate: "" }, shift: { date: d } },
+      { batchRecipe: null, shift: { date: d } },
+    ],
+  };
+}
+
+/**
+ * The setups themselves, for the Production Setup sheet of the export. Same
+ * rule as above minus the third branch: RoboBatchRecipe.shiftId is required,
+ * so a setup always has a shift to fall back to.
+ */
+export function setupProductionDateWhere(date: string | null | undefined) {
+  const d = clean(date);
+  if (!d) return undefined;
+  // No "there is no setup" branch: this IS the setup, and RoboBatchRecipe.shiftId
+  // is required, so there is always a shift to fall back to.
+  return {
+    OR: [
+      { productionDate: d },
+      { productionDate: null, shift: { date: d } },
+      { productionDate: "", shift: { date: d } },
+    ],
+  };
 }
 
 /* ── delays ───────────────────────────────────────────────────────────────
@@ -95,14 +140,13 @@ export function delayProductionDateOf(delay: DatedDelay | null | undefined): str
 export function delayProductionDateWhere(date: string | null | undefined) {
   const d = clean(date);
   if (!d) return undefined;
-  const OR: Array<{
-    productionRecord?: { batchRecipe?: { productionDate: string | null } | null } | null;
-    shift?: { date: string };
-  }> = [
-    { productionRecord: { batchRecipe: { productionDate: d } } },
-    { productionRecord: { batchRecipe: { productionDate: null } }, shift: { date: d } },
-    { productionRecord: { batchRecipe: null }, shift: { date: d } },
-    { productionRecord: null, shift: { date: d } },
-  ];
-  return { OR };
+  return {
+    OR: [
+      { productionRecord: { batchRecipe: { productionDate: d } } },
+      { productionRecord: { batchRecipe: { productionDate: null } }, shift: { date: d } },
+      { productionRecord: { batchRecipe: { productionDate: "" } }, shift: { date: d } },
+      { productionRecord: { batchRecipe: null }, shift: { date: d } },
+      { productionRecord: null, shift: { date: d } },
+    ],
+  };
 }

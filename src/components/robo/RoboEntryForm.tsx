@@ -453,28 +453,43 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
    * slab number is the plant's.
    *
    * It re-runs on the same three things as before — the shift, the number of
-   * records (so it advances after each save) and leaving edit mode. `ignore`
-   * drops a slow reply that lands after a newer one, and `p.slabNumber ||`
-   * still refuses to overwrite a number the operator has already typed.
+   * records (so it advances after each save) and leaving edit mode — plus
+   * `loading`, so it does not fire once against a form that has not finished
+   * loading and again the moment the shift arrives, throwing the first answer
+   * away.
+   *
+   * NEITHER FIELD OVERWRITES WHAT THE OPERATOR TYPED. The slab number never
+   * did (`p.slabNumber ||`). The S.No. used to be replaced outright, which was
+   * survivable while it was computed in the browser in the same tick — but it
+   * is a round trip now, so a corrected S.No. could be wiped seconds later by
+   * an answer already in flight, or by the effect re-firing after a delete.
+   * `suggested` remembers what this effect last put there; anything else in the
+   * box was typed by a person and is left alone.
    */
+  const suggested = useRef<string>("");
   useEffect(() => {
-    if (editingId || isSetupEdit) return;
+    if (loading || editingId || isSetupEdit) return;
     let ignore = false;
     (async () => {
       const next = await getJson<{ serialNumber: number | null; slabNumber: string }>(
         "/api/robo/production/next-number",
         { serialNumber: null, slabNumber: "" },
       );
-      if (ignore) return;
-      setSlab((p) => ({
-        ...p,
-        serialNumber: next.serialNumber != null ? String(next.serialNumber) : p.serialNumber,
-        slabNumber: p.slabNumber || next.slabNumber || "",
-      }));
+      if (ignore || next.serialNumber == null) return;
+      const serial = String(next.serialNumber);
+      setSlab((p) => {
+        const mine = p.serialNumber === "" || p.serialNumber === suggested.current;
+        suggested.current = serial;
+        return {
+          ...p,
+          serialNumber: mine ? serial : p.serialNumber,
+          slabNumber: p.slabNumber || next.slabNumber || "",
+        };
+      });
     })();
     return () => { ignore = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shift?.id, records.length, editingId]);
+  }, [loading, shift?.id, records.length, editingId]);
 
   /* The setup driving this slab: when editing, the record's OWN batch setup —
      not the shift's latest. A slab logged under the morning's design must keep
@@ -647,11 +662,13 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
        cards are built by matching the stored setup's machine NAMES against the
        current machine list. A stored entry with no card — a robot since renamed
        or dropped from the list — would therefore be deleted without ever having
-       been shown. Refuse instead. On a run from last week that is a nuisance;
-       on one from three months ago it is the only warning anyone would get. */
-    if (isSetupEdit) {
+       been shown. Refuse instead. On the run in progress that is a nuisance; on
+       one from three months ago it is the only warning anyone would get, so
+       both edit paths check it. */
+    const editing = isSetupEdit ? setupEdit!.setup : editingBatchId ? shift?.batchRecipes?.find((b) => b.id === editingBatchId) : null;
+    if (editing) {
       const known = new Set(machines.map((m) => m.name));
-      const missing = setupEdit!.setup.entries.map((e) => e.machine.name).filter((n) => !known.has(n));
+      const missing = editing.entries.map((e) => e.machine.name).filter((n) => !known.has(n));
       if (missing.length > 0) {
         setBatchError(
           `This setup records ${missing.join(", ")}, which ${missing.length === 1 ? "is" : "are"} not in the machine list any more, ` +

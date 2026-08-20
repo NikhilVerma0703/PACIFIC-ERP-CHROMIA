@@ -8,7 +8,6 @@ import {
   isIsoDate,
   isSetupStale,
   plantDate,
-  setupAgeDays,
   setupDate,
 } from "../src/lib/robo/setupAge.ts";
 
@@ -66,14 +65,16 @@ test("an unreadable date on either side is no answer, not zero", () => {
 });
 
 test("the age is taken from whichever date the setup actually carries", () => {
-  assert.equal(setupAgeDays("2026-07-04", "2026-07-05", "2026-08-20"), 47);
-  assert.equal(setupAgeDays(null, "2026-07-05", "2026-08-20"), 46);
-  assert.equal(setupAgeDays(null, null, "2026-08-20"), null);
+  // How the Edit setup screen works it out: setupDate picks the date, then
+  // daysBetween counts to today.
+  assert.equal(daysBetween(setupDate("2026-07-04", "2026-07-05"), "2026-08-20"), 47);
+  assert.equal(daysBetween(setupDate(null, "2026-07-05"), "2026-08-20"), 46);
+  assert.equal(daysBetween(setupDate(null, null), "2026-08-20"), null);
 });
 
 test("a setup dated in the future is negative, not clamped to nothing", () => {
   // A run dated next week is a typo worth seeing on the screen.
-  assert.equal(setupAgeDays("2026-08-27", null, "2026-08-20"), -7);
+  assert.equal(daysBetween(setupDate("2026-08-27", null), "2026-08-20"), -7);
   assert.equal(isSetupStale(-7), false);
 });
 

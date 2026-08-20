@@ -20,7 +20,7 @@ const dash = (v: string | number | null | undefined) =>
 export async function GET(req: NextRequest) {
   const date = req.nextUrl.searchParams.get("date")?.trim() || "";
 
-  const delays = await prisma.roboDelayLog.findMany({
+  const fetched = await prisma.roboDelayLog.findMany({
     // Dated by the slab the delay held up, so a delay and its slab never land
     // on two different days in the same workbook — see productionDate.ts.
     where: delayProductionDateWhere(date) ?? {},
@@ -30,8 +30,19 @@ export async function GET(req: NextRequest) {
       machine: true,
       productionRecord: { include: { batchRecipe: true } },
     },
-    orderBy: [{ shift: { date: "asc" } }, { createdAt: "asc" }],
+    orderBy: { createdAt: "asc" },
   });
+
+  /* Sorted by the Production Date the sheet prints, for the same reason as the
+     production export — and here it matters twice over: S.No. is the row
+     position, and the Date-wise Totals sheet next to it IS date-sorted, so an
+     unsorted list would have the two sheets of one workbook disagree about the
+     order of the same days. */
+  const delays = [...fetched].sort(
+    (a, b) =>
+      delayProductionDateOf(a).localeCompare(delayProductionDateOf(b)) ||
+      a.createdAt.getTime() - b.createdAt.getTime(),
+  );
 
   const rows: Record<string, string | number>[] = delays.map((d, i) => ({
     "S.No.":            i + 1,

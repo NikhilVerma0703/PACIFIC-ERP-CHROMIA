@@ -84,15 +84,6 @@ export function daysBetween(fromIso: string | null | undefined, toIso: string | 
   return Math.round((to - from) / 86_400_000);
 }
 
-/** How many days ago this setup's run was, or null when it carries no date. */
-export function setupAgeDays(
-  productionDate: string | null | undefined,
-  shiftDate: string | null | undefined,
-  todayIso: string,
-): number | null {
-  return daysBetween(setupDate(productionDate, shiftDate), todayIso);
-}
-
 /**
  * Is this setup outside the reporting period, and so worth a warning?
  *

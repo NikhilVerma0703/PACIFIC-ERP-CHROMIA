@@ -44,10 +44,8 @@ export interface SlabSearchWhere {
      * it: Prisma ANDs the top-level keys, so a date and a design narrow each
      * other instead of one replacing the other.
      */
-    OR?: Array<{
-      batchRecipe?: { productionDate: string | null } | null;
-      shift?: { date: string };
-    }>;
+    /** The production-date branches, as productionDateWhere builds them. */
+    OR?: NonNullable<ReturnType<typeof productionDateWhere>>["OR"];
   };
   hasFilters: boolean;
 }
@@ -63,9 +61,12 @@ export function slabSearchWhere(input: SlabSearchInput): SlabSearchWhere {
 
   const where: SlabSearchWhere["where"] = {};
   if (shiftId) where.shiftId = shiftId;
-  // Spread rather than assigned: productionDateWhere returns undefined for a
-  // blank date, and its OR is the whole of the production-date match.
-  Object.assign(where, productionDateWhere(date));
+  // Assigned field by field, NOT Object.assign: that helper's signature is
+  // `(target: T, source: U) => T & U`, so it never checks the source against
+  // the target and a productionDateWhere that changed shape would slip through
+  // unnoticed — in the one module written to stop two things drifting apart.
+  const dateWhere = productionDateWhere(date);
+  if (dateWhere) where.OR = dateWhere.OR;
   if (slabNumber) where.slabNumber = { contains: slabNumber };
 
   // Both of these narrow the SAME related setup, so they are collected into one

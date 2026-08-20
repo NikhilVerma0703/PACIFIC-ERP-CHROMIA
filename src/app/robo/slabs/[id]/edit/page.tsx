@@ -60,7 +60,7 @@ export default async function EditRoboSlabPage({
     select: {
       slabNumber: true,
       batchRecipeId: true,
-      shift: { select: { shiftNumber: true, date: true, status: true } },
+      shift: { select: { date: true, status: true } },
       batchRecipe: {
         select: {
           id: true, productionDate: true, batchNo: true, designName: true,

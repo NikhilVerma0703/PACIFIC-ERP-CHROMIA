@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { prisma } from "@/lib/prisma";
 import { fmtDurationLong, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
-import { productionDateOf, productionDateWhere, setupProductionDate } from "@/lib/robo/productionDate";
+import { productionDateOf, productionDateWhere, setupProductionDate, setupProductionDateWhere } from "@/lib/robo/productionDate";
 import {
   PRODUCTION_RECORD_COLUMNS,
   PRODUCTION_RECORD_WIDTHS,
@@ -25,7 +25,7 @@ const dash = (v: string | number | null | undefined) =>
 export async function GET(req: NextRequest) {
   const date = req.nextUrl.searchParams.get("date")?.trim() || "";
 
-  const records = await prisma.roboProductionRecord.findMany({
+  const fetched = await prisma.roboProductionRecord.findMany({
     // Filtered on the date the operator entered, matching what the sheet
     // prints and what Slabs Records searches — see productionDate.ts.
     where: productionDateWhere(date) ?? {},
@@ -34,8 +34,21 @@ export async function GET(req: NextRequest) {
       batchRecipe: true,
       delayLogs: { include: { delayCode: true }, orderBy: { createdAt: "asc" } },
     },
-    orderBy: [{ shift: { date: "asc" } }, { createdAt: "asc" }],
+    orderBy: { createdAt: "asc" },
   });
+
+  /* Sorted by the Production Date the sheet PRINTS, not by the shift's own
+     date. It used to be `orderBy: [{ shift: { date } }, ...]`, which was the
+     same thing back when the column read off the shift — and became a sheet
+     whose first column jumps about the moment it stopped. Sorted here rather
+     than in the query because the value is a fallback across two relations and
+     Postgres cannot order by it; every row is already in memory to be shaped.
+     yyyy-mm-dd sorts as text exactly as it sorts as a date. */
+  const records = [...fetched].sort(
+    (a, b) =>
+      productionDateOf(a).localeCompare(productionDateOf(b)) ||
+      a.createdAt.getTime() - b.createdAt.getTime(),
+  );
 
   /* Columns and row shaping live in lib/robo/productionExport.ts, together and
      under test: json_to_sheet appends any row key its header does not mention,
@@ -79,11 +92,18 @@ export async function GET(req: NextRequest) {
   wsRecords["!cols"] = PRODUCTION_RECORD_WIDTHS.map((wch) => ({ wch }));
 
   /* Second sheet: the production setup each slab was produced under. */
-  const setups = await prisma.roboBatchRecipe.findMany({
-    where: date ? { OR: [{ productionDate: date }, { productionDate: null, shift: { date } }] } : {},
+  const fetchedSetups = await prisma.roboBatchRecipe.findMany({
+    // Through the same module as everything else, rather than a second
+    // hand-written copy of the fallback that could drift from it.
+    where: setupProductionDateWhere(date) ?? {},
     include: { shift: true, entries: { include: { machine: true } } },
     orderBy: { createdAt: "asc" },
   });
+  const setups = [...fetchedSetups].sort(
+    (a, b) =>
+      setupProductionDate(a).localeCompare(setupProductionDate(b)) ||
+      a.createdAt.getTime() - b.createdAt.getTime(),
+  );
 
   const setupRows: Record<string, string | number>[] = [];
   for (const s of setups) {

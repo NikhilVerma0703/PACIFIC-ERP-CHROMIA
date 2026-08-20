@@ -6,7 +6,8 @@ import { SLAB_COMPLETED, SLAB_IN_PROCESSING } from "@/lib/robo/utils";
 /**
  * GET /api/robo/production
  * Filters (all optional, combinable):
- *   shiftId, date (production date from the shift), slabNumber, designName,
+ *   shiftId, date (the production date on the setup, falling back to the
+ *   shift's own date — see lib/robo/productionDate.ts), slabNumber, designName,
  *   batchNo (the batch number on the setup the slab was logged against)
  * With no filters the latest 25 records are returned.
  *

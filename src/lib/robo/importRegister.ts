@@ -153,9 +153,8 @@ export interface ParseResult {
   fatal: string | null;
 }
 
-export function setupKey(date: string, shiftNumber: number, designName: string): string {
-  return `${date}|${shiftNumber}|${designName.trim().toUpperCase()}`;
-}
+import { setupKey } from "./registerSetups.ts";
+export { setupKey, soleSetupDesign } from "./registerSetups.ts";
 
 const REQUIRED = ["date", "slabNumber"];
 

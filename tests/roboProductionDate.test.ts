@@ -50,6 +50,7 @@ test("the search matches exactly what the column shows", () => {
     OR: [
       { batchRecipe: { productionDate: "2026-08-13" } },
       { batchRecipe: { productionDate: null }, shift: { date: "2026-08-13" } },
+      { batchRecipe: { productionDate: "" }, shift: { date: "2026-08-13" } },
       { batchRecipe: null, shift: { date: "2026-08-13" } },
     ],
   });
@@ -61,9 +62,12 @@ test("the fallback branch pins productionDate to null, or the search over-matche
      shift row happens to say the 17th. That is the exact confusion this
      replaces, reappearing inside the search. */
   const where = productionDateWhere("2026-08-17");
-  const fallback = where!.OR[1] as { batchRecipe: { productionDate: null }; shift: { date: string } };
-  assert.equal(fallback.batchRecipe.productionDate, null);
-  assert.equal(fallback.shift.date, "2026-08-17");
+  // "Unset" is NULL *or* "", one branch each: productionDateOf() falls back to
+  // the shift for a blank string too, so a filter that only matched NULL would
+  // print a date on a row nothing could find. Prisma's `in` takes string[] and
+  // cannot carry a null, so this cannot be collapsed into one branch.
+  assert.deepEqual(where!.OR[1], { batchRecipe: { productionDate: null }, shift: { date: "2026-08-17" } });
+  assert.deepEqual(where!.OR[2], { batchRecipe: { productionDate: "" }, shift: { date: "2026-08-17" } });
 });
 
 test("a blank date is no filter at all, so it can be spread unconditionally", () => {
@@ -112,9 +116,9 @@ test("a delay on a slab whose setup carries no date falls back to the shift", ()
 
 test("the delay search covers the slab-less case the slab search does not need", () => {
   const where = delayProductionDateWhere("2026-08-13");
-  assert.equal(where!.OR.length, 4);
+  assert.equal(where!.OR.length, 5);
   assert.deepEqual(where!.OR[0], { productionRecord: { batchRecipe: { productionDate: "2026-08-13" } } });
-  assert.deepEqual(where!.OR[3], { productionRecord: null, shift: { date: "2026-08-13" } });
+  assert.deepEqual(where!.OR[4], { productionRecord: null, shift: { date: "2026-08-13" } });
 });
 
 test("a blank delay date is no filter either", () => {

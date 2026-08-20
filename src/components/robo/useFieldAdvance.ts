@@ -27,8 +27,11 @@ import { nextFieldToFocus } from "@/lib/robo/advanceFocus";
  * Fields are grouped, and the cursor never leaves its group. The slab row and
  * the delay panel below it are one HTML form, so without groups Enter on the
  * last remark would drop into the delay start time — a panel most slabs never
- * use. It also fixes a smaller thing on the way: Enter inside the delay panel
- * used to submit the whole slab, since that is what Enter does in a form.
+ * use. On a touch screen this also stops Enter inside the delay panel saving
+ * the slab instead of adding the delay, which is what Enter does in a form. On
+ * a desktop that is still what it does: nothing here changes for a mouse and a
+ * real keyboard, deliberately, because that is where the in-charges work and
+ * they submit with Enter today.
  */
 
 const GROUP_ATTR = "data-advance-group";
