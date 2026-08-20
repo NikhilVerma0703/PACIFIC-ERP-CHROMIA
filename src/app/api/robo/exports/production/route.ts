@@ -2,22 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { prisma } from "@/lib/prisma";
 import { fmtDurationLong, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
+import { productionDateOf, productionDateWhere, setupProductionDate, setupProductionDateWhere } from "@/lib/robo/productionDate";
+import {
+  PRODUCTION_RECORD_COLUMNS,
+  PRODUCTION_RECORD_WIDTHS,
+  productionRecordRow,
+  type ProductionRecordRow,
+} from "@/lib/robo/productionExport";
 
 const MACHINE_ORDER = ["Roycut-1", "Roymix", "Roycut-2", "Roycut-3"];
-
-const RECORD_COLUMNS = [
-  "S.No.", "Production Date", "Shift", "Operator", "Design Name", "Thickness (cm)",
-  "Slab Number", "In Time", "Out Time",
-  // Robo2, not RoyMix. The machine is stored as "Roymix" and always will be —
-  // the stored names carry the ordering, the preset keys and every delay log
-  // ever saved — but nothing on screen says RoyMix any more, so an export that
-  // did was naming a machine the reader cannot find. The Machine cell was fixed
-  // with machineLabel and these headers were missed. Re-importing an exported
-  // sheet still works either way: importRegister accepts both robo2* and
-  // roymix* spellings for exactly this reason.
-  "Robo2 Body Weight (kg)", "Robo2 Cycle Time (sec)",
-  "Status", "Delay Codes", "Total Delay", "Remarks",
-];
 
 const SETUP_COLUMNS = [
   "Production Date", "Shift", "Design Name", "Thickness (cm)", "Target Slabs",
@@ -32,61 +25,85 @@ const dash = (v: string | number | null | undefined) =>
 export async function GET(req: NextRequest) {
   const date = req.nextUrl.searchParams.get("date")?.trim() || "";
 
-  const records = await prisma.roboProductionRecord.findMany({
-    where: date ? { shift: { date } } : {},
+  const fetched = await prisma.roboProductionRecord.findMany({
+    // Filtered on the date the operator entered, matching what the sheet
+    // prints and what Slabs Records searches — see productionDate.ts.
+    where: productionDateWhere(date) ?? {},
     include: {
       shift: true,
       batchRecipe: true,
       delayLogs: { include: { delayCode: true }, orderBy: { createdAt: "asc" } },
     },
-    orderBy: [{ shift: { date: "asc" } }, { createdAt: "asc" }],
+    orderBy: { createdAt: "asc" },
   });
 
-  const rows = records.map((r, i) => {
-    const delayMins = r.delayLogs.reduce((s, d) => s + d.durationMinutes, 0);
-    return {
-      "S.No.":                    r.serialNumber ?? i + 1,
-      "Production Date":          dash(r.shift?.date),
-      "Shift":                    dash(r.shift?.shiftNumber),
-      "Operator":                 dash(r.shift?.operatorName),
-      "Design Name":              dash(r.batchRecipe?.designName),
-      "Thickness (cm)":           dash(r.batchRecipe?.thickness),
-      "Slab Number":              dash(r.slabNumber),
-      "In Time":                  dash(r.inTime),
-      "Out Time":                 dash(r.outTime),
-      "RoyMix Body Weight (kg)":  dash(r.roymixBodyWeight),
-      "RoyMix Cycle Time (sec)":  dash(r.roymixCycleTime),
-      "Status":                   slabStatusLabel(r.status),
-      "Delay Codes":              r.delayLogs.length ? r.delayLogs.map(d => d.delayCode.code).join(", ") : "-",
-      "Total Delay":              delayMins > 0 ? fmtDurationLong(delayMins) : "-",
-      "Remarks":                  dash(r.remarks),
-    };
-  });
+  /* Sorted by the Production Date the sheet PRINTS, not by the shift's own
+     date. It used to be `orderBy: [{ shift: { date } }, ...]`, which was the
+     same thing back when the column read off the shift — and became a sheet
+     whose first column jumps about the moment it stopped. Sorted here rather
+     than in the query because the value is a fallback across two relations and
+     Postgres cannot order by it; every row is already in memory to be shaped.
+     yyyy-mm-dd sorts as text exactly as it sorts as a date. */
+  const records = [...fetched].sort(
+    (a, b) =>
+      productionDateOf(a).localeCompare(productionDateOf(b)) ||
+      a.createdAt.getTime() - b.createdAt.getTime(),
+  );
+
+  /* Columns and row shaping live in lib/robo/productionExport.ts, together and
+     under test: json_to_sheet appends any row key its header does not mention,
+     so the two drifting apart is a silent blank column plus a stray one past
+     the end — which is what this sheet used to do with the Robo2 pair. */
+  const rows: ProductionRecordRow[] = records.map((r, i) =>
+    productionRecordRow(
+      {
+        serialNumber:     r.serialNumber,
+        productionDate:   productionDateOf(r),
+        shiftNumber:      r.shift?.shiftNumber ?? null,
+        thickness:        r.batchRecipe?.thickness ?? null,
+        slabNumber:       r.slabNumber,
+        roymixBodyWeight: r.roymixBodyWeight,
+        roymixCycleTime:  r.roymixCycleTime,
+        inTime:           r.inTime,
+        outTime:          r.outTime,
+        status:           r.status,
+        delayCodes:       r.delayLogs.map(d => d.delayCode.code),
+        delayMinutes:     r.delayLogs.reduce((s, d) => s + d.durationMinutes, 0),
+        remarks:          r.remarks,
+      },
+      i + 1,
+      slabStatusLabel,
+      fmtDurationLong,
+    ),
+  );
 
   const totalSlabDelay = records.reduce(
     (s, r) => s + r.delayLogs.reduce((x, d) => x + d.durationMinutes, 0), 0
   );
 
-  rows.push({} as (typeof rows)[number]);
+  rows.push({});
   rows.push({
     "Slab Number": "TOTAL",
     "Status": `${records.length} records`,
     "Total Delay": fmtDurationLong(totalSlabDelay),
-  } as (typeof rows)[number]);
+  });
 
-  const wsRecords = XLSX.utils.json_to_sheet(rows, { header: RECORD_COLUMNS });
-  wsRecords["!cols"] = [
-    { wch: 7 }, { wch: 15 }, { wch: 7 }, { wch: 16 }, { wch: 22 }, { wch: 13 },
-    { wch: 14 }, { wch: 10 }, { wch: 10 }, { wch: 21 }, { wch: 21 },
-    { wch: 14 }, { wch: 18 }, { wch: 20 }, { wch: 30 },
-  ];
+  const wsRecords = XLSX.utils.json_to_sheet(rows, { header: [...PRODUCTION_RECORD_COLUMNS] });
+  wsRecords["!cols"] = PRODUCTION_RECORD_WIDTHS.map((wch) => ({ wch }));
 
   /* Second sheet: the production setup each slab was produced under. */
-  const setups = await prisma.roboBatchRecipe.findMany({
-    where: date ? { shift: { date } } : {},
+  const fetchedSetups = await prisma.roboBatchRecipe.findMany({
+    // Through the same module as everything else, rather than a second
+    // hand-written copy of the fallback that could drift from it.
+    where: setupProductionDateWhere(date) ?? {},
     include: { shift: true, entries: { include: { machine: true } } },
     orderBy: { createdAt: "asc" },
   });
+  const setups = [...fetchedSetups].sort(
+    (a, b) =>
+      setupProductionDate(a).localeCompare(setupProductionDate(b)) ||
+      a.createdAt.getTime() - b.createdAt.getTime(),
+  );
 
   const setupRows: Record<string, string | number>[] = [];
   for (const s of setups) {
@@ -96,7 +113,7 @@ export async function GET(req: NextRequest) {
     for (const e of entries) {
       const isRoycut3 = e.machine.name === "Roycut-3";
       setupRows.push({
-        "Production Date":          String(dash(s.shift?.date)),
+        "Production Date":          String(dash(setupProductionDate(s))),
         "Shift":                    String(dash(s.shift?.shiftNumber)),
         "Design Name":              String(dash(s.designName)),
         "Thickness (cm)":           String(dash(s.thickness)),

@@ -16,7 +16,6 @@ const RECORD: SlabRecordFields = {
   fileName: 'Astral Mist 1',
   thicknessCm: '2',
   inTime: '09:15',
-  fullyPrintedDate: '2026-08-03',
   remarks: 'Stock',
 };
 
@@ -80,7 +79,6 @@ describe('the correction form', () => {
     baseMaterial: 'Astral Mist',
     fileName: 'Astral Mist 1',
     thicknessCm: '2',
-    fullyPrintedDate: '2026-08-03',
     remarks: 'Stock',
   };
 
@@ -108,20 +106,27 @@ describe('the correction form', () => {
     const parsed = slabRecordEditSchema.safeParse({
       ...form,
       thicknessCm: '',
-      fullyPrintedDate: '',
       remarks: '',
     });
 
     expect(parsed.success).toBe(true);
     expect(parsed.success && parsed.data.thicknessCm).toBeUndefined();
-    expect(parsed.success && parsed.data.fullyPrintedDate).toBeUndefined();
     expect(parsed.success && parsed.data.remarks).toBeUndefined();
   });
 
-  it('refuses a fully printed date that is not a date', () => {
-    expect(slabRecordEditSchema.safeParse({ ...form, fullyPrintedDate: '03-08-2026' }).success).toBe(
-      false,
-    );
+  it('no longer carries a fully printed date at all', () => {
+    // The field is gone from every form; anything still sending it is ignored
+    // rather than written, so a correction cannot blank the figure the register
+    // importer put in that column.
+    const parsed = slabRecordEditSchema.safeParse({ ...form, fullyPrintedDate: '2026-08-03' });
+    expect(parsed.success).toBe(true);
+    expect(Object.keys(parsed.success ? parsed.data : {})).not.toContain('fullyPrintedDate');
+  });
+
+  it('accepts a correction with no in-time, like the entry form', () => {
+    const parsed = slabRecordEditSchema.safeParse({ ...form, inTime: '' });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.inTime).toBeUndefined();
   });
 
   it('cannot be aimed at something that is not a slab id', () => {

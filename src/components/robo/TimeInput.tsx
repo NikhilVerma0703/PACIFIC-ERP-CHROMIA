@@ -15,17 +15,29 @@ import { isValidTime, maskTimeInput, normaliseTime } from "@/lib/robo/time";
  * tested without a DOM.
  */
 export function TimeInput({
-  value, onChange, className = "", disabled, required,
+  value, onChange, onComplete, className = "", disabled, required, ...rest
 }: {
   value: string;
   onChange: (value: string) => void;
+  /**
+   * Fired the moment the field holds a whole time, with the input element.
+   * A time is the one field on this form whose end can be known — four digits
+   * and the mask has all of it — which is what lets the cursor move on by
+   * itself. See useFieldAdvance.
+   *
+   * It fires on the transition into a valid time, not on every keystroke while
+   * one is present, so correcting an already-complete time re-fires once the
+   * correction is itself complete rather than on the way through.
+   */
+  onComplete?: (el: HTMLInputElement) => void;
   className?: string;
   disabled?: boolean;
   required?: boolean;
-}) {
+} & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "type" | "className" | "disabled" | "required">) {
   const invalid = value.trim() !== "" && !isValidTime(value);
   return (
     <input
+      {...rest}
       type="text"
       inputMode="numeric"
       autoComplete="off"
@@ -35,7 +47,11 @@ export function TimeInput({
       disabled={disabled}
       required={required}
       aria-invalid={invalid || undefined}
-      onChange={(e) => onChange(maskTimeInput(e.target.value))}
+      onChange={(e) => {
+        const masked = maskTimeInput(e.target.value);
+        onChange(masked);
+        if (onComplete && isValidTime(masked) && !isValidTime(value)) onComplete(e.currentTarget);
+      }}
       onBlur={(e) => onChange(normaliseTime(e.target.value))}
       className={className}
       /* Inline rather than a Tailwind class: appending "border-red-400" to a

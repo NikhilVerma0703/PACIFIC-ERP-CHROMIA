@@ -17,11 +17,23 @@ import { CLOCK_TIME_MESSAGE, normaliseClockTime } from '@/lib/chromia/clock-time
  * morning. And it has to be written one way, whatever was typed: "930", "9.30"
  * and "09:30" are the same instant and the register should not show three
  * spellings of it.
+ *
+ * AND IT IS OPTIONAL. It is the one column of the register that is genuinely sometimes not known
+ * when the row is written — a slab booked in from a note, or a day being
+ * caught up afterwards. Refusing the whole entry over it pushed operators into
+ * typing a time they were guessing at, and a guessed in-time is worse than a
+ * blank one: nothing downstream can tell it from a measured one, and the
+ * processing window is computed from it.
+ *
+ * Blank means blank. Anything actually typed is still held to the same rule as
+ * before — "25:70" is refused rather than stored as ten past one.
  */
-const clockTime = z
+const optionalClockTime = z
   .string()
   .trim()
+  .optional()
   .transform((value, ctx) => {
+    if (value === undefined || value === '') return undefined;
     const tidied = normaliseClockTime(value);
     if (!tidied) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: CLOCK_TIME_MESSAGE });
@@ -35,7 +47,7 @@ export const operatorEntrySchema = z.object({
     .string()
     .trim()
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'Enter a valid date'),
-  inTime: clockTime,
+  inTime: optionalClockTime,
   batchNo: z.string().trim().min(1, 'Batch number is required').max(60, 'Batch number is too long'),
   slabNo: z.string().trim().min(1, 'Slab number is required').max(60, 'Slab number is too long'),
   baseMaterial: z

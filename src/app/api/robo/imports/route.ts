@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { currentUser } from "@/lib/rbac";
-import { parseRegister, setupKey, ParsedRow } from "@/lib/robo/importRegister";
+import { parseRegister, setupKey, soleSetupDesign, ParsedRow } from "@/lib/robo/importRegister";
 
 export async function GET() {
   try {
@@ -85,6 +85,12 @@ export async function POST(req: Request) {
         });
       }
 
+      /* The design for rows that do not carry one. Our own export stopped
+         repeating Design Name on every slab line, so on a re-import the second
+         sheet is what says which run a slab belongs to. Only used when that
+         answer is unambiguous — see soleSetupDesign. */
+      const fallbackDesign = soleSetupDesign(parsed.setups, date, shiftNumber);
+
       /* ── Production setups, one per design in this shift ── */
       const recipeByDesign = new Map<string, string>();
       const existingRecipes = await prisma.roboBatchRecipe.findMany({
@@ -111,21 +117,22 @@ export async function POST(req: Request) {
 
           // Resolve (or create) the setup this slab was produced under
           let batchRecipeId: string | null = null;
-          if (row.designName) {
-            const designKey = row.designName.trim().toUpperCase();
+          const rowDesign = row.designName || fallbackDesign;
+          if (rowDesign) {
+            const designKey = rowDesign.trim().toUpperCase();
             let recipeId = recipeByDesign.get(designKey);
             if (!recipeId) {
               const design = await prisma.roboDesign.upsert({
-                where: { name: row.designName.trim() },
+                where: { name: rowDesign.trim() },
                 update: {},
-                create: { name: row.designName.trim() },
+                create: { name: rowDesign.trim() },
               });
-              const entries = parsed.setups[setupKey(row.date, row.shiftNumber, row.designName)] ?? [];
+              const entries = parsed.setups[setupKey(row.date, row.shiftNumber, rowDesign)] ?? [];
               const created = await prisma.roboBatchRecipe.create({
                 data: {
                   shiftId: shift.id,
                   designId: design.id,
-                  designName: row.designName.trim(),
+                  designName: rowDesign.trim(),
                   programName: "",
                   thickness: row.thickness,
                   notes: "Imported from production register",

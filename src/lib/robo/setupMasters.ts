@@ -97,6 +97,31 @@ export function entryCreateData(entries: readonly SetupEntryInput[]) {
 }
 
 /**
+ * Puts each machine's `notes` back onto the rebuilt rows.
+ *
+ * RoboBatchRecipeEntry has a `notes` column that no screen in this ERP writes
+ * and that the setup form therefore never sends. Because the PATCH rebuilds
+ * the rows rather than updating them, "never sent" was silently becoming
+ * "erased": reopening a setup and pressing Save with nothing typed dropped the
+ * note off every machine, for every slab in the batch. Nothing showed it had
+ * gone, because nothing in this ERP shows the column at all.
+ *
+ * Only rows the caller actually read are carried; a machine ticked on for the
+ * first time has no note to keep and gets null, which is what it had.
+ *
+ * The column is not dead weight: the upstream standalone app writes it and
+ * imported setups can carry it. The right long-term answer is to put the field
+ * on the setup card so it can be read and edited like everything else — until
+ * then, not destroying it is the least this can do.
+ */
+export function carryEntryNotes<T extends { machineId: string }>(
+  rows: readonly T[],
+  existingNotes: ReadonlyMap<string, string | null>,
+): (T & { notes: string | null })[] {
+  return rows.map((r) => ({ ...r, notes: existingNotes.get(r.machineId) ?? null }));
+}
+
+/**
  * The setup's own columns. Note what is NOT here: `shiftId`, which create sets
  * once and edit must never touch — moving a setup to another shift would leave
  * every slab logged against it counted under a shift it was not made in.

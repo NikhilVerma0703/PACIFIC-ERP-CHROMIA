@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { delayProductionDateWhere, productionDateWhere } from "@/lib/robo/productionDate";
 
 /** The four robots on the line, in physical order. */
 const ROBOTS = [
@@ -29,25 +30,53 @@ function shiftMinutes(startTime: string, endTime: string | null, status: string,
 /**
  * GET /api/robo/reports/summary?date=YYYY-MM-DD
  * No date  → every production record to date.
- * With date → only shifts produced on that date.
+ * With date → only what was PRODUCED on that date.
+ *
+ * "That date" is the production date the operator entered on the batch setup,
+ * falling back to the shift's own date — the same rule Slabs Records, Complete
+ * Details and both Excel downloads use. See lib/robo/productionDate.ts.
+ *
+ * It used to be `where: { shift: { date } }`, and that is not a small
+ * difference: a shift row is created silently with the day the tablet was
+ * open, so a run entered late counted under the day it was typed. This
+ * endpoint also fills the preview tiles on the Downloads screen AND decides
+ * whether its two buttons are enabled, so while it disagreed with the exports
+ * it sat underneath, picking the real production date turned both downloads
+ * off and picking the typing date offered an empty workbook.
  */
 export async function GET(req: NextRequest) {
   const date = req.nextUrl.searchParams.get("date")?.trim() || "";
   const now = new Date();
   const nowMins = now.getHours() * 60 + now.getMinutes();
 
+  const recordWhere: Prisma.RoboProductionRecordWhereInput = productionDateWhere(date) ?? {};
+  const delayWhere: Prisma.RoboDelayLogWhereInput = delayProductionDateWhere(date) ?? {};
+
+  const totalSlabs = await prisma.roboProductionRecord.count({ where: recordWhere });
+
+  /* Line minutes still come from the shift rows, because that is what a shift
+     genuinely records: when the tablet opened and closed. What changed is
+     WHICH shifts — the ones the matched slabs were logged in, rather than the
+     ones whose own date happens to equal the filter. Otherwise slabs/hour
+     would divide this date's slab count by another date's minutes.
+
+     A shift is counted once however many of its slabs matched; a distinct
+     select over the matched records gives exactly that set. */
+  const shiftIds = date
+    ? (await prisma.roboProductionRecord.findMany({
+        where: recordWhere,
+        select: { shiftId: true },
+        distinct: ["shiftId"],
+      })).map((r) => r.shiftId)
+    : null;
+
   const shifts = await prisma.roboShift.findMany({
-    where: date ? { date } : {},
+    where: shiftIds ? { id: { in: shiftIds } } : {},
     select: { startTime: true, endTime: true, status: true },
   });
   const productionMinutes = shifts.reduce(
     (s, sh) => s + shiftMinutes(sh.startTime, sh.endTime, sh.status, nowMins), 0
   );
-
-  const recordWhere: Prisma.RoboProductionRecordWhereInput = date ? { shift: { date } } : {};
-  const delayWhere: Prisma.RoboDelayLogWhereInput = date ? { shift: { date } } : {};
-
-  const totalSlabs = await prisma.roboProductionRecord.count({ where: recordWhere });
 
   const delays = await prisma.roboDelayLog.findMany({
     where: delayWhere,

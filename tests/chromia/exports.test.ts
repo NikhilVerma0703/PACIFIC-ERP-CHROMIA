@@ -224,7 +224,10 @@ describe('the prefixed period picker', () => {
     const columns = productionColumns();
     expect(columns.map((column) => column.label)).toContain('Recalibrations');
     expect(columns.map((column) => column.label)).toContain('Dispatch Date');
-    expect(columns).toHaveLength(15);
+    // Fourteen, not fifteen: Fully Printed Date went with the field. Nothing
+    // types it any more — see lib/chromia/validation/slab.ts.
+    expect(columns.map((column) => column.label)).not.toContain('Fully Printed Date');
+    expect(columns).toHaveLength(14);
   });
 });
 
@@ -291,7 +294,7 @@ describe('the order a sheet writes its columns in', () => {
       'Thickness (cm)',
       'In-time',
       'Out-time',
-      'Fully Printed Date',
+      // Fully Printed Date sat here until the field that fed it was removed.
       'Status',
       'Outcome',
     ];

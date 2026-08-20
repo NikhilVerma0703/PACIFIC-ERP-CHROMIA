@@ -41,18 +41,28 @@ const optionalDate = z
     return toLocalDate(value);
   });
 
-/**
- * Slab Intake — what the in-charge adds after processing.
+/*
+ * Slab intake — what the in-charge adds after processing.
  *
  * Identity, material, artwork and thickness are all recorded by the operator
- * when the slab goes on the line, so this form no longer asks for them again.
- * What is left is the day it came off printed, and the QC decision below.
+ * when the slab goes on the line, so this never asked for them again. What is
+ * left is the QC decision below, and nothing else:
+ *
+ * FULLY PRINTED DATE IS GONE FROM THE UI TOO.
+ *
+ * It was the one thing the old separate intake page asked for, and it was
+ * asked for twice over: the slab comes off the line the same shift it goes on,
+ * so the date was always the production date already on the record, retyped by
+ * somebody who was not there when it happened. Removed at the plant's request
+ * along with the separate page it lived on.
+ *
+ * The COLUMN stays. ChromiaProcessCycle.fullyPrintedDate holds a real figure
+ * for every slab imported from the monthly register — that sheet has the
+ * column and fills it per slab — and dropping it would throw that away and
+ * break the importer, which uses it as the out-time. Nothing writes it by hand
+ * any more; the importer still does.
  */
-export const slabIntakeSchema = z.object({
-  fullyPrintedDate: optionalDate,
-});
 
-export type SlabIntakeInput = z.infer<typeof slabIntakeSchema>;
 
 
 /**

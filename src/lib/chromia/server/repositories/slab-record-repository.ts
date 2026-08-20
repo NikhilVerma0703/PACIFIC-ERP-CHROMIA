@@ -16,6 +16,9 @@ export async function loadSlabRecord(slabId: string) {
     select: {
       id: true,
       slabNo: true,
+      // Where the slab has got to, so a screen can tell whether there is any
+      // QC left to offer on it — see needsIntakeQc.
+      status: true,
       receivedDate: true,
       remarks: true,
       currentThicknessMm: true,
@@ -26,7 +29,7 @@ export async function loadSlabRecord(slabId: string) {
       cycles: {
         orderBy: { cycleNumber: 'desc' },
         take: 1,
-        select: { id: true, cycleNumber: true, inTime: true, fullyPrintedDate: true },
+        select: { id: true, cycleNumber: true, inTime: true },
       },
     },
   });
@@ -38,6 +41,7 @@ export async function loadSlabRecord(slabId: string) {
   return {
     id: slab.id,
     slabNo: slab.slabNo,
+    status: slab.status,
     receivedDate: slab.receivedDate,
     remarks: slab.remarks,
     // Decimal does not survive the trip to a client component, and the register
@@ -52,7 +56,6 @@ export async function loadSlabRecord(slabId: string) {
     cycleId: cycle?.id ?? null,
     cycleNumber: cycle?.cycleNumber ?? null,
     inTime: cycle?.inTime ?? null,
-    fullyPrintedDate: cycle?.fullyPrintedDate ?? null,
   };
 }
 

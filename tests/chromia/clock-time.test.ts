@@ -142,12 +142,33 @@ describe('the in-time as the schema receives it', () => {
       fileName: 'Astral Mist 1',
     };
 
-    for (const typed of ['25:70', '24:00', '12:60', '', 'abc']) {
+    for (const typed of ['25:70', '24:00', '12:60', 'abc']) {
       const parsed = operatorEntrySchema.safeParse({ ...row, inTime: typed });
       expect(parsed.success).toBe(false);
       expect(parsed.success === false && parsed.error.flatten().fieldErrors.inTime?.[0]).toBe(
         'Enter a valid in-time (HH:MM)',
       );
+    }
+  });
+
+  it('accepts a row with no in-time at all', async () => {
+    const { operatorEntrySchema } = await import('@/lib/chromia/validation/operator');
+
+    const row = {
+      entryDate: '2026-08-03',
+      batchNo: '1245',
+      slabNo: '130520',
+      baseMaterial: 'Astral Mist',
+      fileName: 'Astral Mist 1',
+    };
+
+    // The in-time is optional: it is genuinely sometimes not known when the row
+    // is written, and refusing the entry over it only bought a guessed time
+    // that nothing downstream can tell from a measured one.
+    for (const absent of ['', '   ', undefined]) {
+      const parsed = operatorEntrySchema.safeParse({ ...row, inTime: absent });
+      expect(parsed.success).toBe(true);
+      expect(parsed.success && parsed.data.inTime).toBeUndefined();
     }
   });
 

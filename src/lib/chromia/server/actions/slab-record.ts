@@ -43,7 +43,6 @@ export async function updateSlabRecordAction(
     baseMaterial: formData.get('baseMaterial'),
     fileName: formData.get('fileName'),
     thicknessCm: formData.get('thicknessCm'),
-    fullyPrintedDate: formData.get('fullyPrintedDate'),
     remarks: formData.get('remarks'),
   });
 
@@ -51,8 +50,11 @@ export async function updateSlabRecordAction(
     return { fieldErrors: parsed.error.flatten().fieldErrors };
   }
 
-  const inTime = combineDateAndTime(parsed.data.receivedDate, parsed.data.inTime);
-  if (!inTime) {
+  // Blank is allowed; anything typed still has to be a real time.
+  const inTime = parsed.data.inTime
+    ? combineDateAndTime(parsed.data.receivedDate, parsed.data.inTime)
+    : null;
+  if (parsed.data.inTime && !inTime) {
     return { error: 'Enter a valid date and in-time' };
   }
 

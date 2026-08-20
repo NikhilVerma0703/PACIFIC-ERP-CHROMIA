@@ -33,7 +33,6 @@ export interface SlabRecordFields {
   fileName: string;
   thicknessCm: string;
   inTime: string;
-  fullyPrintedDate: string;
   remarks: string;
 }
 
@@ -45,7 +44,6 @@ const LABELS: Record<keyof SlabRecordFields, string> = {
   fileName: 'File Name / Planned Design',
   thicknessCm: 'Thickness (cm)',
   inTime: 'In-time',
-  fullyPrintedDate: 'Fully Printed Date',
   remarks: 'Slab Remarks',
 };
 
@@ -58,7 +56,6 @@ const ORDER: (keyof SlabRecordFields)[] = [
   'fileName',
   'thicknessCm',
   'inTime',
-  'fullyPrintedDate',
   'remarks',
 ];
 

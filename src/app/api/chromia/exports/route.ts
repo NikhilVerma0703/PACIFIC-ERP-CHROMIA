@@ -16,7 +16,7 @@ import {
   type ExportKind,
 } from '@/lib/chromia/exports';
 import { loadExportRows, type ExportRow } from '@/lib/chromia/server/repositories/export-repository';
-import { dateOnly, dateTime, localDay, writeStyledWorkbook } from '@/lib/chromia/server/exports/sheet';
+import { dateTime, localDay, writeStyledWorkbook } from '@/lib/chromia/server/exports/sheet';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -49,7 +49,6 @@ function baseCells(row: ExportRow): Record<BaseField, string | number> {
     receivedDate: localDay(row.receivedDate),
     inTime: dateTime(row.inTime),
     outTime: dateTime(row.outTime),
-    fullyPrintedDate: dateOnly(row.fullyPrintedDate),
     status: slabStatusView(row.status, row.disposition).label,
     disposition: row.disposition ? DISPOSITION_LABELS[row.disposition] : '',
   };

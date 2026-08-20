@@ -5,6 +5,7 @@ import {
   designCodeFromFileName,
   endOfDay,
   normaliseFileName,
+  registerDay,
   startOfDay,
   toDateInput,
   toTimeInput,
@@ -85,5 +86,49 @@ describe('normaliseFileName', () => {
   it('ignores case and repeated spaces', () => {
     expect(normaliseFileName('  Lighter   Thaj 3 ')).toBe('lighter thaj 3');
     expect(normaliseFileName('LIGHTER THAJ 3')).toBe(normaliseFileName('lighter thaj 3'));
+  });
+});
+
+describe('the day a register entry belongs to', () => {
+  /* The production date is what dates the record now, not the in-time. It has
+     to be, because the in-time is optional — and because the operator chooses
+     the date, often an older day being caught up. */
+
+  it('is local midnight of the date typed', () => {
+    const day = registerDay('2026-08-03');
+    expect(day).not.toBeNull();
+    expect(day?.getFullYear()).toBe(2026);
+    expect(day?.getMonth()).toBe(7);
+    expect(day?.getDate()).toBe(3);
+    expect(day?.getHours()).toBe(0);
+    expect(day?.getMinutes()).toBe(0);
+  });
+
+  it('agrees with the in-time whenever there is one', () => {
+    // The rule this replaces was startOfDay(date + time). Nothing may move for
+    // a row that does carry a time, or every existing record shifts.
+    for (const time of ['00:00', '09:15', '23:59']) {
+      const combined = combineDateAndTime('2026-08-03', time);
+      expect(startOfDay(combined as Date).getTime()).toBe(registerDay('2026-08-03')?.getTime());
+    }
+  });
+
+  it('refuses a day that does not exist rather than rolling into the next month', () => {
+    // new Date(2026, 1, 31) is 3 March. A register entry dated 31 February is a
+    // typo, and silently filing it under March would hide it from its own day.
+    expect(registerDay('2026-02-31')).toBeNull();
+    expect(registerDay('2026-13-01')).toBeNull();
+    expect(registerDay('2026-00-10')).toBeNull();
+  });
+
+  it('refuses anything that is not yyyy-mm-dd', () => {
+    expect(registerDay('03-08-2026')).toBeNull();
+    expect(registerDay('2026-8-3')).toBeNull();
+    expect(registerDay('')).toBeNull();
+    expect(registerDay('today')).toBeNull();
+  });
+
+  it('ignores surrounding whitespace', () => {
+    expect(registerDay('  2026-08-03  ')?.getDate()).toBe(3);
   });
 });
