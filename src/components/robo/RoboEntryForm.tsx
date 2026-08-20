@@ -21,7 +21,8 @@ import { isValidTime } from "@/lib/robo/time";
 import { CATEGORY_META, CATEGORY_ORDER, guessCategory, defaultRobotSpecific } from "@/lib/robo/delayCategories";
 import { findDesignPreset, presetFieldsFor } from "@/lib/robo/design-presets";
 import { SETUP_EDIT_WINDOW_DAYS, daysBetween, describeAge, isSetupStale } from "@/lib/robo/setupAge";
-import { SLAB_IN_PROCESSING, slabStatusClass, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
+import { productionDateOf } from "@/lib/robo/productionDate";
+import { SLAB_IN_PROCESSING, formatSlabRemarks, slabStatusClass, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
 
 const MACHINE_ORDER = ["Roycut-1", "Roymix", "Roycut-2", "Roycut-3"];
 
@@ -47,6 +48,9 @@ interface ProdRecord {
   id: string; serialNumber: number | null; slabNumber: string;
   inTime: string | null; outTime: string | null; roymixCycleTime: number | null;
   roymixBodyWeight: number | null; status: string; remarks: string | null; createdAt: string;
+  /** The delays logged against this slab. Present so the Recent slabs table
+   *  can show the same Remarks text Slabs Records does — see that column. */
+  delayLogs?: SavedDelay[];
 }
 interface ActiveShift {
   id: string; shiftNumber: number; date: string; operatorName: string;
@@ -152,6 +156,14 @@ type MachineEntry = { programName: string; toolName: string; liquidName: string;
 const emptyEntry = (): MachineEntry => ({ programName: "", toolName: "", liquidName: "", powderName: "", rollerHeight: "", targetCycleTime: "" });
 
 const emptySlab = () => ({ serialNumber: "", slabNumber: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" });
+
+/** What the Recent slabs table prints under Remarks: the slab's own note AND
+ *  its delays, through the same formatter Slabs Records uses, with this
+ *  table's em-dash for nothing rather than the formatter's hyphen. */
+const slabRemarkText = (r: ProdRecord): string => {
+  const text = formatSlabRemarks(r.remarks, r.delayLogs);
+  return text === "-" ? "—" : text;
+};
 
 /**
  * Everything the Edit setup screen needs, resolved on the server so the cards
@@ -946,7 +958,9 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
           <Badge tone="amber">Editing slab</Badge>
           <span className="flex min-w-0 items-center gap-2 text-sm text-gray-600">
             <span className="font-medium text-gray-900">{editRecord?.slabNumber}</span>
-            {editRecord?.shift && <span className="text-gray-400">Shift {editRecord.shift.shiftNumber} · {editRecord.shift.date}</span>}
+            {/* The production date, not the shift's — same reason as
+                Complete Details §1. See productionDate.ts. */}
+            {productionDateOf(editRecord) && <span className="text-gray-400">{productionDateOf(editRecord)}</span>}
             {activeBatch && <span className="truncate text-gray-400">{activeBatch.designName}</span>}
           </span>
           {/* A closed shift is already reported on, so say so plainly rather
@@ -1435,7 +1449,13 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                     <td className="py-2 pr-4 text-gray-600">{r.inTime || "—"}{" → "}{r.outTime || "—"}</td>
                     <td className="py-2 pr-4 text-gray-600">{r.roymixCycleTime ? `${r.roymixCycleTime}s` : "—"}</td>
                     <td className="py-2 pr-4 text-gray-600">{r.roymixBodyWeight ? `${r.roymixBodyWeight} kg` : "—"}</td>
-                    <td className="py-2 pr-4 text-gray-500">{r.remarks || ""}</td>
+                    {/* The same text Slabs Records shows: the slab's own
+                        remark AND its delays, through one formatter. This
+                        column used to print r.remarks alone, so a note typed
+                        into the delay panel — which is where most of them go —
+                        appeared on Slabs Records and left this cell blank, on
+                        the very screen the operator had just typed it. */}
+                    <td className="py-2 pr-4 text-gray-500">{slabRemarkText(r)}</td>
                     <td className="py-2 text-right">
                       <div className="flex items-center justify-end gap-2 whitespace-nowrap">
                         {editingId !== r.id && (
