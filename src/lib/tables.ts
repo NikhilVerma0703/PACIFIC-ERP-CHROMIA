@@ -250,6 +250,17 @@ const PRESET_OPTIONS: Record<string, string[]> = {
   repolishStatus: ["Direct Ok", "Polish Ok", "Repolish Done", "Repolish Required"],
   rwStatus: ["Direct Ok", "RW Done Ok", "RW Required and ongoing", "Can't be Reworked"],
   qualityGrade: ["Not graded yet", "A", "A2", "B", "C (Reject)", "CTS", "Printing"],
+  // Quality issues are otherwise ONLY whatever the column already contains — the
+  // options are derived from distinct saved values (selectOptions below). So a
+  // defect nobody has recorded yet cannot be ticked, which is a chicken and egg:
+  // the first slab with it has no checkbox to tick. A preset is how a new defect
+  // becomes offerable, exactly as reasonForDeviation notes further down.
+  //
+  // Listed alone rather than as a full canonical set: the values already in the
+  // column are appended after these and deduped case-insensitively, so naming
+  // only the new one adds it without re-canonicalising defects the plant has
+  // been recording for years — which would silently re-case or drop them.
+  qualityIssue: ["Rubber"],
   polishType: ["Polish", "Suede", "Honed", "Leathered"],
   bay: ["Bay 1", "Bay 2", "Bay 3", "Bay 4", "Bay 5"],
   // MIS "Reason for deviation". The list is otherwise whatever the data contains, so a
