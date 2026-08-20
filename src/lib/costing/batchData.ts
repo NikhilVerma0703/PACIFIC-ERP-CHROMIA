@@ -120,13 +120,106 @@ export interface BatchConsumption {
   pressSlabs: number;
   firstPress: Date | null;
   lastPress: Date | null;
+  /**
+   * Silo-wise grit assignment, or NULL when nobody has assigned this batch.
+   *
+   * NULL AND NEVER [], and the distinction is load-bearing rather than
+   * stylistic: both fingerprints and report.ts switch on it, and an empty array
+   * arriving where null was meant would move every fingerprint in the plant and
+   * silently drop grit out of every total. hasGritAssignment() is the one
+   * predicate all of them go through so two call sites cannot disagree about
+   * what "nothing" looks like.
+   */
+  gritSilos: GritSiloAssignment[] | null;
 }
+
+/** One silo's assignment on one batch, with what the bag records say beside it
+ *  so a caller can flag a disagreement without a second query. */
+export interface GritSiloAssignment {
+  silo: string;
+  /** As assigned, verbatim. "" means listed but not yet sized. */
+  size: string;
+  /** Drawn on this batch, summed across the silo's charges. */
+  kg: number;
+  suppliers: Array<{ seq: number; supplier: string; kg: number }>;
+  /** What the bags in this silo record — REPORTED, never written to. */
+  recordedSizes: string[];
+  recordedSuppliers: string[];
+}
+
+/** The one predicate every consumer goes through. Two guards on one value —
+ *  `if (c.gritSilos)` and `if (c.gritSilos?.length)` — disagree on [], and that
+ *  disagreement is the only path where a batch's grit leaves the total with no
+ *  unpriced line, no blocker and no fingerprint movement. */
+export const hasGritAssignment = (
+  g: readonly unknown[] | null | undefined,
+): boolean => !!g && g.length > 0;
 
 /** The 32 (weight, silo, links) slot triplets, unpivoted in SQL. */
 const GRIT_SLOTS = Array.from({ length: 4 }, (_, mi) =>
   Array.from({ length: 8 }, (_, gi) => ({
     w: `m${mi + 1}_w${gi + 1}`, sn: `m${mi + 1}_g${gi + 1}_sn`, ids: `m${mi + 1}_g${gi + 1}`,
   }))).flat();
+
+/**
+ * Silo-wise grit for one batch: what was assigned, beside what the bags record.
+ *
+ * RETURNS NULL, NEVER [], when nobody has assigned this batch. Both fingerprints
+ * and report.ts fork on this value, and an empty array where null was meant
+ * would move every fingerprint in the plant and drop grit out of every total
+ * with no unpriced line to show for it.
+ *
+ * READS the silo table and never writes to it. The recorded size and supplier
+ * come along so a caller can flag a disagreement without a second query — they
+ * are REPORTED beside the assignment, and the assignment is what the batch is
+ * costed at. tests/gritContainment.test.ts holds that boundary.
+ */
+export async function loadGritSilos(
+  batchKey: string,
+  charges: readonly GritCharge[],
+): Promise<GritSiloAssignment[] | null> {
+  const [sizes, suppliers] = await Promise.all([
+    prisma.costingBatchGritSilo.findMany({ where: { batchKey } }),
+    prisma.costingBatchGritSupplier.findMany({ where: { batchKey }, orderBy: { seq: "asc" } }),
+  ]);
+  if (!sizes.length && !suppliers.length) return null;
+
+  // Kilograms per silo come from the MIXER, never from the assignment — the
+  // split says how the weight divides between suppliers, not how much there was.
+  const kgBySilo = new Map<string, number>();
+  for (const c of charges) kgBySilo.set(c.silo, (kgBySilo.get(c.silo) ?? 0) + c.kg);
+
+  // What the bags in each silo say. One query for the batch's silos, read-only.
+  const siloNos = [...new Set([...kgBySilo.keys(), ...sizes.map((r) => r.siloNo)])].filter(Boolean);
+  const recorded: Array<{ silo_no: string | null; sizes: string[]; suppliers: string[] }> = siloNos.length
+    ? await prisma.$queryRaw`
+        SELECT s.silo_no,
+               array_remove(array_agg(DISTINCT s.size_from_used_bag->>0), NULL) sizes,
+               array_remove(array_agg(DISTINCT s.name_from_supplier_master_from_used_bag->>0), NULL) suppliers
+        FROM silo s
+        WHERE btrim(s.silo_no) = ANY(${siloNos}::text[])
+        GROUP BY s.silo_no`
+    : [];
+  const recBySilo = new Map(recorded.map((r) => [(r.silo_no ?? "").trim(), r]));
+
+  const bySilo = new Map<string, GritSiloAssignment>();
+  const row = (silo: string): GritSiloAssignment => {
+    let r = bySilo.get(silo);
+    if (!r) {
+      const rec = recBySilo.get(silo);
+      r = {
+        silo, size: "", kg: kgBySilo.get(silo) ?? 0, suppliers: [],
+        recordedSizes: rec?.sizes ?? [], recordedSuppliers: rec?.suppliers ?? [],
+      };
+      bySilo.set(silo, r);
+    }
+    return r;
+  };
+  for (const a of sizes) row(a.siloNo).size = a.size;
+  for (const p of suppliers) row(p.siloNo).suppliers.push({ seq: p.seq, supplier: p.supplier, kg: p.kg });
+
+  return [...bySilo.values()].sort((a, b) => a.silo.localeCompare(b.silo));
+}
 
 export async function loadBatchConsumption(batchKey: string): Promise<BatchConsumption | null> {
   const head: Array<{ batch: string | null; cycles: number; resin_kg: number | null; filler_kg: number | null; charges: number | null }> =
@@ -231,6 +324,8 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
              min(imported_at) first, max(imported_at) last
       FROM press WHERE batch_key = ${batchKey}`;
 
+  const gritSilos = await loadGritSilos(batchKey, gritCharges);
+
   return {
     batchKey,
     batch: head[0].batch ?? batchKey,
@@ -241,6 +336,7 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
       tank: t.tank ?? "(no tank recorded)", cycles: t.cycles, kg: Number(t.kg ?? 0),
     })),
     gritCharges,
+    gritSilos,
     gritUnresolvedKg,
     fillerKg: Number(head[0].filler_kg ?? 0),
     mixerCharges: Number(head[0].charges ?? 0),

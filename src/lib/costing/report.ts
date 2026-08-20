@@ -10,8 +10,9 @@ import { prisma } from "@/lib/prisma";
 import {
   computeSheet, varianceLines, type CostingSheet, type MaterialLine, type VariancePanel,
 } from "./compute";
+import { gritFlagSentences, gritSiloItemKey, gritSiloLabel } from "./gritAssign";
 import {
-  bandOf, GRIT_BAND_LABELS, gritItemKey, listCostableBatches, loadBatchConsumption,
+  bandOf, GRIT_BAND_LABELS, gritItemKey, hasGritAssignment, listCostableBatches, loadBatchConsumption,
   RESIN_TANK_SUPPLIER, type BatchConsumption, type BatchListEntry,
 } from "./batchData";
 import {
@@ -335,6 +336,9 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
   const fromBatch = (
     item: string, label: string, group: MaterialLine["group"],
     mixerQty: number, unit: "kg" | "t", cardRate: number | null,
+    // Called with the quantity the split did NOT cover. Only the silo-wise grit
+    // path passes it, and only to withhold the sheet — see the fork below.
+    onShortfall?: (short: number) => void,
   ): boolean => {
     const lines = pricing.byItem.get(item);
     if (!lines?.length) return false;
@@ -353,6 +357,7 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
         needs: "a line covering it on this batch, or a card rate",
       });
     }
+    onShortfall?.(split.unpriced);
     // Every disagreement between the split and the mixer, verbatim. These are
     // the sentences that stop a wrong total looking right.
     assumptions.push(...split.problems);
@@ -444,6 +449,54 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
     "dosing rules — the mixer weighs resin, grit and filler but not these four.",
   );
 
+  // -- grit -----------------------------------------------------------------
+  //
+  // TWO SHAPES, ONE GATE. A batch somebody has assigned prices SILO BY SILO, at
+  // a rupee-per-tonne typed on the line. A batch nobody has assigned prices per
+  // band at the card, exactly as it did before this existed — and that path is
+  // not legacy to be tolerated, it is what every batch costed before this
+  // feature is STILL costed by. Deleting it would silently re-price them.
+  //
+  // The switch is per batch and flips the first time a silo is assigned.
+  if (hasGritAssignment(c.gritSilos)) {
+    for (const sil of c.gritSilos!) {
+      if (sil.kg <= 0) continue;
+      const item = gritSiloItemKey(sil.silo);
+      const label = gritSiloLabel(sil.silo, sil.size);
+
+      // cardRate is a HARD-CODED null, not a variable that could hold a rate.
+      // There is no per-silo card rate and there must never be one — the price
+      // is typed. No future edit can reintroduce a card fallback here without
+      // deleting this literal and the comment above it.
+      //
+      // THE CALLBACK IS THE WITHHELD-SHEET GUARD, and it is the single most
+      // important line in this block. needsBatchRates IS fromCard (see below),
+      // and the sheet is computed only when that is empty; `unpriced` has never
+      // gated it. Without this, a batch that is assigned but not yet priced —
+      // a state the two-step flow GUARANTEES on every batch — would print a
+      // complete-looking sheet with the grit silently missing: on the reference
+      // batch, material 12,500,221 -> 9,311,009, cost/sqft $3.22 -> $2.56, and
+      // the grit row gone from the share table entirely because compute.ts
+      // filters shares to amount > 0. It would not look broken. It would look
+      // like a cheap batch.
+      const priced = fromBatch(item, label, "grit", sil.kg / 1000, "t", null,
+        (short) => { if (short > 0) fromCard.add(label); });
+      if (priced) continue;
+
+      fromCard.add(label);            // assigned, not yet priced -> withhold
+      unpriced.push({
+        item: label, qty: r2(sil.kg / 1000), unit: "t",
+        needs: sil.size
+          ? "a price per tonne for this silo"
+          : "a size from the production verifier, then a price per tonne",
+      });
+    }
+    assumptions.push(...gritFlagSentences(c.gritSilos!));
+    // Unresolved tonnage is deliberately NOT reported on this path: it is inside
+    // the silo rows here, and pushing it again would report the same tonnes
+    // missing twice. It stays in weightsFingerprint untouched either way.
+  } else {
+
   // -- grit per band (per-charge attribution) -------------------------------
   const byBand = new Map<string, { kg: number; silos: Set<string> }>();
   for (const g of c.gritCharges) {
@@ -473,6 +526,7 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
       unit: "t", needs: "the silo fill records for those charges",
     });
   }
+  }   // end of the per-band path
 
   // -- filler ---------------------------------------------------------------
   const fillerRate = card.rates["filler-400"];
