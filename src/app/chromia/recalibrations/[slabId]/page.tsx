@@ -13,7 +13,7 @@ import {
   loadRecentBatchNos,
 } from '@/lib/chromia/server/services/operator-service';
 
-import { IntakeForm } from '../../slabs/new/intake-form';
+import { QcPanel } from '../../operator/qc-panel';
 import { RestartForm } from './restart-form';
 import { TripForm } from './trip-form';
 
@@ -140,19 +140,14 @@ export default async function RecalibrationSlabPage({
           title={`Slab intake — ${record.slabNo}`}
           description={`After recalibration attempt ${used}`}
         />
-        <IntakeForm
+        {/* The same QC section the operator screen shows, so a slab graded
+            after recalibration is graded by exactly the same rules and the same
+            code as one graded on its first pass. */}
+        <QcPanel
+          slabId={record.id}
+          slabNo={record.slabNo}
           recalibrationReasons={recalibrationReasons}
           today={toDateInput(new Date())}
-          existing={{
-            id: record.id,
-            slabNo: record.slabNo,
-            batchNo: record.batch.batchNo,
-            baseMaterial: record.baseMaterial.name,
-            designFileName,
-            thicknessCm: record.thicknessCm === null ? '' : String(record.thicknessCm),
-            receivedDate: toDateInput(record.receivedDate),
-            fullyPrintedDate: toDateInput(record.fullyPrintedDate),
-          }}
         />
       </div>
     );

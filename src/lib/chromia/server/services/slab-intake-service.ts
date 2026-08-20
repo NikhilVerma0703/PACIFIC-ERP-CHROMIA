@@ -3,8 +3,6 @@ import { prisma } from '@/lib/chromia/db';
 import { ConflictError, NotFoundError } from '@/lib/chromia/errors';
 import { createLogger } from '@/lib/chromia/logger';
 import { needsIntakeQc } from '@/lib/chromia/slab-links';
-import { toDateColumn } from '@/lib/chromia/utils/dates';
-import type { SlabIntakeInput } from '@/lib/chromia/validation/slab';
 
 const log = createLogger('slab-intake');
 
@@ -12,20 +10,19 @@ const log = createLogger('slab-intake');
  * Finish a slab that is already on the line.
  *
  * The operator enters the slab's identity and an in-time on the register. The
- * in-charge later opens that slab's intake page, which asks only for the day it
- * came off printed. That is this function: it records the printed date, stamps
- * the out-time, and hands the slab to `applyIntakeGrade` for the QC decision.
+ * in-charge later opens that slab in the register and grades it. That is this
+ * function: it stamps the out-time and hands the slab to `applyIntakeGrade` for
+ * the QC decision.
  *
- * The out-time is the moment this form is saved — that is when the in-charge
- * confirms the slab is off the line. The fully printed date is a calendar day
- * and stays in its own column; using it as a time would stamp every slab at
- * midnight. A slab that already carries an out-time keeps it.
+ * The out-time is the moment the QC section is saved — that is when the
+ * in-charge confirms the slab is off the line. A slab that already carries an
+ * out-time keeps it.
+ *
+ * It used to also record a "fully printed date" typed on a separate page. That
+ * page is gone and so is the field — see the note in validation/slab.ts. The
+ * column is still filled by the register importer, which has it per slab.
  */
-export async function completeSlabIntake(
-  slabId: string,
-  input: SlabIntakeInput,
-  userId: string,
-) {
+export async function completeSlabIntake(slabId: string, userId: string) {
   const slab = await prisma.chromiaSlab.findFirst({
     where: { id: slabId, deletedAt: null },
     select: {
@@ -62,7 +59,6 @@ export async function completeSlabIntake(
     await tx.chromiaProcessCycle.update({
       where: { id: cycle.id },
       data: {
-        fullyPrintedDate: toDateColumn(input.fullyPrintedDate),
         outTime,
         processingMinutes:
           inTime && outTime > inTime

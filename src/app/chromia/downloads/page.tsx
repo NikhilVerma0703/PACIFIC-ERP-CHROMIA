@@ -90,10 +90,6 @@ const PREVIEW_CELL: Record<
     className: tdMuted,
     render: (row) => (row.outTime ? dateTimeFmt.format(row.outTime) : '—'),
   },
-  fullyPrintedDate: {
-    className: `${tdMuted} whitespace-nowrap`,
-    render: (row) => (row.fullyPrintedDate ? dateFmt.format(row.fullyPrintedDate) : '—'),
-  },
   status: {
     className: td,
     render: (row) => <StatusBadge status={row.status} disposition={row.disposition} />,

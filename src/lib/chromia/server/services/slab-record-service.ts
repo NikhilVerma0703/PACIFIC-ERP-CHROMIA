@@ -2,14 +2,13 @@ import { ChromiaAuditAction as AuditAction, ChromiaSlabEventType as SlabEventTyp
 import { prisma } from '@/lib/chromia/db';
 import { ConflictError, NotFoundError } from '@/lib/chromia/errors';
 import { createLogger } from '@/lib/chromia/logger';
-import { startOfDay, toDateInput } from '@/lib/chromia/operator-register';
+import { registerDay, toDateInput } from '@/lib/chromia/operator-register';
 import {
   describeSlabRecordChanges,
   diffSlabRecord,
   DUPLICATE_SLAB_NO_MESSAGE,
   type SlabRecordFields,
 } from '@/lib/chromia/slab-record';
-import { toDateColumn } from '@/lib/chromia/utils/dates';
 import type { SlabRecordDeleteInput, SlabRecordEditInput } from '@/lib/chromia/validation/slab-record';
 import { isSlabNoTaken, loadSlabRecord } from '@/lib/chromia/server/repositories/slab-record-repository';
 import { resolveBaseMaterialId, resolveDesignId } from '@/lib/chromia/server/services/reference-service';
@@ -25,10 +24,6 @@ const dayOf = (date: Date | null) => (date === null ? '' : toDateInput(date));
  * A `@db.Date` column comes back at UTC midnight, so it must be read back the
  * same way it was written or the day drifts by one either side of Greenwich.
  */
-const utcDayOf = (date: Date | null) => {
-  if (date === null) return '';
-  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
-};
 
 /**
  * Correct a slab record.
@@ -63,7 +58,6 @@ export async function updateSlabRecord(input: SlabRecordEditInput, userId: strin
     fileName: record.designFileName,
     thicknessCm: record.thicknessCm === null ? '' : String(record.thicknessCm),
     inTime: timeOf(record.inTime),
-    fullyPrintedDate: utcDayOf(record.fullyPrintedDate),
     remarks: record.remarks ?? '',
   };
 
@@ -75,7 +69,6 @@ export async function updateSlabRecord(input: SlabRecordEditInput, userId: strin
     fileName: input.fileName,
     thicknessCm: input.thicknessCm === undefined ? '' : String(input.thicknessCm),
     inTime: timeOf(input.inTime),
-    fullyPrintedDate: input.fullyPrintedDate ?? '',
     remarks: input.remarks ?? '',
   };
 
@@ -90,7 +83,10 @@ export async function updateSlabRecord(input: SlabRecordEditInput, userId: strin
   const baseMaterialId = await resolveBaseMaterialId(input.baseMaterial);
   const designId = await resolveDesignId(input.fileName);
   const thicknessMm = input.thicknessCm === undefined ? null : input.thicknessCm * 10;
-  const receivedDate = startOfDay(input.inTime);
+  // The production date the operator chose dates the record — not the in-time,
+  // which is optional now and may not be there at all. They agree whenever a
+  // time was typed. See operator-register.registerDay.
+  const receivedDate = registerDay(input.receivedDate) ?? record.receivedDate;
 
   await prisma.$transaction(async (tx) => {
     // The batch is found or created exactly as the register does it, and the
@@ -143,14 +139,10 @@ export async function updateSlabRecord(input: SlabRecordEditInput, userId: strin
     if (record.cycleId) {
       await tx.chromiaProcessCycle.update({
         where: { id: record.cycleId },
-        data: {
-          inTime: input.inTime,
-          designId,
-          fullyPrintedDate:
-            input.fullyPrintedDate === undefined
-              ? null
-              : toDateColumn(new Date(`${input.fullyPrintedDate}T00:00:00`)),
-        },
+        // fullyPrintedDate is deliberately NOT written here: the field is gone
+        // from the form, and writing it from an absent value would blank the
+        // figure the register importer put there. See validation/slab.ts.
+        data: { inTime: input.inTime, designId },
       });
     }
 

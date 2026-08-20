@@ -7,12 +7,7 @@ import { APP_ROUTES } from '@/lib/chromia/constants/app';
 import { ChromiaDisposition as Disposition } from '@prisma/client';
 import { requireActingUser } from '@/lib/chromia/current-user';
 import { isAppError } from '@/lib/chromia/errors';
-import {
-  intakeQcSchema,
-  slabIntakeSchema,
-  type IntakeQcInput,
-  type SlabIntakeInput,
-} from '@/lib/chromia/validation/slab';
+import { intakeQcSchema, type IntakeQcInput } from '@/lib/chromia/validation/slab';
 import {
   declareWaste,
   recordDispatch,
@@ -89,14 +84,12 @@ export async function completeSlabAction(
   const slabId = typeof raw === 'string' ? raw : '';
   if (!slabId) return { error: 'This slab could not be identified. Reopen it from Slabs.' };
 
-  return saveIntake(formData, (input, userId) =>
-    completeSlabIntake(slabId, input, userId).then((slab) => slab.id),
-  );
+  return saveQc(formData, (userId) => completeSlabIntake(slabId, userId).then((slab) => slab.id));
 }
 
-async function saveIntake(
+async function saveQc(
   formData: FormData,
-  persist: (input: SlabIntakeInput, userId: string) => Promise<string>,
+  persist: (userId: string) => Promise<string>,
 ): Promise<SlabIntakeFormState> {
   /**
    * Read a form field as text.
@@ -113,10 +106,6 @@ async function saveIntake(
     return typeof value === 'string' ? value : undefined;
   };
 
-  const parsed = slabIntakeSchema.safeParse({
-    fullyPrintedDate: text('fullyPrintedDate'),
-  });
-
   const qcParsed = intakeQcSchema.safeParse({
     grade: text('grade'),
     disposition: text('disposition'),
@@ -131,13 +120,8 @@ async function saveIntake(
     disposalRef: text('disposalRef'),
   });
 
-  if (!parsed.success || !qcParsed.success) {
-    return {
-      fieldErrors: {
-        ...(parsed.success ? {} : parsed.error.flatten().fieldErrors),
-        ...(qcParsed.success ? {} : qcParsed.error.flatten().fieldErrors),
-      },
-    };
+  if (!qcParsed.success) {
+    return { fieldErrors: qcParsed.error.flatten().fieldErrors };
   }
 
   const qc = qcParsed.data;
@@ -154,7 +138,7 @@ async function saveIntake(
       reasonId = await resolveRecalibrationReasonId(qc.recalibrationReason);
     }
 
-    slabId = await persist(parsed.data, user.id);
+    slabId = await persist(user.id);
 
     await applyIntakeGrade(slabId, qc, user.id);
     await applyDisposition(slabId, qc, user.id);

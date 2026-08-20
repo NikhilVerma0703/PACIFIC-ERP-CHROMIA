@@ -11,7 +11,7 @@ import {
   resolveRange,
 } from '@/lib/chromia/exports';
 import { loadProductionRows, type ProductionRow } from '@/lib/chromia/server/repositories/export-repository';
-import { dateOnly, dateTime, localDay, writeStyledWorkbook } from '@/lib/chromia/server/exports/sheet';
+import { dateTime, localDay, writeStyledWorkbook } from '@/lib/chromia/server/exports/sheet';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -32,7 +32,6 @@ function toValues(row: ProductionRow): (string | number)[] {
     row.thicknessCm ?? '',
     dateTime(row.inTime),
     dateTime(row.outTime),
-    dateOnly(row.fullyPrintedDate),
     slabStatusView(row.status, row.disposition).label,
     row.disposition ? DISPOSITION_LABELS[row.disposition] : '',
     row.recalibrationCount,

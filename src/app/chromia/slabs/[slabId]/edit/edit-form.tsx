@@ -27,7 +27,6 @@ export interface EditableSlab {
   thicknessCm: string;
   receivedDate: string;
   inTime: string;
-  fullyPrintedDate: string;
   remarks: string;
 }
 
@@ -183,30 +182,18 @@ export function EditForm({
             />
           </Field>
 
-          <Field label="In-time *" htmlFor="inTime" error={errors?.inTime?.[0]}>
+          {/* Optional, exactly as on the entry form — a correction that could
+              refuse what the original entry accepted is not a correction. */}
+          <Field label="In-time" htmlFor="inTime" error={errors?.inTime?.[0]}>
             <TimeInput
               id="inTime"
               name="inTime"
-              required
               value={inTime}
               onChange={setInTime}
               className={field}
             />
           </Field>
 
-          <Field
-            label="Fully Printed Date"
-            htmlFor="fullyPrintedDate"
-            error={errors?.fullyPrintedDate?.[0]}
-          >
-            <input
-              id="fullyPrintedDate"
-              name="fullyPrintedDate"
-              type="date"
-              defaultValue={slab.fullyPrintedDate}
-              className={field}
-            />
-          </Field>
 
           <Field label="Slab Remarks" htmlFor="remarks" error={errors?.remarks?.[0]}>
             <input

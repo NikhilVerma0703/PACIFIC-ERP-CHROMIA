@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { intakeQcSchema, slabIntakeSchema } from '@/lib/chromia/validation/slab';
+import { intakeQcSchema } from '@/lib/chromia/validation/slab';
 
 /**
  * The QC section renders only the panel for the outcome that was chosen, so on
@@ -70,25 +70,45 @@ describe('the intake form accepts a partly rendered QC section', () => {
   });
 });
 
-describe('the intake form no longer asks for the slab’s identity', () => {
+describe('the intake form no longer asks for the slab’s identity — or a printed date', () => {
   /**
    * Batch, slab number, material, artwork and thickness are all written by the
    * operator when the slab goes on the line. Asking a second time here only
-   * invited a second, different answer, so the schema now holds one field.
+   * invited a second, different answer.
+   *
+   * The one field that survived that cut — the fully printed date — has now
+   * gone too, along with the separate page it lived on. The slab comes off the
+   * line the same shift it goes on, so the date was the production date on the
+   * record already, retyped by somebody who was not there. QC is the grade and
+   * the outcome, and nothing else: see lib/chromia/validation/slab.ts.
    */
-  it('takes the printed date on its own', () => {
-    const result = slabIntakeSchema.safeParse({ fullyPrintedDate: '2026-08-05' });
+  it('is the QC decision and nothing else', () => {
+    const result = intakeQcSchema.safeParse({
+      grade: 'A',
+      disposition: 'STOCK',
+      stockDate: '2026-08-05',
+      slabRemarks: 'Stock',
+    });
+
     expect(result.success).toBe(true);
+    // Nothing about the slab's identity, and no printed date.
+    for (const gone of ['batchNo', 'slabNo', 'baseMaterial', 'fileName', 'thicknessCm', 'fullyPrintedDate']) {
+      expect(Object.keys(result.data ?? {})).not.toContain(gone);
+    }
   });
 
   it('ignores identity fields if anything still sends them', () => {
-    const result = slabIntakeSchema.safeParse({
-      fullyPrintedDate: '2026-08-05',
+    const result = intakeQcSchema.safeParse({
+      grade: 'A',
+      disposition: 'STOCK',
+      stockDate: '2026-08-05',
       batchNo: '356',
       slabNo: '954356',
+      fullyPrintedDate: '2026-08-05',
     });
     expect(result.success).toBe(true);
-    expect(Object.keys(result.data ?? {})).toEqual(['fullyPrintedDate']);
+    expect(Object.keys(result.data ?? {})).not.toContain('batchNo');
+    expect(Object.keys(result.data ?? {})).not.toContain('fullyPrintedDate');
   });
 });
 
@@ -100,13 +120,6 @@ describe('dates are read as the day that was typed', () => {
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
   };
 
-  it('keeps the fully printed date on its own day, not on UTC midnight', () => {
-    // "2026-08-05" read as UTC lands at 05:30 in India and on 4 August in the
-    // Americas. The day typed must be the day stored, wherever the server is.
-    const result = slabIntakeSchema.safeParse({ fullyPrintedDate: '2026-08-05' });
-    expect(day(result.data?.fullyPrintedDate)).toBe('2026-08-05');
-    expect(result.data?.fullyPrintedDate?.getHours()).toBe(0);
-  });
 
   it('does the same for the outcome dates', () => {
     const result = intakeQcSchema.safeParse({
@@ -118,8 +131,12 @@ describe('dates are read as the day that was typed', () => {
   });
 
   it('reads an unreadable date as not filled in', () => {
-    const result = slabIntakeSchema.safeParse({ fullyPrintedDate: 'yesterday' });
-    expect(result.data?.fullyPrintedDate).toBeUndefined();
+    const result = intakeQcSchema.safeParse({
+      grade: 'A',
+      disposition: 'DISPATCH',
+      dispatchDate: 'yesterday',
+    });
+    expect(result.data?.dispatchDate).toBeUndefined();
   });
 });
 

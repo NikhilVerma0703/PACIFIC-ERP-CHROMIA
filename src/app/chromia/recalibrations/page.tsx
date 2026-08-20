@@ -110,7 +110,6 @@ export default async function RecalibrationsPage() {
                   <th className={th}>In-time</th>
                   <th className={th}>Status</th>
                   <th className={th}>Outcome</th>
-                  <th className={th}>Fully Printed Date</th>
                   <th className={th}>Grade</th>
                   <th className={th}>Reason</th>
                   <th className={th}>Slab Remarks</th>
@@ -161,9 +160,6 @@ export default async function RecalibrationsPage() {
                       </td>
                       <td className={td}>
                         <DispositionBadge disposition={record.currentDisposition} />
-                      </td>
-                      <td className={`${tdMuted} whitespace-nowrap`}>
-                        {record.fullyPrintedDate ? dateFmt.format(record.fullyPrintedDate) : '—'}
                       </td>
                       <td className={td}>
                         <GradeBadge grade={record.currentGrade} />
