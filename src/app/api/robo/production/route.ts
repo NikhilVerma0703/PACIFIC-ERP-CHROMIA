@@ -47,7 +47,7 @@ class DuplicateSlabError extends Error {}
 
 /**
  * POST /api/robo/production — create a slab record.
- * S.No. is assigned automatically per shift when not supplied.
+ * S.No. is assigned automatically from the whole register when not supplied.
  * A slab without an Out Time stays In-Processing.
  */
 export async function POST(req: Request) {
@@ -76,14 +76,21 @@ export async function POST(req: Request) {
     const clash = await tx.roboProductionRecord.findFirst({ where: { slabNumber }, select: { id: true } });
     if (clash) throw new DuplicateSlabError();
 
-    let serialNumber = body.serialNumber ? Number(body.serialNumber) : null;
+    // The S.No. the form sent, when it sent a usable one. Number("") is 0 and
+    // Number("x") is NaN; neither is a row number, so both fall through to the
+    // count rather than being written.
+    const sent = Number(body.serialNumber);
+    let serialNumber = Number.isFinite(sent) && sent > 0 ? Math.trunc(sent) : null;
     if (!serialNumber) {
-      const last = await tx.roboProductionRecord.findFirst({
-        where: { shiftId: body.shiftId },
-        orderBy: { serialNumber: "desc" },
-        select: { serialNumber: true },
-      });
-      serialNumber = (last?.serialNumber ?? 0) + 1;
+      // Counted across the WHOLE register, matching what the form is offered by
+      // /api/robo/production/next-number. This used to be `where: { shiftId }`
+      // with `orderBy: { serialNumber: "desc" }`, which was wrong twice: a shift
+      // row is created silently once per day, so the count restarted every
+      // morning; and serial_number is nullable, so Postgres' DESC NULLS FIRST
+      // put a single NULL at the top and pinned the answer at 1 for good. An
+      // aggregate max ignores NULLs by definition.
+      const agg = await tx.roboProductionRecord.aggregate({ _max: { serialNumber: true } });
+      serialNumber = (agg._max.serialNumber ?? 0) + 1;
     }
 
     const status: string = body.status || (body.outTime ? SLAB_COMPLETED : SLAB_IN_PROCESSING);

@@ -353,17 +353,40 @@ export function RoboEntryForm({ recordId, canDelete = false }: {
     setBatchOpen(false);
   };
 
-  // suggest the next serial / slab number from what's already logged —
-  // but never while an existing slab is loaded for editing
+  /**
+   * Suggest the next S.No. and slab number — but never while an existing slab
+   * is loaded for editing, where the fields hold that record's own numbers.
+   *
+   * Both come from the server now (/api/robo/production/next-number), counted
+   * across the WHOLE register. They used to be worked out here from
+   * `shift.productionRecords`, i.e. from the ACTIVE SHIFT ONLY, and a shift row
+   * is created silently once per day — so every morning the S.No. restarted at
+   * 1 against a register sitting at 34, and the slab number came up blank
+   * because there was no earlier record in that shift to add one to. Neither is
+   * a per-day count: the S.No. is the register's running row number and the
+   * slab number is the plant's.
+   *
+   * It re-runs on the same three things as before — the shift, the number of
+   * records (so it advances after each save) and leaving edit mode. `ignore`
+   * drops a slow reply that lands after a newer one, and `p.slabNumber ||`
+   * still refuses to overwrite a number the operator has already typed.
+   */
   useEffect(() => {
     if (editingId) return;
-    const maxSerial = records.reduce((m, r) => Math.max(m, r.serialNumber ?? 0), 0);
-    const lastSlab = records[0]?.slabNumber;
-    setSlab((p) => ({
-      ...p,
-      serialNumber: String(maxSerial + 1),
-      slabNumber: p.slabNumber || (lastSlab && /^\d+$/.test(lastSlab) ? String(Number(lastSlab) + 1) : ""),
-    }));
+    let ignore = false;
+    (async () => {
+      const next = await getJson<{ serialNumber: number | null; slabNumber: string }>(
+        "/api/robo/production/next-number",
+        { serialNumber: null, slabNumber: "" },
+      );
+      if (ignore) return;
+      setSlab((p) => ({
+        ...p,
+        serialNumber: next.serialNumber != null ? String(next.serialNumber) : p.serialNumber,
+        slabNumber: p.slabNumber || next.slabNumber || "",
+      }));
+    })();
+    return () => { ignore = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shift?.id, records.length, editingId]);
 
