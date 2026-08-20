@@ -11,9 +11,20 @@
  * pinning it in tests/roboSlabSearch.test.ts, is what stops that coming back.
  */
 
+// The .ts is deliberate: this module is reached by `node --test`, whose ESM
+// resolver does not add extensions. tsconfig sets allowImportingTsExtensions
+// and the bundler resolves the exact path, so it is correct in both.
+import { productionDateWhere } from "./productionDate.ts";
+
 export interface SlabSearchInput {
   shiftId?: string | null;
-  /** Production date, matched against the shift's own yyyy-mm-dd date. */
+  /**
+   * Production date. Matched against the date the OPERATOR entered on the
+   * setup, falling back to the shift's own date only where there is none —
+   * exactly what the Production Date column shows. See productionDate.ts: a
+   * shift's date is the day the tablet was open, and matching on it sent
+   * anyone searching for last Thursday's run back an empty table.
+   */
   date?: string | null;
   slabNumber?: string | null;
   designName?: string | null;
@@ -25,9 +36,18 @@ export interface SlabSearchInput {
 export interface SlabSearchWhere {
   where: {
     shiftId?: string;
-    shift?: { date: string };
     slabNumber?: { contains: string };
     batchRecipe?: { designName?: { contains: string }; batchNo?: { contains: string } };
+    /**
+     * The production-date match, which spans two relations — see
+     * productionDateWhere. It sits alongside `batchRecipe` rather than inside
+     * it: Prisma ANDs the top-level keys, so a date and a design narrow each
+     * other instead of one replacing the other.
+     */
+    OR?: Array<{
+      batchRecipe?: { productionDate: string | null } | null;
+      shift?: { date: string };
+    }>;
   };
   hasFilters: boolean;
 }
@@ -43,7 +63,9 @@ export function slabSearchWhere(input: SlabSearchInput): SlabSearchWhere {
 
   const where: SlabSearchWhere["where"] = {};
   if (shiftId) where.shiftId = shiftId;
-  if (date) where.shift = { date };
+  // Spread rather than assigned: productionDateWhere returns undefined for a
+  // blank date, and its OR is the whole of the production-date match.
+  Object.assign(where, productionDateWhere(date));
   if (slabNumber) where.slabNumber = { contains: slabNumber };
 
   // Both of these narrow the SAME related setup, so they are collected into one
