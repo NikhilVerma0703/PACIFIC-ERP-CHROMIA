@@ -1,6 +1,6 @@
 import { ChromiaAuditAction as AuditAction, ChromiaSlabEventType as SlabEventType } from '@prisma/client';
 import { prisma } from '@/lib/chromia/db';
-import { ConflictError, NotFoundError } from '@/lib/chromia/errors';
+import { ConflictError, NotFoundError, ValidationError } from '@/lib/chromia/errors';
 import { createLogger } from '@/lib/chromia/logger';
 import { registerDay, toDateInput } from '@/lib/chromia/operator-register';
 import {
@@ -20,10 +20,6 @@ const timeOf = (date: Date | null) =>
   date === null ? '' : `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 const dayOf = (date: Date | null) => (date === null ? '' : toDateInput(date));
 
-/**
- * A `@db.Date` column comes back at UTC midnight, so it must be read back the
- * same way it was written or the day drifts by one either side of Greenwich.
- */
 
 /**
  * Correct a slab record.
@@ -86,7 +82,15 @@ export async function updateSlabRecord(input: SlabRecordEditInput, userId: strin
   // The production date the operator chose dates the record — not the in-time,
   // which is optional now and may not be there at all. They agree whenever a
   // time was typed. See operator-register.registerDay.
-  const receivedDate = registerDay(input.receivedDate) ?? record.receivedDate;
+  //
+  // Refused rather than fallen back from: "2026-02-31" satisfies the schema's
+  // yyyy-mm-dd shape and is not a day, and quietly keeping the old date while
+  // reporting success is how a correction silently does nothing. The entry form
+  // refuses the same input with the same words.
+  const receivedDate = registerDay(input.receivedDate);
+  if (!receivedDate) {
+    throw new ValidationError('Enter a valid production date');
+  }
 
   await prisma.$transaction(async (tx) => {
     // The batch is found or created exactly as the register does it, and the

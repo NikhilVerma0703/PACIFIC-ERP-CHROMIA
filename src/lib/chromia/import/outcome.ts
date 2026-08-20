@@ -31,12 +31,23 @@
 
 export type ImportOutcomeStatus = "COMPLETED" | "PARTIAL" | "FAILED";
 
-/** What became of the rows in one import run. */
+/**
+ * What became of the rows in one import run.
+ *
+ * `alreadyPresent` and `blankRows` are counted apart on purpose. They used to
+ * share one "skipped" figure, and the sentence beneath it then said things like
+ * "all 266 slabs in this sheet are already in the ERP" for a sheet with 199
+ * slab rows and 67 blank spacers — a number larger than the row count, two
+ * thirds of which were not slabs at all. A spacer row is not a slab anybody
+ * chose to leave alone.
+ */
 export interface ImportCounts {
   /** Rows written. */
   imported: number;
-  /** Rows deliberately left alone — the slab number is already in the ERP. */
-  skipped: number;
+  /** Slabs deliberately left alone — the number is already in the ERP. */
+  alreadyPresent: number;
+  /** Blank spacer rows. Normal in this sheet, and not slabs. */
+  blankRows: number;
   /** Rows the parser could not read at all (missing slab no., no date…). */
   unreadable: number;
   /** Rows that threw while being written. These are the real failures. */
@@ -68,17 +79,19 @@ export function importStatus(counts: ImportCounts): ImportOutcomeStatus {
  * never disagree — they are decided from the same counts.
  */
 export function importSummaryLine(counts: ImportCounts): string {
-  const { imported, skipped, unreadable, failed } = counts;
+  const { imported, alreadyPresent, unreadable, failed } = counts;
   const parts: string[] = [];
 
-  if (imported === 0 && failed === 0 && unreadable === 0 && skipped > 0) {
-    return skipped === 1
+  // Blank rows are never mentioned: they are spacers the sheet has always had,
+  // and naming them would make an ordinary import read like a list of problems.
+  if (imported === 0 && failed === 0 && unreadable === 0 && alreadyPresent > 0) {
+    return alreadyPresent === 1
       ? "Nothing new — the one slab in this sheet is already in the ERP, and was left untouched."
-      : `Nothing new — all ${skipped} slabs in this sheet are already in the ERP, and were left untouched.`;
+      : `Nothing new — all ${alreadyPresent} slabs in this sheet are already in the ERP, and were left untouched.`;
   }
 
   parts.push(imported === 1 ? "1 slab imported" : `${imported} slabs imported`);
-  if (skipped > 0) parts.push(`${skipped} already in the ERP, left untouched`);
+  if (alreadyPresent > 0) parts.push(`${alreadyPresent} already in the ERP, left untouched`);
   if (unreadable > 0) parts.push(`${unreadable} row${unreadable === 1 ? "" : "s"} could not be read`);
   if (failed > 0) parts.push(`${failed} failed to save`);
   return `${parts.join(" · ")}.`;

@@ -159,7 +159,11 @@ const slabSelect = {
   baseMaterial: { select: { name: true } },
   plannedDesign: { select: { fileName: true } },
   cycles: {
-    where: { cycleNumber: 1 },
+    // The LATEST cycle, not cycle 1 — the same one loadSlabRecord opens and
+    // updateSlabRecord writes to. A slab back from recalibration is on cycle 2,
+    // and showing cycle 1's in-time here while the form edits cycle 2's would
+    // have the row disagree with the screen above it after every correction.
+    orderBy: { cycleNumber: 'desc' },
     take: 1,
     select: { inTime: true, design: { select: { fileName: true } } },
   },
@@ -181,16 +185,21 @@ const slabSelect = {
  * So the list is ordered strictly by when the row was SAVED. It is the answer
  * to "did that go in?", which is the only question this table is asked.
  *
- * S. No. still means what the paper book means by it — the entry's number
- * within its own production date — so the numbers here match the register even
- * though the rows are from several days. It is worked out from every slab on
- * those dates, not just the ones on screen, which is why the second query is
- * not simply the twenty rows counted.
+ * S. No. means what the paper book means by it — the entry's number within its
+ * own production date — so the numbers match the register even though the rows
+ * are from several days. It counts against every slab on those dates, not just
+ * the twenty on screen, or the first row of a day already half-entered would be
+ * numbered 1.
+ *
+ * Ordering within a day is by when the row was entered. The old per-day list
+ * ordered by in-time and fell back to that; with the in-time optional there is
+ * nothing to fall back FROM, so entry order is the only order every row has.
  */
 export async function loadRecentRegister(
   limit: number = RECENT_REGISTER_LIMIT,
 ): Promise<RegisterRow[]> {
   const recent = await prisma.chromiaSlab.findMany({
+    where: { deletedAt: null },
     orderBy: { createdAt: 'desc' },
     take: limit,
     select: slabSelect,
@@ -198,23 +207,41 @@ export async function loadRecentRegister(
 
   if (recent.length === 0) return [];
 
-  // Every slab on the production dates these twenty span, oldest first, so a
-  // row can be told its position within its own day.
-  const dates = [...new Set(recent.map((slab) => slab.receivedDate.getTime()))].map(
-    (time) => new Date(time),
-  );
-  const sameDays = await prisma.chromiaSlab.findMany({
-    where: { receivedDate: { in: dates } },
-    orderBy: [{ receivedDate: 'asc' }, { createdAt: 'asc' }],
-    select: { id: true, receivedDate: true },
-  });
-
-  const serialById = new Map<string, number>();
-  const runningByDate = new Map<number, number>();
-  for (const slab of sameDays) {
+  /*
+   * The S. No. of each row, within its own production date.
+   *
+   * Counted rather than listed. The obvious version — fetch every slab on the
+   * dates these twenty span and number them — is unbounded: a register whose
+   * date column was written once and carried down (which the May sheet's own
+   * parser documents) puts a whole month on one date, and one page render
+   * would pull all of it. Instead, for each date, ONE count of the slabs
+   * entered before the oldest row shown on that date. Everything after that is
+   * arithmetic on the twenty rows already in hand.
+   */
+  const oldestShownPerDate = new Map<number, Date>();
+  for (const slab of recent) {
     const key = slab.receivedDate.getTime();
-    const next = (runningByDate.get(key) ?? 0) + 1;
-    runningByDate.set(key, next);
+    const seen = oldestShownPerDate.get(key);
+    if (!seen || slab.createdAt < seen) oldestShownPerDate.set(key, slab.createdAt);
+  }
+
+  const offsets = new Map<number, number>();
+  await Promise.all(
+    [...oldestShownPerDate.entries()].map(async ([time, oldest]) => {
+      const before = await prisma.chromiaSlab.count({
+        where: { deletedAt: null, receivedDate: new Date(time), createdAt: { lt: oldest } },
+      });
+      offsets.set(time, before);
+    }),
+  );
+
+  // Oldest first within each date, so the numbers run the way the book does.
+  const running = new Map<number, number>();
+  const serialById = new Map<string, number>();
+  for (const slab of [...recent].reverse()) {
+    const key = slab.receivedDate.getTime();
+    const next = (running.get(key) ?? offsets.get(key) ?? 0) + 1;
+    running.set(key, next);
     serialById.set(slab.id, next);
   }
 

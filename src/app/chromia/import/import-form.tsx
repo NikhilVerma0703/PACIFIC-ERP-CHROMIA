@@ -82,9 +82,9 @@ export function ImportForm() {
               here" is the common case and reads as a failure without it. */}
           <p className="text-muted mb-3 text-sm">{result.summary.line}</p>
           <div className="grid gap-3 sm:grid-cols-5">
-            <Stat label="Rows found" value={result.summary.totalRows} />
+            <Stat label="Slab rows" value={result.summary.totalRows} />
             <Stat label="Imported" value={result.summary.imported} tone="done" />
-            <Stat label="Already here" value={result.summary.skipped} tone="hold" />
+            <Stat label="Already here" value={result.summary.alreadyPresent} tone="hold" />
             <Stat
               label="Unreadable"
               value={result.summary.unreadable}

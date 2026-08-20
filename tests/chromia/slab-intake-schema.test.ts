@@ -91,7 +91,11 @@ describe('the intake form no longer asks for the slab’s identity — or a prin
     });
 
     expect(result.success).toBe(true);
-    // Nothing about the slab's identity, and no printed date.
+    // What QC does carry: the grade, the outcome and that outcome's own field.
+    expect(result.data?.grade).toBe('A');
+    expect(result.data?.disposition).toBe('STOCK');
+    expect(result.data?.stockDate).toBeInstanceOf(Date);
+    // And nothing about the slab's identity, nor a printed date.
     for (const gone of ['batchNo', 'slabNo', 'baseMaterial', 'fileName', 'thicknessCm', 'fullyPrintedDate']) {
       expect(Object.keys(result.data ?? {})).not.toContain(gone);
     }

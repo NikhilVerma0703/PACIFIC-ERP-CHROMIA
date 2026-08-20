@@ -16,7 +16,6 @@ const RECORD: SlabRecordFields = {
   fileName: 'Astral Mist 1',
   thicknessCm: '2',
   inTime: '09:15',
-  fullyPrintedDate: '2026-08-03',
   remarks: 'Stock',
 };
 
@@ -80,7 +79,6 @@ describe('the correction form', () => {
     baseMaterial: 'Astral Mist',
     fileName: 'Astral Mist 1',
     thicknessCm: '2',
-    fullyPrintedDate: '2026-08-03',
     remarks: 'Stock',
   };
 
@@ -108,7 +106,6 @@ describe('the correction form', () => {
     const parsed = slabRecordEditSchema.safeParse({
       ...form,
       thicknessCm: '',
-      fullyPrintedDate: '',
       remarks: '',
     });
 

@@ -15,7 +15,6 @@ import {
   loadDesignFileNames,
   loadRecentBatchNos,
   loadRecentRegister,
-  RECENT_REGISTER_LIMIT,
 } from '@/lib/chromia/server/services/operator-service';
 
 import { EntryForm } from './entry-form';
@@ -115,7 +114,17 @@ export default async function OperatorPage({
         }
       />
 
+      {/*
+       * `key` per slab, and it is load-bearing. The App Router keeps a
+       * segment's React state across a search-param change on purpose — its own
+       * words: "search params do not cause state to be lost" — so going from
+       * ?slab=A to ?slab=B, or from a half-typed new entry to a slab, would
+       * re-render the form with the new id and the OLD field values still in
+       * state. The next Save would write one slab's numbers onto another.
+       * Keying on the slab makes each one a fresh form.
+       */}
       <EntryForm
+        key={slabId ?? 'new'}
         baseMaterials={baseMaterials}
         entryDate={resolveDay(params.date)}
         nowTime={toTimeInput(new Date())}
@@ -143,6 +152,7 @@ export default async function OperatorPage({
       {selected ? (
         qcOpen ? (
           <QcPanel
+            key={selected.id}
             slabId={selected.id}
             slabNo={selected.slabNo}
             recalibrationReasons={recalibrationReasons}
@@ -167,10 +177,7 @@ export default async function OperatorPage({
         padded={rows.length === 0}
         actions={
           <span className="border-line surface text-muted rounded-full border px-3 py-1 text-xs font-medium">
-            last{' '}
-            <span className="text-foreground font-semibold tabular-nums">
-              {Math.min(rows.length, RECENT_REGISTER_LIMIT)}
-            </span>{' '}
+            last <span className="text-foreground font-semibold tabular-nums">{rows.length}</span>{' '}
             entered
           </span>
         }

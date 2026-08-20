@@ -163,6 +163,10 @@ async function saveQc(
   revalidatePath(APP_ROUTES.slabs);
   revalidatePath(APP_ROUTES.dashboard);
   revalidatePath(APP_ROUTES.recalibrations);
+  // QC is graded from the operator screen now, so that screen is stale the
+  // moment this returns — without this, going Back to it re-offers the QC
+  // section for a slab that has just been graded.
+  revalidatePath(APP_ROUTES.operator);
 
   // Straight to the Recalibration page, where the slab is now waiting to be
   // sent. No query string: the record is simply in the table.

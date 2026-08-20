@@ -41,15 +41,14 @@ const optionalDate = z
     return toLocalDate(value);
   });
 
-/**
- * Slab Intake — what the in-charge adds after processing.
+/*
+ * Slab intake — what the in-charge adds after processing.
  *
  * Identity, material, artwork and thickness are all recorded by the operator
- * when the slab goes on the line, so this form no longer asks for them again.
- * What is left is the day it came off printed, and the QC decision below.
- */
-/*
- * FULLY PRINTED DATE IS GONE FROM THE UI.
+ * when the slab goes on the line, so this never asked for them again. What is
+ * left is the QC decision below, and nothing else:
+ *
+ * FULLY PRINTED DATE IS GONE FROM THE UI TOO.
  *
  * It was the one thing the old separate intake page asked for, and it was
  * asked for twice over: the slab comes off the line the same shift it goes on,

@@ -12,8 +12,10 @@ export interface ImportSummary {
   importBatchId: string;
   totalRows: number;
   imported: number;
-  /** Rows deliberately left alone: blank spacers, and slabs already in the ERP. */
-  skipped: number;
+  /** Slabs already in the ERP, left untouched. */
+  alreadyPresent: number;
+  /** Blank spacer rows the sheet carries. Not slabs. */
+  blankRows: number;
   /** Rows the parser could not read at all. */
   unreadable: number;
   /** Rows that threw while being written. The only real failures. */
@@ -99,9 +101,10 @@ export async function importProRegister(
    */
   const notes: { sourceRow: number; reason: string }[] = [...parseResult.issues];
   const unreadable = parseResult.issues.length;
+  const blankRows = parseResult.skipped;
   let imported = 0;
   let failed = 0;
-  let skipped = parseResult.skipped;
+  let alreadyPresent = 0;
 
   // Resolve (and create where needed) the master data the sheet references.
   const materialIds = new Map<string, string>();
@@ -152,7 +155,7 @@ export async function importProRegister(
       });
 
       if (existing) {
-        skipped += 1;
+        alreadyPresent += 1;
         notes.push({
           sourceRow: row.sourceRow,
           reason: `Slab ${row.slabNo} already exists — left untouched`,
@@ -314,7 +317,7 @@ export async function importProRegister(
     }
   }
 
-  const counts = { imported, skipped, unreadable, failed };
+  const counts = { imported, alreadyPresent, blankRows, unreadable, failed };
   const status = importStatus(counts);
   const line = importSummaryLine(counts);
 
@@ -323,7 +326,10 @@ export async function importProRegister(
     data: {
       status: ImportStatus[status],
       importedRows: imported,
-      skippedRows: skipped,
+      // The column has always been "rows not written". Both halves of that are
+      // reported separately on screen; the stored figure keeps its old meaning
+      // so previous runs stay comparable.
+      skippedRows: alreadyPresent + blankRows,
       failedRows: failed,
       completedAt: new Date(),
       errorLog: notes.length > 0 ? notes : undefined,

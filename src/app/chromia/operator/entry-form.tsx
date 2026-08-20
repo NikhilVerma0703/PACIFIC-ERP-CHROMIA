@@ -68,9 +68,16 @@ export function EntryForm({
    * next four slabs would be booked against today without anyone seeing it.
    *
    * It is held in state now, like the batch and the material either side of it:
-   * the operator sets it when the day changes and not before. `key` on the
-   * useState seed is not needed — the component remounts when the page opens on
-   * a different slab, because the route changes.
+   * the operator sets it when the day changes and not before.
+   *
+   * Every field below is seeded from props ONCE, so the page mounts this with a
+   * `key` that changes with the slab. That is not belt and braces: the App
+   * Router deliberately keeps a segment's React state across a search-param
+   * change ("search params do not cause state to be lost"), so navigating from
+   * one ?slab= to another re-renders this component rather than remounting it.
+   * Without the key the hidden slabId and the action would switch to the new
+   * slab while the visible fields still held the old one's values — and the
+   * next Save would write them onto it.
    */
   const [productionDate, setProductionDate] = useState(editing?.receivedDate ?? entryDate);
 
@@ -84,6 +91,9 @@ export function EntryForm({
   /* Blank, not the clock. The in-time is optional now, and pre-filling it with
      "now" made a guess look like a reading on every row that was left alone. */
   const [inTime, setInTime] = useState(editing?.inTime ?? '');
+  /* Only sent when correcting — a new entry has no remark yet, and the QC
+     section is what writes one. See the field below. */
+  const [remarks, setRemarks] = useState(editing?.remarks ?? '');
 
   const slabInput = useRef<HTMLInputElement>(null);
 
@@ -122,6 +132,15 @@ export function EntryForm({
   const slabNoError = errors?.slabNo?.[0] ?? (duplicate ? DUPLICATE_SLAB_NO_MESSAGE : undefined);
   const dateFieldName = isEditing ? 'receivedDate' : 'entryDate';
   const dateError = (isEditing ? errors?.receivedDate?.[0] : errors?.entryDate?.[0]) ?? undefined;
+
+  /* An error under a field this form does not render has nowhere to appear, and
+     the screen would simply sit still on Save — which is exactly what a missing
+     `remarks` field did. Anything unplaced is said in the banner instead. */
+  const shown = new Set(['entryDate', 'receivedDate', 'batchNo', 'slabNo', 'baseMaterial', 'fileName', 'thicknessCm', 'inTime', 'remarks']);
+  const unplaced = Object.entries(errors ?? {})
+    .filter(([key, messages]) => !shown.has(key) && messages && messages.length > 0)
+    .map(([key, messages]) => `${key}: ${messages?.[0]}`)
+    .join(' · ');
 
   return (
     <div className="mb-6">
@@ -254,9 +273,32 @@ export function EntryForm({
                 className={field}
               />
             </Field>
+
+            {/*
+             * Only when correcting, and it MUST be rendered then. The
+             * correction is a whole-record save: the service writes
+             * `remarks: input.remarks ?? null`, so a form that does not send
+             * the field would blank whatever QC wrote there. Leaving it out
+             * did worse than that — FormData.get returns null for a field that
+             * is not in the document, the schema takes a string or nothing but
+             * never null, and every "Save changes" failed the parse with the
+             * error landing under a field that was not on screen to show it.
+             */}
+            {isEditing ? (
+              <Field label="Slab Remarks" htmlFor="remarks" error={errors?.remarks?.[0]}>
+                <input
+                  id="remarks"
+                  name="remarks"
+                  value={remarks}
+                  onChange={(event) => setRemarks(event.target.value)}
+                  placeholder="Dispatch · Stock · RECALIBRATE - reason"
+                  className={field}
+                />
+              </Field>
+            ) : null}
           </FieldGrid>
 
-          <FormError message={state.error} />
+          <FormError message={state.error ?? (unplaced || undefined)} />
 
           <div className="border-line flex flex-wrap items-center gap-4 border-t pt-5">
             <button
