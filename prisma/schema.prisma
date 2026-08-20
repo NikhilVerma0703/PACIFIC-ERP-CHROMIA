@@ -4226,11 +4226,11 @@ model CostingBatchMaterial {
 /// Prisma's @updatedAt, so the diff stays empty. Do not reuse; drop it some
 /// day with a numbered script, not with db push.
 model CostingBatchRate {
-  id       String @id
-  batchKey String @map("batch_key")
+  id       String  @id
+  batchKey String  @map("batch_key")
   category String
   item     String
-  variant  String @default("")
+  variant  String  @default("")
   unit     String
   rate     Float
   note     String?
@@ -4279,6 +4279,71 @@ model CostingBatchVerification {
   @@unique([batchKey, side, verifiedBy])
   @@index([batchKey])
   @@map("costing_batch_verification")
+}
+
+/// Which SIZE a silo ran in one batch — the production side of silo-wise grit.
+///
+/// NO RATE COLUMN, deliberately. The price lives in costing_batch_material under
+/// 'grit-silo-<n>', which is the only table any sheet is priced from. A rupee
+/// figure here would be a second pricing path and a second fingerprint input
+/// computed in two places, and would put money one SELECT away from a screen
+/// that is meant to carry none.
+///
+/// NO RELATION TO Silo, and none to MixerCycle. silo_no is the mixer's own typed
+/// string, not silo.id — an assignment describes what somebody says a silo ran
+/// on one batch, and must never become a handle for writing to the silo record.
+model CostingBatchGritSilo {
+  id       String @id @default(cuid())
+  /// mixer_cycle.batch_key. No FK: batch_key is a string across several import
+  /// tables, not a table — same as costing_batch_material.
+  batchKey String @map("batch_key")
+  /// The mixer's own silo string (mixer_cycle.m*_g*_sn), btrim'd.
+  siloNo   String @map("silo_no")
+  /// Verbatim as typed. Normalised only for COMPARISON (sizeKey), never stored
+  /// canonicalised — a stored canonical form is a second source of truth. Not a
+  /// rate-card key: a typed size must never mint a catalogue entry.
+  /// '' means listed but not yet sized.
+  size     String @default("")
+
+  assignedBy String   @default("system") @map("assigned_by")
+  assignedAt DateTime @default(now()) @map("assigned_at")
+  updatedAt  DateTime @default(now()) @map("updated_at")
+
+  /// ONE SIZE PER SILO PER BATCH. This index is where "a silo cannot run two
+  /// sizes in one batch" is actually true; the single dropdown is only how it
+  /// looks on screen.
+  @@unique([batchKey, siloNo])
+  @@index([batchKey])
+  /// The learned size list is SELECT DISTINCT over this column.
+  @@index([size])
+  @@map("costing_batch_grit_silo")
+}
+
+/// Which supplier(s) a silo's weight was drawn from, and how much from each.
+///
+/// Same no-rate, no-relation rules as CostingBatchGritSilo above. Kilograms, not
+/// tonnes: the mixer records kilograms and the screen shows kilograms, and the
+/// single conversion to tonnes happens in report.ts where rupees-per-tonne is
+/// applied. Converting in two places is how somebody types 14,780 against a kilo.
+model CostingBatchGritSupplier {
+  id       String @id @default(cuid())
+  batchKey String @map("batch_key")
+  siloNo   String @map("silo_no")
+  /// Position within the silo's split; rewritten wholesale per silo on save,
+  /// the same convention as costing_batch_material.seq.
+  seq      Int    @default(0)
+  /// As typed. Compared fuzzily to the silo's recorded supplier and flagged when
+  /// they differ — THE TYPED VALUE WINS, and nothing here is written back.
+  supplier String
+  kg       Float
+
+  assignedBy String   @default("system") @map("assigned_by")
+  assignedAt DateTime @default(now()) @map("assigned_at")
+
+  @@unique([batchKey, siloNo, seq])
+  @@index([batchKey])
+  @@index([supplier])
+  @@map("costing_batch_grit_supplier")
 }
 
 // ============================================================================
