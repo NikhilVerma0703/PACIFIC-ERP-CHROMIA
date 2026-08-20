@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { Shell } from "@/components/Shell";
 import { Card } from "@/components/ui";
 import { prisma } from "@/lib/prisma";
+import { canEditRoboSetup } from "@/lib/rbac";
 import { slabStatusClass, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
 
 export const dynamic = "force-dynamic";
@@ -51,6 +52,10 @@ export default async function SlabCompleteDetailsPage({ params }: { params: Prom
   if (!record) notFound();
 
   const setup = record.batchRecipe;
+  /* Same gate the Edit setup tab uses, so this page cannot offer a button that
+     lands on a screen refusing to open. It is deliberately wider than the slab
+     DELETE gate — see canEditRoboSetup() in src/lib/rbac.ts. */
+  const maySetup = Boolean(setup) && (await canEditRoboSetup());
   const entries = [...(setup?.entries ?? [])].sort(
     (a, b) => MACHINE_ORDER.indexOf(a.machine.name) - MACHINE_ORDER.indexOf(b.machine.name)
   );
@@ -72,13 +77,28 @@ export default async function SlabCompleteDetailsPage({ params }: { params: Prom
             </div>
             <p className="mt-1 text-xs text-gray-400">Complete details for this slab</p>
           </div>
-          {/* Corrections start here, from the record itself — the same route
+          {/* Corrections start here, from the record itself — the same routes
               the Slabs Records table offers, so whichever screen someone
-              noticed the mistake on leads to the same form. */}
-          <Link href={`/robo/slabs/${id}/edit`}
-            className="inline-flex items-center rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50">
-            Edit slab
-          </Link>
+              noticed the mistake on leads to the same form.
+
+              Two buttons because two different rows can be wrong. "Edit slab"
+              is this record: its numbers, times and delays. "Edit setup" is the
+              run underneath it — the design, thickness and machines in section
+              2 above — which is one row shared by the whole batch. Reading a
+              wrong design here and being offered only "Edit slab" is what sent
+              people to the entry screen to start a duplicate setup. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Link href={`/robo/slabs/${id}/edit`}
+              className="inline-flex items-center rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50">
+              Edit slab
+            </Link>
+            {maySetup && (
+              <Link href={`/robo/slabs/${id}/edit?section=setup`}
+                className="inline-flex items-center rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50">
+                Edit setup
+              </Link>
+            )}
+          </div>
         </div>
 
         {/* ── 1. Shift Information ── */}

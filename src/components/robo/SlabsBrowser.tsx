@@ -193,7 +193,10 @@ export function SlabsBrowser({ canDelete = false }: {
                       </Link>
                       {/* Edit reaches every slab in every shift, closed ones
                           included — this table is the only way back to a slab
-                          once its shift has rolled over. */}
+                          once its shift has rolled over. It opens on two tabs,
+                          Edit slab and Edit setup, because the design and the
+                          machines live on the batch's setup row rather than on
+                          the slab. */}
                       <Link href={`/robo/slabs/${r.id}/edit`}
                         className="inline-flex items-center rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-700 transition hover:bg-gray-50">
                         Edit
