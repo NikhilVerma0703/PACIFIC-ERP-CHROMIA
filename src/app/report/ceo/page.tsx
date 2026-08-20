@@ -329,6 +329,22 @@ function SheetQuality({ r }: { r: DailyReport }) {
             <Line of="Counted in both" is={`−${p.needsRepolish + (q.rework.find(([k]) => k === "RW Required and ongoing")?.[1] ?? 0) - q.openForRework}`} />
             <Sum of="Distinct slabs still open" is={String(q.openForRework)} />
           </InfoDot>],
+        [String(q.recovered), "Recovered after rework",
+          <InfoDot key="rec" label="recovered after rework">
+            <span style={{ display: "block", marginBottom: 6, opacity: 0.85 }}>
+              Slabs that were not right, were worked, and then were {DASH} the mirror of
+              the figure to its left.
+            </span>
+            <Line of="Repolish done" is={String(q.recoveredRepolish)} />
+            <Line of="Rework done, came back OK" is={String(q.recoveredRework)} />
+            <Line of="Counted in both" is={`−${q.recoveredRepolish + q.recoveredRework - q.recovered}`} />
+            <Sum of="Distinct slabs recovered" is={String(q.recovered)} />
+            <span style={{ display: "block", marginTop: 6, opacity: 0.8 }}>
+              A slab that was merely ungraded and is later graded good is not counted:
+              the grade is overwritten in place and keeps no history, so nothing records
+              that it was ever ungraded.
+            </span>
+          </InfoDot>],
       ]} />
 
       <p className={s.prose}>
