@@ -47,6 +47,32 @@ function redirectFor(user: SessionUser | null, path: string): string | null {
   return result === false ? "(denied)" : null;
 }
 
+/**
+ * Where a refused page now sends people.
+ *
+ * Both gates used to bounce a capped role to its own home page, silently. That
+ * is what made the fab loop possible in the first place: the destination was
+ * itself a page the OTHER gate could refuse, so two refusals could point at
+ * each other. /no-access is public in BOTH files, so it is terminal by
+ * construction — the loop cannot be rebuilt out of it, whatever caps are added
+ * later. The test below pins exactly that.
+ */
+const REFUSED = "/no-access";
+
+test("the refusal page is terminal in this gate, for every capped role", () => {
+  // The property that makes REFUSED safe as a universal destination. If any
+  // cap ever swallowed /no-access, a refusal would redirect to a page that
+  // redirects — which is the fab loop with a new address.
+  for (const role of ["OPERATOR", "STORE", "MAINTENANCE", "ROBO", "SALES", "COMMERCIAL"]) {
+    for (const branch of ["SHOP_FLOOR", "OFFICE", "FABRICATION", "CHROMIA", undefined]) {
+      assert.equal(redirectFor({ role, branch }, REFUSED), null,
+        `authorized() redirected ${role}/${branch} away from the refusal page itself`);
+    }
+  }
+  // And signed out, it is still just a page: middleware sends them to /login.
+  assert.equal(redirectFor(null, REFUSED), null);
+});
+
 const FAB_ROLES = ["OPERATOR", "INCHARGE", "LINE_MANAGER"] as const;
 
 // Every page middleware.ts lets a fab user reach, plus every page it redirects
@@ -143,26 +169,30 @@ test("the CHROMIA escape does not widen access for other branches", () => {
   // A SHOP_FLOOR operator is still capped — the escape keys on branch CHROMIA
   // exactly, and middleware (not this callback) is what turns non-Chromia
   // logins away from /chromia pages.
-  assert.equal(redirectFor({ role: "OPERATOR", branch: "SHOP_FLOOR" }, "/chromia"), "/entry");
-  assert.equal(redirectFor({ role: "STORE", branch: "SHOP_FLOOR" }, "/chromia"), "/live");
+  //
+  // The DESTINATION changed: a refused page now goes to /no-access, which says
+  // what happened, instead of silently landing on the role home. What is being
+  // pinned here is that they are still refused.
+  assert.equal(redirectFor({ role: "OPERATOR", branch: "SHOP_FLOOR" }, "/chromia"), REFUSED);
+  assert.equal(redirectFor({ role: "STORE", branch: "SHOP_FLOOR" }, "/chromia"), REFUSED);
 });
 
 // The fab escape must not have widened the Shop Floor caps it sits in front of.
-test("SHOP_FLOOR OPERATOR is still capped to /entry", () => {
-  assert.equal(redirectFor({ role: "OPERATOR", branch: "SHOP_FLOOR" }, "/fab/cutting"), "/entry");
-  assert.equal(redirectFor({ role: "OPERATOR", branch: "SHOP_FLOOR" }, "/office"), "/entry");
+test("SHOP_FLOOR OPERATOR is still capped", () => {
+  assert.equal(redirectFor({ role: "OPERATOR", branch: "SHOP_FLOOR" }, "/fab/cutting"), REFUSED);
+  assert.equal(redirectFor({ role: "OPERATOR", branch: "SHOP_FLOOR" }, "/office"), REFUSED);
   assert.equal(redirectFor({ role: "OPERATOR", branch: "SHOP_FLOOR" }, "/entry"), null);
   assert.equal(redirectFor({ role: "OPERATOR", branch: "SHOP_FLOOR" }, "/api/fab/slabs"), null);
 });
 
-test("STORE is still capped to /live", () => {
-  assert.equal(redirectFor({ role: "STORE", branch: "SHOP_FLOOR" }, "/office"), "/live");
+test("STORE is still capped", () => {
+  assert.equal(redirectFor({ role: "STORE", branch: "SHOP_FLOOR" }, "/office"), REFUSED);
   assert.equal(redirectFor({ role: "STORE", branch: "SHOP_FLOOR" }, "/store/rm"), null);
 });
 
 test("a capped role with no branch is unaffected", () => {
   // branch is nullable on User, so the fab check must not swallow undefined.
-  assert.equal(redirectFor({ role: "OPERATOR" }, "/office"), "/entry");
+  assert.equal(redirectFor({ role: "OPERATOR" }, "/office"), REFUSED);
 });
 
 test("login and static assets stay public, signed out or in", () => {

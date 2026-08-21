@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import type { Filters } from "@/components/consumables/ConsumablesDashboard";
 import { useToast } from "@/components/consumables/toast-context";
+import { useCanWrite } from "@/components/consumables/write-access";
 
 interface DirectMaterial {
   id: string;
@@ -37,6 +38,8 @@ function SkeletonRow() {
 
 export default function DirectMaterialsTable({ filters }: Props) {
   const { showToast } = useToast();
+  // Presentation only - every mutating route re-checks with consumablesGate("WRITE").
+  const canWrite = useCanWrite();
   const [materials, setMaterials] = useState<DirectMaterial[]>([]);
   const [loading, setLoading]     = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -65,6 +68,7 @@ export default function DirectMaterialsTable({ filters }: Props) {
   const inactiveCount = filtered.filter((m) => m.status === "INACTIVE").length;
 
   const startEdit = (m: DirectMaterial) => {
+    if (!canWrite) return;
     setEditingId(m.id);
     setEditValues({
       name: m.name,
@@ -293,7 +297,9 @@ export default function DirectMaterialsTable({ filters }: Props) {
 
                     {/* Actions */}
                     <td className="px-4 py-3.5">
-                      {isEditing ? (
+                      {!canWrite ? (
+                          <span className="text-gray-300">&mdash;</span>
+                        ) : isEditing ? (
                         <div className="flex gap-2">
                           <button
                             onClick={() => saveEdit(material.id)}

@@ -39,16 +39,27 @@ const STORE_TABS = [
   { href: "/consumables",  label: "Consumables",   icon: I.box    },
 ];
 
-// Maintenance Manager is capped: Overview, the Downtime report and their own
-// Maintenance Log. This list is the WHOLE nav for the role — the branch below
-// returns early, so the "Lookups & Reports" section (which carries the
-// Maintenance Log for everyone else) is never reached. That is why the entry has
-// to be repeated here: the role that lives in the maintenance log was the only
-// role with no link to it. Middleware allows all three paths.
+// Maintenance Manager. This list is the WHOLE nav for the role — the branch
+// below returns early, so the "Lookups & Reports" section (which carries the
+// Maintenance Log for everyone else) is never reached. That is why entries have
+// to be repeated here: the role that lives in the maintenance log was once the
+// only role with no link to it.
+//
+// EVERY href here must also be allowed by the MAINTENANCE cap in middleware.ts
+// AND by that page own gate. A nav row the middleware refuses is now a visible
+// trip to /no-access rather than a silent bounce, which is better but still a
+// promise the app did not keep.
+//
+// "exact" on /maintenance: /maintenance/uptime is a nav row of its own, and the
+// default prefix rule would light both at once.
 const MAINTENANCE_TABS = [
-  { href: "/",            label: "Overview",        icon: I.overview },
-  { href: "/mis",         label: "Downtime",        icon: I.mis      },
-  { href: "/maintenance", label: "Maintenance Log", icon: I.spanner  },
+  { href: "/",                   label: "Overview",        icon: I.overview },
+  { href: "/mis",                label: "Downtime",        icon: I.mis      },
+  { href: "/maintenance",        label: "Maintenance Log", icon: I.spanner, exact: true },
+  { href: "/maintenance/uptime", label: "Uptime by Trade", icon: I.live     },
+  { href: "/report/ceo",         label: "CEO Report",      icon: I.ceo      },
+  { href: "/report",             label: "Production Report", icon: I.report, exact: true },
+  { href: "/consumables",        label: "Consumables",     icon: I.box      },
 ];
 
 /* helpers */
@@ -173,7 +184,7 @@ export function Nav({
   if (role === "SALES")
     return <nav className="flex flex-col gap-1"><NavLink href="/inventory" icon={I.box} label="Finished Goods" path={path} /></nav>;
   if (role === "MAINTENANCE")
-    return <nav className="flex flex-col gap-1">{MAINTENANCE_TABS.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}</nav>;
+    return <nav className="flex flex-col gap-1">{MAINTENANCE_TABS.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} exact={t.exact} />)}</nav>;
   if (role === "ROBO")
     // robo line operator — the robo module is their whole ERP
     return (

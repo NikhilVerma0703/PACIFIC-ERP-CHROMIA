@@ -3,6 +3,8 @@
 // comes from the Shell page header like every other tab; no banner, no clock).
 import { useState, useRef, useEffect } from "react";
 
+import { useCanWrite } from "@/components/consumables/write-access";
+
 interface DashboardHeaderProps {
   onAddInventory?: () => void;
   onAddConsumption?: () => void;
@@ -14,6 +16,8 @@ const btnGhost = "inline-flex items-center gap-2 rounded-lg border border-gray-3
 const btnBrand = "inline-flex items-center gap-2 rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-dark";
 
 export default function DashboardHeader({ onAddInventory, onAddConsumption, onExportConsumption, onExportInventory }: DashboardHeaderProps) {
+  // Export is a read - a view-only login keeps it. Recording is not.
+  const canWrite = useCanWrite();
   const [showExportMenu, setShowExportMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -27,8 +31,12 @@ export default function DashboardHeader({ onAddInventory, onAddConsumption, onEx
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <button onClick={onAddConsumption} className={btnBrand}>+ Add Consumption</button>
-      <button onClick={onAddInventory} className={btnGhost}>+ Add Inventory</button>
+      {canWrite && (
+        <>
+          <button onClick={onAddConsumption} className={btnBrand}>+ Add Consumption</button>
+          <button onClick={onAddInventory} className={btnGhost}>+ Add Inventory</button>
+        </>
+      )}
       <div className="relative" ref={menuRef}>
         <button onClick={() => setShowExportMenu((v) => !v)} className={btnGhost}>
           Export
