@@ -3,6 +3,8 @@ import { Card, Empty, Badge, fmt } from "@/components/ui";
 import { getProductionReport } from "@/lib/erp";
 import { getDetailedReport } from "@/lib/detailedReport";
 import { DetailedReportView } from "@/components/DetailedReportView";
+import { currentUser } from "@/lib/rbac";
+import { maySeeMaterialTrace } from "@/lib/routeCaps";
 
 export const dynamic = "force-dynamic";
 
@@ -22,13 +24,21 @@ export default async function ReportPage({
 }) {
   const { b } = await searchParams;
   const query = b?.trim();
+  // The production run is the report. The material-source trace under it is a
+  // batch lookup by another name, and not every login granted this page was
+  // granted that.
+  const user = await currentUser();
+  const trace = maySeeMaterialTrace(String((user as { role?: string } | null)?.role ?? ""));
 
   let r = null;
   let detailed = null;
   let error: string | null = null;
   if (query) {
     try {
-      [r, detailed] = await Promise.all([getProductionReport(query), getDetailedReport(query)]);
+      [r, detailed] = await Promise.all([
+        getProductionReport(query),
+        trace ? getDetailedReport(query) : Promise.resolve(null),
+      ]);
     } catch {
       error = "Could not read the database. Run the import first (see README).";
     }
@@ -52,10 +62,17 @@ export default async function ReportPage({
       {!error && !query && <Empty>Enter a batch number to generate its production report.</Empty>}
       {!error && r && !r.batch.found && <Empty>No records found for batch “{r.batch.key}”.</Empty>}
 
-      {!error && detailed?.found && (
+      {!error && detailed?.found && trace && (
         <Card className="mb-6">
           <DetailedReportView r={detailed} />
         </Card>
+      )}
+
+      {!error && r && r.batch.found && !trace && (
+        <p className="mb-6 rounded-xl border border-gray-200 bg-gray-50 px-4 py-2.5 text-sm text-gray-600">
+          The material-source trace for this batch (suppliers, invoice and bag numbers) is not
+          part of your access. The production run is below.
+        </p>
       )}
 
       {!error && r && r.batch.found && (

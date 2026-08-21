@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import type { Filters } from "@/components/consumables/ConsumablesDashboard";
 import { useToast } from "@/components/consumables/toast-context";
+import { useCanWrite } from "@/components/consumables/write-access";
 
 interface PolishingConsumable {
   id: string;
@@ -64,6 +65,8 @@ export default function PolishingConsumablesTable({ filters }: Props) {
   const { showToast }             = useToast();
   const [items, setItems]         = useState<PolishingConsumable[]>([]);
   const [loading, setLoading]     = useState(true);
+  // Presentation only - every mutating route re-checks with consumablesGate("WRITE").
+  const canWrite = useCanWrite();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<EditValues>({
     name: "", unit: "", dailyConsumption: "", currentStock: "", minStock: "",
@@ -88,6 +91,7 @@ export default function PolishingConsumablesTable({ filters }: Props) {
   const outCount     = filtered.filter((i) => deriveStatus(i) === "Out of Stock").length;
 
   const startEdit = (item: PolishingConsumable) => {
+    if (!canWrite) return;
     setEditingId(item.id);
     setEditValues({
       name:             item.name,
@@ -304,7 +308,9 @@ export default function PolishingConsumablesTable({ filters }: Props) {
 
                     {/* Actions */}
                     <td className="px-4 py-3.5">
-                      {isEditing ? (
+                      {!canWrite ? (
+                          <span className="text-gray-300">&mdash;</span>
+                        ) : isEditing ? (
                         <div className="flex gap-2">
                           <button onClick={() => saveEdit(item.id)} disabled={saving}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white text-xs font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">

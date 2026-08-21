@@ -6,7 +6,12 @@ import { currentUser, rankOf, ROLE_RANK } from "@/lib/rbac";
 
 export type ConsumablesTier = "VIEW" | "WRITE" | "ADMIN";
 const TIER_RANK: Record<ConsumablesTier, number> = { VIEW: 1, WRITE: 2, ADMIN: 3 };
-const ALLOWED = new Set(["ADMIN", "STORE", "LINE_MANAGER", "INCHARGE"]);
+// MAINTENANCE is VIEW-only, and is the one role here that cannot write. The
+// maintenance manager needs to see what the line is drawing and what is running
+// low - the same question as "which spares am I about to be asked for" - but
+// recording a consumption or an inventory receipt is the store's job.
+const ALLOWED = new Set(["ADMIN", "STORE", "LINE_MANAGER", "INCHARGE", "MAINTENANCE"]);
+const VIEW_ONLY = new Set(["MAINTENANCE"]);
 
 /** The consumables tier for a user, or null if they can't see the section. */
 export function consumablesTierOf(user: unknown): ConsumablesTier | null {
@@ -20,6 +25,10 @@ export function consumablesTierOf(user: unknown): ConsumablesTier | null {
   // letting the API through) would be a dead link / mismatch.
   const b = String(u.branch ?? "");
   if (b === "FABRICATION" || b === "CHROMIA") return null;
+  // VIEW, not WRITE: every consumables route asks for at least WRITE before
+  // it mutates, so returning VIEW here is what actually stops a maintenance
+  // login logging a consumption - not a hidden button.
+  if (VIEW_ONLY.has(role)) return "VIEW";
   return "WRITE"; // Store/Incharge/Line Manager both see and log
 }
 

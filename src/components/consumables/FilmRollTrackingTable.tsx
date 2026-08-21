@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import type { Filters } from "@/components/consumables/ConsumablesDashboard";
 import { useToast } from "@/components/consumables/toast-context";
+import { useCanWrite } from "@/components/consumables/write-access";
 import AddFilmRollModal from "./AddFilmRollModal";
 
 interface FilmRoll {
@@ -36,6 +37,8 @@ export default function FilmRollTrackingTable({ filters }: Props) {
   const { showToast }             = useToast();
   const [rolls, setRolls]         = useState<FilmRoll[]>([]);
   const [loading, setLoading]     = useState(true);
+  // Presentation only - every mutating route re-checks with consumablesGate("WRITE").
+  const canWrite = useCanWrite();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editLayers, setEditLayers] = useState("");
@@ -67,7 +70,7 @@ export default function FilmRollTrackingTable({ filters }: Props) {
   const finishedCount = filtered.filter((r) => !r.isActive).length;
   const highUsageCount = filtered.filter((r) => getUsagePct(r.consumedWeight, r.initialWeight) >= 80).length;
 
-  const startEdit  = (roll: FilmRoll) => { setEditingId(roll.id); setEditLayers(String(roll.layersUsed)); };
+  const startEdit  = (roll: FilmRoll) => { if (!canWrite) return; setEditingId(roll.id); setEditLayers(String(roll.layersUsed)); };
   const cancelEdit = () => setEditingId(null);
 
   const saveEdit = async (roll: FilmRoll) => {
@@ -152,6 +155,7 @@ export default function FilmRollTrackingTable({ filters }: Props) {
               </div>
             )}
           </div>
+          {canWrite && (
           <button
             onClick={() => setIsModalOpen(true)}
             className="inline-flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white text-sm font-semibold rounded-lg transition-colors shrink-0 shadow-sm"
@@ -161,6 +165,7 @@ export default function FilmRollTrackingTable({ filters }: Props) {
             </svg>
             Add Film Roll
           </button>
+          )}
         </div>
 
         {/* Table */}
@@ -295,7 +300,9 @@ export default function FilmRollTrackingTable({ filters }: Props) {
 
                       {/* Actions */}
                       <td className="px-4 py-3.5">
-                        {isEditing ? (
+                        {!canWrite ? (
+                          <span className="text-gray-300">&mdash;</span>
+                        ) : isEditing ? (
                           <div className="flex gap-2">
                             <button onClick={() => saveEdit(roll)} disabled={saving}
                               className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white text-xs font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
@@ -350,11 +357,13 @@ export default function FilmRollTrackingTable({ filters }: Props) {
         </div>
       </div>
 
-      <AddFilmRollModal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        onSuccess={() => { setIsModalOpen(false); fetchRolls(); }}
-      />
+      {canWrite && (
+        <AddFilmRollModal
+          isOpen={isModalOpen}
+          onClose={() => setIsModalOpen(false)}
+          onSuccess={() => { setIsModalOpen(false); fetchRolls(); }}
+        />
+      )}
     </>
   );
 }

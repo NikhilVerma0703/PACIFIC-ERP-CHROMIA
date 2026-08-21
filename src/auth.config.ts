@@ -2,6 +2,27 @@ import type { NextAuthConfig } from "next-auth";
 import { storeMayVisit, operatorMayVisit, STORE_HOME, OPERATOR_HOME } from "./lib/routeCaps.ts";
 import type { Role } from "@prisma/client";
 
+/**
+ * Refuse a page and say which one - the same answer middleware.ts gives.
+ *
+ * Both gates have to agree, because either can be the one that stops a
+ * request: this callback runs first and a Response returned here replaces
+ * middleware entirely. If only one of them showed the refusal page, whether a
+ * user got an explanation or a silent bounce would depend on which gate caught
+ * them - which is precisely the kind of difference nobody can reproduce.
+ */
+function refuse(p: string, nextUrl: URL, home: string): Response {
+  // "/" is not a denial - it is where sign-in sends everybody
+  // (src/app/login/actions.ts starts every login there). A capped role whose
+  // allowlist excludes "/" therefore hits this on its FIRST page after
+  // signing in, and answering that with the refusal page is a lockout. Same
+  // rule as middleware.ts denied().
+  if (p === "/") return Response.redirect(new URL(home, nextUrl));
+  const url = new URL("/no-access", nextUrl);
+  url.searchParams.set("from", p);
+  return Response.redirect(url);
+}
+
 // Edge-safe Auth.js config — NO Prisma, NO bcrypt imports here.
 export const authConfig = {
   trustHost: true,
@@ -13,6 +34,10 @@ export const authConfig = {
       const isLoggedIn = !!auth?.user;
       const isPublic =
         nextUrl.pathname === "/login" ||
+        // Must be public here as well as in middleware: this callback runs
+        // FIRST and its Response replaces middleware wholesale, so a capped
+        // role refused there would be bounced off the refusal page here.
+        nextUrl.pathname === "/no-access" ||
         nextUrl.pathname.startsWith("/api/auth") ||
         /\.(png|jpg|jpeg|svg|webp|ico|webmanifest|txt|xml)$/.test(nextUrl.pathname);
       if (isPublic) return true;
@@ -55,9 +80,16 @@ export const authConfig = {
       // /tables, /consumables and /office/batch-verify — and this one runs
       // first, so those three screens bounced to /live.
       const role = (auth?.user as { role?: string } | undefined)?.role;
+      // Their OWN home, not homeFor(role, branch). This gate caps by ROLE and
+      // refuses anything outside that role's allowlist - including the branch home
+      // homeFor would name. Sending a STORE login on the Office branch to /office
+      // means THIS gate refuses it on the next hop, which is a worse answer than
+      // the one it replaced. A role and a branch whose caps do not intersect has
+      // nowhere to land at all; that is a configuration to reject in Users &
+      // Roles, not something a landing page can paper over.
       const p = nextUrl.pathname;
-      if (role === "STORE" && !storeMayVisit(p)) return Response.redirect(new URL(STORE_HOME, nextUrl));
-      if (role === "OPERATOR" && !operatorMayVisit(p)) return Response.redirect(new URL(OPERATOR_HOME, nextUrl));
+      if (role === "STORE" && !storeMayVisit(p)) return refuse(p, nextUrl, STORE_HOME);
+      if (role === "OPERATOR" && !operatorMayVisit(p)) return refuse(p, nextUrl, OPERATOR_HOME);
       return true;
     },
     jwt({ token, user }) {

@@ -1,6 +1,6 @@
 import NextAuth from "next-auth";
 import { authConfig } from "./auth.config";
-import { storeMayVisit, operatorMayVisit, STORE_HOME, OPERATOR_HOME } from "./lib/routeCaps.ts";
+import { storeMayVisit, operatorMayVisit, maintenanceMayVisit, homeFor } from "./lib/routeCaps.ts";
 
 // Edge-safe middleware (Prisma-free config). IMPORTANT: with the auth(fn)
 // wrapper form, Auth.js does NOT auto-redirect — ALL gating is explicit here.
@@ -8,6 +8,42 @@ const { auth } = NextAuth(authConfig);
 
 const CANONICAL_HOST = "erp.pacific-surfaces.com";
 const STATIC_FILE = /\.(png|jpg|jpeg|svg|webp|ico|webmanifest|txt|xml)$/;
+
+/**
+ * Refuse a page, and SAY SO.
+ *
+ * Every cap used to bounce silently to a home page. That is the worst answer to
+ * a click: the page does not appear, no reason is given, and the address bar
+ * quietly says something else - which reads as a broken link, so people click
+ * again and then ask whether the ERP is down. /no-access names the path that
+ * was refused and offers a way back.
+ *
+ * API paths keep answering 403. A fetch that follows a 302 to an HTML page gets
+ * a parse error instead of a status - the failure that hid a dropped table for
+ * half a day earlier this week.
+ */
+function denied(p: string, nextUrl: URL, role: string, branch: string): Response {
+  if (p.startsWith("/api")) return new Response("Forbidden", { status: 403 });
+
+  // "/" IS NOT A DENIAL - it is where sign-in sends everybody.
+  //
+  // src/app/login/actions.ts starts every login at "/" and only overrides it
+  // for two cases, so a capped role whose allowlist excludes "/" reaches this
+  // function on the FIRST page after signing in. Answering that with the
+  // refusal page means a store incharge, an operator, a Chromia tablet or a
+  // sales login signs in and lands on "You do not have access to that page" -
+  // a lockout, from a change whose whole purpose was to stop silent bouncing.
+  //
+  // Asking for "/" is not a deliberate navigation to a forbidden page; it is
+  // the default. So it keeps the old behaviour and routes to the role home.
+  // The admin-on-International-Sales rule further down was always written this
+  // way for the same reason.
+  if (p === "/") return Response.redirect(new URL(homeFor(role, branch), nextUrl));
+
+  const url = new URL("/no-access", nextUrl);
+  url.searchParams.set("from", p);
+  return Response.redirect(url);
+}
 
 export default auth((req) => {
   const { nextUrl } = req;
@@ -26,6 +62,9 @@ export default auth((req) => {
   const p = nextUrl.pathname;
   const isPublic =
     p === "/login" ||
+    // The refusal page itself. It sits here, above every cap: a cap that
+    // redirected to a page its own rule then refused would loop the browser.
+    p === "/no-access" ||
     p.startsWith("/api/auth") ||
     p.startsWith("/api/telegram/report") ||   // cron-only: gated by CRON_SECRET inside
     p.startsWith("/api/telegram/webhook") ||  // Telegram-only: gated by webhook secret inside
@@ -55,9 +94,7 @@ export default auth((req) => {
   // module further down. ----
   if (p.startsWith("/robo") || p.startsWith("/api/robo")) {
     if (!isAdmin && role !== "ROBO") {
-      return p.startsWith("/api")
-        ? new Response("Forbidden", { status: 403 })
-        : Response.redirect(new URL("/", nextUrl));
+      return denied(p, nextUrl, role ?? "", branch ?? "");
     }
   }
 
@@ -77,16 +114,14 @@ export default auth((req) => {
   // cap below contains them meanwhile. Remove both clauses after that runs. ----
   if (p.startsWith("/chromia") || p.startsWith("/api/chromia")) {
     if (!isAdmin && role !== "CHROMIA" && branch !== "CHROMIA") {
-      return p.startsWith("/api")
-        ? new Response("Forbidden", { status: 403 })
-        : Response.redirect(new URL("/", nextUrl));
+      return denied(p, nextUrl, role ?? "", branch ?? "");
     }
   }
 
   // ---- Shift scoreboard: ADMIN only. It ranks named individuals and drives an
   // incentive payout, so it must not be visible to the people it scores. ----
   if (p.startsWith("/scoreboard")) {
-    if (!isAdmin) return Response.redirect(new URL("/", nextUrl));
+    if (!isAdmin) return denied(p, nextUrl, role ?? "", branch ?? "");
   }
 
   // ---- Maintenance log: the Maintenance Manager, Line Manager and admins. ----
@@ -107,7 +142,7 @@ export default auth((req) => {
   // and everyone who can see it treats it as their own list.
   if (p.startsWith("/maintenance")) {
     const ok = isAdmin || role === "MAINTENANCE" || role === "LINE_MANAGER";
-    if (!ok) return Response.redirect(new URL("/", nextUrl));
+    if (!ok) return denied(p, nextUrl, role ?? "", branch ?? "");
   }
 
   // ---- Bill automation (finance engine): Office Finance/Accounts and admins
@@ -117,9 +152,7 @@ export default auth((req) => {
   if (p.startsWith("/office/finance") || p.startsWith("/api/office/finance")) {
     const finOk = isAdmin || (branch === "OFFICE" && (role === "FINANCE" || role === "ACCOUNTS"));
     if (!finOk) {
-      return p.startsWith("/api")
-        ? new Response("Forbidden", { status: 403 })
-        : Response.redirect(new URL("/", nextUrl));
+      return denied(p, nextUrl, role ?? "", branch ?? "");
     }
   }
 
@@ -151,9 +184,7 @@ export default auth((req) => {
   // `/office` allowance cannot leak it. ----
   if (!batchRatesApi && (p.startsWith("/office/costing") || p.startsWith("/api/office/costing"))) {
     if (!isAdmin) {
-      return p.startsWith("/api")
-        ? new Response("Forbidden", { status: 403 })
-        : Response.redirect(new URL("/", nextUrl));
+      return denied(p, nextUrl, role ?? "", branch ?? "");
     }
   }
 
@@ -171,9 +202,7 @@ export default auth((req) => {
   if (p.startsWith("/office/batch-verify") || p.startsWith("/api/office/batch-verify")) {
     const verifyOk = isAdmin || role === "STORE" || role === "LINE_MANAGER";
     if (!verifyOk) {
-      return p.startsWith("/api")
-        ? new Response("Forbidden", { status: 403 })
-        : Response.redirect(new URL("/", nextUrl));
+      return denied(p, nextUrl, role ?? "", branch ?? "");
     }
   }
 
@@ -198,9 +227,7 @@ export default auth((req) => {
     // the one in lib/chromia/tier.ts together, once that has run.
     const ok = p.startsWith("/chromia") || p.startsWith("/api/chromia") || STATIC_FILE.test(p);
     if (!ok) {
-      return p.startsWith("/api")
-        ? new Response("Forbidden", { status: 403 })
-        : Response.redirect(new URL("/chromia", nextUrl));
+      return denied(p, nextUrl, role ?? "", branch ?? "");
     }
     return;
   }
@@ -225,29 +252,29 @@ export default auth((req) => {
         "/fab/fabrication", "/fab/packaging", "/fab/downtime",
       ];
       const ok = QUEUE_PAGES.includes(p) || p === "/fab/session";
-      if (!ok) return Response.redirect(new URL("/fab/cutting", nextUrl));
+      if (!ok) return denied(p, nextUrl, role ?? "", branch ?? "");
       return;
     }
-    // fab MANAGER (LINE_MANAGER) / SUPERVISOR (INCHARGE): any fab page + Overview
-    const fabHome = role === "LINE_MANAGER" ? "/fab/manager" : "/fab/supervisor/slabs";
+    // fab MANAGER (LINE_MANAGER) / SUPERVISOR (INCHARGE): any fab page + Overview.
+    // Where each of them LANDS now lives in homeFor(), which denied() calls.
     const ok = fabPath || p === "/" || STATIC_FILE.test(p);
-    if (!ok) return Response.redirect(new URL(fabHome, nextUrl));
+    if (!ok) return denied(p, nextUrl, role ?? "", branch ?? "");
     return;
   }
   if (!isAdmin && fabPath) {
     // Production / Office staff never see fabrication.
-    return Response.redirect(new URL("/", nextUrl));
+    return denied(p, nextUrl, role ?? "", branch ?? "");
   }
   if (!isAdmin && branch === "INTERNATIONAL_SALES") {
     // International Sales staff: sales pages + API only — never production/office pages.
     if (p.startsWith("/api")) return;
     const ok = p.startsWith("/sales") || p.startsWith("/admin/users") || STATIC_FILE.test(p); // Users&Roles reachable; its own gate keeps it SALES_ADMIN-only
-    if (!ok) return Response.redirect(new URL("/sales", nextUrl));
+    if (!ok) return denied(p, nextUrl, role ?? "", branch ?? "");
     return;
   }
   if (!isAdmin && p.startsWith("/sales")) {
     // Staff from every other department never see International Sales.
-    return Response.redirect(new URL("/", nextUrl));
+    return denied(p, nextUrl, role ?? "", branch ?? "");
   }
   // Admins who signed in via the International Sales card land on the SALES
   // dashboard — their nav is sales-focused; "/" is the production overview.
@@ -256,7 +283,7 @@ export default auth((req) => {
   }
   if (!isAdmin && branch !== "OFFICE" && p.startsWith("/inventory")) {
     // Finished-goods inventory is an Office (Commercial) module — shop floor never sees it.
-    return Response.redirect(new URL("/", nextUrl));
+    return denied(p, nextUrl, role ?? "", branch ?? "");
   }
 
   // Both caps come from lib/routeCaps, which auth.config.ts imports too. They
@@ -264,8 +291,8 @@ export default auth((req) => {
   // Incharge /tables, /consumables and /office/batch-verify while auth.config
   // still allowed only /live, /store and /api — and auth.config runs first, so
   // the stricter, staler list silently won and three granted screens bounced.
-  if (role === "STORE" && !storeMayVisit(p)) return Response.redirect(new URL(STORE_HOME, nextUrl));
-  if (role === "OPERATOR" && !operatorMayVisit(p)) return Response.redirect(new URL(OPERATOR_HOME, nextUrl));
+  if (role === "STORE" && !storeMayVisit(p)) return denied(p, nextUrl, role ?? "", branch ?? "");
+  if (role === "OPERATOR" && !operatorMayVisit(p)) return denied(p, nextUrl, role ?? "", branch ?? "");
 
   if (role === "COMMERCIAL") {
     // Commercial: finished-goods slabs, plus READ-ONLY production lookups from the
@@ -294,31 +321,19 @@ export default auth((req) => {
     const under = (base: string) => p === base || p.startsWith(base + "/");
     const ok = p.startsWith("/api") || under("/inventory")
       || under("/office") || under("/slab");
-    if (!ok) return Response.redirect(new URL("/inventory", nextUrl));
+    if (!ok) return denied(p, nextUrl, role ?? "", branch ?? "");
   }
   if (role === "SALES") {
     // Sales: the finished-goods stock summary only.
     const ok = p.startsWith("/inventory") || p.startsWith("/api");
-    if (!ok) return Response.redirect(new URL("/inventory", nextUrl));
+    if (!ok) return denied(p, nextUrl, role ?? "", branch ?? "");
   }
   if (role === "MAINTENANCE") {
-    // maintenance manager: Overview, the Downtime report and the Maintenance Log
-    // (may also POST the downtime response and the delay reclassification, both
-    // server actions on /mis).
-    //
-    // /maintenance was missing from this list, so the one page written FOR this
-    // role was the one page it could not open — the Nav entry existed and the
-    // page's own gates (canRaiseMaintenance, canRespondDowntime) both admit
-    // MAINTENANCE, but middleware redirected to "/" before either could run.
-    // That is why the role appeared to have no maintenance log at all.
-    //
-    // under() is exact-or-subpath, borrowed from the Commercial block above:
-    // a bare startsWith("/maintenance") would also hand this capped role
-    // a future /maintenance-costs or /maintenance-admin, which is opt-OUT
-    // security — the safer form costs one helper.
-    const under = (base: string) => p === base || p.startsWith(base + "/");
-    const ok = p === "/" || under("/mis") || under("/maintenance") || p.startsWith("/api");
-    if (!ok) return Response.redirect(new URL("/", nextUrl));
+    // The cap itself lives in lib/routeCaps beside the Store and Operator ones,
+    // so it can be unit-tested and cannot drift from a second copy - which is
+    // the failure that file was created to end. See maintenanceMayVisit for what
+    // is granted and, more importantly, what is deliberately not.
+    if (!maintenanceMayVisit(p)) return denied(p, nextUrl, role ?? "", branch ?? "");
   }
   if (role === "ROBO") {
     // Robo line operator: the robo entry form and ITS APIs — nothing else.
@@ -339,9 +354,7 @@ export default auth((req) => {
     if (!ok) {
       // 403 rather than a redirect for API paths: a fetch that follows a 302
       // to an HTML page fails as a confusing parse error instead of a refusal.
-      return p.startsWith("/api")
-        ? new Response("Forbidden", { status: 403 })
-        : Response.redirect(new URL("/robo", nextUrl));
+      return denied(p, nextUrl, role ?? "", branch ?? "");
     }
   }
 });
