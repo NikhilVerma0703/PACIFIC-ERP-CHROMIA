@@ -216,11 +216,16 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
 
       {/* The SAME materials panel the admin has on /office/costing — the one
           component, not a copy, talking to the same batch-rates API (which now
-          admits the two verifiers; the route is the gate). Signers only: an
-          admin reading this page signs nothing and already has the panel next
-          door with the computed sheet under it. Saving re-reads the detail
-          below, because an edit can lapse a mark and always moves the
-          completeness answer the buttons obey. */}
+          admits the two verifiers; the route is the gate).
+
+          GATED ON sign, NOT can, and that is load-bearing: it is what decides
+          who can TYPE a price here, not merely read one. Admin used to fail
+          this test - signableSides returned [] for ADMIN - so an admin opening
+          this page saw neither the pricing panel nor the grit panel below and
+          had no way to tell why. Admin signs as of 2026-08-21, so both appear.
+
+          Saving re-reads the detail below, because an edit can lapse a mark and
+          always moves the completeness answer the buttons obey. */}
       {detail && sign.length > 0 && (
         <BatchRatesPanel
           key={detail.batchKey}

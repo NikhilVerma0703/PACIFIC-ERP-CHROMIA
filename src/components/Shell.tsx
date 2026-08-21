@@ -37,13 +37,13 @@ export async function Shell({ children }: { children: ReactNode }) {
   const salesDuty = salesTier
     ? await salesDutyFor(String((user as { id?: string } | undefined)?.id ?? ""), salesTier)
     : "";
-  // Whether this login SIGNS batch verifications — the store incharge (STORE
-  // role) and the named production verifier (WEIGHTS_VERIFIER_EMAILS). Decided
-  // HERE because Nav is a client component and must not read the env var; and
-  // on signableSides rather than readableSides so admins — who read the verify
-  // screen but sign nothing — do not grow a nav entry for it. Neither user had
-  // ANY link to /office/batch-verify before this; the page existed, middleware
-  // admitted them, and nothing on screen said so.
+  // Whether this login SIGNS batch verifications - the store incharge (STORE
+  // role), the named production verifier (WEIGHTS_VERIFIER_EMAILS), and since
+  // 2026-08-21 the ADMIN as well. Decided HERE because Nav is a client
+  // component and must not read the env var; and on signableSides rather than
+  // readableSides, so the row appears for exactly the people who have a button
+  // to press on it. None of them had ANY link to /office/batch-verify before
+  // this: the page existed, middleware admitted them, and nothing said so.
   const batchVerify = signableSides(
     user?.role as string | undefined,
     user?.email,

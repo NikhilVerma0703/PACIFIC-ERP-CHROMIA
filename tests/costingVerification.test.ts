@@ -178,10 +178,28 @@ test("isBatchVerifier matches by role or by allowlist, and nobody else", () => {
   assert.equal(isBatchVerifier("ADMIN", "boss@thepacific.group", raw), false);
 });
 
-test("admin reads both halves and signs neither", () => {
+test("admin reads both halves and SIGNS both (owner, 2026-08-21)", () => {
+  // This reverses the original rule, which this test used to pin: admin read
+  // both and signed neither, so that a pair of signatures could not be produced
+  // from a single login. The owner asked for admin to be able to verify too.
+  //
+  // The safeguard that remains is that nothing counts signatures - verifyMarks
+  // returns every mark WITH ITS NAME and the screen lists them, so a batch
+  // carrying only the admin mark is visibly a batch only the admin checked.
+  // Admin cannot sign AS either verifier, which is the property that mattered.
   const raw = "satyadev@thepacific.group";
   assert.deepEqual(readableSides("ADMIN", "boss@thepacific.group", raw), ["WEIGHTS", "COSTS"]);
-  assert.deepEqual(signableSides("ADMIN", "boss@thepacific.group", raw), []);
+  assert.deepEqual(signableSides("ADMIN", "boss@thepacific.group", raw), ["WEIGHTS", "COSTS"]);
+  // ...by ROLE alone. An admin is still not a "batch verifier": the allowlist
+  // and the STORE role are unchanged, so the two named people are still the two
+  // named people and admin has not been quietly added to their number.
+  assert.equal(isBatchVerifier("ADMIN", "boss@thepacific.group", raw), false);
+  assert.equal(canVerifyCosts("ADMIN"), false);
+  assert.equal(canVerifyWeights("boss@thepacific.group", raw), false);
+  // And nobody else gained anything from this change.
+  assert.deepEqual(signableSides("LINE_MANAGER", "other@thepacific.group", raw), []);
+  assert.deepEqual(signableSides("INCHARGE", "someone@thepacific.group", raw), []);
+  assert.deepEqual(signableSides(null, null, raw), []);
 });
 
 // ---- verifyMarks: one mark per person, each lapsing on its own ----

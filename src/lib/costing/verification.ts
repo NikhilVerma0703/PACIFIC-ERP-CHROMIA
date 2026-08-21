@@ -276,18 +276,30 @@ export function readableSides(
 /**
  * Which halves somebody may SIGN.
  *
- * Not the same list as readableSides: an admin sees both and signs neither. A
- * verification is one named person saying they checked it, and an admin able to
- * tick both boxes turns the pair of signatures into a formality that one login
- * can produce on its own.
- *
  * Both verifiers sign both sides (owner, 2026-08-18) — each mark is stored per
  * PERSON, so one signing does not stand in for the other having checked.
+ *
+ * ADMIN SIGNS TOO (owner, 2026-08-21). This reverses a deliberate rule, so the
+ * reasoning it replaces is kept rather than deleted: an admin who can tick both
+ * boxes can produce a complete-looking sign-off from one login, which is why
+ * admin was originally excluded.
+ *
+ * What makes that acceptable rather than merely overruled is that nothing here
+ * has ever counted signatures. verifyMarks returns EVERY mark with its name and
+ * time and the screen lists them, so "two people checked this" is a conclusion
+ * a reader draws from the names — not a quorum this module enforces. Admin
+ * signing adds a third possible name; it cannot forge either of the other two,
+ * and a batch carrying only the admin mark reads as exactly that.
+ *
+ * If a real quorum is ever wanted — "not verified until two DIFFERENT people
+ * have marked this side" — this is the function to build it in, and it would
+ * want to exclude admin from the COUNT rather than from the button.
  */
 export function signableSides(
   role: string | null | undefined,
   email: string | null | undefined,
   raw: string | undefined | null,
 ): VerifySide[] {
+  if (role === "ADMIN") return ["WEIGHTS", "COSTS"];
   return isBatchVerifier(role, email, raw) ? ["WEIGHTS", "COSTS"] : [];
 }

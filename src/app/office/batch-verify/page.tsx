@@ -31,9 +31,10 @@ export default async function BatchVerifyPage() {
   const sign = signableSides(role, email, raw);
   if (!can.length) redirect("/");
 
-  // Both verifiers now read and sign BOTH halves (owner, 2026-08-18), so the
-  // old one-sided descriptions collapsed into one. Admin still reads both and
-  // signs neither.
+  // Both verifiers read and sign BOTH halves (owner, 2026-08-18), so the old
+  // one-sided descriptions collapsed into one. Admin signs as well (owner,
+  // 2026-08-21) and is therefore a signer here rather than a reader - see
+  // signableSides for why that does not weaken the pair of signatures.
   const signer = sign.length > 0;
 
   return (
