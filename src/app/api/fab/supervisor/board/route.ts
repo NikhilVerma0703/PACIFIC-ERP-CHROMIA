@@ -131,7 +131,7 @@ export async function GET(req: NextRequest) {
   if (view === "slabs") {
     const slabs = await prisma.fabSlab.findMany({
       where: { projectId },
-      orderBy: { createdAt: "asc" },
+      orderBy: { createdAt: "desc" },
       select: {
         id: true,
         slabCode: true,
