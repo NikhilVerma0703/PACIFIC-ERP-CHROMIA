@@ -29,7 +29,6 @@ import { useCallback, useEffect, useState } from "react";
 import { Badge, Card, Empty } from "@/components/ui";
 import { readJson } from "@/lib/readJson";
 import { BatchRatesPanel } from "@/components/office/BatchRatesPanel";
-import { GritAssignPanel } from "@/components/office/GritAssignPanel";
 
 const API = "/api/office/batch-verify";
 
@@ -235,17 +234,11 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
         />
       )}
 
-      {/* Grit, silo by silo — under the materials panel, which is the order the
-          owner described it in: open the batch, then grit. Re-reads the detail
-          on save for the same reason the panel above does: an assignment moves
-          both fingerprints, so a standing mark can lapse the moment it lands. */}
-      {detail && sign.length > 0 && (
-        <GritAssignPanel
-          key={`grit-${detail.batchKey}`}
-          batchKey={detail.batchKey}
-          onSaved={() => void load(picked)}
-        />
-      )}
+      {/* The silo-by-silo grit panel that stood here is GONE. Its rows now live
+          inside the materials panel above, in the slot the size-band cards used
+          to occupy, carrying the price alongside the size, type and supplier.
+          Two screens described the same tonnage two different ways - once by
+          band, once by silo - and nothing made them agree. See GritSiloRows. */}
 
       {detail && can.includes("WEIGHTS") && detail.weights && (
         <Card>

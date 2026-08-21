@@ -59,6 +59,30 @@ async function everAssignedSizes(): Promise<string[]> {
   return rows.map((r) => r.size);
 }
 
+/** The three the plant runs today. A SEED, not a whitelist: the dropdown offers
+ *  these plus everything anybody has typed, and a new one typed once is offered
+ *  on every batch afterwards. Nothing rejects a type that is not here. */
+const SEED_GRIT_TYPES = ["Premium Supreme G2", "Glass", "Cristobalite"];
+
+/** Every grit type anybody has ever assigned, plant-wide, seeded with the three
+ *  above. Derived exactly like everAssignedSizes so the list and the data
+ *  cannot disagree - see scripts/0050 for why there is no dictionary table. */
+async function everAssignedTypes(): Promise<string[]> {
+  const rows = await prisma.costingBatchGritSilo.findMany({
+    where: { gritType: { not: "" } },
+    select: { gritType: true },
+    distinct: ["gritType"],
+    take: 500,
+  });
+  // Case-insensitive de-dup so "Glass" typed once does not sit beside "glass".
+  const seen = new Map<string, string>();
+  for (const t of [...SEED_GRIT_TYPES, ...rows.map((r) => r.gritType)]) {
+    const k = t.trim().toLowerCase();
+    if (k && !seen.has(k)) seen.set(k, t.trim());
+  }
+  return [...seen.values()];
+}
+
 export async function GET(req: NextRequest) {
   const me = await assigner();
   if (!me) return json({ error: FORBIDDEN }, 403);
@@ -81,9 +105,10 @@ export async function GET(req: NextRequest) {
     .map(([silo, kg]) => {
       const a = assigned.get(silo);
       const size = a?.size ?? "";
+      const gritType = a?.gritType ?? "";
       const suppliers = a?.suppliers ?? [];
       return {
-        silo, kg, size, suppliers,
+        silo, kg, size, gritType, suppliers,
         recordedSizes: a?.recordedSizes ?? [],
         recordedSuppliers: a?.recordedSuppliers ?? [],
         // Reported, never enforced. The entered value is what is costed.
@@ -100,12 +125,16 @@ export async function GET(req: NextRequest) {
     silos,
     unresolvedKg: c.gritUnresolvedKg,
     sizeOptions: mergeSizeCatalogue(await everAssignedSizes(), Object.keys(GRIT_BAND_LABELS), recordedHere),
+    // Learned the same way sizes are: SELECT DISTINCT over what has been typed,
+    // seeded with the three the plant runs today. No dictionary table, so the
+    // list and the data cannot drift apart.
+    typeOptions: await everAssignedTypes(),
     blockers: gritAssignBlockers(silos),
   });
 }
 
-interface PostedSupplier { supplier?: unknown; kg?: unknown }
-interface PostedSilo { silo?: unknown; size?: unknown; suppliers?: PostedSupplier[] }
+interface PostedSupplier { supplier?: unknown; kg?: unknown; ratePerT?: unknown }
+interface PostedSilo { silo?: unknown; size?: unknown; gritType?: unknown; suppliers?: PostedSupplier[] }
 
 /**
  * Save the assignment for one or more silos.
@@ -130,21 +159,33 @@ export async function PUT(req: NextRequest) {
   // Validate the WHOLE payload before writing any of it — a half-applied save
   // leaves a batch assigned in a way nobody chose. Same rule as the batch-rates
   // route, and the same reason.
-  const clean: Array<{ silo: string; size: string; suppliers: Array<{ seq: number; supplier: string; kg: number }> }> = [];
+  type CleanLine = { seq: number; supplier: string; kg: number; ratePerT: number | null };
+  const clean: Array<{ silo: string; size: string; gritType: string; suppliers: CleanLine[] }> = [];
   for (const p of posted) {
     const silo = typeof p.silo === "string" ? p.silo.trim() : "";
     if (!silo) return json({ error: "Every row needs a silo number." }, 400);
     const size = typeof p.size === "string" ? p.size.trim().slice(0, 60) : "";
+    const gritType = typeof p.gritType === "string" ? p.gritType.trim().slice(0, 60) : "";
     const rows = Array.isArray(p.suppliers) ? p.suppliers : [];
     if (rows.length > 20) return json({ error: `Too many suppliers on silo ${silo}.` }, 400);
 
-    const suppliers: Array<{ seq: number; supplier: string; kg: number }> = [];
+    const suppliers: CleanLine[] = [];
     for (const r of rows) {
       const supplier = typeof r.supplier === "string" ? r.supplier.trim().slice(0, 200) : "";
-      // A row with neither a name nor a weight is a row nobody filled in, and
-      // dropping it silently is right — the editor always renders a blank line.
-      if (!supplier && (r.kg === "" || r.kg == null)) continue;
-      if (!supplier) return json({ error: `A weight on silo ${silo} has no supplier against it.` }, 400);
+      // A row with NOTHING in it is a row nobody filled in, and dropping it
+      // silently is right — the editor always renders one blank line.
+      //
+      // The rate has to be in this test. It was added after the test was
+      // written, so a row carrying ONLY a price looked empty: the line was
+      // discarded, the save answered ok, and the price the verifier had just
+      // typed was gone with nothing on screen saying so.
+      const blankRate = r.ratePerT === "" || r.ratePerT == null;
+      if (!supplier && (r.kg === "" || r.kg == null) && blankRate) continue;
+      if (!supplier) {
+        return json({ error: blankRate
+          ? `A weight on silo ${silo} has no supplier against it.`
+          : `A price on silo ${silo} has no supplier against it.` }, 400);
+      }
       const kg = Number(r.kg);
       // Refused rather than coerced, for the reason the batch-rates route gives
       // about a zero rate: a zero does not fail loudly, it just assigns nothing
@@ -154,9 +195,22 @@ export async function PUT(req: NextRequest) {
       }
       // seq is positional over the KEPT rows, so a deleted blank line does not
       // leave a hole the unique index would later trip over.
-      suppliers.push({ seq: suppliers.length, supplier, kg });
+      // THE RATE IS OPTIONAL AND null IS A REAL ANSWER. Blank means nobody has
+      // priced this line yet, which is the normal state between assigning a
+      // silo and pricing it. A zero is refused for the same reason a zero
+      // weight is: it does not fail loudly, it just costs the grit at nothing
+      // and prints a sheet that looks complete.
+      let ratePerT: number | null = null;
+      if (!(r.ratePerT === "" || r.ratePerT == null)) {
+        const v = Number(r.ratePerT);
+        if (!Number.isFinite(v) || v <= 0) {
+          return json({ error: `${supplier} on silo ${silo} needs a price above zero, or none at all.` }, 400);
+        }
+        ratePerT = v;
+      }
+      suppliers.push({ seq: suppliers.length, supplier, kg, ratePerT });
     }
-    clean.push({ silo, size, suppliers });
+    clean.push({ silo, size, gritType, suppliers });
   }
 
   // One transaction per save. Deleting and re-inserting outside one would leave
@@ -166,14 +220,20 @@ export async function PUT(req: NextRequest) {
     for (const s of clean) {
       await tx.costingBatchGritSilo.upsert({
         where: { batchKey_siloNo: { batchKey, siloNo: s.silo } },
-        create: { batchKey, siloNo: s.silo, size: s.size, assignedBy: me.name },
-        update: { size: s.size, assignedBy: me.name, updatedAt: new Date() },
+        create: { batchKey, siloNo: s.silo, size: s.size, gritType: s.gritType, assignedBy: me.name },
+        update: { size: s.size, gritType: s.gritType, assignedBy: me.name, updatedAt: new Date() },
       });
       await tx.costingBatchGritSupplier.deleteMany({ where: { batchKey, siloNo: s.silo } });
       if (s.suppliers.length) {
         await tx.costingBatchGritSupplier.createMany({
           data: s.suppliers.map((p) => ({
-            batchKey, siloNo: s.silo, seq: p.seq, supplier: p.supplier, kg: p.kg, assignedBy: me.name,
+            batchKey, siloNo: s.silo, seq: p.seq, supplier: p.supplier, kg: p.kg,
+            ratePerT: p.ratePerT,
+            // Stamped only when there IS a rate, so "who priced this" stays
+            // answerable and does not quietly become "who last touched the row".
+            rateBy: p.ratePerT == null ? null : me.name,
+            rateAt: p.ratePerT == null ? null : new Date(),
+            assignedBy: me.name,
           })),
         });
       }

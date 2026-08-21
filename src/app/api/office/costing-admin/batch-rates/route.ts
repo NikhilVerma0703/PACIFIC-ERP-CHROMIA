@@ -33,6 +33,7 @@
 //     by name; a line nobody reads is worse than none, because the screen shows
 //     it as saved.
 
+import { gritCostFacts } from "@/lib/costing/gritAssign";
 import { NextRequest, NextResponse } from "next/server";
 
 import { isAdmin, currentUser } from "@/lib/rbac";
@@ -177,6 +178,10 @@ async function verification(batchKey: string, card: EffectiveRateCard, lines: Sa
       lines: lines.map((l) => ({ item: l.item, seq: l.seq, qty: l.qty, rate: l.rate })),
       cardRates: card.rates,
       resinBySupplier: card.resinBySupplier,
+      // Size, type and every per-line rate. Derived in gritAssign so the
+      // three call sites cannot drift apart again - which is how gritSizes
+      // came to be passed by none of them.
+      ...gritCostFacts(c?.gritSilos),
     }),
   };
   const stored = await prisma.costingBatchVerification.findMany({ where: { batchKey } });

@@ -113,17 +113,44 @@ test("the Silo model gains no back-reference to costing", () => {
     "Silo must not reference the grit assignment tables");
 });
 
-test("no money column on either assignment table", () => {
-  // The price lives in costing_batch_material and nowhere else. A rate here
-  // would be a second pricing path and a rupee value on a screen that carries
-  // none — see scripts/0049 for the full reasoning.
-  for (const model of ["CostingBatchGritSilo", "CostingBatchGritSupplier"]) {
-    const body = modelBlock(model);
-    for (const money of ["rate", "price", "amount", "cost", "inr", "rupees"]) {
-      assert.equal(new RegExp(`^\\s*${money}\\b`, "mi").test(body), false,
-        `${model} must not carry a "${money}" column`);
-    }
+test("the price lives on the SPLIT LINE, and the silo still carries no money", () => {
+  // THIS REVERSES scripts/0049's rule, on the owner's instruction (2026-08-21).
+  // The old test asserted neither assignment table carried money at all, on the
+  // grounds that the price lived in costing_batch_material. That turned out to
+  // be unreachable: report.ts prices an assigned silo from a line keyed
+  // `grit-silo-<n>`, and the only route that writes that table validates against
+  // a fixed catalogue which cannot contain a silo number. Every assigned batch
+  // therefore reported its grit unpriced and withheld the whole sheet - batch
+  // 1415 in production, six silos, zero priced lines.
+  //
+  // Worth knowing: the old assertion could not have caught this field anyway.
+  // It tested for a column named `rate` on a word boundary, and the column
+  // is `ratePerT`, so it never matched. It would have gone on passing while
+  // asserting something false, which is worse than not testing it at all.
+  const silo = modelBlock("CostingBatchGritSilo");
+  const supplier = modelBlock("CostingBatchGritSupplier");
+
+  // The SILO still holds no money. A rate here would price a whole silo at one
+  // figure, which is the thing the supplier split exists to avoid: a silo is
+  // split BECAUSE the supplier differs, and a different supplier is a different
+  // invoice at a different price.
+  for (const money of ["ratePerT", "rate", "price", "amount", "cost", "inr", "rupees"]) {
+    assert.equal(new RegExp(`^\\s*${money}\\b`, "mi").test(silo), false,
+      `CostingBatchGritSilo must not carry a "${money}" column`);
   }
+
+  // The SPLIT LINE holds exactly one money column, and it is NULLABLE.
+  assert.match(supplier, /^\s*ratePerT\s+Float\?/mi,
+    "the rate must be Float? - null means unpriced, and 0 would mean free");
+  for (const money of ["price", "amount", "cost", "inr", "rupees"]) {
+    assert.equal(new RegExp(`^\\s*${money}\\b`, "mi").test(supplier), false,
+      `CostingBatchGritSupplier must not also carry a "${money}" column`);
+  }
+
+  // Null must stay expressible. A default would make "not priced yet"
+  // unrepresentable and silently cost unpriced grit at that default.
+  assert.equal(/^\s*ratePerT\s+Float\?\s+@default/mi.test(supplier), false,
+    "ratePerT must have no default - unpriced has to stay distinct from priced");
 });
 
 test("the migration creates only — it alters, drops and moves nothing", () => {

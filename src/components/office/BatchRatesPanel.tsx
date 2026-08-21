@@ -30,6 +30,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Card, Empty } from "@/components/ui";
 import { readJson } from "@/lib/readJson";
+import { GritSiloRows } from "@/components/office/GritSiloRows";
 
 const API = "/api/office/costing-admin/batch-rates";
 
@@ -76,7 +77,17 @@ const money = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 });
 // force. Four is enough for every factor the card holds.
 const factor = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 4 });
 
-const SPLITTABLE = new Set(["RESIN", "GRIT", "FILLER", "PIGMENT", "CHEMICAL"]);
+// The families whose lines carry a QUANTITY somebody types. Pigment and the
+// chemicals used to be here and are not any more: their kilograms come from a
+// dosing percentage of resin weight, so this panel already knows the weight and
+// asking for it again was asking somebody to re-type a number the screen had
+// computed - and to be wrong about it. See DOSED_FAMILIES just below, which
+// says "Never weighed" about the very same materials.
+//
+// The consequence, stated: a dosed material now carries ONE line - one supplier
+// and one price for the batch. With no typed weight there is nothing to divide
+// between two suppliers, so a split would have no meaning.
+const SPLITTABLE = new Set(["RESIN", "GRIT", "FILLER"]);
 
 /** The families, in the order the line consumes them. */
 const FAMILY_ORDER = ["RESIN", "GRIT", "FILLER", "PIGMENT", "CHEMICAL", "DOSING", "BASIS"] as const;
@@ -86,7 +97,7 @@ const FAMILY_LABEL: Record<string, string> = {
 };
 const FAMILY_NOTE: Record<string, string> = {
   RESIN: "Weighed by the mixer.",
-  GRIT: "Weighed per charge, by size band.",
+  GRIT: "One card per silo — size, type, supplier and price on the same row.",
   FILLER: "Weighed by the mixer.",
   PIGMENT: "Never weighed — the quantity is a percentage of resin weight, set below.",
   CHEMICAL: "Never weighed — the quantities are a percentage of resin weight, set below.",
@@ -785,7 +796,10 @@ export function BatchRatesPanel({
               {lines.length} line{lines.length === 1 ? "" : "s"}
             </Badge>
           )}
-          {saved && !balanced && left != null && (
+          {/* splittable, because an "unallocated" figure is computed from a
+              quantity the editor no longer asks for on a dosed material - it
+              would report a shortfall against a number nobody can change. */}
+          {splittable && saved && !balanced && left != null && (
             <span className="text-xs text-amber-700">
               {left > 0 ? `${num.format(left)} ${mixer?.unit} unallocated` : `${num.format(-left)} ${mixer?.unit} over`}
             </span>
@@ -919,7 +933,14 @@ export function BatchRatesPanel({
               <button type="button" className={btnGhost}
                 disabled={!splittable && lines.length >= 1}
                 onClick={() => setLines(c.item, [...lines, { qty: "", rate: "", description: "", note: "" }])}>
-                {lines.length ? "Add another supplier" : splittable ? "Assign a supplier" : "Set the value"}
+                {!splittable && lines.length
+                  // Disabled AND labelled "Add another supplier" read as a bug.
+                  // A dosed material has one line by design: its kilograms come
+                  // from the dosing percentage, so there is no weight to divide
+                  // between two of them.
+                  ? "One supplier — the weight comes from the dose"
+                  : lines.length ? "Add another supplier"
+                    : splittable ? "Assign a supplier" : "Set the value"}
               </button>
               {/* The remainder, prefilled.
                   A material is only fully described once its lines add up to
@@ -1062,9 +1083,16 @@ export function BatchRatesPanel({
               </div>
 
               <div className="space-y-2">
-                {used.map((c) => materialRow(c, false))}
+                {/* GRIT IS NOT A CATALOGUE FAMILY ANY MORE. The band cards that
+                    stood here priced grit per size band; the silo rows price it
+                    per silo and per supplier, which is how it is actually bought.
+                    Same <section>, same heading, same card styling as Resin and
+                    Filler either side - only the rows underneath changed. */}
+                {family === "GRIT"
+                  ? <GritSiloRows batchKey={batchKey} onSaved={onSaved} />
+                  : used.map((c) => materialRow(c, false))}
 
-                {used.length === 0 && (
+                {family !== "GRIT" && used.length === 0 && (
                   <p className="rounded-xl border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-400">
                     The mixer recorded none of these for {batchLabel}.
                   </p>

@@ -429,3 +429,141 @@ export function gritFlagSentences(rows: readonly GritSiloFlagInput[]): string[] 
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Pricing one silo. PURE, and here rather than in report.ts because report.ts
+// is server-only and `node --test` cannot load it — so arithmetic left in there
+// is arithmetic nothing checks. This is the money, so it lives where it can be
+// tested.
+// ---------------------------------------------------------------------------
+
+/** One split line as the costing sees it. */
+export interface GritPricedLine {
+  supplier: string;
+  kg: number;
+  /** NULL means nobody has priced it. It is never zero — see the caller. */
+  ratePerT: number | null;
+}
+
+export interface GritSiloPricing {
+  /** Priced lines, ready to become material rows. Tonnes, because the rate is
+   *  rupees per tonne; the kg→t conversion happens HERE and nowhere else. */
+  lines: Array<{ supplier: string; tonnes: number; ratePerT: number }>;
+  /** What is missing, in tonnes, with the sentence that says what to do. */
+  missing: Array<{ tonnes: number; needs: string }>;
+  /** Whether the whole sheet must be withheld. TRUE whenever anything about
+   *  this silo is unpriced — an under-reported total that looks complete is
+   *  worse than no total, because nobody goes looking for the difference. */
+  withhold: boolean;
+}
+
+/**
+ * What one assigned silo contributes to the sheet.
+ *
+ * THE RULE THIS ENCODES: a silo is costed from its SPLIT LINES, each at its own
+ * rupees-per-tonne, because a silo is split across suppliers precisely when the
+ * supplier — and therefore the invoice and the price — differs.
+ *
+ * NULL IS NOT ZERO, and that is the whole of the safety here. An unpriced line
+ * withholds the sheet; costing it at nothing would print a complete-looking
+ * total with that grit silently missing. It would not look broken. It would
+ * look like a cheap batch.
+ */
+export function priceGritSilo(sil: {
+  silo: string;
+  size: string;
+  kg: number;
+  suppliers: readonly GritPricedLine[];
+}): GritSiloPricing {
+  const out: GritSiloPricing = { lines: [], missing: [], withhold: false };
+  if (sil.kg <= 0) return out;
+
+  const split = sil.suppliers ?? [];
+  if (!split.length) {
+    out.withhold = true;
+    out.missing.push({
+      tonnes: sil.kg / 1000,
+      needs: sil.size
+        ? "a supplier and a price per tonne for this silo"
+        : "a size, a supplier and a price per tonne for this silo",
+    });
+    return out;
+  }
+
+  let pricedKg = 0;
+  for (const l of split) {
+    if (l.ratePerT == null) {
+      out.withhold = true;
+      out.missing.push({
+        tonnes: l.kg / 1000,
+        needs: `a price per tonne for ${l.supplier || "the supplier"} on silo ${sil.silo}`,
+      });
+      continue;
+    }
+    pricedKg += l.kg;
+    out.lines.push({ supplier: l.supplier, tonnes: l.kg / 1000, ratePerT: l.ratePerT });
+  }
+
+  // Tonnage the mixer drew that no line accounts for, in EITHER direction.
+  //
+  // Under-assigned is grit nobody has priced: reported and withheld, because a
+  // sheet computed without it under-reports the batch.
+  //
+  // OVER-assigned is worse and used to pass silently: the lines are costed at
+  // their own kilograms, so a fat-fingered 41,814 against a silo that drew
+  // 17,180 prices 24 tonnes of grit that was never weighed - and the sheet
+  // prints as complete. Every sibling path already defends this (splitMaterial
+  // pushes a problem sentence; completeness blocks on a negative remainder) and
+  // this one did not.
+  const short = Math.round((sil.kg - pricedKg) * 1000) / 1000;
+  if (short < -0.005) {
+    out.withhold = true;
+    out.missing.push({
+      tonnes: short / 1000,          // negative: the sheet must not add this in
+      needs: `the lines on silo ${sil.silo} add up to ${Math.round(pricedKg * 1000) / 1000} kg ` +
+             `but the mixer drew ${sil.kg} kg - correct the split before this batch is costed`,
+    });
+  } else if (short > 0.005 && !split.some((l) => l.ratePerT == null)) {
+    out.withhold = true;
+    out.missing.push({
+      tonnes: short / 1000,
+      needs: `a supplier and a price for the remaining ${short} kg of silo ${sil.silo}`,
+    });
+  }
+  return out;
+}
+
+/**
+ * The grit facts the COSTS fingerprint needs, derived in ONE place.
+ *
+ * There are three callers of costsFingerprint — the report drawer, the verify
+ * screen and the admin batch-rates panel — and they each build the shape by
+ * hand. That is exactly how `gritSizes` came to be accepted by the function,
+ * documented at length, tested, and passed by nobody: three copies drifted and
+ * the newest fact never reached any of them. One helper, three spreads.
+ *
+ * Returns undefined for an unassigned batch rather than empty arrays, so the
+ * length guards in costsFingerprint keep hashing those batches byte-identically
+ * and no standing sign-off lapses on deploy.
+ */
+export function gritCostFacts(gritSilos: ReadonlyArray<{
+  silo: string;
+  size: string;
+  gritType?: string;
+  suppliers: ReadonlyArray<{ seq: number; ratePerT: number | null }>;
+}> | null | undefined): {
+  gritSizes?: Array<{ silo: string; size: string }>;
+  gritTypes?: Array<{ silo: string; gritType: string }>;
+  gritRates?: Array<{ silo: string; seq: number; rate: number | null }>;
+} {
+  if (!gritSilos?.length) return {};
+  return {
+    gritSizes: gritSilos.map((s) => ({ silo: s.silo, size: s.size })),
+    gritTypes: gritSilos.map((s) => ({ silo: s.silo, gritType: s.gritType ?? "" })),
+    // Every line, priced or not. A NULL hashes as "unpriced" inside the
+    // fingerprint, so putting a first price on a blank line moves the string —
+    // which is the single most important edit for this to catch.
+    gritRates: gritSilos.flatMap((s) =>
+      s.suppliers.map((p) => ({ silo: s.silo, seq: p.seq, rate: p.ratePerT }))),
+  };
+}

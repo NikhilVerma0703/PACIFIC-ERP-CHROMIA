@@ -2356,11 +2356,11 @@ enum FabShapeType {
 }
 
 model FabMachine {
-  id         String              @id @default(cuid())
-  code       String              @unique
+  id         String               @id @default(cuid())
+  code       String               @unique
   name       String
   type       FabMachineType
-  createdAt  DateTime            @default(now()) @map("created_at")
+  createdAt  DateTime             @default(now()) @map("created_at")
   sessions   FabMachineSession[]
   operations FabOperation[]
   slabJobs   FabSlabJob[]
@@ -2372,12 +2372,12 @@ model FabMachine {
 /// Floor roster. The operator login is shared; these names are who actually
 /// stood at the machine for a process session. Supervisor creates them.
 model FabWorker {
-  id        String               @id @default(cuid())
-  name      String               @unique
-  active    Boolean              @default(true)
-  createdAt DateTime             @default(now()) @map("created_at")
-  createdById String?            @map("created_by_id")
-  createdBy   User?              @relation(fields: [createdById], references: [id])
+  id          String               @id @default(cuid())
+  name        String               @unique
+  active      Boolean              @default(true)
+  createdAt   DateTime             @default(now()) @map("created_at")
+  createdById String?              @map("created_by_id")
+  createdBy   User?                @relation(fields: [createdById], references: [id])
   sessions    FabMachineSession[]
   operations  FabOperation[]
   slabJobs    FabSlabJob[]
@@ -2409,19 +2409,19 @@ model FabMachineSession {
 /// Floor stoppage on one machine / process. Start and end are logged while a
 /// process session is open so the name and shift are known.
 model FabMachineDowntime {
-  id          String      @id @default(cuid())
-  machineId   String      @map("machine_id")
-  machine     FabMachine  @relation(fields: [machineId], references: [id])
-  processType String      @map("process_type")
+  id          String     @id @default(cuid())
+  machineId   String     @map("machine_id")
+  machine     FabMachine @relation(fields: [machineId], references: [id])
+  processType String     @map("process_type")
   reason      String
   notes       String?
-  startedAt   DateTime    @default(now()) @map("started_at")
-  endedAt     DateTime?   @map("ended_at")
-  workerId    String?     @map("worker_id")
-  worker      FabWorker?  @relation(fields: [workerId], references: [id])
+  startedAt   DateTime   @default(now()) @map("started_at")
+  endedAt     DateTime?  @map("ended_at")
+  workerId    String?    @map("worker_id")
+  worker      FabWorker? @relation(fields: [workerId], references: [id])
   shift       String?
-  sessionId   String?     @map("session_id")
-  userId      String      @map("user_id")
+  sessionId   String?    @map("session_id")
+  userId      String     @map("user_id")
 
   @@index([machineId, endedAt])
   @@index([processType, endedAt])
@@ -4361,6 +4361,13 @@ model CostingBatchGritSilo {
   /// rate-card key: a typed size must never mint a catalogue entry.
   /// '' means listed but not yet sized.
   size     String @default("")
+  /// What the silo ran: "Premium Supreme G2", "Glass", "Cristobalite", or
+  /// whatever the plant runs next. Verbatim as typed, exactly like `size`, and
+  /// for the same two reasons: a stored canonical form is a second source of
+  /// truth, and a typed value must never mint a rate-card key. '' means not
+  /// chosen yet. The dropdown is DERIVED from this column, so a type typed once
+  /// is offered on every batch afterwards with no dictionary to administer.
+  gritType String @default("") @map("grit_type")
 
   assignedBy String   @default("system") @map("assigned_by")
   assignedAt DateTime @default(now()) @map("assigned_at")
@@ -4383,16 +4390,30 @@ model CostingBatchGritSilo {
 /// single conversion to tonnes happens in report.ts where rupees-per-tonne is
 /// applied. Converting in two places is how somebody types 14,780 against a kilo.
 model CostingBatchGritSupplier {
-  id       String @id @default(cuid())
-  batchKey String @map("batch_key")
-  siloNo   String @map("silo_no")
+  id       String    @id @default(cuid())
+  batchKey String    @map("batch_key")
+  siloNo   String    @map("silo_no")
   /// Position within the silo's split; rewritten wholesale per silo on save,
   /// the same convention as costing_batch_material.seq.
-  seq      Int    @default(0)
+  seq      Int       @default(0)
   /// As typed. Compared fuzzily to the silo's recorded supplier and flagged when
   /// they differ — THE TYPED VALUE WINS, and nothing here is written back.
   supplier String
   kg       Float
+  /// Rupees per TONNE for this supplier's share of this silo. The weight beside
+  /// it is KILOGRAMS, because that is what the mixer records; the single
+  /// conversion lives in report.ts and must not be repeated.
+  ///
+  /// NULLABLE, AND NULL IS NOT ZERO. Null means nobody has priced this line;
+  /// 0 would mean the grit was free. Anything that reads this with `?? 0`
+  /// turns an unpriced batch into a cheap one and prints a complete-looking
+  /// sheet with the grit silently missing.
+  ratePerT Float?    @map("rate_per_t")
+  /// Kept apart from assignedBy/assignedAt, which record who assigned the
+  /// SPLIT. Usually the same person, but an admin may correct a rate long
+  /// after the split was entered and collapsing them would erase that.
+  rateBy   String?   @map("rate_by")
+  rateAt   DateTime? @map("rate_at")
 
   assignedBy String   @default("system") @map("assigned_by")
   assignedAt DateTime @default(now()) @map("assigned_at")

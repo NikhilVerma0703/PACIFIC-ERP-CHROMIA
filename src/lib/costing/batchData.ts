@@ -139,9 +139,15 @@ export interface GritSiloAssignment {
   silo: string;
   /** As assigned, verbatim. "" means listed but not yet sized. */
   size: string;
+  /** What the silo ran - Premium Supreme G2, Glass, Cristobalite. Verbatim as
+   *  typed, same as size. "" means not chosen yet. */
+  gritType: string;
   /** Drawn on this batch, summed across the silo's charges. */
   kg: number;
-  suppliers: Array<{ seq: number; supplier: string; kg: number }>;
+  /** The split. `ratePerT` is rupees per TONNE while `kg` is kilograms - the
+   *  conversion happens once, in report.ts. NULL rate means nobody has priced
+   *  this line; it must never be read as zero. */
+  suppliers: Array<{ seq: number; supplier: string; kg: number; ratePerT: number | null }>;
   /** What the bags in this silo record — REPORTED, never written to. */
   recordedSizes: string[];
   recordedSuppliers: string[];
@@ -208,15 +214,25 @@ export async function loadGritSilos(
     if (!r) {
       const rec = recBySilo.get(silo);
       r = {
-        silo, size: "", kg: kgBySilo.get(silo) ?? 0, suppliers: [],
+        silo, size: "", gritType: "", kg: kgBySilo.get(silo) ?? 0, suppliers: [],
         recordedSizes: rec?.sizes ?? [], recordedSuppliers: rec?.suppliers ?? [],
       };
       bySilo.set(silo, r);
     }
     return r;
   };
-  for (const a of sizes) row(a.siloNo).size = a.size;
-  for (const p of suppliers) row(p.siloNo).suppliers.push({ seq: p.seq, supplier: p.supplier, kg: p.kg });
+  for (const a of sizes) {
+    const r = row(a.siloNo);
+    r.size = a.size;
+    r.gritType = a.gritType;
+  }
+  for (const p of suppliers) {
+    row(p.siloNo).suppliers.push({
+      seq: p.seq, supplier: p.supplier, kg: p.kg,
+      // `?? null` and never `?? 0`: unpriced is a state, not a price.
+      ratePerT: p.ratePerT ?? null,
+    });
+  }
 
   return [...bySilo.values()].sort((a, b) => a.silo.localeCompare(b.silo));
 }

@@ -10,7 +10,7 @@ import { prisma } from "@/lib/prisma";
 import {
   computeSheet, varianceLines, type CostingSheet, type MaterialLine, type VariancePanel,
 } from "./compute";
-import { gritFlagSentences, gritSiloItemKey, gritSiloLabel } from "./gritAssign";
+import { gritFlagSentences, gritSiloLabel, priceGritSilo, gritCostFacts } from "./gritAssign";
 import {
   bandOf, GRIT_BAND_LABELS, gritItemKey, hasGritAssignment, listCostableBatches, loadBatchConsumption,
   RESIN_TANK_SUPPLIER, type BatchConsumption, type BatchListEntry,
@@ -171,6 +171,10 @@ export async function buildCostingReport(batchKey: string): Promise<CostingRepor
       lines: savedLines.map((l) => ({ item: l.item, seq: l.seq, qty: l.qty, rate: l.rate })),
       cardRates: card.rates,
       resinBySupplier: card.resinBySupplier,
+      // Size, type and every per-line rate. Derived in gritAssign so the
+      // three call sites cannot drift apart again - which is how gritSizes
+      // came to be passed by none of them.
+      ...gritCostFacts(c?.gritSilos),
     }),
   };
   const markRows: VerificationRow[] = verifRows.map((r) => ({
@@ -459,37 +463,64 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
   //
   // The switch is per batch and flips the first time a silo is assigned.
   if (hasGritAssignment(c.gritSilos)) {
-    for (const sil of c.gritSilos!) {
-      if (sil.kg <= 0) continue;
-      const item = gritSiloItemKey(sil.silo);
+    // THE ROW LIST COMES FROM THE MIXER, NOT FROM THE ASSIGNMENT TABLE.
+    //
+    // c.gritSilos holds only silos somebody has assigned, and hasGritAssignment
+    // flips true on the FIRST one. The screen saves one silo per request, so a
+    // batch is routinely on this path with most of its silos still unassigned.
+    // Iterating the assignment array alone silently dropped every one of them:
+    // no price, no unpriced line, nothing in fromCard - so the sheet computed,
+    // complete and confident, missing three quarters of the batch grit.
+    //
+    // Seeding rows in loadGritSilos would fix the arithmetic and break something
+    // worse: it would move the assign= segment of weightsFingerprint on every
+    // already-assigned batch and lapse every standing mark in the plant.
+    const assignedBySilo = new Map((c.gritSilos ?? []).map((s) => [s.silo, s]));
+    const mixerKg = new Map<string, number>();
+    for (const g of c.gritCharges) mixerKg.set(g.silo, (mixerKg.get(g.silo) ?? 0) + g.kg);
+
+    for (const [silo, kg] of mixerKg) {
+      if (kg <= 0) continue;
+      const sil = assignedBySilo.get(silo);
+
+      // Drawn from, never assigned. Withhold - this is grit nobody has even
+      // said what it is, let alone what it cost.
+      if (!sil) {
+        const label = gritSiloLabel(silo, "");
+        fromCard.add(label);
+        unpriced.push({
+          item: label, qty: r2(kg / 1000), unit: "t",
+          needs: `a size, a supplier and a price per tonne - silo ${silo} drew ${r2(kg / 1000)} t and nobody has assigned it`,
+        });
+        continue;
+      }
+
       const label = gritSiloLabel(sil.silo, sil.size);
-
-      // cardRate is a HARD-CODED null, not a variable that could hold a rate.
-      // There is no per-silo card rate and there must never be one — the price
-      // is typed. No future edit can reintroduce a card fallback here without
-      // deleting this literal and the comment above it.
+      // The arithmetic lives in gritAssign.priceGritSilo - pure, and therefore
+      // actually tested, which this file cannot be because it is server-only.
       //
-      // THE CALLBACK IS THE WITHHELD-SHEET GUARD, and it is the single most
-      // important line in this block. needsBatchRates IS fromCard (see below),
-      // and the sheet is computed only when that is empty; `unpriced` has never
-      // gated it. Without this, a batch that is assigned but not yet priced —
-      // a state the two-step flow GUARANTEES on every batch — would print a
-      // complete-looking sheet with the grit silently missing: on the reference
-      // batch, material 12,500,221 -> 9,311,009, cost/sqft $3.22 -> $2.56, and
-      // the grit row gone from the share table entirely because compute.ts
-      // filters shares to amount > 0. It would not look broken. It would look
-      // like a cheap batch.
-      const priced = fromBatch(item, label, "grit", sil.kg / 1000, "t", null,
-        (short) => { if (short > 0) fromCard.add(label); });
-      if (priced) continue;
+      // It used to read a costing_batch_material line keyed grit-silo-<n>. That
+      // line could never exist: the only route that writes that table validates
+      // the item against a fixed 44-entry catalogue and a silo number is data,
+      // not a catalogue entry, so it answered 400 every time. Every assigned
+      // batch therefore withheld its whole sheet - batch 1415 sat like that in
+      // production with six assigned silos and no way out.
+      const priced = priceGritSilo(sil);
 
-      fromCard.add(label);            // assigned, not yet priced -> withhold
-      unpriced.push({
-        item: label, qty: r2(sil.kg / 1000), unit: "t",
-        needs: sil.size
-          ? "a price per tonne for this silo"
-          : "a size from the production verifier, then a price per tonne",
-      });
+      for (const l of priced.lines) {
+        materials.push({
+          group: "grit", item: label,
+          basis: l.supplier ? `${l.supplier}, set on this batch` : "set on this batch",
+          qty: l.tonnes, unit: "t", rate: l.ratePerT,
+        });
+      }
+      for (const m of priced.missing) {
+        unpriced.push({ item: label, qty: r2(m.tonnes), unit: "t", needs: m.needs });
+      }
+      // fromCard IS needsBatchRates, and needsBatchRates is the ONLY thing that
+      // withholds the sheet - the unpriced array has never gated it. Dropping
+      // this line prints a complete-looking total with the grit missing.
+      if (priced.withhold) fromCard.add(label);
     }
     assumptions.push(...gritFlagSentences(c.gritSilos!));
     // Unresolved tonnage is deliberately NOT reported on this path: it is inside

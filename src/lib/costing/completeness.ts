@@ -54,7 +54,26 @@ export interface CompletenessLine {
 export interface CompletenessConsumption {
   resinKg: number;
   fillerKg: number;
-  gritCharges: ReadonlyArray<{ band: string; kg: number }>;
+  gritCharges: ReadonlyArray<{ band: string; kg: number; silo?: string }>;
+  /**
+   * The silo assignment, when the batch has one. OPTIONAL, and absent means
+   * unassigned - the per-band rules below are what every historical batch is
+   * still judged by and must not move.
+   *
+   * It has to be here because this gate and report.ts were answering different
+   * questions about the same batch. report.ts costs an assigned batch SILO by
+   * silo and withholds the sheet when a line has no price; this gate only ever
+   * looked at grit-<band> against the plant card, which an assigned batch still
+   * satisfies. So a batch whose grit was 100% unpriced - every silo NULL, sheet
+   * withheld - was still accepted for sign-off. The signature said the prices
+   * were checked; there were no prices.
+   */
+  gritSilos?: ReadonlyArray<{
+    silo: string;
+    size: string;
+    kg: number;
+    suppliers: ReadonlyArray<{ supplier: string; kg: number; ratePerT: number | null }>;
+  }> | null;
 }
 
 /** The card in force on the batch's run date — effectiveRateCard's shape. */
@@ -106,6 +125,23 @@ function consumedTotals(
   const out: Array<{ item: string; qty: number; unit: string }> = [];
 
   if (usable(c.resinKg)) out.push({ item: "resin", qty: c.resinKg, unit: "kg" });
+
+  // AN ASSIGNED BATCH IS NOT JUDGED PER BAND. Its grit is costed silo by silo
+  // at prices typed on the split lines, so the band rates on the plant card say
+  // nothing about whether it can be costed. Returning band totals here would
+  // let the card satisfy a gate the sheet itself refuses.
+  //
+  // The silo rules live in gritSiloBlockers below, called by the same caller.
+  if (c.gritSilos?.length) {
+    if (usable(c.fillerKg)) out.push({ item: "filler-400", qty: c.fillerKg / 1000, unit: "t" });
+    if (usable(c.resinKg)) {
+      for (const [chem, rule] of DOSED_CHEMICALS) {
+        const d = doseFor(rule);
+        if (usable(d)) out.push({ item: chem, qty: (c.resinKg * d) / 100, unit: "kg" });
+      }
+    }
+    return out;
+  }
 
   // Grit per band, in tonnes — bands are already normalised upstream.
   const byBand = new Map<string, number>();
@@ -167,6 +203,16 @@ export function batchCompleteness(
     usable(batchDose[rule]) ? batchDose[rule]
       : usable(card.rates[rule]) ? card.rates[rule]
         : undefined;
+
+  // AN ASSIGNED BATCH IS BLOCKED ON ITS SILOS, not on the plant card bands.
+  // Pushed before the per-material checks so the reason a verifier reads first
+  // is the one that actually stops the sheet computing.
+  blockers.push(...gritSiloBlockers(
+    consumption.gritSilos,
+    // The mixer is the truth about which silos fed this batch. Passing it is
+    // what lets the gate see a silo nobody assigned.
+    consumption.gritCharges.map((g) => ({ silo: (g as { silo?: string }).silo ?? "", kg: g.kg })),
+  ));
 
   const totals = consumedTotals(consumption, doseFor);
 
@@ -245,4 +291,65 @@ export function batchCompleteness(
   }
 
   return { ok: blockers.length === 0, blockers };
+}
+
+
+/**
+ * Why an ASSIGNED batch cannot be costed yet, in the verifier own words.
+ *
+ * These mirror priceGritSilo exactly, and they have to: that function decides
+ * whether the SHEET computes, this one decides whether a SIGN-OFF is accepted,
+ * and the two disagreeing is how a batch came to carry a signature saying its
+ * prices were checked when every price was NULL.
+ *
+ * Restated here rather than imported because this module deliberately has no
+ * imports - see the header. The cost of that is this duplication; the price of
+ * the alternative was a gate nobody could unit-test.
+ */
+export function gritSiloBlockers(
+  gritSilos: CompletenessConsumption["gritSilos"],
+  /** What the MIXER drew, per silo. A silo in here with no row in gritSilos is
+   *  grit nobody has assigned at all - invisible to any rule that iterates the
+   *  assignment table, which is how a partly-assigned batch printed a complete
+   *  sheet missing three quarters of its grit. */
+  mixerKgBySilo: ReadonlyArray<{ silo: string; kg: number }> = [],
+): string[] {
+  if (!gritSilos?.length) return [];
+  const out: string[] = [];
+
+  const haveRow = new Set(gritSilos.map((s) => s.silo));
+  const drawn = new Map<string, number>();
+  for (const g of mixerKgBySilo) drawn.set(g.silo, (drawn.get(g.silo) ?? 0) + g.kg);
+  for (const [silo, kg] of drawn) {
+    if (kg > 0 && !haveRow.has(silo)) {
+      out.push(`Silo ${silo} drew ${Math.round(kg)} kg and has not been assigned at all.`);
+    }
+  }
+  for (const s of gritSilos) {
+    if (!s.size) out.push(`Silo ${s.silo} has no size — nobody has said what it ran.`);
+    if (!s.suppliers.length) {
+      out.push(`Silo ${s.silo} has no supplier or price against its ${Math.round(s.kg)} kg.`);
+      continue;
+    }
+    let priced = 0;
+    for (const p of s.suppliers) {
+      // NULL is not zero. An unpriced line is the normal state between
+      // assigning a silo and pricing it, and it must stop a sign-off.
+      if (p.ratePerT == null) {
+        out.push(`${p.supplier || "A supplier"} on silo ${s.silo} has no price per tonne.`);
+        continue;
+      }
+      priced += p.kg;
+    }
+    const short = Math.round((s.kg - priced) * 1000) / 1000;
+    if (short > 0.005 && s.suppliers.every((p) => p.ratePerT != null)) {
+      out.push(`Silo ${s.silo} has ${short} kg assigned to nobody.`);
+    } else if (short < -0.005) {
+      out.push(
+        `Silo ${s.silo} is over-assigned: the lines add up to ${Math.round(priced * 1000) / 1000} kg ` +
+        `but the mixer drew ${s.kg} kg.`,
+      );
+    }
+  }
+  return out;
 }

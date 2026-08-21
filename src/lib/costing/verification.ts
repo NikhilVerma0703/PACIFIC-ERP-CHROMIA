@@ -108,6 +108,25 @@ export interface PricedShape {
    * typed rupee figure applies to.
    */
   gritSizes?: ReadonlyArray<{ silo: string; size: string }> | null;
+  /**
+   * The assigned grit TYPE and the per-line PRICE - the two facts scripts/0050
+   * added, and the two the sheet is now costed from.
+   *
+   * These have to be here or a price edit changes the money and lapses nothing.
+   * The weights string cannot carry them: it hashes silo, size, supplier and kg,
+   * and a re-priced line keeps every one of those identical, so it comes back
+   * byte-for-byte the same. The lines/card/resin parts above never see a grit
+   * rate either - it lives in costing_batch_grit_supplier, which neither
+   * costing_batch_material nor costing_rate knows about.
+   *
+   * NULL rate hashes as the literal "unpriced", not as 0 or as empty: pricing a
+   * blank line for the first time MUST move this string, and an empty segment
+   * would make that edit invisible.
+   */
+  gritRates?: ReadonlyArray<{ silo: string; seq: number; rate: number | null }> | null;
+  /** Type is a claim about WHAT was bought, which is a claim about what the
+   *  price applies to - so it belongs beside the size, on this side. */
+  gritTypes?: ReadonlyArray<{ silo: string; gritType: string }> | null;
 }
 
 /**
@@ -143,7 +162,18 @@ export function costsFingerprint(p: PricedShape): string {
   const assign = p.gritSizes?.length
     ? `&assign[${p.gritSizes.map((s) => `${s.silo}=${s.size}`).sort().join(";")}]`
     : "";
-  return `lines[${lines}]&card[${card}]&resin[${resin}]${assign}`;
+  // Rates and types, appended and length-guarded for exactly the same reason:
+  // a batch nobody has assigned produces a byte-identical string to the one it
+  // produced before these existed, so not one standing sign-off lapses on the
+  // day this deploys. A mark lapses the first time somebody prices or types a
+  // silo on that batch - locally caused, expected, and the point of the thing.
+  const rates = p.gritRates?.length
+    ? `&rate[${p.gritRates.map((r) => `${r.silo}#${r.seq}=${r.rate == null ? "unpriced" : round3(r.rate)}`).sort().join(";")}]`
+    : "";
+  const types = p.gritTypes?.length
+    ? `&type[${p.gritTypes.map((t) => `${t.silo}=${t.gritType}`).sort().join(";")}]`
+    : "";
+  return `lines[${lines}]&card[${card}]&resin[${resin}]${assign}${rates}${types}`;
 }
 
 /** One stored sign-off. */

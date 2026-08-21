@@ -13,6 +13,7 @@
 // multiplied by a quantity. Adding those two together is the costed sheet,
 // which stays where it is, behind the ADMIN-only gate next door.
 
+import { gritCostFacts } from "@/lib/costing/gritAssign";
 import { NextRequest, NextResponse } from "next/server";
 
 import { currentUser } from "@/lib/rbac";
@@ -84,6 +85,10 @@ async function fingerprints(batchKey: string) {
       lines: lines.map((l) => ({ item: l.item, seq: l.seq, qty: l.qty, rate: l.rate })),
       cardRates: card.rates,
       resinBySupplier: card.resinBySupplier,
+      // Size, type and every per-line rate. Derived in gritAssign so the
+      // three call sites cannot drift apart again - which is how gritSizes
+      // came to be passed by none of them.
+      ...gritCostFacts(c?.gritSilos),
     }),
   };
 }
