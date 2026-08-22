@@ -386,10 +386,19 @@ export function gritAssignBlockers(rows: readonly GritSiloLine[], label?: (size:
  */
 export const gritSiloItemKey = (silo: string) => `grit-silo-${String(silo).trim()}`;
 
+/** How a silo reads to a person. The sentinel is spelled out HERE so every
+ *  consumer gets it right: the sheet, the blockers, the save button and the
+ *  card all interpolate this, and "silo (no silo)" reads as a bug wherever it
+ *  escapes. */
+export function gritSiloName(silo: string): string {
+  return silo === NO_SILO ? "grit with no silo recorded" : `silo ${silo}`;
+}
+
 /** How a silo's grit reads on the sheet and in a blocker. */
 export function gritSiloLabel(silo: string, size: string): string {
   const s = String(size ?? "").trim();
-  return s ? `Grit ${s} — silo ${silo}` : `Grit — silo ${silo}`;
+  const who = gritSiloName(silo);
+  return s ? `Grit ${s} — ${who}` : `Grit — ${who}`;
 }
 
 /** The shape gritFlagSentences needs. Structural, so a loader row satisfies it

@@ -123,6 +123,7 @@ export function GritSiloRows({ batchKey, onSaved }: { batchKey: string; onSaved?
   const save = async (row: SiloRow) => {
     setBusy(row.silo);
     setNote(null);
+    let saved = false;
     // try/finally, because readJson never throws but FETCH DOES - a dropped
     // connection, an offline tablet, a navigation mid-request. Without this the
     // button reads "Saving..." for ever and the only way out is a reload, on a
@@ -153,14 +154,21 @@ export function GritSiloRows({ batchKey, onSaved }: { batchKey: string; onSaved?
       if (!res.ok) { setNote({ text: res.error ?? `Save failed (${res.status})`, ok: false }); return; }
       setNote({ text: `Silo ${row.silo} saved.`, ok: true });
       setOpen(null);
+      saved = true;   // past this point a throw is a RELOAD failure, not a save one
       await load();
       onSaved?.();
     } catch (e) {
+      // WHICH half failed changes the answer completely. A throw before the
+      // save landed means nothing was written; a throw from the reload after
+      // it landed means the work IS saved and only the refresh failed. Saying
+      // "nothing was saved" in the second case invites somebody to type a
+      // price twice.
+      const detail = e instanceof Error && e.message ? `: ${e.message}` : ".";
       setNote({
-        text: e instanceof Error && e.message
-          ? `Could not reach the server: ${e.message}`
-          : "Could not reach the server. Nothing was saved.",
-        ok: false,
+        text: saved
+          ? `Silo ${row.silo} was saved, but the screen could not refresh${detail} Reload to see it.`
+          : `Could not reach the server. Nothing was saved${detail}`,
+        ok: saved,
       });
     } finally {
       setBusy("");

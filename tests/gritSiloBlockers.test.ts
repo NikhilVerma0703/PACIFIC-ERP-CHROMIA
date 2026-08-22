@@ -121,3 +121,27 @@ test("a silo whose grit has no size band at all still gets a row", () => {
   assert.equal(b.length, 1);
   assert.match(b[0], /Silo 203 drew 11535 kg and has not been assigned/);
 });
+
+test("a silo the mixer no longer reports cannot block a sign-off for ever", () => {
+  // The trap the no-silo bucket made routine: price it, then let somebody type
+  // the missing silo number on the mixer form. The bucket empties, its priced
+  // lines remain, and the row now claims 2,100 kg against a mixer draw of 0 —
+  // reading as pure over-assignment. It has no card on any screen, so nothing
+  // could clear it, and every sign-off attempt failed for ever while the sheet
+  // costed the batch cleanly without it.
+  //
+  // priceGritSilo already returned early on kg <= 0; this gate did not.
+  const stale = [{ silo: "(no silo)", size: "0.1-0.4", kg: 0, suppliers: [sup("Someone", 2100, 5000)] }];
+  assert.deepEqual(gritSiloBlockers(stale, []), [],
+    "a row the mixer no longer backs must not block anything");
+  // ...and the sheet agrees, as it always did.
+  assert.equal(priceGritSilo(stale[0]).withhold, false);
+  assert.deepEqual(priceGritSilo(stale[0]).lines, []);
+
+  // The same shape for a real silo whose number was corrected after assignment.
+  const corrected = [{ silo: "204", size: "1.2-2.5", kg: 0, suppliers: [sup("Premium Vinayaka", 12998.6, 4200)] }];
+  assert.deepEqual(gritSiloBlockers(corrected, [{ silo: "205", kg: 12998.6 }]).filter((b) => b.includes("204")), [],
+    "the stale 204 row is silent...");
+  assert.equal(gritSiloBlockers(corrected, [{ silo: "205", kg: 12998.6 }]).length, 1,
+    "...while the silo that IS in the draw is reported as unassigned");
+});

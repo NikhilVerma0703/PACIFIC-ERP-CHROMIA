@@ -315,11 +315,12 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
               </div>
             )}
             {detail.weights.gritUnresolvedKg > 0 && (
-              // Reported rather than dropped: grit with no resolvable silo link
+              // Reported rather than dropped: grit whose bags yield no SIZE BAND.
+              // Not "no silo" - it has one, and on the silo path it is priced there
               // is still grit the batch consumed, and hiding it would make the
               // silo table quietly disagree with the tonnage.
               <p className="mt-2 text-xs text-amber-700">
-                {num.format(detail.weights.gritUnresolvedKg)} kg has no resolvable silo link.
+                {num.format(detail.weights.gritUnresolvedKg)} kg has no size band on its bag records.
               </p>
             )}
           </div>

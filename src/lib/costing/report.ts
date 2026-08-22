@@ -559,8 +559,13 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
   }
   if (c.gritUnresolvedKg > 0) {
     unpriced.push({
-      item: "Grit that could not be traced to a silo", qty: r2(c.gritUnresolvedKg / 1000),
-      unit: "t", needs: "the silo fill records for those charges",
+      // BAND PATH ONLY, and the wording matters. gritUnresolvedKg counts grit
+      // whose bags yield no SIZE BAND - not grit with no silo - and on this
+      // path a band is exactly what it needs to be priced. On the silo path
+      // the same kilograms sit inside the silo rows and are not reported here
+      // at all, which is why this lives in the else branch.
+      item: "Grit with no size band on its bag records", qty: r2(c.gritUnresolvedKg / 1000),
+      unit: "t", needs: "a size band on the silo fill records for those charges",
     });
   }
   }   // end of the per-band path

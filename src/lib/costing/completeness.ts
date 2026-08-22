@@ -330,6 +330,18 @@ export function gritSiloBlockers(
     }
   }
   for (const s of gritSilos) {
+    // A row the MIXER NO LONGER BACKS is not this batch problem any more.
+    //
+    // priceGritSilo returns immediately on kg <= 0, and report.ts only ever
+    // visits silos present in the mixer draw, so such a row costs nothing and
+    // the sheet never looks at it. Without the same guard here it read as pure
+    // over-assignment and blocked every sign-off attempt for ever - on a row
+    // that has no card on any screen and therefore no way to be cleared.
+    //
+    // The no-silo bucket makes that routine rather than exotic: price it, then
+    // let somebody type the missing silo number on the mixer form, and the
+    // bucket empties while its priced lines remain behind.
+    if (s.kg <= 0) continue;
     if (!s.size) out.push(`Silo ${s.silo} has no size — nobody has said what it ran.`);
     if (!s.suppliers.length) {
       out.push(`Silo ${s.silo} has no supplier or price against its ${Math.round(s.kg)} kg.`);

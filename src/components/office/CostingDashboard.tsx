@@ -331,7 +331,7 @@ export function CostingDashboard() {
                     </tr>
                     {report.detail.consumption.gritUnresolvedKg > 0 && (
                       <tr className={row}>
-                        <td className={`${td} text-amber-700`}>Grit with no silo link</td>
+                        <td className={`${td} text-amber-700`}>Grit with no size band on its bags</td>
                         <td className={`${td} text-xs text-gray-500`}>unresolved</td>
                         <td className={`${td} text-right text-amber-700`}>{num(report.detail.consumption.gritUnresolvedKg, 1)} kg</td>
                       </tr>

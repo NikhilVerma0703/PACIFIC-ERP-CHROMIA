@@ -232,6 +232,23 @@ export async function PUT(req: NextRequest) {
   // it back to the per-band costing path and print a different total.
   await prisma.$transaction(async (tx) => {
     for (const s of clean) {
+      // WHO PRICED THIS, and when - carried forward rather than restamped.
+      //
+      // The supplier rows are deleted and recreated wholesale, and the screen
+      // always echoes every rate back, so a save that only changed the SIZE
+      // re-posted the same price and rewrote rate_by to whoever pressed the
+      // button. The schema keeps rate_by/rate_at apart from assigned_by/
+      // assigned_at precisely so a later correction stays distinguishable from
+      // the original entry, and restamping collapsed the two into one. There is
+      // no action_log on this route, so the old values were unrecoverable.
+      const before = await tx.costingBatchGritSupplier.findMany({
+        where: { batchKey, siloNo: s.silo },
+        select: { seq: true, supplier: true, ratePerT: true, rateBy: true, rateAt: true },
+      });
+      // Keyed on seq AND supplier: seq alone is positional and shifts when a
+      // line is removed, which would carry one person's stamp onto another
+      // person's price.
+      const priorRate = new Map(before.map((r) => [`${r.seq}|${r.supplier}`, r]));
       await tx.costingBatchGritSilo.upsert({
         where: { batchKey_siloNo: { batchKey, siloNo: s.silo } },
         create: { batchKey, siloNo: s.silo, size: s.size, gritType: s.gritType, assignedBy: me.name },
@@ -240,15 +257,20 @@ export async function PUT(req: NextRequest) {
       await tx.costingBatchGritSupplier.deleteMany({ where: { batchKey, siloNo: s.silo } });
       if (s.suppliers.length) {
         await tx.costingBatchGritSupplier.createMany({
-          data: s.suppliers.map((p) => ({
-            batchKey, siloNo: s.silo, seq: p.seq, supplier: p.supplier, kg: p.kg,
-            ratePerT: p.ratePerT,
-            // Stamped only when there IS a rate, so "who priced this" stays
-            // answerable and does not quietly become "who last touched the row".
-            rateBy: p.ratePerT == null ? null : me.name,
-            rateAt: p.ratePerT == null ? null : new Date(),
-            assignedBy: me.name,
-          })),
+          data: s.suppliers.map((p) => {
+            const was = priorRate.get(`${p.seq}|${p.supplier}`);
+            // Unchanged rate keeps its original stamp. A new rate, or a changed
+            // one, gets this person and this moment. No rate clears both.
+            const same = was != null && was.ratePerT != null && p.ratePerT != null
+              && Math.abs(was.ratePerT - p.ratePerT) < 1e-9;
+            return {
+              batchKey, siloNo: s.silo, seq: p.seq, supplier: p.supplier, kg: p.kg,
+              ratePerT: p.ratePerT,
+              rateBy: p.ratePerT == null ? null : same ? was.rateBy : me.name,
+              rateAt: p.ratePerT == null ? null : same ? was.rateAt : new Date(),
+              assignedBy: me.name,
+            };
+          }),
         });
       }
     }
