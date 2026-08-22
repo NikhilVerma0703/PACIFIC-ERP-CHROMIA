@@ -1178,7 +1178,12 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
           {batchError && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{batchError}</div>}
 
           <form onSubmit={saveBatch} className="space-y-5">
-            <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+            {/* Two up, then Design across, then two up — the register's own
+                grouping, and what a tablet gets. The four-across desktop row
+                is unchanged; it just starts at lg (1024px) now instead of md
+                (768px), which was exactly iPad-portrait width, so every tablet
+                on the floor was being handed the desktop grid. */}
+            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
               <div>
                 <span className={label}>Production date</span>
                 <input type="date" value={batch.productionDate} onChange={(e) => setBatch((p) => ({ ...p, productionDate: e.target.value }))} className={inp} />
@@ -1214,43 +1219,92 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                       <input type="checkbox" checked={on} onChange={() => setActiveMachines((p) => ({ ...p, [m.id]: !p[m.id] }))}
                         className="h-4 w-4 rounded border-gray-300 text-brand focus:ring-brand/30" />
                       <h3 className="text-sm font-medium text-gray-900">{machineLabel(m.name)}</h3>
-                      {isRoymix && <Badge tone="green">liquid optional</Badge>}
+                      {/* The green "liquid optional" badge that used to sit
+                          here has moved onto the Liquid label itself — see
+                          the field below. */}
                       {!on && <span className="ml-auto text-xs text-gray-400">Not in use</span>}
                     </div>
                     {on && (
-                      <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-                        <div className={isRoymix ? "col-span-2" : ""}>
+                      /*
+                       * Three layouts, one DOM.
+                       *
+                       * TABLET (sm–lg, which is every iPad in portrait): six
+                       * columns, laid out the way the line reads a machine —
+                       * the Program across the top, then the three consumables
+                       * together, then the numbers.
+                       *
+                       *   Robo1 / Robo3   Program
+                       *                   Tool · Liquid · Powder
+                       *                   Target cycle time · Roller height
+                       *   Robo2           Program
+                       *                   Liquid
+                       *   Robo4           Program
+                       *                   Tool · Liquid · Powder
+                       *                   Target cycle time
+                       *
+                       * PHONE (below sm): the same rows, but the consumables
+                       * stack one per line. Three dropdowns across 253px is
+                       * 76px each — narrower than the cell this whole change
+                       * exists to escape, and a dropdown that narrow is not a
+                       * control, it is a hazard. The two plain numbers still
+                       * pair up; they are three digits.
+                       *
+                       * DESKTOP (lg and up): the three-column grid exactly as
+                       * it was, restored by the `lg:order-*` classes.
+                       *
+                       * The DOM is in TABLET order, not desktop order, and the
+                       * reordering is spent on the desktop instead. Tab order
+                       * follows the DOM: on the tablet — the shop floor's
+                       * device, where somebody is going field by field through
+                       * a slab — what you tab to is what you see next. The
+                       * in-charge on a desktop gets the mismatch, on a two-row
+                       * grid where it is hard to get lost.
+                       *
+                       * The tablet/desktop split was at md (768px), which is
+                       * iPad-portrait width to the pixel, so tablets landed on
+                       * the desktop side of it and every dropdown was clipped
+                       * to a ~135px cell. SearchableSelect's own breakpoint
+                       * moved with this one; the two have to agree or a value
+                       * wraps in a cell that is no longer narrow, or worse,
+                       * does not in one that is.
+                       */
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-6 lg:grid-cols-3">
+                        <div className={`col-span-2 sm:col-span-6 lg:order-1 ${isRoymix ? "lg:col-span-2" : "lg:col-span-1"}`}>
                           <span className={label}>Program</span>
                           <SearchableSelect value={entry.programName} options={programOptions} placeholder="Search programs or add new…"
                             onSelect={(name) => setEntry(m.id, "programName", name)} onCreate={addProgram} />
                         </div>
                         {!isRoymix && (
-                          <div>
+                          <div className="col-span-2 lg:order-2 lg:col-span-1">
                             <span className={label}>Tool</span>
                             <SearchableSelect value={entry.toolName} options={tools} placeholder="Search tools…"
                               onSelect={(name) => setEntry(m.id, "toolName", name)} onCreate={addTool} />
                           </div>
                         )}
-                        {!isRoymix && (
-                          <div>
-                            <span className={label}>Target cycle time (sec)</span>
-                            <input type="number" value={entry.targetCycleTime} onChange={(e) => setEntry(m.id, "targetCycleTime", e.target.value)} placeholder="e.g. 214" className={inp} />
-                          </div>
-                        )}
-                        <div>
-                          <span className={label}>Liquid</span>
+                        {/* Robo2 takes liquid and nothing else, and the fact
+                            that it is optional belongs on the field — it used
+                            to be a green badge up in the card's title bar,
+                            where it read as being about the machine. */}
+                        <div className={`lg:order-4 lg:col-span-1 ${isRoymix ? "col-span-2 sm:col-span-6" : "col-span-2"}`}>
+                          <span className={label}>Liquid{isRoymix ? " (optional)" : ""}</span>
                           <SearchableSelect value={entry.liquidName} options={liquids} placeholder="Search liquids…"
                             onSelect={(name) => setEntry(m.id, "liquidName", name)} onCreate={addLiquid} />
                         </div>
                         {!isRoymix && (
-                          <div>
+                          <div className="col-span-2 lg:order-5 lg:col-span-1">
                             <span className={label}>Powder</span>
                             <SearchableSelect value={entry.powderName} options={powders} placeholder="Search powders…"
                               onSelect={(name) => setEntry(m.id, "powderName", name)} onCreate={addPowder} />
                           </div>
                         )}
+                        {!isRoymix && (
+                          <div className="col-span-1 sm:col-span-3 lg:order-3 lg:col-span-1">
+                            <span className={label}>Target cycle time (sec)</span>
+                            <input type="number" value={entry.targetCycleTime} onChange={(e) => setEntry(m.id, "targetCycleTime", e.target.value)} placeholder="e.g. 214" className={inp} />
+                          </div>
+                        )}
                         {!isRoymix && !isRoycut3 && (
-                          <div>
+                          <div className="col-span-1 sm:col-span-3 lg:order-6 lg:col-span-1">
                             <span className={label}>Roller height (mm)</span>
                             <input value={entry.rollerHeight} onChange={(e) => setEntry(m.id, "rollerHeight", e.target.value)} placeholder="e.g. 20" className={inp} />
                           </div>
@@ -1310,7 +1364,11 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+            {/* Two up on a tablet, four across on the desktop. The four-across
+                row itself is unchanged; it starts at lg now rather than md,
+                which put S.No., Slab number, In time and Out time into ~95px
+                cells on the iPad the operator actually types this on. */}
+            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
               <div>
                 <span className={label}>S.No.</span>
                 <input type="number" value={slab.serialNumber} onChange={(e) => setSlab((p) => ({ ...p, serialNumber: e.target.value }))} className={inp} {...advanceProps("slab")} />
@@ -1347,7 +1405,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                   </div>
                 </>
               )}
-              <div className={hasRoymix ? "col-span-2" : "col-span-2 md:col-span-4"}>
+              <div className={hasRoymix ? "col-span-2" : "col-span-2 lg:col-span-4"}>
                 <span className={label}>Remarks</span>
                 <input value={slab.remarks} onChange={(e) => setSlab((p) => ({ ...p, remarks: e.target.value }))} placeholder="Optional notes for this slab" className={inp} {...advanceProps("slab")} />
               </div>
@@ -1420,8 +1478,13 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
 
               {delayError && <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{delayError}</div>}
 
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
-                <div ref={codeRef} className="relative col-span-2 md:col-span-3">
+              {/* Below lg the code takes a row to itself, the three times share
+                  the next one and the remark and + Add have the last — a delay
+                  is read code-first, and the code is the widest thing here. The
+                  desktop row is the same six columns it always was; only the
+                  breakpoint moved, off iPad-portrait width. */}
+              <div className="grid grid-cols-6 gap-3">
+                <div ref={codeRef} className="relative col-span-6 lg:col-span-3">
                   <span className={label}>Delay code</span>
                   {selectedCode ? (
                     <div className="flex items-center gap-1.5">
@@ -1498,7 +1561,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                   )}
                 </div>
                 {selectedCode?.isRobotSpecific && (
-                  <div className="col-span-2 md:col-span-3">
+                  <div className="col-span-6 lg:col-span-3">
                     <span className={label}>Machine</span>
                     <select value={delayForm.machineId}
                       onChange={(e) => { const m = machines.find((x) => x.id === e.target.value); setDelayForm((p) => ({ ...p, machineId: e.target.value, machineName: m?.name || "" })); }}
@@ -1508,15 +1571,15 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                     </select>
                   </div>
                 )}
-                <div>
+                <div className="col-span-2 lg:col-span-1">
                   <span className={label}>Start <span className="text-red-500">*</span></span>
                   <TimeInput value={delayForm.startTime} onChange={(v) => setDelayForm((p) => ({ ...p, startTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("delay")} />
                 </div>
-                <div>
+                <div className="col-span-2 lg:col-span-1">
                   <span className={label}>End <span className="text-red-500">*</span></span>
                   <TimeInput value={delayForm.endTime} onChange={(v) => setDelayForm((p) => ({ ...p, endTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("delay")} />
                 </div>
-                <div>
+                <div className="col-span-2 lg:col-span-1">
                   <span className={label}>Duration</span>
                   <div className={`w-full rounded-lg border px-3 py-2 text-sm ${
                     delayDuration ? "border-green-200 bg-green-50 font-semibold text-green-800"
@@ -1525,7 +1588,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                     {delayDuration ? fmtDuration(delayDuration) : delayForm.startTime && delayForm.endTime ? "Invalid" : "Auto"}
                   </div>
                 </div>
-                <div className="flex items-end gap-2 md:col-span-3">
+                <div className="col-span-6 flex items-end gap-2 lg:col-span-3">
                   <input value={delayForm.remarks} onChange={(e) => setDelayForm((p) => ({ ...p, remarks: e.target.value }))} placeholder="Delay remarks (optional)" className={inp} {...advanceProps("delay")} />
                   <button type="button" onClick={addDelay} className="shrink-0 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-amber-700">+ Add</button>
                 </div>
