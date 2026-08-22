@@ -418,7 +418,23 @@ export function BatchRatesPanel({
 
   const save = async (c: CatalogueItem) => {
     setBusy(c.item); setNote(null);
-    const lines = lineOf(c.item)
+    const drafts = lineOf(c.item);
+    // A HALF-FILLED LINE IS AN ERROR, NOT NOISE. This used to filter out any
+    // line without a rate, silently - so a person who typed the quantity and
+    // the supplier but no price pressed Save, got a green "falls back to the
+    // card", and their line was simply gone. Three such saves on batch 1413,
+    // all answered 200, none keeping anything; "it is not saving" was the
+    // exact report. The route would have refused the line loudly; the filter
+    // threw it away before the route could. Only a line with NOTHING in it is
+    // dropped - that is the blank row the editor always renders.
+    const half = drafts.findIndex((l) =>
+      l.rate.trim() === "" && (l.qty.trim() !== "" || l.description.trim() !== "" || l.note.trim() !== ""));
+    if (half !== -1) {
+      setNote({ text: `Line ${half + 1} of ${c.label} has no price. Type the rate, or clear the whole line.`, ok: false });
+      setBusy("");
+      return;
+    }
+    const lines = drafts
       .filter((l) => l.rate.trim() !== "")
       .map((l, i) => ({
         seq: i,
