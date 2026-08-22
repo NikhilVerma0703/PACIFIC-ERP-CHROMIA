@@ -853,7 +853,12 @@ export function BatchRatesPanel({
                   <thead>
                     <tr className="text-left text-xs uppercase tracking-wide text-gray-400">
                       {splittable && <th className="pb-1 pr-3 font-medium">How much ({c.unit})</th>}
-                      <th className="pb-1 pr-3 font-medium">Supplier</th>
+                      {/* The exchange rate was bought from nobody. Asking
+                          "who it was bought from" on ₹ per USD read as a bug,
+                          because it was one: this table serves materials and
+                          the basis figure alike, and only materials have a
+                          supplier. */}
+                      {c.category !== "BASIS" && <th className="pb-1 pr-3 font-medium">Supplier</th>}
                       <th className="pb-1 pr-3 font-medium">₹ per {c.unit}</th>
                       <th className="pb-1 pr-3 font-medium">Note</th>
                       <th className="pb-1 pr-3 font-medium">Amount</th>
@@ -885,17 +890,19 @@ export function BatchRatesPanel({
                               />
                             </td>
                           )}
-                          <td className="py-1.5 pr-3">
-                            <input
-                              value={l.description}
-                              onChange={(e) => setLines(c.item,
-                                lines.map((x, j) => j === i ? { ...x, description: e.target.value } : x))}
-                              placeholder="who it was bought from"
-                              list={DESC_LIST_ID}
-                              autoComplete="off"
-                              className={inp}
-                            />
-                          </td>
+                          {c.category !== "BASIS" && (
+                            <td className="py-1.5 pr-3">
+                              <input
+                                value={l.description}
+                                onChange={(e) => setLines(c.item,
+                                  lines.map((x, j) => j === i ? { ...x, description: e.target.value } : x))}
+                                placeholder="who it was bought from"
+                                list={DESC_LIST_ID}
+                                autoComplete="off"
+                                className={inp}
+                              />
+                            </td>
+                          )}
                           <td className="py-1.5 pr-3">
                             <input
                               type="number" step="0.0001" min="0" inputMode="decimal"
@@ -966,18 +973,21 @@ export function BatchRatesPanel({
             )}
 
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <button type="button" className={btnGhost}
-                disabled={!splittable && lines.length >= 1}
-                onClick={() => setLines(c.item, [...lines, { qty: "", rate: "", description: "", note: "" }])}>
-                {!splittable && lines.length
-                  // Disabled AND labelled "Add another supplier" read as a bug.
-                  // A dosed material has one line by design: its kilograms come
-                  // from the dosing percentage, so there is no weight to divide
-                  // between two of them.
-                  ? "One supplier — the weight comes from the dose"
-                  : lines.length ? "Add another supplier"
-                    : splittable ? "Assign a supplier" : "Set the value"}
-              </button>
+              {/* A DISABLED button explaining a dose on the ₹-per-USD row was
+                  nonsense twice over. When a non-splittable item has its one
+                  line there is nothing to add: dosed chemicals get the reason
+                  as plain text, the basis figure gets nothing - its own
+                  trailing note already says "one value for the whole batch". */}
+              {!splittable && lines.length >= 1 ? (
+                DOSED_BY[c.item] ? (
+                  <span className="text-xs text-gray-400">One supplier — the weight comes from the dose.</span>
+                ) : null
+              ) : (
+                <button type="button" className={btnGhost}
+                  onClick={() => setLines(c.item, [...lines, { qty: "", rate: "", description: "", note: "" }])}>
+                  {lines.length ? "Add another supplier" : splittable ? "Assign a supplier" : "Set the value"}
+                </button>
+              )}
               {/* The remainder, prefilled.
                   A material is only fully described once its lines add up to
                   what the mixer weighed, and the arithmetic to get there was
