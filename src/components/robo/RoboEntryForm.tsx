@@ -157,6 +157,7 @@ type MachineEntry = { programName: string; toolName: string; liquidName: string;
 const emptyEntry = (): MachineEntry => ({ programName: "", toolName: "", liquidName: "", powderName: "", rollerHeight: "", targetCycleTime: "" });
 
 const emptySlab = () => ({ serialNumber: "", slabNumber: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" });
+const emptyDelayForm = () => ({ selectedCodeId: "", machineId: "", machineName: "", startTime: "", endTime: "", remarks: "" });
 
 /** What the Recent slabs table prints under Remarks: the slab's own note AND
  *  its delays, through the same formatter Slabs Records uses, with this
@@ -276,7 +277,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
 
   // ---- delays inside the slab entry ----
   const [delays, setDelays] = useState<PendingDelay[]>([]);
-  const [delayForm, setDelayForm] = useState({ selectedCodeId: "", machineId: "", machineName: "", startTime: "", endTime: "", remarks: "" });
+  const [delayForm, setDelayForm] = useState(emptyDelayForm);
   const [delayError, setDelayError] = useState("");
   const [codeSearch, setCodeSearch] = useState("");
   const [codeOpen, setCodeOpen] = useState(false);
@@ -286,6 +287,32 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
   const [newCode, setNewCode] = useState({ open: false, code: "", description: "", category: "GENERAL", isRobotSpecific: true });
   const [newCodeError, setNewCodeError] = useState("");
   const [savingCode, setSavingCode] = useState(false);
+
+  /**
+   * Empty the delay-entry panel: the picked code, the search box, the machine,
+   * the times, the remark, the inline "new code" form and any error.
+   *
+   * Everything here except `delays` itself, which each caller decides about —
+   * saving a slab sends the pending delays with it, cancelling an edit throws
+   * them away, and both then want the panel blank.
+   *
+   * WHY. `+ Add` cleared this, so an operator who logs delays the ordinary way
+   * never saw a problem — which is why only one of them reported it and it
+   * could not be reproduced. Pick a code and then save the slab WITHOUT
+   * pressing Add and it survived: `delays` was emptied on save, the picker was
+   * not, so the next slab opened with the previous slab's code sitting
+   * selected. Nothing wrong was ever written — the code was only staged, not
+   * attached — but the operator is reading a screen that says the next slab
+   * already has a delay on it, and the next `+ Add` would have used it.
+   */
+  const resetDelayEntry = () => {
+    setDelayForm(emptyDelayForm());
+    setCodeSearch("");
+    setCodeOpen(false);
+    setDelayError("");
+    setNewCode((p) => ({ ...p, open: false }));
+    setNewCodeError("");
+  };
 
   const refetchShift = async () => {
     const s = await getJson<ActiveShift | null>("/api/robo/shifts/active", null);
@@ -313,6 +340,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     setSlabError("");
     setSlabTaken(false);
     setDelays([]);
+    resetDelayEntry();
     setEditLoading(false);
     return rec;
   };
@@ -791,8 +819,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
       durationMinutes: dur.minutes + (dur.seconds > 0 ? 1 : 0),
       startTime: delayForm.startTime, endTime: delayForm.endTime, remarks: delayForm.remarks,
     }]);
-    setDelayForm({ selectedCodeId: "", machineId: "", machineName: "", startTime: "", endTime: "", remarks: "" });
-    setCodeSearch("");
+    resetDelayEntry();
   };
 
   /** Open the inline panel pre-filled with whatever the operator typed. */
@@ -857,6 +884,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     setEditingId(null);
     setEditRecord(null);
     setDelays([]);
+    resetDelayEntry();
     setSlabTaken(false);
     setSlab(emptySlab());
   };
@@ -958,6 +986,10 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     setEditingId(null);
     setEditRecord(null);
     setDelays([]);
+    // The delay picker goes with them. It used to be left as it was, so a code
+    // chosen but never added with + Add stayed selected on the next slab — see
+    // resetDelayEntry.
+    resetDelayEntry();
     setSlabTaken(false);
 
     /*
