@@ -708,6 +708,16 @@ export function BatchRatesPanel({
             </button>
           )}
         </div>
+
+            {/* The refusal, WHERE THE CLICK HAPPENED. The panel-level note
+                renders at the bottom of the card, which on a long batch is a
+                screen away from the Save button that was just pressed - so a
+                refused save read as a dead button. Batch 1413, twice in one
+                day: first the silent line-drop, then a refusal nobody could
+                see. Errors only; success already shows on the row itself. */}
+            {note && !note.ok && (
+              <p className="mt-2 text-xs font-medium text-red-600">{note.text}</p>
+            )}
       </div>
     );
   };
@@ -944,7 +954,14 @@ export function BatchRatesPanel({
                     ? `Adds up to the ${num.format(mixer.qty)} ${mixer.unit} the mixer recorded.`
                     : left! > 0
                       ? `${num.format(left!)} ${mixer.unit} of ${num.format(mixer.qty)} still unallocated — it will price at the card, or be reported unpriced if there is no card rate.`
-                      : `${num.format(-left!)} ${mixer.unit} MORE than the mixer recorded. It will still be priced, and the sheet will say the two disagree.`}
+                      // 33,600 typed against a mixer total of 62.848 is not a
+                      // disagreement about quantity, it is KILOGRAMS in a
+                      // TONNES box - the one mistake this file keeps warning
+                      // about in both directions. Say so, with the number to
+                      // type, instead of announcing a 33,537-tonne dispute.
+                      : mixer.unit === "t" && allocated > 20 * mixer.qty
+                        ? `${num.format(allocated)} looks like KILOGRAMS typed into a tonnes box - the mixer weighed ${num.format(mixer.qty)} t. If you meant ${num.format(allocated)} kg, type ${num.format(allocated / 1000)}.`
+                        : `${num.format(-left!)} ${mixer.unit} MORE than the mixer recorded. It will still be priced, and the sheet will say the two disagree.`}
               </p>
             )}
 
@@ -991,6 +1008,14 @@ export function BatchRatesPanel({
                 </span>
               )}
             </div>
+
+            {/* The refusal, WHERE THE CLICK HAPPENED - same as the dose editor
+                above. The panel-level note renders at the bottom of the card,
+                a screen away from this button on a long batch, so a refused
+                save read as a dead button. Errors only. */}
+            {note && !note.ok && (
+              <p className="mt-2 text-xs font-medium text-red-600">{note.text}</p>
+            )}
           </div>
         ))}
       </div>
