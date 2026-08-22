@@ -99,8 +99,8 @@ const FAMILY_NOTE: Record<string, string> = {
   RESIN: "Weighed by the mixer.",
   GRIT: "One card per silo — size, type, supplier and price on the same row.",
   FILLER: "Weighed by the mixer.",
-  PIGMENT: "Never weighed — the quantity is a percentage of resin weight, set below.",
-  CHEMICAL: "Never weighed — the quantities are a percentage of resin weight, set below.",
+  PIGMENT: "Never weighed — set the dose (% of resin) or type the weight; the price goes on the same row.",
+  CHEMICAL: "Never weighed — set the dose (% of resin) or type the weight; the price goes on the same row.",
   DOSING: "The percentages that turn resin weight into the quantities above. One value each, nothing to split.",
   BASIS: "The rate this batch was quoted at. Leave it and the plant default is used.",
 };
@@ -143,6 +143,11 @@ export function BatchRatesPanel({
 }) {
   const [data, setData] = useState<Payload | null>(null);
   const [drafts, setDrafts] = useState<Record<string, DraftLine[]>>({});
+  /** In-progress WEIGHT text per dose rule. The stored fact is always the
+   *  percentage - typing a weight just computes it, so the costing logic does
+   *  not change shape. Non-empty only while the person is typing kilograms;
+   *  a direct percentage edit clears it and the box shows the derived kg. */
+  const [doseKg, setDoseKg] = useState<Record<string, string>>({});
   // Whether the grit on THIS batch is costed silo-wise yet. Null while the
   // silo rows are still loading, so the band rates do not flash in and out.
   const [gritAssigned, setGritAssigned] = useState<boolean | null>(null);
@@ -202,6 +207,12 @@ export function BatchRatesPanel({
     if (!data) return [];
     const byFamily = new Map<string, { used: CatalogueItem[]; unused: CatalogueItem[] }>();
     for (const c of data.catalogue) {
+      // The dose rules no longer get cards of their own. "TiO2 dose" in one
+      // section and "TiO2" in another was the same fact split across two
+      // cards - the owner's screenshot put them side by side and asked why.
+      // Each chemical's card now opens the combined editor (dose or weight,
+      // price, supplier, note), so a whole section of the page goes away.
+      if (c.category === "DOSING") continue;
       const slot = byFamily.get(c.category) ?? { used: [], unused: [] };
       const hasQty = (data.mixer[c.item]?.qty ?? 0) > 0;
       const priced = data.rows.some((r) => r.item === c.item);
@@ -398,7 +409,7 @@ export function BatchRatesPanel({
   /** One item's lines, saved as the whole set the route expects. */
   const postLines = async (
     item: string,
-    lines: Array<{ seq: number; qty: number | null; rate: number; description: string }>,
+    lines: Array<{ seq: number; qty: number | null; rate: number; description: string; note?: string }>,
   ): Promise<string | null> => {
     const r = await fetch(API, {
       method: "POST",
@@ -501,6 +512,7 @@ export function BatchRatesPanel({
         });
         return;
       }
+      // The RULE line carries no supplier - it is a percentage, not a purchase.
       const err = await postLines(c.item, [{ seq: 0, qty: null, rate: pct, description: "" }]);
       if (err) { setNote({ text: err, ok: false }); return; }
 
@@ -528,7 +540,14 @@ export function BatchRatesPanel({
           }
           // qty null is "the rest" — which for a chemical nobody weighed is the
           // whole derived weight, priced at this rate.
-          const e2 = await postLines(chem.item, [{ seq: 0, qty: null, rate: price, description: "" }]);
+          // Description and note come from the draft, so saving the dose no
+          // longer erases who the chemical was bought from - the exact
+          // data-loss the first grit review confirmed and this finally fixes.
+          const d0 = lineOf(chem.item)[0];
+          const e2 = await postLines(chem.item, [{
+            seq: 0, qty: null, rate: price,
+            description: d0?.description ?? "", note: d0?.note ?? "",
+          }]);
           if (e2) { setNote({ text: e2, ok: false }); return; }
           priced = ` ${chem.label} at ₹${money.format(price)} per kg.`;
         }
@@ -594,10 +613,20 @@ export function BatchRatesPanel({
     const saved = savedItems.includes(c.item);
     const isPct = c.unit === "pct";
 
-    const setPct = (v: string) => setLines(c.item, [{ qty: "", rate: v, description: "", note: "" }]);
-    const setPrice = (v: string) => {
-      if (chem) setLines(chem.item, [{ qty: "", rate: v, description: "", note: "" }]);
+    const setPct = (v: string) => {
+      setLines(c.item, [{ qty: "", rate: v, description: "", note: "" }]);
+      // A direct percentage edit wins: the weight box goes back to showing
+      // the derived kilograms rather than half-typed ones.
+      setDoseKg((m) => ({ ...m, [c.item]: "" }));
     };
+    /** One field of the chem line, keeping the others - typing the price used
+     *  to rebuild the line with description and note blanked. */
+    const setChem = (field: "rate" | "description" | "note", v: string) => {
+      if (!chem) return;
+      const cur = lineOf(chem.item)[0] ?? { qty: "", rate: "", description: "", note: "" };
+      setLines(chem.item, [{ ...cur, [field]: v }]);
+    };
+    const setPrice = (v: string) => setChem("rate", v);
 
     // Live, from what is in the box — falling back to the card, which is what
     // an empty box means.
@@ -633,6 +662,43 @@ export function BatchRatesPanel({
             </span>
           </label>
 
+          {/* OR the weight, straight in. The owner: "either percentage to
+              calculate weight or direct weight input". The stored fact stays
+              the PERCENTAGE - typing kilograms just computes it against the
+              resin the mixer weighed, so the costing path does not change
+              shape and the sheet still explains itself as dose x resin. */}
+          {isPct && resin != null && resin > 0 && (
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500">
+                or weight (kg)
+              </span>
+              <input
+                type="number" step="0.001" min="0" inputMode="decimal"
+                value={doseKg[c.item] !== undefined && doseKg[c.item] !== ""
+                  ? doseKg[c.item]
+                  : kg != null ? String(Math.round(kg * 1000) / 1000) : ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setDoseKg((m) => ({ ...m, [c.item]: v }));
+                  const w = Number(v);
+                  if (v.trim() !== "" && Number.isFinite(w) && w > 0) {
+                    // Six decimals of percentage keeps the round-trip honest:
+                    // 1,792.312 kg of 22,404 kg resin is 8.000014%, and
+                    // truncating harder than this would move the kilograms
+                    // somebody just typed.
+                    const pct = Math.round((w / resin) * 100 * 1e6) / 1e6;
+                    setLines(c.item, [{ qty: "", rate: String(pct), description: "", note: "" }]);
+                  }
+                }}
+                placeholder="type kg instead"
+                className={`${inp} max-w-[10rem]`}
+              />
+              <span className="mt-1 block text-xs text-gray-400">
+                against {num.format(resin)} kg resin
+              </span>
+            </label>
+          )}
+
           {carries && chem && split.ok && (
             <label className="block">
               <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500">
@@ -649,6 +715,38 @@ export function BatchRatesPanel({
                 {" · blank uses the card"}
               </span>
             </label>
+          )}
+
+          {/* Supplier and note, HERE, because this editor is now where a dosed
+              chemical is entered end to end - and because saving a dose used
+              to silently blank both, which was a confirmed review finding. */}
+          {carries && chem && split.ok && (
+            <>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500">
+                  Supplier
+                </span>
+                <input
+                  value={lineOf(chem.item)[0]?.description ?? ""}
+                  onChange={(e) => setChem("description", e.target.value)}
+                  placeholder="who it was bought from"
+                  list={DESC_LIST_ID}
+                  autoComplete="off"
+                  className={`${inp} max-w-[14rem]`}
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500">
+                  Note
+                </span>
+                <input
+                  value={lineOf(chem.item)[0]?.note ?? ""}
+                  onChange={(e) => setChem("note", e.target.value)}
+                  placeholder="PO number, anything worth remembering"
+                  className={`${inp} max-w-[16rem]`}
+                />
+              </label>
+            </>
           )}
         </div>
 
@@ -813,7 +911,7 @@ export function BatchRatesPanel({
                     // taken for this batch's price. The split editor still
                     // shows it, against the quantity it actually applies to.
                     : DOSED_BY[c.item]
-                      ? "no dose set — set the rule below and this fills in"
+                      ? "no dose set — open this row and set it"
                       : splittable ? "not used in this batch" : "one value for this batch"}
                 </>
               )}
@@ -838,7 +936,17 @@ export function BatchRatesPanel({
           </button>
         </div>
 
-        {isOpen && (isDosing ? doseEditor(c) : (
+        {/* A dosed chemical opens the COMBINED editor - dose (or weight),
+            price, supplier and note in one place. The owner: "dosing/weights
+            should be in one row, not separate". The standalone dose cards are
+            gone from the families below; this is where that job lives now.
+            The rule item is passed, because everything in that editor - the
+            save, the card fallbacks, the arithmetic - is keyed on the rule. */}
+        {isOpen && ((() => {
+          const ruleKey = DOSED_BY[c.item];
+          const rule = ruleKey ? data.catalogue.find((x) => x.item === ruleKey) : undefined;
+          return rule ? doseEditor(rule) : null;
+        })() ?? (isDosing ? doseEditor(c) : (
           <div className="mt-3 border-t border-gray-200 pt-3">
             {lines.length === 0 && (
               <p className="mb-2 text-sm text-gray-500">
@@ -1027,7 +1135,7 @@ export function BatchRatesPanel({
               <p className="mt-2 text-xs font-medium text-red-600">{note.text}</p>
             )}
           </div>
-        ))}
+        )))}
       </div>
     );
   };
