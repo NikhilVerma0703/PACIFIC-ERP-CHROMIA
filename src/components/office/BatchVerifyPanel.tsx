@@ -26,14 +26,13 @@
 // that survives the thing it signed off is worse than no sign-off at all.
 
 import { useCallback, useEffect, useState } from "react";
-import { Badge, Card, Empty } from "@/components/ui";
+import { Card, Empty } from "@/components/ui";
 import { readJson } from "@/lib/readJson";
 import { BatchRatesPanel } from "@/components/office/BatchRatesPanel";
+import { SignoffCard } from "@/components/office/SignoffCard";
 
 const API = "/api/office/batch-verify";
 
-const btn = "rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transition hover:bg-brand/90 disabled:opacity-60";
-const btnGhost = "rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-60";
 const td = "px-3 py-1.5";
 
 const num = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 3 });
@@ -78,64 +77,11 @@ interface Detail {
   prices?: Prices;
 }
 
-const when = (iso: string) =>
-  new Date(iso).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
-
-/** The state strip for one half — every signature it carries, each with who
- *  and when, and whether it still holds. One entry per person: the marks are
- *  per verifier now, so one going stale does not unsay the other. */
-function Verdict({ marks }: { marks: Mark[] }) {
-  if (marks.length === 0) return <Badge tone="amber">Not verified</Badge>;
-  return (
-    <span className="flex flex-col items-end gap-1">
-      {marks.map((m) => (
-        <span key={m.by} className="flex flex-wrap items-center gap-2">
-          {m.status === "verified" ? (
-            <>
-              <Badge tone="green">Verified</Badge>
-              <span className="text-xs text-gray-500">by {m.by} · {when(m.at)}</span>
-            </>
-          ) : (
-            <>
-              <Badge tone="amber">Needs checking again</Badge>
-              <span className="text-xs text-amber-700">
-                {m.by} verified this on {when(m.at)}, and the numbers have changed since.
-              </span>
-            </>
-          )}
-        </span>
-      ))}
-    </span>
-  );
-}
-
-/**
- * What still has to be entered, listed beside the disabled mark button.
- *
- * The list is the API's own answer (completeness.blockers), not a client-side
- * re-derivation: the POST refuses a mark on an unfinished batch, and a screen
- * that computed its own version of the rule would eventually disagree with
- * the one that decides. Disabling the button without saying why would just
- * send the verifier hunting through the materials panel row by row.
- */
-function StillToEnter({ blockers }: { blockers: string[] }) {
-  return (
-    <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5">
-      <p className="text-xs font-semibold text-amber-800">
-        This batch cannot be marked correct yet — still to finish in the materials panel above:
-      </p>
-      <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-amber-700">
-        {blockers.map((b) => <li key={b}>{b}</li>)}
-      </ul>
-    </div>
-  );
-}
 
 export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
   const [batches, setBatches] = useState<BatchRow[] | null>(null);
   const [picked, setPicked] = useState<string>("");
   const [detail, setDetail] = useState<Detail | null>(null);
-  const [busy, setBusy] = useState<string>("");
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
 
   useEffect(() => {
@@ -157,30 +103,6 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
 
   useEffect(() => { void load(picked); }, [picked, load]);
 
-  const act = async (side: Side, withdraw: boolean) => {
-    setBusy(side); setNote(null);
-    try {
-      const r = withdraw
-        ? await fetch(`${API}?batchKey=${encodeURIComponent(picked)}&side=${side}`, { method: "DELETE" })
-        : await fetch(API, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ batchKey: picked, side }),
-        });
-      const res = await readJson<{ error?: string }>(r);
-      if (!res.ok) { setNote({ text: res.error ?? `Failed (${res.status})`, ok: false }); return; }
-      setNote({
-        text: withdraw
-          ? `${side === "WEIGHTS" ? "Weights" : "Prices"} sign-off withdrawn.`
-          : `${side === "WEIGHTS" ? "Weights" : "Prices"} marked verified.`,
-        ok: true,
-      });
-      await load(picked);
-    } catch (e) {
-      setNote({ text: e instanceof Error ? e.message : String(e), ok: false });
-    } finally { setBusy(""); }
-  };
-
   if (!batches) {
     return <Card><Empty>Loading the batches…</Empty></Card>;
   }
@@ -196,7 +118,7 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
           <option value="">Pick a batch…</option>
           {batches.map((b) => (
             <option key={b.batchKey} value={b.batchKey}>
-              {b.batch} · {b.design} · {b.slabs} slabs
+              {b.batch} · {b.design} · {b.slabs} slabs · {b.lastPress ?? "no press date"}
             </option>
           ))}
         </select>
@@ -204,6 +126,10 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
           <p className="mt-2 text-sm text-gray-500">No batches with mixer records in the last 45 days.</p>
         )}
       </Card>
+
+      {/* The same sign-off card the admin has on Batch costing, in the same
+          place: state, blockers and the buttons for whoever may sign. */}
+      {detail && <SignoffCard batchKey={detail.batchKey} onChanged={() => void load(picked)} />}
 
       {note && (
         <div className={`rounded-xl border px-4 py-2.5 text-sm ${
@@ -242,12 +168,8 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
 
       {detail && can.includes("WEIGHTS") && detail.weights && (
         <Card>
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-              Weights — what the mixer recorded
-            </h2>
-            <Verdict marks={detail.verification.WEIGHTS} />
-          </div>
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">What the mixer weighed</h2>
+          <p className="mb-3 mt-0.5 text-xs text-gray-400">The consumption recorded against this batch — the half you mark as Consumption above.</p>
 
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="rounded-xl border border-gray-200 p-3">
@@ -325,51 +247,14 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
             )}
           </div>
 
-          {sign.includes("WEIGHTS") && (() => {
-            // Your OWN mark decides the button — the other verifier's does not
-            // make this "Verified" for you, and withdrawing only removes yours.
-            const mine = detail.verification.WEIGHTS.find((m) => m.by === detail.me);
-            // An unfinished batch cannot be marked (the API refuses; this
-            // disable is the courtesy). Withdrawing stays open — taking a
-            // signature BACK off an incomplete batch is the right direction.
-            const gaps = detail.completeness && !detail.completeness.ok
-              ? detail.completeness.blockers : null;
-            return (
-              <div className="mt-4 border-t border-gray-200 pt-3">
-                {gaps && <StillToEnter blockers={gaps} />}
-                <div className="flex flex-wrap items-center gap-2">
-                  <button type="button" className={btn} disabled={busy === "WEIGHTS" || !!gaps}
-                    onClick={() => void act("WEIGHTS", false)}>
-                    {busy === "WEIGHTS" ? "Saving…"
-                      : mine?.status === "verified" ? "Verified by you" : "Mark consumption correct"}
-                  </button>
-                  {mine && (
-                    <button type="button" className={btnGhost} disabled={busy === "WEIGHTS"}
-                      onClick={() => void act("WEIGHTS", true)}>
-                      Withdraw
-                    </button>
-                  )}
-                  <span className="text-xs text-gray-400">
-                    You are confirming these are the quantities the batch actually consumed.
-                  </span>
-                </div>
-              </div>
-            );
-          })()}
         </Card>
       )}
 
       {detail && can.includes("COSTS") && detail.prices && (
         <Card>
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-              Prices — the rates this batch is costed at
-            </h2>
-            <Verdict marks={detail.verification.COSTS} />
-          </div>
-
-          <p className="mb-3 text-sm text-gray-500">
-            Rate card resolved for {detail.prices.onDate} — the batch&rsquo;s own run date, not today.
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">Rates used for this batch</h2>
+          <p className="mb-3 mt-0.5 text-xs text-gray-400">
+            Card rates as they stood on {detail.prices.onDate}, the batch&rsquo;s own run date — the half you mark as Prices above.
           </p>
 
           {Object.keys(detail.prices.resinBySupplier).length > 0 && (
@@ -435,35 +320,6 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
             </p>
           )}
 
-          {sign.includes("COSTS") && (() => {
-            const mine = detail.verification.COSTS.find((m) => m.by === detail.me);
-            // Same rule as the weights side, deliberately: "the prices are
-            // right" is as much a claim about a fully-entered batch as "the
-            // consumption is right", so one unfinished split blocks both.
-            const gaps = detail.completeness && !detail.completeness.ok
-              ? detail.completeness.blockers : null;
-            return (
-              <div className="mt-4 border-t border-gray-200 pt-3">
-                {gaps && <StillToEnter blockers={gaps} />}
-                <div className="flex flex-wrap items-center gap-2">
-                  <button type="button" className={btn} disabled={busy === "COSTS" || !!gaps}
-                    onClick={() => void act("COSTS", false)}>
-                    {busy === "COSTS" ? "Saving…"
-                      : mine?.status === "verified" ? "Verified by you" : "Mark prices correct"}
-                  </button>
-                  {mine && (
-                    <button type="button" className={btnGhost} disabled={busy === "COSTS"}
-                      onClick={() => void act("COSTS", true)}>
-                      Withdraw
-                    </button>
-                  )}
-                  <span className="text-xs text-gray-400">
-                    You are confirming these are the rates the batch should be costed at.
-                  </span>
-                </div>
-              </div>
-            );
-          })()}
         </Card>
       )}
 

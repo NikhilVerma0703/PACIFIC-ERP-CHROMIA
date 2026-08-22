@@ -289,7 +289,7 @@ export function RateCardEditor() {
               fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
             </svg>
-            Plant-wide rates · admin
+            Plant-wide rates
           </h2>
           <p className="mt-0.5 text-xs text-gray-400">
             {folded

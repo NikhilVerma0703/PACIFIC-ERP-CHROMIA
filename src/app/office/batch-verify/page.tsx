@@ -44,20 +44,13 @@ export default async function BatchVerifyPage() {
         <p className="mt-1 max-w-2xl text-sm text-gray-500">
           {signer ? (
             <>
-              Both halves of a batch check: the consumption the mixer recorded — resin, grit by
-              silo, filler and the charge count — and the unit prices the batch is costed at.
-              Enter the batch&rsquo;s materials yourself in the panel below — supplier splits,
-              prices, doses — then check each half against the floor and the invoices and mark
-              it correct; your mark sits beside the other verifier&rsquo;s, named and timed.
-              A batch cannot be marked until everything is entered: every material priced, every
-              dose set, and every split covering the full mixer-weighed quantity. If a record or
-              a rate changes afterwards, your mark lapses and the batch comes back here needing
-              a fresh check.
+              Pick a batch, enter its materials and prices, check both halves against the floor
+              and the invoices, and mark each correct. A batch cannot be marked until everything
+              is entered; a mark lapses by itself if the numbers change under it.
             </>
           ) : (
             <>
-              Both halves of a batch check, as the two people who sign them see it. Each of the
-              two verifiers marks both the consumption and the prices. You can read both and
+              Both halves of a batch check, as the two verifiers see them. You can read both and
               sign neither — a verification is a named person saying they checked it.
             </>
           )}

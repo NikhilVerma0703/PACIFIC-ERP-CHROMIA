@@ -1148,20 +1148,11 @@ export function BatchRatesPanel({
             Materials for this batch · {savedItems.length} priced here
           </h2>
           {priceFlag}
-          <div className="mt-1 max-w-3xl space-y-1 text-sm text-gray-500">
-            <p>
-              <span className="font-medium text-gray-700">You are setting two things per material:</span>{" "}
-              <span className="font-medium text-gray-700">how much</span> came from each supplier,
-              and <span className="font-medium text-gray-700">the price per {"\u20B9"}/unit</span> you
-              paid them. Either on its own is fine — leave the quantity blank and that supplier
-              takes whatever is left of what the mixer weighed.
-            </p>
-            <p>
-              The mixer already knows the total. A material you assign nothing to is priced
-              whole at the rate card, which is the normal case — only assign the ones that
-              came from more than one place, or at a price the card does not have.
-            </p>
-          </div>
+          <p className="mt-1 max-w-3xl text-xs text-gray-400">
+            Per material: how much came from each supplier, and the price paid. Leave a quantity
+            blank and that supplier takes the rest of what the mixer weighed; assign nothing and
+            the material is priced at the rate card.
+          </p>
         </div>
         <button type="button" onClick={() => setOpen(false)} className={btnGhost}>Close</button>
       </div>
@@ -1171,46 +1162,6 @@ export function BatchRatesPanel({
           note.ok ? "border-green-200 bg-green-50 text-green-800" : "border-red-200 bg-red-50 text-red-700"
         }`}>
           {note.text}
-        </div>
-      )}
-
-      {/* Who has checked this batch.
-          Shown to the admin editing the rates because the person about to
-          change one is exactly the person who needs to know it has already
-          been signed off - and that saving will send it back for re-checking.
-          Read-only: admin sees both and signs neither. */}
-      {data.signoff && (
-        <div className="mb-3 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-gray-200 px-4 py-2.5 text-xs">
-          {([
-            ["WEIGHTS", "Consumption"],
-            ["COSTS", "Prices"],
-          ] as const).map(([side, label]) => {
-            // A LIST per side now: both verifiers can hold a mark, each of
-            // which lapses on its own when the numbers move under it.
-            const marks = data.signoff![side];
-            return (
-              <span key={side} className="flex flex-wrap items-center gap-2">
-                <span className="font-medium text-gray-500">{label}</span>
-                {marks.length === 0 && (
-                  <>
-                    <Badge tone="amber">Not yet accepted</Badge>
-                    <span className="text-gray-400">waiting on the verifiers</span>
-                  </>
-                )}
-                {marks.map((m) => m.status === "verified" ? (
-                  <span key={m.by} className="flex items-center gap-1.5">
-                    <Badge tone="green">Accepted</Badge>
-                    <span className="text-gray-500">by {m.by}</span>
-                  </span>
-                ) : (
-                  <span key={m.by} className="flex items-center gap-1.5">
-                    <Badge tone="amber">Changed since accepted</Badge>
-                    <span className="text-amber-700">{m.by} accepted an earlier version</span>
-                  </span>
-                ))}
-              </span>
-            );
-          })}
         </div>
       )}
 

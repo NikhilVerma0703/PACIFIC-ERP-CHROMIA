@@ -11,9 +11,10 @@
 // screen exists.
 
 import { useCallback, useEffect, useState } from "react";
-import { Badge, Card } from "@/components/ui";
+import { Card } from "@/components/ui";
 import { readJson } from "@/lib/readJson";
 import { BatchRatesPanel } from "@/components/office/BatchRatesPanel";
+import { SignoffCard } from "@/components/office/SignoffCard";
 
 const API = "/api/office/costing";
 
@@ -113,10 +114,11 @@ function Kpi({ label, value, sub }: { label: string; value: string; sub?: string
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, sub, children }: { title: string; sub?: string; children: React.ReactNode }) {
   return (
     <Card>
-      <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">{title}</h2>
+      <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">{title}</h2>
+      {sub ? <p className="mb-3 mt-0.5 text-xs text-gray-400">{sub}</p> : <div className="mb-3" />}
       {children}
     </Card>
   );
@@ -175,8 +177,6 @@ export function CostingDashboard() {
    *  computed sheet, and this one is ADMIN-only.
    *  The API is still the control - an unfinished batch answers 409 with the
    *  list of what is missing, and that answer is shown, not paraphrased. */
-  const [markBusy, setMarkBusy] = useState("");
-  const [markNote, setMarkNote] = useState("");
 
   useEffect(() => {
     let live = true;
@@ -212,14 +212,9 @@ export function CostingDashboard() {
   const load = useCallback(async (key: string) => {
     // A reload of the SAME batch (after a rate save) keeps the drawer as the
     // user left it; picking a different batch closes it.
-    if (key !== selected) {
-      setShowDetail(false);
-      // The drawer closes on a batch switch precisely so one batch's facts are
-      // never read over another's - and a 409 note ("finish the materials
-      // panel first: ...") is a batch-specific fact like any other. Leaving it
-      // standing showed batch A's missing materials under batch B's name.
-      setMarkNote("");
-    }
+    // The drawer closes on a batch switch precisely so one batch's facts are
+    // never read over another's.
+    if (key !== selected) setShowDetail(false);
     setSelected(key);
     setReport(null);
     setError("");
@@ -240,27 +235,6 @@ export function CostingDashboard() {
     }
   }, [selected]);
 
-  const mark = useCallback(async (side: "WEIGHTS" | "COSTS", undo: boolean) => {
-    if (!selected) return;
-    setMarkBusy(side + (undo ? ":undo" : ""));
-    setMarkNote("");
-    try {
-      const r = await fetch("/api/office/batch-verify" + (undo ? `?batchKey=${encodeURIComponent(selected)}&side=${side}` : ""), {
-        method: undo ? "DELETE" : "POST",
-        ...(undo ? {} : {
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ batchKey: selected, side }),
-        }),
-      });
-      const res = await readJson<{ ok?: boolean }>(r);
-      if (!res.ok) { setMarkNote(res.error ?? `Failed (${res.status})`); return; }
-      await load(selected);   // marks changed; the drawer stays open on a same-batch reload
-    } catch (e) {
-      setMarkNote(e instanceof Error && e.message ? `Could not reach the server: ${e.message}` : "Could not reach the server.");
-    } finally {
-      setMarkBusy("");
-    }
-  }, [selected, load]);
 
   const s = report?.sheet ?? null;
 
@@ -287,10 +261,7 @@ export function CostingDashboard() {
       <Card>
         <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">Batch</h2>
         <div className="flex flex-wrap items-center gap-3">
-          {/* Disabled while a mark is in flight: mark() reloads ITS batch when
-              the POST resolves, so switching mid-mark snapped the picker back
-              and let two report fetches race for the screen. */}
-          <select value={selected} onChange={(e) => void load(e.target.value)} className={selCls} disabled={markBusy !== ""}>
+          <select value={selected} onChange={(e) => void load(e.target.value)} className={selCls}>
             <option value="">Pick a batch…</option>
             {(batches ?? []).map((b) => (
               <option key={b.batchKey} value={b.batchKey}>
@@ -415,48 +386,6 @@ export function CostingDashboard() {
             </div>
 
             <div>
-              <p className="mb-1 text-xs font-medium text-gray-500">Verification — who marked what correct</p>
-              <div className="space-y-1 text-sm">
-                {(["WEIGHTS", "COSTS"] as const).map((side) => {
-                  const marks = report.detail.marks[side];
-                  const what = side === "WEIGHTS" ? "Consumption" : "Prices";
-                  return (
-                    <div key={side} className="flex flex-wrap items-center gap-2">
-                      <span className="w-24 text-xs font-medium text-gray-500">{what}</span>
-                      {marks.length === 0 ? (
-                        <Badge tone="amber">not yet marked</Badge>
-                      ) : marks.map((m) => (
-                        <span key={m.by} className="flex items-center gap-1.5">
-                          <Badge tone={m.status === "verified" ? "green" : "amber"}>
-                            {m.status === "verified" ? "correct" : "changed since"}
-                          </Badge>
-                          <span className="text-xs text-gray-500">
-                            {m.by} · {new Date(m.at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}
-                          </span>
-                        </span>
-                      ))}
-                      <button type="button" disabled={markBusy !== ""}
-                        onClick={() => void mark(side, false)}
-                        className="rounded-lg border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50">
-                        {markBusy === side ? "Marking…" : "Mark correct"}
-                      </button>
-                      {marks.length > 0 && (
-                        <button type="button" disabled={markBusy !== ""}
-                          onClick={() => void mark(side, true)}
-                          className="rounded-lg px-2 py-1 text-xs text-gray-400 transition hover:text-red-600 disabled:opacity-50">
-                          {markBusy === side + ":undo" ? "…" : "Withdraw mine"}
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-              {markNote && (
-                <p className="mt-2 text-xs text-red-700">{markNote}</p>
-              )}
-            </div>
-
-            <div>
               <p className="mb-1 text-xs font-medium text-gray-500">Edit history — every change, newest first</p>
               {report.detail.changes.length === 0 ? (
                 <p className="text-sm text-gray-500">
@@ -479,6 +408,9 @@ export function CostingDashboard() {
           </div>
         )}
       </Card>
+
+      {/* ---- sign-off: the same card the verifiers see, in the same place ---- */}
+      {report && <SignoffCard batchKey={report.batchKey} onChanged={() => void load(report.batchKey)} />}
 
       {/* ---- rates for this batch ---- */}
       {report && (
@@ -561,7 +493,7 @@ export function CostingDashboard() {
 
       {/* ---- 1 · headline ---- */}
       {s && !notCostable && (
-        <Section title={`Headline — ${report!.batch} · ${report!.design} · ${s.output.totalSlabs} slabs`}>
+        <Section title="Headline" sub={`${report!.batch} · ${report!.design} · ${s.output.totalSlabs} slabs`}>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             <Kpi label="Cost / slab · 3 cm" value={inr0(s.final.perSlab3cm)} sub="material + conversion" />
             <Kpi label="Cost / slab · 2 cm" value={inr0(s.final.perSlab2cm)} />
@@ -575,7 +507,7 @@ export function CostingDashboard() {
 
       {/* ---- 2 · raw material ---- */}
       {s && !notCostable && (
-        <Section title="Raw material — quantities are actual mixer consumption">
+        <Section title="Raw material" sub="Quantities are what the mixer actually consumed">
           <p className="mb-2 text-xs font-medium text-gray-500">Resin and chemicals</p>
           <MaterialTable lines={s.material.resinAndChemicals} totalLabel="Sub-total" total={s.material.resinAndChemicalsTotal} />
           <p className="mb-2 mt-5 text-xs font-medium text-gray-500">Grit and filler — {num(s.material.gritAndFillerTonnes, 3)} t</p>
@@ -605,7 +537,7 @@ export function CostingDashboard() {
 
       {/* ---- 3 · output & allocation ---- */}
       {s && !notCostable && (
-        <Section title="Output and how material cost is split">
+        <Section title="Output" sub="How the material cost is split across thicknesses">
           <div className="overflow-x-auto">
             <table className="w-full max-w-2xl text-sm">
               <thead><tr className={thead}>
@@ -636,7 +568,7 @@ export function CostingDashboard() {
 
       {/* ---- 4 · conversion ---- */}
       {s && !notCostable && (
-        <Section title="Conversion cost per slab — identical for both thicknesses">
+        <Section title="Conversion cost per slab" sub="Identical for both thicknesses">
           <div className="overflow-x-auto">
             <table className="w-full max-w-3xl text-sm">
               <thead><tr className={thead}>
@@ -667,7 +599,7 @@ export function CostingDashboard() {
 
       {/* ---- 5 · variance ---- */}
       {report && (
-        <Section title="Variance — two records of the same thing, disagreeing">
+        <Section title="Variance" sub="Two records of the same quantity, disagreeing">
           {report.variance.lines.length === 0 ? (
             <p className="text-sm text-green-700">
               Every cross-check agrees: per-charge grit attribution matches whole-silo,
