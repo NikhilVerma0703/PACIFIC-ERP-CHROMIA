@@ -16,14 +16,33 @@
 // Every number comes from scripts/dailyReportData.mjs. Nothing is typed here.
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import PdfPrinter from "pdfmake/src/printer.js";
 import { collect } from "./dailyReportData.mjs";
 
 /* ------------------------------------------------------------------ fonts */
+// Where the bundled fallback lives, resolved from THIS FILE rather than from
+// process.cwd(). A serverless function does not run with the repo root as its
+// working directory, so a relative "node_modules/..." would resolve to nothing
+// there and the render would throw at import time - on a schedule, at 09:00,
+// with nobody watching.
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const VENDORED_FONTS = path.join(HERE, "..", "node_modules", "pdfjs-dist", "standard_fonts");
+
 const FONT_DIRS = [
   "C:/Windows/Fonts",                            // the original pairing
   "/System/Library/Fonts/Supplemental",          // macOS
   "/usr/share/fonts/truetype/msttcorefonts",     // linux, if installed
+  // LAST RESORT, and the one a SERVER actually hits. Liberation Sans ships
+  // inside pdfjs-dist, already a dependency - so the scheduled run needs no
+  // fonts installed on the box and no binaries committed here.
+  //
+  // BE CLEAR WHAT THIS COSTS: Liberation is metric-compatible with ARIAL, not
+  // Calibri, so the column geometry this file exists to preserve is only exact
+  // on a machine that has Calibri. The emailed copy is a faithful REPORT, not
+  // a pixel-faithful reproduction of the original document. Run it on Windows
+  // when the document itself is what matters.
+  VENDORED_FONTS,
 ];
 const find = (...names) => {
   for (const d of FONT_DIRS) for (const n of names) {
@@ -46,15 +65,31 @@ const BODY_SUBSTITUTE = family(["Trebuchet MS.ttf", "trebuc.ttf"], ["Trebuchet M
 const DISPLAY = family(["Georgia.ttf", "georgia.ttf"], ["Georgia Bold.ttf", "georgiab.ttf"],
                        ["Georgia Italic.ttf", "georgiai.ttf"], ["Georgia Bold Italic.ttf", "georgiaz.ttf"]);
 
-const body = BODY_ORIGINAL ?? BODY_SUBSTITUTE;
-if (!body || !DISPLAY) {
-  console.error("No usable fonts found. Looked in:\n  " + FONT_DIRS.join("\n  "));
-  process.exit(1);
+const BODY_SERVER = family(["LiberationSans-Regular.ttf"], ["LiberationSans-Bold.ttf"],
+                           ["LiberationSans-Italic.ttf"], ["LiberationSans-BoldItalic.ttf"]);
+
+const body = BODY_ORIGINAL ?? BODY_SUBSTITUTE ?? BODY_SERVER;
+// Georgia has no bundled stand-in, so the display face falls back to the body
+// one rather than failing outright: a report that reads is worth more than a
+// heading in exactly the right serif.
+const display = DISPLAY ?? body;
+if (!body) {
+  // THROW, do not process.exit. This module is imported by the scheduled job
+  // as well as run from a shell, and exiting the process there would kill the
+  // request with no error anybody could read.
+  throw new Error("No usable fonts found. Looked in: " + FONT_DIRS.join(", "));
 }
+
+/** Which of the three tiers is in force. Reported by the CLI and logged by the
+ *  scheduled job, so a PDF that looks different from the original is
+ *  explainable rather than mysterious. */
+export const FONT_TIER = BODY_ORIGINAL ? "Calibri (original)"
+  : BODY_SUBSTITUTE ? "Trebuchet MS substitute"
+  : "Liberation Sans (server fallback - column widths approximate)";
 // Trebuchet sets ~3.6% wider than Calibri at the same nominal size; scaling the
 // point size back keeps every column the width it was designed to be.
 const S = BODY_ORIGINAL ? 1 : 0.964;
-const printer = new PdfPrinter({ Body: body, Display: DISPLAY });
+const printer = new PdfPrinter({ Body: body, Display: display });
 
 /* --------------------------------------------------------------- palette */
 // Sampled from the original PDF's own colour operators, not chosen again.
@@ -479,19 +514,77 @@ function pageTwo(d, q, dateLong) {
   ];
 }
 
-/* -------------------------------------------------------------------- main */
-const [, , argDate, argOut] = process.argv;
-const yesterday = () => { const t = new Date(); t.setUTCDate(t.getUTCDate() - 1); return t.toISOString().slice(0, 10); };
-const date = argDate && /^\d{4}-\d{2}-\d{2}$/.test(argDate) ? argDate : yesterday();
-const out = argOut ?? `Daily-Report-${fileDate(date)}.pdf`;
+/* ---------------------------------------------------------------- exports */
 
-const data = await collect(date);
-if (!data.hours.length) { console.error(`No MIS rows for ${date} — nothing to report.`); process.exit(1); }
-const pdf = printer.createPdfKitDocument(buildDoc(data));
-await new Promise((res, rej) => {
-  const s = fs.createWriteStream(out);
-  pdf.pipe(s); pdf.end(); s.on("finish", res); s.on("error", rej);
-});
-await data.prisma.$disconnect();
-console.log(`${out}  ${date}  ${data.day.made}/${data.day.target} slabs, ${data.day.lost} min lost` +
-            `  [body font: ${BODY_ORIGINAL ? "Calibri (original)" : "Trebuchet MS substitute"}]`);
+/** Yesterday in UTC, which is what this report is for by default. */
+export const yesterdayUTC = () => {
+  const t = new Date();
+  t.setUTCDate(t.getUTCDate() - 1);
+  return t.toISOString().slice(0, 10);
+};
+
+/**
+ * The report for one day, as a PDF in memory.
+ *
+ * Separated from the CLI below so the scheduled job can attach the bytes to an
+ * email without writing a temp file - a serverless function has nowhere
+ * durable to write one, and a file written to /tmp on one invocation is not
+ * there on the next.
+ *
+ * Returns null when the day has no MIS rows. That is not an error: it is a
+ * plant that did not run, and the caller decides whether silence or an email
+ * saying so is the right answer. Throwing would put a stack trace in a cron
+ * log every Sunday.
+ */
+export async function buildDailyReportPdf(date) {
+  // INSIDE the try. collect() builds its own PrismaClient and can throw part
+  // way through - above the try, that connection was never closed, and a
+  // serverless invocation holds a Neon connection until the runtime recycles.
+  let data;
+  try {
+    data = await collect(date);
+    if (!data.hours.length) return null;
+    const doc = printer.createPdfKitDocument(buildDoc(data));
+    const buf = await new Promise((res, rej) => {
+      const chunks = [];
+      doc.on("data", (c) => chunks.push(c));
+      doc.on("end", () => res(Buffer.concat(chunks)));
+      doc.on("error", rej);
+      doc.end();
+    });
+    return { pdf: buf, date, fileName: `Pacific ERP ${fileDate(date)}.pdf`, summary: data.day };
+  } finally {
+    // ALWAYS, even when the day was empty, the render threw, or collect itself
+    // failed part way through. The optional chain matters: collect can throw
+    // before `data` is assigned, and a finally that itself throws would
+    // replace the real error with a meaningless one.
+    await data?.prisma?.$disconnect();
+  }
+}
+
+/* -------------------------------------------------------------------- main */
+//
+// CLI ONLY. import.meta.main is not available on every Node this runs under,
+// so the check is on argv[1] - importing this module must not start a render.
+const isCli = process.argv[1] && process.argv[1].endsWith("make-daily-report-pdf.mjs");
+if (isCli) {
+  const [, , argDate, argOut] = process.argv;
+  // A DATE THAT WAS ASKED FOR AND NOT UNDERSTOOD IS AN ERROR. Substituting
+  // yesterday renders a different day than the one requested and names the
+  // file after the substitute, so the output is internally consistent and
+  // there is nothing to notice - somebody forwards it as the 15th.
+  if (argDate && !/^\d{4}-\d{2}-\d{2}$/.test(argDate)) {
+    console.error(`Not a date: ${argDate}. Use YYYY-MM-DD, or pass nothing for yesterday.`);
+    process.exit(2);
+  }
+  const date = argDate || yesterdayUTC();
+  const out = argOut ?? `Daily-Report-${fileDate(date)}.pdf`;
+  const built = await buildDailyReportPdf(date);
+  if (!built) {
+    console.error(`No MIS rows for ${date} — nothing to report.`);
+    process.exit(1);
+  }
+  fs.writeFileSync(out, built.pdf);
+  console.log(`${out}  ${date}  ${built.summary.made}/${built.summary.target} slabs, ` +
+              `${built.summary.lost} min lost  [body font: ${FONT_TIER}]`);
+}

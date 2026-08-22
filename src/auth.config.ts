@@ -39,6 +39,13 @@ export const authConfig = {
         // role refused there would be bounced off the refusal page here.
         nextUrl.pathname === "/no-access" ||
         nextUrl.pathname.startsWith("/api/auth") ||
+        // The scheduled report. Public HERE as well as in middleware, because
+        // this callback runs first and a Response it returns replaces every
+        // rule over there — a cron route listed only in middleware would be
+        // bounced to /login before its own CRON_SECRET check ever ran. The
+        // route is not open: it refuses anything without the secret, and
+        // refuses everything when the secret is unset.
+        nextUrl.pathname.startsWith("/api/report/daily-email") ||
         /\.(png|jpg|jpeg|svg|webp|ico|webmanifest|txt|xml)$/.test(nextUrl.pathname);
       if (isPublic) return true;
       if (!isLoggedIn) return false;

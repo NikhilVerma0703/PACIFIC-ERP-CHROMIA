@@ -39,6 +39,23 @@ const nextConfig = {
       "./node_modules/pdfjs-dist/legacy/build/pdf.mjs",
       "./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
     ],
+    // The scheduled daily report renders its PDF inside the function, so the
+    // generator AND the fonts it reads must travel with it.
+    //
+    // Fonts for the same reason spelled out above: pdfjs-dist is external and
+    // the tracer does not follow a runtime fs.readFileSync into it. Without
+    // this the module throws "No usable fonts found" on the first cold start -
+    // at 09:00, on a schedule, with nobody watching. Liberation Sans is the
+    // only tier a Linux lambda can reach; Calibri and Trebuchet are the
+    // Windows-only tiers that let the CLI reproduce the original document.
+    "/api/report/daily-email": [
+      "./scripts/make-daily-report-pdf.mjs",
+      "./scripts/dailyReportData.mjs",
+      "./node_modules/pdfjs-dist/standard_fonts/LiberationSans-Regular.ttf",
+      "./node_modules/pdfjs-dist/standard_fonts/LiberationSans-Bold.ttf",
+      "./node_modules/pdfjs-dist/standard_fonts/LiberationSans-Italic.ttf",
+      "./node_modules/pdfjs-dist/standard_fonts/LiberationSans-BoldItalic.ttf",
+    ],
   },
 };
 
