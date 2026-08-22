@@ -96,7 +96,6 @@ function NavLink({ href, icon, label, path, office, exact }: {
   );
 }
 
-/* Section — a labelled, non-collapsible group of links (same look as the app tabs) */
 /**
  * A nav section that FOLDS. The admin sidebar had grown to ~38 rows across
  * eight sections, and finding anything meant scrolling past everyone else's
@@ -211,10 +210,16 @@ export function Nav({
     // Batch Sign-off is the ONE office path this role reaches (middleware caps
     // the rest of /office away). It was granted there and linked nowhere — the
     // store incharge could not find the screen built for them.
+    // SECTIONS FOR EVERY LOGIN THAT HAS THEM (owner, 2026-08-22), not only the
+    // admin: the fold is the sidebar's way of staying short, and a store
+    // incharge scrolling nine flat rows needs it as much as an admin with
+    // thirty-eight. Grouped the way the admin sidebar groups the same links.
     return (
-      <nav className="flex flex-col gap-1">
-        {STORE_TABS.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}
-        {batchVerify && <NavLink href="/office/batch-verify" icon={I.report} label="Batch Sign-off" path={path} />}
+      <nav className="flex flex-col">
+        <Section label="Overview" items={STORE_TABS.filter(t => t.href === "/live")} path={path} />
+        <Section label="Raw Material" items={STORE_TABS.filter(t => t.href.startsWith("/store") || t.href === "/tables")} path={path} />
+        <Section label="Consumables" items={STORE_TABS.filter(t => t.href === "/consumables")} path={path} />
+        {batchVerify && <Section label="Verification" items={[{ href: "/office/batch-verify", icon: I.report, label: "Batch Sign-off" }]} path={path} />}
       </nav>
     );
   if (role === "COMMERCIAL")
@@ -228,17 +233,30 @@ export function Nav({
   if (role === "SALES")
     return <nav className="flex flex-col gap-1"><NavLink href="/inventory" icon={I.box} label="Finished Goods" path={path} /></nav>;
   if (role === "MAINTENANCE")
-    return <nav className="flex flex-col gap-1">{MAINTENANCE_TABS.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} exact={t.exact} />)}</nav>;
+    return (
+      <nav className="flex flex-col">
+        <Section label="Overview" items={MAINTENANCE_TABS.filter(t => t.href === "/")} path={path} />
+        <Section label="Maintenance" items={MAINTENANCE_TABS.filter(t => t.href === "/mis" || t.href.startsWith("/maintenance"))} path={path} />
+        <Section label="Reports" items={MAINTENANCE_TABS.filter(t => t.href.startsWith("/report"))} path={path} />
+        <Section label="Consumables" items={MAINTENANCE_TABS.filter(t => t.href === "/consumables")} path={path} />
+      </nav>
+    );
   if (role === "ROBO")
     // robo line operator — the robo module is their whole ERP
     return (
-      <nav className="flex flex-col gap-1">
-        <NavLink href="/robo" icon={I.factory} label="Robo Entry" path={path} exact />
-        <NavLink href="/robo/slabs" icon={I.batch} label="Slab Records" path={path} />
-        <NavLink href="/robo/reports" icon={I.ceo} label="Reports" path={path} />
-        <NavLink href="/robo/downloads" icon={I.box} label="Downloads" path={path} />
-        <NavLink href="/robo/import" icon={I.entry} label="Import" path={path} />
-        <NavLink href="/robo/masters" icon={I.tables} label="Master Lists" path={path} />
+      <nav className="flex flex-col">
+        <Section label="Production" items={[
+          { href: "/robo", icon: I.factory, label: "Robo Entry", exact: true },
+          { href: "/robo/slabs", icon: I.batch, label: "Slab Records" },
+        ]} path={path} />
+        <Section label="Reports" items={[
+          { href: "/robo/reports", icon: I.ceo, label: "Reports" },
+          { href: "/robo/downloads", icon: I.box, label: "Downloads" },
+        ]} path={path} />
+        <Section label="Setup" items={[
+          { href: "/robo/import", icon: I.entry, label: "Import" },
+          { href: "/robo/masters", icon: I.tables, label: "Master Lists" },
+        ]} path={path} />
       </nav>
     );
   if (role === "CHROMIA" || (!isAdmin && branch === "CHROMIA"))
@@ -246,8 +264,11 @@ export function Nav({
     // arm covers logins left on the retired CHROMIA department, which
     // middleware caps to this module too; it goes with them.
     return (
-      <nav className="flex flex-col gap-1">
-        {chromiaItems.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} />)}
+      <nav className="flex flex-col">
+        <Section label="Production" items={chromiaItems.filter(t => ["/chromia/dashboard", "/chromia/operator", "/chromia/slabs", "/chromia/stockyard"].includes(t.href))} path={path} />
+        <Section label="Recalibration" items={chromiaItems.filter(t => t.href.startsWith("/chromia/recalibration"))} path={path} />
+        <Section label="Reports" items={chromiaItems.filter(t => t.href === "/chromia/reports" || t.href === "/chromia/downloads")} path={path} />
+        <Section label="Setup" items={chromiaItems.filter(t => t.href === "/chromia/import")} path={path} />
       </nav>
     );
   if (role === "OPERATOR" && branch !== "FABRICATION")
@@ -260,14 +281,23 @@ export function Nav({
     );
   if (office)
     return (
-      <nav className="flex flex-col gap-1">
-        <NavLink href="/office" icon={I.factory} label="Shop Floor" path={path} office />
-        <NavLink href="/entry"  icon={I.entry}   label="Data Entry" path={path} />
-        {(role === "FINANCE" || role === "ACCOUNTS" || showAdmin) && <NavLink href="/office/finance" icon={I.report} label="Bill Automation" path={path} />}
-        {/* Costing prices the whole cost base — strictly ADMIN, like the scoreboard. */}
-        {isAdmin && <NavLink href="/office/costing" icon={I.ceo} label="Batch Costing" path={path} />}
-        {inventory && <NavLink href="/inventory" icon={I.box} label="Finished Goods" path={path} />}
-        {showAdmin && <NavLink href="/admin/users" icon={I.users} label="Users & Roles" path={path} />}
+      <nav className="flex flex-col">
+        {/* "Shop Floor" keeps its office-aware highlight (it lights for every
+            production lookup), so it stays a bare NavLink under its heading. */}
+        <div className="mt-4 first:mt-0">
+          <p className="mb-1 px-3 text-[10px] font-bold uppercase tracking-[0.12em] text-gray-400">Office</p>
+          <div className="flex flex-col gap-0.5">
+            <NavLink href="/office" icon={I.factory} label="Shop Floor" path={path} office />
+            <NavLink href="/entry"  icon={I.entry}   label="Data Entry" path={path} />
+          </div>
+        </div>
+        <Section label="Finance" items={[
+          ...((role === "FINANCE" || role === "ACCOUNTS" || showAdmin) ? [{ href: "/office/finance", icon: I.report, label: "Bill Automation" }] : []),
+          // Costing prices the whole cost base — strictly ADMIN, like the scoreboard.
+          ...(isAdmin ? [{ href: "/office/costing", icon: I.ceo, label: "Batch Costing" }] : []),
+        ]} path={path} />
+        {inventory && <Section label="Inventory" items={[{ href: "/inventory", icon: I.box, label: "Finished Goods" }]} path={path} />}
+        {showAdmin && <Section label="Admin" items={[{ href: "/admin/users", icon: I.users, label: "Users & Roles" }]} path={path} />}
       </nav>
     );
 
