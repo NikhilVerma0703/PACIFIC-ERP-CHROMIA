@@ -20,6 +20,7 @@ import { TimeInput } from "./TimeInput";
 import { isValidTime } from "@/lib/robo/time";
 import { CATEGORY_META, CATEGORY_ORDER, guessCategory, defaultRobotSpecific } from "@/lib/robo/delayCategories";
 import { findDesignPreset, presetFieldsFor } from "@/lib/robo/design-presets";
+import { nextSlabNumber } from "@/lib/robo/nextNumbers";
 import { SETUP_EDIT_WINDOW_DAYS, daysBetween, describeAge, isSetupStale } from "@/lib/robo/setupAge";
 import { productionDateOf } from "@/lib/robo/productionDate";
 import { SLAB_IN_PROCESSING, formatSlabRemarks, slabStatusClass, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
@@ -251,6 +252,18 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
   const [slabError, setSlabError] = useState("");
   const [slabSaving, setSlabSaving] = useState(false);
   const [slabTaken, setSlabTaken] = useState(false);
+  /** Bumped when the form needs the server to restate where the register ends:
+   *  a slab deleted, a correction saved, a save refused as a duplicate, or a
+   *  save this form could not count on from itself. An ordinary save does NOT
+   *  bump it — that path already knows the answer.
+   *
+   *  The numbering effect used to key off `records.length` instead, which stops
+   *  moving: /api/robo/shifts/active returns `take: 25` production records, so
+   *  on the 26th slab of a shift the length is 25 before the save and 25 after,
+   *  the effect never re-ran, and the operator was left with the S.No. from
+   *  slab 25 and a slab-number field that had just been cleared. A count that
+   *  saturates is not an event. */
+  const [registerVersion, setRegisterVersion] = useState(0);
   /** Set while an existing slab is loaded into the form — save PATCHes that
    *  record instead of creating a duplicate. */
   const [editingId, setEditingId] = useState<string | null>(recordId ?? null);
@@ -443,23 +456,26 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
    * Suggest the next S.No. and slab number — but never while an existing slab
    * is loaded for editing, where the fields hold that record's own numbers.
    *
-   * Both come from the server now (/api/robo/production/next-number), counted
-   * across the WHOLE register. They used to be worked out here from
-   * `shift.productionRecords`, i.e. from the ACTIVE SHIFT ONLY, and a shift row
-   * is created silently once per day — so every morning the S.No. restarted at
-   * 1 against a register sitting at 34, and the slab number came up blank
-   * because there was no earlier record in that shift to add one to. Neither is
-   * a per-day count: the S.No. is the register's running row number and the
-   * slab number is the plant's.
+   * Both come from the server (/api/robo/production/next-number), and both are
+   * one past what is on the LAST SAVED SLAB — S.No. 19 / slab 43567 offers 20 /
+   * 43568. They used to be worked out here from `shift.productionRecords`, i.e.
+   * from the ACTIVE SHIFT ONLY, and a shift row is created silently once per
+   * day — so every morning the S.No. restarted at 1 against a register sitting
+   * at 34, and the slab number came up blank because there was no earlier
+   * record in that shift to add one to. Neither is a per-day count: the S.No. is
+   * the register's running row number and the slab number is the plant's.
    *
-   * It re-runs on the same three things as before — the shift, the number of
-   * records (so it advances after each save) and leaving edit mode — plus
-   * `loading`, so it does not fire once against a form that has not finished
-   * loading and again the moment the shift arrives, throwing the first answer
-   * away.
+   * THIS IS THE OPENING SUGGESTION, NOT THE RUNNING ONE. After a slab is
+   * saved, saveSlab counts on from the slab it just wrote, in the browser,
+   * without asking anyone — see the block there. So this runs on a fresh page,
+   * on a shift change, on leaving edit mode, after a delete, after a 409, and
+   * when saveSlab had nothing to count from (a blank S.No., a slab number like
+   * 140748-A). `registerVersion` is what those cases bump; `loading` keeps it
+   * from firing once against a half-loaded form and again the moment the shift
+   * arrives, throwing the first answer away.
    *
-   * NEITHER FIELD OVERWRITES WHAT THE OPERATOR TYPED. The slab number never
-   * did (`p.slabNumber ||`). The S.No. used to be replaced outright, which was
+   * NEITHER FIELD OVERWRITES WHAT THE OPERATOR TYPED. The slab number never did
+   * (`p.slabNumber ||`). The S.No. used to be replaced outright, which was
    * survivable while it was computed in the browser in the same tick — but it
    * is a round trip now, so a corrected S.No. could be wiped seconds later by
    * an answer already in flight, or by the effect re-firing after a delete.
@@ -489,7 +505,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     })();
     return () => { ignore = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, shift?.id, records.length, editingId]);
+  }, [loading, shift?.id, registerVersion, editingId]);
 
   /* The setup driving this slab: when editing, the record's OWN batch setup —
      not the shift's latest. A slab logged under the morning's design must keep
@@ -744,14 +760,19 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
    * than on save. `excludeId` keeps a slab being edited from clashing with
    * itself. The API enforces the same rule with a 409, so this is only the
    * earlier, friendlier half of the check.
+   *
+   * Returns whether the number is free, for the one caller that acts on the
+   * answer rather than just showing it — saveSlab, checking the number it just
+   * suggested for itself.
    */
-  const checkSlabNumber = async (value: string) => {
+  const checkSlabNumber = async (value: string): Promise<boolean> => {
     const n = value.trim();
-    if (!n) { setSlabTaken(false); return; }
+    if (!n) { setSlabTaken(false); return true; }
     const qs = new URLSearchParams({ slabNumber: n });
     if (editingId) qs.set("excludeId", editingId);
     const data = await getJson<{ available: boolean }>(`/api/robo/production/check-slab?${qs.toString()}`, { available: true });
     setSlabTaken(!data.available);
+    return data.available;
   };
 
   // ---- delays ----
@@ -859,6 +880,9 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     }
     const body = await res.json().catch(() => ({}));
     if (editingId === r.id) cancelEdit();
+    // A delete moves the register's last row too, so the suggestion is restated
+    // from whatever is now newest rather than counting on from a deleted slab.
+    setRegisterVersion((v) => v + 1);
     await refetchShift();
     say(`Slab ${body.slabNumber ?? r.slabNumber} deleted${body.deletedDelayLogs ? ` with ${body.deletedDelayLogs} delay log(s)` : ""}.`);
   };
@@ -910,7 +934,16 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     ).catch(() => null);
     if (!res?.ok) {
       const d = res ? await res.json().catch(() => ({})) : {};
-      if (res?.status === 409) setSlabTaken(true);
+      if (res?.status === 409) {
+        setSlabTaken(true);
+        // Somebody else took that number. The one in the box has been refused,
+        // so it is no longer a suggestion worth keeping — clear it and let the
+        // effect ask for a fresh one, rather than leaving the operator holding
+        // a number they have just been told is taken with no way forward but a
+        // reload.
+        setSlab((p) => ({ ...p, slabNumber: "" }));
+        setRegisterVersion((v) => v + 1);
+      }
       setSlabError(d.error || (editingId ? "Failed to update the slab." : "Failed to save the slab."));
       setSlabSaving(false);
       return;
@@ -926,7 +959,55 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     setEditRecord(null);
     setDelays([]);
     setSlabTaken(false);
-    setSlab((p) => ({ ...p, slabNumber: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" }));
+
+    /*
+     * THE NEXT PAIR, COUNTED FROM THE SLAB JUST WRITTEN.
+     *
+     * This is the whole of "after saving each slab, the next entry uses the
+     * latest saved S.No. + 1 and Slab Number + 1", and it is done here rather
+     * than by asking the server because here we KNOW what the last slab was —
+     * we just wrote it. No round trip, nothing to go stale, and nothing for a
+     * dropped request on plant wifi to leave behind.
+     *
+     * The server is still asked when this cannot answer: a blank or
+     * non-numeric S.No., a slab number like 140748-A that nothing follows
+     * from, and every correction — see below.
+     */
+    const savedSerial = Number(slab.serialNumber);
+    const nextSerial = Number.isFinite(savedSerial) && savedSerial > 0 ? String(savedSerial + 1) : "";
+    // Same helper the server uses, so the width rule is the same one: 09999
+    // becomes 10000 and 00042 becomes 00043.
+    const nextSlab = wasEdit ? "" : nextSlabNumber(saved);
+
+    if (wasEdit) {
+      /* A correction says nothing about where the register ends — the slab
+         being fixed can be from any day. Counting on from it would offer the
+         number after THAT row, which is very likely one that already exists.
+         Both fields are emptied and the effect below fetches the real end of
+         the register. */
+      suggested.current = "";
+      setSlab((p) => ({ ...p, serialNumber: "", slabNumber: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" }));
+      setRegisterVersion((v) => v + 1);
+    } else {
+      suggested.current = nextSerial;
+      setSlab((p) => ({ ...p, serialNumber: nextSerial, slabNumber: nextSlab, inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" }));
+      // Only when this could not work it out. Asking every time would let the
+      // server's answer overwrite a pair we know is right.
+      if (!nextSerial || !nextSlab) setRegisterVersion((v) => v + 1);
+      /* The server's suggestion skips numbers that already exist; counting on
+         from the last slab cannot. So it is checked, and if the plant has
+         already used it — an import filled the block above, another tablet got
+         there first — the field is emptied and the server asked for one that
+         skips. The operator never sees a number they will be refused, and the
+         guard on `p.slabNumber` means a number typed in the meantime wins. */
+      if (nextSlab) {
+        void (async () => {
+          if (await checkSlabNumber(nextSlab)) return;
+          setSlab((p) => (p.slabNumber === nextSlab ? { ...p, slabNumber: "" } : p));
+          setRegisterVersion((v) => v + 1);
+        })();
+      }
+    }
     await refetchShift();
     say(wasEdit
       ? `Slab ${saved} updated${finished ? " and completed" : ""}.`
