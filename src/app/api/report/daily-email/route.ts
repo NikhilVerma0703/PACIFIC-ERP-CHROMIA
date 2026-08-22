@@ -6,7 +6,17 @@ import { reportRecipients } from "@/lib/report/dailyReportText";
 /**
  * GET /api/report/daily-email — yesterday's production report, emailed out.
  *
- * Runs from vercel.json crons at 03:30 UTC, which is 09:00 IST. Vercel's
+ * PARKED, 2026-08-22. The vercel.json cron entry that drove this has been
+ * removed at the owner's request, so nothing calls this on a schedule and no
+ * email goes out. Everything else is intact and tested; re-enabling is one
+ * entry back in vercel.json:
+ *
+ *     { "path": "/api/report/daily-email", "schedule": "30 3 * * *" }
+ *
+ * It stays reachable by hand with the secret, which is how it should be
+ * tested before the schedule goes back on.
+ *
+ * When it ran, it ran at 03:30 UTC, which is 09:00 IST. Vercel's
  * scheduler sends `Authorization: Bearer <CRON_SECRET>`; the house pattern in
  * /api/sales/cron/payment-reminders uses `x-cron-secret`. BOTH are accepted, so
  * the same URL works from the platform scheduler and from cron-job.org or curl.
