@@ -143,6 +143,9 @@ export function BatchRatesPanel({
 }) {
   const [data, setData] = useState<Payload | null>(null);
   const [drafts, setDrafts] = useState<Record<string, DraftLine[]>>({});
+  // Whether the grit on THIS batch is costed silo-wise yet. Null while the
+  // silo rows are still loading, so the band rates do not flash in and out.
+  const [gritAssigned, setGritAssigned] = useState<boolean | null>(null);
   const [busy, setBusy] = useState("");
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
   // Null until the first load decides: a batch that already has lines opens
@@ -1088,9 +1091,31 @@ export function BatchRatesPanel({
                     per silo and per supplier, which is how it is actually bought.
                     Same <section>, same heading, same card styling as Resin and
                     Filler either side - only the rows underneath changed. */}
-                {family === "GRIT"
-                  ? <GritSiloRows batchKey={batchKey} onSaved={onSaved} />
-                  : used.map((c) => materialRow(c, false))}
+                {family === "GRIT" ? (
+                  <>
+                    <GritSiloRows batchKey={batchKey} onSaved={onSaved} onPath={setGritAssigned} />
+
+                    {/* THE BAND RATES, WHILE THE BAND PATH IS WHAT COSTS THIS
+                        BATCH. report.ts switches to the silo path the moment one
+                        silo is assigned; until then the batch is costed per size
+                        band, and pricing grit at the plant card sets fromCard,
+                        which withholds the whole sheet. Removing these rows left
+                        398 batches with no way to clear that short of assigning
+                        every silo. They disappear as soon as a silo is assigned,
+                        so the screen never offers two ways to price the same
+                        tonnage at once. */}
+                    {gritAssigned === false && used.length > 0 && (
+                      <div className="mt-4 space-y-2 border-t border-dashed border-gray-200 pt-4">
+                        <p className="text-xs text-gray-500">
+                          This batch is still costed <b>by size band</b> — no silo has been assigned
+                          yet. Set a band rate here, or assign the silos above and price them
+                          individually. These rows go away once you do.
+                        </p>
+                        {used.map((c) => materialRow(c, false))}
+                      </div>
+                    )}
+                  </>
+                ) : used.map((c) => materialRow(c, false))}
 
                 {family !== "GRIT" && used.length === 0 && (
                   <p className="rounded-xl border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-400">

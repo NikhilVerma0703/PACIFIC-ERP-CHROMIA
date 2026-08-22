@@ -94,7 +94,14 @@ const draftsOf = (s: SiloRow): Draft[] =>
       }))
     : [{ supplier: "", kg: "", rate: "" }];
 
-export function GritSiloRows({ batchKey, onSaved }: { batchKey: string; onSaved?: () => void }) {
+export function GritSiloRows({ batchKey, onSaved, onPath }: {
+  batchKey: string;
+  onSaved?: () => void;
+  /** Whether ANY silo on this batch is assigned - which is what decides
+   *  whether report.ts costs it silo-wise or per band. The parent needs it to
+   *  know whether to offer the band rates as well. */
+  onPath?: (assigned: boolean) => void;
+}) {
   const [data, setData] = useState<Payload | null>(null);
   const [sizes, setSizes] = useState<Record<string, string>>({});
   const [types, setTypes] = useState<Record<string, string>>({});
@@ -114,7 +121,11 @@ export function GritSiloRows({ batchKey, onSaved }: { batchKey: string; onSaved?
     setSizes(Object.fromEntries(res.data.silos.map((s) => [s.silo, s.size])));
     setTypes(Object.fromEntries(res.data.silos.map((s) => [s.silo, s.gritType])));
     setSplit(Object.fromEntries(res.data.silos.map((s) => [s.silo, draftsOf(s)])));
-  }, [batchKey]);
+    // hasGritAssignment is `any row exists`, so one assigned silo moves the
+    // whole batch off the band path. The parent shows the band rates only
+    // while that has not happened.
+    onPath?.(res.data.silos.some((s) => s.size !== "" || s.suppliers.length > 0));
+  }, [batchKey, onPath]);
 
   useEffect(() => { void load(); }, [load]);
 

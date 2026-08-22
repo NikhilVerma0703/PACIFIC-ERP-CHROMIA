@@ -285,22 +285,21 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
   ).join(" UNION ALL ");
   const charges: Array<{ silo_no: string | null; band: string | null; kg: number | null }> =
     await prisma.$queryRawUnsafe(
-      // THE TYPED SILO NUMBER, OR THE ONE THE LINKED BAG RECORD CARRIES.
+      // THE TYPED SILO NUMBER ONLY. The bag link is NOT used to infer it.
       //
-      // m*_g*_sn is what the operator typed on the mixer form and is often
-      // blank; m*_g* is the link to the silo row, which usually knows its own
-      // number. Reading only the typed field threw away 11,424.7 kg of grit
-      // that could be placed exactly - batch 1370 to silo 101, 1358 to 103,
-      // 1347 to 203 - and dumped it in the untraceable bucket.
+      // It was, briefly, and the evidence took it back out. Falling back to the
+      // linked silo record recovered 11,424.7 kg of blank entries - but on the
+      // charges where the operator DID type a silo, that same link disagrees
+      // with them 1,200 times over 467,842 kg. A signal that contradicts the
+      // person at the mixer that often is not one to trust where the person
+      // said nothing at all; a bag record plausibly says where a bag was
+      // STORED, not which silo the mixer drew from.
       //
-      // The typed value WINS where present: it is what the person at the mixer
-      // said, and the link is a fallback, not a correction.
-      `SELECT COALESCE(
-                NULLIF(btrim(s.silo_no), ''),
-                (SELECT MIN(btrim(x.silo_no)) FROM silo x
-                  WHERE x."airtableId" = ANY(s.ids)
-                    AND btrim(COALESCE(x.silo_no, '')) <> '')
-              ) silo_no,
+      // Guessing wrong here is silent and permanent: the tonnage lands on some
+      // other silo's row and is priced as that silo's grit, and nothing ever
+      // says so. Left unattributed it appears as its own priceable row, which
+      // is visible, correctable, and honest about what is not known.
+      `SELECT NULLIF(btrim(s.silo_no), '') silo_no,
               (SELECT MIN(x.size_from_used_bag->>0) FROM silo x
                 WHERE x."airtableId" = ANY(s.ids) AND x.size_from_used_bag IS NOT NULL) band,
               SUM(s.kg) kg
