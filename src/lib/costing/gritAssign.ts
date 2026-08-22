@@ -1,3 +1,11 @@
+/**
+ * The row key for grit the mixer weighed against no silo.
+ *
+ * A sentinel and not "": an empty string reads as missing data everywhere it
+ * lands, and this is a real bucket of real kilograms that somebody has to
+ * price. It cannot collide with a silo number, which is always numeric.
+ */
+export const NO_SILO = "(no silo)";
 // Grit assigned silo by silo: the comparison rules, and nothing else.
 //
 // NO IMPORTS, deliberately — the same reason lib/roles.ts, lib/costing/verification.ts

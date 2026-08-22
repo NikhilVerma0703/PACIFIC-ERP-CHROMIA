@@ -127,7 +127,17 @@ export async function GET(req: NextRequest) {
     batch: c.batch,
     design: c.design,
     silos,
-    unresolvedKg: c.gritUnresolvedKg,
+    // ZERO, deliberately, and not c.gritUnresolvedKg.
+    //
+    // That figure counts grit with no size BAND, which since the silo rows
+    // started using the full mixer weight is sitting ON those rows - on batch
+    // 1423 it was the 2,100 kg that makes silo 102 add up to 8,400. Reporting it
+    // here as well announced the same kilograms twice and told the reader they
+    // were on none of the rows directly above them, which was false.
+    //
+    // Grit with no SILO is a separate thing and now has a row of its own under
+    // the NO_SILO key, so there is no longer any grit this screen cannot price.
+    unresolvedKg: 0,
     sizeOptions: mergeSizeCatalogue(await everAssignedSizes(), Object.keys(GRIT_BAND_LABELS), recordedHere),
     // Learned the same way sizes are: SELECT DISTINCT over what has been typed,
     // seeded with the three the plant runs today. No dictionary table, so the

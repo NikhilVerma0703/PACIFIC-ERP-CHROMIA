@@ -33,6 +33,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { NO_SILO } from "@/lib/costing/gritAssign";
 import { readJson } from "@/lib/readJson";
 
 const API = "/api/office/grit-assignment";
@@ -234,7 +235,10 @@ export function GritSiloRows({ batchKey, onSaved }: { batchKey: string; onSaved?
               <button type="button" onClick={() => setOpen(isOpen ? null : row.silo)}
                 className="min-w-0 flex-1 text-left">
                 <span className="block text-sm font-medium text-gray-900">
-                  Silo {row.silo}
+                  {/* The no-silo bucket is a row like any other - it takes a
+                      size, a type, a supplier and a price - but calling it
+                      "Silo (no silo)" would read as a bug. */}
+                  {row.silo === NO_SILO ? "Grit with no silo recorded" : `Silo ${row.silo}`}
                   <span className="ml-2 text-xs font-normal text-gray-400">per t</span>
                 </span>
                 {/* SIZE, TYPE, SUPPLIER, WEIGHT AND PRICE ON THE FACE OF THE ROW.

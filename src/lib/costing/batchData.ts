@@ -1,5 +1,10 @@
 import "server-only";
 
+// NO_SILO lives in gritAssign, which is import-free: a "use client" screen
+// needs the same constant and cannot reach into a server-only module for it.
+import { NO_SILO } from "./gritAssign";
+export { NO_SILO };
+
 // What one batch actually consumed, read from the mixer records.
 //
 // Every column here was verified against the Simply White reference batch
@@ -112,6 +117,9 @@ export interface BatchConsumption {
    * band-keyed totals for that quietly measured against a subset.
    */
   gritSiloKg: Array<{ silo: string; kg: number }>;
+  /** Of the above, the weight the mixer recorded against no silo at all - it
+   *  appears under the NO_SILO key so it can be sized, supplied and priced. */
+  gritNoSiloKg: number;
   /** kg with no resolvable size band, reported rather than dropped. */
   gritUnresolvedKg: number;
   fillerKg: number;
@@ -171,6 +179,7 @@ export const hasGritAssignment = (
 ): boolean => !!g && g.length > 0;
 
 /** The 32 (weight, silo, links) slot triplets, unpivoted in SQL. */
+
 const GRIT_SLOTS = Array.from({ length: 4 }, (_, mi) =>
   Array.from({ length: 8 }, (_, gi) => ({
     w: `m${mi + 1}_w${gi + 1}`, sn: `m${mi + 1}_g${gi + 1}_sn`, ids: `m${mi + 1}_g${gi + 1}`,
@@ -276,7 +285,22 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
   ).join(" UNION ALL ");
   const charges: Array<{ silo_no: string | null; band: string | null; kg: number | null }> =
     await prisma.$queryRawUnsafe(
-      `SELECT s.silo_no,
+      // THE TYPED SILO NUMBER, OR THE ONE THE LINKED BAG RECORD CARRIES.
+      //
+      // m*_g*_sn is what the operator typed on the mixer form and is often
+      // blank; m*_g* is the link to the silo row, which usually knows its own
+      // number. Reading only the typed field threw away 11,424.7 kg of grit
+      // that could be placed exactly - batch 1370 to silo 101, 1358 to 103,
+      // 1347 to 203 - and dumped it in the untraceable bucket.
+      //
+      // The typed value WINS where present: it is what the person at the mixer
+      // said, and the link is a fallback, not a correction.
+      `SELECT COALESCE(
+                NULLIF(btrim(s.silo_no), ''),
+                (SELECT MIN(btrim(x.silo_no)) FROM silo x
+                  WHERE x."airtableId" = ANY(s.ids)
+                    AND btrim(COALESCE(x.silo_no, '')) <> '')
+              ) silo_no,
               (SELECT MIN(x.size_from_used_bag->>0) FROM silo x
                 WHERE x."airtableId" = ANY(s.ids) AND x.size_from_used_bag IS NOT NULL) band,
               SUM(s.kg) kg
@@ -298,12 +322,18 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
   // the 26,258.6 kg it actually ran.
   const siloKg = new Map<string, number>();
   let gritUnresolvedKg = 0;
+  // Grit the mixer weighed against NO SILO at all. Distinct from unbanded grit,
+  // which has a silo and therefore a row; this has neither, and before it was
+  // given the row below it was simply announced as untraceable and left
+  // unpriceable - 21,557.7 kg of it across ten batches.
+  let noSiloKg = 0;
   for (const c of charges) {
     const band = bandOf(c.band);
     const kg = Number(c.kg ?? 0);
     if (!kg) continue;
     const silo = (c.silo_no ?? "").trim();
     if (silo) siloKg.set(silo, (siloKg.get(silo) ?? 0) + kg);
+    else noSiloKg += kg;
     if (!band) {
       gritUnresolvedKg += kg;
       continue;
@@ -323,6 +353,17 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
   const gritSiloKg: Array<{ silo: string; kg: number }> = [...siloKg.entries()]
     .map(([silo, kg]) => ({ silo, kg: Math.round(kg * 1000) / 1000 }))
     .sort((a, b) => b.kg - a.kg);
+
+  // Grit with no silo gets a ROW OF ITS OWN rather than a footnote. It was
+  // announced as "could not be traced to a silo... nothing here prices it",
+  // which was accurate and useless: the tonnage sat in the batch weight with no
+  // way to give it a size, a supplier or a price. As a row it takes all four
+  // like any other, and the costing path and the sign-off gate pick it up
+  // without either of them learning a special case.
+  if (noSiloKg > 0.005) {
+    gritSiloKg.push({ silo: NO_SILO, kg: Math.round(noSiloKg * 1000) / 1000 });
+    gritSiloKg.sort((a, b) => b.kg - a.kg);
+  }
 
   // Run length. mixer_start_time is an Airtable time-of-day with an
   // unreliable date part, so the walk repairs rollovers (a start earlier than
@@ -386,6 +427,7 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
     })),
     gritCharges,
     gritSiloKg,
+    gritNoSiloKg: Math.round(noSiloKg * 1000) / 1000,
     gritSilos,
     gritUnresolvedKg,
     fillerKg: Number(head[0].filler_kg ?? 0),
