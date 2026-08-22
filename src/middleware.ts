@@ -361,7 +361,19 @@ export default auth((req) => {
 });
 
 export const config = {
-  // known-good matcher (path-to-regexp): skip Next internals only;
-  // static files are excluded by code above (more reliable than matcher regex)
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  // Skip Next internals AND static-asset extensions. The extension list is the
+  // SAME one STATIC_FILE and auth.config treat as public, so excluding it here
+  // changes no decision - it only stops paying an edge invocation to reach a
+  // check that always answers "public". Production logs showed ~20,000 icon and
+  // manifest requests in 48 hours, every one of them running this middleware
+  // for nothing. The in-code STATIC_FILE check STAYS, deliberately: if this
+  // matcher ever misses a static path, the code still excludes it, so the two
+  // can only fail safe. THE DOT IS DOUBLE-ESCAPED (\\.) because this is a JS
+  // string: a single \. collapses to a bare dot, which matches ANY character -
+  // so the exclusion would swallow every path merely ENDING in these letters,
+  // /chico or /robo/slabs/x7svg included, and an excluded path skips BOTH auth
+  // gates at once. The review caught exactly that. (The old matcher skipped Next internals only, with the
+  // note that code is more reliable than matcher regex - that note is still
+  // true, which is why the code check is kept rather than replaced.)
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|svg|webp|ico|webmanifest|txt|xml)$).*)"],
 };

@@ -1,7 +1,8 @@
 import { Shell } from "@/components/Shell";
 import { Card, Empty, Badge } from "@/components/ui";
 import { getSlabReport, type StationStop } from "@/lib/slabReport";
-import { currentRole } from "@/lib/rbac";
+import { LookupTabs, showLookupTabs } from "@/components/LookupTabs";
+import { currentRole, currentUser } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
 
@@ -34,8 +35,14 @@ export default async function SlabLookup({ searchParams }: { searchParams: Promi
     try { r = await getSlabReport(query, { basic }); } catch { error = "Could not read the database."; }
   }
 
+  const viewer = await currentUser();
+  const tabs = showLookupTabs(
+    String((viewer as { role?: string } | null)?.role ?? ""),
+    String((viewer as { branch?: string } | null)?.branch ?? ""));
+
   return (
     <Shell>
+      {tabs && <LookupTabs active="/slab" />}
       <div className="mb-5">
         <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Slab Lookup</h1>
         <p className="mt-1 max-w-2xl text-sm text-gray-500">

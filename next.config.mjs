@@ -5,6 +5,27 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // CACHE HEADERS FOR THE PWA ASSETS - the single biggest bandwidth cut
+  // available without touching any logic. Next serves public/ files with
+  // max-age=0, must-revalidate, so every floor tablet re-asked for the same
+  // icons and manifest on every visit: production logs showed ~20,000 such
+  // requests in 48 hours (manifest 6,986; icon-512-maskable 5,796; icon-192
+  // 4,177...), each one ALSO an edge middleware invocation. The icons never
+  // change without a filename change, so a year + immutable is correct; the
+  // manifest gets a day, because its contents could change on a deploy and a
+  // stale manifest holds the old icon list until it expires.
+  async headers() {
+    return [
+      {
+        source: "/:file(icon-192.png|icon-512.png|icon-512-maskable.png|apple-touch-icon.png|logo-white.png|logo-dark.png)",
+        headers: [{ key: "Cache-Control", value: "public, max-age=31536000, immutable" }],
+      },
+      {
+        source: "/manifest.webmanifest",
+        headers: [{ key: "Cache-Control", value: "public, max-age=86400" }],
+      },
+    ];
+  },
   reactStrictMode: true,
   // entry-form photo attachments ride along in server-action form posts
   experimental: { serverActions: { bodySizeLimit: "10mb" } },

@@ -5,6 +5,8 @@ import Form from "next/form";
 import { batchHasUnbacked } from "@/lib/backfill";
 import { normalizeBatch } from "@/lib/normalizeBatch";
 import { Shell } from "@/components/Shell";
+import { LookupTabs, showLookupTabs } from "@/components/LookupTabs";
+import { currentUser } from "@/lib/rbac";
 import { Card, H2, Kpi, Empty, Badge, fmt } from "@/components/ui";
 import { HBars, gradeColor } from "@/components/charts";
 import { WastagePill } from "@/components/WastagePill";
@@ -165,8 +167,14 @@ export default async function BatchPage({
   const slab = (station: string, only?: string) =>
     `/batch/slabs?b=${encodeURIComponent(query ?? "")}&station=${station}${only ? `&only=${only}` : ""}${scope.solo ? "&solo=1" : ""}`;
 
+  const viewer = await currentUser();
+  const tabs = showLookupTabs(
+    String((viewer as { role?: string } | null)?.role ?? ""),
+    String((viewer as { branch?: string } | null)?.branch ?? ""));
+
   return (
     <Shell>
+      {tabs && <LookupTabs active="/batch" />}
       <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center">
         <Form action="/batch" className="flex gap-2">
           <input

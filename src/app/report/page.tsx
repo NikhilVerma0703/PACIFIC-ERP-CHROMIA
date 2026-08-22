@@ -3,6 +3,7 @@ import { Card, Empty, Badge, fmt } from "@/components/ui";
 import { getProductionReport } from "@/lib/erp";
 import { getDetailedReport } from "@/lib/detailedReport";
 import { DetailedReportView } from "@/components/DetailedReportView";
+import { LookupTabs, showLookupTabs } from "@/components/LookupTabs";
 import { currentUser } from "@/lib/rbac";
 import { maySeeMaterialTrace } from "@/lib/routeCaps";
 
@@ -44,8 +45,13 @@ export default async function ReportPage({
     }
   }
 
+  const tabs = showLookupTabs(
+    String((user as { role?: string } | null)?.role ?? ""),
+    String((user as { branch?: string } | null)?.branch ?? ""));
+
   return (
     <Shell>
+      {tabs && <LookupTabs active="/report" />}
       <form method="GET" className="mb-6 flex gap-2">
         <input
           name="b"

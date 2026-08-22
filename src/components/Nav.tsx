@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 
 const I = {
   overview:    "M3 12l9-9 9 9M5 10v10h5v-6h4v6h5V10",
@@ -96,14 +97,57 @@ function NavLink({ href, icon, label, path, office, exact }: {
 }
 
 /* Section — a labelled, non-collapsible group of links (same look as the app tabs) */
+/**
+ * A nav section that FOLDS. The admin sidebar had grown to ~38 rows across
+ * eight sections, and finding anything meant scrolling past everyone else's
+ * department - the owner asked for a better arrangement, and the arrangement
+ * that scales is: closed by default, open where you are.
+ *
+ * THE SECTION CONTAINING THE CURRENT PAGE CAN ALWAYS BE SEEN. It is forced
+ * open and its chevron still works for a manual fold, but navigation always
+ * lands you somewhere visible - a nav that hides the page you are on reads
+ * as broken.
+ *
+ * Manual choices persist per section in localStorage, so the fold survives
+ * navigation and reload. The key is the section label: stable, human, and
+ * shared across roles that see the same section.
+ *
+ * DEFAULT IS OPEN, not closed, for the first paint and for anybody who has
+ * never folded anything: the pre-fold sidebar is the one every user already
+ * knows, so nothing moves until they choose. localStorage is read in an
+ * effect because this is a client component that renders on the server
+ * first - reading it during render would make the server and client HTML
+ * disagree and React would warn about hydration.
+ */
 function Section({ label, items, path }: { label: string; items: { href: string; icon: string; label: string; exact?: boolean }[]; path: string }) {
+  const holdsCurrent = items.some((t) =>
+    t.exact ? path === t.href || path.startsWith(t.href + "?") : path === t.href || path.startsWith(t.href + "/"));
+  const [folded, setFolded] = useState(false);
+  useEffect(() => {
+    try { setFolded(localStorage.getItem("nav-fold:" + label) === "1"); } catch { /* private mode */ }
+  }, [label]);
   if (!items.length) return null;
+  const closed = folded && !holdsCurrent;
+  const toggle = () => {
+    const next = !folded;
+    setFolded(next);
+    try { localStorage.setItem("nav-fold:" + label, next ? "1" : "0"); } catch { /* private mode */ }
+  };
   return (
     <div className="mt-4 first:mt-0">
-      <p className="mb-1 px-3 text-[10px] font-bold uppercase tracking-[0.12em] text-gray-400">{label}</p>
-      <div className="flex flex-col gap-0.5">
-        {items.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} exact={t.exact} />)}
-      </div>
+      <button type="button" onClick={toggle}
+        className="mb-1 flex w-full items-center justify-between px-3 text-[10px] font-bold uppercase tracking-[0.12em] text-gray-400 transition hover:text-gray-600">
+        <span>{label}</span>
+        <svg className={"h-3 w-3 transition-transform " + (closed ? "-rotate-90" : "")}
+          fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {!closed && (
+        <div className="flex flex-col gap-0.5">
+          {items.map(t => <NavLink key={t.href} href={t.href} icon={t.icon} label={t.label} path={path} exact={t.exact} />)}
+        </div>
+      )}
     </div>
   );
 }
@@ -238,15 +282,22 @@ export function Nav({
   ];
   const reports = [
     { href: "/report/ceo", icon: I.ceo, label: "CEO Report" },
-    { href: "/batch",  icon: I.batch,  label: "Batch Lookup" },
-    { href: "/slab",   icon: I.batch,  label: "Slab Lookup" },
-    { href: "/report", icon: I.report, label: "Production Report", exact: true },
+    // ONE row for the three lookup pages. /batch, /slab and /report each
+    // answered "tell me about X" with their own nav row and no link between
+    // them; they now share a tab strip (LookupTabs) so one row reaches all
+    // three. The URLs did not move - every cap and bookmark still works.
+    { href: "/batch", icon: I.batch, label: "Lookups" },
     { href: "/mis",    icon: I.mis,    label: "Downtime" },
     { href: "/maintenance", icon: I.spanner, label: "Maintenance Log" },
     // Only for the named production verifier (WEIGHTS_VERIFIER_EMAILS) — a
     // shop-floor Line Manager who is not on that list never sees this, exactly
     // as the page itself would bounce them home.
-    ...(batchVerify ? [{ href: "/office/batch-verify", icon: I.samples, label: "Batch Sign-off" }] : []),
+    // NOT for admins any more: sign-off lives inside Batch Costing for them,
+    // where the marks were already displayed - two pages sharing a batch
+    // picker and the same panels was the duplication the owner pointed at.
+    // The named verifiers keep this row: their page deliberately never shows
+    // a computed sheet, and the costing page is ADMIN-only.
+    ...(batchVerify && !isAdmin ? [{ href: "/office/batch-verify", icon: I.samples, label: "Batch Sign-off" }] : []),
   ];
   const fabrication = [
     ...(mgmt ? [

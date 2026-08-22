@@ -31,8 +31,13 @@ export default async function CostingPage() {
         </p>
       </div>
       <div className="space-y-5">
-        <RateCardEditor />
+        {/* Batch work first: picking and pricing a batch is what this page is
+            opened FOR. The plant-wide rates change perhaps monthly, and their
+            full table used to open above this and push the batch picker below
+            the fold - it now folds to one line when complete and sits after
+            the thing people actually came to do. */}
         <CostingDashboard />
+        <RateCardEditor />
       </div>
     </Shell>
   );

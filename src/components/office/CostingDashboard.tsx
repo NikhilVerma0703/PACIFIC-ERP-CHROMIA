@@ -167,6 +167,16 @@ export function CostingDashboard() {
    *  history from one batch shown over another's sheet is how a wrong "who
    *  changed this" gets quoted in an argument. */
   const [showDetail, setShowDetail] = useState(false);
+  /** Sign-off, from THIS page. The marks were already displayed here and the
+   *  buttons lived on /office/batch-verify - two admin pages sharing one
+   *  batch picker and the same panels, which is the duplication the owner
+   *  pointed at. Admin signs since 2026-08-21, so the buttons belong beside
+   *  the marks. The named verifiers keep their own page: it never shows a
+   *  computed sheet, and this one is ADMIN-only.
+   *  The API is still the control - an unfinished batch answers 409 with the
+   *  list of what is missing, and that answer is shown, not paraphrased. */
+  const [markBusy, setMarkBusy] = useState("");
+  const [markNote, setMarkNote] = useState("");
 
   useEffect(() => {
     let live = true;
@@ -202,7 +212,14 @@ export function CostingDashboard() {
   const load = useCallback(async (key: string) => {
     // A reload of the SAME batch (after a rate save) keeps the drawer as the
     // user left it; picking a different batch closes it.
-    if (key !== selected) setShowDetail(false);
+    if (key !== selected) {
+      setShowDetail(false);
+      // The drawer closes on a batch switch precisely so one batch's facts are
+      // never read over another's - and a 409 note ("finish the materials
+      // panel first: ...") is a batch-specific fact like any other. Leaving it
+      // standing showed batch A's missing materials under batch B's name.
+      setMarkNote("");
+    }
     setSelected(key);
     setReport(null);
     setError("");
@@ -222,6 +239,28 @@ export function CostingDashboard() {
       setLoading(false);
     }
   }, [selected]);
+
+  const mark = useCallback(async (side: "WEIGHTS" | "COSTS", undo: boolean) => {
+    if (!selected) return;
+    setMarkBusy(side + (undo ? ":undo" : ""));
+    setMarkNote("");
+    try {
+      const r = await fetch("/api/office/batch-verify" + (undo ? `?batchKey=${encodeURIComponent(selected)}&side=${side}` : ""), {
+        method: undo ? "DELETE" : "POST",
+        ...(undo ? {} : {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ batchKey: selected, side }),
+        }),
+      });
+      const res = await readJson<{ ok?: boolean }>(r);
+      if (!res.ok) { setMarkNote(res.error ?? `Failed (${res.status})`); return; }
+      await load(selected);   // marks changed; the drawer stays open on a same-batch reload
+    } catch (e) {
+      setMarkNote(e instanceof Error && e.message ? `Could not reach the server: ${e.message}` : "Could not reach the server.");
+    } finally {
+      setMarkBusy("");
+    }
+  }, [selected, load]);
 
   const s = report?.sheet ?? null;
 
@@ -248,7 +287,10 @@ export function CostingDashboard() {
       <Card>
         <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">Batch</h2>
         <div className="flex flex-wrap items-center gap-3">
-          <select value={selected} onChange={(e) => void load(e.target.value)} className={selCls}>
+          {/* Disabled while a mark is in flight: mark() reloads ITS batch when
+              the POST resolves, so switching mid-mark snapped the picker back
+              and let two report fetches race for the screen. */}
+          <select value={selected} onChange={(e) => void load(e.target.value)} className={selCls} disabled={markBusy !== ""}>
             <option value="">Pick a batch…</option>
             {(batches ?? []).map((b) => (
               <option key={b.batchKey} value={b.batchKey}>
@@ -393,10 +435,25 @@ export function CostingDashboard() {
                           </span>
                         </span>
                       ))}
+                      <button type="button" disabled={markBusy !== ""}
+                        onClick={() => void mark(side, false)}
+                        className="rounded-lg border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50">
+                        {markBusy === side ? "Marking…" : "Mark correct"}
+                      </button>
+                      {marks.length > 0 && (
+                        <button type="button" disabled={markBusy !== ""}
+                          onClick={() => void mark(side, true)}
+                          className="rounded-lg px-2 py-1 text-xs text-gray-400 transition hover:text-red-600 disabled:opacity-50">
+                          {markBusy === side + ":undo" ? "…" : "Withdraw mine"}
+                        </button>
+                      )}
                     </div>
                   );
                 })}
               </div>
+              {markNote && (
+                <p className="mt-2 text-xs text-red-700">{markNote}</p>
+              )}
             </div>
 
             <div>

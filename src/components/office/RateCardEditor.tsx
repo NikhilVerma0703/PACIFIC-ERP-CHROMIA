@@ -83,6 +83,14 @@ export function RateCardEditor() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  /** The whole card, folded. These rates change perhaps monthly, yet the
+   *  full table opened above the batch picker on every visit and pushed the
+   *  actual work - pick a batch, price it - below the fold; the owner asked
+   *  for a better arrangement. Folded by default WHEN COMPLETE; while rates
+   *  are missing or empty it opens itself, because then the rates ARE the
+   *  work and hiding them would hide the reason no sheet computes.
+   *  Manual choice wins once made. */
+  const [foldRates, setFoldRates] = useState<boolean | null>(null);
   /** item|variant -> draft {rate, from, note} for the revision being typed. */
   const [drafts, setDrafts] = useState<Record<string, { rate: string; from: string; note: string }>>({});
   /** Which rows have their revision boxes open. Default is the READ view
@@ -269,17 +277,26 @@ export function RateCardEditor() {
     );
   };
 
+  // null = nobody has chosen: fold when the card is healthy, open when not.
+  const folded = foldRates ?? (!!state && !empty && missingPlantWide.length === 0);
+
   return (
     <Card>
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+      <div className={folded ? "flex flex-wrap items-center justify-between gap-2" : "mb-3 flex flex-wrap items-center justify-between gap-2"}>
+        <button type="button" onClick={() => setFoldRates(!folded)} className="text-left">
+          <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-400 transition hover:text-gray-600">
+            <svg className={"h-3 w-3 transition-transform " + (folded ? "-rotate-90" : "")}
+              fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
             Plant-wide rates · admin
           </h2>
           <p className="mt-0.5 text-xs text-gray-400">
-            One value for the whole plant. Material rates are set on the batch, below.
+            {folded
+              ? "Manpower, electricity, polishing, packing and the basis figures. Click to open."
+              : "One value for the whole plant. Material rates are set on the batch, below."}
           </p>
-        </div>
+        </button>
         {state && (
           <span className="flex items-center gap-2 text-xs text-gray-400">
             {empty
@@ -292,109 +309,114 @@ export function RateCardEditor() {
         )}
       </div>
 
-      {error && <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+      {/* Everything below the header only exists while the card is open - the
+          fold is real, not visual, so a folded card also skips this render. */}
+      {!folded && (<>
 
-      {empty && (
-        <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-          <p className="font-medium">No rates have been entered.</p>
-          <p className="mt-1 text-red-700">
-            No batch can be costed until the plant-wide figures below exist. The starter also
-            seeds the material rates, which every batch then falls back to unless it sets its
-            own — so it is the fastest way to a working sheet, not a commitment to those
-            numbers.
-          </p>
-          <button type="button" onClick={loadStarter} disabled={busy} className={`${btnPrimary} mt-3`}>
-            {busy ? "Loading…" : "Load the Simply White rates (Aug 2026)"}
-          </button>
-        </div>
-      )}
+        {error && <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
 
-      {/* A missing plant-wide rate is not a warning, it is a stop: the report
-          refuses to compute a sheet without all seven, because electricity
-          silently at zero reads as a cheap batch rather than an unset rate. */}
-      {state && !empty && missingPlantWide.length > 0 && (
-        <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-          <p className="font-medium">
-            No batch can be costed until these are set: {missingPlantWide.join(", ")}.
-          </p>
-          <p className="mt-1 text-red-700">
-            The sheet needs every one of them — four of the seven are divided by, so a blank
-            would print an infinite cost per square foot rather than fail.
-          </p>
-        </div>
-      )}
-
-      {/* Materials are mentioned once and quietly. An unpriced grit band is a
-          real gap, but it belongs to whichever batch actually used it, and most
-          never will. */}
-      {state && !empty && missingMaterials.length > 0 && (
-        <p className="mb-3 text-xs text-gray-500">
-          {missingMaterials.length} material rate
-          {missingMaterials.length === 1 ? " has" : "s have"} never been set
-          ({missingMaterials.join(", ")}). Set them on the batches that used them, below — a
-          batch consuming one without a rate says so on its own sheet.
-        </p>
-      )}
-
-      {state && (
-        <div className="space-y-4">
-          {/* No variant branch any more. Resin was the only item that split by
-              supplier, and it is set per batch now — so every line here is a
-              single plant-wide value. */}
-          {Object.entries(byCategory).map(([cat, items]) => (
-            <div key={cat}>
-              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-400">{CATEGORY_LABELS[cat] ?? cat}</p>
-              <div>{items.map((c) => line(c))}</div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {state && state.rows.length > 0 && (
-        <div className="mt-4 border-t border-gray-100 pt-3">
-          <button type="button" onClick={() => setShowHistory((v) => !v)}
-            className="text-sm font-medium text-brand hover:underline">
-            {showHistory ? "Hide history" : `History — all ${state.rows.length} revisions →`}
-          </button>
-          {showHistory && (
-            // Deliberately still every row, materials included. Those rates are
-            // the fallback a batch uses when it sets none of its own, and this
-            // is the only place left to see or remove one.
-            <p className="mt-1 text-xs text-gray-400">
-              Every revision, including the material rates batches fall back to.
+        {empty && (
+          <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+            <p className="font-medium">No rates have been entered.</p>
+            <p className="mt-1 text-red-700">
+              No batch can be costed until the plant-wide figures below exist. The starter also
+              seeds the material rates, which every batch then falls back to unless it sets its
+              own — so it is the fastest way to a working sheet, not a commitment to those
+              numbers.
             </p>
-          )}
-          {showHistory && (
-            <table className="mt-2 w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-100 text-left text-xs uppercase tracking-wide text-gray-400">
-                  <th className="py-2 pr-4 font-medium">Item</th>
-                  <th className="py-2 pr-4 font-medium">Rate</th>
-                  <th className="py-2 pr-4 font-medium">Effective from</th>
-                  <th className="py-2 pr-4 font-medium">By</th>
-                  <th className="py-2 pr-4 font-medium">Note</th>
-                  <th className="py-2 font-medium" />
-                </tr>
-              </thead>
-              <tbody>
-                {state.rows.map((r) => (
-                  <tr key={r.id} className="border-b border-gray-50 last:border-0">
-                    <td className="py-2 pr-4 text-gray-900">{r.item}{r.variant ? ` · ${r.variant}` : ""}</td>
-                    <td className="py-2 pr-4 text-gray-900">{fmtRate(r.rate)}</td>
-                    <td className="py-2 pr-4 text-gray-600">{r.effectiveFrom}</td>
-                    <td className="py-2 pr-4 text-gray-600">{r.createdBy}</td>
-                    <td className="py-2 pr-4 text-xs text-gray-400">{r.note ?? ""}</td>
-                    <td className="py-2 text-right">
-                      <button type="button" onClick={() => removeRow(r.id)} disabled={busy}
-                        className="text-xs text-gray-400 hover:text-red-500">remove</button>
-                    </td>
+            <button type="button" onClick={loadStarter} disabled={busy} className={`${btnPrimary} mt-3`}>
+              {busy ? "Loading…" : "Load the Simply White rates (Aug 2026)"}
+            </button>
+          </div>
+        )}
+
+        {/* A missing plant-wide rate is not a warning, it is a stop: the report
+            refuses to compute a sheet without all seven, because electricity
+            silently at zero reads as a cheap batch rather than an unset rate. */}
+        {state && !empty && missingPlantWide.length > 0 && (
+          <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+            <p className="font-medium">
+              No batch can be costed until these are set: {missingPlantWide.join(", ")}.
+            </p>
+            <p className="mt-1 text-red-700">
+              The sheet needs every one of them — four of the seven are divided by, so a blank
+              would print an infinite cost per square foot rather than fail.
+            </p>
+          </div>
+        )}
+
+        {/* Materials are mentioned once and quietly. An unpriced grit band is a
+            real gap, but it belongs to whichever batch actually used it, and most
+            never will. */}
+        {state && !empty && missingMaterials.length > 0 && (
+          <p className="mb-3 text-xs text-gray-500">
+            {missingMaterials.length} material rate
+            {missingMaterials.length === 1 ? " has" : "s have"} never been set
+            ({missingMaterials.join(", ")}). Set them on the batches that used them, below — a
+            batch consuming one without a rate says so on its own sheet.
+          </p>
+        )}
+
+        {state && (
+          <div className="space-y-4">
+            {/* No variant branch any more. Resin was the only item that split by
+                supplier, and it is set per batch now — so every line here is a
+                single plant-wide value. */}
+            {Object.entries(byCategory).map(([cat, items]) => (
+              <div key={cat}>
+                <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-400">{CATEGORY_LABELS[cat] ?? cat}</p>
+                <div>{items.map((c) => line(c))}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {state && state.rows.length > 0 && (
+          <div className="mt-4 border-t border-gray-100 pt-3">
+            <button type="button" onClick={() => setShowHistory((v) => !v)}
+              className="text-sm font-medium text-brand hover:underline">
+              {showHistory ? "Hide history" : `History — all ${state.rows.length} revisions →`}
+            </button>
+            {showHistory && (
+              // Deliberately still every row, materials included. Those rates are
+              // the fallback a batch uses when it sets none of its own, and this
+              // is the only place left to see or remove one.
+              <p className="mt-1 text-xs text-gray-400">
+                Every revision, including the material rates batches fall back to.
+              </p>
+            )}
+            {showHistory && (
+              <table className="mt-2 w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-100 text-left text-xs uppercase tracking-wide text-gray-400">
+                    <th className="py-2 pr-4 font-medium">Item</th>
+                    <th className="py-2 pr-4 font-medium">Rate</th>
+                    <th className="py-2 pr-4 font-medium">Effective from</th>
+                    <th className="py-2 pr-4 font-medium">By</th>
+                    <th className="py-2 pr-4 font-medium">Note</th>
+                    <th className="py-2 font-medium" />
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
+                </thead>
+                <tbody>
+                  {state.rows.map((r) => (
+                    <tr key={r.id} className="border-b border-gray-50 last:border-0">
+                      <td className="py-2 pr-4 text-gray-900">{r.item}{r.variant ? ` · ${r.variant}` : ""}</td>
+                      <td className="py-2 pr-4 text-gray-900">{fmtRate(r.rate)}</td>
+                      <td className="py-2 pr-4 text-gray-600">{r.effectiveFrom}</td>
+                      <td className="py-2 pr-4 text-gray-600">{r.createdBy}</td>
+                      <td className="py-2 pr-4 text-xs text-gray-400">{r.note ?? ""}</td>
+                      <td className="py-2 text-right">
+                        <button type="button" onClick={() => removeRow(r.id)} disabled={busy}
+                          className="text-xs text-gray-400 hover:text-red-500">remove</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+      </>)}
     </Card>
   );
 }
