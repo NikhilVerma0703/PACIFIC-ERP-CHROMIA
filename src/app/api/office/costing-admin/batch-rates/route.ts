@@ -33,20 +33,14 @@
 //     by name; a line nobody reads is worse than none, because the screen shows
 //     it as saved.
 
-import { gritCostFacts } from "@/lib/costing/gritAssign";
 import { NextRequest, NextResponse } from "next/server";
 
 import { isAdmin, currentUser } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 import {
   effectiveRateCard, listBatchMaterials, RATE_ITEM_BY_KEY, RATE_ITEMS,
-  type EffectiveRateCard, type SavedMaterialLine,
 } from "@/lib/costing/rateCard";
 import { dosingOverrides, isOverridable, isSplittable } from "@/lib/costing/batchRates";
-import {
-  costsFingerprint, verifyMarks, weightsFingerprint,
-  type VerificationRow, type VerifySide,
-} from "@/lib/costing/verification";
 import { isBatchVerifier } from "@/lib/costing/verification";
 import { loadBatchConsumption } from "@/lib/costing/batchData";
 import { bandOf, gritItemKey } from "@/lib/costing/batchData";
@@ -101,8 +95,7 @@ async function mixerQuantities(batchKey: string): Promise<Record<string, { qty: 
 
   const out: Record<string, { qty: number; unit: string }> = {
     resin: { qty: c.resinKg, unit: "kg" },
-    "filler-400": { qty: c.fillerKg / 1000, unit: "t" },
-  };
+    "filler-400": { qty: c.fillerKg / 1000, unit: "t" } };
 
   const byBand = new Map<string, number>();
   for (const g of c.gritCharges) byBand.set(g.band, (byBand.get(g.band) ?? 0) + g.kg);
@@ -149,8 +142,7 @@ async function suggestedSuppliers(card: { resinBySupplier: Record<string, number
     where: { description: { not: null } },
     select: { description: true },
     distinct: ["description"],
-    take: 500,
-  });
+    take: 500 });
   const seen = new Set<string>();
   const out: string[] = [];
   for (const v of [...Object.keys(card.resinBySupplier), ...rows.map((r) => r.description ?? "")]) {
@@ -160,41 +152,6 @@ async function suggestedSuppliers(card: { resinBySupplier: Record<string, number
     out.push(t);
   }
   return out.sort((a, b) => a.localeCompare(b));
-}
-
-/**
- * Whether the two sign-offs on this batch still stand.
- *
- * Shown on the admin panel because the person changing a rate is exactly the
- * person who needs to know that somebody has already checked it - and that
- * their change is about to invalidate that check. Read-only here: admin sees
- * both and signs neither.
- */
-async function verification(batchKey: string, card: EffectiveRateCard, lines: SavedMaterialLine[]) {
-  const c = await loadBatchConsumption(batchKey);
-  const fp: Record<VerifySide, string> = {
-    WEIGHTS: c ? weightsFingerprint(c) : "",
-    COSTS: costsFingerprint({
-      lines: lines.map((l) => ({ item: l.item, seq: l.seq, qty: l.qty, rate: l.rate })),
-      cardRates: card.rates,
-      resinBySupplier: card.resinBySupplier,
-      // Size, type and every per-line rate. Derived in gritAssign so the
-      // three call sites cannot drift apart again - which is how gritSizes
-      // came to be passed by none of them.
-      ...gritCostFacts(c?.gritSilos),
-    }),
-  };
-  const stored = await prisma.costingBatchVerification.findMany({ where: { batchKey } });
-  const rows: VerificationRow[] = stored.map((r) => ({
-    side: r.side as VerifySide, fingerprint: r.fingerprint,
-    verifiedBy: r.verifiedBy, verifiedAt: r.verifiedAt.toISOString(),
-  }));
-  // A LIST per side: both verifiers may hold a mark on the same side now
-  // (owner, 2026-08-18), and each lapses on its own.
-  return {
-    WEIGHTS: verifyMarks(rows, "WEIGHTS", fp.WEIGHTS),
-    COSTS: verifyMarks(rows, "COSTS", fp.COSTS),
-  };
 }
 
 export async function GET(req: NextRequest) {
@@ -212,12 +169,11 @@ export async function GET(req: NextRequest) {
     effectiveRateCard(c?.firstPress ?? new Date()),
     mixerQuantities(batchKey),
   ]);
-  const [descriptions, signoff] = await Promise.all([
+  const [descriptions] = await Promise.all([
     suggestedSuppliers(card),
-    verification(batchKey, card, rows),
   ]);
 
-  return json({ batchKey, catalogue: SETTABLE, rows, card, mixer, descriptions, signoff });
+  return json({ batchKey, catalogue: SETTABLE, rows, card, mixer, descriptions });
 }
 
 interface PostedLine {
@@ -297,8 +253,7 @@ export async function POST(req: NextRequest) {
       description: typeof p.description === "string" ? p.description.trim().slice(0, 200) : "",
       // Free text, and longer: the description names the supplier, the note is
       // where "short delivery, balance invoiced next month" goes.
-      note: typeof p.note === "string" ? p.note.trim().slice(0, 500) : "",
-    };
+      note: typeof p.note === "string" ? p.note.trim().slice(0, 500) : "" };
   }
 
   // Replace this material's lines wholesale, in one transaction. Deleting then
@@ -311,9 +266,7 @@ export async function POST(req: NextRequest) {
       data: lines.map((l) => ({
         batchKey, item, category: def.category, unit: def.unit,
         seq: l.seq, qty: l.qty, rate: l.rate,
-        description: l.description || null, note: l.note || null, createdBy: user,
-      })),
-    });
+        description: l.description || null, note: l.note || null, createdBy: user })) });
     // The edit trail. costing_batch_material only remembers its CURRENT lines
     // — the wholesale replace above wipes who set what before — so each save is
     // also appended to action_log, which nothing deletes from. This is what the
@@ -322,9 +275,7 @@ export async function POST(req: NextRequest) {
       data: {
         actor: user, batchKey, kind: "costing-batch-rate", model: "CostingBatchMaterial",
         summary: `${user} set ${def.label}: ${lines.length} line${lines.length === 1 ? "" : "s"}`,
-        payload: { item, lines },
-      },
-    });
+        payload: { item, lines } } });
   });
 
   return json({ ok: true, item, lines: lines.length });
@@ -351,9 +302,7 @@ export async function DELETE(req: NextRequest) {
     data: {
       actor: user, batchKey, kind: "costing-batch-rate", model: "CostingBatchMaterial",
       summary: `${user} cleared ${label} — it prices at the card again`,
-      payload: { item, cleared: gone.count },
-    },
-  });
+      payload: { item, cleared: gone.count } } });
 
   return json({ ok: true, fellBackToCard: item, removed: gone.count });
 }

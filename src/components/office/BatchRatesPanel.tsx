@@ -60,7 +60,6 @@ interface Payload {
   /** Suppliers to suggest — this batch's own, plus its card's resin suppliers. */
   descriptions?: string[];
   /** Who has signed this batch off — every mark, per side. */
-  signoff?: { WEIGHTS: SignMark[]; COSTS: SignMark[] };
 }
 
 /** A row being edited. Blank qty means "whatever is left". */
@@ -521,6 +520,18 @@ export function BatchRatesPanel({
         const rawPrice = lineOf(chem.item)[0]?.rate.trim() ?? "";
         const had = data.rows.some((r) => r.item === chem.item);
         if (rawPrice === "") {
+          // A supplier or note typed beside a BLANK price cannot be stored — the
+          // route keeps no line without a rate — and used to vanish under a
+          // green "re-costed" note. Refuse, the way the general editor refuses
+          // "Line 1 has no price", so nothing typed is lost in silence.
+          const draft = lineOf(chem.item)[0];
+          if ((draft?.description ?? "").trim() || (draft?.note ?? "").trim()) {
+            setNote({
+              text: `${chem.label}: enter the price too, or clear the supplier and note — a supplier cannot be saved without a price.`,
+              ok: false,
+            });
+            return;
+          }
           // Blank means the card, and the row said so. Only ever a delete of the
           // single line this editor writes — priceHere() has already refused to
           // touch a split.

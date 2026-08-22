@@ -45,8 +45,12 @@ const btnGhost = "rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-med
 const when = (iso: string) =>
   new Date(iso).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
 
-export function SignoffCard({ batchKey, onChanged }: {
+export function SignoffCard({ batchKey, version = 0, onChanged }: {
   batchKey: string;
+  /** Bump to make the card re-read without remounting — the page does so
+   *  after a materials save, because a save can lapse a mark and always moves
+   *  the completeness answer the buttons obey. */
+  version?: number;
   /** Called after a mark is placed or withdrawn — the page re-reads whatever
    *  else it shows, because a mark is a fact about the batch it displays. */
   onChanged?: () => void;
@@ -58,10 +62,17 @@ export function SignoffCard({ batchKey, onChanged }: {
   const load = useCallback(async () => {
     const r = await fetch(`${API}?batchKey=${encodeURIComponent(batchKey)}`, { cache: "no-store" });
     const res = await readJson<State>(r);
-    setState(res.ok && res.data ? res.data : null);
+    return res.ok && res.data ? res.data : null;
   }, [batchKey]);
 
-  useEffect(() => { setState(undefined); setNote(null); void load(); }, [load]);
+  // A slow answer for the PREVIOUS batch must not land on the next one's card:
+  // the effect owns a `live` flag and ignores a response after a switch.
+  useEffect(() => {
+    let live = true;
+    setState(undefined); setNote(null);
+    void load().then((st) => { if (live) setState(st); });
+    return () => { live = false; };
+  }, [load, version]);
 
   const act = async (side: Side, withdraw: boolean) => {
     setBusy(side + (withdraw ? ":undo" : "")); setNote(null);
@@ -72,7 +83,7 @@ export function SignoffCard({ batchKey, onChanged }: {
       const res = await readJson<{ error?: string }>(r);
       if (!res.ok) { setNote({ text: res.error ?? `Failed (${res.status})`, ok: false }); return; }
       setNote({ text: withdraw ? `${SIDE[side].label} sign-off withdrawn.` : `${SIDE[side].label} marked correct.`, ok: true });
-      await load();
+      setState(await load());
       onChanged?.();
     } catch (e) {
       setNote({ text: e instanceof Error && e.message ? `Could not reach the server: ${e.message}` : "Could not reach the server.", ok: false });
@@ -137,7 +148,7 @@ export function SignoffCard({ batchKey, onChanged }: {
                   </span>
                   {maySign && (
                     <span className="flex items-center gap-2">
-                      <button type="button" className={btn} disabled={busy !== "" || !!gaps}
+                      <button type="button" className={btn} disabled={busy !== "" || !!gaps || mine?.status === "verified"}
                         title={`You are confirming ${SIDE[side].confirms}.`}
                         onClick={() => void act(side, false)}>
                         {busy === side ? "Saving…" : mine?.status === "verified" ? "Marked by you" : "Mark correct"}

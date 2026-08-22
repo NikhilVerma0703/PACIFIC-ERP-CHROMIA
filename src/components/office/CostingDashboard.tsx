@@ -216,7 +216,11 @@ export function CostingDashboard() {
     // never read over another's.
     if (key !== selected) setShowDetail(false);
     setSelected(key);
-    setReport(null);
+    // Only a batch SWITCH blanks the sheet. A same-batch re-read (after a save
+    // or a mark) keeps the current sheet and the sign-off card on screen while
+    // the fresh one loads — unmounting them threw away the card's own note and
+    // re-read the sign-off from scratch on every mark.
+    if (key !== selected || !key) setReport(null);
     setError("");
     if (!key) return;
     setLoading(true);
@@ -507,7 +511,7 @@ export function CostingDashboard() {
 
       {/* ---- 2 · raw material ---- */}
       {s && !notCostable && (
-        <Section title="Raw material" sub="Quantities are what the mixer actually consumed">
+        <Section title="Raw material" sub="Quantities as the mixer weighed them; dosed chemicals as dose × resin">
           <p className="mb-2 text-xs font-medium text-gray-500">Resin and chemicals</p>
           <MaterialTable lines={s.material.resinAndChemicals} totalLabel="Sub-total" total={s.material.resinAndChemicalsTotal} />
           <p className="mb-2 mt-5 text-xs font-medium text-gray-500">Grit and filler — {num(s.material.gritAndFillerTonnes, 3)} t</p>
@@ -551,6 +555,13 @@ export function CostingDashboard() {
               </tbody>
             </table>
           </div>
+          {report!.stats.pressSlabs > s.output.totalSlabs && (
+            <p className="mt-2 text-xs text-amber-700">
+              The press recorded {report!.stats.pressSlabs} slabs; {report!.stats.pressSlabs - s.output.totalSlabs} of them have
+              no thickness recorded at any station (or are 1.2 cm) and are not in this count — the cost is divided over
+              the {s.output.totalSlabs} that do.
+            </p>
+          )}
           <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Kpi label="Material / 3 cm equivalent" value={inr(s.output.materialPerEquivalent)} />
             <Kpi label="Material / 2 cm slab" value={inr(s.output.materialPer2cm)} sub="× 2⁄3" />
@@ -603,7 +614,7 @@ export function CostingDashboard() {
           {report.variance.lines.length === 0 ? (
             <p className="text-sm text-green-700">
               Every cross-check agrees: per-charge grit attribution matches whole-silo,
-              and the slab counts line up across distributor, JOT and press.
+              and the slab counts line up across the press count, JOT and every pressed slab.
             </p>
           ) : (
             <>

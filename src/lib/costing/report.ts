@@ -604,7 +604,7 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
  *
  * Grit: per-charge attribution vs whole-silo (each silo counted entirely
  * under the band it MOSTLY held - the shortcut a manual sheet takes). Slabs:
- * the distributor count vs JOT, and vs press.
+ * the press count (each slab at its resolved thickness) vs JOT alone, and vs every press slab.
  */
 function buildVariance(c: BatchConsumption, card: EffectiveRateCard): VariancePanel {
   const perBand = new Map<string, number>();
@@ -636,9 +636,9 @@ function buildVariance(c: BatchConsumption, card: EffectiveRateCard): VariancePa
     });
   }
   pairs.push(
-    { item: "3 cm slabs — distributor vs JOT", primaryQty: c.slabs3cm, checkQty: c.jot3cm, unit: "slabs", rate: 0 },
-    { item: "2 cm slabs — distributor vs JOT", primaryQty: c.slabs2cm, checkQty: c.jot2cm, unit: "slabs", rate: 0 },
-    { item: "Slabs produced — distributor vs press", primaryQty: c.slabs3cm + c.slabs2cm, checkQty: c.pressSlabs, unit: "slabs", rate: 0 },
+    { item: "3 cm slabs — press (resolved) vs JOT alone", primaryQty: c.slabs3cm, checkQty: c.jot3cm, unit: "slabs", rate: 0 },
+    { item: "2 cm slabs — press (resolved) vs JOT alone", primaryQty: c.slabs2cm, checkQty: c.jot2cm, unit: "slabs", rate: 0 },
+    { item: "Slabs with a thickness vs all press slabs", primaryQty: c.slabs3cm + c.slabs2cm, checkQty: c.pressSlabs, unit: "slabs", rate: 0 },
   );
   return varianceLines(pairs);
 }

@@ -294,7 +294,7 @@ export function RateCardEditor() {
           <p className="mt-0.5 text-xs text-gray-400">
             {folded
               ? "Manpower, electricity, polishing, packing and the basis figures. Click to open."
-              : "One value for the whole plant. Material rates are set on the batch, below."}
+              : "One value for the whole plant. Material rates are set on the batch, above."}
           </p>
         </button>
         {state && (

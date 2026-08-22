@@ -83,6 +83,10 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
   const [picked, setPicked] = useState<string>("");
   const [detail, setDetail] = useState<Detail | null>(null);
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
+  // Bumped on every materials save so the sign-off card re-reads its blockers
+  // and marks — a save can lapse a mark and always moves the completeness
+  // answer its buttons obey.
+  const [signoffVersion, setSignoffVersion] = useState(0);
 
   useEffect(() => {
     void (async () => {
@@ -129,7 +133,7 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
 
       {/* The same sign-off card the admin has on Batch costing, in the same
           place: state, blockers and the buttons for whoever may sign. */}
-      {detail && <SignoffCard batchKey={detail.batchKey} onChanged={() => void load(picked)} />}
+      {detail && <SignoffCard batchKey={detail.batchKey} version={signoffVersion} onChanged={() => void load(picked)} />}
 
       {note && (
         <div className={`rounded-xl border px-4 py-2.5 text-sm ${
@@ -156,7 +160,7 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
           key={detail.batchKey}
           batchKey={detail.batchKey}
           batchLabel={detail.batch}
-          onSaved={() => void load(picked)}
+          onSaved={() => { setSignoffVersion((v) => v + 1); void load(picked); }}
         />
       )}
 
