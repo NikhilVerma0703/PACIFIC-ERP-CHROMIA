@@ -18,6 +18,7 @@ export { NO_SILO };
 // read; that is the design, not an accident.
 
 import { prisma } from "@/lib/prisma";
+import { thicknessBySlab } from "@/lib/slabThickness";
 
 /**
  * Which supplier fills which daily resin tank.
@@ -129,6 +130,13 @@ export interface BatchConsumption {
   runHours: number;
   runStoppages: { count: number; hours: number };
   wallClockHours: number;
+  /** Press slabs by thickness, each slab's thickness resolved across every
+   *  station that stamps one (lib/slabThickness: jot, then distributor/kreos,
+   *  then polish) — the same resolver the batch report and the Telegram bot
+   *  use. NOT the distributor's own count: four of Arva White's five batches
+   *  never went through the distributor and costed as "no slabs" while the
+   *  press held 237-441 of them. 1.2 cm slabs are not in either figure; the
+   *  sheet has no factor for them yet. */
   slabs3cm: number;
   slabs2cm: number;
   /** Independent thickness counts from JOT - the variance pair. */
@@ -397,14 +405,26 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
   }
 
   const thick: Array<{ src: string; t: string | null; n: number }> = await prisma.$queryRaw`
-    SELECT 'distributor' src, slab_thickness t, count(DISTINCT slab_number)::int n
-    FROM distributor WHERE batch_key = ${batchKey} GROUP BY 2
-    UNION ALL
     SELECT 'jot' src, thickness t, count(DISTINCT slab_number)::int n
     FROM jot WHERE batch_key = ${batchKey} GROUP BY 2`;
   const pick = (src: string, cm: string) =>
     thick.filter((r) => r.src === src && (r.t ?? "").replace(/\s/g, "").startsWith(cm))
       .reduce((s, r) => s + r.n, 0);
+
+  // THE SLABS THE SHEET DIVIDES BY: every distinct slab the press recorded,
+  // each given the thickness the shared resolver finds for it wherever it was
+  // stamped. Counting per distinct PRESS slab is what stops a station with
+  // partial coverage (or none — see the type comment) from deciding the count.
+  const pressSlabNos: Array<{ s: number }> = await prisma.$queryRaw`
+    SELECT DISTINCT slab_number::float8 s FROM press
+    WHERE batch_key = ${batchKey} AND slab_number IS NOT NULL`;
+  const thicknessOf = await thicknessBySlab({ keys: [batchKey] });
+  let slabs3cm = 0, slabs2cm = 0;
+  for (const { s: n } of pressSlabNos) {
+    const t = thicknessOf.get(Number(n));
+    if (t === "3 cm") slabs3cm++;
+    else if (t === "2 cm") slabs2cm++;
+  }
 
   const press: Array<{ slabs: number; design: string | null; first: Date | null; last: Date | null }> =
     await prisma.$queryRaw`
@@ -434,8 +454,8 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
     runHours: runMs / 3_600_000,
     runStoppages: { count: stops, hours: stopMs / 3_600_000 },
     wallClockHours: wallMs / 3_600_000,
-    slabs3cm: pick("distributor", "3cm"),
-    slabs2cm: pick("distributor", "2cm"),
+    slabs3cm,
+    slabs2cm,
     jot3cm: pick("jot", "3cm"),
     jot2cm: pick("jot", "2cm"),
     pressSlabs: press[0]?.slabs ?? 0,
