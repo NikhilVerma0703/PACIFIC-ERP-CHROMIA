@@ -55,6 +55,9 @@ export interface CompletenessConsumption {
   resinKg: number;
   fillerKg: number;
   gritCharges: ReadonlyArray<{ band: string; kg: number; silo?: string }>;
+  /** The mixer per silo, FULL weight - see BatchConsumption.gritSiloKg. Only
+   *  the silo rules use it; the per-band rules stay on gritCharges. */
+  gritSiloKg?: ReadonlyArray<{ silo: string; kg: number }>;
   /**
    * The silo assignment, when the batch has one. OPTIONAL, and absent means
    * unassigned - the per-band rules below are what every historical batch is
@@ -209,9 +212,10 @@ export function batchCompleteness(
   // is the one that actually stops the sheet computing.
   blockers.push(...gritSiloBlockers(
     consumption.gritSilos,
-    // The mixer is the truth about which silos fed this batch. Passing it is
-    // what lets the gate see a silo nobody assigned.
-    consumption.gritCharges.map((g) => ({ silo: (g as { silo?: string }).silo ?? "", kg: g.kg })),
+    // gritSiloKg, not gritCharges: the band-keyed totals omit every charge whose
+    // bags yield no band, so the gate would measure each silo against a subset
+    // of itself and miss silos it cannot band at all.
+    consumption.gritSiloKg ?? [],
   ));
 
   const totals = consumedTotals(consumption, doseFor);

@@ -96,8 +96,12 @@ export async function GET(req: NextRequest) {
   // Every silo the MIXER says fed this batch, whether or not it has been
   // assigned — the row list comes from consumption, never from a catalogue. A
   // silo that only exists in the catalogue is a silo nobody can price.
+  // FULL weight per silo, not the band-resolved part. gritCharges is keyed by
+  // band and omits any charge whose bags yield none, so building the row list
+  // from it hid whole silos: on batch 1415 silo 203 drew 11,534.5 kg and had no
+  // card at all, and silo 204 showed 12,998.6 of the 26,258.6 kg it ran.
   const kgBySilo = new Map<string, number>();
-  for (const g of c.gritCharges) kgBySilo.set(g.silo, (kgBySilo.get(g.silo) ?? 0) + g.kg);
+  for (const g of c.gritSiloKg) kgBySilo.set(g.silo, (kgBySilo.get(g.silo) ?? 0) + g.kg);
 
   const assigned = new Map((c.gritSilos ?? []).map((s) => [s.silo, s]));
   const silos = [...kgBySilo.entries()]

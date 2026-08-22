@@ -476,8 +476,11 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
     // worse: it would move the assign= segment of weightsFingerprint on every
     // already-assigned batch and lapse every standing mark in the plant.
     const assignedBySilo = new Map((c.gritSilos ?? []).map((s) => [s.silo, s]));
+    // gritSiloKg, not gritCharges: the latter is keyed by band and drops every
+    // charge whose bags yield none, so it undercounts the silos it does list
+    // and omits the ones it cannot band at all.
     const mixerKg = new Map<string, number>();
-    for (const g of c.gritCharges) mixerKg.set(g.silo, (mixerKg.get(g.silo) ?? 0) + g.kg);
+    for (const g of c.gritSiloKg) mixerKg.set(g.silo, (mixerKg.get(g.silo) ?? 0) + g.kg);
 
     for (const [silo, kg] of mixerKg) {
       if (kg <= 0) continue;
@@ -523,9 +526,12 @@ function buildMaterialLines(c: BatchConsumption, card: EffectiveRateCard, pricin
       if (priced.withhold) fromCard.add(label);
     }
     assumptions.push(...gritFlagSentences(c.gritSilos!));
-    // Unresolved tonnage is deliberately NOT reported on this path: it is inside
-    // the silo rows here, and pushing it again would report the same tonnes
-    // missing twice. It stays in weightsFingerprint untouched either way.
+    // Unresolved tonnage is NOT reported separately on this path, and now that
+    // is actually true. The rows above are built from gritSiloKg, which counts
+    // every charge the mixer recorded whether its bags yield a band or not, so
+    // the unresolved kilograms really are inside them. While these rows came
+    // from gritCharges the same comment was simply wrong: 39,784 kg of batch
+    // 1415 was in no row, in no unpriced line, and in no total.
   } else {
 
   // -- grit per band (per-charge attribution) -------------------------------

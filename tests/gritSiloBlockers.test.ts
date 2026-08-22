@@ -85,3 +85,39 @@ test("an UNASSIGNED batch is judged by the bands, exactly as it always was", () 
   assert.deepEqual(gritSiloBlockers([], [{ silo: "201", kg: 19103.5 }]), []);
   assert.deepEqual(gritSiloBlockers(undefined), []);
 });
+
+test("the denominator is the MIXER TOTAL, not the band-resolved part", () => {
+  // The question this settles: when the screen says "4,181.4 kg unassigned", is
+  // that measured against what the silo drew, or against some subset of it?
+  //
+  // It used to be a subset. The per-silo weights were summed from gritCharges,
+  // which is keyed by (silo, BAND) and diverts any charge whose bags yield no
+  // band into gritUnresolvedKg — so each silo was measured against only the part
+  // of itself that could be banded, and a silo with no bandable charge at all
+  // did not appear. On batch 1415 that hid 39,784 kg of 96,507 — silo 203 drew
+  // 11,534.5 kg and had no row, and silo 204 showed 12,998.6 of 26,258.6.
+  //
+  // Real figures from batch 1415, mixer truth.
+  const silos = [{ silo: "204", size: "1.2-2.5", kg: 26258.6, suppliers: [sup("Premium Vinayaka", 12998.6, 4200)] }];
+  const b = gritSiloBlockers(silos, [{ silo: "204", kg: 26258.6 }]);
+  assert.equal(b.length, 1);
+  assert.match(b[0], /13260 kg assigned to nobody/,
+    "the shortfall is against the 26,258.6 kg the mixer drew, not the 12,998.6 that was bandable");
+
+  // ...and the sheet agrees, so neither can quietly price a subset.
+  const priced = priceGritSilo(silos[0]);
+  assert.equal(priced.withhold, true);
+  assert.equal(priced.lines[0].tonnes, 12.9986, "only the assigned share is costed");
+});
+
+test("a silo whose grit has no size band at all still gets a row", () => {
+  // Silo 203 on batch 1415: 11,534.5 kg, not one charge of it bandable. It was
+  // absent from the screen and from the costing, so its tonnage left the batch
+  // total in silence.
+  const b = gritSiloBlockers(
+    [{ silo: "201", size: "0.1-0.4", kg: 19103.5, suppliers: [sup("Supreme Vinayaka", 19103.5, 4200)] }],
+    [{ silo: "201", kg: 19103.5 }, { silo: "203", kg: 11534.5 }],
+  );
+  assert.equal(b.length, 1);
+  assert.match(b[0], /Silo 203 drew 11535 kg and has not been assigned/);
+});

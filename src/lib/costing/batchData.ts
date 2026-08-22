@@ -103,7 +103,16 @@ export interface BatchConsumption {
   resinByTank: Array<{ tank: string; cycles: number; kg: number }>;
   /** Per (silo, band) from the per-charge silo links - the primary attribution. */
   gritCharges: GritCharge[];
-  /** kg with no resolvable silo link, reported rather than dropped. */
+  /**
+   * What the mixer drew PER SILO - the full weight, including charges whose
+   * bags yield no size band and which therefore never reach gritCharges.
+   *
+   * This is the denominator for anything silo-shaped: how much of silo 204 is
+   * still unassigned, and how much of it the sheet has to price. Using the
+   * band-keyed totals for that quietly measured against a subset.
+   */
+  gritSiloKg: Array<{ silo: string; kg: number }>;
+  /** kg with no resolvable size band, reported rather than dropped. */
   gritUnresolvedKg: number;
   fillerKg: number;
   /** Mixer charges (mixer1..4 flags) - the TiO₂ dosing multiplier. */
@@ -182,7 +191,8 @@ const GRIT_SLOTS = Array.from({ length: 4 }, (_, mi) =>
  */
 export async function loadGritSilos(
   batchKey: string,
-  charges: readonly GritCharge[],
+  /** The mixer per silo, FULL weight - see BatchConsumption.gritSiloKg. */
+  siloKg: ReadonlyArray<{ silo: string; kg: number }>,
 ): Promise<GritSiloAssignment[] | null> {
   const [sizes, suppliers] = await Promise.all([
     prisma.costingBatchGritSilo.findMany({ where: { batchKey } }),
@@ -192,8 +202,12 @@ export async function loadGritSilos(
 
   // Kilograms per silo come from the MIXER, never from the assignment — the
   // split says how the weight divides between suppliers, not how much there was.
+  //
+  // FULL weight, not the band-resolved part. `charges` is keyed by band and
+  // omits every charge whose bags yield none, so summing it here measured each
+  // silo against a subset of itself - 41% of batch 1415 was outside it.
   const kgBySilo = new Map<string, number>();
-  for (const c of charges) kgBySilo.set(c.silo, (kgBySilo.get(c.silo) ?? 0) + c.kg);
+  for (const g of siloKg) kgBySilo.set(g.silo, (kgBySilo.get(g.silo) ?? 0) + g.kg);
 
   // What the bags in each silo say. One query for the batch's silos, read-only.
   const siloNos = [...new Set([...kgBySilo.keys(), ...sizes.map((r) => r.siloNo)])].filter(Boolean);
@@ -272,11 +286,24 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
     );
 
   const gritMap = new Map<string, number>();
+  // WHAT THE MIXER DREW PER SILO, band or no band.
+  //
+  // gritCharges below is keyed by (silo, BAND) and a charge whose bags yield no
+  // band is diverted into gritUnresolvedKg and never appears in it. That is
+  // right for the per-band costing path, which has nothing to price such a
+  // charge with - and wrong for anything asking "how much came out of silo
+  // 204", which is the question the silo screen and the silo costing path both
+  // ask. On batch 1415 the difference was 39,784 kg: silo 203 drew 11,534.5 kg
+  // and did not appear on the screen at all, and silo 204 showed 12,998.6 of
+  // the 26,258.6 kg it actually ran.
+  const siloKg = new Map<string, number>();
   let gritUnresolvedKg = 0;
   for (const c of charges) {
     const band = bandOf(c.band);
     const kg = Number(c.kg ?? 0);
     if (!kg) continue;
+    const silo = (c.silo_no ?? "").trim();
+    if (silo) siloKg.set(silo, (siloKg.get(silo) ?? 0) + kg);
     if (!band) {
       gritUnresolvedKg += kg;
       continue;
@@ -290,6 +317,12 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
       return { silo, band, kg };
     })
     .sort((a, b) => a.band.localeCompare(b.band) || a.silo.localeCompare(b.silo));
+
+  /** Every silo the mixer drew from, with its FULL weight. Heaviest first,
+   *  which is the order the job is worked in. */
+  const gritSiloKg: Array<{ silo: string; kg: number }> = [...siloKg.entries()]
+    .map(([silo, kg]) => ({ silo, kg: Math.round(kg * 1000) / 1000 }))
+    .sort((a, b) => b.kg - a.kg);
 
   // Run length. mixer_start_time is an Airtable time-of-day with an
   // unreliable date part, so the walk repairs rollovers (a start earlier than
@@ -340,7 +373,7 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
              min(imported_at) first, max(imported_at) last
       FROM press WHERE batch_key = ${batchKey}`;
 
-  const gritSilos = await loadGritSilos(batchKey, gritCharges);
+  const gritSilos = await loadGritSilos(batchKey, gritSiloKg);
 
   return {
     batchKey,
@@ -352,6 +385,7 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
       tank: t.tank ?? "(no tank recorded)", cycles: t.cycles, kg: Number(t.kg ?? 0),
     })),
     gritCharges,
+    gritSiloKg,
     gritSilos,
     gritUnresolvedKg,
     fillerKg: Number(head[0].filler_kg ?? 0),
