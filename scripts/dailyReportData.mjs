@@ -18,6 +18,24 @@
 // which is the only timestamp that still moves. If `created` ever starts
 // populating again, prefer it — but check coverage first, do not assume.
 import { PrismaClient } from "@prisma/client";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Next loads .env.local for the app; a plain `node scripts/...` run does not,
+// and this is meant to be run by hand. dotenv is only here as somebody else's
+// transitive dependency, so it is not something to rely on — read the file.
+if (!process.env.DATABASE_URL) {
+  const root = dirname(dirname(fileURLToPath(import.meta.url)));
+  for (const f of [".env.local", ".env"]) {
+    try {
+      for (const line of readFileSync(join(root, f), "utf8").split(/\r?\n/)) {
+        const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)$/.exec(line);
+        if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
+      }
+    } catch { /* not there is fine — the variable may come from the environment */ }
+  }
+}
 
 const IST_OFFSET_MIN = 330;
 const SHIFTS = [
@@ -38,6 +56,7 @@ export function reportWindow(date) {
 /** "06 - 07" -> 6. The hour label is the in-charge's own, so it is the key. */
 const hourStart = (h) => (h ? Number(String(h).slice(0, 2)) : null);
 const shiftOf = (h) => (h >= 6 && h < 14 ? "A" : h >= 14 && h < 22 ? "B" : "C");
+const FACE = { BS: "Bottom side", TS: "Top side" };
 const mins = (r) =>
   (r.processDelayDurationMinutes ?? 0) + (r.cleaningDelayDurationMinutes ?? 0) +
   (r.breakdownDelayDurationMechanicalOrElectricalMinutes ?? 0) + (r.poweroutDelayDurationMinutes ?? 0);
@@ -133,6 +152,21 @@ async function collectQuality(prisma, from, to) {
   const entries = await prisma.polishEntry.findMany({ where: win });
   const qc = await prisma.polishQc.findMany({ where: win });
 
+  // WHICH SHIFT A PERSON WORKED, from when their rows landed. There is no
+  // shift column on either polishing table, so the only evidence is the clock.
+  // A second shift is named only when it carries a real share of the work —
+  // one stray row at a shift boundary is noise, not a shift worked.
+  const IST = (d) => new Date(d.getTime() + IST_OFFSET_MIN * 60000).getUTCHours();
+  const shiftLabel = (rows, key, who) => {
+    const mine = rows.filter((r) => (key(r) ?? "Not recorded") === who);
+    const c = { A: 0, B: 0, C: 0 };
+    for (const r of mine) c[shiftOf(IST(r.importedAt))]++;
+    const [first, second] = Object.entries(c).sort((a, b) => b[1] - a[1]);
+    if (!first?.[1]) return "";
+    const tail = second?.[1] / mine.length >= 0.05 ? ` and the tail of ${second[0]}` : "";
+    return `${first[0]} shift${tail}`;
+  };
+
   const tally = (rows, key) => {
     const m = new Map();
     for (const r of rows) { const k = key(r); m.set(k, (m.get(k) ?? 0) + 1); }
@@ -163,7 +197,7 @@ async function collectQuality(prisma, from, to) {
   const byDesign = new Map();
   for (const e of entries) {
     const k = `${e.design ?? "(none)"}`;
-    if (!byDesign.has(k)) byDesign.set(k, { design: e.design, batches: new Set(), slabs: 0, face: e.polishSide, A: 0, A2: 0, B: 0, C: 0, ungraded: 0 });
+    if (!byDesign.has(k)) byDesign.set(k, { design: e.design, batches: new Set(), slabs: 0, face: FACE[e.polishSide] ?? e.polishSide, A: 0, A2: 0, B: 0, C: 0, ungraded: 0 });
     const d = byDesign.get(k);
     d.slabs++; if (e.batchNumber) d.batches.add(e.batchNumber);
     const g = qcBySlab.get(e.slabNumber)?.qualityGrade;
@@ -188,8 +222,14 @@ async function collectQuality(prisma, from, to) {
     faultSlabsMulti: qc.filter((r) => (r.qualityIssue ?? []).length > 1).length,
     bcSlabs: bc.length,
     bcFaultTotal: bc.reduce((a, r) => a + (r.qualityIssue ?? []).length, 0),
-    operators: tally(entries, (r) => r.calliberator ?? "Not recorded"),
-    inspectors: tally(qc, (r) => r.inspector ?? "Not recorded"),
+    operators: tally(entries, (r) => r.calliberator ?? "Not recorded")
+      .map(([k, n]) => [k, n, shiftLabel(entries, (r) => r.calliberator, k)]),
+    inspectors: tally(qc, (r) => r.inspector ?? "Not recorded")
+      .map(([k, n]) => [k, n, shiftLabel(qc, (r) => r.inspector, k)]),
+    // How many of each grade are already cleared to leave — the grade table
+    // says so per row, because "passed" and "shippable" are not the same thing.
+    dispatchByGrade: Object.fromEntries([...new Set(qc.map((r) => r.qualityGrade))].map((g) =>
+      [g, qc.filter((r) => r.qualityGrade === g && r.goingToDispatch === "Yes").length])),
     designs: [...byDesign.values()].sort((a, b) => b.slabs - a.slabs),
     thickness: tally(entries, (r) => r.slabThickness ?? "Not recorded"),
   };
