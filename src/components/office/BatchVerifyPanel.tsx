@@ -10,11 +10,12 @@
 // is enforced in the API; this component renders whatever arrives and asks for
 // nothing more.
 //
-// The verifiers also ENTER the batch here now (owner, 2026-08-19): the same
-// materials panel the admin has on /office/costing — supplier splits, prices,
-// doses — is rendered below the picker for anyone who can sign. The panel came
-// to them rather than them to /office/costing, because that page carries the
-// computed sheet and the whole cost base and stays admin-only. And a mark is
+// The verifiers also ENTER the batch here now (owner, 2026-08-19): supplier
+// splits, prices, doses — on a flat table built for them (SimpleMaterialsEntry,
+// with the admin's full materials panel one toggle away), rendered below the
+// picker for anyone who can sign. The entry came to them rather than them to
+// /office/costing, because that page carries the computed sheet and the whole
+// cost base and stays admin-only. And a mark is
 // REFUSED until the batch is fully entered — every price resolving, every dose
 // set, every split covering the mixer total. The refusal is the API's
 // (completeness.ts, checked in the POST); the disabled buttons and the blocker
@@ -28,7 +29,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Card, Empty } from "@/components/ui";
 import { readJson } from "@/lib/readJson";
-import { BatchRatesPanel } from "@/components/office/BatchRatesPanel";
+import { SimpleMaterialsEntry } from "@/components/office/SimpleMaterialsEntry";
 import { SignoffCard } from "@/components/office/SignoffCard";
 
 const API = "/api/office/batch-verify";
@@ -143,9 +144,14 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
         </div>
       )}
 
-      {/* The SAME materials panel the admin has on /office/costing — the one
-          component, not a copy, talking to the same batch-rates API (which now
-          admits the two verifiers; the route is the gate).
+      {/* The verifiers' flat table — one row per material the mixer used,
+          supplier and price beside the mixer's figure — talking to the same
+          batch-rates and grit-assignment APIs the admin's panel does (which
+          admit the two verifiers; the routes are the gate). The admin's own
+          materials panel is still reachable from the table's "Open the full
+          panel" toggle, unchanged, for anything the table does not cover. The
+          verifiers had been handed that panel directly and reported it "not
+          very intuitive to understand and put weights / percentages and costs".
 
           GATED ON sign, NOT can, and that is load-bearing: it is what decides
           who can TYPE a price here, not merely read one. Admin used to fail
@@ -156,7 +162,7 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
           Saving re-reads the detail below, because an edit can lapse a mark and
           always moves the completeness answer the buttons obey. */}
       {detail && sign.length > 0 && (
-        <BatchRatesPanel
+        <SimpleMaterialsEntry
           key={detail.batchKey}
           batchKey={detail.batchKey}
           batchLabel={detail.batch}
