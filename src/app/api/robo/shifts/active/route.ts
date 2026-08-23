@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { roboGate } from "@/lib/rbac";
 
 export async function GET() {
+  const refused = await roboGate();
+  if (refused) return refused;
   const shift = await prisma.roboShift.findFirst({
     where: { status: "ACTIVE" },
     include: {

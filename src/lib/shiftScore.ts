@@ -795,6 +795,15 @@ export async function scoreStations(from: string, to: string, excludeNames: stri
   // No try/catch anywhere, as before: a station whose query fails must not render
   // as "nobody worked here" — that quietly removes real people from a payout board.
   const stationRows: any[][] = await Promise.all(STATIONS.map((st) => {
+    // st.table, st.col and st.ts are INTERPOLATED into the SQL below - Postgres
+    // cannot take an identifier as a bound parameter. They are literals from
+    // STATIONS, all snake_case, so this never fires today; it is here so that
+    // an edit up there which slips a quote or a space into a name fails HERE,
+    // loudly, rather than reaching Postgres as SQL. Loud on purpose, for the
+    // same reason there is no try/catch around these queries.
+    for (const ident of [st.table, st.col, st.ts]) {
+      if (!/^[a-z0-9_]+$/.test(ident)) throw new Error(`scoreStations: "${ident}" is not a plain identifier`);
+    }
     const when = st.tsRequired ? st.ts : `COALESCE(${st.ts}, imported_at)`;
     // The polishing board's window used to filter on COALESCE(created, imported_at),
     // which no btree can serve — a 24–29 ms seq scan over 44.7k polish_entry rows

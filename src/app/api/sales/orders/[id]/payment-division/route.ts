@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { salesAuth as auth } from "@/lib/sales/session";
+import { assertOrderVisible } from "@/lib/sales/ownership";
 import { prisma } from "@/lib/prisma";
 
 const db = prisma as any;
@@ -23,6 +24,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   }
 
   const { id: orderId } = await params;
+  const refused = await assertOrderVisible(session.user, orderId);
+  if (refused) return refused;
   const body = await req.json();
   const { divisionId, action, newDueDate, note } = body as {
     divisionId: string;

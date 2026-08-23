@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { roboGate } from "@/lib/rbac";
 
 interface RouteContext { params: Promise<{ id: string }> }
 
 export async function GET(_req: Request, ctx: RouteContext) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const { id } = await ctx.params;
   const code = await prisma.roboDelayCode.findUnique({ where: { id } });
   if (!code) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -11,6 +14,8 @@ export async function GET(_req: Request, ctx: RouteContext) {
 }
 
 export async function PATCH(req: Request, ctx: RouteContext) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const { id } = await ctx.params;
   const body = await req.json();
   const data: Record<string, unknown> = {};
@@ -23,6 +28,8 @@ export async function PATCH(req: Request, ctx: RouteContext) {
 
 /** Refuses to delete a delay code that has already been logged against production. */
 export async function DELETE(_req: Request, ctx: RouteContext) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const { id } = await ctx.params;
 
   const logged = await prisma.roboDelayLog.count({ where: { delayCodeId: id } });

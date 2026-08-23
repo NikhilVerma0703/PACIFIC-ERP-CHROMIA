@@ -6,6 +6,7 @@
  * Allowed for: SALES_ADMIN, ACCOUNTS, SALESPERSON (any sales role).
  */
 import { salesAuth as auth } from "@/lib/sales/session";
+import { assertPaymentDivisionVisible } from "@/lib/sales/ownership";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 import { sendMail } from "@/lib/sales/mailer";
@@ -25,6 +26,8 @@ export async function POST(
   if (!salesRole) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const { id } = await params;
+  const refused = await assertPaymentDivisionVisible(session.user, id);
+  if (refused) return refused;
 
   const division = await db.salesPaymentDivision.findUnique({
     where: { id },

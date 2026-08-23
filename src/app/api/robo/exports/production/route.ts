@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import { prisma } from "@/lib/prisma";
 import { fmtDurationLong, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
 import { productionDateOf, productionDateWhere, setupProductionDate, setupProductionDateWhere } from "@/lib/robo/productionDate";
+import { roboGate } from "@/lib/rbac";
 import {
   PRODUCTION_RECORD_COLUMNS,
   PRODUCTION_RECORD_WIDTHS,
@@ -23,6 +24,8 @@ const dash = (v: string | number | null | undefined) =>
 
 /** GET /api/robo/exports/production?date=YYYY-MM-DD — omit date for every record to date. */
 export async function GET(req: NextRequest) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const date = req.nextUrl.searchParams.get("date")?.trim() || "";
 
   const fetched = await prisma.roboProductionRecord.findMany({

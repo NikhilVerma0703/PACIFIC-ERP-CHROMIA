@@ -3,7 +3,16 @@ import bcrypt from "bcryptjs";
 
 const prisma = new PrismaClient();
 
-const DEFAULT_PASSWORD = process.env.SEED_PASSWORD || "Pacific@123";
+// No fallback password. The one that used to sit here was committed to git and
+// seeded two ADMIN logins, so anyone with repo access knew a candidate for the
+// highest-privilege accounts. The seed now refuses to run without SEED_PASSWORD,
+// the way scripts/provision-*-user.ts already refuse without theirs. (Runtime is
+// untouched: build is `prisma generate && next build`; this never runs on deploy.)
+const DEFAULT_PASSWORD = process.env.SEED_PASSWORD ?? "";
+if (!DEFAULT_PASSWORD) {
+  console.error("\n  ✖ SEED_PASSWORD is not set. Export it (the password every seeded user gets) and re-run `npm run db:seed`.\n");
+  process.exit(1);
+}
 
 const USERS: Array<{
   email: string;

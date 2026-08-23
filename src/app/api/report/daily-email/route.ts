@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { sendDailyReport } from "@/lib/report/dailyReportEmail";
 import { reportRecipients } from "@/lib/report/dailyReportText";
+import { secretEqual } from "@/lib/secretEqual";
 
 /**
  * GET /api/report/daily-email — yesterday's production report, emailed out.
@@ -36,8 +37,9 @@ export const maxDuration = 120;
 function authorised(req: Request): boolean {
   const secret = process.env.CRON_SECRET;
   if (!secret) return false;
-  if (req.headers.get("x-cron-secret") === secret) return true;
-  return req.headers.get("authorization") === `Bearer ${secret}`;
+  // Constant-time on both forms - see lib/secretEqual for why `===` is not used.
+  if (secretEqual(req.headers.get("x-cron-secret"), secret)) return true;
+  return secretEqual(req.headers.get("authorization"), `Bearer ${secret}`);
 }
 
 export async function GET(req: Request) {

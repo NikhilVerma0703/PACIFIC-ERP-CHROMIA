@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { salesAuth as auth } from "@/lib/sales/session";
+import { assertOrderVisible } from "@/lib/sales/ownership";
 import { prisma } from "@/lib/prisma";
 import { getSp, getSpMap } from "@/lib/sales/spLookup";
 
@@ -9,6 +10,8 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
   const session = await auth();
   if (!session?.user) return Response.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
+  const refused = await assertOrderVisible(session.user, id);
+  if (refused) return refused;
 
   // Fetch order without logs first (logs have a known column-type bug until migration runs)
   const order = await db.salesOrder.findUnique({
@@ -82,6 +85,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (!session?.user) return Response.json({ error: "Unauthorized" }, { status: 401 });
   const uid = (session.user as any).id as string;
   const { id } = await params;
+  const refused = await assertOrderVisible(session.user, id);
+  if (refused) return refused;
   const body = await req.json();
   const { deliveryTerms, notes, status } = body;
 

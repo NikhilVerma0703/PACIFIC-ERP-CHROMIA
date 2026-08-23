@@ -8,6 +8,7 @@
  *   → Saves per-order data into sales_shipment_docs columns.
  */
 import { salesAuth as auth } from "@/lib/sales/session";
+import { assertOrderVisible } from "@/lib/sales/ownership";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 
@@ -20,6 +21,8 @@ export async function GET(
   const session = await auth();
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
+  const refused = await assertOrderVisible(session.user, id);
+  if (refused) return refused;
 
   const rows = await db.$queryRawUnsafe(
     `SELECT marks_nos, item_net_weights, ocean_freight, packing_charges,
@@ -50,6 +53,8 @@ export async function POST(
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
+  const refused = await assertOrderVisible(session.user, id);
+  if (refused) return refused;
   const { overrides = {}, itemNetWeights = [], marksNos = "" } = await req.json();
 
   const oceanFreight   = overrides.oceanFreight   ? parseFloat(overrides.oceanFreight)   : null;

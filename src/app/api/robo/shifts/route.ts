@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { roboGate } from "@/lib/rbac";
 
 export async function GET() {
+  const refused = await roboGate();
+  if (refused) return refused;
   const shifts = await prisma.roboShift.findMany({
     include: {
       batchRecipes: { include: { design: true, program: true } },
@@ -15,6 +18,8 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const body = await req.json();
   try {
     // Serializable so the check-then-create is atomic: when two devices start a

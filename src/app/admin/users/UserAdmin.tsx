@@ -4,8 +4,12 @@ import { useState, useTransition } from "react";
 import { useActionState } from "react";
 import { useRouter } from "next/navigation";
 import { createUser, setActive, resetPassword, setStation, signOutEverywhere, signOutEveryone } from "./actions";
-import { STATION_LABEL, ROLE_RANK, roleLabelFor, type RoleName } from "@/lib/rbac";
-import { BRANCH_LABEL } from "@/lib/branch";
+// From the import-free modules, not lib/rbac / lib/branch: those import
+// @/auth, and a "use client" import of them shipped next-auth, jose, bcryptjs,
+// zod, a crypto polyfill and the Prisma browser stub to this page (≈240 kB
+// gzipped, the largest route in the app) for four string tables.
+import { STATION_LABEL, ROLE_RANK, roleLabelFor, type RoleName } from "@/lib/roles";
+import { BRANCH_LABEL } from "@/lib/branchNames";
 
 export interface UserRow {
   id: string; email: string; name: string | null; role: string; station: string | null;

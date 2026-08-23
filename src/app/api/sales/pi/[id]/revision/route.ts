@@ -5,6 +5,7 @@
  * Body: { reason?, customerRemarks?, resend?: boolean }
  */
 import { salesAuth as auth } from "@/lib/sales/session";
+import { assertPiVisible } from "@/lib/sales/ownership";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 
@@ -18,6 +19,8 @@ export async function POST(
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
+  const refused = await assertPiVisible(session.user, id);
+  if (refused) return refused;
   const body = await req.json();
   const { reason, customerRemarks } = body as {
     reason?: string;

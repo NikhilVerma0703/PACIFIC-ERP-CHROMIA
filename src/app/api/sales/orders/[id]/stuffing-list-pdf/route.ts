@@ -1,4 +1,5 @@
 import { salesAuth as auth } from "@/lib/sales/session";
+import { assertOrderVisible } from "@/lib/sales/ownership";
 import { generateStuffingListPdf } from "@/lib/sales/pdf/stuffingListPdf";
 import { NextResponse } from "next/server";
 
@@ -7,6 +8,8 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
+  const refused = await assertOrderVisible(session.user, id);
+  if (refused) return refused;
   try {
     const pdf = await generateStuffingListPdf(id);
     return new Response(new Uint8Array(pdf), {

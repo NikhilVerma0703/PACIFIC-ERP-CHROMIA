@@ -35,6 +35,37 @@ const REFUSAL_PAGE = "/no-access";
 const alwaysOk = (p: string) => p === REFUSAL_PAGE || p === "/live" || p.startsWith("/api");
 
 /**
+ * The ONLY paths served without a session: Next's own build output and the
+ * handful of files that actually sit in public/.
+ *
+ * The old rule was "anything ending in .png/.jpg/.svg/.ico/.webmanifest/.txt/.xml",
+ * in three places (here as STATIC_FILE, in auth.config.ts, and in the
+ * middleware matcher). An extension test says nothing about WHERE a path
+ * points: /api/robo/shifts/55.png, /tables/Press.png and /silo/5.png all
+ * ended in .png, and a matcher-excluded path runs NO middleware and NO
+ * authorized() callback at all - it skips both gates at once. It was inert
+ * only because the handlers behind those ids happened to miss on "55.png";
+ * that is luck, not a control.
+ *
+ * So this is an ALLOWLIST of real files, matched exactly - the same shape as
+ * every cap in this file. public/ holds exactly these today (ls it): the PWA
+ * icons, the two logos the login page shows, and the manifest. favicon.ico is
+ * kept although nothing ships one: browsers ask for it unprompted, and a 404
+ * is the right answer, not a redirect to /login. A file added to public/
+ * later must be added HERE (and to the matcher in middleware.ts, which is a
+ * string literal Next reads at build time and cannot call this function) or
+ * it will need a sign-in to load - a dead asset, never a leak.
+ *
+ * Pure, so the matcher string and this function can be checked against each
+ * other in tests/publicAssets.test.ts.
+ */
+export const PUBLIC_ASSET = /^\/(?:favicon\.ico|apple-touch-icon\.png|icon-[\w-]+\.png|logo-[\w-]+\.png|manifest\.webmanifest)$/;
+
+export function isPublicAsset(p: string): boolean {
+  return p.startsWith("/_next/static/") || p.startsWith("/_next/image") || PUBLIC_ASSET.test(p);
+}
+
+/**
  * Store Incharge. The two-tier RM store is theirs (/store), plus the RM tables
  * capped to STORE_MODELS, consumables, and the ONE office path this role
  * reaches: /office/batch-verify, where they sign off the prices a batch is
@@ -205,4 +236,33 @@ const TRACE_BLIND = new Set(["MAINTENANCE"]);
 
 export function maySeeMaterialTrace(role: string): boolean {
   return !TRACE_BLIND.has(role);
+}
+
+/**
+ * Who may open the /mis page - and therefore who may pull its Excel export.
+ *
+ * /mis itself has no gate of its own: its audience is whoever no cap turns
+ * away, which middleware.ts decides block by block. /api/mis/export used to
+ * refuse only COMMERCIAL and SALES, while every branch block and every role
+ * cap hands its login ALL of /api - so an operator, a store incharge, a
+ * fabrication or sales login could download the whole downtime log (incidents,
+ * maintenance responses, photo links) for any date range from a page they can
+ * never open. This names the page's audience once so the route can mirror it.
+ *
+ * It is written as the list of REFUSALS because that is what middleware does
+ * for /mis: no capped role has it in its allowlist (storeMayVisit,
+ * operatorMayVisit), the Fabrication and International Sales blocks never reach
+ * a production page, the Chromia cap is the module alone, Commercial and Sales
+ * are refused by name, and ROBO is capped to /robo. MAINTENANCE is the one
+ * capped role whose allowlist includes /mis (maintenanceMayVisit), and is
+ * therefore NOT refused here. Admins span every department. If a block in
+ * middleware.ts changes who reaches /mis, change this with it - the test in
+ * tests/misAudience.test.ts pins the caps it can check.
+ */
+const MIS_BLIND_ROLES = new Set(["OPERATOR", "STORE", "COMMERCIAL", "SALES", "ROBO", "CHROMIA"]);
+const MIS_BLIND_BRANCHES = new Set(["FABRICATION", "INTERNATIONAL_SALES", "CHROMIA"]);
+
+export function maySeeMis(role: string, branch: string): boolean {
+  if (role === "ADMIN") return true;
+  return !MIS_BLIND_ROLES.has(role) && !MIS_BLIND_BRANCHES.has(branch);
 }

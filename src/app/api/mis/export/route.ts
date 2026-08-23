@@ -3,18 +3,24 @@
 // the current on-screen view. One row per incident, plus the maintenance response.
 //
 // Audience = whoever can see the /mis page: every production-side role + Maintenance + Admin.
-// Commercial and Sales are redirected away from /mis by middleware but can still reach /api,
-// so they are excluded explicitly here.
+// Every capped role and every branch block is handed ALL of /api by middleware, so the page's
+// audience has to be restated here — maySeeMis (lib/routeCaps) is that single statement. It
+// used to name only Commercial and Sales, which left the file open to operators, the store
+// incharge and the fabrication and sales departments, none of whom can open the page it
+// belongs to; the download button only renders on /mis.
 import { getDowntimeReport, fmtDur, DELAY_FIELDS, DELAY_LABEL } from "@/lib/downtime";
 import { getDowntimeResponses } from "@/lib/downtimeResponse";
 import { photosForRecords } from "@/lib/entryPhoto";
-import { currentRole } from "@/lib/rbac";
+import { currentUser } from "@/lib/rbac";
+import { maySeeMis } from "@/lib/routeCaps";
 import * as XLSX from "xlsx";
 
 export async function GET(request: Request) {
-  const role = await currentRole();
-  if (!role) return Response.json({ error: "Please sign in." }, { status: 401 });
-  if (role === "COMMERCIAL" || role === "SALES") return Response.json({ error: "Not authorized" }, { status: 403 });
+  const me = await currentUser();
+  const role = String((me as { role?: string | null } | null)?.role ?? "");
+  if (!me || !role) return Response.json({ error: "Please sign in." }, { status: 401 });
+  const branch = String((me as { branch?: string | null } | null)?.branch ?? "");
+  if (!maySeeMis(role, branch)) return Response.json({ error: "Not authorized" }, { status: 403 });
 
   try {
     const sp = new URL(request.url).searchParams;

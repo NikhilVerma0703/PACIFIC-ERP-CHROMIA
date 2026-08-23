@@ -2,8 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { entryCreateData, setupScalarData, type SetupEntryInput } from "@/lib/robo/setupMasters";
 import { registerTypedMasters, resolveDesignId } from "@/lib/robo/setupMastersDb";
+import { roboGate } from "@/lib/rbac";
 
 export async function GET(req: NextRequest) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const shiftId = req.nextUrl.searchParams.get("shiftId");
   const where = shiftId ? { shiftId } : {};
   const data = await prisma.roboBatchRecipe.findMany({
@@ -34,6 +37,8 @@ export async function GET(req: NextRequest) {
  * it in canEditRoboSetup().
  */
 export async function POST(req: Request) {
+  const refused = await roboGate();
+  if (refused) return refused;
   try {
     const body = await req.json();
     const entries: SetupEntryInput[] = body.entries || [];

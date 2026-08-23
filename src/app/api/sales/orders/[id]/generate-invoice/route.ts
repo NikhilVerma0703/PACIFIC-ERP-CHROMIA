@@ -12,6 +12,7 @@
  * Role guard: COMMERCIAL or SALES_ADMIN only.
  */
 import { salesAuth as auth } from "@/lib/sales/session";
+import { assertOrderVisible } from "@/lib/sales/ownership";
 import { prisma }                      from "@/lib/prisma";
 import { NextResponse }                from "next/server";
 import { generateCommercialInvoicePdf } from "@/lib/sales/pdf/commercialInvoicePdf";
@@ -97,6 +98,8 @@ export async function POST(
   }
 
   const { id } = await params;
+  const refused = await assertOrderVisible(session.user, id);
+  if (refused) return refused;
 
   // ── 1. Load order + PI + shipment docs ─────────────────────────────────────
   const order = await db.salesOrder.findUnique({

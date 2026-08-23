@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { salesAuth as auth } from "@/lib/sales/session";
+import { assertPiVisible } from "@/lib/sales/ownership";
 import { prisma } from "@/lib/prisma";
 import { sendMail } from "@/lib/sales/mailer";
 import { getCCList } from "@/lib/sales/mailHelpers";
@@ -14,6 +15,8 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
+  const refused = await assertPiVisible(session.user, id);
+  if (refused) return refused;
   const db = prisma as any;
 
   const pi = await db.proformaInvoice.findUnique({

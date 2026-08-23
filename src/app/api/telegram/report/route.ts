@@ -7,13 +7,15 @@
 import { sendTelegram } from "@/lib/telegram";
 import { hourlyMessage, shiftMessage, dailyMessage, lastCompletedHourIST, plusDay, ymdIST } from "@/lib/telegramReports";
 import { shiftOfHour } from "@/lib/misShiftHours";
+import { secretEqual } from "@/lib/secretEqual";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET;
-  if (!secret || req.headers.get("authorization") !== `Bearer ${secret}`) {
+  // Constant-time compare - see lib/secretEqual for why `!==` is not used.
+  if (!secret || !secretEqual(req.headers.get("authorization"), `Bearer ${secret}`)) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
   if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {

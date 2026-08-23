@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { salesAuth as auth } from "@/lib/sales/session";
+import { assertPiVisible } from "@/lib/sales/ownership";
 import { prisma } from "@/lib/prisma";
 import { getSpMap } from "@/lib/sales/spLookup";
 
@@ -9,6 +10,8 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
   const session = await auth();
   if (!session?.user) return Response.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
+  const refused = await assertPiVisible(session.user, id);
+  if (refused) return refused;
   const pi = await db.proformaInvoice.findUnique({
     where: { id },
     include: {
@@ -94,6 +97,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const session = await auth();
   if (!session?.user) return Response.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
+  const refused = await assertPiVisible(session.user, id);
+  if (refused) return refused;
   const body = await req.json();
 
   const existing = await db.proformaInvoice.findUnique({ where: { id } });

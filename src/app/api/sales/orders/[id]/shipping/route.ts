@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { salesAuth as auth } from "@/lib/sales/session";
+import { assertOrderVisible } from "@/lib/sales/ownership";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 
@@ -9,6 +10,8 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
   const session = await auth();
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
+  const refused = await assertOrderVisible(session.user, id);
+  if (refused) return refused;
   const docs = await db.salesShipmentDocs.findUnique({ where: { orderId: id } });
   return NextResponse.json(docs ?? {});
 }
@@ -18,6 +21,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
+  const refused = await assertOrderVisible(session.user, id);
+  if (refused) return refused;
   const body = await req.json();
 
   // Allowed editable fields

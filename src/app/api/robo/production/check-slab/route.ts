@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { roboGate } from "@/lib/rbac";
 
 /**
  * GET /api/robo/production/check-slab?slabNumber=140748&excludeId=<id>
@@ -14,6 +15,8 @@ import { prisma } from "@/lib/prisma";
  * form that skips this check still cannot create the duplicate.
  */
 export async function GET(req: NextRequest) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const slabNumber = req.nextUrl.searchParams.get("slabNumber")?.trim() || "";
   const excludeId = req.nextUrl.searchParams.get("excludeId")?.trim() || "";
 

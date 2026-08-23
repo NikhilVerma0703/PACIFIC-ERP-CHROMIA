@@ -2,8 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import * as XLSX from "xlsx";
 import { machineLabel } from "@/lib/robo/utils";
+import { roboGate } from "@/lib/rbac";
 
 export async function GET(req: NextRequest) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const shiftId = req.nextUrl.searchParams.get("shiftId");
   if (!shiftId) return NextResponse.json({ error: "shiftId required" }, { status: 400 });
 

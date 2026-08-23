@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { slabSearchWhere } from "@/lib/robo/slabSearch";
 import { SLAB_COMPLETED, SLAB_IN_PROCESSING } from "@/lib/robo/utils";
+import { roboGate } from "@/lib/rbac";
 
 /**
  * GET /api/robo/production
@@ -16,6 +17,8 @@ import { SLAB_COMPLETED, SLAB_IN_PROCESSING } from "@/lib/robo/utils";
  * second assignment would silently drop the first — see that file.
  */
 export async function GET(req: NextRequest) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const sp = req.nextUrl.searchParams;
   const limitParam = Number(sp.get("limit"));
 
@@ -52,6 +55,8 @@ class DuplicateSlabError extends Error {}
  * A slab without an Out Time stays In-Processing.
  */
 export async function POST(req: Request) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const body = await req.json();
 
   // The slab number is how a slab is found again — on the Slabs Records

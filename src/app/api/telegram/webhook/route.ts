@@ -10,6 +10,7 @@
 import { sendTelegramTo, telegramChatIds } from "@/lib/telegram";
 import { hourlyMessage, shiftMessage, dailyMessage, lastCompletedHourIST, ymdIST } from "@/lib/telegramReports";
 import { shiftOfHour } from "@/lib/misShiftHours";
+import { secretEqual } from "@/lib/secretEqual";
 
 export const dynamic = "force-dynamic";
 // /ask builds a large pack (several seconds of queries) and then calls a model
@@ -48,7 +49,8 @@ const HELP_ASK = "/ask &lt;question&gt; — e.g. /ask how many slabs did we lose
 
 export async function POST(req: Request) {
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
-  if (!secret || req.headers.get("x-telegram-bot-api-secret-token") !== secret) {
+  // Constant-time compare - see lib/secretEqual for why `!==` is not used.
+  if (!secret || !secretEqual(req.headers.get("x-telegram-bot-api-secret-token"), secret)) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
   try {

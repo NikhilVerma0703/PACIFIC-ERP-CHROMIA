@@ -22,8 +22,18 @@ const db = prisma as any;
 // with the Live Status sweep (src/app/live/allocatorAction.ts): ERP-native cycle,
 // a filler silo/buffer named, filler weight present, but no silo link deducted yet.
 
-/** How many of this family's ERP-native cycles still owe a grit/filler deduction. */
+/** How many of this family's ERP-native cycles still owe a grit/filler deduction.
+ *
+ *  Gated like its sibling below — a session, then canRectify() — but answering 0
+ *  instead of refusing, so the batch report renders identically for everyone who
+ *  can open it (every role that reaches /batch is rank INCHARGE or above and
+ *  passes both). It used to carry no gate at all: a "use server" export is
+ *  callable by action id from any page, not only from /batch, so the middleware
+ *  block that keeps Commercial off the route was the only thing between a
+ *  signed-in Sales, Fabrication or Chromia login and this count. */
 export async function pendingRmAllocation(batch: string): Promise<number> {
+  if (!(await currentUser())) return 0;
+  if (!(await canRectify())) return 0;
   try {
     const { keys } = await batchFamily(batch);
     if (!keys.length) return 0;

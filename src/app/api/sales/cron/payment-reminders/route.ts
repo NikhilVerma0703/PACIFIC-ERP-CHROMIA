@@ -10,12 +10,14 @@
  */
 import { NextResponse } from "next/server";
 import { runPaymentDeadlineReminders } from "@/lib/sales/paymentReminderJob";
+import { secretEqual } from "@/lib/secretEqual";
 
 export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET;
   if (!secret) return NextResponse.json({ error: "CRON_SECRET not configured" }, { status: 401 });
   const provided = req.headers.get("x-cron-secret");
-  if (provided !== secret) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  // Constant-time compare - see lib/secretEqual for why `!==` is not used.
+  if (!secretEqual(provided, secret)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
     const result = await runPaymentDeadlineReminders();

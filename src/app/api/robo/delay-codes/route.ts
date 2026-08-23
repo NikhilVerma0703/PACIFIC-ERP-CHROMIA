@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { roboGate } from "@/lib/rbac";
 
 export async function GET(req: NextRequest) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const category = req.nextUrl.searchParams.get("category");
   const where = category ? { category } : {};
   const codes = await prisma.roboDelayCode.findMany({
@@ -12,6 +15,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: Request) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const { code, description, category, isRobotSpecific } = await req.json();
   if (!code?.trim() || !description?.trim() || !category?.trim()) {
     return NextResponse.json(

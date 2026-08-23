@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { roboGate } from "@/lib/rbac";
 
 export async function GET(_: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const { id } = await params;
   const shift = await prisma.roboShift.findUnique({
     where: { id },
@@ -16,6 +19,8 @@ export async function GET(_: NextRequest, { params }: { params: Promise<{ id: st
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const { id } = await params;
   const body = await req.json();
   const data: Record<string, unknown> = {};

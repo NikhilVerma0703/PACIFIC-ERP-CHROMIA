@@ -8,6 +8,7 @@
  *   force=false → only send milestones not yet sent (same logic as the daily cron)
  */
 import { salesAuth as auth } from "@/lib/sales/session";
+import { assertOrderVisible } from "@/lib/sales/ownership";
 import { NextResponse } from "next/server";
 import { sendSingleDivisionReminder } from "@/lib/sales/paymentReminderJob";
 
@@ -25,6 +26,8 @@ export async function POST(
   }
 
   const { id: orderId } = await params;
+  const refused = await assertOrderVisible(session.user, orderId);
+  if (refused) return refused;
   const { divisionId, force = false, milestone } = await req.json() as { divisionId: string; force?: boolean; milestone?: string };
 
   if (!divisionId) return NextResponse.json({ error: "divisionId required" }, { status: 400 });

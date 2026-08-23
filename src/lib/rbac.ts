@@ -5,53 +5,18 @@ import { sessionUserRow } from "@/lib/sessionRevalidation";
 // Role hierarchy: ROLE_RANK/rankOf moved to lib/roles.ts (a pure, import-free
 // module) so node --test can reach them — imported AND re-exported here so
 // every existing `from "@/lib/rbac"` import keeps working unchanged.
-import { ROLE_RANK, rankOf } from "@/lib/roles";
-import type { RoleName } from "@/lib/roles";
-export { ROLE_RANK, rankOf };
+import { ROLE_RANK, rankOf, STATIONS, STATION_LABEL, ROLE_LABEL, FAB_ROLE_LABEL, roleLabelFor } from "@/lib/roles";
+import type { RoleName, StationName } from "@/lib/roles";
+export { ROLE_RANK, rankOf, STATIONS, STATION_LABEL, ROLE_LABEL, FAB_ROLE_LABEL, roleLabelFor };
 // Imported as well as re-exported: `export type { RoleName } from ...` alone
 // forwards the name to importers without binding it locally, so creatableRoles
 // below could not see it and the whole app failed to typecheck.
-export type { RoleName };
-export type StationName =
-  | "PRESS" | "OVEN" | "JOT" | "MIXER" | "KREOS"
-  | "DISTRIBUTOR" | "SILO" | "POLISH_QC" | "POLISH_ENTRY" | "CUTTING";
-
-export const STATIONS: StationName[] = ["PRESS", "OVEN", "JOT", "MIXER", "KREOS", "DISTRIBUTOR", "SILO", "POLISH_QC", "POLISH_ENTRY", "CUTTING"];
-export const STATION_LABEL: Record<string, string> = {
-  PRESS: "Press", OVEN: "Oven", JOT: "Jot", MIXER: "Mixer", KREOS: "Kreos",
-  DISTRIBUTOR: "Distributor", SILO: "Silo", POLISH_QC: "Polish QC", POLISH_ENTRY: "Polish Entry", CUTTING: "Cutting",
-};
-
-export const ROLE_LABEL: Record<string, string> = {
-  OPERATOR: "Operator", INCHARGE: "Incharge", LINE_MANAGER: "Line Manager", ADMIN: "Administrator",
-  FINANCE: "Finance", ACCOUNTS: "Accounts", SALES: "Sales", COMMERCIAL: "Commercial", STORE: "Store Incharge", MAINTENANCE: "Maintenance Manager",
-  ROBO: "Robo Operator",
-  CHROMIA: "Chromia Operator",
-};
-
-/** Fabrication shares the ONE role hierarchy with Shop Floor (LINE_MANAGER /
- * INCHARGE / OPERATOR — see lib/fab/access.ts's fabTierOf: there is no
- * parallel fabRole field), but the generic ROLE_LABEL names ("Line Manager",
- * "Incharge", "Operator") don't read as fabrication-specific anywhere the
- * role is displayed — most visibly in Users & Roles, where an admin picking
- * the Fabrication department couldn't find "Fabrication Manager" /
- * "Fabrication Supervisor" / "Fabrication Machine Operator" by name. This
- * gives the SAME underlying roles department-appropriate display names
- * without introducing a second role system or touching the Role enum/DB. */
-export const FAB_ROLE_LABEL: Record<string, string> = {
-  LINE_MANAGER: "Fabrication Manager",
-  INCHARGE: "Fabrication Supervisor",
-  OPERATOR: "Fabrication Machine Operator",
-};
-/** Role label, department-aware: Fabrication uses its own label map for the
- * roles it shares with Shop Floor; every other branch (and any role with no
- * department-specific name) falls back to the generic ROLE_LABEL. */
-export function roleLabelFor(role?: string | null, branch?: string | null): string {
-  const r = String(role ?? "");
-  if (branch === "FABRICATION" && FAB_ROLE_LABEL[r]) return FAB_ROLE_LABEL[r];
-  return ROLE_LABEL[r] ?? r;
-}
-
+export type { RoleName, StationName };
+// The station and role LABEL tables moved to lib/roles.ts with the rank table,
+// for a second reason beyond testability: the one client component that needs
+// them (Users & Roles) imported them from here, and this module imports
+// @/auth — so next-auth, jose, bcryptjs, zod, a crypto polyfill and the Prisma
+// browser stub (≈240 kB gzipped) shipped to that page for four string tables.
 /** `auth()` once per request. Every `auth()` call runs the jwt callback, which
  * revalidates the User row — so Shell calling `auth()` AND `currentUser()` (which
  * called `auth()` again) paid the jwt-callback query twice per navigation
@@ -269,6 +234,36 @@ export async function canDeleteRoboSlab(): Promise<boolean> {
 export async function canEditRoboSetup(): Promise<boolean> {
   const role = await currentRole();
   return role === "ROBO" || rankOf(role) >= ROLE_RANK.ADMIN;
+}
+
+/**
+ * The in-route gate for EVERY /api/robo handler — the same shape as fabGate
+ * (lib/fab/access.ts) and chromiaGate (lib/chromia/access.ts), and admitting
+ * exactly the set middleware already admits to /robo and /api/robo: the ROBO
+ * tablet and admins. It turns no valid session away that reaches the route
+ * today, so every robo screen keeps working unchanged.
+ *
+ * It exists because middleware was the ONLY lock on 33 of these routes, and
+ * middleware runs the edge auth config WITHOUT the database: a login that has
+ * been deactivated, or whose sessionVersion was bumped to sign it out
+ * everywhere, kept a valid JWT working against /api/robo for the rest of the
+ * 8-hour token life, while every other module refused it at once through
+ * currentUser(). The revocation is the documented point of sessionVersion; a
+ * module it does not reach is a module it does not protect. The gate also
+ * makes the route its own boundary for the day the matcher or a branch block
+ * is edited — the three-layer rule every other module follows.
+ *
+ * Returns a ready refusal (401 no session · 403 not the robo audience) or
+ * null, so a handler adds two lines and nothing else. ROBO is named rather
+ * than ranked for the reason canDeleteRoboSlab gives: the capped role sits at
+ * rank 1, below every rank test.
+ */
+export async function roboGate(): Promise<Response | null> {
+  const user = await currentUser();
+  if (!user) return Response.json({ error: "Please sign in." }, { status: 401 });
+  const role = String((user as { role?: string | null }).role ?? "");
+  if (role === "ROBO" || rankOf(role) >= ROLE_RANK.ADMIN) return null;
+  return Response.json({ error: "Not authorized" }, { status: 403 });
 }
 
 /** Maintenance Manager or admin may fill the maintenance response on a downtime incident. */

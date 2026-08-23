@@ -1,13 +1,24 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { parseRegister } from "@/lib/robo/importRegister";
+import { roboGate } from "@/lib/rbac";
 
 /** POST /api/robo/imports/preview — parse and validate a register without writing anything. */
 export async function POST(req: Request) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const form = await req.formData();
   const file = form.get("file");
   if (!(file instanceof File)) {
     return NextResponse.json({ error: "No workbook uploaded." }, { status: 400 });
+  }
+  // Same size and name checks as the import itself (see imports/route.ts for
+  // why): the preview parses the whole workbook in memory too.
+  if (file.size > 10 * 1024 * 1024) {
+    return NextResponse.json({ error: "File too large (max 10 MB)." }, { status: 413 });
+  }
+  if (!/\.(xlsx|xlsm|xls)$/i.test(file.name ?? "")) {
+    return NextResponse.json({ error: "Only an Excel workbook (.xlsx / .xls) is accepted here." }, { status: 415 });
   }
 
   const buf = Buffer.from(await file.arrayBuffer());

@@ -5,6 +5,7 @@
  * Returns 404 if no measurement list has been uploaded yet.
  */
 import { salesAuth as auth } from "@/lib/sales/session";
+import { assertOrderVisible } from "@/lib/sales/ownership";
 import { prisma } from "@/lib/prisma";
 
 const db = prisma as any;
@@ -17,6 +18,8 @@ export async function GET(
   if (!session?.user) return new Response("Unauthorized", { status: 401 });
 
   const { id } = await params;
+  const refused = await assertOrderVisible(session.user, id);
+  if (refused) return refused;
 
   const rows: any[] = await db.$queryRaw`
     SELECT measurement_list_upload

@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { roboGate } from "@/lib/rbac";
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const { id } = await params;
   const body = await req.json();
   const data = await prisma.roboMachine.update({ where: { id }, data: body });
@@ -12,6 +15,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
  * it instead.
  */
 export async function DELETE(_: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const { id } = await params;
 
   const [entries, delays] = await Promise.all([

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { delayProductionDateOf, productionDateOf } from "@/lib/robo/productionDate";
+import { roboGate } from "@/lib/rbac";
 
 function pad(n: number): string { return String(n).padStart(2, "0"); }
 
@@ -36,6 +37,8 @@ function shiftMinutes(startTime: string, endTime: string | null, status: string,
  * exactly what it always was.
  */
 export async function GET(req: NextRequest) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const raw = Number(req.nextUrl.searchParams.get("days"));
   const days = Math.min(Math.max(Number.isFinite(raw) && raw > 0 ? raw : 7, 1), 90);
 

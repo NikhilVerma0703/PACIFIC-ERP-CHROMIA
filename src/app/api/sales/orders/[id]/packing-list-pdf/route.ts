@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { salesAuth as auth } from "@/lib/sales/session";
+import { assertOrderVisible } from "@/lib/sales/ownership";
 import { prisma } from "@/lib/prisma";
 import { generatePackingListPdf } from "@/lib/sales/pdf/packingListPdf";
 
@@ -9,6 +10,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const session = await auth();
   if (!session?.user) return new Response("Unauthorized", { status: 401 });
   const { id } = await params;
+  const refused = await assertOrderVisible(session.user, id);
+  if (refused) return refused;
   try {
     // Check for a manually-uploaded packing list first
     const rows: any[] = await db.$queryRaw`

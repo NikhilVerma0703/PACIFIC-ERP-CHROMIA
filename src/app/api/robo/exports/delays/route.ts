@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { fmtDurationLong, machineLabel } from "@/lib/robo/utils";
 import { delayGrandTotal, delayTotalsByDate } from "@/lib/robo/delayTotals";
 import { delayProductionDateOf, delayProductionDateWhere } from "@/lib/robo/productionDate";
+import { roboGate } from "@/lib/rbac";
 
 const COLUMNS = [
   "S.No.", "Production Date", "Shift", "Delay Code", "Description", "Category",
@@ -18,6 +19,8 @@ const dash = (v: string | number | null | undefined) =>
 
 /** GET /api/robo/exports/delays?date=YYYY-MM-DD — omit date for every delay to date. */
 export async function GET(req: NextRequest) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const date = req.nextUrl.searchParams.get("date")?.trim() || "";
 
   const fetched = await prisma.roboDelayLog.findMany({

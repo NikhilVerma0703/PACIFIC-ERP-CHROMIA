@@ -298,6 +298,9 @@ const PRESET_OPTIONS: Record<string, string[]> = {
 const OPT_TTL_MS = 5 * 60_000;
 const _optCache = new Map<string, { at: number; data: Record<string, string[]> }>();
 
+/** The shape of every table and column name in scripts/fieldmap.json. */
+const SQL_IDENT = /^[a-z0-9_]+$/;
+
 export async function selectOptions(model: string): Promise<Record<string, string[]>> {
   const meta = tableMeta(model);
   if (!meta) return {};
@@ -351,6 +354,14 @@ export async function selectOptions(model: string): Promise<Record<string, strin
         const rows: Record<string, unknown>[] = await d.findMany({ where: { [f.prismaField]: { not: null } }, select: { [f.prismaField]: true }, distinct: [f.prismaField], take: 500 });
         mergeSingle(f.prismaField, rows.map((r) => r[f.prismaField]));
       } else if (isMulti(f) && meta.tableMap && f.column) {
+        // The column and table names are INTERPOLATED into the SQL, not bound:
+        // Postgres cannot take an identifier as a parameter. They come from
+        // scripts/fieldmap.json, where every one of them is snake_case today,
+        // so this guard rejects nothing that exists - it only makes sure a
+        // future fieldmap edit that slips a quote into a name skips the field
+        // (exactly what the catch below does for a failed query) instead of
+        // reaching Postgres as SQL.
+        if (!SQL_IDENT.test(f.column) || !SQL_IDENT.test(meta.tableMap)) return;
         // distinct values computed in the DB (covers the whole table, returns a handful of rows)
         const rows: { v: unknown }[] = await db.$queryRawUnsafe(`SELECT DISTINCT unnest("${f.column}") AS v FROM "${meta.tableMap}" LIMIT 500`);
         mergeMulti(f.prismaField, rows.map((r) => r.v));

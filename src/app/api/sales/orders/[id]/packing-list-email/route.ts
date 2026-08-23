@@ -7,6 +7,7 @@
  * GET   => Returns current packing list status record.
  */
 import { salesAuth as auth } from "@/lib/sales/session";
+import { assertOrderVisible } from "@/lib/sales/ownership";
 import { prisma }                 from "@/lib/prisma";
 import { NextResponse }           from "next/server";
 import { getCCList }              from "@/lib/sales/mailHelpers";
@@ -29,6 +30,8 @@ export async function GET(
   const session = await auth();
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
+  const refused = await assertOrderVisible(session.user, id);
+  if (refused) return refused;
   const pl = await getPackingList(id);
   return NextResponse.json(pl || { status: "PENDING_SEND", orderId: id });
 }
@@ -41,6 +44,8 @@ export async function POST(
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
+  const refused = await assertOrderVisible(session.user, id);
+  if (refused) return refused;
 
   const order = await db.salesOrder.findUnique({
     where: { id },
@@ -152,6 +157,8 @@ export async function PATCH(
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
+  const refused = await assertOrderVisible(session.user, id);
+  if (refused) return refused;
   const body = await req.json() as {
     action: "accept" | "reject";
     reason?: string;

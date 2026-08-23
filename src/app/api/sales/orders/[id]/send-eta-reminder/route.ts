@@ -4,6 +4,7 @@
  * Manually send an ETA reminder email to the client for testing.
  */
 import { salesAuth as auth } from "@/lib/sales/session";
+import { assertOrderVisible } from "@/lib/sales/ownership";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 import { sendMail } from "@/lib/sales/mailer";
@@ -23,6 +24,8 @@ export async function POST(
   if (!salesRole && sysRole !== "ADMIN") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const { id } = await params;
+  const refused = await assertOrderVisible(session.user, id);
+  if (refused) return refused;
 
   const order = await db.salesOrder.findUnique({
     where: { id },

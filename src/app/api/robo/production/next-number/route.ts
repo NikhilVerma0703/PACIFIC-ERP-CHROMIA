@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { latestNumericSlab, nextSerialNumber, nextSlabNumber } from "@/lib/robo/nextNumbers";
+import { roboGate } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +27,8 @@ export const dynamic = "force-dynamic";
  * Read-only, and gated by middleware's /api/robo rule like every other route here.
  */
 export async function GET() {
+  const refused = await roboGate();
+  if (refused) return refused;
   const [agg, recent] = await Promise.all([
     prisma.roboProductionRecord.aggregate({ _max: { serialNumber: true } }),
     prisma.roboProductionRecord.findMany({

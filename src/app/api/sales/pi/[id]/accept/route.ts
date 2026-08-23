@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { salesAuth as auth } from "@/lib/sales/session";
+import { assertPiVisible } from "@/lib/sales/ownership";
 import { prisma } from "@/lib/prisma";
 import { generateOrderNumber } from "@/lib/sales/orderNumber";
 
@@ -11,6 +12,8 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
 
   const userId = (session.user as any).id as string;
   const { id } = await params;
+  const refused = await assertPiVisible(session.user, id);
+  if (refused) return refused;
 
   const pi = await db.proformaInvoice.findUnique({ where: { id } });
   if (!pi)                  return Response.json({ error: "Not found" }, { status: 404 });

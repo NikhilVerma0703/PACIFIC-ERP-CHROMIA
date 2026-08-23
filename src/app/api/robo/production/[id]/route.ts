@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { canDeleteRoboSlab } from "@/lib/rbac";
+import { canDeleteRoboSlab, roboGate } from "@/lib/rbac";
 import { logActionTx } from "@/lib/actionLog";
 import { SLAB_COMPLETED, SLAB_IN_PROCESSING } from "@/lib/robo/utils";
 
 export async function GET(_: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const { id } = await params;
   const record = await prisma.roboProductionRecord.findUnique({
     where: { id },
@@ -29,6 +31,8 @@ export async function GET(_: NextRequest, { params }: { params: Promise<{ id: st
  * from the GET the same operator legitimately makes.
  */
 export async function DELETE(_: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const { id } = await params;
 
   if (!(await canDeleteRoboSlab())) {
@@ -85,6 +89,8 @@ export async function DELETE(_: NextRequest, { params }: { params: Promise<{ id:
  * `delays` appends new delay logs; existing ones are left untouched.
  */
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const { id } = await params;
   const body = await req.json();
 

@@ -13,10 +13,60 @@
  * Uses raw SQL throughout — columns were added via migrations, not all in Prisma schema.
  */
 import { salesAuth as auth } from "@/lib/sales/session";
+import { assertOrderVisible } from "@/lib/sales/ownership";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 
 const db = prisma as any;
+
+// ── What may be stored ──────────────────────────────────────────────────────
+// Everything this route writes ends up in Neon as text/jsonb and is later
+// served as a PDF (packing-list-pdf, measurement-list-pdf, the merge in
+// generate-invoice), mailed as a PDF attachment (sendShippingDocsEmail) or
+// mailed as an image (dispatch-email). Nothing checked the payload before it
+// was written: any string landed in a document column, any JSON in the photo
+// array, and the only size limit was the platform's request ceiling — an
+// unbounded base64 column is direct storage cost.
+//
+// The UI sends FileReader data: URLs — application/pdf for the five document
+// slots (their pickers accept only PDFs, and a non-PDF there is already a
+// broken attachment downstream) and image/* for stuffing photos (any image
+// subtype: phones hand over JPEG, PNG, HEIC, WebP). So a document must be a
+// PDF data: URL, a photo an image data: URL — or an http(s) URL, which older
+// rows still carry and a reorder echoes back — each under the 10 MB decoded
+// ceiling every other upload in the repo uses (lib/fab/poPdf.ts, the OCR and
+// Chromia intakes). Real uploads are far smaller: Vercel's ~4.5 MB request
+// limit already bounds what reaches this handler, so nothing that uploads
+// today is refused; only what no real user sends is.
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const isPdfMime   = (m: string) => m === "application/pdf" || m === "application/x-pdf";
+const isImageMime = (m: string) => m.startsWith("image/");
+
+/** Decoded byte size of a data: URL whose MIME passes `mimeOk`; null when it is
+ *  not such a URL. base64 is what FileReader emits; a plain data: URL is sized as-is. */
+function dataUrlBytes(s: string, mimeOk: (mime: string) => boolean): number | null {
+  const m = /^data:([^;,]+)(;[^,]*)?,/i.exec(s);
+  if (!m || !mimeOk(m[1].toLowerCase())) return null;
+  const body = s.length - m[0].length;
+  return /;base64/i.test(m[2] ?? "") ? Math.floor((body * 3) / 4) : body;
+}
+
+type Photo = { url: string; filename?: string; caption?: string };
+
+/** The photo an element may be stored as, or the reason it may not. */
+function checkPhoto(p: unknown): { ok: true; photo: Photo } | { ok: false; error: string } {
+  if (!p || typeof p !== "object") return { ok: false, error: "Each photo must be an object with a url." };
+  const { url, filename, caption } = p as Record<string, unknown>;
+  if (typeof url !== "string" || !url) return { ok: false, error: "Photo url is required." };
+  if (!/^https?:\/\//i.test(url)) {
+    const bytes = dataUrlBytes(url, isImageMime);
+    if (bytes === null) return { ok: false, error: "Stuffing photos must be images." };
+    if (bytes > MAX_UPLOAD_BYTES) return { ok: false, error: "Photo too large (max 10 MB)." };
+  }
+  if (filename !== undefined && (typeof filename !== "string" || filename.length > 255)) return { ok: false, error: "Photo filename must be a string of at most 255 characters." };
+  if (caption !== undefined && (typeof caption !== "string" || caption.length > 500)) return { ok: false, error: "Photo caption must be a string of at most 500 characters." };
+  return { ok: true, photo: { url, ...(typeof filename === "string" ? { filename } : {}), ...(caption ? { caption: caption as string } : {}) } };
+}
 
 export async function GET(
   _req: Request,
@@ -26,6 +76,8 @@ export async function GET(
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
+  const refused = await assertOrderVisible(session.user, id);
+  if (refused) return refused;
 
   const [rows, piRows]: [any[], any[]] = await Promise.all([
     db.$queryRaw`
@@ -60,6 +112,8 @@ export async function PATCH(
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
+  const refused = await assertOrderVisible(session.user, id);
+  if (refused) return refused;
   const body = await req.json() as { type: string; data: any };
   const { type, data } = body;
 
@@ -70,6 +124,36 @@ export async function PATCH(
   ];
   if (!validTypes.includes(type)) {
     return NextResponse.json({ error: `Unknown type: ${type}` }, { status: 400 });
+  }
+
+  // Validate BEFORE the upsert below creates a row (the order itself is known
+  // to exist — assertOrderVisible above answered 404 otherwise).
+  const isDocumentType = ["packingList", "measurementList", "blDoc", "fumigationCert", "bankDetails"].includes(type);
+  const documentData: string | null = isDocumentType && data != null && data !== "" ? data : null;
+  if (isDocumentType && data != null && data !== "") {
+    if (typeof data !== "string") return NextResponse.json({ error: "Document must be a data: URL." }, { status: 400 });
+    const bytes = dataUrlBytes(data, isPdfMime);
+    if (bytes === null) return NextResponse.json({ error: "Only a PDF is accepted here." }, { status: 415 });
+    if (bytes > MAX_UPLOAD_BYTES) return NextResponse.json({ error: "File too large (max 10 MB)." }, { status: 413 });
+  }
+  let photoIn: Photo | null = null;
+  if (type === "photoAppend") {
+    const c = checkPhoto(data);
+    if (!c.ok) return NextResponse.json({ error: c.error }, { status: 400 });
+    photoIn = c.photo;
+  }
+  let photosIn: Photo[] | null = null;
+  if (type === "photoReorder") {
+    if (!Array.isArray(data)) return NextResponse.json({ error: "photoReorder expects the full photo array." }, { status: 400 });
+    photosIn = [];
+    for (const el of data) {
+      const c = checkPhoto(el);
+      if (!c.ok) return NextResponse.json({ error: c.error }, { status: 400 });
+      photosIn.push(c.photo);
+    }
+  }
+  if (type === "photoRemove" && (!Number.isInteger(Number(data)) || Number(data) < 0)) {
+    return NextResponse.json({ error: "photoRemove expects the index to remove." }, { status: 400 });
   }
 
   // Ensure a sales_shipment_docs row exists for this order
@@ -91,7 +175,7 @@ export async function PATCH(
     const col = colMap[type];
     await db.$queryRawUnsafe(
       `UPDATE sales_shipment_docs SET ${col} = $1, updated_at = now() WHERE order_id = $2`,
-      data ?? null, id
+      documentData, id
     );
 
     // After uploading a shipping doc, check if auto-send trigger conditions are met
@@ -119,8 +203,8 @@ export async function PATCH(
 
   // ── Stuffing photos (JSONB array operations) ────────────────────────────────
   if (type === "photoAppend") {
-    // data = { url: string, filename: string, caption?: string }
-    const photo = { url: data.url, filename: data.filename, ...(data.caption ? { caption: data.caption } : {}) };
+    // data = { url: string, filename: string, caption?: string } — checked above
+    const photo = photoIn as Photo;
     await db.$queryRawUnsafe(
       `UPDATE sales_shipment_docs
        SET stuffing_photos = COALESCE(stuffing_photos, '[]'::jsonb) || $1::jsonb,
@@ -155,12 +239,13 @@ export async function PATCH(
   }
 
   if (type === "photoReorder") {
-    // data = full reordered Photo[] array
+    // data = full reordered Photo[] array — checked above, stored as {url, filename, caption?} only
+    const photos = photosIn as Photo[];
     await db.$queryRawUnsafe(
       `UPDATE sales_shipment_docs SET stuffing_photos = $1::jsonb, updated_at = now() WHERE order_id = $2`,
-      JSON.stringify(data), id
+      JSON.stringify(photos), id
     );
-    return NextResponse.json({ ok: true, photos: data });
+    return NextResponse.json({ ok: true, photos });
   }
 
   return NextResponse.json({ error: "Unhandled type" }, { status: 400 });

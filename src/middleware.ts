@@ -1,13 +1,16 @@
 import NextAuth from "next-auth";
 import { authConfig } from "./auth.config";
-import { storeMayVisit, operatorMayVisit, maintenanceMayVisit, homeFor } from "./lib/routeCaps.ts";
+import { storeMayVisit, operatorMayVisit, maintenanceMayVisit, homeFor, isPublicAsset } from "./lib/routeCaps.ts";
 
 // Edge-safe middleware (Prisma-free config). IMPORTANT: with the auth(fn)
 // wrapper form, Auth.js does NOT auto-redirect — ALL gating is explicit here.
 const { auth } = NextAuth(authConfig);
 
 const CANONICAL_HOST = "erp.pacific-surfaces.com";
-const STATIC_FILE = /\.(png|jpg|jpeg|svg|webp|ico|webmanifest|txt|xml)$/;
+// What is served without a session lives in lib/routeCaps (isPublicAsset), an
+// exact allowlist of the files in public/. The extension regex that used to
+// sit here said "anything ending in .png" and thereby let /api/robo/x.png or
+// /tables/Press.png past both gates; see the note on isPublicAsset.
 
 /**
  * Refuse a page, and SAY SO.
@@ -70,7 +73,7 @@ export default auth((req) => {
     p.startsWith("/api/telegram/webhook") ||  // Telegram-only: gated by webhook secret inside
     p.startsWith("/api/sales/cron") ||        // cron-only: gated by CRON_SECRET inside
     p.startsWith("/api/report/daily-email") || // cron-only: gated by CRON_SECRET inside
-    STATIC_FILE.test(p);
+    isPublicAsset(p);
   if (isPublic) return;
 
   // 3) everything else requires a session
@@ -226,7 +229,7 @@ export default auth((req) => {
     // scripts/0046-migrate-chromia-branch-users.sql moves it onto the role.
     // Remove it, the escape in auth.config.ts, the branch arm in Nav.tsx and
     // the one in lib/chromia/tier.ts together, once that has run.
-    const ok = p.startsWith("/chromia") || p.startsWith("/api/chromia") || STATIC_FILE.test(p);
+    const ok = p.startsWith("/chromia") || p.startsWith("/api/chromia") || isPublicAsset(p);
     if (!ok) {
       return denied(p, nextUrl, role ?? "", branch ?? "");
     }
@@ -258,7 +261,7 @@ export default auth((req) => {
     }
     // fab MANAGER (LINE_MANAGER) / SUPERVISOR (INCHARGE): any fab page + Overview.
     // Where each of them LANDS now lives in homeFor(), which denied() calls.
-    const ok = fabPath || p === "/" || STATIC_FILE.test(p);
+    const ok = fabPath || p === "/" || isPublicAsset(p);
     if (!ok) return denied(p, nextUrl, role ?? "", branch ?? "");
     return;
   }
@@ -269,7 +272,7 @@ export default auth((req) => {
   if (!isAdmin && branch === "INTERNATIONAL_SALES") {
     // International Sales staff: sales pages + API only — never production/office pages.
     if (p.startsWith("/api")) return;
-    const ok = p.startsWith("/sales") || p.startsWith("/admin/users") || STATIC_FILE.test(p); // Users&Roles reachable; its own gate keeps it SALES_ADMIN-only
+    const ok = p.startsWith("/sales") || p.startsWith("/admin/users") || isPublicAsset(p); // Users&Roles reachable; its own gate keeps it SALES_ADMIN-only
     if (!ok) return denied(p, nextUrl, role ?? "", branch ?? "");
     return;
   }
@@ -313,10 +316,10 @@ export default auth((req) => {
     //
     // Middleware is NOT the boundary for what IS granted: server actions POST to
     // those same routes, so the actions gate themselves on canRectify()
-    // (rank >= INCHARGE), which COMMERCIAL (rank 1) fails. One exception worth
-    // knowing: pendingRmAllocation (rmHealActions.ts) carries no gate and returns a
-    // count to any signed-in caller — blocking the route is what keeps it away from
-    // Commercial, so do not treat the action gates as complete on their own.
+    // (rank >= INCHARGE), which COMMERCIAL (rank 1) fails. pendingRmAllocation
+    // (rmHealActions.ts) was the one exception — it returned a count to any
+    // signed-in caller and only this route block kept it from Commercial; it now
+    // carries the same canRectify() gate as its siblings and answers 0 otherwise.
     // under() is exact-or-subpath so a future /reports or /batches cannot be opened
     // by accident; note the /api clause above is a bare prefix and is not.
     const under = (base: string) => p === base || p.startsWith(base + "/");
@@ -361,19 +364,26 @@ export default auth((req) => {
 });
 
 export const config = {
-  // Skip Next internals AND static-asset extensions. The extension list is the
-  // SAME one STATIC_FILE and auth.config treat as public, so excluding it here
-  // changes no decision - it only stops paying an edge invocation to reach a
+  // Skip Next internals AND the real static files in public/ - the SAME exact
+  // list isPublicAsset (lib/routeCaps) treats as public, so excluding them here
+  // changes no decision: it only stops paying an edge invocation to reach a
   // check that always answers "public". Production logs showed ~20,000 icon and
   // manifest requests in 48 hours, every one of them running this middleware
-  // for nothing. The in-code STATIC_FILE check STAYS, deliberately: if this
+  // for nothing. The in-code isPublicAsset check STAYS, deliberately: if this
   // matcher ever misses a static path, the code still excludes it, so the two
-  // can only fail safe. THE DOT IS DOUBLE-ESCAPED (\\.) because this is a JS
-  // string: a single \. collapses to a bare dot, which matches ANY character -
-  // so the exclusion would swallow every path merely ENDING in these letters,
-  // /chico or /robo/slabs/x7svg included, and an excluded path skips BOTH auth
-  // gates at once. The review caught exactly that. (The old matcher skipped Next internals only, with the
-  // note that code is more reliable than matcher regex - that note is still
-  // true, which is why the code check is kept rather than replaced.)
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|svg|webp|ico|webmanifest|txt|xml)$).*)"],
+  // can only fail safe.
+  //
+  // It used to exclude `.*\\.(?:png|jpg|...)$` - ANY path ending in a static
+  // extension - and an excluded path runs neither this middleware nor the
+  // authorized() callback. /api/robo/shifts/55.png, /tables/Press.png, /silo/5.png
+  // therefore reached their handlers with no session at all; only the handlers'
+  // own misses on "55.png" kept it inert. Each file is now named, anchored at
+  // both ends (the `$` inside the lookahead, as before - the two _next prefixes
+  // are the only open-ended ones), with its dot DOUBLE-ESCAPED (\\.) because
+  // this is a JS string: a single \. collapses to a bare dot that matches any
+  // character. A file added to public/ later goes here AND in PUBLIC_ASSET
+  // (routeCaps.ts) - the test in tests/publicAssets.test.ts holds the two to the
+  // same list. This is a string literal because Next reads it at build time; it
+  // cannot call the function.
+  matcher: ["/((?!_next/static|_next/image|(?:favicon\\.ico|apple-touch-icon\\.png|icon-[\\w-]+\\.png|logo-[\\w-]+\\.png|manifest\\.webmanifest)$).*)"],
 };

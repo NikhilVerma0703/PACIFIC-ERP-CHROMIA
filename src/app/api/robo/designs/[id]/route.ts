@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { roboGate } from "@/lib/rbac";
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const { id } = await params;
   const data = await prisma.roboDesign.update({ where: { id }, data: await req.json() });
   return NextResponse.json(data);
@@ -30,6 +33,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
  * would lose information the empty-setup case does not.
  */
 export async function DELETE(_: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const { id } = await params;
 
   const setups = await prisma.roboBatchRecipe.findMany({ where: { designId: id }, select: { id: true } });

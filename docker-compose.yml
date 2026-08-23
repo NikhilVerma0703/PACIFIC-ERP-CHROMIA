@@ -5,7 +5,14 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: pacific
-      POSTGRES_PASSWORD: pacific
+      # Local-dev password, read from the POSTGRES_PASSWORD variable (compose
+      # loads ./.env automatically). It used to be a literal committed here; a
+      # password in git is a habit this repo does not want even for a dev box.
+      # Set it ONCE in .env, and use the same value in your local DATABASE_URL:
+      #   POSTGRES_PASSWORD=<anything>
+      # (.env.example cannot carry the note: .gitignore's `.env*` rule ignores
+      # it.) An existing ./pgdata volume keeps the password it was created with.
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set (add it to .env, it is the local dev database password)}"
       POSTGRES_DB: pacific_erp
     ports:
       - "5432:5432"

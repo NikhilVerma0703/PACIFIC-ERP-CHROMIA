@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { delayProductionDateWhere, productionDateWhere } from "@/lib/robo/productionDate";
+import { roboGate } from "@/lib/rbac";
 
 /** The four robots on the line, in physical order. */
 const ROBOTS = [
@@ -45,6 +46,8 @@ function shiftMinutes(startTime: string, endTime: string | null, status: string,
  * off and picking the typing date offered an empty workbook.
  */
 export async function GET(req: NextRequest) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const date = req.nextUrl.searchParams.get("date")?.trim() || "";
   const now = new Date();
   const nowMins = now.getHours() * 60 + now.getMinutes();

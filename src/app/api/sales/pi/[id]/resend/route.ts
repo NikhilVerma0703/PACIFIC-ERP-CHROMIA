@@ -5,6 +5,7 @@
  * Sets status back to SENT, marks the latest revision as sentAt, sends email directly.
  */
 import { salesAuth as auth } from "@/lib/sales/session";
+import { assertPiVisible } from "@/lib/sales/ownership";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 import { sendMail } from "@/lib/sales/mailer";
@@ -24,6 +25,8 @@ export async function POST(
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
+  const refused = await assertPiVisible(session.user, id);
+  if (refused) return refused;
 
   const pi = await db.proformaInvoice.findUnique({
     where: { id },

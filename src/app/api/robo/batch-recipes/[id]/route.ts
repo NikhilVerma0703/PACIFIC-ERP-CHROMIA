@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { canEditRoboSetup } from "@/lib/rbac";
+import { canEditRoboSetup, roboGate } from "@/lib/rbac";
 import {
   carryEntryNotes,
   entryCreateData,
@@ -11,6 +11,8 @@ import {
 import { registerTypedMasters, resolveDesignId } from "@/lib/robo/setupMastersDb";
 
 export async function GET(_: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const { id } = await params;
   const data = await prisma.roboBatchRecipe.findUnique({
     where: { id },
@@ -71,6 +73,8 @@ export async function GET(_: NextRequest, { params }: { params: Promise<{ id: st
  * sends it any more.
  */
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const { id } = await params;
   const body = await req.json();
 

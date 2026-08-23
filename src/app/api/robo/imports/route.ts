@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { currentUser } from "@/lib/rbac";
+import { currentUser, roboGate } from "@/lib/rbac";
 import { parseRegister, setupKey, soleSetupDesign, ParsedRow } from "@/lib/robo/importRegister";
 
 export async function GET() {
+  const refused = await roboGate();
+  if (refused) return refused;
   try {
     const logs = await prisma.roboImportLog.findMany({ orderBy: { createdAt: "desc" }, take: 20 });
     return NextResponse.json({ ready: true, logs });
@@ -15,12 +17,27 @@ export async function GET() {
 
 /** POST /api/robo/imports — parse the register and write shifts, setups and slab records. */
 export async function POST(req: Request) {
+  const refused = await roboGate();
+  if (refused) return refused;
   const form = await req.formData();
   const file = form.get("file");
   const period = (form.get("period") as string | null)?.trim() || null;
 
   if (!(file instanceof File)) {
     return NextResponse.json({ error: "No workbook uploaded." }, { status: 400 });
+  }
+  // The whole file is read into memory and handed to the XLSX parser, so it is
+  // sized and named first — the 10 MB ceiling every other intake uses (OCR,
+  // the fab PO PDF, the Chromia register). A real register is well under a
+  // megabyte; anything near the cap is the wrong file, and a crafted workbook
+  // can inflate far beyond its byte size inside the parser. The name is checked
+  // because the browser's MIME for spreadsheets is unreliable (often blank or
+  // octet-stream); the picker on the import page already limits to .xlsx/.xls.
+  if (file.size > 10 * 1024 * 1024) {
+    return NextResponse.json({ error: "File too large (max 10 MB)." }, { status: 413 });
+  }
+  if (!/\.(xlsx|xlsm|xls)$/i.test(file.name ?? "")) {
+    return NextResponse.json({ error: "Only an Excel workbook (.xlsx / .xls) is accepted here." }, { status: 415 });
   }
 
   const u = await currentUser();
