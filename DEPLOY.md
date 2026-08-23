@@ -47,7 +47,8 @@ git push -u origin main
 ### 4. Vercel
 1. https://vercel.com/new → import the repo.
 2. **Environment Variables** (Project → Settings → Environment Variables):
-   - `DATABASE_URL` = Neon pooled URL
+   - `DATABASE_URL` = Neon URL (direct is fine for migrations)
+   - `DATABASE_URL_POOLED` = the same URL on the `-pooler` host — the app prefers it when set (src/lib/prisma.ts); that is what keeps Neon connection time down under load
    - `AUTH_SECRET` = output of `npx auth secret`
    - `AUTH_URL` = your production URL (e.g. `https://pacific-erp.vercel.app`)
    - `AIRTABLE_PAT`, `AIRTABLE_BASE_ID` (for sync)

@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { salesAuth as auth } from "@/lib/sales/session";
 import { prisma } from "@/lib/prisma";
+import { assertOrderVisible } from "@/lib/sales/ownership";
 import { NextResponse } from "next/server";
 import { getSpMap } from "@/lib/sales/spLookup";
 
@@ -130,6 +131,10 @@ export async function POST(req: Request) {
   if (body.amount === undefined || body.amount === null || body.amount < 0)
     return NextResponse.json({ error: "amount must be >= 0" }, { status: 400 });
 
+  // Same rule as reading the order: a credit note is raised only on an order
+  // the caller may see (404 for a missing one, 403 for another salesperson's).
+  const refused = await assertOrderVisible(session.user, body.orderId);
+  if (refused) return refused;
   const order = await db.salesOrder.findUnique({ where: { id: body.orderId } });
   if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
 

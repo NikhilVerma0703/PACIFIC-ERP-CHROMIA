@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { salesAuth as auth } from "@/lib/sales/session";
 import { prisma } from "@/lib/prisma";
+import { assertPiVisible } from "@/lib/sales/ownership";
 import { generateOrderNumber } from "@/lib/sales/orderNumber";
 import { getAssignedSpIds } from "@/lib/sales/rmScope";
 import { getSp, getSpMap } from "@/lib/sales/spLookup";
@@ -102,6 +103,12 @@ export async function POST(req: Request) {
 
   const { piId, deliveryTerms, notes } = await req.json();
   if (!piId) return Response.json({ error: "piId required" }, { status: 400 });
+  // Same rule as reading the PI: a salesperson raises an order only from a PI
+  // of their own (or their team's, for a reporting manager); global duties
+  // keep global reach. The UI only offers PIs the scoped list returned, so a
+  // legitimate flow never meets this refusal.
+  const refused = await assertPiVisible(session.user, piId);
+  if (refused) return refused;
 
   const pi = await db.proformaInvoice.findUnique({ where: { id: piId } });
   if (!pi) return Response.json({ error: "PI not found" }, { status: 404 });

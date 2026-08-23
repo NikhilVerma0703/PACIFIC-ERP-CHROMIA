@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { salesAuth as auth } from "@/lib/sales/session";
 import { prisma } from "@/lib/prisma";
+import { assertOrderVisible } from "@/lib/sales/ownership";
 import { NextResponse } from "next/server";
 
 const db = prisma as any;
@@ -19,6 +20,20 @@ export async function PATCH(
     notes?: string;
     appliedToOrderId?: string | null;
   };
+
+  // Ownership, both ends. The note belongs to an order; the caller must be able
+  // to see that order to touch the note at all, and — when applying it — the
+  // order it is applied to as well. The same-client rule the picker enforces
+  // (loadAvailableCNs by clientId) still holds; this adds only "and it is
+  // yours to see", exactly as the order routes do.
+  const cn = await db.salesCreditNote.findUnique({ where: { id }, select: { orderId: true } });
+  if (!cn) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  const refusedSource = await assertOrderVisible(session.user, cn.orderId);
+  if (refusedSource) return refusedSource;
+  if (body.appliedToOrderId) {
+    const refusedTarget = await assertOrderVisible(session.user, body.appliedToOrderId);
+    if (refusedTarget) return refusedTarget;
+  }
 
   const now = new Date();
 
