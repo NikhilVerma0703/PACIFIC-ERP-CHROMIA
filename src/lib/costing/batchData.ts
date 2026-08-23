@@ -75,7 +75,15 @@ export async function listCostableBatches(days: number): Promise<BatchListEntry[
       SELECT batch_key, mode() WITHIN GROUP (ORDER BY design_name) design,
              count(DISTINCT slab_number)::int slabs,
              min(imported_at) first_press, max(imported_at) last_press
-      FROM press WHERE batch_key IS NOT NULL GROUP BY batch_key
+      FROM press
+      -- Only the batches the join below can keep. The LEFT JOIN ... USING
+      -- (batch_key) discards every pressed group whose key is not in mixes, and
+      -- each group's aggregates depend on that group's rows alone, so restricting
+      -- the groups changes nothing in the result — it only stops this from
+      -- aggregating the whole (30k-row, growing) press table for a picker that
+      -- shows a few weeks of batches. batch_key is indexed.
+      WHERE batch_key IS NOT NULL AND batch_key IN (SELECT batch_key FROM mixes)
+      GROUP BY batch_key
     )
     SELECT m.batch_key, m.batch, m.cycles, p.design, COALESCE(p.slabs, 0)::int slabs,
            p.first_press, p.last_press
@@ -278,12 +286,6 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
       FROM mixer_cycle WHERE batch_key = ${batchKey}`;
   if (!head[0] || head[0].cycles === 0) return null;
 
-  const tanks: Array<{ tank: string | null; cycles: number; kg: number | null }> = await prisma.$queryRaw`
-    SELECT COALESCE(m1_r_dtn, m2_r_dtn, m3_r_dtn, m4_r_dtn) tank, count(*)::int cycles,
-           sum(COALESCE(m1_r_w,0)+COALESCE(m2_r_w,0)+COALESCE(m3_r_w,0)+COALESCE(m4_r_w,0)) kg
-    FROM mixer_cycle WHERE batch_key = ${batchKey}
-    GROUP BY 1 ORDER BY 2 DESC`;
-
   // Grit: unpivot the 32 slots, resolve each charge's silo fill-records to a
   // size band. The per-charge link is authoritative - silos swap bands
   // mid-run, and the whole-silo shortcut is exactly the mistake the variance
@@ -291,8 +293,20 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
   const arms = GRIT_SLOTS.map((s) =>
     `SELECT ${s.sn} silo_no, ${s.w} kg, ${s.ids} ids FROM mixer_cycle WHERE batch_key = $1 AND COALESCE(${s.w}, 0) > 0`,
   ).join(" UNION ALL ");
-  const charges: Array<{ silo_no: string | null; band: string | null; kg: number | null }> =
-    await prisma.$queryRawUnsafe(
+
+  // Every read below is a function of batchKey alone - none of them needs
+  // another's answer - so they go to Neon together. They were never one
+  // snapshot (each ran at its own instant in sequence), so issuing them at
+  // once changes no guarantee and no figure; it only stops the costing screen
+  // paying seven round trips one after the other before the report's own
+  // Promise.all even begins. The per-read comments stay with their queries.
+  const [tanks, charges, times, thick, pressSlabNos, thicknessOf, press] = await Promise.all([
+    prisma.$queryRaw<Array<{ tank: string | null; cycles: number; kg: number | null }>>`
+      SELECT COALESCE(m1_r_dtn, m2_r_dtn, m3_r_dtn, m4_r_dtn) tank, count(*)::int cycles,
+             sum(COALESCE(m1_r_w,0)+COALESCE(m2_r_w,0)+COALESCE(m3_r_w,0)+COALESCE(m4_r_w,0)) kg
+      FROM mixer_cycle WHERE batch_key = ${batchKey}
+      GROUP BY 1 ORDER BY 2 DESC`,
+    prisma.$queryRawUnsafe<Array<{ silo_no: string | null; band: string | null; kg: number | null }>>(
       // THE TYPED SILO NUMBER ONLY. The bag link is NOT used to infer it.
       //
       // It was, briefly, and the evidence took it back out. Falling back to the
@@ -314,7 +328,31 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
        FROM (${arms}) s
        GROUP BY 1, 2`,
       batchKey,
-    );
+    ),
+    // Run length inputs. mixer_start_time is an Airtable time-of-day with an
+    // unreliable date part; the walk further down repairs rollovers and drops
+    // stoppages. Fetched here, read there.
+    prisma.$queryRaw<Array<{ cycle: number; t: Date | null }>>`
+      SELECT cycle::float cycle, mixer_start_time t FROM mixer_cycle
+      WHERE batch_key = ${batchKey} AND mixer_start_time IS NOT NULL
+      ORDER BY cycle`,
+    prisma.$queryRaw<Array<{ src: string; t: string | null; n: number }>>`
+      SELECT 'jot' src, thickness t, count(DISTINCT slab_number)::int n
+      FROM jot WHERE batch_key = ${batchKey} GROUP BY 2`,
+    // THE SLABS THE SHEET DIVIDES BY: every distinct slab the press recorded,
+    // each given the thickness the shared resolver finds for it wherever it was
+    // stamped. Counting per distinct PRESS slab is what stops a station with
+    // partial coverage (or none — see the type comment) from deciding the count.
+    prisma.$queryRaw<Array<{ s: number }>>`
+      SELECT DISTINCT slab_number::float8 s FROM press
+      WHERE batch_key = ${batchKey} AND slab_number IS NOT NULL`,
+    thicknessBySlab({ keys: [batchKey] }),
+    prisma.$queryRaw<Array<{ slabs: number; design: string | null; first: Date | null; last: Date | null }>>`
+      SELECT count(DISTINCT slab_number)::int slabs,
+             mode() WITHIN GROUP (ORDER BY design_name) design,
+             min(imported_at) first, max(imported_at) last
+      FROM press WHERE batch_key = ${batchKey}`,
+  ]);
 
   const gritMap = new Map<string, number>();
   // WHAT THE MIXER DREW PER SILO, band or no band.
@@ -377,10 +415,6 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
   // its predecessor gains 24 h) and then drops gaps over two hours - those
   // are stoppages, and absorbing overhead across a day the line stood still
   // would flatter the batch.
-  const times: Array<{ cycle: number; t: Date | null }> = await prisma.$queryRaw`
-    SELECT cycle::float cycle, mixer_start_time t FROM mixer_cycle
-    WHERE batch_key = ${batchKey} AND mixer_start_time IS NOT NULL
-    ORDER BY cycle`;
   let runMs = 0, stopMs = 0, stops = 0, wallMs = 0;
   if (times.length > 1) {
     const DAY = 86_400_000, GAP = 2 * 3_600_000;
@@ -404,21 +438,11 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
     }
   }
 
-  const thick: Array<{ src: string; t: string | null; n: number }> = await prisma.$queryRaw`
-    SELECT 'jot' src, thickness t, count(DISTINCT slab_number)::int n
-    FROM jot WHERE batch_key = ${batchKey} GROUP BY 2`;
   const pick = (src: string, cm: string) =>
     thick.filter((r) => r.src === src && (r.t ?? "").replace(/\s/g, "").startsWith(cm))
       .reduce((s, r) => s + r.n, 0);
 
-  // THE SLABS THE SHEET DIVIDES BY: every distinct slab the press recorded,
-  // each given the thickness the shared resolver finds for it wherever it was
-  // stamped. Counting per distinct PRESS slab is what stops a station with
-  // partial coverage (or none — see the type comment) from deciding the count.
-  const pressSlabNos: Array<{ s: number }> = await prisma.$queryRaw`
-    SELECT DISTINCT slab_number::float8 s FROM press
-    WHERE batch_key = ${batchKey} AND slab_number IS NOT NULL`;
-  const thicknessOf = await thicknessBySlab({ keys: [batchKey] });
+  // Press slabs by thickness - see the pressSlabNos read above.
   let slabs3cm = 0, slabs2cm = 0;
   for (const { s: n } of pressSlabNos) {
     const t = thicknessOf.get(Number(n));
@@ -426,13 +450,8 @@ export async function loadBatchConsumption(batchKey: string): Promise<BatchConsu
     else if (t === "2 cm") slabs2cm++;
   }
 
-  const press: Array<{ slabs: number; design: string | null; first: Date | null; last: Date | null }> =
-    await prisma.$queryRaw`
-      SELECT count(DISTINCT slab_number)::int slabs,
-             mode() WITHIN GROUP (ORDER BY design_name) design,
-             min(imported_at) first, max(imported_at) last
-      FROM press WHERE batch_key = ${batchKey}`;
-
+  // Needs gritSiloKg, which is derived from `charges` above - so this one read
+  // genuinely comes after the batch.
   const gritSilos = await loadGritSilos(batchKey, gritSiloKg);
 
   return {

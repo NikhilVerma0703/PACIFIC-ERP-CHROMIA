@@ -119,8 +119,14 @@ function PolishingQueue() {
   useEffect(() => {
     setLoading(true);
     Promise.all([loadOpen(), loadDone(doneDate)]).finally(() => setLoading(false));
-    const t = setInterval(loadOpen, 20000);
-    return () => clearInterval(t);
+    // Poll the open queue every 20 s — but only while the tab is visible (a
+    // hidden tab shows nothing, so polling it only burns a function call and a
+    // Neon read all night), and once immediately when it becomes visible again
+    // so a returned-to tab is current. Same pattern as components/AutoRefresh.
+    const t = setInterval(() => { if (document.visibilityState === "visible") loadOpen(); }, 20000);
+    const onVisible = () => { if (document.visibilityState === "visible") loadOpen(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVisible); };
   }, [loadOpen, loadDone, doneDate]);
 
   async function startPiece(pieceId: string) {

@@ -17,6 +17,7 @@
 // which is the only timestamp still moving. If `created` starts populating
 // again, prefer it — but check coverage first, do not assume.
 import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@prisma/client";
 
 export const IST_OFFSET_MIN = 330;
 export type ShiftLetter = "A" | "B" | "C";
@@ -61,13 +62,46 @@ export type HourRow = {
   electrical: string | null; mechanical: string | null;
 };
 
+// ONLY THE COLUMNS THIS FILE READS. Mis carries six Json columns and PolishQc an
+// image, a barcode and a last-modified blob that no figure here derives from;
+// fetching whole rows shipped all of it from Neon for every report. Each select
+// names exactly the fields the mapping below touches, so the figures cannot
+// change — a field that is not read cannot alter a number.
+const MIS_SELECT = {
+  hour: true, productionInchargeName: true, submittedBy: true, batch: true, design: true,
+  startingSlabNumber: true, endingSlabNumber: true, slabsPerHourStd: true,
+  processDelayDurationMinutes: true, cleaningDelayDurationMinutes: true,
+  breakdownDelayDurationMechanicalOrElectricalMinutes: true, poweroutDelayDurationMinutes: true,
+  reasonForDeviation: true, details: true, areaOfProblem: true, anyBreakdownYesNo: true,
+  sparesUsed: true, actionTaken: true, rcaNo: true, electricalInchargeName: true, mechanicalInchargeName: true,
+} satisfies Prisma.MisSelect;
+const ENTRY_SELECT = {
+  design: true, polishSide: true, batchNumber: true, slabNumber: true, importedAt: true,
+  calliberator: true, slabThickness: true,
+} satisfies Prisma.PolishEntrySelect;
+const QC_SELECT = {
+  qualityGrade: true, qualityIssue: true, slabNumber: true, repolishStatus: true, rwStatus: true,
+  goingToDispatch: true, importedAt: true, inspector: true,
+} satisfies Prisma.PolishQcSelect;
+type EntryRow = Prisma.PolishEntryGetPayload<{ select: typeof ENTRY_SELECT }>;
+type QcRow = Prisma.PolishQcGetPayload<{ select: typeof QC_SELECT }>;
+
 export async function getDailyReport(date: string) {
   const { from, to } = reportWindow(date);
 
-  const mis = await prisma.mis.findMany({
-    where: { dateAndTime: { gte: from, lt: to } },
-    orderBy: { dateAndTime: "asc" },
-  });
+  // The three tables are keyed on the same window and read nothing from one
+  // another, so they are fetched together rather than one after the other —
+  // one round of round trips to Neon instead of three.
+  const win = { importedAt: { gte: from, lt: to } };
+  const [mis, entries, qc] = await Promise.all([
+    prisma.mis.findMany({
+      where: { dateAndTime: { gte: from, lt: to } },
+      orderBy: { dateAndTime: "asc" },
+      select: MIS_SELECT,
+    }),
+    prisma.polishEntry.findMany({ where: win, select: ENTRY_SELECT }),
+    prisma.polishQc.findMany({ where: win, select: QC_SELECT }),
+  ]);
 
   const hours: HourRow[] = mis.map((r) => {
     const h = hourStart(r.hour);
@@ -137,7 +171,7 @@ export async function getDailyReport(date: string) {
 
   return {
     date, window: { from, to }, hours, shifts, day, cause, reclassified,
-    quality: await getQuality(from, to),
+    quality: getQuality(entries, qc),
     maintenance: getMaintenance(hours),
   };
 }
@@ -215,11 +249,9 @@ function getMaintenance(hours: HourRow[]) {
 //   rwStatus       did it need rework at all            -> 137 went straight through
 // A slab can clear one and fail another: of the 20 graded "Polish Ok", six came
 // back B and one C. The page names each column by its question for that reason.
-async function getQuality(from: Date, to: Date) {
-  const win = { importedAt: { gte: from, lt: to } };
-  const entries = await prisma.polishEntry.findMany({ where: win });
-  const qc = await prisma.polishQc.findMany({ where: win });
-
+// Both tables are read by getDailyReport (alongside the Mis rows, in one go)
+// and handed in here; this function only derives.
+function getQuality(entries: EntryRow[], qc: QcRow[]) {
   const tally = <T>(rows: T[], key: (r: T) => string): [string, number][] => {
     const m = new Map<string, number>();
     for (const r of rows) { const k = key(r); m.set(k, (m.get(k) ?? 0) + 1); }

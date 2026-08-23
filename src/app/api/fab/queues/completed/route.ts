@@ -35,33 +35,86 @@ export async function GET(req: Request) {
 
   // For CUTTING, filter employees by operation.operatorId (FabSlabJob sets this).
   // For other types, CLO pieces have null operationId so we post-filter via session overlap.
-  let ops = await prisma.fabPieceOperation.findMany({
-    where: {
-      operationType: type as any,
-      isCompleted:   true,
-      completedAt:   { gte: startOfDay, lte: endOfDay },
-      // NOT filtered by operator here — see the CUTTING block below. Narrowing
-      // in the query made an unmatched filter indistinguishable from an empty
-      // day, and for cutting it never matched at all.
-    },
-    include: {
-      operation: {
-        include: {
-          machine:  { select: { name: true, code: true } },
-          operator: { select: { name: true } },
+  //
+  // The three reads below depend only on the request (type, day, user), never
+  // on each other, so they go to Neon together instead of one after the other;
+  // which of the second and third actually run is decided by the same
+  // conditions as before (sessions only for a non-CUTTING operator, jobs only
+  // for CUTTING).
+  const [opsForDay, userSessions, jobs] = await Promise.all([
+    prisma.fabPieceOperation.findMany({
+      where: {
+        operationType: type as any,
+        isCompleted:   true,
+        completedAt:   { gte: startOfDay, lte: endOfDay },
+        // NOT filtered by operator here — see the CUTTING block below. Narrowing
+        // in the query made an unmatched filter indistinguishable from an empty
+        // day, and for cutting it never matched at all.
+      },
+      include: {
+        operation: {
+          include: {
+            machine:  { select: { name: true, code: true } },
+            operator: { select: { name: true } },
+          },
+        },
+        piece: {
+          include: {
+            project:     { select: { projectCode: true, customerName: true } },
+            drawing:     { select: { drawingNumber: true } },
+            requirement: { select: { pieceLabel: true, description: true, length: true, width: true } },
+            slab:        { select: { slabCode: true, colour: true } },
+          },
         },
       },
-      piece: {
-        include: {
-          project:     { select: { projectCode: true, customerName: true } },
-          drawing:     { select: { drawingNumber: true } },
-          requirement: { select: { pieceLabel: true, description: true, length: true, width: true } },
-          slab:        { select: { slabCode: true, colour: true } },
-        },
-      },
-    },
-    orderBy: { completedAt: "desc" },
-  });
+      orderBy: { completedAt: "desc" },
+    }),
+    // Non-CUTTING employees: their machine sessions for this station and day,
+    // used below to attribute completions by overlap.
+    filterByUser && type !== "CUTTING"
+      ? prisma.fabMachineSession.findMany({
+          where: {
+            userId,
+            machine: { type: type as any },
+            loginTime: { lte: endOfDay },
+            OR: [{ logoutTime: { gte: startOfDay } }, { isActive: true }],
+          },
+          select: { loginTime: true, logoutTime: true, isActive: true },
+        })
+      : null,
+    // CUTTING: CLO jobs completed on this date.
+    // endTime may be null for jobs completed before endTime field was added —
+    // fall back to createdAt for those so they still appear in date filters.
+    type === "CUTTING"
+      ? prisma.fabSlabJob.findMany({
+          where: {
+            status: "COMPLETED",
+            OR: [
+              { endTime: { gte: startOfDay, lte: endOfDay } },
+              // Fallback: jobs with null endTime, use createdAt to approximate date
+              { endTime: null, createdAt: { gte: startOfDay, lte: endOfDay } },
+            ],
+            ...(filterByUser ? { operatorId: userId } : {}),
+          },
+          include: {
+            machine:  { select: { name: true, code: true } },
+            operator: { select: { name: true } },
+            slab: {
+              include: {
+                project: { select: { projectCode: true } },
+                requirementAllocations: {
+                  include: {
+                    requirement: { select: { pieceLabel: true, length: true, width: true } },
+                  },
+                },
+              },
+            },
+          },
+          orderBy: { endTime: "desc" },
+        })
+      : [],
+  ]);
+  let ops = opsForDay;
 
   // CUTTING attributes through FabOperation.operatorId, which FabSlabJob sets.
   // Applying that as a query filter returned an empty list to every operator,
@@ -89,29 +142,31 @@ export async function GET(req: Request) {
   // completing the work — which reads as "it did not save" and invites a
   // duplicate. No session means there is nothing to attribute by, not that
   // nothing happened.
-  if (filterByUser && type !== "CUTTING") {
-    const userSessions = await prisma.fabMachineSession.findMany({
-      where: {
-        userId,
-        machine: { type: type as any },
-        loginTime: { lte: endOfDay },
-        OR: [{ logoutTime: { gte: startOfDay } }, { isActive: true }],
-      },
-      select: { loginTime: true, logoutTime: true, isActive: true },
+  if (userSessions && userSessions.length) ops = ops.filter(op => {
+    if (!op.completedAt) return false;
+    return userSessions.some(s => {
+      const started = s.loginTime <= op.completedAt!;
+      const ended   = s.logoutTime ? s.logoutTime >= op.completedAt! : s.isActive;
+      return started && ended;
     });
-    if (userSessions.length) ops = ops.filter(op => {
-      if (!op.completedAt) return false;
-      return userSessions.some(s => {
-        const started = s.loginTime <= op.completedAt!;
-        const ended   = s.logoutTime ? s.logoutTime >= op.completedAt! : s.isActive;
-        return started && ended;
-      });
-    });
-  }
+  });
 
-  const opWorkers = await workersForOperations(
-    ops.map(op => op.operation?.id).filter((id): id is string => !!id),
-  );
+  // Roster names for the legacy rows and, for CUTTING, the QC slab names and
+  // roster names for the CLO jobs: three id-keyed lookups over results already
+  // in hand, none of which reads another's answer.
+  const qcIds = jobs.map(j => j.slab.pacificQcId).filter(Boolean) as string[];
+  const [opWorkers, qcRows, jobWorkers] = await Promise.all([
+    workersForOperations(
+      ops.map(op => op.operation?.id).filter((id): id is string => !!id),
+    ),
+    qcIds.length
+      ? prisma.polishQc.findMany({
+          where:  { id: { in: qcIds } },
+          select: { id: true, slabNumber: true, design: true },
+        })
+      : [],
+    workersForSlabJobs(jobs.map(j => j.id)),
+  ]);
 
   const legacyRows = ops.map(op => ({
     flowType:      "legacy" as const,
@@ -132,47 +187,7 @@ export async function GET(req: Request) {
 
   const cloRows: any[] = [];
   if (type === "CUTTING") {
-    // Fetch CLO jobs completed on this date.
-    // endTime may be null for jobs completed before endTime field was added —
-    // fall back to createdAt for those so they still appear in date filters.
-    const jobs = await prisma.fabSlabJob.findMany({
-      where: {
-        status: "COMPLETED",
-        OR: [
-          { endTime: { gte: startOfDay, lte: endOfDay } },
-          // Fallback: jobs with null endTime, use createdAt to approximate date
-          { endTime: null, createdAt: { gte: startOfDay, lte: endOfDay } },
-        ],
-        ...(filterByUser ? { operatorId: userId } : {}),
-      },
-      include: {
-        machine:  { select: { name: true, code: true } },
-        operator: { select: { name: true } },
-        slab: {
-          include: {
-            project: { select: { projectCode: true } },
-            requirementAllocations: {
-              include: {
-                requirement: { select: { pieceLabel: true, length: true, width: true } },
-              },
-            },
-          },
-        },
-      },
-      orderBy: { endTime: "desc" },
-    });
-
-    const qcIds = jobs.map(j => j.slab.pacificQcId).filter(Boolean) as string[];
-    const qcMap = new Map(
-      qcIds.length
-        ? (await prisma.polishQc.findMany({
-            where:  { id: { in: qcIds } },
-            select: { id: true, slabNumber: true, design: true },
-          })).map(q => [q.id, q])
-        : []
-    );
-
-    const jobWorkers = await workersForSlabJobs(jobs.map(j => j.id));
+    const qcMap = new Map(qcRows.map(q => [q.id, q]));
 
     for (const job of jobs) {
       const qc       = job.slab.pacificQcId ? qcMap.get(job.slab.pacificQcId) : null;

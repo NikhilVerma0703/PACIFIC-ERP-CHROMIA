@@ -704,6 +704,11 @@ model PolishQc {
   // plus the dup guard on every QC save. imported_at serves /live findFirst + /tables sort.
   @@index([slabNumber])
   @@index([importedAt])
+  // 0051 hot-path (2026-08-23): the "created_time in range OR (created_time IS NULL AND
+  // imported_at in range)" window (misShift polish throughput, run 2-3x per /mis load and again
+  // every 45 s per open tab) was a 105 ms seq scan over 3,624 buffers because only imported_at
+  // was indexed — Postgres cannot BitmapOr the two arms until created_time has one too.
+  @@index([createdTime])
   @@map("polish_qc")
 }
 
@@ -767,6 +772,9 @@ model Distributor {
   // 0038 hot-path (2026-08-14): /live + /tables recency; date window for scoreStations/downtime
   @@index([importedAt])
   @@index([date])
+  // 0051 hot-path (2026-08-23): lineHeadPrefill's created_time-OR-imported_at hour window on every
+  // /entry/mis load seq-scanned 13.9k rows (752 buffers) — see polish_qc for why both arms need one.
+  @@index([createdTime])
   @@map("distributor")
 }
 
@@ -976,6 +984,9 @@ model Kreos {
   // 0038 hot-path (2026-08-14): /live + /tables recency; date window for scoreStations/downtime
   @@index([importedAt])
   @@index([date])
+  // 0051 hot-path (2026-08-23): lineHeadPrefill's created_time-OR-imported_at hour window on every
+  // /entry/mis load — same shape and reason as distributor/polish_qc.
+  @@index([createdTime])
   @@map("kreos")
 }
 
@@ -1081,6 +1092,10 @@ model Press {
   // dashboard press-today) was a 4.2 ms seq scan discarding 27,720 of 28,813 rows per call.
   @@index([importedAt])
   @@index([date])
+  // 0051 hot-path (2026-08-23): pressPrefill (every /entry/mis load) and the hourly Telegram
+  // press-vs-MIS check both window on created_time OR (created_time IS NULL AND imported_at);
+  // with only imported_at indexed that was a 7 ms seq scan discarding all 30.5k rows per call.
+  @@index([createdTime])
   @@map("press")
 }
 
@@ -2703,6 +2718,11 @@ model FabPieceOperation {
   /// in the database) and its 30-minute idle window all ask exactly this, and
   /// the table carried no index at all until now. See scripts/0046.
   @@index([isCompleted, completedAt])
+  /// 0051 hot-path (2026-08-23): Postgres does not index foreign keys on its own, so every
+  /// `pieceOperations` include (one child query per queue poll, every 15-20 s per station), the
+  /// cutting-queue / CEO "pending CUTTING op" EXISTS probe, and the per-piece updateMany in the
+  /// eight complete/undo routes all walked the whole table to find one piece's operations.
+  @@index([pieceId])
   @@map("fab_piece_operation")
 }
 

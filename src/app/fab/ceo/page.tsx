@@ -305,8 +305,14 @@ export default function CeoDashboard() {
 
   useEffect(() => {
     load(dateFilter, rangeDays);
-    const t = setInterval(() => load(dateFilter, rangeDays), 30000);
-    return () => clearInterval(t);
+    // Refresh every 30 s — but only while the tab is visible (this route is the
+    // heaviest aggregation in the module, and a hidden tab shows none of it),
+    // and once immediately when it becomes visible again so a returned-to tab
+    // is current. Same pattern as components/AutoRefresh.
+    const t = setInterval(() => { if (document.visibilityState === "visible") load(dateFilter, rangeDays); }, 30000);
+    const onVisible = () => { if (document.visibilityState === "visible") load(dateFilter, rangeDays); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVisible); };
   }, [load, dateFilter, rangeDays]);
 
   // RETIRED 2026-08 with POST /api/fab/admin/fix-cascade -- see the panel below.

@@ -2,8 +2,8 @@
 import { useState } from "react";
 import {
   MAIL_BODY_KEYS, DEFAULT_BODIES, MAIL_BODY_LABELS, MAIL_BODY_VARS,
-} from "@/lib/sales/mailBodies";
-import type { MailBodyKey } from "@/lib/sales/mailBodies";
+} from "@/lib/sales/mailBodies.defaults";
+import type { MailBodyKey } from "@/lib/sales/mailBodies.defaults";
 
 export default function MailBodiesClient({
   initial,

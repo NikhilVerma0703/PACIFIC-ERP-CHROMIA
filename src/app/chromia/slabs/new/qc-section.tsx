@@ -7,7 +7,7 @@ import { ComboInput } from '@/components/chromia/ui/combo';
 import { Field } from '@/components/chromia/ui';
 import { DispositionBadge, GradeBadge } from '@/components/chromia/ui/status';
 import { DISPOSITION_LABELS, GRADE_ALLOWED_DISPOSITIONS } from '@/lib/chromia/constants/process-stages';
-import { ChromiaDisposition as Disposition, ChromiaSlabGrade as SlabGrade } from '@prisma/client';
+import { Disposition, SlabGrade } from '@/lib/chromia/constants/process-stages';
 
 import { Divider, field, FieldGrid, OutcomePanel, selectField } from './ui';
 

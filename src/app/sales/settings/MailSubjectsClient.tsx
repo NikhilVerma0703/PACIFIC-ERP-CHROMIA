@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
-import { MAIL_SUBJECT_KEYS, DEFAULT_SUBJECTS, MAIL_SUBJECT_LABELS } from "@/lib/sales/mailSubjects";
-import type { MailSubjectKey } from "@/lib/sales/mailSubjects";
+import { MAIL_SUBJECT_KEYS, DEFAULT_SUBJECTS, MAIL_SUBJECT_LABELS } from "@/lib/sales/mailSubjects.defaults";
+import type { MailSubjectKey } from "@/lib/sales/mailSubjects.defaults";
 
 export default function MailSubjectsClient({
   initial,

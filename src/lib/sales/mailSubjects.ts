@@ -7,38 +7,10 @@
  */
 import { prisma } from "@/lib/prisma";
 
-export const MAIL_SUBJECT_KEYS = [
-  "pi_subject",
-  "dispatch_subject",
-  "shipping_docs_subject",
-  "packing_list_subject",
-  "bl_ready_subject",
-  "payment_reminder_subject",
-] as const;
+export { MAIL_SUBJECT_KEYS, DEFAULT_SUBJECTS, MAIL_SUBJECT_LABELS } from "./mailSubjects.defaults";
+export type { MailSubjectKey } from "./mailSubjects.defaults";
+import { MAIL_SUBJECT_KEYS, DEFAULT_SUBJECTS, type MailSubjectKey } from "./mailSubjects.defaults";
 
-export type MailSubjectKey = typeof MAIL_SUBJECT_KEYS[number];
-
-export const DEFAULT_SUBJECTS: Record<MailSubjectKey, string> = {
-  pi_subject:               "Proforma Invoice {piNumber} | Pacific Engineered Surfaces Pvt. Ltd.",
-  dispatch_subject:         "Dispatch Details — Invoice {invoiceNo} | Pacific Engineered Surfaces",
-  shipping_docs_subject:    "Shipping Documents — Invoice {invoiceNo} | Pacific Engineered Surfaces",
-  packing_list_subject:     "Packing List for Approval — {invoiceNo} | Pacific Granites India Pvt. Ltd.",
-  bl_ready_subject:         "B/L Ready — {invoiceNo} | Pacific Engineered Surfaces",
-  payment_reminder_subject: "Payment Reminder — Invoice {invoiceNo} | Pacific Engineered Surfaces",
-};
-
-const LABEL: Record<MailSubjectKey, string> = {
-  pi_subject:               "PI Send Email",
-  dispatch_subject:         "Dispatch / Stuffing Email",
-  shipping_docs_subject:    "Shipping Documents Email",
-  packing_list_subject:     "Packing List Approval Email (PGI)",
-  bl_ready_subject:         "B/L Ready Email",
-  payment_reminder_subject: "Payment Reminder Email",
-};
-
-export { LABEL as MAIL_SUBJECT_LABELS };
-
-/** Fetch all custom subjects from DB (returns {} if column missing or row absent). */
 export async function getMailSubjects(): Promise<Partial<Record<MailSubjectKey, string>>> {
   const db = prisma as any;
   try {

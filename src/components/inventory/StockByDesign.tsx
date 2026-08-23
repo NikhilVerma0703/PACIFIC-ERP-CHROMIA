@@ -62,14 +62,24 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
     load();
     // live sync: a ~5ms version check every 1.5s; approval changes anywhere
     // trigger an immediate full reload (plus a 30s full-refresh floor for stock).
+    //
+    // Both ticks fire only while the tab is visible. A hidden tab shows nothing,
+    // yet at 1.5 s it was the single biggest caller of the whole system — ~57k
+    // function invocations a day per forgotten tab, each a session check plus
+    // the version probe on Neon, and it kept the database from ever idling.
+    // Nothing visible changes: the focus/visibilitychange handler below already
+    // reloads in full the moment the tab is looked at again, before anyone can
+    // read a stale figure. The intervals themselves are untouched.
     let ver = "";
-    const check = () =>
+    const check = () => {
+      if (document.visibilityState !== "visible") return;
       fetch("/api/inventory/approve")
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => { if (alive && d?.v !== undefined) { if (ver && d.v !== ver) load(); ver = d.v; } })
         .catch(() => {});
+    };
     const idV = setInterval(check, 1500);
-    const idFull = setInterval(load, 30000);
+    const idFull = setInterval(() => { if (document.visibilityState === "visible") load(); }, 30000);
     const onFocus = () => load();
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);

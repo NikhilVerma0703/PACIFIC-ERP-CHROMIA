@@ -6,26 +6,9 @@ export async function GET() {
   const g = await fabGate("EMPLOYEE");
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
-  // ── OLD flow: FabSlabAllocation → FabPiece ──────────────────────────────
-  const allocations = await prisma.fabSlabAllocation.findMany({
-    include: {
-      piece: {
-        include: {
-          project:     { select: { projectCode: true, customerName: true } },
-          drawing:     { select: { drawingNumber: true } },
-          requirement: { select: { pieceLabel: true, description: true, length: true, width: true } },
-          pieceOperations: { where: { operationType: "CUTTING" } },
-        },
-      },
-      slab: true,
-    },
-  });
-
-  const pending = allocations.filter(a =>
-    a.piece.pieceOperations.some(op => !op.isCompleted)
-  );
-
   // ── NEW CLO flow: FabSlabJob (READY / IN_PROGRESS) ──────────────────────
+  // Read first: the legacy query below excludes the slabs these jobs hold, so
+  // it needs the set before it runs.
   const slabJobs = await prisma.fabSlabJob.findMany({
     where:   { status: { in: ["READY", "IN_PROGRESS"] } },
     include: {
@@ -48,12 +31,57 @@ export async function GET() {
   });
 
   // One slab, one row. A project released from the planning board has FabPieces
-  // (the legacy grouping above) AND can have a slab job sent from the cut queue —
+  // (the legacy grouping below) AND can have a slab job sent from the cut queue —
   // the same physical slab, listed twice, on the screen where an operator decides
   // what to cut next. The slab job is the newer, richer entry and completing it
   // advances those same pieces, so it wins; only ACTIVE jobs suppress the legacy
   // row, or pieces still pending under a finished job would have nowhere to show.
   const slabIdsWithActiveJob = new Set(slabJobs.map(j => j.slabId));
+
+  // Lookup physical QC slab names for CLO slabs
+  const qcIds = slabJobs.map(j => j.slab.pacificQcId).filter(Boolean) as string[];
+
+  // ── OLD flow: FabSlabAllocation → FabPiece ──────────────────────────────
+  // The two predicates the grouping loop applied in JS — "this piece still has
+  // an open CUTTING op" and "this slab has no active job" — are pushed into the
+  // query, so the route no longer reads every allocation ever made (with four
+  // joined relations each) every 15 s per station only to drop nearly all of
+  // them. isCompleted is a non-nullable Boolean, so `isCompleted: false` is
+  // exactly `!op.isCompleted`, and the loop's `continue` on an active slab is
+  // exactly `slabId notIn`. The JS filter stays as a no-op guard: the include
+  // is a separate statement from the WHERE, so it keeps the old behaviour even
+  // if an op is completed between the two.
+  // The three reads depend only on slabJobs, not on each other.
+  const [allocations, qcSlabs, jobWorkers] = await Promise.all([
+    prisma.fabSlabAllocation.findMany({
+      where: {
+        slabId: { notIn: [...slabIdsWithActiveJob] },
+        piece: { pieceOperations: { some: { operationType: "CUTTING", isCompleted: false } } },
+      },
+      include: {
+        piece: {
+          include: {
+            project:     { select: { projectCode: true, customerName: true } },
+            drawing:     { select: { drawingNumber: true } },
+            requirement: { select: { pieceLabel: true, description: true, length: true, width: true } },
+            pieceOperations: { where: { operationType: "CUTTING" } },
+          },
+        },
+        slab: true,
+      },
+    }),
+    qcIds.length
+      ? prisma.polishQc.findMany({
+          where:  { id: { in: qcIds } },
+          select: { id: true, slabNumber: true, design: true },
+        })
+      : [],
+    workersForSlabJobs(slabJobs.map(j => j.id)),
+  ]);
+
+  const pending = allocations.filter(a =>
+    a.piece.pieceOperations.some(op => !op.isCompleted)
+  );
 
   const legacyMap = new Map<string, { type: "legacy"; slab: any; pieces: any[] }>();
   for (const alloc of pending) {
@@ -63,16 +91,7 @@ export async function GET() {
     legacyMap.get(key)!.pieces.push(alloc.piece);
   }
 
-  // Lookup physical QC slab names for CLO slabs
-  const qcIds = slabJobs.map(j => j.slab.pacificQcId).filter(Boolean) as string[];
-  const qcSlabs = qcIds.length
-    ? await prisma.polishQc.findMany({
-        where:  { id: { in: qcIds } },
-        select: { id: true, slabNumber: true, design: true },
-      })
-    : [];
   const qcById = new Map(qcSlabs.map(q => [q.id, q]));
-  const jobWorkers = await workersForSlabJobs(slabJobs.map(j => j.id));
 
   const cloEntries = slabJobs.map(job => {
     const qc = job.slab.pacificQcId ? qcById.get(job.slab.pacificQcId) : null;

@@ -227,10 +227,15 @@ function CuttingQueue() {
     Promise.all([loadOpen(), loadDone(doneDate)]).finally(() => setLoading(false));
   }, [loadOpen, loadDone, doneDate]);
 
-  // Poll open queue every 15s
+  // Poll open queue every 15s — but only while the tab is visible (a hidden
+  // tab shows nothing, so polling it only burns a function call and a Neon
+  // read every 15 s all night), and once immediately when it becomes visible
+  // again so a returned-to tab is current. Same pattern as components/AutoRefresh.
   useEffect(() => {
-    const t = setInterval(() => loadOpen(), 15000);
-    return () => clearInterval(t);
+    const t = setInterval(() => { if (document.visibilityState === "visible") loadOpen(); }, 15000);
+    const onVisible = () => { if (document.visibilityState === "visible") loadOpen(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVisible); };
   }, [loadOpen]);
 
   async function startClo(slabJobId: string) {

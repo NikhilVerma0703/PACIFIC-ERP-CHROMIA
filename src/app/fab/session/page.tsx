@@ -41,9 +41,15 @@ export default function FabSessionPage() {
 
   useEffect(() => {
     fetchMachines();
-    // Poll every 10 s so logged-out machines appear available quickly
-    const timer = setInterval(fetchMachines, 10_000);
-    return () => clearInterval(timer);
+    // Poll every 10 s so logged-out machines appear available quickly — but
+    // only while the tab is visible (a hidden tab shows nothing, and every call
+    // of this route is a function invocation plus reads on Neon), and once
+    // immediately when it becomes visible again so a returned-to tab is
+    // current. Same pattern as components/AutoRefresh.
+    const timer = setInterval(() => { if (document.visibilityState === "visible") fetchMachines(); }, 10_000);
+    const onVisible = () => { if (document.visibilityState === "visible") fetchMachines(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
   }, [fetchMachines]);
 
   async function startSession() {

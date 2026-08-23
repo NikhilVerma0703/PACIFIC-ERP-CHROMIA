@@ -28,7 +28,27 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
   let error: string | null = null;
   try { r = await getDowntimeReport({ from, to, batch: batch || undefined, type: sp.type }); }
   catch { error = "Could not read the MIS log."; }
-  const respMap = r ? await getDowntimeResponses(r.incidents.map((i) => i.id)) : null;
+  // Both cards are keyed off the CLOCK, not off which shift logged most
+  // recently — for most of any shift the newest MIS row belongs to the running
+  // shift, so recency would label the shift in progress "last shift report"
+  // and there would be nothing left to show as current.
+  const nowShift = currentShiftAnchor();
+  // Everything below the report is read in ONE round of round trips. The three
+  // id-keyed lookups need only the incident ids, and the role check and the two
+  // shift cards need nothing from this page at all, so none of the six waits on
+  // another — serially they cost the page (and its 45 s refresh) five extra trips
+  // to Neon for the same answers. Each expression is exactly what it was.
+  const incidentIds = r ? r.incidents.map((i) => i.id) : [];
+  const [respMap, reclassMap, photoMap, mayMaintain, currentShift, prevShift] = await Promise.all([
+    r ? getDowntimeResponses(incidentIds) : Promise.resolve(null),
+    r ? getDelayReclassLog(incidentIds) : Promise.resolve(null),
+    // Response photos, one query for the whole log (best-effort — an empty map just means
+    // no 📷 chips). Stored against the MIS row in entry_photo, served by /api/photo.
+    r ? photosForRecords("Mis", incidentIds) : Promise.resolve(new Map<string, { id: string; filename: string }[]>()),
+    canRespondDowntime(),
+    getCurrentShiftReport(),
+    getPreviousShiftReport(),
+  ]);
   // null with incidents present = the LOOKUP failed (not "nobody responded"). Show the
   // saved-response column as unknown and disable responding for this load — a fresh save
   // against an unseen earlier response would overwrite it blind.
@@ -38,12 +58,10 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
   // corrected figures are already IN the Mis row, so an unreadable log does not leave a
   // gap on screen — it leaves an hour that looks like production entered it that way.
   // That is worse than a blank, so it is said out loud and writing is withheld.
-  const reclassMap = r ? await getDelayReclassLog(r.incidents.map((i) => i.id)) : null;
   const reclassFailed = !!r && r.incidents.length > 0 && reclassMap === null;
   // ONE role check, two independent gates: responding and reclassifying are the same
   // audience (canRespondDowntime = MAINTENANCE or ADMIN) but they fail apart — a broken
   // responses read must not silently disable the correction, or vice versa.
-  const mayMaintain = await canRespondDowntime();
   const canRespond = mayMaintain && !respFailed;
   const canReclass = mayMaintain && !reclassFailed;
   const reclass: Record<string, ReclassRecord[]> = {};
@@ -51,20 +69,8 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
   // Map -> plain object: props crossing into the client log card must be serializable.
   const responses: Record<string, import("@/lib/downtimeResponse").DowntimeResp> = {};
   if (respMap) for (const [k, v] of respMap) responses[k] = v;
-  // Response photos, one query for the whole log (best-effort — an empty map just means
-  // no 📷 chips). Stored against the MIS row in entry_photo, served by /api/photo.
-  const photoMap = r ? await photosForRecords("Mis", r.incidents.map((i) => i.id)) : new Map<string, { id: string; filename: string }[]>();
   const photos: Record<string, { id: string; filename: string }[]> = {};
   for (const [k, v] of photoMap) photos[k] = v;
-  // Both cards are keyed off the CLOCK, not off which shift logged most
-  // recently — for most of any shift the newest MIS row belongs to the running
-  // shift, so recency would label the shift in progress "last shift report"
-  // and there would be nothing left to show as current.
-  const nowShift = currentShiftAnchor();
-  const [currentShift, prevShift] = await Promise.all([
-    getCurrentShiftReport(),
-    getPreviousShiftReport(),
-  ]);
   // Normally the shift immediately before this one. If it logged nothing (plant
   // idle, missed entries) fall back to the most recent shift that did report,
   // which is what this card showed before — but never the running shift, or it

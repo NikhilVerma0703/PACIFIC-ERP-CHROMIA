@@ -69,8 +69,15 @@ function PackagingQueue() {
   useEffect(() => {
     setLoading(true);
     Promise.all([loadQueue(), loadPackages()]).finally(() => setLoading(false));
-    const t = setInterval(() => { loadQueue(); loadPackages(); }, 20000);
-    return () => clearInterval(t);
+    // Poll both every 20 s — but only while the tab is visible (a hidden tab
+    // shows nothing, so polling it only burns two function calls and their Neon
+    // reads all night), and once immediately when it becomes visible again so a
+    // returned-to tab is current. Same pattern as components/AutoRefresh.
+    const refresh = () => { loadQueue(); loadPackages(); };
+    const t = setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 20000);
+    const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVisible); };
   }, [loadQueue, loadPackages]);
 
   // Unique projects from queue

@@ -1,5 +1,4 @@
-import { SLAB_STATUS_LABELS } from '@/lib/chromia/constants/process-stages';
-import { ChromiaDisposition as Disposition, ChromiaSlabStatus as SlabStatus } from '@prisma/client';
+import { SLAB_STATUS_LABELS, Disposition, SlabStatus } from '@/lib/chromia/constants/process-stages';
 import type { ChromiaDisposition as DispositionType, ChromiaSlabStatus as SlabStatusType } from '@prisma/client';
 import type { Tone } from '@/components/chromia/ui';
 

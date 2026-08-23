@@ -1,14 +1,42 @@
 /**
  * Chromia process stage catalogue.
  *
- * The enum values themselves come from the Prisma schema (the single source of
- * truth); this module adds the ordering, human labels and business limits that
- * the database does not express. `@/generated/prisma/enums` is a pure,
- * client-safe module — importing it does not pull in the Prisma client.
+ * The enum TYPES come from the Prisma schema (the single source of truth);
+ * this module adds the ordering, human labels and business limits that the
+ * database does not express.
+ *
+ * The enum VALUES are declared here as local objects, not imported from
+ * '@prisma/client'. A value import of a Prisma enum pulls the client's browser
+ * stub — every model's field table — into whichever bundle imports it, and
+ * this module is imported by the operator and recalibration tablet screens
+ * (≈35 kB gzipped on the shop-floor tablet for four small enums). Prisma's
+ * enums are plain `{ A: 'A', ... }` objects, so a local object is identical at
+ * runtime; `satisfies Record<E, E>` makes tsc fail the build if the schema
+ * ever adds, removes or renames a member, so the two cannot drift.
  */
-import { ChromiaDisposition as Disposition, ChromiaProcessStage as ProcessStage, ChromiaSlabGrade as SlabGrade, ChromiaSlabStatus as SlabStatus, type ChromiaDisposition as DispositionType, type ChromiaProcessStage as ProcessStageType, type ChromiaSlabGrade as SlabGradeType, type ChromiaSlabStatus as SlabStatusType } from '@prisma/client';
+import type { ChromiaDisposition as DispositionType, ChromiaProcessStage as ProcessStageType, ChromiaSlabGrade as SlabGradeType, ChromiaSlabStatus as SlabStatusType } from '@prisma/client';
 
-export { Disposition, ProcessStage, SlabGrade, SlabStatus };
+export const Disposition = {
+  DISPATCH: 'DISPATCH', STOCK: 'STOCK', SAMPLE_CUTTING: 'SAMPLE_CUTTING', RECALIBRATION: 'RECALIBRATION', WASTE: 'WASTE',
+} as const satisfies Record<DispositionType, DispositionType>;
+export const ProcessStage = {
+  INCOMING: 'INCOMING', INCOMING_DETAILS: 'INCOMING_DETAILS', BASE_PRIMER: 'BASE_PRIMER', PRINTING: 'PRINTING',
+  MOULDING: 'MOULDING', COOLING: 'COOLING', POLISHING: 'POLISHING', UV_POLISHING: 'UV_POLISHING',
+  QUALITY_CHECK: 'QUALITY_CHECK', GRADE_DECISION: 'GRADE_DECISION',
+} as const satisfies Record<ProcessStageType, ProcessStageType>;
+export const SlabGrade = { A: 'A', B: 'B', C: 'C' } as const satisfies Record<SlabGradeType, SlabGradeType>;
+export const SlabStatus = {
+  RECEIVED: 'RECEIVED', IN_PROCESS: 'IN_PROCESS', UNDER_INSPECTION: 'UNDER_INSPECTION', GRADED: 'GRADED',
+  OUT_FOR_RECALIBRATION: 'OUT_FOR_RECALIBRATION', RECEIVED_FROM_RECALIBRATION: 'RECEIVED_FROM_RECALIBRATION',
+  IN_STOCK: 'IN_STOCK', SAMPLE_CUT: 'SAMPLE_CUT', DISPATCHED: 'DISPATCHED', WASTE: 'WASTE', ON_HOLD: 'ON_HOLD',
+} as const satisfies Record<SlabStatusType, SlabStatusType>;
+// Prisma exports each enum as a value AND a type of the same name; callers
+// write `grade: SlabGrade` in a signature and `SlabGrade.A` in a body. Keep
+// that contract so every existing import works unchanged.
+export type Disposition = DispositionType;
+export type ProcessStage = ProcessStageType;
+export type SlabGrade = SlabGradeType;
+export type SlabStatus = SlabStatusType;
 export type { DispositionType as SlabDisposition, ProcessStageType, SlabGradeType, SlabStatusType };
 
 /** Backwards-compatible alias used across the app. */
