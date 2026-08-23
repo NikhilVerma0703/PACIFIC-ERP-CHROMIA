@@ -185,7 +185,11 @@
    * report is black on my iPhone" happens. Forcing color-adjust also keeps the
    * dark table headers and the ruled shading in the printed sheet instead of
    * leaving their white text on nothing. */
-  :global(html), :global(body) { background: #fff !important; }
+  /* html/body carry no local class, so a CSS module may not name them bare —
+   * :has(.doc) keeps the selector "pure" for Next's loader and scopes the white
+   * ground to the page that holds a report. Every print engine in use reads
+   * :has() (Chrome 105+, Safari 15.4+, Firefox 121+). */
+  :global(html):has(.doc), :global(body):has(.doc) { background: #fff !important; }
   .doc { color: #000; background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
 
