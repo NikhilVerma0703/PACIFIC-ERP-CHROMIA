@@ -25,9 +25,9 @@ import { readJson } from "@/lib/readJson";
 
 const API = "/api/office/batch-verify";
 
-type Side = "WEIGHTS" | "COSTS";
-interface Mark { status: "verified" | "stale"; by: string; at: string }
-interface State {
+export type Side = "WEIGHTS" | "COSTS";
+export interface Mark { status: "verified" | "stale"; by: string; at: string }
+export interface SignState {
   sign: Side[];
   me?: string;
   verification: Record<Side, Mark[]>;
@@ -45,8 +45,11 @@ const btnGhost = "rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-med
 const when = (iso: string) =>
   new Date(iso).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
 
-export function SignoffCard({ batchKey, version = 0, onChanged }: {
+export function SignoffCard({ batchKey, version = 0, onChanged, onState }: {
   batchKey: string;
+  /** The loaded state, for a parent that summarises the marks while this card
+   *  is folded away (the costing page's one-line "Inputs & sign-off"). */
+  onState?: (s: SignState | null) => void;
   /** Bump to make the card re-read without remounting — the page does so
    *  after a materials save, because a save can lapse a mark and always moves
    *  the completeness answer the buttons obey. */
@@ -55,13 +58,13 @@ export function SignoffCard({ batchKey, version = 0, onChanged }: {
    *  else it shows, because a mark is a fact about the batch it displays. */
   onChanged?: () => void;
 }) {
-  const [state, setState] = useState<State | null | undefined>(undefined); // undefined = loading, null = not for this viewer
+  const [state, setState] = useState<SignState | null | undefined>(undefined); // undefined = loading, null = not for this viewer
   const [busy, setBusy] = useState("");
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
 
   const load = useCallback(async () => {
     const r = await fetch(`${API}?batchKey=${encodeURIComponent(batchKey)}`, { cache: "no-store" });
-    const res = await readJson<State>(r);
+    const res = await readJson<SignState>(r);
     return res.ok && res.data ? res.data : null;
   }, [batchKey]);
 
@@ -70,8 +73,9 @@ export function SignoffCard({ batchKey, version = 0, onChanged }: {
   useEffect(() => {
     let live = true;
     setState(undefined); setNote(null);
-    void load().then((st) => { if (live) setState(st); });
+    void load().then((st) => { if (live) { setState(st); onState?.(st); } });
     return () => { live = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- onState is a setter; re-running on its identity would refetch on every parent render
   }, [load, version]);
 
   const act = async (side: Side, withdraw: boolean) => {
@@ -83,7 +87,8 @@ export function SignoffCard({ batchKey, version = 0, onChanged }: {
       const res = await readJson<{ error?: string }>(r);
       if (!res.ok) { setNote({ text: res.error ?? `Failed (${res.status})`, ok: false }); return; }
       setNote({ text: withdraw ? `${SIDE[side].label} sign-off withdrawn.` : `${SIDE[side].label} marked correct.`, ok: true });
-      setState(await load());
+      const st = await load();
+      setState(st); onState?.(st);
       onChanged?.();
     } catch (e) {
       setNote({ text: e instanceof Error && e.message ? `Could not reach the server: ${e.message}` : "Could not reach the server.", ok: false });

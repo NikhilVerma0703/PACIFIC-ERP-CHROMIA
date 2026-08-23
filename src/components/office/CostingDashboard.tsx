@@ -14,7 +14,8 @@ import { useCallback, useEffect, useState } from "react";
 import { Card } from "@/components/ui";
 import { readJson } from "@/lib/readJson";
 import { BatchRatesPanel } from "@/components/office/BatchRatesPanel";
-import { SignoffCard } from "@/components/office/SignoffCard";
+import { SignoffCard, type SignState } from "@/components/office/SignoffCard";
+import { RateCardEditor } from "@/components/office/RateCardEditor";
 import { CostingSheet } from "@/components/office/CostingSheet";
 
 const API = "/api/office/costing";
@@ -120,13 +121,17 @@ export function CostingDashboard() {
   const [selected, setSelected] = useState("");
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(false);
+  // The single collapsible below the picker. Closed at first load, always;
+  // opened by the person, or by a sheet that cannot be computed (see effect).
+  const [inputsOpen, setInputsOpen] = useState(false);
+  const [signoffVersion, setSignoffVersion] = useState(0);
+  const [signState, setSignState] = useState<SignState | null>(null);
   const [error, setError] = useState("");
   /** Why the batch list could not be read. Distinct from "no batches". */
   const [listError, setListError] = useState("");
   /** The "View batch data & edit history" drawer. Closed on batch change —
    *  history from one batch shown over another's sheet is how a wrong "who
    *  changed this" gets quoted in an argument. */
-  const [showDetail, setShowDetail] = useState(false);
   /** Sign-off, from THIS page. The marks were already displayed here and the
    *  buttons lived on /office/batch-verify - two admin pages sharing one
    *  batch picker and the same panels, which is the duplication the owner
@@ -170,9 +175,9 @@ export function CostingDashboard() {
   const load = useCallback(async (key: string) => {
     // A reload of the SAME batch (after a rate save) keeps the drawer as the
     // user left it; picking a different batch closes it.
-    // The drawer closes on a batch switch precisely so one batch's facts are
-    // never read over another's.
-    if (key !== selected) setShowDetail(false);
+    // The collapsible closes on a batch switch precisely so one batch's facts
+    // are never read over another's.
+    if (key !== selected) { setInputsOpen(false); setSignState(null); }
     setSelected(key);
     // Only a batch SWITCH blanks the sheet. A same-batch re-read (after a save
     // or a mark) keeps the current sheet and the sign-off card on screen while
@@ -217,13 +222,25 @@ export function CostingDashboard() {
    */
   const notCostable = !!s && s.output.totalSlabs <= 0;
 
+  const pricedCount = report ? new Set(report.detail.batchLines.map((l) => l.item)).size : 0;
+  const signChip = (side: "WEIGHTS" | "COSTS") => {
+    const marks = signState?.verification?.[side];
+    if (!marks) return <span className="text-gray-400">…</span>;
+    if (marks.length === 0) return <span className="rounded bg-amber-50 px-1.5 py-0.5 font-medium text-amber-700">not marked</span>;
+    if (marks.some((m) => m.status === "stale")) return <span className="rounded bg-amber-50 px-1.5 py-0.5 font-medium text-amber-700">changed since</span>;
+    return <span className="rounded bg-green-50 px-1.5 py-0.5 font-medium text-green-700">correct · {marks.length}</span>;
+  };
+  // A sheet that cannot be computed has its fix inside the collapsible, and no
+  // document to stand in front of — so it opens itself. Only then.
+  const cannotCompute = !!report && (report.blockedBy.length > 0 || notCostable);
+  useEffect(() => { if (cannotCompute) setInputsOpen(true); }, [cannotCompute, report?.batchKey]);
+
   return (
-    <div className="space-y-5">
-      <div className="space-y-5 print:hidden">
-      {/* ---- batch picker ---- */}
-      <Card>
-        <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">Batch</h2>
-        <div className="flex flex-wrap items-center gap-3">
+    <div className="space-y-4">
+      {/* ---- ONE line: which batch, and its facts. The page title lives here
+          too — a heading block of its own was a section for a sentence. ---- */}
+      <div className="flex flex-wrap items-center gap-3 print:hidden">
+        <h1 className="text-lg font-semibold tracking-tight text-gray-900">Batch costing</h1>
           <select value={selected} onChange={(e) => void load(e.target.value)} className={selCls}>
             <option value="">Pick a batch…</option>
             {(batches ?? []).map((b) => (
@@ -244,32 +261,66 @@ export function CostingDashboard() {
             </span>
           )}
           {loading && <span className="text-xs text-gray-400">Computing…</span>}
-          {report && (
-            <button
-              type="button"
-              onClick={() => setShowDetail((v) => !v)}
-              className="ml-auto self-center text-center text-sm font-medium text-brand hover:underline"
-            >
-              {showDetail ? "Hide batch data & edit history" : "View batch data & edit history"}
-            </button>
-          )}
-        </div>
         {report && (
-          <p className="mt-2 text-xs text-gray-400">
-            {report.design} · pressed {report.window.firstPress ?? "?"} to {report.window.lastPress ?? "?"} ·
-            {" "}costed at the rate card in force on {report.rateDate} · computed from mixer records just now
-          </p>
+          <span className="text-xs text-gray-400">
+            {report.design} · pressed {report.window.firstPress ?? "?"} to {report.window.lastPress ?? "?"} · rates as on {report.rateDate}
+          </span>
         )}
-        {error && <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+      </div>
+      {error && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 print:hidden">{error}</div>}
 
-        {/* ---- batch data & edit history drawer ----
-            The consumption figures repeat what the sheet below prices — the
-            owner said redundancy is fine to trim, so this keeps the raw
-            mixer-side facts (what ran, what was weighed, slab counts) and puts
-            its weight on THE CHANGES: who set which price when, who marked
-            what correct, off the append-only action log. */}
-        {report && showDetail && (
-          <div className="mt-4 space-y-5 border-t border-gray-200 pt-4">
+      {/* ---- Inputs & sign-off: ONE collapsible, closed at first load.
+          Everything that is not the document lives in here — the sign-off
+          card, the materials panel, the batch data and edit history, the
+          plant-wide rates — so the page opens on the picker, one summary
+          line, and the sheet. It opens itself only when the sheet cannot be
+          computed, because then the fix is in here and there is no document
+          to be centre stage. The sign-off card stays MOUNTED while closed
+          (hidden, not unrendered) so the summary line can show the two marks
+          without a second fetch; the heavier panels mount only when opened. ---- */}
+      {report && (
+        <div className="rounded-xl border border-gray-200 bg-white/70 print:hidden">
+          <button type="button" onClick={() => setInputsOpen((v) => !v)} aria-expanded={inputsOpen}
+            className="flex w-full flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-left">
+            <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
+              <svg className={"h-3 w-3 transition-transform " + (inputsOpen ? "" : "-rotate-90")} fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+              Inputs &amp; sign-off
+            </span>
+            <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500">
+              <span>{pricedCount} material{pricedCount === 1 ? "" : "s"} priced on this batch</span>
+              <span>·</span>
+              <span>Consumption {signChip("WEIGHTS")}</span>
+              <span>Prices {signChip("COSTS")}</span>
+            </span>
+            <span className="ml-auto text-xs font-medium text-brand">{inputsOpen ? "Close" : "Open"}</span>
+          </button>
+          <div className={inputsOpen ? "space-y-5 border-t border-gray-200 p-4" : "hidden"}>
+            <SignoffCard batchKey={report.batchKey} version={signoffVersion}
+              onChanged={() => void load(report.batchKey)} onState={setSignState} />
+            {inputsOpen && (
+              <>
+        <BatchRatesPanel
+          key={report.batchKey}
+          batchKey={report.batchKey}
+          batchLabel={report.batch}
+          // The unpriced flags live INLINE beside this panel's heading now
+          // (owner, 2026-08-18) — the two standalone banner blocks that used to
+          // sit below are gone. The guard itself is untouched: report.ts still
+          // withholds the sheet while either list is non-empty.
+          needsBatchRates={report.needsBatchRates}
+          unpriced={report.unpriced.map((u) => u.item)}
+          // Re-read the sheet rather than patching it: the report is computed
+          // from mixer records and the card on every read, so recomputing is
+          // the only way the totals, shares and per-sqft lines all move
+          // together with a changed rate.
+          onSaved={() => { setSignoffVersion((v) => v + 1); void load(report.batchKey); }}
+        />
+                <Card>
+                  <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">Batch data &amp; edit history</h2>
+                  <p className="mb-3 mt-0.5 text-xs text-gray-400">What ran and what was weighed; who set which price when; every change, newest first.</p>
+                  <div className="space-y-5">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Kpi label="Mixer cycles ran" value={num(report.stats.resinCycles, 0)} sub={`${num(report.stats.mixerCharges, 0)} mixer charges`} />
               <Kpi label="Slabs · 2 cm" value={num(report.detail.consumption.slabs2cm, 0)} />
@@ -368,31 +419,13 @@ export function CostingDashboard() {
                 </ul>
               )}
             </div>
+                  </div>
+                </Card>
+                <RateCardEditor />
+              </>
+            )}
           </div>
-        )}
-      </Card>
-
-      {/* ---- sign-off: the same card the verifiers see, in the same place ---- */}
-      {report && <SignoffCard batchKey={report.batchKey} onChanged={() => void load(report.batchKey)} />}
-
-      {/* ---- rates for this batch ---- */}
-      {report && (
-        <BatchRatesPanel
-          key={report.batchKey}
-          batchKey={report.batchKey}
-          batchLabel={report.batch}
-          // The unpriced flags live INLINE beside this panel's heading now
-          // (owner, 2026-08-18) — the two standalone banner blocks that used to
-          // sit below are gone. The guard itself is untouched: report.ts still
-          // withholds the sheet while either list is non-empty.
-          needsBatchRates={report.needsBatchRates}
-          unpriced={report.unpriced.map((u) => u.item)}
-          // Re-read the sheet rather than patching it: the report is computed
-          // from mixer records and the card on every read, so recomputing is
-          // the only way the totals, shares and per-sqft lines all move
-          // together with a changed rate.
-          onSaved={() => void load(report.batchKey)}
-        />
+        </div>
       )}
 
       {report && report.blockedBy.length > 0 && (
@@ -421,12 +454,6 @@ export function CostingDashboard() {
         </div>
       )}
 
-      {/* The standalone "no sheet yet" and "used but not priced" banners are
-          gone (owner, 2026-08-18): both facts are flagged inline beside the
-          "Materials for this batch" heading in the panel above, which is also
-          where the fix happens. report.ts still withholds the sheet — this
-          removed two renderings of the same warning, not the guard. */}
-
       {/* ---- not costable yet: say what is missing, print nothing ---- */}
       {s && notCostable && (
         <Card>
@@ -453,8 +480,6 @@ export function CostingDashboard() {
           )}
         </Card>
       )}
-
-      </div>
 
       {/* ---- the sheet, as a document ----
           Headline, raw material, output, conversion and variance used to be

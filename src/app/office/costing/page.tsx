@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { Shell } from "@/components/Shell";
 import { currentUser } from "@/lib/rbac";
-import { RateCardEditor } from "@/components/office/RateCardEditor";
 import { CostingDashboard } from "@/components/office/CostingDashboard";
 
 export const dynamic = "force-dynamic";
@@ -19,23 +18,10 @@ export default async function CostingPage() {
 
   return (
     <Shell>
-      {/* print:hidden — printing this page prints the costing SHEET alone */}
-      <div className="mb-6 print:hidden">
-        <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Batch costing</h1>
-        <p className="mt-1 max-w-2xl text-sm text-gray-500">
-          Pick a batch, enter what it was bought at, and read its sheet. Quantities come from
-          the mixer; prices come from you. Nothing is stored — the batch re-costs on every load.
-        </p>
-      </div>
-      <div className="space-y-5">
-        {/* Batch work first: picking and pricing a batch is what this page is
-            opened FOR. The plant-wide rates change perhaps monthly, and their
-            full table used to open above this and push the batch picker below
-            the fold - it now folds to one line when complete and sits after
-            the thing people actually came to do. */}
-        <CostingDashboard />
-        <RateCardEditor />
-      </div>
+      {/* The dashboard carries the title, the picker, one folded line of
+          inputs (sign-off, materials, batch data, plant-wide rates) and the
+          document. One component, so the page itself has no sections to stack. */}
+      <CostingDashboard />
     </Shell>
   );
 }
