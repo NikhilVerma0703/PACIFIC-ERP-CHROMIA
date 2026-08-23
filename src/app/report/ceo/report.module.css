@@ -177,6 +177,11 @@
   .doc { color: #000; }
 }
 
+/* A table or block that must not be cut by a page break. Used by the costing
+   sheet, whose length varies with the batch and which paginates naturally
+   rather than one fixed sheet per page. */
+.keep { break-inside: avoid; page-break-inside: avoid; }
+
 @page { size: A4; margin: 12.7mm; }
 
 /* narrow screens: let the sheet scroll rather than reflow — a report that

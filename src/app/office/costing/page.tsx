@@ -19,7 +19,8 @@ export default async function CostingPage() {
 
   return (
     <Shell>
-      <div className="mb-6">
+      {/* print:hidden — printing this page prints the costing SHEET alone */}
+      <div className="mb-6 print:hidden">
         <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Batch costing</h1>
         <p className="mt-1 max-w-2xl text-sm text-gray-500">
           Pick a batch, enter what it was bought at, and read its sheet. Quantities come from
