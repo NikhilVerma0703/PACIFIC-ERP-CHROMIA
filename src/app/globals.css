@@ -5,6 +5,10 @@
 :root {
   --bg: #eef1f4;
   --fg: #0f1720;
+  /* The ERP is light-only by decision (see the Chromia note below). Declaring
+   * it stops dark-mode devices from darkening form controls, scrollbars and
+   * the print pipeline on their own. */
+  color-scheme: light;
 }
 
 html, body { max-width: 100vw; }

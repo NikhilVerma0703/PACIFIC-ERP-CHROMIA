@@ -59,7 +59,12 @@
 }
 .kpi { flex: 1; padding: 4px 6px 4px 0; }
 .kpi + .kpi { border-left: 0.35px solid var(--rule); padding-left: 8px; }
-.kpiValue { font-family: var(--display); font-weight: 700; font-size: 16.2pt; color: var(--ink); line-height: 1.1; }
+/* 15.2pt, not 16.2: the costing sheet's crore values (₹1,57,11,096 in Georgia
+ * bold) made the six-tile band's min-content wider than the sheet's 698px
+ * content box, so the last figure bled past the page edge on screen. One point
+ * down plus a hair of tracking buys ~35px of headroom; nowrap so a value that
+ * ever again outgrows its tile fails visibly rather than wrapping mid-number. */
+.kpiValue { font-family: var(--display); font-weight: 700; font-size: 15.2pt; letter-spacing: -0.01em; color: var(--ink); line-height: 1.1; white-space: nowrap; }
 .kpiLabel { font-size: 6.2pt; color: var(--grey); letter-spacing: 0.07em; margin-top: 2.5px; text-transform: uppercase; }
 
 /* prose ------------------------------------------------------------------- */
@@ -172,9 +177,16 @@
   .bar, .info, .hint { display: none !important; }
   .hoverWrap { border-bottom: 0; cursor: auto; }
   .hoverTip { display: none !important; }
-  .sheet { box-shadow: none; margin: 0; width: auto; min-height: 0; padding: 0; }
+  .sheet { box-shadow: none; margin: 0; width: auto; min-height: 0; padding: 0; background: #fff; }
   .sheet + .sheet { page-break-before: always; }
-  .doc { color: #000; }
+  /* Paint the paper, do not assume it. WebKit strips backgrounds when printing
+   * to PDF, so the file carries a TRANSPARENT ground — and dark-mode mail and
+   * chat viewers render transparency as black, which is how "the downloaded
+   * report is black on my iPhone" happens. Forcing color-adjust also keeps the
+   * dark table headers and the ruled shading in the printed sheet instead of
+   * leaving their white text on nothing. */
+  :global(html), :global(body) { background: #fff !important; }
+  .doc { color: #000; background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
 
 /* A table or block that must not be cut by a page break. Used by the costing
