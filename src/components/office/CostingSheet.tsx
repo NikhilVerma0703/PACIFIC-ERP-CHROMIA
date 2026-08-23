@@ -48,6 +48,11 @@ export interface CostingSheetReport {
       perSqftUsd3cm: number; perSqftUsd2cm: number;
       materialTotal: number; conversionTotal: number; batchTotal: number;
     };
+    usd: {
+      rate: number; perSlab3cm: number; perSlab2cm: number;
+      resinAndChemicalsTotal: number; gritAndFillerTotal: number; materialTotal: number;
+      conversionPerSlab: number; conversionTotal: number; batchTotal: number;
+    };
   };
   variance: {
     lines: Array<{ item: string; primaryQty: number; checkQty: number; unit: string; delta: number; costEffect: number }>;
@@ -58,6 +63,14 @@ export interface CostingSheetReport {
 
 const inr = (n: number) => "₹" + n.toLocaleString("en-IN", { maximumFractionDigits: 2 });
 const inr0 = (n: number) => "₹" + Math.round(n).toLocaleString("en-IN");
+// Dollars group en-US: an Indian-grouped dollar figure reads as a typo to the
+// buyer the number is quoted to. Cents are floored at two digits so "$176.3"
+// can never sit beside "$241.83" in the same band.
+const usd = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const usd0 = (n: number) => "$" + Math.round(n).toLocaleString("en-US");
+// Per sq ft keeps the trade's four decimals — the third is real money at
+// container volume — but floors at cents so "$2.9" can never print either.
+const usd4 = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 const num = (n: number, d = 2) => n.toLocaleString("en-IN", { maximumFractionDigits: d });
 const DASH = "—";
 
@@ -83,7 +96,7 @@ function Section({ n, name, note }: { n: number; name: string; note?: string }) 
   );
 }
 
-function MaterialTable({ lines, total }: { lines: PricedLine[]; total: number }) {
+function MaterialTable({ lines, total, totalUsd }: { lines: PricedLine[]; total: number; totalUsd: number }) {
   return (
     <table className={`${s.t} ${s.keep}`}>
       <thead><tr>
@@ -100,7 +113,8 @@ function MaterialTable({ lines, total }: { lines: PricedLine[]; total: number })
             <td className={s.num}>{inr0(l.amount)}</td>
           </tr>
         ))}
-        <tr className={s.total}><td colSpan={4}>Sub-total</td><td className={s.num}>{inr0(total)}</td></tr>
+        <tr className={s.total}><td colSpan={4}>Sub-total</td>
+          <td className={s.num}>{inr0(total)} <span className={s.muted}>· {usd0(totalUsd)}</span></td></tr>
       </tbody>
     </table>
   );
@@ -148,34 +162,41 @@ export function CostingSheet({ report }: { report: CostingSheetReport }) {
               <div className={s.docDate}>
                 Batch {report.batch} · {report.design} · pressed {pressedSpan(report.window.firstPress, report.window.lastPress)}
               </div>
-              <div className={s.docDate}>Rates as in force on {report.rateDate}</div>
+              {/* The rate prints raw, not through num(): a batch rate of 95.375
+                  clipped to "95.38" would break the ₹ ÷ rate tie-back for
+                  anyone checking the sheet by hand. */}
+              <div className={s.docDate}>Rates as in force on {report.rateDate} · $1 = ₹{sh.usd.rate}</div>
             </div>
           </div>
           <hr className={s.mastRule} />
 
+          {/* The "· $x" join is non-breaking so a wrapped label carries the
+              whole dollar unit to line 2 instead of ending line 1 on a bare "·".
+              Material's label slot holds the % motif; its dollar is on the
+              Total material row below. */}
           <div className={s.kpis}>
-            {kpi(inr0(sh.final.perSlab3cm), "Cost / slab · 3 cm")}
-            {kpi(inr0(sh.final.perSlab2cm), "Cost / slab · 2 cm")}
-            {kpi(inr(sh.final.perSqft3cm), `Cost / sq ft · 3 cm · $${sh.final.perSqftUsd3cm}`)}
-            {kpi(inr(sh.final.perSqft2cm), `Cost / sq ft · 2 cm · $${sh.final.perSqftUsd2cm}`)}
+            {kpi(inr0(sh.final.perSlab3cm), `Cost / slab · 3 cm · ${usd(sh.usd.perSlab3cm)}`)}
+            {kpi(inr0(sh.final.perSlab2cm), `Cost / slab · 2 cm · ${usd(sh.usd.perSlab2cm)}`)}
+            {kpi(inr(sh.final.perSqft3cm), `Cost / sq ft · 3 cm · ${usd4(sh.final.perSqftUsd3cm)}`)}
+            {kpi(inr(sh.final.perSqft2cm), `Cost / sq ft · 2 cm · ${usd4(sh.final.perSqftUsd2cm)}`)}
             {kpi(inr0(sh.final.materialTotal), `Material · ${num(matPct, 1)}% of total`)}
-            {kpi(inr0(sh.final.batchTotal), "Total batch cost")}
+            {kpi(inr0(sh.final.batchTotal), `Total batch cost · ${usd0(sh.usd.batchTotal)}`)}
           </div>
 
           <p className={s.prose}>
             Batch {report.batch} made <strong>{sh.output.totalSlabs} slabs</strong> — {sh.output.slabs3cm} of 3 cm and {sh.output.slabs2cm} of 2 cm —
             over {num(sh.conversion.runHours, 1)} hours of run. Material came to <strong>{inr0(sh.final.materialTotal)}</strong> ({num(matPct, 1)} per cent
-            of the total) and conversion to <strong>{inr0(sh.final.conversionTotal)}</strong>, a batch cost of <strong>{inr0(sh.final.batchTotal)}</strong>:
-            {" "}{inr0(sh.final.perSlab3cm)} per 3 cm slab and {inr0(sh.final.perSlab2cm)} per 2 cm slab. Quantities are what the mixer weighed;
+            of the total) and conversion to <strong>{inr0(sh.final.conversionTotal)}</strong> ({usd0(sh.usd.conversionTotal)}), a batch cost of <strong>{inr0(sh.final.batchTotal)}</strong> ({usd0(sh.usd.batchTotal)} at ₹{sh.usd.rate}):
+            {" "}{inr0(sh.final.perSlab3cm)} ({usd(sh.usd.perSlab3cm)}) per 3 cm slab and {inr0(sh.final.perSlab2cm)} ({usd(sh.usd.perSlab2cm)}) per 2 cm slab. Quantities are what the mixer weighed;
             dosed chemicals are dose × resin; prices are the batch&rsquo;s own where set and the rate card elsewhere.
           </p>
 
           {/* 1 · raw material */}
           <Section n={1} name="Raw material" note="Quantities as the mixer weighed them; dosed chemicals as dose × resin" />
           <div className={s.subLabel}>Resin and chemicals</div>
-          <MaterialTable lines={sh.material.resinAndChemicals} total={sh.material.resinAndChemicalsTotal} />
+          <MaterialTable lines={sh.material.resinAndChemicals} total={sh.material.resinAndChemicalsTotal} totalUsd={sh.usd.resinAndChemicalsTotal} />
           <div className={s.subLabel} style={{ marginTop: 6 }}>Grit and filler — {num(sh.material.gritAndFillerTonnes, 3)} t</div>
-          <MaterialTable lines={sh.material.gritAndFiller} total={sh.material.gritAndFillerTotal} />
+          <MaterialTable lines={sh.material.gritAndFiller} total={sh.material.gritAndFillerTotal} totalUsd={sh.usd.gritAndFillerTotal} />
           <div className={s.pair} style={{ marginTop: 6 }}>
             <div>
               <div className={s.subLabel}>Share of material cost</div>
@@ -185,7 +206,9 @@ export function CostingSheet({ report }: { report: CostingSheetReport }) {
                   {sh.material.shares.map((g) => (
                     <tr key={g.label}><td className={s.key}>{g.label}</td><td className={s.num}>{inr0(g.amount)}</td><td className={s.num}>{num(g.pct, 1)}%</td></tr>
                   ))}
-                  <tr className={s.total}><td>Total material</td><td className={s.num}>{inr0(sh.material.total)}</td><td className={s.num}>100%</td></tr>
+                  <tr className={s.total}><td>Total material</td>
+                    <td className={s.num}>{inr0(sh.material.total)} <span className={s.muted}>· {usd0(sh.usd.materialTotal)}</span></td>
+                    <td className={s.num}>100%</td></tr>
                 </tbody>
               </table>
             </div>
@@ -234,7 +257,8 @@ export function CostingSheet({ report }: { report: CostingSheetReport }) {
               {sh.conversion.heads.map((h) => (
                 <tr key={h.head}><td className={s.key}>{h.head}</td><td className={s.muted}>{h.basis}</td><td className={s.num}>{inr(h.perSlab)}</td></tr>
               ))}
-              <tr className={s.total}><td colSpan={2}>Total conversion</td><td className={s.num}>{inr(sh.conversion.perSlab)}</td></tr>
+              <tr className={s.total}><td colSpan={2}>Total conversion</td>
+                <td className={s.num}>{inr(sh.conversion.perSlab)} <span className={s.muted}>· {usd(sh.usd.conversionPerSlab)}</span></td></tr>
             </tbody>
           </table>
           <p className={s.note}>

@@ -114,6 +114,27 @@ export interface CostingSheet {
     conversionTotal: number;
     batchTotal: number;
   };
+  /** The headline figures again, in dollars, at `rate` — derived from the
+   *  PRINTED rupee figures rather than the unrounded ones, so the two
+   *  currencies tie on paper. Line items stay ₹-only: rates are negotiated
+   *  in rupees, and a dollar on every row is ink nobody quotes from.
+   *
+   *  Each figure rounds independently, so the block need not SUM to the
+   *  cent: materialTotal + conversionTotal can miss batchTotal by one. Each
+   *  dollar ties to its own ₹ figure; do not sum-check them against each
+   *  other. */
+  usd: {
+    /** ₹ per USD the dollars were priced at — printed on the sheet. */
+    rate: number;
+    perSlab3cm: number;
+    perSlab2cm: number;
+    resinAndChemicalsTotal: number;
+    gritAndFillerTotal: number;
+    materialTotal: number;
+    conversionPerSlab: number;
+    conversionTotal: number;
+    batchTotal: number;
+  };
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -246,7 +267,11 @@ export function computeSheet(
   const inrPerUsd = divisor(basis.inrPerUsd, "rupees per USD");
   const perSlab3cm = round2(materialPerEquivalent + conversionPerSlab);
   const perSlab2cm = round2(materialPer2cm + conversionPerSlab);
+  const perSqft3cm = round2(perSlab3cm / sqftPerSlab);
+  const perSqft2cm = round2(perSlab2cm / sqftPerSlab);
   const conversionTotal = round2(conversionPerSlab * totalSlabs);
+  const batchTotal = round2(total + conversionTotal);
+  const toUsd = (n: number) => round2(n / inrPerUsd);
 
   return {
     material: {
@@ -278,15 +303,28 @@ export function computeSheet(
     final: {
       perSlab3cm,
       perSlab2cm,
-      perSqft3cm: round2(perSlab3cm / sqftPerSlab),
-      perSqft2cm: round2(perSlab2cm / sqftPerSlab),
+      perSqft3cm,
+      perSqft2cm,
       // Four decimals: a slab sells by the container, and the third decimal
-      // of a $/sqft price is real money at that volume.
-      perSqftUsd3cm: Math.round((perSlab3cm / sqftPerSlab / inrPerUsd) * 10000) / 10000,
-      perSqftUsd2cm: Math.round((perSlab2cm / sqftPerSlab / inrPerUsd) * 10000) / 10000,
+      // of a $/sqft price is real money at that volume. Derived from the
+      // PRINTED ₹/sqft, like the usd block, so the dollar on the sheet always
+      // equals the rupee beside it at the printed rate.
+      perSqftUsd3cm: Math.round((perSqft3cm / inrPerUsd) * 10000) / 10000,
+      perSqftUsd2cm: Math.round((perSqft2cm / inrPerUsd) * 10000) / 10000,
       materialTotal: total,
       conversionTotal,
-      batchTotal: round2(total + conversionTotal),
+      batchTotal,
+    },
+    usd: {
+      rate: inrPerUsd,
+      perSlab3cm: toUsd(perSlab3cm),
+      perSlab2cm: toUsd(perSlab2cm),
+      resinAndChemicalsTotal: toUsd(resinAndChemicalsTotal),
+      gritAndFillerTotal: toUsd(gritAndFillerTotal),
+      materialTotal: toUsd(total),
+      conversionPerSlab: toUsd(conversionPerSlab),
+      conversionTotal: toUsd(conversionTotal),
+      batchTotal: toUsd(batchTotal),
     },
   };
 }

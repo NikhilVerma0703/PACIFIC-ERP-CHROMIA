@@ -108,6 +108,21 @@ test("costing: final per-slab, per-sqft and USD figures match the sheet", () => 
   assert.equal(s.final.batchTotal, 15_711_095.92);
 });
 
+test("costing: the dollar block prices every headline at the sheet's rate", () => {
+  const s = computeSheet(MATERIALS, OUTPUT, BASIS);
+  assert.equal(s.usd.rate, 95);
+  // Derived from the PRINTED rupee figures, not the unrounded ones, so the
+  // two currencies tie on paper: 22,973.99 / 95, to the cent.
+  assert.equal(s.usd.perSlab3cm, 241.83);
+  assert.equal(s.usd.perSlab2cm, 176.3);
+  assert.equal(s.usd.resinAndChemicalsTotal, 81_493.19);
+  assert.equal(s.usd.gritAndFillerTotal, 50_088.08);
+  assert.equal(s.usd.materialTotal, 131_581.27);
+  assert.equal(s.usd.conversionPerSlab, 45.25);
+  assert.equal(s.usd.conversionTotal, 33_798.68);
+  assert.equal(s.usd.batchTotal, 165_379.96);
+});
+
 test("costing: estimated lines keep their flag through pricing", () => {
   const s = computeSheet(MATERIALS, OUTPUT, BASIS);
   const resin = s.material.resinAndChemicals.filter((l) => l.group === "resin");

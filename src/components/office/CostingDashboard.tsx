@@ -53,6 +53,11 @@ interface Report {
       perSqftUsd3cm: number; perSqftUsd2cm: number;
       materialTotal: number; conversionTotal: number; batchTotal: number;
     };
+    usd: {
+      rate: number; perSlab3cm: number; perSlab2cm: number;
+      resinAndChemicalsTotal: number; gritAndFillerTotal: number; materialTotal: number;
+      conversionPerSlab: number; conversionTotal: number; batchTotal: number;
+    };
   };
   unpriced: Array<{ item: string; qty: number | null; unit: string; needs: string }>;
   blockedBy: string[];
