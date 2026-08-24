@@ -1,5 +1,6 @@
 "use client";
 import { Suspense, useEffect, useState } from "react";
+import { readJson } from "@/lib/readJson";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
@@ -45,6 +46,7 @@ function PIListPageInner() {
   const statusParam  = searchParams.get("status");
   const [pis, setPis]               = useState<PI[]>([]);
   const [loading, setLoading]       = useState(true);
+  const [loadError, setLoadError]   = useState("");
   const [filter, setFilter]         = useState(statusParam && FILTERS.includes(statusParam) ? statusParam : "ALL");
   const [factory, setFactory]       = useState("ALL");
   const [spTabs, setSpTabs]         = useState<SpTab[]>([]);
@@ -66,7 +68,7 @@ function PIListPageInner() {
   }, []);
 
   async function load(p = 1, append = false) {
-    setLoading(true);
+    setLoading(true); setLoadError("");
     const params = new URLSearchParams();
     if (filter !== "ALL") params.set("status", filter);
     if (factory !== "ALL") params.set("productType", factory);
@@ -75,16 +77,24 @@ function PIListPageInner() {
     params.set("page", String(p));
     if (dateFrom) params.set("from", dateFrom);
     if (dateTo)   params.set("to", dateTo);
-    const r = await fetch(`/api/sales/pi?${params}`);
-    const data = await r.json();
-    const list = Array.isArray(data) ? data : [];
-    if (append) {
-      setPis(prev => [...prev, ...list]);
-    } else {
-      setPis(list);
+    // readJson + finally — see sales/orders/page.tsx: the spinner used to stay
+    // for ever after an expired session or a dropped connection.
+    try {
+      const r = await fetch(`/api/sales/pi?${params}`);
+      const res = await readJson<unknown>(r);
+      if (!res.ok) { setLoadError(res.error ?? `Could not load PIs (HTTP ${res.status}).`); return; }
+      const list = Array.isArray(res.data) ? res.data : [];
+      if (append) {
+        setPis(prev => [...prev, ...list]);
+      } else {
+        setPis(list);
+      }
+      setHasMore(list.length === PAGE_SIZE);
+    } catch (e) {
+      setLoadError(e instanceof Error && e.message ? `Could not reach the server: ${e.message}` : "Could not reach the server.");
+    } finally {
+      setLoading(false);
     }
-    setHasMore(list.length === PAGE_SIZE);
-    setLoading(false);
   }
 
   function loadMore() {
@@ -176,6 +186,7 @@ function PIListPageInner() {
         )}
       </div>
 
+      {loadError && <div className="text-sm text-red-600 py-3 text-center">{loadError}</div>}
       {loading ? (
         <div className="text-sm text-slate-400 py-12 text-center">Loading&#x2026;</div>
       ) : visible.length === 0 ? (

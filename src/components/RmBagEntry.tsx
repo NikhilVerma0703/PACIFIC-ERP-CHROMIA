@@ -3,6 +3,11 @@
 import { useState } from "react";
 import { useActionState } from "react";
 import { createAssignedBag, type BagEntryResult, type BagFormOptions } from "@/app/store/actions";
+import { guardAction, SERVER_UNREACHABLE } from "@/lib/guardAction";
+
+// A dropped connection answers like any other failure instead of unmounting the
+// form (lib/guardAction). stamp 0 = the form is not reset.
+const guardedCreate = guardAction<BagEntryResult | null, BagEntryResult | null>(createAssignedBag, { ok: false, message: SERVER_UNREACHABLE, stamp: 0 });
 
 const input = "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
 const label = "mb-1 block text-xs font-medium text-gray-600";
@@ -42,7 +47,7 @@ function PickField({ name, title, options, required = false, allowOther = true }
 }
 
 export function RmBagEntry({ options }: { options: BagFormOptions }) {
-  const [res, action, pending] = useActionState<BagEntryResult | null, FormData>(createAssignedBag, null);
+  const [res, action, pending] = useActionState<BagEntryResult | null, FormData>(guardedCreate, null);
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-5">

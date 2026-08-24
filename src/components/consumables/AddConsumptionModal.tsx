@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { jsonOrThrow } from "@/lib/jsonOrThrow";
 import { useToast } from "@/components/consumables/toast-context";
 
 interface Department  { id: string; name: string; }
@@ -43,8 +44,8 @@ export default function AddConsumptionModal({ isOpen, onClose, onSuccess }: Prop
 
   useEffect(() => {
     if (!isOpen) return;
-    fetch("/api/consumables/departments").then((r) => r.json()).then(setDepartments).catch(console.error);
-    fetch("/api/consumables/inventory").then((r) => r.json()).then(setInventoryItems).catch(console.error);
+    fetch("/api/consumables/departments").then(jsonOrThrow).then(setDepartments).catch(console.error);
+    fetch("/api/consumables/inventory").then(jsonOrThrow).then(setInventoryItems).catch(console.error);
   }, [isOpen]);
 
   if (!isOpen) return null;

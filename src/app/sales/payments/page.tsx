@@ -1,6 +1,7 @@
 "use client";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useState } from "react";
+import { readJson } from "@/lib/readJson";
 import Link from "next/link";
 
 type Division = {
@@ -71,6 +72,7 @@ export default function PaymentsPage() {
 
   const [divisions, setDivisions] = useState<Division[]>([]);
   const [loading, setLoading]     = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [filter, setFilter]       = useState<FilterTab>("PENDING");
   const [busy, setBusy]           = useState<string | null>(null);
   const [msg, setMsg]             = useState("");
@@ -86,16 +88,19 @@ export default function PaymentsPage() {
   const [partErr, setPartErr]     = useState("");
 
   async function load(p = 1, append = false) {
-    setLoading(true);
+    setLoading(true); setLoadError("");
     const params = new URLSearchParams();
     params.set("limit", String(PAGE_SIZE));
     params.set("page", String(p));
     if (dateFrom) params.set("from", dateFrom);
     if (dateTo)   params.set("to", dateTo);
-    const r = await fetch(`/api/sales/payments?${params}`);
-    if (r.ok) {
-      const data = await r.json();
-      const list = Array.isArray(data) ? data : [];
+    // readJson + finally — see sales/orders/page.tsx. A failure used to clear
+    // the spinner silently (or not at all, on a dropped connection).
+    try {
+      const r = await fetch(`/api/sales/payments?${params}`);
+      const res = await readJson<unknown>(r);
+      if (!res.ok) { setLoadError(res.error ?? `Could not load payments (HTTP ${res.status}).`); return; }
+      const list = Array.isArray(res.data) ? res.data : [];
       if (append) {
         setDivisions(prev => {
           const seen = new Set(prev.map((d: any) => d.id));
@@ -105,8 +110,11 @@ export default function PaymentsPage() {
         setDivisions(list);
       }
       setHasMore(list.length === PAGE_SIZE);
+    } catch (e) {
+      setLoadError(e instanceof Error && e.message ? `Could not reach the server: ${e.message}` : "Could not reach the server.");
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }
 
   function loadMore() {
@@ -297,6 +305,7 @@ export default function PaymentsPage() {
       </div>
 
       {msg && <p className="text-sm text-green-600 mb-4">{msg}</p>}
+      {loadError && <div className="text-sm text-red-600 py-3 text-center">{loadError}</div>}
 
       {loading ? (
         <div className="text-sm text-slate-400 py-16 text-center">Loading&#x2026;</div>

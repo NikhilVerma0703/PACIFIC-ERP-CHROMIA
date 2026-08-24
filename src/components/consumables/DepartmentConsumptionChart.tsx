@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { jsonOrThrow } from "@/lib/jsonOrThrow";
 import {
   ResponsiveContainer, BarChart, Bar,
   XAxis, YAxis, Tooltip, Cell,
@@ -40,11 +41,12 @@ export default function DepartmentConsumptionChart() {
   const [data, setData] = useState<DeptData[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
     fetch("/api/consumables/charts/department-consumption")
-      .then((r) => r.json())
+      .then(jsonOrThrow)
       .then((d) => { setData(d); setLoading(false); })
-      .catch(console.error);
+      .catch((e) => { console.error(e); setLoadError(e instanceof Error && e.message ? e.message : "Could not load."); setLoading(false); });
   }, []);
 
   // Dynamic height: 52px per bar, min 200
@@ -52,6 +54,7 @@ export default function DepartmentConsumptionChart() {
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      {loadError && <p className="px-5 pt-3 text-xs text-red-600">{loadError}</p>}
       {/* Top accent */}
       <div className="h-1 w-full bg-gradient-to-r from-violet-500 to-purple-400" />
 

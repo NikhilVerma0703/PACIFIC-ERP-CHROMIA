@@ -37,8 +37,11 @@ export default async function EditRecord({ params }: { params: Promise<{ model: 
       <div className="mb-4 flex flex-wrap gap-3">
         {photos.map((ph) => (
           <a key={ph.id} href={`/api/photo?id=${ph.id}`} target="_blank" className="block overflow-hidden rounded-lg border border-gray-200 shadow-sm transition hover:border-brand" title={`${ph.filename}${ph.taken_by ? ` · ${ph.taken_by}` : ""}`}>
+            {/* width/height reserve the 96px box before the bytes arrive (these are
+                full camera JPEGs, avg 324 KB), lazy + async keep their decode off the
+                path of the editor's hydration; the classes still size the box. */}
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={`/api/photo?id=${ph.id}`} alt={ph.filename} className="h-24 w-24 object-cover" />
+            <img src={`/api/photo?id=${ph.id}`} alt={ph.filename} width={96} height={96} loading="lazy" decoding="async" className="h-24 w-24 object-cover" />
           </a>
         ))}
       </div>

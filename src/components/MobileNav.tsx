@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { createPortal } from "react-dom";
 import { Nav } from "./Nav";
@@ -8,6 +8,7 @@ import { Nav } from "./Nav";
 export function MobileNav({ showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false, intlSales = false, salesDuty = "", batchVerify = false }: { showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; inventory?: boolean; consumables?: boolean; intlSales?: boolean; salesDuty?: string; batchVerify?: boolean }) {
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const closeBtn = useRef<HTMLButtonElement>(null);
   const path = usePathname();
   
   // Close the drawer on navigation
@@ -16,18 +17,33 @@ export function MobileNav({ showAdmin = false, branch = "SHOP_FLOOR", role = "",
   // Ensure Portal only runs on the client to prevent Next.js SSR errors
   useEffect(() => { setMounted(true); }, []);
 
+  // While open: the page behind must not scroll (a swipe on the backdrop used
+  // to scroll the page under the drawer), Escape closes, and focus lands on
+  // the close button so a keyboard or screen reader is inside the drawer.
+  // Restores whatever body overflow was there before.
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("keydown", onKey);
+    closeBtn.current?.focus();
+    return () => { document.body.style.overflow = prev; document.removeEventListener("keydown", onKey); };
+  }, [open]);
+
   // The Teleported Drawer
   const drawerContent = open && mounted ? createPortal(
     <div className="fixed inset-0 z-[9999] md:hidden">
       
       {/* Dark, blurry backdrop */}
       <div 
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity" 
+        className="absolute inset-0 touch-none bg-black/60 backdrop-blur-sm transition-opacity" 
         onClick={() => setOpen(false)} 
       />
       
-      {/* White Sidebar Drawer */}
-      <div className="absolute inset-y-0 left-0 flex w-72 flex-col bg-white px-4 py-5 shadow-2xl z-[10000]">
+      {/* White Sidebar Drawer. safe-bottom: clears the iPhone home indicator in
+          a home-screen install (keeps py-5 where there is no inset). */}
+      <div className="absolute inset-y-0 left-0 flex w-72 flex-col bg-white px-4 py-5 shadow-2xl z-[10000] safe-bottom [--safe-pad:1.25rem]">
         
         {/* Drawer Header */}
         <div className="mb-5 flex items-center justify-between px-2 shrink-0">
@@ -38,6 +54,7 @@ export function MobileNav({ showAdmin = false, branch = "SHOP_FLOOR", role = "",
             <div className="text-sm font-semibold text-gray-900">Pacific ERP</div>
           </div>
           <button 
+            ref={closeBtn}
             type="button" 
             onClick={() => setOpen(false)} 
             aria-label="Close menu" 
@@ -49,8 +66,9 @@ export function MobileNav({ showAdmin = false, branch = "SHOP_FLOOR", role = "",
           </button>
         </div>
 
-        {/* Navigation Links */}
-        <div className="flex-1 overflow-y-auto pb-6">
+        {/* Navigation Links. overscroll-contain: reaching the end of the list no
+            longer scroll-chains into the page behind. */}
+        <div className="flex-1 overflow-y-auto overscroll-contain pb-6">
           <Nav showAdmin={showAdmin} branch={branch} role={role} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} />
         </div>
 

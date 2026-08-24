@@ -1,6 +1,7 @@
 "use client";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useState } from "react";
+import { readJson } from "@/lib/readJson";
 import Link from "next/link";
 
 type StockCheck = {
@@ -40,6 +41,7 @@ function StatusBadge({ s }: { s: string }) {
 export default function StockChecksPage() {
   const [checks, setChecks] = useState<StockCheck[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [filter, setFilter] = useState<"ALL" | "PENDING" | "AVAILABLE" | "UNAVAILABLE" | "PARTIAL">("PENDING");
   const [active, setActive] = useState<StockCheck | null>(null);
   const [notes, setNotes] = useState("");
@@ -47,10 +49,18 @@ export default function StockChecksPage() {
   const [msg, setMsg] = useState("");
 
   async function load() {
-    setLoading(true);
-    const r = await fetch("/api/sales/stock-checks");
-    if (r.ok) setChecks(await r.json());
-    setLoading(false);
+    setLoading(true); setLoadError("");
+    // readJson + finally — see sales/orders/page.tsx.
+    try {
+      const r = await fetch("/api/sales/stock-checks");
+      const res = await readJson<unknown>(r);
+      if (!res.ok) { setLoadError(res.error ?? `Could not load stock checks (HTTP ${res.status}).`); return; }
+      if (Array.isArray(res.data)) setChecks(res.data);
+    } catch (e) {
+      setLoadError(e instanceof Error && e.message ? `Could not reach the server: ${e.message}` : "Could not reach the server.");
+    } finally {
+      setLoading(false);
+    }
   }
   useEffect(() => { load(); }, []);
 
@@ -100,6 +110,7 @@ export default function StockChecksPage() {
         ))}
       </div>
 
+      {loadError && <div className="text-sm text-red-600 py-3 text-center">{loadError}</div>}
       {loading ? (
         <div className="text-sm text-slate-400 py-16 text-center">Loading…</div>
       ) : filtered.length === 0 ? (

@@ -135,6 +135,7 @@ export default async function FabProjectDetailPage({
                   </span>
                 )}
               </div>
+              <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 text-xs text-gray-500">
                   <tr>
@@ -186,6 +187,7 @@ export default async function FabProjectDetailPage({
                   })}
                 </tbody>
               </table>
+              </div>
             </div>
           ))}
         </div>

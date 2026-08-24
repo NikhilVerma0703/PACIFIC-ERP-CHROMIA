@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { jsonOrThrow } from "@/lib/jsonOrThrow";
 import {
   ResponsiveContainer, BarChart, Bar,
   XAxis, YAxis, Tooltip, Cell,
@@ -38,11 +39,12 @@ export default function TopConsumedItemsChart() {
   const [data, setData]       = useState<TopItem[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
     fetch("/api/consumables/charts/top-items")
-      .then((r) => r.json())
+      .then(jsonOrThrow)
       .then((d: TopItem[]) => { setData(d); setLoading(false); })
-      .catch(console.error);
+      .catch((e) => { console.error(e); setLoadError(e instanceof Error && e.message ? e.message : "Could not load."); setLoading(false); });
   }, []);
 
   const chartData = data.map((item) => ({
@@ -54,6 +56,7 @@ export default function TopConsumedItemsChart() {
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      {loadError && <p className="px-5 pt-3 text-xs text-red-600">{loadError}</p>}
       {/* Accent bar */}
       <div className="h-1 w-full bg-gradient-to-r from-blue-600 to-blue-400" />
 

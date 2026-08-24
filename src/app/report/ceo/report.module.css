@@ -111,6 +111,14 @@
   font-size: 7px; font-weight: 700; font-style: italic;
   line-height: 9.4px; text-align: center; cursor: pointer;
   background: #fff; padding: 0; font-family: var(--display);
+  /* globals.css gives every <button> min-height: 44px under a coarse pointer,
+   * which stretched this 11px dot into an 11x44 sliver on the CEO's iPhone.
+   * The dot keeps its size; the ::before below is the finger-sized hit area,
+   * touch screens only so a mouse sees exactly what it always did. */
+  min-height: 0; position: relative;
+}
+@media screen and (pointer: coarse) {
+  .infoDot::before { content: ""; position: absolute; inset: -16px; }
 }
 .infoDot:hover, .infoDot[aria-expanded="true"] { border-color: var(--ink); color: var(--ink); }
 .infoPop {
@@ -133,7 +141,10 @@
  * click — which a touch screen can do and a hover cannot, and which stays
  * open while you check it against the table underneath. */
 .hoverWrap { position: relative; border: 0; padding: 0; background: none; font: inherit; color: inherit;
-  text-align: inherit; border-bottom: 0.8px dotted var(--grey); cursor: pointer; }
+  text-align: inherit; border-bottom: 0.8px dotted var(--grey); cursor: pointer;
+  /* same coarse-pointer min-height as the dot: a 44px figure made its table
+   * row two and a half times the height of its neighbours on a phone */
+  min-height: 0; }
 .hoverWrap:hover { border-bottom-color: var(--ink); color: var(--ink); }
 .hoverWrap[aria-expanded="true"] { border-bottom-color: var(--ink); color: var(--ink); }
 .hoverTip {
@@ -201,7 +212,11 @@
 @page { size: A4; margin: 12.7mm; }
 
 /* narrow screens: let the sheet scroll rather than reflow — a report that
- * rewraps on a phone is not the document the page is for. */
-@media (max-width: 230mm) {
+ * rewraps on a phone is not the document the page is for.
+ * 1097px, not the sheet's own 230mm: with the 256px sidebar open and the
+ * shell's 48px of padding the 210mm sheet needs a 1098px window, so between
+ * 869 and 1097px it ran off the right of the main column instead. Screen
+ * only — the printed page has no scroller. */
+@media screen and (max-width: 1097px) {
   .scroller { overflow-x: auto; padding-bottom: 8px; }
 }

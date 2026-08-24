@@ -4,6 +4,7 @@
 // would be a cycle, and a cycle here leaves one of the two components undefined
 // at module-init time depending on which side the bundler evaluates first.
 import { useCallback, useEffect, useRef, useState } from "react";
+import { readJson } from "@/lib/readJson";
 
 const API = "/api/office/finance";
 const inp = "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm transition focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20 disabled:bg-gray-50 disabled:text-gray-400";
@@ -11,7 +12,12 @@ const inp = "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm
 async function j<T>(url: string): Promise<T> {
   const r = await fetch(url, { cache: "no-store" });
   if (!r.ok) throw new Error(`Request failed (${r.status})`);
-  return r.json() as Promise<T>;
+  // readJson on the success path: an expired session answers a JSON route with
+  // the login page's HTML and status 200, which r.json() reported as
+  // "Unexpected token '<'"; now it says what happened. Same result otherwise.
+  const res = await readJson<T>(r);
+  if (!res.ok) throw new Error(res.error ?? `Request failed (${r.status})`);
+  return res.data as T;
 }
 
 /**

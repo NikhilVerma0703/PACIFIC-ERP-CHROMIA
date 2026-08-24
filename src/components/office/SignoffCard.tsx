@@ -73,7 +73,11 @@ export function SignoffCard({ batchKey, version = 0, onChanged, onState }: {
   useEffect(() => {
     let live = true;
     setState(undefined); setNote(null);
-    void load().then((st) => { if (live) { setState(st); onState?.(st); } });
+    // A rejected fetch (expired session, dropped Wi-Fi) used to leave "Reading
+    // the sign-off…" on screen for ever, plus an unhandled rejection; it now
+    // says so in the card instead.
+    void load().then((st) => { if (live) { setState(st); onState?.(st); } })
+      .catch((e) => { if (live) setNote({ text: e instanceof Error && e.message ? `Could not read the sign-off: ${e.message}` : "Could not read the sign-off.", ok: false }); });
     return () => { live = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- onState is a setter; re-running on its identity would refetch on every parent render
   }, [load, version]);
@@ -112,7 +116,9 @@ export function SignoffCard({ batchKey, version = 0, onChanged, onState }: {
       </div>
 
       {state === undefined ? (
-        <p className="text-sm text-gray-400">Reading the sign-off…</p>
+        note
+          ? <p className="text-xs text-red-700">{note.text}</p>
+          : <p className="text-sm text-gray-400">Reading the sign-off…</p>
       ) : (
         <>
           {/* The API's own answer to "why can I not mark this yet", verbatim —

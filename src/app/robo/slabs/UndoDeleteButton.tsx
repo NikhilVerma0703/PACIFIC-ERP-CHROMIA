@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { ClientTime } from "@/components/ClientTime";
 import { undoLastRoboSlabDelete } from "./undoActions";
 
 /**
@@ -23,7 +24,10 @@ export function UndoDeleteButton({ summary, by, at }: { summary: string; by: str
         <div className="text-xs text-amber-900">
           <b>{summary}</b>
           <span className="text-amber-700">
-            {by ? ` · by ${by}` : ""}{at ? ` · ${new Date(at).toLocaleString()}` : ""}
+            {/* ClientTime: the time is written after mount, so the server (UTC)
+                and the tablet (IST) no longer render different text and React
+                no longer regenerates the page on every load */}
+            {by ? ` · by ${by}` : ""}{at ? <> · <ClientTime iso={at} /></> : ""}
           </span>
           <div className="text-[11px] text-amber-700">
             The slab and its delay logs were kept and can be put back exactly as they were.

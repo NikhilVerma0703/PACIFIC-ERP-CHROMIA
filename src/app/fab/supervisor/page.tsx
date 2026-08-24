@@ -276,7 +276,7 @@ function SlabCard({ slab, onAssign, onSend, printerEmail }: {
 
       {/* Pieces table */}
       {expanded && (
-        <div className="border-t border-gray-100">
+        <div className="border-t border-gray-100 overflow-x-auto">
           <table className="w-full text-xs">
             <thead className="bg-gray-50">
               <tr>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { slabLabel } from "@/lib/slabLabel";
 import { displayBatch } from "@/lib/batchDisplay";
 import { NONE } from "@/lib/inventory/filterValues";
@@ -125,8 +125,15 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
   };
   useEffect(() => {
     loadKpi();
-    const id = setInterval(loadKpi, 60000); // live refresh every minute
-    return () => clearInterval(id);
+    // Live refresh every minute — but only while the tab is visible, and once
+    // when it becomes visible again so a returned-to tab is current. Same gate
+    // as the fab pages and StockByDesign; this one was missed, so a forgotten
+    // /inventory tab kept hitting /api/inventory/kpi all night, and every tick
+    // also re-rendered the 1000-row table below.
+    const tick = () => { if (document.visibilityState === "visible") loadKpi(); };
+    const id = setInterval(tick, 60000);
+    document.addEventListener("visibilitychange", tick);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", tick); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -202,7 +209,9 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
     } catch { setEditMsg("Save failed."); }
   };
 
-  const openDetail = (n: number) => {
+  // useCallback with no deps: the body touches only state setters (stable) and
+  // fetch, and a stable identity is what lets SlabRows below skip re-rendering.
+  const openDetail = useCallback((n: number) => {
     setEditing(false);
     setDetailBusy(true); setDetail({ slabNumber: n });
     fetch(`/api/inventory/slab?number=${n}`)
@@ -210,7 +219,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
       .then((d) => setDetail((cur: any) => (cur?.slabNumber === n ? (d && !d.error ? { slabNumber: n, ...d } : { slabNumber: n, error: d?.error ?? "Failed to load" }) : cur)))
       .catch(() => setDetail((cur: any) => (cur?.slabNumber === n ? { slabNumber: n, error: "Failed to load" } : cur)))
       .finally(() => setDetail((cur: any) => { if (cur?.slabNumber === n || cur == null) setDetailBusy(false); return cur; }));
-  };
+  }, []);
 
   const loadDesigns = () => {
     fetch("/api/inventory/designs")
@@ -236,7 +245,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
     } catch { /* noop */ }
   };
 
-  const toggle = (r: Slab) => setSel((s) => { const c = new Map(s); if (c.has(r.slabNumber)) c.delete(r.slabNumber); else c.set(r.slabNumber, r); return c; });
+  const toggle = useCallback((r: Slab) => setSel((s) => { const c = new Map(s); if (c.has(r.slabNumber)) c.delete(r.slabNumber); else c.set(r.slabNumber, r); return c; }), []);
   const allShownSelected = rows.length > 0 && rows.every((r) => sel.has(r.slabNumber));
   // header checkbox acts on THIS result page only — it never drops slabs picked in an earlier search
   const toggleAll = () => setSel((s) => {
@@ -327,7 +336,11 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
     finally { setStBusy(false); }
   };
 
-  const displayRows = sSorts.length
+  // Memoised: a pure function of rows and the sort levels. Every keystroke in
+  // the filter, move, status and edit boxes re-renders this component, and
+  // re-sorting 1000 rows with localeCompare on each one was most of the
+  // measured 50-60 ms per character.
+  const displayRows = useMemo(() => sSorts.length
     ? [...rows].sort((a, b) => {
         for (const so of sSorts) {
           const va = a[so.k], vb = b[so.k];
@@ -341,7 +354,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
         }
         return 0;
       })
-    : rows;
+    : rows, [rows, sSorts]);
   // click = primary sort (asc -> desc -> off) · Shift+Click = add another level
   const slabSort = (k: keyof Slab, additive: boolean) =>
     setSSorts((cur) => {
@@ -790,25 +803,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
                 ) : rows.length === 0 ? (
                   <tr><td colSpan={13} className="px-3 py-10 text-center text-gray-400">No slabs match the current filters.</td></tr>
                 ) : (
-                  displayRows.map((r) => (
-                    <tr key={r.id} className={`border-t border-gray-50 ${sel.has(r.slabNumber) ? "bg-brand/5 hover:bg-brand/10" : "hover:bg-gray-50/50"}`}>
-                      <td className="px-3 py-2"><input type="checkbox" checked={sel.has(r.slabNumber)} onChange={() => toggle(r)} /></td>
-                      <td className="px-3 py-2 font-medium text-gray-900">
-                        <button className="hover:text-brand hover:underline" title="View slab details" onClick={() => openDetail(r.slabNumber)}>{displaySlab(r.slabNumber, r.barcode)}</button>
-                      </td>
-                      <td className="px-3 py-2">{r.design ?? "—"}</td>
-                      <td className="px-3 py-2">{displayBatch(r.batchNumber)}</td>
-                      <td className="px-3 py-2">{r.slabThickness ?? "—"}</td>
-                      <td className="px-3 py-2">{r.grade ?? "—"}</td>
-                      <td className="px-3 py-2 max-w-[180px] truncate" title={(r.qualityIssue ?? []).join(", ")}>{r.qualityIssue?.length ? r.qualityIssue.join(", ") : "—"}</td>
-                      <td className="px-3 py-2">{r.polishType ?? "—"}</td>
-                      <td className="px-3 py-2">{r.bayNumber ?? "—"}</td>
-                      <td className="px-3 py-2">{r.frameNumber ?? "—"}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{r.sqft || "—"}</td>
-                      <td className="px-3 py-2 text-right tabular-nums" title="Days in inventory">{r.ageDays ?? "—"}{r.ageDays != null ? "d" : ""}</td>
-                      <td className="px-3 py-2"><span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">{r.status}</span></td>
-                    </tr>
-                  ))
+                  <SlabRows rows={displayRows} sel={sel} onToggle={toggle} onOpen={openDetail} />
                 )}
               </tbody>
             </table>
@@ -934,3 +929,39 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
     </div>
   );
 }
+
+/** The result rows, memoised. The filter, move, status and edit inputs all
+ *  live in InventoryDashboard's state, so every keystroke re-rendered the
+ *  whole dashboard — including up to 1000 of these rows and their checkboxes
+ *  (measured 50-60 ms per character in jsdom before the browser laid anything
+ *  out). With the rows behind memo and stable callbacks, a keystroke re-renders
+ *  only the form strip; the rows still re-render whenever rows, the sort or
+ *  the selection change, exactly as before. Markup is byte-for-byte what the
+ *  inline map produced. */
+const SlabRows = memo(function SlabRows({ rows, sel, onToggle, onOpen }: {
+  rows: Slab[]; sel: Map<number, Slab>; onToggle: (r: Slab) => void; onOpen: (n: number) => void;
+}) {
+  return (
+    <>
+      {rows.map((r) => (
+        <tr key={r.id} className={`border-t border-gray-50 ${sel.has(r.slabNumber) ? "bg-brand/5 hover:bg-brand/10" : "hover:bg-gray-50/50"}`}>
+          <td className="px-3 py-2"><input type="checkbox" checked={sel.has(r.slabNumber)} onChange={() => onToggle(r)} /></td>
+          <td className="px-3 py-2 font-medium text-gray-900">
+            <button className="hover:text-brand hover:underline" title="View slab details" onClick={() => onOpen(r.slabNumber)}>{displaySlab(r.slabNumber, r.barcode)}</button>
+          </td>
+          <td className="px-3 py-2">{r.design ?? "—"}</td>
+          <td className="px-3 py-2">{displayBatch(r.batchNumber)}</td>
+          <td className="px-3 py-2">{r.slabThickness ?? "—"}</td>
+          <td className="px-3 py-2">{r.grade ?? "—"}</td>
+          <td className="px-3 py-2 max-w-[180px] truncate" title={(r.qualityIssue ?? []).join(", ")}>{r.qualityIssue?.length ? r.qualityIssue.join(", ") : "—"}</td>
+          <td className="px-3 py-2">{r.polishType ?? "—"}</td>
+          <td className="px-3 py-2">{r.bayNumber ?? "—"}</td>
+          <td className="px-3 py-2">{r.frameNumber ?? "—"}</td>
+          <td className="px-3 py-2 text-right tabular-nums">{r.sqft || "—"}</td>
+          <td className="px-3 py-2 text-right tabular-nums" title="Days in inventory">{r.ageDays ?? "—"}{r.ageDays != null ? "d" : ""}</td>
+          <td className="px-3 py-2"><span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">{r.status}</span></td>
+        </tr>
+      ))}
+    </>
+  );
+});

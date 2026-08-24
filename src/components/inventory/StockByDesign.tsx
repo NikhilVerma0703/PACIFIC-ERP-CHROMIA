@@ -80,7 +80,9 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
     };
     const idV = setInterval(check, 1500);
     const idFull = setInterval(() => { if (document.visibilityState === "visible") load(); }, 30000);
-    const onFocus = () => load();
+    // visibilitychange fires on the HIDE transition too; without the guard each
+    // hide cost one full (~400 KB) summary reload that nobody was looking at.
+    const onFocus = () => { if (document.visibilityState === "visible") load(); };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);
     return () => { alive = false; clearInterval(idV); clearInterval(idFull); window.removeEventListener("focus", onFocus); document.removeEventListener("visibilitychange", onFocus); };

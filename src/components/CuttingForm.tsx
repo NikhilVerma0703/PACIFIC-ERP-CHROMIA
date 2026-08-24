@@ -2,13 +2,17 @@
 
 import { useActionState, useEffect, useRef, useState } from "react";
 import { createCuttingEntry, resolveBatchFromSlab } from "@/app/cutting/actions";
+import { guardAction, SERVER_UNREACHABLE } from "@/lib/guardAction";
 
 const PURPOSES = ["Sample", "Display", "QC", "Waste", "Other"];
 
 const initialState = { ok: false, message: "", stamp: 0 };
+// A dropped connection answers like any other failure instead of unmounting the
+// form (lib/guardAction). stamp 0 = the form is not reset.
+const guardedCreate = guardAction(createCuttingEntry, { ok: false, message: SERVER_UNREACHABLE, stamp: 0 });
 
 export function CuttingForm() {
-  const [state, action, pending] = useActionState(createCuttingEntry, initialState);
+  const [state, action, pending] = useActionState(guardedCreate, initialState);
   const formRef = useRef<HTMLFormElement>(null);
   const [batchHint, setBatchHint] = useState<string | null>(null);
   const [batchLoading, setBatchLoading] = useState(false);

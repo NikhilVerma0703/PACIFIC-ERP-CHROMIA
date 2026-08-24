@@ -74,7 +74,7 @@ export function LoginForm({ branch }: { branch: "SHOP_FLOOR" | "OFFICE" | "INTER
         </div>
 
         <div className="mt-6 text-center">
-          <a href="/login" className="text-xs font-medium uppercase tracking-[0.18em] text-pacific-mid/70 transition hover:text-white">← switch branch</a>
+          <a href="/login" className="tap-area text-xs font-medium uppercase tracking-[0.18em] text-pacific-mid/70 transition hover:text-white">← switch branch</a>
         </div>
       </div>
     </LoginScene>

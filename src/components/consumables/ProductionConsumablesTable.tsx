@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { jsonOrThrow } from "@/lib/jsonOrThrow";
 import type { Filters } from "@/components/consumables/ConsumablesDashboard";
 
 interface ProductionConsumable {
@@ -65,11 +66,12 @@ export default function ProductionConsumablesTable({ filters }: Props) {
   const [items, setItems]     = useState<ProductionConsumable[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
     fetch("/api/consumables/production-consumables")
-      .then((r) => r.json())
+      .then(jsonOrThrow)
       .then((d) => { setItems(d); setLoading(false); })
-      .catch(console.error);
+      .catch((e) => { console.error(e); setLoadError(e instanceof Error && e.message ? e.message : "Could not load."); setLoading(false); });
   }, []);
 
   const filtered = items.filter((item) => {
@@ -84,6 +86,7 @@ export default function ProductionConsumablesTable({ filters }: Props) {
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      {loadError && <p className="px-5 pt-3 text-xs text-red-600">{loadError}</p>}
       {/* Accent bar — purple gradient */}
       <div className="h-1 w-full"
         style={{ background: lowCount + outCount > 0

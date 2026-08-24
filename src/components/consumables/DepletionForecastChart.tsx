@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { jsonOrThrow } from "@/lib/jsonOrThrow";
 import {
   ResponsiveContainer, BarChart, Bar,
   XAxis, YAxis, Tooltip, ReferenceLine, ReferenceArea, Cell,
@@ -95,9 +96,10 @@ export default function DepletionForecastChart() {
   const [data, setData]       = useState<ChartItem[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
     fetch("/api/consumables/charts/depletion-forecast")
-      .then((r) => r.json())
+      .then(jsonOrThrow)
       .then((raw: ForecastItem[]) => {
         const mapped: ChartItem[] = raw.map((item) => ({
           ...item,
@@ -108,7 +110,7 @@ export default function DepletionForecastChart() {
         setData(mapped);
         setLoading(false);
       })
-      .catch(console.error);
+      .catch((e) => { console.error(e); setLoadError(e instanceof Error && e.message ? e.message : "Could not load."); setLoading(false); });
   }, []);
 
   const outCount      = data.filter((d) => d.status === "out").length;
@@ -119,6 +121,7 @@ export default function DepletionForecastChart() {
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      {loadError && <p className="px-5 pt-3 text-xs text-red-600">{loadError}</p>}
       {/* Accent bar */}
       <div className="h-1 w-full"
         style={{ background: criticalCount + outCount > 0

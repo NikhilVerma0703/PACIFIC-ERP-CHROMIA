@@ -26,7 +26,7 @@
 // lapses on its own when the numbers move underneath it, because a sign-off
 // that survives the thing it signed off is worse than no sign-off at all.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Card, Empty } from "@/components/ui";
 import { readJson } from "@/lib/readJson";
 import { SimpleMaterialsEntry } from "@/components/office/SimpleMaterialsEntry";
@@ -98,12 +98,26 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
     })();
   }, []);
 
+  // Every pick gets a sequence number and only the LATEST answer may land: two
+  // batches picked quickly, with the first one's answer arriving last, left the
+  // select on B and the sign-off card, the materials table and their buttons
+  // on A (reproduced under jsdom). A dropped connection used to throw out of
+  // here and leave the previous batch's detail under the new selection.
+  const loadSeq = useRef(0);
   const load = useCallback(async (batchKey: string) => {
+    const seq = ++loadSeq.current;
     if (!batchKey) { setDetail(null); return; }
-    const r = await fetch(`${API}?batchKey=${encodeURIComponent(batchKey)}`, { cache: "no-store" });
-    const res = await readJson<Detail>(r);
-    if (res.ok && res.data) setDetail(res.data);
-    else { setDetail(null); setNote({ text: res.error ?? `Could not load (${res.status})`, ok: false }); }
+    try {
+      const r = await fetch(`${API}?batchKey=${encodeURIComponent(batchKey)}`, { cache: "no-store" });
+      const res = await readJson<Detail>(r);
+      if (seq !== loadSeq.current) return;
+      if (res.ok && res.data) setDetail(res.data);
+      else { setDetail(null); setNote({ text: res.error ?? `Could not load (${res.status})`, ok: false }); }
+    } catch (e) {
+      if (seq !== loadSeq.current) return;
+      setDetail(null);
+      setNote({ text: e instanceof Error && e.message ? `Could not reach the server: ${e.message}` : "Could not reach the server.", ok: false });
+    }
   }, []);
 
   useEffect(() => { void load(picked); }, [picked, load]);

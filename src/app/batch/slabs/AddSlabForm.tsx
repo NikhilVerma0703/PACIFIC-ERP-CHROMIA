@@ -86,7 +86,7 @@ export function AddSlabForm({
         ))}
       </div>
 
-      <div className="sticky bottom-0 -mx-5 mt-6 flex items-center justify-between gap-3 border-t border-gray-200 bg-white/85 px-5 py-3 backdrop-blur">
+      <div className="sticky bottom-0 -mx-5 mt-6 flex items-center justify-between gap-3 border-t border-gray-200 bg-white/85 px-5 py-3 backdrop-blur safe-bottom">
         <div className="text-sm">{msg ? <span className="text-red-600">{msg}</span> : <span className="text-gray-400">{editable.length} fields · verify before adding</span>}</div>
         <button disabled={pending} className="rounded-lg bg-brand px-5 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-60">
           {pending ? "Adding…" : "Add slab"}

@@ -15,11 +15,15 @@ export function InfoDot({ label, children }: { label: string; children: ReactNod
 
   useEffect(() => {
     if (!open) return;
-    const away = (e: MouseEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
+    const away = (e: PointerEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
     const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", away);
+    // pointerdown, not mousedown: iOS Safari only synthesises mouse events for
+    // taps on "clickable" elements, so a tap on blank paper never closed the
+    // panel. pointerdown fires for touch and mouse alike, on every browser in
+    // use, and means exactly what mousedown meant on a desktop.
+    document.addEventListener("pointerdown", away);
     document.addEventListener("keydown", esc);
-    return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", esc); };
+    return () => { document.removeEventListener("pointerdown", away); document.removeEventListener("keydown", esc); };
   }, [open]);
 
   return (
@@ -52,11 +56,12 @@ export function Explain({ label, tip, children }: { label: string; tip: ReactNod
 
   useEffect(() => {
     if (!open) return;
-    const away = (e: MouseEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
+    const away = (e: PointerEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
     const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", away);
+    // pointerdown for the same reason as InfoDot above (iOS taps on plain text).
+    document.addEventListener("pointerdown", away);
     document.addEventListener("keydown", esc);
-    return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", esc); };
+    return () => { document.removeEventListener("pointerdown", away); document.removeEventListener("keydown", esc); };
   }, [open]);
 
   return (

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { jsonOrThrow } from "@/lib/jsonOrThrow";
 import type { Filters } from "@/components/consumables/ConsumablesDashboard";
 import { useToast } from "@/components/consumables/toast-context";
 import { useCanWrite } from "@/components/consumables/write-access";
@@ -90,6 +91,7 @@ export default function InventoryStockTable({ filters }: Props) {
   const { showToast } = useToast();
   const [items, setItems]       = useState<InventoryItem[]>([]);
   const [loading, setLoading]   = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   // Presentation only - every mutating route re-checks with consumablesGate("WRITE").
   const canWrite = useCanWrite();
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -98,9 +100,9 @@ export default function InventoryStockTable({ filters }: Props) {
 
   useEffect(() => {
     fetch("/api/consumables/inventory")
-      .then((r) => r.json())
+      .then(jsonOrThrow)
       .then((d) => { setItems(d); setLoading(false); })
-      .catch(console.error);
+      .catch((e) => { console.error(e); setLoadError(e instanceof Error && e.message ? e.message : "Could not load."); setLoading(false); });
   }, []);
 
   const filtered = items.filter((item) => {
@@ -155,6 +157,7 @@ export default function InventoryStockTable({ filters }: Props) {
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      {loadError && <p className="px-5 pt-3 text-xs text-red-600">{loadError}</p>}
       {/* Accent bar */}
       <div className="h-1 w-full"
         style={{ background: lowCount + outCount > 0

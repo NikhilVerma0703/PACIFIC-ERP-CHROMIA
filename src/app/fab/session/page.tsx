@@ -70,7 +70,7 @@ export default function FabSessionPage() {
   const typeOrder = ["CUTTING","POLISHING","SINK_CUTTING","FABRICATION","PACKAGING"];
 
   if (loading) return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+    <div className="min-h-screen supports-[height:100svh]:min-h-svh bg-slate-950 flex items-center justify-center">
       <div className="flex gap-2 items-center text-slate-400 text-sm">
         <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
@@ -82,7 +82,7 @@ export default function FabSessionPage() {
   );
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6">
+    <div className="min-h-screen supports-[height:100svh]:min-h-svh bg-slate-950 flex flex-col items-center justify-center p-6">
       <div className="w-full max-w-lg">
         <div className="text-center mb-8">
           <div className="inline-flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-full px-4 py-1.5 mb-5">

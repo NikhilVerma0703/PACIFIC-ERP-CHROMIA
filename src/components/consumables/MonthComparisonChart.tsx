@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { jsonOrThrow } from "@/lib/jsonOrThrow";
 import {
   ResponsiveContainer, BarChart, Bar,
   XAxis, YAxis, Tooltip, CartesianGrid, Cell,
@@ -66,15 +67,16 @@ export default function MonthComparisonChart() {
   const [labels, setLabels] = useState({ thisMonth: "This Month", lastMonth: "Last Month" });
   const [loading, setLoading] = useState(true);
 
+  const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
     fetch("/api/consumables/charts/month-comparison")
-      .then((r) => r.json())
+      .then(jsonOrThrow)
       .then((res: ApiResponse) => {
         setData(res.data);
         setLabels({ thisMonth: res.thisMonthName, lastMonth: res.lastMonthName });
         setLoading(false);
       })
-      .catch(console.error);
+      .catch((e) => { console.error(e); setLoadError(e instanceof Error && e.message ? e.message : "Could not load."); setLoading(false); });
   }, []);
 
   const totalThis = data.reduce((s, d) => s + d.thisMonth, 0);
@@ -87,6 +89,7 @@ export default function MonthComparisonChart() {
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      {loadError && <p className="px-5 pt-3 text-xs text-red-600">{loadError}</p>}
       {/* Accent bar — green if up, red if down, gray if flat */}
       <div className="h-1 w-full"
         style={{ background: isUp

@@ -74,15 +74,19 @@ const usd4 = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDig
 const num = (n: number, d = 2) => n.toLocaleString("en-IN", { maximumFractionDigits: d });
 const DASH = "—";
 
-/** "17–19 Aug 2026" from the two press dates, or whichever half exists. */
+/** "17–19 Aug 2026" from the two press dates, or whichever half exists.
+ *  The inputs are date-only strings (report.ts slices them from toISOString),
+ *  which `new Date` reads as UTC midnight — so the day is taken back out in
+ *  UTC too. Same text as before in India and anywhere east of Greenwich; west
+ *  of it the sheet no longer printed every press date a day early. */
 function pressedSpan(first: string | null, last: string | null): string {
   const f = first ? new Date(first) : null, l = last ? new Date(last) : null;
-  const fmt = (d: Date) => d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+  const fmt = (d: Date) => d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
   if (f && l) {
-    const sameDay = f.toDateString() === l.toDateString();
+    const sameDay = f.toISOString().slice(0, 10) === l.toISOString().slice(0, 10);
     if (sameDay) return fmt(f);
-    const sameMonth = f.getMonth() === l.getMonth() && f.getFullYear() === l.getFullYear();
-    return sameMonth ? `${f.getDate()}–${fmt(l)}` : `${fmt(f)} – ${fmt(l)}`;
+    const sameMonth = f.getUTCMonth() === l.getUTCMonth() && f.getUTCFullYear() === l.getUTCFullYear();
+    return sameMonth ? `${f.getUTCDate()}–${fmt(l)}` : `${fmt(f)} – ${fmt(l)}`;
   }
   return f ? fmt(f) : l ? fmt(l) : "press dates not recorded";
 }

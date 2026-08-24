@@ -17,7 +17,7 @@ export function MastersNav({ active }: { active: (typeof LINKS)[number]["key"] }
         <Link
           key={l.key}
           href={l.href}
-          className={`rounded-full px-3.5 py-1.5 text-xs font-medium transition ${
+          className={`inline-flex items-center rounded-full px-3.5 py-1.5 text-xs font-medium transition ${
             l.key === active
               ? "bg-brand text-white"
               : "border border-gray-200 bg-white text-gray-600 hover:bg-gray-50"

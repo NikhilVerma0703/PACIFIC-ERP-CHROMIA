@@ -16,6 +16,7 @@
 // `needs_review` and those messages are shown in full rather than summarised,
 // because each one is a specific thing to look at on the paper bill.
 import { useCallback, useEffect, useState } from "react";
+import { readJson } from "@/lib/readJson";
 import { invoiceBlockers, visibleAdvisories } from "@/lib/finance/vendorInvoiceRules";
 import { createLedger, LedgerPicker } from "@/components/office/LedgerPicker";
 
@@ -78,7 +79,12 @@ async function j<T>(url: string, init?: RequestInit): Promise<T> {
     } catch { /* keep default */ }
     throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
   }
-  return r.json() as Promise<T>;
+  // readJson on the success path: an expired session answers a JSON route with
+  // the login page's HTML and status 200, which r.json() reported as
+  // "Unexpected token '<'"; now it says what happened. Same result otherwise.
+  const res = await readJson<T>(r);
+  if (!res.ok) throw new Error(res.error ?? `Request failed (${r.status})`);
+  return res.data as T;
 }
 
 export function VendorInvoicePanel({ seed, onDone, onCancel }: {

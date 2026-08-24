@@ -1318,7 +1318,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                         <span className="min-w-0 flex-1 truncate text-xs text-gray-500">{selectedCode.description}</span>
                       </div>
                       <button type="button" aria-label="Clear code" onClick={() => { setDelayForm((p) => ({ ...p, selectedCodeId: "", machineId: "", machineName: "" })); setCodeSearch(""); }}
-                        className="shrink-0 rounded-md px-1.5 py-1 text-xs text-gray-400 hover:bg-gray-100 hover:text-red-500">✕</button>
+                        className="tap-area shrink-0 rounded-md px-1.5 py-1 text-xs text-gray-400 hover:bg-gray-100 hover:text-red-500">✕</button>
                     </div>
                   ) : newCode.open ? (
                     <div className="space-y-3 rounded-lg border border-amber-300 bg-white p-3">

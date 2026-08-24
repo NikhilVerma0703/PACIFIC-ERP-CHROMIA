@@ -182,7 +182,14 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
     for (const a of areas) fd.append("areaOfProblem", a);
     for (const r of reasons) fd.append("reasonForDeviation", r);
     start(async () => {
-      const r = await createRow(undefined, fd);
+      // createRow answers every business failure with a string; the CALL itself
+      // rejects when the tablet's Wi-Fi drops mid-post or the session has
+      // expired. Uncaught, React 19 routes that out of the transition to
+      // global-error.tsx and the typed hour is gone with the page — so it is
+      // caught here and shown in the sheet, with everything still filled in.
+      let r: string | undefined;
+      try { r = await createRow(undefined, fd); }
+      catch { setOk(null); setErr("Could not reach the server — nothing was saved. Check the connection and tap Save again."); return; }
       if (r && r !== "ok") { setOk(null); setErr(r); }
       else {
         setErr(null); setOk(`Hour ${hour} saved ✓`);
@@ -348,7 +355,7 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
                   <td className="max-w-[160px] truncate px-3 py-2 text-xs" title={r.areaOfProblem.join(", ")}>{r.areaOfProblem.join(", ") || "—"}</td>
                   <td className="whitespace-nowrap px-3 py-2 text-center">{delay > 0 ? `${delay} min` : "—"}</td>
                   <td className="max-w-[180px] truncate px-3 py-2 text-xs" title={r.details ?? ""}>{r.details || "—"}</td>
-                  <td className="px-3 py-2"><a href={`/tables/Mis/${r.id}`} className="text-xs text-brand hover:underline">edit</a></td>
+                  <td className="px-3 py-2"><a href={`/tables/Mis/${r.id}`} className="tap-area text-xs text-brand hover:underline">edit</a></td>
                 </tr>
               );
             })}

@@ -2,6 +2,11 @@
 
 import { useActionState } from "react";
 import { createResinDelivery, uploadResinDeliveries, type ResinEntryResult, type UploadResult2 } from "@/app/store/actions";
+import { guardAction, SERVER_UNREACHABLE } from "@/lib/guardAction";
+
+// A dropped connection answers like any other failure instead of unmounting the
+// form (lib/guardAction). stamp 0 = the form is not reset.
+const guardedCreate = guardAction<ResinEntryResult | null, ResinEntryResult | null>(createResinDelivery, { ok: false, message: SERVER_UNREACHABLE, stamp: 0 });
 import { DupeResolver } from "./DupeResolver";
 
 const input = "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
@@ -9,7 +14,7 @@ const label = "mb-1 block text-xs font-medium text-gray-600";
 const TEMPLATE = "Tank No,Invoice No,Supplier,Quantity KG,Vehicle,Date\nO1,RS-2026-101,Ineos,24000,TN09AB1234,2026-06-11\n";
 
 export function RmResinEntry({ tanks }: { tanks: string[] }) {
-  const [res, action, pending] = useActionState<ResinEntryResult | null, FormData>(createResinDelivery, null);
+  const [res, action, pending] = useActionState<ResinEntryResult | null, FormData>(guardedCreate, null);
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-5">
       <div className="mb-3 text-sm font-semibold text-gray-800">Log a tanker delivery</div>

@@ -4,6 +4,7 @@ import { useState, useEffect, useTransition } from "react";
 import { useActionState } from "react";
 import { useRouter } from "next/navigation";
 import { saveRow, createRow, deleteRow } from "@/app/tables/actions";
+import { guardAction, SERVER_UNREACHABLE } from "@/lib/guardAction";
 import type { FieldMeta } from "@/lib/tables";
 import { fmt } from "@/components/ui";
 import { secondsToHHMM } from "@/lib/time";
@@ -14,6 +15,9 @@ import { PhotoField } from "./PhotoField";
 import { isCurated } from "@/lib/categoricalFields";
 import { classifyMixer, mixerFullLabel } from "@/lib/mixerLabels";
 import type { SiloFormInfo } from "@/lib/silo";
+
+const guardedSaveRow = guardAction(saveRow, SERVER_UNREACHABLE);
+const guardedCreateRow = guardAction(createRow, SERVER_UNREACHABLE);
 
 const base = "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm transition focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20 disabled:bg-gray-50 disabled:text-gray-400";
 const grid = "grid grid-cols-1 gap-x-5 gap-y-4 sm:grid-cols-2 lg:grid-cols-3";
@@ -184,7 +188,9 @@ function groupFields(fs: FieldMeta[]): { title: string; fields: FieldMeta[] }[] 
 }
 
 export function RecordEditor({ model, id, fields, values, mode, options = {}, hideFields = [], operatorName, silos, canEditBags, onSaved, canDelete = false }: { model: string; id?: string; fields: FieldMeta[]; values: Record<string, unknown>; mode: "edit" | "new"; options?: Record<string, string[]>; hideFields?: string[]; operatorName?: string | null; silos?: SiloFormInfo[]; canEditBags?: boolean; onSaved?: () => void; canDelete?: boolean; }) {
-  const [msg, action, pending] = useActionState(mode === "edit" ? saveRow : createRow, undefined);
+  // guardAction: a dropped connection mid-save shows in the bar instead of
+  // throwing the page to global-error with the edits half typed (lib/guardAction).
+  const [msg, action, pending] = useActionState(mode === "edit" ? guardedSaveRow : guardedCreateRow, undefined);
   const router = useRouter();
   const [deleting, startDelete] = useTransition();
   const [delMsg, setDelMsg] = useState<string | null>(null);
@@ -316,7 +322,7 @@ export function RecordEditor({ model, id, fields, values, mode, options = {}, hi
       )}
 
       <div className="mb-4 max-w-sm"><PhotoField /></div>
-      <div className="sticky bottom-0 -mx-5 mt-6 flex items-center justify-between gap-3 border-t border-gray-200 bg-white/85 px-5 py-3 backdrop-blur">
+      <div className="sticky bottom-0 -mx-5 mt-6 flex items-center justify-between gap-3 border-t border-gray-200 bg-white/85 px-5 py-3 backdrop-blur safe-bottom">
         <div className="text-sm">{delMsg ? <span className="text-red-600">{delMsg}</span> : msg === "ok" ? <span className="text-green-600">Saved &#10003;</span> : msg?.startsWith("✓") ? <span className="text-green-600">{msg}</span> : msg ? <span className="text-red-600">{msg}</span> : <span className="text-gray-400">{editable.length} editable fields</span>}</div>
         <div className="flex items-center gap-2">
           {mode === "edit" && canDelete && id && (

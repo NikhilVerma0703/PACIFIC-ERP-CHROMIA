@@ -2,6 +2,11 @@
 
 import { useActionState } from "react";
 import { createUnassignedRm, type ManualEntryResult } from "@/app/store/actions";
+import { guardAction, SERVER_UNREACHABLE } from "@/lib/guardAction";
+
+// A dropped connection answers like any other failure instead of unmounting the
+// form (lib/guardAction). stamp 0 = the form is not reset.
+const guardedCreate = guardAction<ManualEntryResult | null, ManualEntryResult | null>(createUnassignedRm, { ok: false, message: SERVER_UNREACHABLE, stamp: 0 });
 
 const input = "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
 const label = "mb-1 block text-xs font-medium text-gray-600";
@@ -16,7 +21,7 @@ function Field({ name, title, required = false, type = "text", step, placeholder
 }
 
 export function RmEntry() {
-  const [res, action, pending] = useActionState<ManualEntryResult | null, FormData>(createUnassignedRm, null);
+  const [res, action, pending] = useActionState<ManualEntryResult | null, FormData>(guardedCreate, null);
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-5">

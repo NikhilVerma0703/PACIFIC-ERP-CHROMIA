@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { jsonOrThrow } from "@/lib/jsonOrThrow";
 import {
   ResponsiveContainer, BarChart, Bar,
   XAxis, YAxis, Tooltip, Cell, CartesianGrid,
@@ -50,9 +51,10 @@ export default function InventoryHealthChart() {
   const [data, setData]       = useState<ChartRow[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
     fetch("/api/consumables/charts/inventory-health")
-      .then((r) => r.json())
+      .then(jsonOrThrow)
       .then((items: StockItem[]) => {
         const rows: ChartRow[] = items.map((item) => ({
           fullName: item.itemName,
@@ -64,7 +66,7 @@ export default function InventoryHealthChart() {
         setData(rows);
         setLoading(false);
       })
-      .catch(console.error);
+      .catch((e) => { console.error(e); setLoadError(e instanceof Error && e.message ? e.message : "Could not load."); setLoading(false); });
   }, []);
 
   const lowCount     = data.filter((d) => d.isLow).length;
@@ -72,6 +74,7 @@ export default function InventoryHealthChart() {
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      {loadError && <p className="px-5 pt-3 text-xs text-red-600">{loadError}</p>}
       {/* Accent bar — red if any low, green if all healthy */}
       <div
         className="h-1 w-full"

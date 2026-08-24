@@ -61,7 +61,7 @@ export default function FabDowntimePage() {
       {rows.length === 0 && !error ? (
         <p className="mt-8 text-sm text-gray-400">No downtime logged yet.</p>
       ) : (
-        <div className="mt-6 bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="mt-6 bg-white rounded-xl border border-gray-200 overflow-hidden overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-xs text-gray-500">
               <tr>

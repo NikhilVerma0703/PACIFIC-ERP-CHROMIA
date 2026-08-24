@@ -12,9 +12,16 @@ import { useEffect, useState, type ReactNode } from "react";
 // Client state on a server shell: the nav and the user card stay
 // server-rendered and arrive as children; this component only owns the
 // width. The choice persists in localStorage, read AFTER mount — SSR always
-// paints the rail expanded, and a one-frame correction on a hard reload
-// beats a hydration mismatch. In-app navigation never re-mounts the shell,
-// so the state simply survives it.
+// paints the rail expanded, and a one-frame correction beats a hydration
+// mismatch. Shell is rendered inside every page.tsx, not in a layout, so
+// Next remounts it on EVERY in-app navigation; for anyone who had hidden
+// the rail each click used to paint it open and slide it shut again. The
+// fix is the `data-sidebar-hidden` attribute on <html>: a boot script in
+// app/layout.tsx stamps it from localStorage before first paint, toggle()
+// keeps it in step, and globals.css collapses `.pacific-rail` under it — so
+// the first frame of every page, the loading skeleton included, already has
+// the width this state will settle on. The React state below is unchanged;
+// the attribute only gets the CSS there first.
 //
 // The inner column keeps a fixed width while the <aside> animates, so the
 // text clips behind the edge instead of rewrapping mid-slide. Mobile keeps
@@ -22,17 +29,28 @@ import { useEffect, useState, type ReactNode } from "react";
 // tile — a printed CEO report must not carry a stray logo button.
 
 const KEY = "pacific-sidebar-hidden";
+const ATTR = "data-sidebar-hidden";
+
+function stamp(hidden: boolean) {
+  if (hidden) document.documentElement.setAttribute(ATTR, "1");
+  else document.documentElement.removeAttribute(ATTR);
+}
 
 export function CollapsibleSidebar({ subtitle, children }: { subtitle: string; children: ReactNode }) {
   const [hidden, setHidden] = useState(false);
   useEffect(() => {
-    try { if (localStorage.getItem(KEY) === "1") setHidden(true); } catch { /* private mode */ }
+    try {
+      const v = localStorage.getItem(KEY) === "1";
+      if (v) setHidden(true);
+      stamp(v);
+    } catch { /* private mode */ }
   }, []);
-  const toggle = () => setHidden((h) => {
-    const v = !h;
+  const toggle = () => {
+    const v = !hidden;
     try { localStorage.setItem(KEY, v ? "1" : "0"); } catch { /* private mode */ }
-    return v;
-  });
+    stamp(v);
+    setHidden(v);
+  };
 
   return (
     <>
@@ -44,8 +62,14 @@ export function CollapsibleSidebar({ subtitle, children }: { subtitle: string; c
           <img src="/logo-white.png" alt="Pacific Surfaces" className="h-5 w-5 object-contain" />
         </button>
       )}
+      {/* inert + aria-hidden while collapsed: the w-0 rail still held every
+          nav link and Sign out in the Tab order and the accessibility tree.
+          h-dvh where supported: Android Chrome resolves 100vh to the tallest
+          viewport, which left the user card and Sign out under the URL bar. */}
       <aside
-        className={`sticky top-0 hidden h-screen shrink-0 overflow-hidden border-r bg-white/70 backdrop-blur transition-[width] duration-200 md:flex print:hidden ${
+        inert={hidden || undefined}
+        aria-hidden={hidden || undefined}
+        className={`pacific-rail sticky top-0 hidden h-screen shrink-0 overflow-hidden border-r bg-white/70 backdrop-blur transition-[width] duration-200 supports-[height:100dvh]:h-dvh md:flex print:hidden ${
           hidden ? "w-0 border-transparent" : "w-64 border-gray-200/70"
         }`}
       >

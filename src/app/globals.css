@@ -28,14 +28,36 @@ body {
 .card-hover:hover { transform: translateY(-2px); box-shadow: 0 10px 30px -12px rgba(15,76,92,0.25); }
 
 /* ---------- touch devices (phones & Android tablets) ---------- */
-@media (pointer: coarse) {
+/* `screen and` on purpose: a bare (pointer: coarse) is `all and (pointer:
+ * coarse)`, so a PDF printed from an iPhone inherited the 44px buttons and
+ * rows below. Print never needs a tap target. */
+@media screen and (pointer: coarse) {
   /* 16px inputs stop mobile browsers from zoom-jumping on focus */
   input:not([type="checkbox"]):not([type="radio"]), select, textarea { font-size: 16px; min-height: 44px; }
+  /* The bare `select` / `textarea` above is (0,0,1) and loses to a `.text-sm`
+   * or `.text-[15px]` utility (0,1,0), so every MIS, Robo, maintenance, fab
+   * and Chromia select still rendered 14-15px on iPad and zoom-jumped on
+   * focus. The two :not() clauses exist only to lift this to (0,2,1), the
+   * same weight the input selector already has; they exclude sizes that are
+   * 16px or larger anyway. */
+  select:not(.text-base):not(.text-lg), textarea:not(.text-base):not(.text-lg) { font-size: 16px; }
   /* comfortable tap targets everywhere */
-  button, a.rounded-md, a.rounded-lg, summary { min-height: 44px; }
+  button, a.rounded-md, a.rounded-lg, a.rounded-full, summary { min-height: 44px; }
   /* checkboxes & radios big enough to hit with a finger */
   input[type="checkbox"], input[type="radio"] { min-width: 20px; min-height: 20px; }
-  summary { display: flex; align-items: center; }
+  /* Vertical padding rather than `display: flex`: a flex summary loses its
+   * native ▸ marker, which left the "(optional)" folds on the RM forms and
+   * the tables index with no expand cue on tablets. 12px + a 20px line is the
+   * same 44px the flex rule gave; summaries that set their own display or
+   * padding classes keep them (a class outranks this element rule). */
+  summary { padding-block: 12px; }
+  /* A finger-sized hit area for the small inline links and ✕ buttons that
+   * must keep their size in the layout (a table cell's "edit", an alert's
+   * close): the pseudo-element grows the clickable box by 10px on every side
+   * without moving anything. Only for controls with no other control within
+   * that margin — the grown box sits above its neighbours. */
+  .tap-area { position: relative; }
+  .tap-area::before { content: ""; position: absolute; inset: -10px; }
   /* momentum scrolling for wide tables */
   .overflow-x-auto { -webkit-overflow-scrolling: touch; }
 }
@@ -43,6 +65,10 @@ body {
 /* keep content clear of curved screen edges / notches */
 @supports (padding: env(safe-area-inset-left)) {
   body { padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+  /* Bottom-anchored bars (sticky Save bars, the fab packaging bar, the phone
+   * drawer) sit flush on the iPhone home indicator in a home-screen install
+   * otherwise. max() keeps the bar's own padding where the inset is 0. */
+  .safe-bottom { padding-bottom: max(var(--safe-pad, 0.75rem), env(safe-area-inset-bottom)); }
 }
 
 /* ===========================================================================
@@ -177,4 +203,23 @@ body {
    selector without a local class. Screen only — print stays A4. */
 @media screen {
   html[data-report-wide] main { max-width: none; }
+}
+
+/* Collapsed desktop sidebar (attribute stamped by the boot script in
+   app/layout.tsx and by CollapsibleSidebar.toggle). The rail — the real one
+   and the loading skeleton's ghost — is 0 wide from the first frame, so a
+   navigation no longer paints it open and slides it shut. Same values the
+   component's own `w-0 border-transparent` classes set once it has mounted.
+
+   The second rule keeps the floating logo tile (fixed, 12-48px from the left
+   edge) off the page heading: the centred main column starts 24px in, which
+   only clears the tile once the window is ~1224px wide. The calc() pads
+   exactly what is missing and nothing on wider screens, so the heading never
+   jumps; the report's full-width mode lifts the centring, so it pads always. */
+@media screen {
+  html[data-sidebar-hidden] .pacific-rail { width: 0; border-color: transparent; }
+}
+@media screen and (min-width: 768px) {
+  html[data-sidebar-hidden] .shell-main { padding-left: max(1.5rem, calc(60px - max(0px, (100vw - 72rem) / 2))); }
+  html[data-sidebar-hidden][data-report-wide] .shell-main { padding-left: 3.75rem; }
 }

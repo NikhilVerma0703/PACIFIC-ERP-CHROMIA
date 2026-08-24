@@ -10,7 +10,7 @@
 // because catching 2.81 t booked to the wrong grit size is the reason this
 // screen exists.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Card } from "@/components/ui";
 import { readJson } from "@/lib/readJson";
 import { BatchRatesPanel } from "@/components/office/BatchRatesPanel";
@@ -177,6 +177,7 @@ export function CostingDashboard() {
     return () => { live = false; };
   }, []);
 
+  const loadSeq = useRef(0);
   const load = useCallback(async (key: string) => {
     // A reload of the SAME batch (after a rate save) keeps the drawer as the
     // user left it; picking a different batch closes it.
@@ -190,7 +191,13 @@ export function CostingDashboard() {
     // re-read the sign-off from scratch on every mark.
     if (key !== selected || !key) setReport(null);
     setError("");
-    if (!key) return;
+    // Sequence number: only the LATEST request may set the sheet. Two batches
+    // picked quickly, with the first answer arriving last, left the select on
+    // one batch and the summary line and sheet on the other (reproduced).
+    const seq = ++loadSeq.current;
+    // (a pick cleared while a load is in flight: that load's finally is now
+    // ignored, so the spinner is cleared here)
+    if (!key) { setLoading(false); return; }
     setLoading(true);
     try {
       const r = await fetch(`${API}?batch=${encodeURIComponent(key)}`, { cache: "no-store" });
@@ -198,12 +205,14 @@ export function CostingDashboard() {
       // which answers with an empty body — surfaced as "Unexpected end of JSON
       // input" and the status was never reported.
       const res = await readJson<Report>(r);
+      if (seq !== loadSeq.current) return;
       if (!res.ok || !res.data) throw new Error(res.error ?? `Failed (${res.status})`);
       setReport(res.data);
     } catch (e) {
+      if (seq !== loadSeq.current) return;
       setError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [selected]);
 

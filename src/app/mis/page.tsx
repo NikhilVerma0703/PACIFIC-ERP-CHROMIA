@@ -123,7 +123,7 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
       <div className="mb-3 flex flex-wrap gap-2">
         {presets.map((pp) => {
           const active = from === pp.f && to === pp.t;
-          return <Link key={pp.label} href={presetHref(pp.f, pp.t)} className={`rounded-full px-3 py-1 text-xs font-medium transition ${active ? "bg-brand text-white" : "border border-gray-300 text-gray-600 hover:bg-gray-50"}`}>{pp.label}</Link>;
+          return <Link key={pp.label} href={presetHref(pp.f, pp.t)} className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium transition ${active ? "bg-brand text-white" : "border border-gray-300 text-gray-600 hover:bg-gray-50"}`}>{pp.label}</Link>;
         })}
       </div>
       <form method="GET" className="mb-6 flex flex-wrap items-end gap-3">
@@ -211,10 +211,12 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
             {r.byReason.length === 0 ? <p className="text-sm text-gray-400">No deviations logged in this range.</p> : (
               <div className="space-y-1.5">
                 {r.byReason.slice(0, 20).map((x) => (
+                  /* w-28 / w-24 below sm: the fixed 224 + 112px columns were wider
+                     than a phone's card and made the page scroll sideways */
                   <div key={x.reason} className="flex items-center gap-3 text-sm">
-                    <div className="w-56 shrink-0 truncate text-gray-700" title={x.reason}>{x.reason}</div>
+                    <div className="w-28 shrink-0 truncate text-gray-700 sm:w-56" title={x.reason}>{x.reason}</div>
                     <div className="h-4 flex-1 rounded bg-gray-100"><div className="h-4 rounded bg-brand" style={{ width: `${Math.max(2, Math.round((100 * x.minutes) / maxReason))}%` }} /></div>
-                    <div className="w-28 shrink-0 text-right text-gray-600">{fmtDur(x.minutes)} · {x.incidents}&times;</div>
+                    <div className="w-24 shrink-0 text-right text-gray-600 sm:w-28">{fmtDur(x.minutes)} · {x.incidents}&times;</div>
                   </div>
                 ))}
               </div>
@@ -259,7 +261,7 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
               <div className="space-y-1.5">
                 {r.designs.slice(0, 25).map((x) => (
                   <Link key={x.design} href={x.design === "—" ? link({}) : `/batch?d=${encodeURIComponent(x.design)}`} className="flex items-center gap-3 rounded text-sm hover:bg-gray-50">
-                    <div className="w-56 shrink-0 truncate text-brand hover:underline" title={x.design}>{x.design}</div>
+                    <div className="w-28 shrink-0 truncate text-brand hover:underline sm:w-56" title={x.design}>{x.design}</div>
                     <div className="h-4 flex-1 rounded bg-gray-100"><div className="h-4 rounded bg-green-500" style={{ width: `${Math.max(2, Math.round((100 * x.slabs) / maxDesign))}%` }} /></div>
                     <div className="w-20 shrink-0 text-right text-gray-600">{fmt(x.slabs)} slab(s)</div>
                   </Link>

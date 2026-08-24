@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { jsonOrThrow } from "@/lib/jsonOrThrow";
 import type { Filters } from "@/components/consumables/ConsumablesDashboard";
 
 interface InventoryItem {
@@ -31,11 +32,12 @@ export default function LowStockAlerts({ filters }: Props) {
   const [items, setItems]     = useState<InventoryItem[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
     fetch("/api/consumables/inventory")
-      .then((r) => r.json())
+      .then(jsonOrThrow)
       .then((data: InventoryItem[]) => { setItems(data); setLoading(false); })
-      .catch(console.error);
+      .catch((e) => { console.error(e); setLoadError(e instanceof Error && e.message ? e.message : "Could not load."); setLoading(false); });
   }, []);
 
   // Only items that need attention
@@ -143,6 +145,7 @@ export default function LowStockAlerts({ filters }: Props) {
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      {loadError && <p className="px-5 pt-3 text-xs text-red-600">{loadError}</p>}
       {/* Accent bar */}
       <div className="h-1 w-full bg-gradient-to-r from-red-500 to-orange-400" />
 

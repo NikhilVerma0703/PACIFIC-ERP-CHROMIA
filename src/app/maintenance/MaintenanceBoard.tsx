@@ -511,7 +511,7 @@ function TicketRow({
             {/* A ticket that carries a mis_id but whose hour is outside the
                 window still says where it came from. */}
             {t.misId && (
-              <Link href="/mis" className="text-xs font-medium text-brand hover:underline">
+              <Link href="/mis" className="tap-area text-xs font-medium text-brand hover:underline">
                 from a downtime incident →
               </Link>
             )}
@@ -623,7 +623,7 @@ function IncidentRow({
               </span>
             )}
             {i.batch && (
-              <Link href={`/batch?b=${encodeURIComponent(i.batch)}`} className="text-xs font-medium text-brand hover:underline">
+              <Link href={`/batch?b=${encodeURIComponent(i.batch)}`} className="tap-area text-xs font-medium text-brand hover:underline">
                 batch {i.batch}
               </Link>
             )}

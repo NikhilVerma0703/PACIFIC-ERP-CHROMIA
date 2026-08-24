@@ -1,5 +1,6 @@
 "use client";
 import { Suspense, useEffect, useState } from "react";
+import { readJson } from "@/lib/readJson";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
@@ -73,6 +74,7 @@ function OrdersPageInner() {
   const statusParam  = searchParams.get("status");
   const [orders, setOrders]         = useState<Order[]>([]);
   const [loading, setLoading]       = useState(true);
+  const [loadError, setLoadError]   = useState("");
   const [filter, setFilter]         = useState(statusParam && FILTERS.includes(statusParam) ? statusParam : "ALL");
   const [factory, setFactory]       = useState("ALL");
   const [spTabs, setSpTabs]         = useState<SpTab[]>([]);
@@ -94,7 +96,7 @@ function OrdersPageInner() {
   }, []);
 
   async function load(p = 1, append = false) {
-    setLoading(true);
+    setLoading(true); setLoadError("");
     const params = new URLSearchParams();
     if (filter !== "ALL" && filter !== "⚠ DELAYED") params.set("status", filter);
     if (factory !== "ALL") params.set("productType", factory);
@@ -103,19 +105,29 @@ function OrdersPageInner() {
     params.set("page", String(p));
     if (dateFrom) params.set("from", dateFrom);
     if (dateTo)   params.set("to", dateTo);
-    const r = await fetch(`/api/sales/orders?${params}`);
-    const data = await r.json();
-    const list = Array.isArray(data) ? data : [];
-    if (append) {
-      setOrders(prev => {
-        const seen = new Set(prev.map((o: any) => o.id));
-        return [...prev, ...list.filter((o: any) => !seen.has(o.id))];
-      });
-    } else {
-      setOrders(list);
+    // readJson + finally: an expired session (the login page's HTML, 200) or a
+    // dropped connection used to throw out of r.json() with loading still
+    // true, so the spinner never cleared. Now the error is shown and the
+    // spinner stops; the list is left as it was.
+    try {
+      const r = await fetch(`/api/sales/orders?${params}`);
+      const res = await readJson<unknown>(r);
+      if (!res.ok) { setLoadError(res.error ?? `Could not load orders (HTTP ${res.status}).`); return; }
+      const list = Array.isArray(res.data) ? res.data : [];
+      if (append) {
+        setOrders(prev => {
+          const seen = new Set(prev.map((o: any) => o.id));
+          return [...prev, ...list.filter((o: any) => !seen.has(o.id))];
+        });
+      } else {
+        setOrders(list);
+      }
+      setHasMore(list.length === PAGE_SIZE);
+    } catch (e) {
+      setLoadError(e instanceof Error && e.message ? `Could not reach the server: ${e.message}` : "Could not reach the server.");
+    } finally {
+      setLoading(false);
     }
-    setHasMore(list.length === PAGE_SIZE);
-    setLoading(false);
   }
 
   function loadMore() {
@@ -207,6 +219,7 @@ function OrdersPageInner() {
         )}
       </div>
 
+      {loadError && <div className="text-sm text-red-600 py-3 text-center">{loadError}</div>}
       {loading ? (
         <div className="text-sm text-slate-400 py-12 text-center">Loading&#x2026;</div>
       ) : visible.length === 0 ? (

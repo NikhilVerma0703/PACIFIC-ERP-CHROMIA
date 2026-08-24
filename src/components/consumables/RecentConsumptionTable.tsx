@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { jsonOrThrow } from "@/lib/jsonOrThrow";
 import type { Filters } from "@/components/consumables/ConsumablesDashboard";
 
 interface ConsumptionEntry {
@@ -48,18 +49,19 @@ function formatDate(dateStr: string) {
 export default function RecentConsumptionTable({ filters }: Props) {
   const [entries, setEntries]   = useState<ConsumptionEntry[]>([]);
   const [loading, setLoading]   = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [page, setPage]         = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
   useEffect(() => {
-    setLoading(true);
+    setLoading(true); setLoadError(null);
     const params = new URLSearchParams();
     if (filters.dateFrom) params.set("dateFrom", filters.dateFrom);
     if (filters.dateTo)   params.set("dateTo",   filters.dateTo);
     fetch(`/api/consumables/consumption?${params.toString()}`)
-      .then((r) => r.json())
+      .then(jsonOrThrow)
       .then((d) => { setEntries(d); setLoading(false); setPage(1); })
-      .catch(console.error);
+      .catch((e) => { console.error(e); setLoadError(e instanceof Error && e.message ? e.message : "Could not load."); setLoading(false); });
   }, [filters.dateFrom, filters.dateTo]);
 
   useEffect(() => { setPage(1); }, [filters.search, filters.department]);
@@ -86,6 +88,7 @@ export default function RecentConsumptionTable({ filters }: Props) {
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      {loadError && <p className="px-5 pt-3 text-xs text-red-600">{loadError}</p>}
       {/* Accent bar */}
       <div className="h-1 w-full bg-gradient-to-r from-teal-500 to-cyan-400" />
 

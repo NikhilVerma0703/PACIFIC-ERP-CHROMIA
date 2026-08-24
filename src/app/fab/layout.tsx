@@ -56,7 +56,7 @@ export default async function FabLayout({ children }: { children: React.ReactNod
            five queues are listed. The machine session is optional — when one is
            open its station is highlighted and it is what stamps machineId onto
            the work; without one the queues still work. */
-        <aside className="w-60 min-h-screen bg-slate-900 flex flex-col p-4">
+        <aside className="w-60 shrink-0 min-h-screen bg-slate-900 flex flex-col p-4">
           <div className="mb-6 p-3 bg-slate-800 rounded-xl border border-slate-700">
             <p className="text-sm font-semibold text-white leading-tight">Pacific Fabrication</p>
             <p className="text-xs text-slate-400 mt-0.5">Operator · pick a process</p>
@@ -76,7 +76,7 @@ export default async function FabLayout({ children }: { children: React.ReactNod
         </aside>
       ) : (
         /* MANAGER / SUPERVISOR: white sidebar */
-        <aside className="w-60 h-screen sticky top-0 bg-white border-r border-slate-100 flex flex-col p-4">
+        <aside className="w-60 shrink-0 h-screen supports-[height:100dvh]:h-dvh sticky top-0 bg-white border-r border-slate-100 flex flex-col p-4">
           <div className="px-3 mb-5">
             <p className="text-xs font-bold text-slate-900 tracking-tight">Pacific Fabrication</p>
             <p className="text-[11px] text-slate-400 mt-0.5 truncate">{session.user.name} {roleLabel}</p>
@@ -154,7 +154,11 @@ export default async function FabLayout({ children }: { children: React.ReactNod
         </aside>
       )}
 
-      <main className="flex-1 p-6 min-h-screen">{children}</main>
+      {/* shrink-0 on the rails and min-w-0 here: a wide queue table used to
+          squeeze the 240px sidebar to ~128px on an 800px tablet and push the
+          page past the viewport; now the sidebar keeps its width and the table
+          scrolls inside its own card (each card carries overflow-x-auto). */}
+      <main className="flex-1 min-w-0 p-6 min-h-screen">{children}</main>
     </div>
   );
 }

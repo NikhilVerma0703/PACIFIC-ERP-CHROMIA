@@ -180,7 +180,7 @@ function FabricationQueue() {
         pieces.length === 0 ? (
           <div className="text-center py-20 text-gray-400">No pieces pending fabrication.</div>
         ) : (
-          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs text-gray-500">
                 <tr>
@@ -213,7 +213,7 @@ function FabricationQueue() {
           </div>
         )
       ) : (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden overflow-x-auto">
           {completed.length === 0 ? (
             <div className="text-center py-16 text-gray-400 text-sm">No pieces completed on {doneDate}.</div>
           ) : (

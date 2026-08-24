@@ -2,13 +2,13 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { ClientTime } from "@/components/ClientTime";
 import { undoLast } from "./undo";
 
-function ago(iso?: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-}
+// Same format as before; written after mount by ClientTime, because formatting
+// the server's timestamp in the device's zone during render made the server
+// (UTC) and the tablet (IST) disagree and React regenerate the page client-side.
+const AT_FORMAT: Intl.DateTimeFormatOptions = { dateStyle: "medium", timeStyle: "short" };
 
 // `mayUndo` mirrors undoLast's own gates (incharge-and-above AND the Shop Floor branch,
 // undo.ts:11-12). When false the bar still reports what was last done and by whom — only
@@ -21,7 +21,7 @@ export function UndoLastButton({ batch, label, by, at, mayUndo = true }: { batch
     <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2">
       <span className="text-sm text-amber-900">
         <span className="font-medium">Last action:</span> {label}
-        {(by || at) && <span className="text-amber-700"> — {by ? `by ${by}` : ""}{by && at ? " · " : ""}{at ? ago(at) : ""}</span>}
+        {(by || at) && <span className="text-amber-700"> — {by ? `by ${by}` : ""}{by && at ? " · " : ""}{at ? <ClientTime iso={at} options={AT_FORMAT} /> : ""}</span>}
       </span>
       <div className="flex items-center gap-3">
         {msg && <span className="text-sm text-gray-700">{msg}</span>}

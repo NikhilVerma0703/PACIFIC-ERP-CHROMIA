@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { jsonOrThrow } from "@/lib/jsonOrThrow";
 
 interface KPIData {
   totalItems: number;
@@ -151,15 +152,17 @@ function SkeletonCard() {
 
 export default function KPICards() {
   const [data, setData] = useState<KPIData | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/consumables/kpi")
-      .then((r) => r.json())
+      .then(jsonOrThrow)
       .then(setData)
-      .catch(console.error);
+      .catch((e) => { console.error(e); setLoadError(e instanceof Error && e.message ? e.message : "Could not load."); });
   }, []);
 
   if (!data) {
+    if (loadError) return <p className="text-xs text-red-600">{loadError}</p>;
     return (
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         {CARDS.map((c) => <SkeletonCard key={c.title} />)}

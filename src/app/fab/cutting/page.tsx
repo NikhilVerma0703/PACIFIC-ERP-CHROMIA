@@ -135,6 +135,9 @@ function CloCard({
           {/* Locked by another: no action buttons */}
         </div>
       </div>
+      {/* overflow-x-auto: eight px-5 columns do not fit an 800px tablet beside the
+          sidebar; the table scrolls inside the card instead of widening the page */}
+      <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead className="bg-gray-50 text-xs text-gray-500">
           <tr>
@@ -159,6 +162,7 @@ function CloCard({
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
@@ -324,7 +328,7 @@ function CuttingQueue() {
       {actionError && (
         <div className="mb-4 flex items-start justify-between gap-4 rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">
           <span><b>Not saved.</b> {actionError}</span>
-          <button onClick={() => setActionError(null)} className="shrink-0 font-bold text-red-400 hover:text-red-700">✕</button>
+          <button onClick={() => setActionError(null)} className="tap-area shrink-0 font-bold text-red-400 hover:text-red-700">✕</button>
         </div>
       )}
 
@@ -359,6 +363,7 @@ function CuttingQueue() {
                       {completing[slab.id] ? "Saving…" : "Mark Slab Cut"}
                     </button>
                   </div>
+                  <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead className="bg-gray-50 text-xs text-gray-500">
                       <tr>
@@ -389,6 +394,7 @@ function CuttingQueue() {
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 </div>
               );
             })}

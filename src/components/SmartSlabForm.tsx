@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useActionState } from "react";
 import { Toast } from "./Toast";
 import { createRow } from "@/app/tables/actions";
+import { guardAction, SERVER_UNREACHABLE } from "@/lib/guardAction";
 import { getSmartDefaults, getBatchForSlab } from "@/app/entry/slab/actions";
 import type { FieldMeta } from "@/lib/tables";
 import { OPERATOR_FIELDS } from "@/lib/operatorFields";
@@ -12,6 +13,8 @@ import { secondsToHHMM } from "@/lib/time";
 import type { SlabMode } from "@/lib/smartEntry";
 import { isRequiredField } from "@/lib/requiredFields";
 import { PhotoField } from "./PhotoField";
+
+const guardedCreateRow = guardAction(createRow, SERVER_UNREACHABLE);
 
 // Current local date+time as a datetime-local value ("YYYY-MM-DDTHH:mm"), used to
 // pre-fill empty Date fields so an entry always carries a date even if the
@@ -114,7 +117,9 @@ function SlabField({ f, locked, def, opts, operatorName, unlocked, onUnlock, req
 }
 
 export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options = {}, operatorName, batchField = "batch", slabMode = "increment", slabOptions = [], slabFirst = false }: { model: string; tableName: string; fields: FieldMeta[]; paramFieldSet: string[]; options?: Record<string, string[]>; operatorName?: string | null; batchField?: string; slabMode?: SlabMode; slabOptions?: number[]; slabFirst?: boolean; }) {
-  const [msg, action, pending] = useActionState(createRow, undefined);
+  // guardAction: a dropped connection mid-save shows in the bar instead of
+  // throwing the page to global-error with the slab half typed (lib/guardAction).
+  const [msg, action, pending] = useActionState(guardedCreateRow, undefined);
   const [batch, setBatch] = useState("");
   const [defaults, setDefaults] = useState<{ values: Record<string, unknown>; slabAutofill?: number | null; lineThickness?: string | null } | null>(null);
   const [version, setVersion] = useState(0);
@@ -238,7 +243,7 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
         </div>
       </div>
 
-      <div className="sticky bottom-0 -mx-5 mt-6 flex items-center justify-between gap-3 border-t border-gray-200 bg-white/85 px-5 py-3 backdrop-blur">
+      <div className="sticky bottom-0 -mx-5 mt-6 flex items-center justify-between gap-3 border-t border-gray-200 bg-white/85 px-5 py-3 backdrop-blur safe-bottom">
         <div className="text-sm">{msg === "ok" ? <span className="text-green-600">Saved &#10003; — enter the next slab</span> : msg ? <span className="text-red-600">{msg}</span> : <span className="text-gray-400">{tableName} · smart entry</span>}</div>
         <button disabled={pending} className="min-h-[44px] rounded-lg bg-brand px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-60">{pending ? "Saving…" : "Save slab"}</button>
       </div>

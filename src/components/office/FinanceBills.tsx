@@ -9,6 +9,7 @@
 // the exception, for when someone paid out of their own pocket. Either way the
 // per-bill toggle at review can correct a stack that turns out to be mixed.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { readJson } from "@/lib/readJson";
 import { Card, Badge, Empty } from "@/components/ui";
 import { VendorInvoicePanel } from "@/components/office/VendorInvoicePanel";
 import { createLedger, LedgerPicker } from "@/components/office/LedgerPicker";
@@ -116,7 +117,12 @@ async function j<T>(url: string, init?: RequestInit): Promise<T> {
     try { const d = await r.json(); msg = typeof d.error === "string" ? d.error : (d.detail?.error ?? d.detail ?? msg); } catch { /* keep default */ }
     throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
   }
-  return r.json();
+  // readJson on the success path: an expired session answers a JSON route with
+  // the login page's HTML and status 200, which r.json() reported as
+  // "Unexpected token '<'"; now it says what happened. Same result otherwise.
+  const res = await readJson<T>(r);
+  if (!res.ok) throw new Error(res.error ?? `Request failed (${r.status})`);
+  return res.data as T;
 }
 
 /**

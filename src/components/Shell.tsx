@@ -83,7 +83,10 @@ export async function Shell({ children }: { children: ReactNode }) {
           </div>
           <form action={logout}><button className="min-h-[44px] text-sm text-gray-500">Sign out</button></form>
         </header>
-        <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-8">{children}</main>
+        {/* px-4 below sm: px-6 left a 360px phone 312px of content and the MIS
+            bar rows overflowed it. shell-main is the hook globals.css uses to keep
+            the collapsed-sidebar tile off the heading in narrower windows. */}
+        <main className="shell-main mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 sm:py-8">{children}</main>
       </div>
     </div>
   );

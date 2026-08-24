@@ -265,7 +265,7 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
       <div className="mb-3 flex flex-wrap gap-2">
         {presets.map((p) => {
           const active = from === p.f && to === p.t;
-          return <Link key={p.label} href={href(p.f, p.t)} className={`rounded-full px-3 py-1 text-xs font-medium transition ${active ? "bg-brand text-white" : "border border-gray-300 text-gray-600 hover:bg-gray-50"}`}>{p.label}</Link>;
+          return <Link key={p.label} href={href(p.f, p.t)} className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium transition ${active ? "bg-brand text-white" : "border border-gray-300 text-gray-600 hover:bg-gray-50"}`}>{p.label}</Link>;
         })}
       </div>
       <form method="GET" className="mb-6 flex flex-wrap items-end gap-3">

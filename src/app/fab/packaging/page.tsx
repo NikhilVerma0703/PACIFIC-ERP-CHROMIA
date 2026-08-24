@@ -228,6 +228,7 @@ function PackagingQueue() {
                       <span className="text-xs text-gray-400">{group[0].project.customerName}</span>
                       <span className="ml-auto text-xs text-gray-400">{group.length} piece{group.length !== 1 ? "s" : ""}</span>
                     </div>
+                    <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead className="text-xs text-gray-400 bg-gray-50/50">
                         <tr>
@@ -279,22 +280,25 @@ function PackagingQueue() {
                         ))}
                       </tbody>
                     </table>
+                    </div>
                   </div>
                 );
               })}
             </div>
           )}
 
-          {/* Sticky Create Package bar */}
+          {/* Sticky Create Package bar. safe-bottom clears the iPhone home
+              indicator in a home-screen install; px-4 below sm and flex-wrap on the
+              row let it fit a narrow tablet instead of running off the right. */}
           {selected.size > 0 && (
-            <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-2xl px-8 py-4 z-50">
+            <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-2xl px-4 sm:px-8 py-4 z-50 safe-bottom [--safe-pad:1rem]">
               {createError && (
                 <div className="max-w-5xl mx-auto mb-2 px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 flex items-center justify-between">
                   <span>{createError}</span>
-                  <button onClick={() => setCreateError(null)} className="ml-3 text-red-400 hover:text-red-600">×</button>
+                  <button onClick={() => setCreateError(null)} className="tap-area ml-3 text-red-400 hover:text-red-600">×</button>
                 </div>
               )}
-              <div className="max-w-5xl mx-auto flex items-center gap-4">
+              <div className="max-w-5xl mx-auto flex flex-wrap items-center gap-4">
                 <div className="text-sm font-semibold text-gray-800 flex-shrink-0">
                   {selected.size} piece{selected.size !== 1 ? "s" : ""} selected
                 </div>
@@ -351,7 +355,7 @@ function PackagingQueue() {
               </button>
 
               {expanded.has(pkg.id) && (
-                <div className="border-t border-gray-100">
+                <div className="border-t border-gray-100 overflow-x-auto">
                   <table className="w-full text-xs">
                     <thead className="bg-gray-50 text-gray-400">
                       <tr>

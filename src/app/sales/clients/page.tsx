@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { readJson } from "@/lib/readJson";
 
 type Client = {
   id: string; name: string; email: string | null; phone: string | null;
@@ -26,6 +27,7 @@ const EMPTY = { name: "", email: "", phone: "", country: "", city: "", contactPe
 export default function ClientsPage() {
   const [clients, setClients] = useState<Client[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [modal, setModal] = useState<"new" | "edit" | null>(null);
   const [editing, setEditing] = useState<Client | null>(null);
   const [form, setForm] = useState(EMPTY);
@@ -34,10 +36,19 @@ export default function ClientsPage() {
   const [search, setSearch] = useState("");
 
   async function load() {
-    setLoading(true);
-    const r = await fetch("/api/sales/clients");
-    setClients(await r.json());
-    setLoading(false);
+    setLoading(true); setLoadError("");
+    // readJson + finally — see sales/orders/page.tsx. Also only ever stores an
+    // array: an `{error}` body used to be stored as the list and crash .filter.
+    try {
+      const r = await fetch("/api/sales/clients");
+      const res = await readJson<unknown>(r);
+      if (!res.ok) { setLoadError(res.error ?? `Could not load clients (HTTP ${res.status}).`); return; }
+      if (Array.isArray(res.data)) setClients(res.data);
+    } catch (e) {
+      setLoadError(e instanceof Error && e.message ? `Could not reach the server: ${e.message}` : "Could not reach the server.");
+    } finally {
+      setLoading(false);
+    }
   }
   useEffect(() => { load(); }, []);
 
@@ -126,6 +137,7 @@ export default function ClientsPage() {
           className="w-64 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500" />
       </div>
 
+      {loadError && <div className="text-sm text-red-600 py-3 text-center">{loadError}</div>}
       {loading ? (
         <div className="text-sm text-slate-400 py-12 text-center">Loading…</div>
       ) : filtered.length === 0 ? (

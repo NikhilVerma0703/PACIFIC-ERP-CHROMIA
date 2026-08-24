@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { jsonOrThrow } from "@/lib/jsonOrThrow";
 import type { Filters } from "@/components/consumables/ConsumablesDashboard";
 import { useToast } from "@/components/consumables/toast-context";
 import { useCanWrite } from "@/components/consumables/write-access";
@@ -37,6 +38,7 @@ export default function FilmRollTrackingTable({ filters }: Props) {
   const { showToast }             = useToast();
   const [rolls, setRolls]         = useState<FilmRoll[]>([]);
   const [loading, setLoading]     = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   // Presentation only - every mutating route re-checks with consumablesGate("WRITE").
   const canWrite = useCanWrite();
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -46,9 +48,9 @@ export default function FilmRollTrackingTable({ filters }: Props) {
 
   const fetchRolls = () => {
     fetch("/api/consumables/film-rolls")
-      .then((res) => res.json())
+      .then(jsonOrThrow)
       .then((data) => { setRolls(data); setLoading(false); })
-      .catch(console.error);
+      .catch((e) => { console.error(e); setLoadError(e instanceof Error && e.message ? e.message : "Could not load."); setLoading(false); });
   };
 
   useEffect(() => { fetchRolls(); }, []);
@@ -124,6 +126,7 @@ export default function FilmRollTrackingTable({ filters }: Props) {
   return (
     <>
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        {loadError && <p className="px-5 pt-3 text-xs text-red-600">{loadError}</p>}
         {/* Accent bar — amber/orange for film tracking, distinct from all other sections */}
         <div className="h-1 w-full bg-gradient-to-r from-amber-400 to-orange-400" />
 

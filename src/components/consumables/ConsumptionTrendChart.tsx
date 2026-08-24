@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { jsonOrThrow } from "@/lib/jsonOrThrow";
 import {
   ResponsiveContainer, AreaChart, Area,
   CartesianGrid, XAxis, YAxis, Tooltip,
@@ -26,12 +27,13 @@ export default function ConsumptionTrendChart() {
   const [data, setData] = useState<TrendPoint[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
-    setLoading(true);
+    setLoading(true); setLoadError(null);
     fetch(`/api/consumables/charts/consumption-trend?days=${days}`)
-      .then((r) => r.json())
+      .then(jsonOrThrow)
       .then((d) => { setData(d); setLoading(false); })
-      .catch(console.error);
+      .catch((e) => { console.error(e); setLoadError(e instanceof Error && e.message ? e.message : "Could not load."); setLoading(false); });
   }, [days]);
 
   const total = data.reduce((s, d) => s + d.total, 0);
@@ -39,6 +41,7 @@ export default function ConsumptionTrendChart() {
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      {loadError && <p className="px-5 pt-3 text-xs text-red-600">{loadError}</p>}
       {/* Top accent */}
       <div className="h-1 w-full bg-gradient-to-r from-blue-500 to-blue-400" />
 
