@@ -1,5 +1,6 @@
 import { ChromiaSlabStatus as SlabStatus } from '@prisma/client';
 import { prisma } from '@/lib/chromia/db';
+import { simpleSlabWhere, type SimpleFilters } from '@/lib/chromia/simple-filters';
 
 /**
  * Stockyard data access.
@@ -7,10 +8,20 @@ import { prisma } from '@/lib/chromia/db';
  * Two questions only: what is on the racks, and what has left them.
  */
 
-/** Every slab whose current outcome is Stock, oldest holding first. */
-export async function listStockedSlabs() {
+/**
+ * Every slab whose current outcome is Stock, oldest holding first.
+ *
+ * The optional filters narrow the rack list by production date, batch and slab
+ * number — the same three the Recalibration page takes — AND-ed onto the "in
+ * stock" condition. No filters means the whole rack, exactly as before.
+ */
+export async function listStockedSlabs(filters?: SimpleFilters) {
   const slabs = await prisma.chromiaSlab.findMany({
-    where: { deletedAt: null, status: SlabStatus.IN_STOCK },
+    where: {
+      deletedAt: null,
+      status: SlabStatus.IN_STOCK,
+      ...(filters ? simpleSlabWhere(filters) : {}),
+    },
     orderBy: [{ receivedDate: 'asc' }, { createdAt: 'asc' }],
     select: {
       id: true,

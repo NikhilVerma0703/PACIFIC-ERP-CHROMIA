@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 
 import { EmptyState, PageHeader } from '@/components/chromia/ui';
+import { SimpleFilterBar } from '@/components/chromia/filter-bar-simple';
 import { dataTable, SectionCard } from '@/components/chromia/ui/form';
 import { DispositionBadge, GradeBadge, StatusBadge } from '@/components/chromia/ui/status';
 import { APP_ROUTES } from '@/lib/chromia/constants/app';
@@ -13,8 +14,14 @@ import {
   stageOf,
   statusLabel,
 } from '@/lib/chromia/recalibration-flow';
+import {
+  hasSimpleFilters,
+  parseSimpleFilters,
+  productionDateRange,
+  type RawSearchParams,
+} from '@/lib/chromia/simple-filters';
 import { link } from '@/lib/chromia/ui';
-import { listRecalibrationRecords } from '@/lib/chromia/server/repositories/recalibration-flow-repository';
+import { searchRecalibrationRecords } from '@/lib/chromia/server/repositories/recalibration-flow-repository';
 
 export const metadata: Metadata = { title: 'Recalibration' };
 export const dynamic = 'force-dynamic';
@@ -63,8 +70,27 @@ const STAGE_CLASS: Record<string, string> = {
  *
  * Tapping the slab number opens whatever that slab needs next.
  */
-export default async function RecalibrationsPage() {
-  const records = await listRecalibrationRecords();
+export default async function RecalibrationsPage({
+  searchParams,
+}: {
+  searchParams: Promise<RawSearchParams>;
+}) {
+  const filters = parseSimpleFilters(await searchParams);
+  const filtered = hasSimpleFilters(filters);
+
+  // The same three filters Stockyard takes, mapped onto the existing
+  // recalibration search: the single production date becomes that whole day's
+  // range, which is the shape searchRecalibrationRecords already speaks. With
+  // nothing set it returns every record, exactly as the unfiltered list did.
+  const { from, to } = productionDateRange(filters);
+  const records = await searchRecalibrationRecords({
+    batchNo: filters.batchNo,
+    slabNo: filters.slabNo,
+    baseMaterialId: null,
+    designId: null,
+    receivedFrom: from,
+    receivedTo: to,
+  });
   const now = new Date();
 
   const waiting = records.filter((record) => stageOf(state(record)) === 'AWAITING_SEND').length;
@@ -76,10 +102,14 @@ export default async function RecalibrationsPage() {
         title="Recalibration"
         description={
           records.length === 0
-            ? 'No slab has been sent for recalibration.'
-            : `${waiting} waiting in the plant · ${away} out`
+            ? filtered
+              ? 'No recalibration record matches these filters.'
+              : 'No slab has been sent for recalibration.'
+            : `${waiting} waiting in the plant · ${away} out${filtered ? ' · filtered' : ''}`
         }
       />
+
+      <SimpleFilterBar filters={filters} action={APP_ROUTES.recalibrations} />
 
       <SectionCard
         title="Recalibration records"
@@ -94,7 +124,9 @@ export default async function RecalibrationsPage() {
       >
         {records.length === 0 ? (
           <EmptyState>
-            Slabs graded C and marked for recalibration at QC appear here automatically.
+            {filtered
+              ? 'No recalibration record matches these filters.'
+              : 'Slabs graded C and marked for recalibration at QC appear here automatically.'}
           </EmptyState>
         ) : (
           <div className="overflow-x-auto">

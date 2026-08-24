@@ -1,8 +1,15 @@
 import type { Metadata } from 'next';
 
 import { EmptyState, PageHeader } from '@/components/chromia/ui';
+import { SimpleFilterBar } from '@/components/chromia/filter-bar-simple';
 import { dataTable, SectionCard } from '@/components/chromia/ui/form';
 import { GradeBadge } from '@/components/chromia/ui/status';
+import { APP_ROUTES } from '@/lib/chromia/constants/app';
+import {
+  hasSimpleFilters,
+  parseSimpleFilters,
+  type RawSearchParams,
+} from '@/lib/chromia/simple-filters';
 import { daysBetween } from '@/lib/chromia/utils/dates';
 import { listStockedSlabs, listStockReleases } from '@/lib/chromia/server/repositories/stockyard-repository';
 
@@ -35,8 +42,20 @@ function toDateInput(date: Date): string {
  * This page is that one step, kept deliberately apart from QC and Slab Intake:
  * the racks on top, the release log underneath.
  */
-export default async function StockyardPage() {
-  const [stocked, releases] = await Promise.all([listStockedSlabs(), listStockReleases()]);
+export default async function StockyardPage({
+  searchParams,
+}: {
+  searchParams: Promise<RawSearchParams>;
+}) {
+  const filters = parseSimpleFilters(await searchParams);
+  const filtered = hasSimpleFilters(filters);
+
+  // Filters narrow the rack list; the release log below is history and stays
+  // whole, the same way Slab Records filters the records and not the summary.
+  const [stocked, releases] = await Promise.all([
+    listStockedSlabs(filtered ? filters : undefined),
+    listStockReleases(),
+  ]);
 
   const now = new Date();
   const today = toDateInput(now);
@@ -47,10 +66,16 @@ export default async function StockyardPage() {
         title="Stockyard"
         description={
           stocked.length === 0
-            ? 'No slabs are in stock.'
-            : `${stocked.length} slab${stocked.length === 1 ? '' : 's'} in stock`
+            ? filtered
+              ? 'No slabs in stock match these filters.'
+              : 'No slabs are in stock.'
+            : `${stocked.length} slab${stocked.length === 1 ? '' : 's'} in stock${
+                filtered ? ' matching' : ''
+              }`
         }
       />
+
+      <SimpleFilterBar filters={filters} action={APP_ROUTES.stockyard} />
 
       {/* ------------------------------------------------------ on the rack --- */}
       <div className="mb-6">
@@ -66,7 +91,11 @@ export default async function StockyardPage() {
           }
         >
           {stocked.length === 0 ? (
-            <EmptyState>Nothing is on the racks right now.</EmptyState>
+            <EmptyState>
+              {filtered
+                ? 'No stocked slab matches these filters.'
+                : 'Nothing is on the racks right now.'}
+            </EmptyState>
           ) : (
             <div className="overflow-x-auto">
               <table className={dataTable.root}>
