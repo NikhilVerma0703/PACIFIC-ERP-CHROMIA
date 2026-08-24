@@ -74,14 +74,14 @@ async function managedSpIdsOf(uid: string): Promise<string[]> {
   // Dynamic so this module stays importable by node --test (a static import of
   // @/lib/prisma would pull the client, and the alias, into the test run); the
   // route bundle resolves it statically all the same.
+  //
+  // No catch: a failed assignments query must THROW (the route answers 500),
+  // not read as "manages nobody" — that answered a manager 403 Forbidden on a
+  // team order their own list shows, over a pooler blip.
   const { prisma } = await import("@/lib/prisma");
-  try {
-    const rows = await prisma.$queryRaw<Array<{ spId: string }>>`
-      SELECT sp_id AS "spId" FROM sales_manager_assignments WHERE manager_id = ${uid} AND is_active = true`;
-    return rows.map((r) => r.spId);
-  } catch {
-    return [];
-  }
+  const rows = await prisma.$queryRaw<Array<{ spId: string }>>`
+    SELECT sp_id AS "spId" FROM sales_manager_assignments WHERE manager_id = ${uid} AND is_active = true`;
+  return rows.map((r) => r.spId);
 }
 
 async function visibleTo(user: SessionUser, ownerIds: ReadonlyArray<string | null | undefined>): Promise<boolean> {
@@ -93,15 +93,24 @@ async function visibleTo(user: SessionUser, ownerIds: ReadonlyArray<string | nul
 }
 
 const notFound = () => Response.json({ error: "Not found" }, { status: 404 });
-const forbidden = () => Response.json({ error: "Forbidden" }, { status: 403 });
+// A record that is not the caller's answers exactly like one that does not
+// exist. Answering 403 told a probing salesperson which ids EXIST (403 = real,
+// 404 = not) — an existence oracle. One answer, no oracle, and it matches what
+// the module promised: a miss is 404.
+const forbidden = notFound;
 
 /**
- * The refusal to return from a route that was handed an order id — 404 when no
- * such order, 403 when it is not the caller's — or null when the caller may go
- * on. Call it right after the session check and before any read or write:
+ * The refusal to return from a route that was handed an order id — 404 whether
+ * no such order exists or it is not the caller's (deliberately the same
+ * answer; see `forbidden`) — or null when the caller may go on. Call it right
+ * after the session check and before any read or write:
  *
  *   const refused = await assertOrderVisible(session.user, id);
  *   if (refused) return refused;
+ *
+ * The owner lookups carry NO catch: a query failure here is a system fault and
+ * must answer 500 like any other, not 404 — "the database blinked" and "this
+ * record is gone" are different sentences on a live sales floor.
  */
 export async function assertOrderVisible(user: SessionUser, orderId: string): Promise<Response | null> {
   const { prisma } = await import("@/lib/prisma");
@@ -109,7 +118,7 @@ export async function assertOrderVisible(user: SessionUser, orderId: string): Pr
   const order = await prisma.salesOrder.findUnique({
     where: { id: orderId },
     select: { spId: true, proformaInvoices: { select: { spId: true } } },
-  }).catch(() => null);
+  });
   if (!order) return notFound();
   const ok = await visibleTo(user, [order.spId, ...order.proformaInvoices.map((p) => p.spId)]);
   return ok ? null : forbidden();
@@ -121,7 +130,7 @@ export async function assertPiVisible(user: SessionUser, piId: string): Promise<
   const pi = await prisma.proformaInvoice.findUnique({
     where: { id: piId },
     select: { spId: true, order: { select: { spId: true } } },
-  }).catch(() => null);
+  });
   if (!pi) return notFound();
   const ok = await visibleTo(user, [pi.spId, pi.order?.spId]);
   return ok ? null : forbidden();
@@ -134,7 +143,7 @@ export async function assertClientVisible(user: SessionUser, clientId: string): 
   const client = await prisma.salesClient.findUnique({
     where: { id: clientId },
     select: { createdById: true },
-  }).catch(() => null);
+  });
   if (!client) return notFound();
   const ok = await visibleTo(user, [client.createdById]);
   return ok ? null : forbidden();
@@ -146,7 +155,7 @@ export async function assertPaymentDivisionVisible(user: SessionUser, divisionId
   const div = await prisma.salesPaymentDivision.findUnique({
     where: { id: divisionId },
     select: { order: { select: { spId: true, proformaInvoices: { select: { spId: true } } } } },
-  }).catch(() => null);
+  });
   if (!div) return notFound();
   const ok = await visibleTo(user, [div.order?.spId, ...(div.order?.proformaInvoices ?? []).map((p) => p.spId)]);
   return ok ? null : forbidden();

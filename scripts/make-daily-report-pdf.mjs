@@ -265,10 +265,10 @@ function pageOne(d, dateLong) {
   const r2 = (v) => Math.round(v * 100) / 100;
   const stdGroups = (() => {
     const m = new Map();
-    for (const x of hours) if (x.made != null && x.std != null && x.std > 0) m.set(r2(x.std), (m.get(r2(x.std)) ?? 0) + 1);
+    for (const x of hours) if (x.shift != null && x.made != null && x.std != null && x.std > 0) m.set(r2(x.std), (m.get(r2(x.std)) ?? 0) + 1);
     return [...m.entries()].sort((a, b) => b[0] - a[0]);
   })();
-  const declaredNoStd = hours.filter((x) => x.made != null && !(x.std != null && x.std > 0)).length;
+  const declaredNoStd = hours.filter((x) => x.shift != null && x.made != null && !(x.std != null && x.std > 0)).length;
   const stdRange = stdGroups.length === 0 ? null
     : stdGroups.length === 1 ? `${stdGroups[0][0]}`
     : `${stdGroups[stdGroups.length - 1][0]}–${stdGroups[0][0]}`;

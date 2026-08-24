@@ -82,7 +82,10 @@ export async function collect(date, prisma = new PrismaClient()) {
   const hours = mis.map((r) => {
     const h = hourStart(r.hour);
     return {
-      hour: r.hour, h, shift: shiftOf(h),
+      // Null-guarded like src/lib/dailyReport.ts: shiftOf(null) buckets to C,
+      // which put a row with no hour label into C's target here while the web
+      // page excluded it — the two surfaces printed different day targets.
+      hour: r.hour, h, shift: h == null ? null : shiftOf(h),
       incharge: r.productionInchargeName ?? r.submittedBy ?? null,
       batch: r.batch, design: r.design,
       made: slabsOf(r),

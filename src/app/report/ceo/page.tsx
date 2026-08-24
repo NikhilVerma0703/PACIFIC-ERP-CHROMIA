@@ -114,14 +114,17 @@ function SheetProduction({ r }: { r: DailyReport }) {
   // typed on an MIS row puts "30.299999999999997" into the CEO's working
   // (and 11 vs 11.000001 would split into two lines).
   const r2 = (v: number) => Math.round(v * 100) / 100;
+  // Only rows that reach a shift: day.target is summed via the three shifts,
+  // and a row with no hour label has shift null and contributes nothing — a
+  // tooltip line for it would over-sum the printed total by exactly its std.
   const stdGroups = (() => {
     const m = new Map<number, number>();
-    for (const x of hours) if (x.made != null && x.std != null && x.std > 0) m.set(r2(x.std), (m.get(r2(x.std)) ?? 0) + 1);
+    for (const x of hours) if (x.shift != null && x.made != null && x.std != null && x.std > 0) m.set(r2(x.std), (m.get(r2(x.std)) ?? 0) + 1);
     return [...m.entries()].sort((a, b) => b[0] - a[0]);
   })();
   // Declared hours with no standard set contribute zero to the target; if any
   // exist the tooltip must say so or its lines will not add up to the total.
-  const declaredNoStd = hours.filter((x) => x.made != null && !(x.std != null && x.std > 0)).length;
+  const declaredNoStd = hours.filter((x) => x.shift != null && x.made != null && !(x.std != null && x.std > 0)).length;
   const stdRange = stdGroups.length === 0 ? null
     : stdGroups.length === 1 ? `${stdGroups[0][0]}`
     : `${stdGroups[stdGroups.length - 1][0]}–${stdGroups[0][0]}`;

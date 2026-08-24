@@ -198,7 +198,12 @@ test("a capped role with no branch is unaffected", () => {
 test("login and static assets stay public, signed out or in", () => {
   assert.equal(redirectFor(null, "/login"), null);
   assert.equal(redirectFor(null, "/api/auth/session"), null);
-  assert.equal(redirectFor(null, "/logo.png"), null);
+  // A REAL file in public/, per the isPublicAsset allowlist. This line used to
+  // say "/logo.png" — no such file — and passed only because auth.config kept
+  // the retired any-.png-is-public rule; tests/publicAssets.test.ts pins
+  // "/logo.png" as needing a session, and now both gates agree.
+  assert.equal(redirectFor(null, "/logo-white.png"), null);
+  assert.equal(redirectFor(null, "/logo.png"), "(denied)");
   // Signed out anywhere else is a plain false, NOT a Response — middleware.ts
   // still runs and issues the login redirect itself so it can attach a
   // callbackUrl. Returning a redirect here would throw that away.

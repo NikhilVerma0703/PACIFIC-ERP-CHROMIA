@@ -1,5 +1,5 @@
 import type { NextAuthConfig } from "next-auth";
-import { storeMayVisit, operatorMayVisit, STORE_HOME, OPERATOR_HOME } from "./lib/routeCaps.ts";
+import { storeMayVisit, operatorMayVisit, isPublicAsset, STORE_HOME, OPERATOR_HOME } from "./lib/routeCaps.ts";
 import type { Role } from "@prisma/client";
 
 /**
@@ -46,7 +46,13 @@ export const authConfig = {
         // route is not open: it refuses anything without the secret, and
         // refuses everything when the secret is unset.
         nextUrl.pathname.startsWith("/api/report/daily-email") ||
-        /\.(png|jpg|jpeg|svg|webp|ico|webmanifest|txt|xml)$/.test(nextUrl.pathname);
+        // The SAME allowlist middleware uses — not a copy. The old rule here
+        // was "anything ending in .png/.svg/…", which marked /tables/Press.png
+        // and /api/mis/export.xml "public" in the gate that runs FIRST; it was
+        // the last survivor of the three copies routeCaps.ts replaced, inert
+        // only while middleware re-checked behind it. Sharing the function is
+        // what keeps the two gates incapable of disagreeing.
+        isPublicAsset(nextUrl.pathname);
       if (isPublic) return true;
       if (!isLoggedIn) return false;
 

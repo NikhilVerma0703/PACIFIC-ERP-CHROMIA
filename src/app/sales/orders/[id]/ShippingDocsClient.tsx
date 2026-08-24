@@ -137,12 +137,19 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
       reader.onload = () => res(reader.result as string);
       reader.readAsDataURL(file);
     });
-    await fetch(`/api/sales/orders/${orderId}/doc-upload`, {
+    // A refused file (415 non-PDF, 413 too large) must not paint the green
+    // "uploaded" state — that lie survives until the next reload and gets
+    // discovered at shipping-docs-email time.
+    const r = await fetch(`/api/sales/orders/${orderId}/doc-upload`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type: "packingList", data }),
     });
-    setHasPackingList(true);
+    if (r.ok) { setHasPackingList(true); setError(null); }
+    else {
+      const err = await r.json().then((j) => j?.error).catch(() => null);
+      setError(`The packing list was not accepted${err ? ` — ${err}` : ""} (HTTP ${r.status}).`);
+    }
     setPlUploading(false);
     if (plRef.current) plRef.current.value = "";
   }
@@ -167,12 +174,16 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
       reader.onload = () => res(reader.result as string);
       reader.readAsDataURL(file);
     });
-    await fetch(`/api/sales/orders/${orderId}/doc-upload`, {
+    const r = await fetch(`/api/sales/orders/${orderId}/doc-upload`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type: "measurementList", data }),
     });
-    setHasMeasurementList(true);
+    if (r.ok) { setHasMeasurementList(true); setError(null); }
+    else {
+      const err = await r.json().then((j) => j?.error).catch(() => null);
+      setError(`The measurement list was not accepted${err ? ` — ${err}` : ""} (HTTP ${r.status}).`);
+    }
     setMlUploading(false);
     if (mlRef.current) mlRef.current.value = "";
   }
@@ -205,11 +216,19 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ type: "photoAppend", data: { url: dataUrl, filename: file.name } }),
         });
+        if (!r.ok) {
+          // The server REFUSED it (bad type, too large) — showing it in the
+          // strip anyway makes a rejected photo look stored until reload.
+          const err = await r.json().then((j) => j?.error).catch(() => null);
+          setError(`${file.name} was not accepted${err ? ` — ${err}` : ""} (HTTP ${r.status}).`);
+          continue;
+        }
         const d = await r.json();
         if (d.photos) setPhotos(d.photos);
         else setPhotos(p => [...p, { url: dataUrl, filename: file.name }]);
       } catch {
-        // Fallback: keep in local state if upload fails
+        // Fallback: keep in local state if the NETWORK failed (the save path
+        // still carries it later) — refusals are handled above and never land here.
         setPhotos(p => [...p, { url: dataUrl, filename: file.name }]);
       }
     }
@@ -259,22 +278,29 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
   }
 
   async function uploadShippingDocs() {
-    // Upload the three large PDF files via the dedicated doc-upload endpoint
-    const uploads: Array<{ type: string; file: { data: string } | null }> = [
-      { type: "blDoc",          file: blDocFile },
-      { type: "fumigationCert", file: fumigationFile },
-      { type: "bankDetails",    file: bankDetailsFile },
+    // Upload the three large PDF files via the dedicated doc-upload endpoint.
+    // The route refuses non-PDFs (415) and oversized files (413) — a refusal
+    // must THROW so the caller's catch shows it, not vanish into a discarded
+    // Promise.all while the screen claims the document is in.
+    const uploads: Array<{ type: string; label: string; file: { data: string } | null }> = [
+      { type: "blDoc",          label: "BL document",           file: blDocFile },
+      { type: "fumigationCert", label: "fumigation certificate", file: fumigationFile },
+      { type: "bankDetails",    label: "bank details",           file: bankDetailsFile },
     ];
     await Promise.all(
       uploads
         .filter(u => u.file !== null)
-        .map(u =>
-          fetch(`/api/sales/orders/${orderId}/doc-upload`, {
+        .map(async u => {
+          const r = await fetch(`/api/sales/orders/${orderId}/doc-upload`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ type: u.type, data: u.file!.data }),
-          })
-        )
+          });
+          if (!r.ok) {
+            const err = await r.json().then((j) => j?.error).catch(() => null);
+            throw new Error(`The ${u.label} was not accepted${err ? ` — ${err}` : ""} (HTTP ${r.status}).`);
+          }
+        })
     );
   }
 
@@ -320,14 +346,16 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
 
   async function sendDispatchEmail() {
     setDispatchSending(true); setDispatchSent(false); setDispatchError(null);
-    // Upload PDFs first, then save metadata
-    await uploadShippingDocs();
-    await fetch(`/api/sales/orders/${orderId}/shipping`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(buildPayload()),
-    });
     try {
+      // Upload PDFs first, then save metadata — inside the try, so a refused
+      // upload lands in dispatchError instead of an unhandled rejection with
+      // the button stuck on "sending".
+      await uploadShippingDocs();
+      await fetch(`/api/sales/orders/${orderId}/shipping`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildPayload()),
+      });
       const r = await fetch(`/api/sales/orders/${orderId}/dispatch-email`, { method: "POST" });
       if (!r.ok) throw new Error((await r.json()).error ?? "Failed to send");
       setDispatchSent(true);

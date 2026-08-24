@@ -78,3 +78,14 @@ test("the middleware no longer carries an extension-based public rule", () => {
   assert.doesNotMatch(MIDDLEWARE, /\\\.\(png\|jpg/, "middleware.ts must not test static-ness by extension");
   assert.match(MIDDLEWARE, /isPublicAsset\(/, "middleware.ts must use the shared allowlist");
 });
+
+test("auth.config.ts no longer carries an extension-based public rule either", () => {
+  // The THIRD copy of the old rule lived here, in the gate that runs FIRST —
+  // and a Response returned from authorized() replaces middleware wholesale,
+  // so a stale rule in this file is one refactor away from being load-bearing.
+  // The review that pinned middleware.ts alone let this copy survive a commit
+  // whose message said all three were gone.
+  const AUTH_CONFIG = readFileSync(new URL("../src/auth.config.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(AUTH_CONFIG, /\\\.\(png\|jpg/, "auth.config.ts must not test static-ness by extension");
+  assert.match(AUTH_CONFIG, /isPublicAsset\(/, "auth.config.ts must use the shared allowlist");
+});
