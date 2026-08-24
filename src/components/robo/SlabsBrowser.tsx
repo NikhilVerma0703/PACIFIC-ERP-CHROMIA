@@ -159,15 +159,15 @@ export function SlabsBrowser({ canDelete = false }: {
           <table className="w-full text-sm">
             <thead className="border-b border-gray-200 bg-slate-50">
               <tr>
-                {["Production Date", "Slab Number", "Design Name", "In Time", "Out Time", "Status", "Remark", ""].map(h => (
-                  <th key={h} className="whitespace-nowrap px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">{h}</th>
+                {["Production Date", "Design Name", "Batch No.", "Slab Number", "In Time", "Out Time", "Status", "Remarks", "Action"].map((h, i, arr) => (
+                  <th key={h} className={`whitespace-nowrap px-4 py-3 text-xs font-semibold uppercase tracking-wide text-gray-500 ${i === arr.length - 1 ? "text-right" : "text-left"}`}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {!loading && results.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-12 text-center text-gray-400">
+                  <td colSpan={9} className="px-4 py-12 text-center text-gray-400">
                     {applied ? "No slabs match these filters." : "No production records yet."}
                   </td>
                 </tr>
@@ -179,8 +179,9 @@ export function SlabsBrowser({ canDelete = false }: {
                       register caught up on Monday showed Monday for every slab
                       of the previous week. See productionDate.ts. */}
                   <td className="whitespace-nowrap px-4 py-3 text-gray-600">{productionDateOf(r) || "-"}</td>
-                  <td className="px-4 py-3 font-medium text-gray-900">{r.slabNumber}</td>
                   <td className="px-4 py-3 text-gray-600">{r.batchRecipe?.designName || "-"}</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-gray-600">{r.batchRecipe?.batchNo || "-"}</td>
+                  <td className="px-4 py-3 font-medium text-gray-900">{r.slabNumber}</td>
                   <td className="px-4 py-3 text-gray-600">{r.inTime || "-"}</td>
                   <td className="px-4 py-3 text-gray-600">{r.outTime || "-"}</td>
                   <td className="px-4 py-3">
