@@ -6,7 +6,8 @@ const LINKS = [
   { key: "tools", href: "/robo/masters/tools", label: "Tools" },
   { key: "liquids", href: "/robo/masters/liquids", label: "Liquids" },
   { key: "powders", href: "/robo/masters/powders", label: "Powders" },
-  { key: "operators", href: "/robo/masters/operators", label: "Operators" },
+  // Operators removed — the section is gone from Masters. The RoboOperator
+  // model and its seed stay in the database, untouched; nothing surfaces them.
   { key: "delay-codes", href: "/robo/masters/delay-codes", label: "Delay codes" },
 ] as const;
 
