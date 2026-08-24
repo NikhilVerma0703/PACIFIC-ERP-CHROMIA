@@ -1617,7 +1617,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs uppercase tracking-wide text-gray-400">
-                  <th className="py-2 pr-4 font-medium">#</th>
+                  <th className="py-2 pr-4 font-medium">S.No.</th>
                   <th className="py-2 pr-4 font-medium">Slab</th>
                   <th className="py-2 pr-4 font-medium">Status</th>
                   <th className="py-2 pr-4 font-medium">In → Out</th>
