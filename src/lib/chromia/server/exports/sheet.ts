@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx-js-style';
 
 import { GROUP_COLORS, type ExportColumn } from '@/lib/chromia/exports';
+import { toPlantDateInput, toPlantTimeInput } from '@/lib/chromia/plant-time';
 
 /**
  * Colour-banded workbook writer, shared by every download.
@@ -76,16 +77,18 @@ export function writeStyledWorkbook({
 }
 
 /**
- * Dates for the sheet, in the reader's own clock.
+ * Dates for the sheet, in the plant's own clock.
  *
  * `toISOString` prints UTC, so an in-time of 11:10 on the shop floor reached
- * the spreadsheet as 05:40 — off by the whole India offset, every row. The
- * register is read by the people who wrote it, so the sheet must show the time
- * they saw on the wall.
+ * the spreadsheet as 05:40 — off by the whole India offset, every row. And
+ * reading the server's own clock only papered over that on a server set to
+ * India time; on the UTC host it actually runs on, it was the same 05:40. The
+ * register is read by the people who wrote it, so the sheet shows plant time,
+ * pinned explicitly and independent of where it runs — see plant-time.ts.
  *
  * `fully_printed_date` is a DATE column and comes back at UTC midnight, so it
  * is formatted from its UTC parts; everything else is a real instant and is
- * formatted locally.
+ * formatted in plant time.
  */
 const pad = (value: number) => String(value).padStart(2, '0');
 
@@ -94,8 +97,10 @@ export const dateOnly = (value: Date | null) =>
     ? `${value.getUTCFullYear()}-${pad(value.getUTCMonth() + 1)}-${pad(value.getUTCDate())}`
     : '';
 
-export const localDay = (value: Date | null) =>
-  value ? `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}` : '';
+export const localDay = (value: Date | null) => (value ? toPlantDateInput(value) : '');
+
+/** Just the time of day, in plant time — `09:08`. */
+export const timeOnly = (value: Date | null) => (value ? toPlantTimeInput(value) : '');
 
 /**
  * The day and the time of day, separated by a comma.
@@ -105,4 +110,4 @@ export const localDay = (value: Date | null) =>
  * register writes it.
  */
 export const dateTime = (value: Date | null) =>
-  value ? `${localDay(value)}, ${pad(value.getHours())}:${pad(value.getMinutes())}` : '';
+  value ? `${localDay(value)}, ${toPlantTimeInput(value)}` : '';

@@ -263,7 +263,6 @@ export const BASE_FIELDS = [
   'thicknessCm',
   'receivedDate',
   'inTime',
-  'outTime',
   'status',
   'disposition',
 ] as const;
@@ -278,8 +277,9 @@ const BASE_COLUMN: Record<BaseField, Omit<ExportColumn, 'label'> & { label: stri
   design: { label: 'File Name / Planned Design', group: 'product', width: 26 },
   thicknessCm: { label: 'Thickness (cm)', group: 'product', width: 14 },
   receivedDate: { label: 'Production Date', group: 'timing', width: 16 },
-  inTime: { label: 'In-time', group: 'timing', width: 18 },
-  outTime: { label: 'Out-time', group: 'timing', width: 18 },
+  // In-time is the time of day only now — the day is the Production Date beside
+  // it. Out-time has been dropped from every sheet.
+  inTime: { label: 'In-time', group: 'timing', width: 12 },
   status: { label: 'Status', group: 'state', width: 22 },
   disposition: { label: 'Outcome', group: 'state', width: 18 },
 };
@@ -380,21 +380,27 @@ export function productionFileName(range: DateRange): string {
 /**
  * Columns of the complete production sheet.
  *
- * Everything the outcome sheets carry, plus the three outcome dates side by
- * side — so one row shows a slab's whole life without needing three files.
+ * S.No. leads — the row number the sheet is read by — then the production date.
+ * Everything the outcome sheets carry follows, plus Grade and the slab's own
+ * remark right after the Outcome (both read from the Slab Records data), then
+ * the three outcome dates side by side, so one row shows a slab's whole life
+ * without needing three files. In-time is the time of day only; Out-time is
+ * gone.
  */
 export function productionColumns(): ExportColumn[] {
   return [
+    { label: 'S.No.', group: 'identity', width: 7 },
     { label: 'Production Date', group: 'identity', width: 16 },
     { label: 'Batch No.', group: 'identity', width: 14 },
     { label: 'Slab No.', group: 'identity', width: 14 },
     { label: 'Base Material / Slab Name', group: 'product', width: 24 },
     { label: 'File Name / Planned Design', group: 'product', width: 26 },
     { label: 'Thickness (cm)', group: 'product', width: 14 },
-    { label: 'In-time', group: 'timing', width: 18 },
-    { label: 'Out-time', group: 'timing', width: 18 },
+    { label: 'In-time', group: 'timing', width: 12 },
     { label: 'Status', group: 'state', width: 22 },
     { label: 'Outcome', group: 'state', width: 18 },
+    { label: 'Grade', group: 'state', width: 10 },
+    { label: 'Slab Remarks', group: 'state', width: 30 },
     { label: 'Recalibrations', group: 'state', width: 15 },
     { label: 'Dispatch Date', group: 'outcome', width: 16 },
     { label: 'Stock Date', group: 'outcome', width: 16 },
