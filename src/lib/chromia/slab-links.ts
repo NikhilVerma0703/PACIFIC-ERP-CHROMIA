@@ -30,7 +30,14 @@ export function needsIntakeQc(status: SlabStatusType): boolean {
  * that is already graded, or one sitting at the recalibration facility, has
  * nothing to open: its work is done or belongs to the Recalibration section.
  * Returning null rather than a dead link keeps the table honest about that.
+ *
+ * `back` is an optional query string — the filters the row was found under —
+ * carried along so that completing QC can return to that same filtered view
+ * rather than a bare list. It is the query part only (no leading `?`), and it
+ * is url-encoded here so its own `&`/`=` survive being one parameter's value.
  */
-export function slabHref(id: string, status: SlabStatusType): string | null {
-  return needsIntakeQc(status) ? `${APP_ROUTES.slabIntake}?slab=${id}` : null;
+export function slabHref(id: string, status: SlabStatusType, back?: string): string | null {
+  if (!needsIntakeQc(status)) return null;
+  const href = `${APP_ROUTES.slabIntake}?slab=${id}`;
+  return back ? `${href}&back=${encodeURIComponent(back)}` : href;
 }

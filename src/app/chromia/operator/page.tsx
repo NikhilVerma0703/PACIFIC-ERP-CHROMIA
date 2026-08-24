@@ -75,6 +75,11 @@ export default async function OperatorPage({
 }) {
   const params = await searchParams;
   const slabId = resolveSlabId(params.slab);
+  // The filtered Slab Records view this slab was opened from, if any — carried
+  // through so saving its QC returns there instead of the bare list. See
+  // slabHref and completeSlabAction.
+  const backRaw = Array.isArray(params.back) ? params.back[0] : params.back;
+  const back = backRaw && backRaw.trim() !== '' ? backRaw : undefined;
 
   const [rows, baseMaterials, fileNames, batchNos, selected, recalibrationReasons] =
     await Promise.all([
@@ -157,6 +162,7 @@ export default async function OperatorPage({
             slabNo={selected.slabNo}
             recalibrationReasons={recalibrationReasons}
             today={toDateInput(new Date())}
+            back={back}
           />
         ) : (
           <SectionCard title="QC Section" accent="grade" padded>

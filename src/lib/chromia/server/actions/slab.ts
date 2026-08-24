@@ -174,7 +174,16 @@ async function saveQc(
     redirect(APP_ROUTES.recalibrations);
   }
 
-  // Back to the history table: the record the in-charge just completed is the
-  // top row, and there is no per-slab page to land on any more.
+  // Back to the history table — and to the SAME filtered view the slab was
+  // opened from, when it carried one. Processing a month of old records used to
+  // dump the in-charge back at the unfiltered list after every slab, so the
+  // February filter had to be retyped before each one. `back` is the filter
+  // query the row was found under; re-parsed through URLSearchParams so only a
+  // well-formed query string can ever become the destination.
+  const back = formData.get('back');
+  if (typeof back === 'string' && back.trim() !== '') {
+    const clean = new URLSearchParams(back).toString();
+    if (clean) redirect(`${APP_ROUTES.slabs}?${clean}`);
+  }
   redirect(APP_ROUTES.slabs);
 }

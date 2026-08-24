@@ -17,13 +17,16 @@ export function SlabNo({
   status,
   slabNo,
   className,
+  back,
 }: {
   id: string;
   status: SlabStatus;
   slabNo: string;
   className?: string;
+  /** The filter query to return to after QC — see slabHref. */
+  back?: string;
 }) {
-  const href = slabHref(id, status);
+  const href = slabHref(id, status, back);
 
   if (!href) {
     return <span className={cn('font-mono', className)}>{slabNo}</span>;

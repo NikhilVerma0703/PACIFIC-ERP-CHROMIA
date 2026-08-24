@@ -15,6 +15,8 @@ interface Props {
   slabNo: string;
   recalibrationReasons: Option[];
   today: string;
+  /** The filtered Slab Records query to return to after saving — see slabHref. */
+  back?: string;
 }
 
 /**
@@ -35,7 +37,7 @@ interface Props {
  * `QcSection` itself is imported unchanged from where it has always lived, so
  * the allowed grade/outcome pairs stay decided in exactly one place.
  */
-export function QcPanel({ slabId, slabNo, recalibrationReasons, today }: Props) {
+export function QcPanel({ slabId, slabNo, recalibrationReasons, today, back }: Props) {
   const [state, formAction, isPending] = useActionState(completeSlabAction, INITIAL_STATE);
 
   return (
@@ -43,6 +45,9 @@ export function QcPanel({ slabId, slabNo, recalibrationReasons, today }: Props) 
       <SectionCard title="QC Section" accent="grade">
         <form action={formAction} className="flex flex-col gap-6">
           <input type="hidden" name="slabId" value={slabId} />
+          {/* The filtered view to return to once this is saved. Absent when the
+              slab was not opened from a filtered Slab Records search. */}
+          {back ? <input type="hidden" name="back" value={back} /> : null}
 
           <QcSection
             recalibrationReasons={recalibrationReasons}

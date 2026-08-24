@@ -45,16 +45,34 @@ export default async function SlabsPage({
   searchParams: Promise<RawSearchParams>;
 }) {
   const filters = parseSlabFilters(await searchParams);
+  const filtered = hasActiveFilters(filters);
 
+  /*
+   * A filtered search shows every match on one page — see searchSlabs. This is
+   * a deliberate, temporary simplification for processing old records: an
+   * in-charge working through February wants the whole month in front of them,
+   * not twelve pages of it. Unfiltered browsing of the entire register stays
+   * paged, because that set is unbounded.
+   */
   const [{ rows, total }, [baseMaterials, designs]] = await Promise.all([
-    searchSlabs(filters),
+    searchSlabs(filters, { unpaged: filtered }),
     loadFilterOptions(),
   ]);
 
-  const pages = pageCount(total, filters.pageSize);
-  const filtered = hasActiveFilters(filters);
-  const from = total === 0 ? 0 : (filters.page - 1) * filters.pageSize + 1;
-  const to = Math.min(filters.page * filters.pageSize, total);
+  const pages = filtered ? 1 : pageCount(total, filters.pageSize);
+  const from = total === 0 ? 0 : filtered ? 1 : (filters.page - 1) * filters.pageSize + 1;
+  const to = filtered ? total : Math.min(filters.page * filters.pageSize, total);
+
+  /*
+   * The current filter query, carried on each slab link so QC can return to it.
+   * A slab number opens the QC screen, and completing QC used to redirect to a
+   * bare /chromia/slabs — dropping the very filter the in-charge was working
+   * through and making them retype it before every single slab. The link hands
+   * the filters along; the QC save sends them back (see completeSlabAction).
+   * Only when something is actually filtered — unfiltered browsing returns to
+   * the plain list exactly as before.
+   */
+  const backQuery = filtered ? buildQuery(filters) : undefined;
 
   return (
     <>
@@ -115,7 +133,7 @@ export default async function SlabsPage({
                       </td>
                       <td className={`${tdMuted} font-mono`}>{slab.batch.batchNo}</td>
                       <td className={td}>
-                        <SlabNo id={slab.id} status={slab.status} slabNo={slab.slabNo} />
+                        <SlabNo id={slab.id} status={slab.status} slabNo={slab.slabNo} back={backQuery} />
                       </td>
                       <td className={td}>{slab.baseMaterial.name}</td>
                       <td className={tdMuted}>
