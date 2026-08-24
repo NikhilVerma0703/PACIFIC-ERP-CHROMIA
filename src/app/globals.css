@@ -186,8 +186,10 @@ body {
 .chromia-root ::placeholder { color: var(--muted); opacity: 0.65; }
 
 /* 10–12" shop-floor tablets. Scoped to a coarse pointer AND to the module, so
-   the desktop density of the rest of the ERP is untouched. */
-@media (pointer: coarse) {
+   the desktop density of the rest of the ERP is untouched. Screen-scoped like
+   the main touch block above: a coarse-pointer device printing to PDF must not
+   carry these paddings into the printed page. */
+@media screen and (pointer: coarse) {
   .chromia-root input[type="date"],
   .chromia-root input[type="time"] { min-height: 46px; }
   .chromia-root nav a { min-height: 46px; display: inline-flex; align-items: center; }
