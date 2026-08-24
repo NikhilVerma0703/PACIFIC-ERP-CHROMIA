@@ -104,7 +104,22 @@ const Kpis = ({ tiles }: { tiles: [string, string, React.ReactNode?][] }) => (
 /* ------------------------------------------------------------ page one */
 function SheetProduction({ r }: { r: DailyReport }) {
   const { day, shifts, hours, cause } = r;
-  const std = hours.find((x) => x.std)?.std ?? null;
+  // The standard is set on each hour's MIS entry from that hour's cycle time,
+  // so it can change through the day — grouping by it is the only honest way
+  // to show the target's arithmetic. (The tooltip once printed "hours × the
+  // first hour's standard", which named a product the target never was:
+  // 21 × 11 = 231 beside a target of 255.)
+  const stdGroups = (() => {
+    const m = new Map<number, number>();
+    for (const x of hours) if (x.made != null && x.std != null && x.std > 0) m.set(x.std, (m.get(x.std) ?? 0) + 1);
+    return [...m.entries()].sort((a, b) => b[0] - a[0]);
+  })();
+  // Declared hours with no standard set contribute zero to the target; if any
+  // exist the tooltip must say so or its lines will not add up to the total.
+  const declaredNoStd = hours.filter((x) => x.made != null && !(x.std != null && x.std > 0)).length;
+  const stdRange = stdGroups.length === 0 ? null
+    : stdGroups.length === 1 ? `${stdGroups[0][0]}`
+    : `${stdGroups[stdGroups.length - 1][0]}–${stdGroups[0][0]}`;
   const designs = [...new Set(hours.map((x) => (x.batch && x.design ? `${x.batch}, ${x.design}` : null)).filter(Boolean))] as string[];
   const blank = hours.filter((x) => x.made == null).length;
   const ranked = [...shifts].filter((x) => x.pct != null).sort((a, b) => b.pct! - a.pct!);
@@ -124,12 +139,15 @@ function SheetProduction({ r }: { r: DailyReport }) {
         [String(day.made), "Slabs produced"],
         [String(day.target), "Target for the day",
           <InfoDot key="t" label="the target">
-            <Line of="Standard rate" is={`${std ?? DASH} slabs an hour`} />
-            <Line of="Hours that declared output" is={String(day.hoursRun)} />
-            <Line of="Hours with no output declared" is={String(day.hoursTotal - day.hoursRun)} />
-            <Sum of={`${day.hoursRun} × ${std ?? 0}`} is={String(day.target)} />
+            {stdGroups.map(([rate, n]) => (
+              <Line key={rate} of={`${n} hour${n === 1 ? "" : "s"} at ${rate} an hour`} is={String(n * rate)} />
+            ))}
+            {declaredNoStd > 0 && <Line of={`${declaredNoStd} declared hour${declaredNoStd === 1 ? "" : "s"} with no standard set`} is="0" />}
+            <Line of="Hours with no output declared" is={`${day.hoursTotal - day.hoursRun} (left out)`} />
+            <Sum of="Sum of each hour's own standard" is={String(day.target)} />
             <span style={{ display: "block", marginTop: 6, opacity: 0.8 }}>
-              An hour that declared nothing is left out rather than counted as a miss.
+              The standard comes from each hour&rsquo;s own MIS entry (its cycle time), so it can change
+              through the day. An hour that declared nothing is left out rather than counted as a miss.
             </span>
           </InfoDot>],
         [pct1(day.pct), "Achievement",
@@ -176,7 +194,9 @@ function SheetProduction({ r }: { r: DailyReport }) {
         </tbody>
       </table>
 
-      <Section name="Hour by hour" note={`Target is ${std} slabs an hour. A dash means the line produced nothing that hour.`} />
+      <Section name="Hour by hour" note={`${stdGroups.length > 1
+        ? `Each hour carries its own target (${stdRange} an hour this day)`
+        : `Target is ${stdRange ?? DASH} slabs an hour`}. A dash means the line produced nothing that hour.`} />
       <table className={s.t}>
         <thead><tr>
           <th>Hour</th><th>Batch and design</th><th className={s.num}>Made</th>
