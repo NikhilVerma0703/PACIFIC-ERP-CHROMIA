@@ -13,6 +13,7 @@ import {
 import { daysBetween } from '@/lib/chromia/utils/dates';
 import { listStockedSlabs, listStockReleases } from '@/lib/chromia/server/repositories/stockyard-repository';
 
+import { RecalibrateButton } from './recalibrate-button';
 import { ReleaseForm } from './release-form';
 
 export const metadata: Metadata = { title: 'Stockyard' };
@@ -109,7 +110,7 @@ export default async function StockyardPage({
                     <th className={`${th} text-right`}>Thickness (cm)</th>
                     <th className={th}>Grade</th>
                     <th className={`${th} text-right`}>Days in Stock</th>
-                    <th className={`${th} text-right`}>Dispatch</th>
+                    <th className={`${th} text-right`}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -134,7 +135,12 @@ export default async function StockyardPage({
                         {slab.stockDate === null ? '—' : daysBetween(slab.stockDate, now)}
                       </td>
                       <td className={`${td} text-right`}>
-                        <ReleaseForm slabId={slab.id} today={today} />
+                        {/* Two exits from the rack, side by side: dispatch it,
+                            or send it for recalibration. */}
+                        <div className="flex items-center justify-end gap-2">
+                          <ReleaseForm slabId={slab.id} today={today} />
+                          <RecalibrateButton slabId={slab.id} slabNo={slab.slabNo} />
+                        </div>
                       </td>
                     </tr>
                   ))}
