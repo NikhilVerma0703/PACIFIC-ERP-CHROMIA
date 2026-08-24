@@ -7,6 +7,7 @@ import { EmptyState, Field, PageHeader, Stat } from '@/components/chromia/ui';
 import { dataTable, field as fieldClass, SectionCard } from '@/components/chromia/ui/form';
 import { parseRange } from '@/lib/chromia/reports';
 import { loadProductionSummary } from '@/lib/chromia/server/repositories/report-repository';
+import { PLANT_TIME_ZONE } from '@/lib/chromia/plant-time';
 
 export const metadata: Metadata = { title: 'Production Summary' };
 export const dynamic = 'force-dynamic';
@@ -16,8 +17,7 @@ const { th, td, tdNum } = dataTable;
 const dateFmt = new Intl.DateTimeFormat('en-GB', {
   day: '2-digit',
   month: 'short',
-  year: 'numeric',
-});
+  year: 'numeric', timeZone: PLANT_TIME_ZONE, });
 
 function iso(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -102,7 +102,7 @@ export default async function ReportsPage({
               Headline
             </h2>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              <Stat label="Slabs received" value={headline.received} tone="active" />
+              <Stat label="Slabs produced" value={headline.received} tone="active" />
               <Stat label="Still in process" value={headline.inProcess} tone="neutral" />
               <Stat label="Dispatched" value={headline.dispatched} tone="done" />
               <Stat label="Stock" value={headline.stocked} tone="active" />

@@ -57,7 +57,7 @@ export interface OverallTile {
  */
 export function buildOverallTiles(counts: OverallCounts): OverallTile[] {
   return [
-    { key: 'received', label: 'Total Slabs Received', value: counts.received, tone: 'neutral' },
+    { key: 'received', label: 'Total Produced Slabs', value: counts.received, tone: 'neutral' },
     {
       key: 'inPlant',
       label: 'Total Slabs in the Plant',
