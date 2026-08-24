@@ -467,10 +467,30 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     setEditingBatchId(latestBatch.id);
     setBatchOpen(true);
   };
+  /**
+   * Empty the batch-setup half — every field blank, every machine ticked on
+   * and cleared. This is what the seeding effect above already does for a run
+   * with no saved setup, but that effect is keyed on `editingBatchId`, and
+   * opening a new batch straight after saving one is a null → null transition:
+   * React sees no change, the effect never re-fires, and the design, thickness,
+   * targets and all four machine cards from the batch just saved were still on
+   * screen. So the new run is seeded here explicitly, the same way the delay
+   * picker is cleared between slabs.
+   */
+  const seedBlankBatch = () => {
+    const e: Record<string, MachineEntry> = {};
+    const a: Record<string, boolean> = {};
+    for (const m of machines) { e[m.id] = emptyEntry(); a[m.id] = true; }
+    setEntries(e);
+    setActiveMachines(a);
+    setBatch({ productionDate: localDate(), batchNo: "", designName: "", targetSlabs: "", thickness: "", notes: "" });
+  };
   /** Configure a genuinely different run — a second design in the same shift. */
   const startNewBatch = () => {
     setBatchError("");
     setEditingBatchId(null);
+    // Nothing of the batch just saved is carried into the next one.
+    seedBlankBatch();
     setBatchOpen(true);
   };
   /** Close the batch half; leaving edit mode re-seeds the cards blank. */
