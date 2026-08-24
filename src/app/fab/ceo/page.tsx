@@ -918,6 +918,7 @@ export default function CeoDashboard() {
             {downtimeLog.length === 0 ? (
               <p className="text-sm text-slate-400 text-center py-12">No fabrication downtime on this day.</p>
             ) : (
+              <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-left text-xs text-slate-500 border-b border-slate-100">
@@ -953,6 +954,7 @@ export default function CeoDashboard() {
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </div>
         </div>
@@ -978,6 +980,7 @@ export default function CeoDashboard() {
                     <span className="text-slate-500">{s.total} pcs</span>
                   </span>
                 </summary>
+                <div className="overflow-x-auto">
                 <table className="w-full text-sm border-t border-slate-100">
                   <thead className="bg-slate-50 text-xs text-slate-500">
                     <tr>
@@ -1004,6 +1007,7 @@ export default function CeoDashboard() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               </details>
             ))}
           </div>
@@ -1030,6 +1034,7 @@ export default function CeoDashboard() {
             {slabWastage.length === 0 ? (
               <p className="text-sm text-slate-400 text-center py-12">No slabs assigned yet</p>
             ) : (
+              <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 text-xs text-slate-500 border-b border-slate-100">
                   <tr>
@@ -1067,6 +1072,7 @@ export default function CeoDashboard() {
                   })}
                 </tbody>
               </table>
+              </div>
             )}
           </div>
         </div>

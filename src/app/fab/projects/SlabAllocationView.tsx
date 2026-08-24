@@ -309,6 +309,7 @@ export function SlabAllocationView({
               </div>
 
               {/* Pieces table */}
+              <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead className="bg-gray-50/50">
                   <tr>
@@ -333,6 +334,7 @@ export function SlabAllocationView({
                   ))}
                 </tbody>
               </table>
+              </div>
             </div>
           );
         })}

@@ -1,7 +1,43 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import s from "./report.module.css";
+
+/** Outside-dismiss shared by InfoDot and Explain.
+ *
+ *  Pointer events, not mouse events: iOS Safari only synthesises mouse events
+ *  for taps on "clickable" elements, so a tap on blank paper never closed the
+ *  panel. But a bare pointerdown fires at the FIRST TOUCH of a scroll gesture
+ *  too — swiping the sheet to check the working against the table underneath
+ *  closed the panel the moment the finger landed. So: a down-then-up pair that
+ *  barely moved is a tap and dismisses; a moving pair, or one the browser took
+ *  over for scrolling (pointercancel), is a scroll and leaves the panel open.
+ *  On a mouse this is a click, exactly as before. */
+function useAwayDismiss(open: boolean, setOpen: (v: boolean) => void, box: RefObject<HTMLSpanElement | null>) {
+  useEffect(() => {
+    if (!open) return;
+    let start: { id: number; x: number; y: number } | null = null;
+    const down = (e: PointerEvent) => {
+      start = box.current?.contains(e.target as Node) ? null : { id: e.pointerId, x: e.clientX, y: e.clientY };
+    };
+    const up = (e: PointerEvent) => {
+      if (start && e.pointerId === start.id && Math.hypot(e.clientX - start.x, e.clientY - start.y) < 10) setOpen(false);
+      start = null;
+    };
+    const cancel = () => { start = null; };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("pointerdown", down);
+    document.addEventListener("pointerup", up);
+    document.addEventListener("pointercancel", cancel);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("pointerdown", down);
+      document.removeEventListener("pointerup", up);
+      document.removeEventListener("pointercancel", cancel);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open, setOpen, box]);
+}
 
 /** The "i" beside a derived figure: click it and it shows the arithmetic that
  *  produced the number, in the same terms the tables use.
@@ -12,19 +48,7 @@ import s from "./report.module.css";
 export function InfoDot({ label, children }: { label: string; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLSpanElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const away = (e: PointerEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    // pointerdown, not mousedown: iOS Safari only synthesises mouse events for
-    // taps on "clickable" elements, so a tap on blank paper never closed the
-    // panel. pointerdown fires for touch and mouse alike, on every browser in
-    // use, and means exactly what mousedown meant on a desktop.
-    document.addEventListener("pointerdown", away);
-    document.addEventListener("keydown", esc);
-    return () => { document.removeEventListener("pointerdown", away); document.removeEventListener("keydown", esc); };
-  }, [open]);
+  useAwayDismiss(open, setOpen, box);
 
   return (
     <span className={s.info} ref={box}>
@@ -53,16 +77,7 @@ export function InfoDot({ label, children }: { label: string; children: ReactNod
 export function Explain({ label, tip, children }: { label: string; tip: ReactNode; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLSpanElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const away = (e: PointerEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    // pointerdown for the same reason as InfoDot above (iOS taps on plain text).
-    document.addEventListener("pointerdown", away);
-    document.addEventListener("keydown", esc);
-    return () => { document.removeEventListener("pointerdown", away); document.removeEventListener("keydown", esc); };
-  }, [open]);
+  useAwayDismiss(open, setOpen, box);
 
   return (
     <span ref={box} style={{ position: "relative" }}>

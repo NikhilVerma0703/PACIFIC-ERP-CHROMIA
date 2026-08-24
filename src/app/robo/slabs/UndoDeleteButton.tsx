@@ -27,7 +27,7 @@ export function UndoDeleteButton({ summary, by, at }: { summary: string; by: str
             {/* ClientTime: the time is written after mount, so the server (UTC)
                 and the tablet (IST) no longer render different text and React
                 no longer regenerates the page on every load */}
-            {by ? ` · by ${by}` : ""}{at ? <> · <ClientTime iso={at} /></> : ""}
+            {by ? ` · by ${by}` : ""}{at ? <ClientTime iso={at} prefix=" · " /> : ""}
           </span>
           <div className="text-[11px] text-amber-700">
             The slab and its delay logs were kept and can be put back exactly as they were.

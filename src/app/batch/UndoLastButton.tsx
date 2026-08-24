@@ -21,7 +21,7 @@ export function UndoLastButton({ batch, label, by, at, mayUndo = true }: { batch
     <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2">
       <span className="text-sm text-amber-900">
         <span className="font-medium">Last action:</span> {label}
-        {(by || at) && <span className="text-amber-700"> — {by ? `by ${by}` : ""}{by && at ? " · " : ""}{at ? <ClientTime iso={at} options={AT_FORMAT} /> : ""}</span>}
+        {(by || at) && <span className="text-amber-700"> — {by ? `by ${by}` : ""}{at ? <ClientTime iso={at} prefix={by ? " · " : ""} options={AT_FORMAT} /> : ""}</span>}
       </span>
       <div className="flex items-center gap-3">
         {msg && <span className="text-sm text-gray-700">{msg}</span>}

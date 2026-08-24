@@ -256,7 +256,29 @@ function shiftNarrative(s) {
 /* ------------------------------------------------------------------ page 1 */
 function pageOne(d, dateLong) {
   const { day, shifts, hours, cause } = d;
-  const std = hours.find((x) => x.std)?.std ?? null;
+  // The standard is set on each hour's MIS entry from that hour's cycle time,
+  // so it can change through the day. The old flat derivation ("the first
+  // hour's std") had the PDF assert "Target is 14 slabs an hour" beside a
+  // summed target its own arithmetic never used — and printed "Target is null"
+  // on a day with no standards at all. KEEP IN STEP with the same block in
+  // src/app/report/ceo/page.tsx (SheetProduction).
+  const r2 = (v) => Math.round(v * 100) / 100;
+  const stdGroups = (() => {
+    const m = new Map();
+    for (const x of hours) if (x.made != null && x.std != null && x.std > 0) m.set(r2(x.std), (m.get(r2(x.std)) ?? 0) + 1);
+    return [...m.entries()].sort((a, b) => b[0] - a[0]);
+  })();
+  const declaredNoStd = hours.filter((x) => x.made != null && !(x.std != null && x.std > 0)).length;
+  const stdRange = stdGroups.length === 0 ? null
+    : stdGroups.length === 1 ? `${stdGroups[0][0]}`
+    : `${stdGroups[stdGroups.length - 1][0]}–${stdGroups[0][0]}`;
+  const stdNote =
+    (stdGroups.length > 1
+      ? `Each hour carries its own target (${stdRange} an hour this day)`
+      : `Target is ${stdRange ?? DASH} slabs an hour`) +
+    (declaredNoStd > 0
+      ? `; ${declaredNoStd} declared hour${declaredNoStd === 1 ? "" : "s"} carr${declaredNoStd === 1 ? "ies" : "y"} no standard and count${declaredNoStd === 1 ? "s" : ""} zero`
+      : "");
   const designs = [...new Set(hours.map((x) => (x.batch && x.design ? `${x.batch}, ${x.design}` : null)).filter(Boolean))];
   const blank = hours.filter((x) => x.made == null).length;
   const best = [...shifts].filter((s) => s.pct != null).sort((a, b) => b.pct - a.pct)[0];
@@ -302,7 +324,7 @@ function pageOne(d, dateLong) {
            tdTotal(`Time lost equals ${((100 * day.lost) / 1440).toFixed(1)}% of the day`)],
         ],
       }, layout: LAYOUT },
-    heading("HOUR BY HOUR", `Target is ${std} slabs an hour. A dash means the line produced nothing that hour.`),
+    heading("HOUR BY HOUR", `${stdNote}. A dash means the line produced nothing that hour.`),
     { table: {
         headerRows: 1, widths: [38, 96, 30, 32, 32, "*"],
         body: [

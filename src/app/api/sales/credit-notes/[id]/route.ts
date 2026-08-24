@@ -21,18 +21,41 @@ export async function PATCH(
     appliedToOrderId?: string | null;
   };
 
-  // Ownership, both ends. The note belongs to an order; the caller must be able
-  // to see that order to touch the note at all, and — when applying it — the
-  // order it is applied to as well. The same-client rule the picker enforces
-  // (loadAvailableCNs by clientId) still holds; this adds only "and it is
-  // yours to see", exactly as the order routes do.
+  // Ownership, on the end being TOUCHED — not both ends unconditionally. The
+  // note belongs to a source order, but the picker offers it by CLIENT, and a
+  // partially transferred client legitimately has orders under two owners
+  // (see lib/sales/ownership.ts: a scoped screen must never offer what the
+  // route then refuses; requiring the source here 403'd exactly that).
+  //   - editing the note itself (status/amount/notes): the source order — its
+  //     owner issued it, nobody else rewrites it;
+  //   - applying: the order the credit lands on — that is whose balance
+  //     changes, and whose page offered the picker;
+  //   - unapplying: the order it currently sits on, with the source accepted
+  //     too (either page legitimately shows the remove control).
+  // The same-client rule the picker enforces (loadAvailableCNs by clientId)
+  // still holds.
   const cn = await db.salesCreditNote.findUnique({ where: { id }, select: { orderId: true } });
   if (!cn) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  const refusedSource = await assertOrderVisible(session.user, cn.orderId);
-  if (refusedSource) return refusedSource;
-  if (body.appliedToOrderId) {
-    const refusedTarget = await assertOrderVisible(session.user, body.appliedToOrderId);
-    if (refusedTarget) return refusedTarget;
+  const touchingApplication = "appliedToOrderId" in body;
+  const editingNote = body.status !== undefined || body.amount !== undefined || body.notes !== undefined;
+  if (editingNote || !touchingApplication) {
+    const refusedSource = await assertOrderVisible(session.user, cn.orderId);
+    if (refusedSource) return refusedSource;
+  }
+  if (touchingApplication) {
+    if (body.appliedToOrderId) {
+      const refusedTarget = await assertOrderVisible(session.user, body.appliedToOrderId);
+      if (refusedTarget) return refusedTarget;
+    } else {
+      const cur: Array<{ id: string | null }> = await db.$queryRaw`
+        SELECT applied_to_order_id AS id FROM sales_credit_notes WHERE id = ${id}`;
+      const currentId = cur?.[0]?.id ?? null;
+      const refusedCurrent = currentId ? await assertOrderVisible(session.user, currentId) : null;
+      if (refusedCurrent) {
+        const refusedSource = await assertOrderVisible(session.user, cn.orderId);
+        if (refusedSource) return refusedCurrent;
+      }
+    }
   }
 
   const now = new Date();

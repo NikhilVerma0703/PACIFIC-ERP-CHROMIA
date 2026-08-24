@@ -202,13 +202,24 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     if (order?.client?.id) loadAvailableCNs(order.client.id);
   }
 
-  async function applyCN(cnId: string) {
-    setApplyBusy(cnId);
-    await fetch(`/api/sales/credit-notes/${cnId}`, {
+  // A refused apply/unapply used to vanish: the PATCH 403'd, nobody read r.ok,
+  // and the page just refreshed with the note still sitting where it was — the
+  // user could not tell a failure from a success that changed nothing.
+  async function patchCNApplication(cnId: string, appliedToOrderId: string | null): Promise<boolean> {
+    const r = await fetch(`/api/sales/credit-notes/${cnId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ appliedToOrderId: id }),
+      body: JSON.stringify({ appliedToOrderId }),
     });
+    if (r.ok) { setCNMsg(""); return true; }
+    const err = await r.json().then((j) => j?.error).catch(() => null);
+    setCNMsg(`Could not ${appliedToOrderId ? "apply" : "remove"} the credit${err ? ` — ${err}` : ""} (HTTP ${r.status}).`);
+    return false;
+  }
+
+  async function applyCN(cnId: string) {
+    setApplyBusy(cnId);
+    await patchCNApplication(cnId, id);
     setApplyBusy(null);
     await Promise.all([
       loadCNs(),
@@ -220,11 +231,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   async function unapplyCN(cnId: string) {
     if (!confirm("Remove this credit from the order?")) return;
     setApplyBusy(cnId);
-    await fetch(`/api/sales/credit-notes/${cnId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ appliedToOrderId: null }),
-    });
+    await patchCNApplication(cnId, null);
     setApplyBusy(null);
     await Promise.all([
       loadAppliedCNs(),

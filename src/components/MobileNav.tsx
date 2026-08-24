@@ -27,8 +27,16 @@ export function MobileNav({ showAdmin = false, branch = "SHOP_FLOOR", role = "",
     document.body.style.overflow = "hidden";
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
     document.addEventListener("keydown", onKey);
+    // The drawer and the hamburger are hidden by CSS at ≥768px (md:hidden)
+    // while `open` stays true — rotating a phone to landscape would leave the
+    // page frozen under an invisible drawer with nothing to tap. Crossing the
+    // breakpoint closes it, which runs this cleanup and unlocks the page.
+    const mq = window.matchMedia("(min-width: 768px)");
+    const onMq = () => { if (mq.matches) setOpen(false); };
+    onMq();
+    mq.addEventListener("change", onMq);
     closeBtn.current?.focus();
-    return () => { document.body.style.overflow = prev; document.removeEventListener("keydown", onKey); };
+    return () => { document.body.style.overflow = prev; document.removeEventListener("keydown", onKey); mq.removeEventListener("change", onMq); };
   }, [open]);
 
   // The Teleported Drawer
