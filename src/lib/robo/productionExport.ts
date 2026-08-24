@@ -14,12 +14,22 @@
  * appeared after Remarks, which was supposed to be last. Keeping the two here,
  * next to each other and covered by a test, is what stops that repeating.
  *
- * ── What changed, and why ────────────────────────────────────────────────
- * Operator is gone: it was RoboShift.operatorName, which nothing in the ERP
- * fills in, so the column was dashes all the way down.
+ * ── What the sheet carries, and why ──────────────────────────────────────
+ * Design Name and Batch No. now ride on every row: the sheet is read one slab
+ * at a time, and a reader should not have to cross-reference the Production
+ * Setup sheet to learn which design a slab was. They come off the slab's own
+ * batch setup.
  *
- * Design Name is gone: it belongs to the setup, and the Production Setup sheet
- * carries it once per run rather than repeating it on all 500 slabs of a batch.
+ * Remarks is the SAME string Slabs Records shows — the slab's own note and its
+ * delays through one formatter, e.g. "C5 Robo1 15m [22:40-22:55]". It is
+ * resolved in the route (formatSlabRemarks lives in utils.ts, which pulls in
+ * enough of the app that `node --test` cannot load it) and handed in already
+ * formatted, so this file stays pure.
+ *
+ * Shift, Status, Delay Codes and Total Delay are gone: Shift is an internal
+ * grouping the register does not show, Status is derived from the Out time
+ * beside it, and both delay columns are now folded into the one Remarks string
+ * the operator actually reads.
  *
  * Robo2, not RoyMix: the machine is stored as "Roymix" and always will be —
  * the stored names carry the ordering, the preset keys and every delay log ever
@@ -32,22 +42,20 @@
 export const PRODUCTION_RECORD_COLUMNS = [
   "S.No.",
   "Production Date",
-  "Shift",
+  "Design Name",
   "Thickness (cm)",
-  "Slab Number",
+  "Batch No.",
+  "Slab No.",
   // Beside the slab they describe, not stranded at the far end of the row.
   "Robo2 Body Weight (kg)",
   "Robo2 Cycle Time (sec)",
   "In Time",
   "Out Time",
-  "Status",
-  "Delay Codes",
-  "Total Delay",
   "Remarks",
 ] as const;
 
 /** Column widths, one per column above and in the same order. */
-export const PRODUCTION_RECORD_WIDTHS = [7, 15, 7, 13, 14, 21, 21, 10, 10, 14, 18, 20, 30];
+export const PRODUCTION_RECORD_WIDTHS = [7, 15, 22, 13, 12, 12, 21, 21, 10, 10, 40];
 
 export type ProductionRecordColumn = (typeof PRODUCTION_RECORD_COLUMNS)[number];
 export type ProductionRecordRow = Partial<Record<ProductionRecordColumn, string | number>>;
@@ -56,17 +64,17 @@ export type ProductionRecordRow = Partial<Record<ProductionRecordColumn, string 
 export interface ProductionRowInput {
   serialNumber: number | null;
   productionDate: string;
-  shiftNumber: number | null;
+  designName: string | null;
   thickness: number | null;
+  batchNo: string | null;
   slabNumber: string;
   roymixBodyWeight: number | null;
   roymixCycleTime: number | null;
   inTime: string | null;
   outTime: string | null;
-  status: string;
-  delayCodes: string[];
-  delayMinutes: number;
-  remarks: string | null;
+  /** The Slabs-Records remark string, note and delays together, resolved in
+   *  the route through formatSlabRemarks. "-" when there is nothing. */
+  remarks: string;
 }
 
 const dash = (v: string | number | null | undefined): string | number =>
@@ -75,29 +83,24 @@ const dash = (v: string | number | null | undefined): string | number =>
 /**
  * One row, keyed by exactly the columns above.
  *
- * `statusLabel` and `formatDuration` are passed in rather than imported: they
- * live in utils.ts, which pulls in enough of the app that `node --test` cannot
- * load it, and the shaping is what needs testing here.
+ * `fallbackSerial` is used only when the slab carries no S.No. of its own — the
+ * row's position in the sheet, so the column is never blank.
  */
 export function productionRecordRow(
   r: ProductionRowInput,
   fallbackSerial: number,
-  statusLabel: (status: string) => string,
-  formatDuration: (minutes: number) => string,
 ): ProductionRecordRow {
   return {
     "S.No.":                  r.serialNumber ?? fallbackSerial,
     "Production Date":        dash(r.productionDate),
-    "Shift":                  dash(r.shiftNumber),
+    "Design Name":            dash(r.designName),
     "Thickness (cm)":         dash(r.thickness),
-    "Slab Number":            dash(r.slabNumber),
+    "Batch No.":              dash(r.batchNo),
+    "Slab No.":               dash(r.slabNumber),
     "Robo2 Body Weight (kg)": dash(r.roymixBodyWeight),
     "Robo2 Cycle Time (sec)": dash(r.roymixCycleTime),
     "In Time":                dash(r.inTime),
     "Out Time":               dash(r.outTime),
-    "Status":                 statusLabel(r.status),
-    "Delay Codes":            r.delayCodes.length ? r.delayCodes.join(", ") : "-",
-    "Total Delay":            r.delayMinutes > 0 ? formatDuration(r.delayMinutes) : "-",
     "Remarks":                dash(r.remarks),
   };
 }
