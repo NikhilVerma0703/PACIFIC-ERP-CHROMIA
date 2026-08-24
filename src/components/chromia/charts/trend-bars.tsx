@@ -1,4 +1,5 @@
 import { CHART_INK, labelStride, niceScale, OUTCOME_COLORS, type ChartSeries } from './chart-ink';
+import { PLANT_TIME_ZONE } from '@/lib/chromia/plant-time';
 
 /**
  * Production Trend.
@@ -75,7 +76,7 @@ const GROUP = SERIES.length * BAR + (SERIES.length - 1) * BAR_GAP;
  */
 const BASE_WIDTH = 1080;
 
-const dayFmt = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short' });
+const dayFmt = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', timeZone: PLANT_TIME_ZONE });
 
 function shortDay(day: string): string {
   const parsed = new Date(`${day}T00:00:00`);

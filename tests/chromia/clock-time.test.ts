@@ -95,10 +95,13 @@ describe('tidying up what was typed', () => {
 });
 
 describe('the starting value of the field', () => {
-  it('is the current time, zero-padded', () => {
-    expect(nowClockTime(new Date(2026, 7, 3, 9, 5))).toBe('09:05');
-    expect(nowClockTime(new Date(2026, 7, 3, 17, 30))).toBe('17:30');
-    expect(nowClockTime(new Date(2026, 7, 3, 0, 0))).toBe('00:00');
+  it('is the current plant time, zero-padded', () => {
+    // Instants given in UTC, expected in plant time (+05:30), so the assertion
+    // holds whatever timezone the test host runs in. 03:35 UTC is 09:05 in the
+    // plant; 18:30 UTC the evening before is the plant's midnight.
+    expect(nowClockTime(new Date(Date.UTC(2026, 7, 3, 3, 35)))).toBe('09:05');
+    expect(nowClockTime(new Date(Date.UTC(2026, 7, 3, 12, 0)))).toBe('17:30');
+    expect(nowClockTime(new Date(Date.UTC(2026, 7, 2, 18, 30)))).toBe('00:00');
   });
 
   it('is always a time the validator accepts', () => {

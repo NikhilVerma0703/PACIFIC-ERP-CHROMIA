@@ -3,7 +3,7 @@ import Link from 'next/link';
 
 import { EmptyState, PageHeader } from '@/components/chromia/ui';
 import { APP_ROUTES } from '@/lib/chromia/constants/app';
-import { toDateInput } from '@/lib/chromia/operator-register';
+import { toDateInput, toTimeInput } from '@/lib/chromia/operator-register';
 import {
   loadBaseMaterialNames,
   loadDesignFileNames,
@@ -16,7 +16,6 @@ import { EditForm } from './edit-form';
 export const metadata: Metadata = { title: 'Edit Slab Record' };
 export const dynamic = 'force-dynamic';
 
-const pad = (value: number) => `${value}`.padStart(2, '0');
 
 export default async function EditSlabPage({
   params,
@@ -60,9 +59,7 @@ export default async function EditSlabPage({
           designFileName: record.designFileName,
           thicknessCm: record.thicknessCm === null ? '' : String(record.thicknessCm),
           receivedDate: toDateInput(record.receivedDate),
-          inTime: record.inTime
-            ? `${pad(record.inTime.getHours())}:${pad(record.inTime.getMinutes())}`
-            : '',
+          inTime: record.inTime ? toTimeInput(record.inTime) : '',
           remarks: record.remarks ?? '',
         }}
         baseMaterials={baseMaterials}

@@ -14,6 +14,7 @@ import {
   type RawSearchParams,
 } from '@/lib/chromia/slab-filters';
 import { loadFilterOptions, searchSlabs } from '@/lib/chromia/server/repositories/slab-repository';
+import { PLANT_TIME_ZONE } from '@/lib/chromia/plant-time';
 
 import { FilterBar } from './filter-bar';
 import { RowActions } from './row-actions';
@@ -24,15 +25,13 @@ export const dynamic = 'force-dynamic';
 const dateFmt = new Intl.DateTimeFormat('en-GB', {
   day: '2-digit',
   month: 'short',
-  year: 'numeric',
-});
+  year: 'numeric', timeZone: PLANT_TIME_ZONE, });
 
 const dateTimeFmt = new Intl.DateTimeFormat('en-GB', {
   day: '2-digit',
   month: 'short',
   hour: '2-digit',
-  minute: '2-digit',
-});
+  minute: '2-digit', timeZone: PLANT_TIME_ZONE, });
 
 const { th, td, tdMuted, tdNum } = dataTable;
 

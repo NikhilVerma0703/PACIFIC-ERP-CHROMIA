@@ -4,6 +4,7 @@ import { EmptyState, PageHeader, Section } from '@/components/chromia/ui';
 import { actorNames } from '@/lib/chromia/actors';
 import { prisma } from '@/lib/chromia/db';
 import { table } from '@/lib/chromia/ui';
+import { PLANT_TIME_ZONE } from '@/lib/chromia/plant-time';
 
 import { ImportForm } from './import-form';
 
@@ -14,8 +15,7 @@ const dateFmt = new Intl.DateTimeFormat('en-GB', {
   day: '2-digit',
   month: 'short',
   hour: '2-digit',
-  minute: '2-digit',
-});
+  minute: '2-digit', timeZone: PLANT_TIME_ZONE, });
 
 export default async function ImportPage() {
   const history = await prisma.chromiaImportBatch.findMany({

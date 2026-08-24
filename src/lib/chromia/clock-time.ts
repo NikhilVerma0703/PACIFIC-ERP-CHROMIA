@@ -24,6 +24,8 @@
  */
 
 /** HH:MM (seconds tolerated), hours 00–23 and minutes 00–59 — nothing else. */
+import { toPlantTimeInput } from '@/lib/chromia/plant-time';
+
 export const CLOCK_TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/;
 
 /** The one message every in-time field shows for a time it cannot read. */
@@ -108,7 +110,7 @@ export function normaliseClockTime(raw: string): string | null {
   return `${pad(hours)}:${pad(minutes)}`;
 }
 
-/** The current time as HH:MM, for the field's starting value. */
+/** The current time as HH:MM in plant time, for the field's starting value. */
 export function nowClockTime(at: Date = new Date()): string {
-  return `${pad(at.getHours())}:${pad(at.getMinutes())}`;
+  return toPlantTimeInput(at);
 }

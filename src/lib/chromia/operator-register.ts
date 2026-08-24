@@ -19,14 +19,17 @@
  */
 
 import { isClockTime } from '@/lib/chromia/clock-time';
+import { plantInstant, toPlantDateInput, toPlantTimeInput } from '@/lib/chromia/plant-time';
 
 /**
- * The day a register entry belongs to: local midnight of `yyyy-mm-dd`.
+ * The day a register entry belongs to: midnight of `yyyy-mm-dd`.
  *
- * This is what dates the record now, rather than the in-time did. They agree
- * whenever a time was typed — `startOfDay(combineDateAndTime(d, t))` is this
- * same instant — but an entry with no in-time still has a production date, and
- * that date is the one the operator chose.
+ * This is what dates the record — the day the operator chose — not the in-time,
+ * which is optional and often absent. It is a date-only value: stored at
+ * midnight and only ever shown as a day, so it reads correctly through the
+ * plant-time formatters without needing to be parsed in plant time itself (see
+ * plant-time.ts). The in-time, when there is one, is a real instant parsed in
+ * plant time by combineDateAndTime and lands on this same day.
  */
 export function registerDay(date: string): Date | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date.trim());
@@ -39,15 +42,29 @@ export function registerDay(date: string): Date | null {
   return parsed;
 }
 
-/** `2026-08-03` + `09:15` → a local Date. */
+/**
+ * `2026-08-03` + `09:15` → the instant that wall clock names in the plant.
+ *
+ * The time is read as plant-local (see plant-time.ts), so a slab booked in at
+ * 09:15 comes back 09:15 through the plant-time formatters — not shifted by the
+ * India offset, which is what happened when this parsed in the server's UTC.
+ */
 export function combineDateAndTime(date: string, time: string): Date | null {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date.trim());
+  if (!match) return null;
   // A real time of day, not merely two digits and a colon — the in-time is
-  // typed now, and `new Date('...T25:70:00')` is silently Invalid Date.
+  // typed now, and "25:70" must not become half past one the next morning.
   if (!isClockTime(time)) return null;
 
-  const parsed = new Date(`${date}T${time.length === 5 ? `${time}:00` : time}`);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
+  const [hours, minutes, seconds = 0] = time.trim().split(':').map(Number);
+  return plantInstant(
+    Number(match[1]),
+    Number(match[2]),
+    Number(match[3]),
+    hours ?? 0,
+    minutes ?? 0,
+    seconds ?? 0,
+  );
 }
 
 /** Midnight (local) of the given `yyyy-mm-dd` string. */
@@ -64,19 +81,14 @@ export function endOfDay(date: Date): Date {
   return copy;
 }
 
-/** `yyyy-mm-dd` in local time — not `toISOString`, which shifts to UTC. */
+/** `yyyy-mm-dd` in plant time — for seeding date inputs. */
 export function toDateInput(date: Date): string {
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return toPlantDateInput(date);
 }
 
-/** `HH:mm` in local time. */
+/** `HH:mm` in plant time — for seeding time inputs. */
 export function toTimeInput(date: Date): string {
-  const hours = `${date.getHours()}`.padStart(2, '0');
-  const minutes = `${date.getMinutes()}`.padStart(2, '0');
-  return `${hours}:${minutes}`;
+  return toPlantTimeInput(date);
 }
 
 /**

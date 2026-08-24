@@ -13,6 +13,7 @@ import {
 } from '@/lib/chromia/recalibration-tracking-filters';
 import { searchRecalibrationRecords } from '@/lib/chromia/server/repositories/recalibration-flow-repository';
 import { loadFilterOptions } from '@/lib/chromia/server/repositories/slab-repository';
+import { PLANT_TIME_ZONE } from '@/lib/chromia/plant-time';
 
 import { FilterBar } from './filter-bar';
 
@@ -22,8 +23,7 @@ export const dynamic = 'force-dynamic';
 const dateFmt = new Intl.DateTimeFormat('en-GB', {
   day: '2-digit',
   month: 'short',
-  year: 'numeric',
-});
+  year: 'numeric', timeZone: PLANT_TIME_ZONE, });
 
 const { th, td, tdMuted, tdNum } = dataTable;
 

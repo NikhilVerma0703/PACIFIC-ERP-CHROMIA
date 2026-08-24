@@ -12,6 +12,7 @@ import {
 } from '@/lib/chromia/simple-filters';
 import { daysBetween } from '@/lib/chromia/utils/dates';
 import { listStockedSlabs, listStockReleases } from '@/lib/chromia/server/repositories/stockyard-repository';
+import { PLANT_TIME_ZONE } from '@/lib/chromia/plant-time';
 
 import { RecalibrateButton } from './recalibrate-button';
 import { ReleaseForm } from './release-form';
@@ -22,8 +23,7 @@ export const dynamic = 'force-dynamic';
 const dateFmt = new Intl.DateTimeFormat('en-GB', {
   day: '2-digit',
   month: 'short',
-  year: 'numeric',
-});
+  year: 'numeric', timeZone: PLANT_TIME_ZONE, });
 
 const { th, td, tdMuted, tdNum } = dataTable;
 

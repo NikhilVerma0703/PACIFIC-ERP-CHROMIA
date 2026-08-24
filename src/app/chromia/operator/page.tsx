@@ -10,6 +10,7 @@ import { needsIntakeQc } from '@/lib/chromia/slab-links';
 import { link } from '@/lib/chromia/ui';
 import { listRecalibrationReasons } from '@/lib/chromia/server/repositories/recalibration-repository';
 import { loadSlabRecord } from '@/lib/chromia/server/repositories/slab-record-repository';
+import { PLANT_TIME_ZONE } from '@/lib/chromia/plant-time';
 import {
   loadBaseMaterialNames,
   loadDesignFileNames,
@@ -23,17 +24,14 @@ import { QcPanel } from './qc-panel';
 export const metadata: Metadata = { title: 'Operator Entry' };
 export const dynamic = 'force-dynamic';
 
-const timeFmt = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit' });
+const timeFmt = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: PLANT_TIME_ZONE });
 
 const dateFmt = new Intl.DateTimeFormat('en-GB', {
   day: '2-digit',
   month: 'short',
-  year: 'numeric',
-});
+  year: 'numeric', timeZone: PLANT_TIME_ZONE, });
 
 const { th, td } = dataTable;
-
-const pad = (value: number) => `${value}`.padStart(2, '0');
 
 /** `?slab=` — the one this screen is open on, if any. */
 function resolveSlabId(raw: string | string[] | undefined): string | null {
@@ -145,9 +143,7 @@ export default async function OperatorPage({
                 fileName: selected.designFileName,
                 thicknessCm: selected.thicknessCm === null ? '' : String(selected.thicknessCm),
                 receivedDate: toDateInput(selected.receivedDate),
-                inTime: selected.inTime
-                  ? `${pad(selected.inTime.getHours())}:${pad(selected.inTime.getMinutes())}`
-                  : '',
+                inTime: selected.inTime ? toTimeInput(selected.inTime) : '',
                 remarks: selected.remarks ?? '',
               }
             : undefined

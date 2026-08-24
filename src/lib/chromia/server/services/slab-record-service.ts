@@ -2,7 +2,7 @@ import { ChromiaAuditAction as AuditAction, ChromiaSlabEventType as SlabEventTyp
 import { prisma } from '@/lib/chromia/db';
 import { ConflictError, NotFoundError, ValidationError } from '@/lib/chromia/errors';
 import { createLogger } from '@/lib/chromia/logger';
-import { registerDay, toDateInput } from '@/lib/chromia/operator-register';
+import { registerDay, toDateInput, toTimeInput } from '@/lib/chromia/operator-register';
 import {
   describeSlabRecordChanges,
   diffSlabRecord,
@@ -15,9 +15,7 @@ import { resolveBaseMaterialId, resolveDesignId } from '@/lib/chromia/server/ser
 
 const log = createLogger('slab-record');
 
-const pad = (value: number) => `${value}`.padStart(2, '0');
-const timeOf = (date: Date | null) =>
-  date === null ? '' : `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+const timeOf = (date: Date | null) => (date === null ? '' : toTimeInput(date));
 const dayOf = (date: Date | null) => (date === null ? '' : toDateInput(date));
 
 
