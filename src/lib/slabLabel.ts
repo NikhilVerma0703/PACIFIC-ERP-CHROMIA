@@ -36,3 +36,10 @@ export function parseSlabInput(raw: unknown): number | null {
 export function isInsertSlab(n: number | null | undefined): boolean {
   return typeof n === "number" && Number.isFinite(n) && !Number.isInteger(n);
 }
+
+/** Legacy no-number slabs were imported as 9,000,000+n and display by their NB
+ *  barcode label. Shared so the inventory table and the register popup cannot
+ *  disagree about a slab's name. */
+export function displaySlab(n: number, barcode?: string | null): string {
+  return n >= 9000000 && barcode ? barcode : slabLabel(n);
+}

@@ -2,7 +2,11 @@
 // Stock summary styled after the physical stock register: SL.NO + merged
 // colour cell, a row per thickness+batch, full grid lines, yellow sticky
 // header. Designs collapsed by default; all trial designs under "Trials".
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { displaySlab } from "@/lib/slabLabel";
+
+interface QcSlab { slab: number; grade: string | null; issues: string[]; status: string | null; barcode: string | null }
+interface QcTarget { design: string; thickness: string; batch: string }
 
 interface Row {
   design: string; thickness: string; batch: string; rawBatch?: string; total: number; dispatched: number;
@@ -50,6 +54,40 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
   const [open, setOpen] = useState<Set<string>>(new Set());   // open designs (closed by default)
   const [ov, setOv] = useState<Map<string, boolean>>(new Map()); // optimistic Approved overrides
   const [openT, setOpenT] = useState<Set<string>>(new Set()); // open thickness groups
+
+  // Per-slab quality popup — the Sales drill-down. Where the Admin register
+  // opens a batch into the full slab table (onOpenSlabs), the Sales register
+  // has no such table; the same click opens this instead. Sequence-guarded so
+  // a slow answer for batch A cannot land on an open popup for batch B.
+  const [qc, setQc] = useState<QcTarget | null>(null);
+  const [qcRows, setQcRows] = useState<QcSlab[] | null>(null);
+  const [qcTruncated, setQcTruncated] = useState(false);
+  const [qcError, setQcError] = useState<string | null>(null);
+  const qcSeq = useRef(0);
+  const openQuality = (r: Row) => {
+    const seq = ++qcSeq.current;
+    setQc({ design: r.design, thickness: r.thickness, batch: r.batch });
+    setQcRows(null); setQcTruncated(false); setQcError(null);
+    // The SHOWN values travel as-is, "-" placeholders included — the route
+    // resolves them the way the register grouped them (canonical design,
+    // display batch, "-" = not recorded).
+    const p = new URLSearchParams({ design: r.design, thickness: r.thickness, batch: r.batch });
+    fetch(`/api/inventory/batch-quality?${p.toString()}`)
+      .then(async (res) => {
+        // Download the body FIRST, gate on seq LAST: checking before the await
+        // let a stale answer slip through the gap while its body streamed.
+        const body = await res.json().catch(() => null);
+        if (seq !== qcSeq.current) return;
+        if (!res.ok) {
+          setQcError(`${body?.error ?? "Could not load the slab list"} (HTTP ${res.status}).`);
+          return;
+        }
+        setQcRows(Array.isArray(body?.slabs) ? body.slabs : []);
+        setQcTruncated(Boolean(body?.truncated));
+      })
+      .catch(() => { if (seq === qcSeq.current) setQcError("Could not load the slab list — the network request failed."); });
+  };
+  const closeQuality = () => { qcSeq.current++; setQc(null); setQcRows(null); setQcTruncated(false); setQcError(null); };
 
   useEffect(() => {
     let alive = true;
@@ -208,7 +246,7 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
           {thickOptions.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
         <input className="w-full max-w-[140px] rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20" placeholder="Batch..." value={batchQ} onChange={(e) => setBatchQ(e.target.value)} />
-        <p className="text-xs text-gray-400">Stock register - click a colour to open its batches - trials grouped at the end.</p>
+        <p className="text-xs text-gray-400">Stock register - click a colour to open its batches{onOpenSlabs ? "" : " - click a batch for per-slab quality"} - trials grouped at the end.</p>
       </div>
       <div className="max-h-[85vh] overflow-auto rounded-lg border border-gray-300 bg-white">
         <table className="w-full border-collapse text-sm">
@@ -282,10 +320,18 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
                       {e.kind === "batch" && (
                         <>
                           <td className={bcell}></td>
+                          {/* One gesture, role-appropriate destination: with the full
+                              slab table available (Admin/Office) the batch opens it;
+                              without one (Sales) the same click opens the per-slab
+                              quality popup instead. */}
                           <td
-                            className={`${bcell} ${onOpenSlabs ? "cursor-pointer font-medium text-brand hover:underline" : ""}`}
-                            title={onOpenSlabs ? "Open these slabs" : undefined}
-                            onClick={onOpenSlabs ? (ev) => { ev.stopPropagation(); onOpenSlabs({ design: e.r.design, thickness: e.r.thickness === "-" ? undefined : e.r.thickness, batch: e.r.batch === "-" ? undefined : (e.r.rawBatch ?? e.r.batch) }); } : undefined}
+                            className={`${bcell} cursor-pointer font-medium text-brand hover:underline`}
+                            title={onOpenSlabs ? "Open these slabs" : "Per-slab grades and quality issues"}
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              if (onOpenSlabs) onOpenSlabs({ design: e.r.design, thickness: e.r.thickness === "-" ? undefined : e.r.thickness, batch: e.r.batch === "-" ? undefined : (e.r.rawBatch ?? e.r.batch) });
+                              else openQuality(e.r);
+                            }}
                           >{e.r.batch}</td>
                           <Cells v={e.r} />
                         </>
@@ -323,6 +369,65 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
         </table>
       </div>
       {!loading && <p className="text-xs text-gray-400">{groups.length.toLocaleString("en-IN")} colour(s) in stock.</p>}
+      {qc && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 sm:p-8" onClick={closeQuality}>
+          <div className="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-semibold uppercase tracking-wide text-gray-900">{qc.design}</h2>
+                <p className="mt-1 text-sm text-gray-500">
+                  Batch {qc.batch}{qc.thickness !== "-" ? ` · ${qc.thickness}` : ""}
+                  {qcRows ? ` · ${qcRows.length} slab(s)` : ""}
+                </p>
+              </div>
+              <button onClick={closeQuality} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50">Close ✕</button>
+            </div>
+            {qcError ? (
+              <p className="py-10 text-center text-sm text-red-600">{qcError}</p>
+            ) : qcRows == null ? (
+              <p className="py-10 text-center text-gray-400">Loading…</p>
+            ) : qcRows.length === 0 ? (
+              <p className="py-10 text-center text-gray-400">No slabs recorded for this line.</p>
+            ) : (
+              <div className="mt-4">
+                {(() => { const n = qcRows.filter((s) => s.issues.length > 0).length; return (
+                  <p className="mb-2 text-xs text-gray-500">
+                    {n === 0 ? "No quality issues recorded on any slab in this line." : `${n} of ${qcRows.length} slab(s) carry a quality note.`}
+                  </p>
+                ); })()}
+                <div className="max-h-[60vh] overflow-y-auto rounded-xl border border-gray-200">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0 bg-white">
+                      <tr className="border-b border-gray-100 text-left text-gray-500">
+                        <th className="px-3 py-2">Slab #</th>
+                        <th className="px-3 py-2">Grade</th>
+                        <th className="px-3 py-2">Quality issue</th>
+                        <th className="px-3 py-2">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {qcRows.map((s) => (
+                        <tr key={s.slab} className="border-t border-gray-50 hover:bg-gray-50/60">
+                          <td className="px-3 py-2 font-medium text-gray-900">{displaySlab(s.slab, s.barcode)}</td>
+                          <td className="px-3 py-2">{s.grade ?? <span className="text-gray-400">—</span>}</td>
+                          <td className="px-3 py-2">
+                            {s.issues.length ? <span className="text-gray-700">{s.issues.join(", ")}</span> : <span className="text-gray-300">—</span>}
+                          </td>
+                          <td className="px-3 py-2">
+                            {s.status ? <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">{s.status}</span> : <span className="text-gray-400">—</span>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {qcTruncated && <p className="mt-2 text-xs font-medium text-amber-700">Showing the first 1,000 slabs — this line holds more.</p>}
+                <p className="mt-2 text-xs text-gray-400">Approved, in-stock slabs only — dispatched slabs are not listed, exactly as the register counts them.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

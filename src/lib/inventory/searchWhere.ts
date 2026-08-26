@@ -108,9 +108,16 @@ export async function getUnapprovedSlabNumbers(strict = false): Promise<number[]
   }
 }
 
-/** Wrap a where clause so unapproved stock is excluded (approved-only view). */
-export async function approvedOnlyWhere(where: any): Promise<any> {
-  const pending = await getUnapprovedSlabNumbers();
+/** Wrap a where clause so unapproved stock is excluded (approved-only view).
+ *
+ *  `strict` decides what a failed approval read means. Default (false): the
+ *  view degrades to approved-known state — right for inventoryGate audiences,
+ *  who may see pending stock anyway. A SALES-facing caller must pass true: for
+ *  that audience "could not read the approval list" has to fail CLOSED (throw,
+ *  route answers 500), because degrading OPEN would show unapproved and
+ *  admin-hidden stock to exactly the audience approval exists to shield. */
+export async function approvedOnlyWhere(where: any, opts?: { strict?: boolean }): Promise<any> {
+  const pending = await getUnapprovedSlabNumbers(opts?.strict ?? false);
   if (!pending.length) return where;
   // preserve top-level keys (status etc.) — some callers read them back
   const prevAnd = Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : [];

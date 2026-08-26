@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { slabLabel } from "@/lib/slabLabel";
+import { displaySlab } from "@/lib/slabLabel";
 import { displayBatch } from "@/lib/batchDisplay";
 import { NONE } from "@/lib/inventory/filterValues";
 import { StockByDesign } from "./StockByDesign";
@@ -59,9 +59,8 @@ const ACTIONS = [
 ];
 const EMPTY = { design: "", batch: "", thickness: "", grade: "", slab: "", bay: "", status: "", rw: "", pi: "", customer: "" };
 
-// Legacy no-number slabs (imported as 9,000,000+n) display by their NB label.
-const displaySlab = (n: number, barcode?: string | null) =>
-  n >= 9000000 && barcode ? barcode : slabLabel(n);
+// displaySlab (NB-label rule for legacy 9,000,000+ slabs) is shared from
+// lib/slabLabel so this table and the register popup cannot disagree.
 
 const fmtAt = (iso: string) => {
   const d = new Date(iso);
