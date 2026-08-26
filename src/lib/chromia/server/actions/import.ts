@@ -5,8 +5,12 @@ import * as XLSX from 'xlsx';
 
 import { requireActingUser } from '@/lib/chromia/current-user';
 import { isAppError } from '@/lib/chromia/errors';
-import { findDuplicateSlabNos, parseProRegister } from '@/lib/chromia/import/pro-register';
-import { importProRegister, type ImportSummary } from '@/lib/chromia/server/services/import-service';
+import { findDuplicateSlabNos, parseRegister } from '@/lib/chromia/import/pro-register';
+import {
+  deleteImportBatch,
+  importProRegister,
+  type ImportSummary,
+} from '@/lib/chromia/server/services/import-service';
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
@@ -29,8 +33,19 @@ export interface ImportFormState {
       receivedDate: string;
       remark: string | null;
       disposition: string | null;
+      grade: string | null;
     }[];
   };
+}
+
+/**
+ * A file is missing one or more of the six required columns — say which, by
+ * name, instead of a bare failure. Column order does not matter and extra
+ * columns are ignored, so the only thing to fix is the ones named here.
+ */
+function missingColumnsMessage(missing: string[]): string {
+  const plural = missing.length === 1 ? '' : 's';
+  return `This file is missing required column${plural}: ${missing.join(', ')}. Column order does not matter and extra columns are fine — add the missing column${plural} and import again.`;
 }
 
 /** Read the uploaded workbook into a row matrix. */
@@ -77,7 +92,11 @@ export async function previewImportAction(
   try {
     const file = validateFile(formData.get('file'));
     const { sheetName, rows } = await readSheet(file);
-    const result = parseProRegister(rows);
+    const result = parseRegister(rows);
+
+    if (result.missingColumns && result.missingColumns.length > 0) {
+      return { error: missingColumnsMessage(result.missingColumns) };
+    }
 
     return {
       preview: {
@@ -96,6 +115,7 @@ export async function previewImportAction(
           receivedDate: row.receivedDate.toISOString().slice(0, 10),
           remark: row.remark,
           disposition: row.disposition,
+          grade: row.grade,
         })),
       },
     };
@@ -116,7 +136,11 @@ export async function runImportAction(
 
     const user = await requireActingUser();
     const { sheetName, rows } = await readSheet(file);
-    const parsed = parseProRegister(rows);
+    const parsed = parseRegister(rows);
+
+    if (parsed.missingColumns && parsed.missingColumns.length > 0) {
+      return { error: missingColumnsMessage(parsed.missingColumns) };
+    }
 
     if (parsed.rows.length === 0) {
       return { error: 'No slab rows were found in that sheet.' };
@@ -133,6 +157,40 @@ export async function runImportAction(
     revalidatePath('/chromia/recalibrations');
 
     return { summary };
+  } catch (error) {
+    if (isAppError(error) || error instanceof Error) return { error: error.message };
+    throw error;
+  }
+}
+
+export interface DeleteImportState {
+  error?: string;
+  /** Set on success — how many slabs the removed file had brought in. */
+  deleted?: number;
+  sourceFile?: string;
+}
+
+/**
+ * Delete a previously imported file: the batch record and every slab it
+ * brought in, through the same delete workflow a single slab uses.
+ */
+export async function deleteImportAction(
+  _previousState: DeleteImportState,
+  formData: FormData,
+): Promise<DeleteImportState> {
+  const importBatchId = String(formData.get('importBatchId') ?? '').trim();
+  if (!importBatchId) return { error: 'That import could not be identified.' };
+
+  try {
+    const user = await requireActingUser();
+    const result = await deleteImportBatch(importBatchId, user.id);
+
+    revalidatePath('/chromia/import');
+    revalidatePath('/chromia/slabs');
+    revalidatePath('/chromia/dashboard');
+    revalidatePath('/chromia/recalibrations');
+
+    return { deleted: result.deleted, sourceFile: result.sourceFile };
   } catch (error) {
     if (isAppError(error) || error instanceof Error) return { error: error.message };
     throw error;

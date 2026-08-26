@@ -1,6 +1,7 @@
-import { ChromiaCycleStatus as CycleStatus, ChromiaDisposition as Disposition, ChromiaImportStatus as ImportStatus, ChromiaRecalibrationStatus as RecalibrationStatus, ChromiaSlabEventType as SlabEventType, ChromiaSlabStatus as SlabStatus } from '@prisma/client';
+import { ChromiaAuditAction as AuditAction, ChromiaCycleStatus as CycleStatus, ChromiaDisposition as Disposition, ChromiaImportStatus as ImportStatus, ChromiaRecalibrationStatus as RecalibrationStatus, ChromiaSlabEventType as SlabEventType, ChromiaSlabStatus as SlabStatus } from '@prisma/client';
 import { MAX_RECALIBRATION_ATTEMPTS } from '@/lib/chromia/constants/process-stages';
 import { prisma } from '@/lib/chromia/db';
+import { NotFoundError } from '@/lib/chromia/errors';
 import { createLogger } from '@/lib/chromia/logger';
 import { daysBetween, toDateColumn } from '@/lib/chromia/utils/dates';
 import { importStatus, importSummaryLine } from '@/lib/chromia/import/outcome';
@@ -168,7 +169,9 @@ export async function importProRegister(
 
       const isRecalibration = row.disposition === Disposition.RECALIBRATION;
       const status = statusFor(row);
-      const inTime = row.receivedDate;
+      // An explicit in-time when the file carried one, else the production date
+      // — the same fallback the operator entry uses.
+      const inTime = row.inTime ?? row.receivedDate;
       const outTime = row.fullyPrintedDate ?? row.bypassedDate ?? null;
 
       await prisma.$transaction(async (tx) => {
@@ -191,7 +194,10 @@ export async function importProRegister(
             plannedDesignId,
             status,
             currentCycleNumber: 1,
+            currentGrade: row.grade,
             currentDisposition: row.disposition,
+            originalThicknessMm: row.thicknessMm,
+            currentThicknessMm: row.thicknessMm,
             recalibrationCount: isRecalibration ? 1 : 0,
             isRecalibrationOut: status === SlabStatus.OUT_FOR_RECALIBRATION,
             receivedDate: row.receivedDate,
@@ -228,6 +234,7 @@ export async function importProRegister(
             status: outTime ? CycleStatus.COMPLETED : CycleStatus.ACTIVE,
             completedAt: outTime,
             disposition: row.disposition,
+            finalGrade: row.grade,
             createdById: userId,
           },
         });
@@ -245,6 +252,37 @@ export async function importProRegister(
             }`,
           },
         });
+
+        // The remark's grade and outcome, recorded as a real grade decision so
+        // a historical row carries the same Grade + Outcome a slab graded at QC
+        // does — not just a disposition with no grade behind it.
+        if (row.grade && row.disposition) {
+          await tx.chromiaGradeDecision.create({
+            data: {
+              cycleId: cycle.id,
+              slabId: slab.id,
+              grade: row.grade,
+              disposition: row.disposition,
+              reason: 'Graded from register remark on import',
+              remarks: row.remark,
+              decidedById: userId,
+              decidedAt: row.receivedDate,
+              attemptNumberAtDecision: 1,
+            },
+          });
+
+          await tx.chromiaSlabEvent.create({
+            data: {
+              slabId: slab.id,
+              cycleId: cycle.id,
+              eventType: SlabEventType.GRADE_ASSIGNED,
+              toStatus: status,
+              userId,
+              occurredAt: row.receivedDate,
+              note: `Grade ${row.grade} → ${row.disposition} (from import remark)`,
+            },
+          });
+        }
 
         if (isRecalibration) {
           const sentDate = row.recalSentDate ?? row.receivedDate;
@@ -345,6 +383,68 @@ export async function importProRegister(
     line,
     errors: notes.slice(0, 50),
   };
+}
+
+/**
+ * Undo an import — remove the slabs a file brought in, and the batch record.
+ *
+ * Everything that hangs off each slab (its cycle, QC, grade decision, history,
+ * recalibration trips and outcome record) goes with it by the same cascade a
+ * single delete uses, scoped to the slab's own id. Each production batch keeps
+ * its slab count straight, and an audit entry records the removal after the
+ * rows it names are gone.
+ *
+ * Slab numbers are handed back to the plant, so a file imported by mistake can
+ * be corrected and imported again.
+ */
+export async function deleteImportBatch(
+  importBatchId: string,
+  userId: string,
+): Promise<{ deleted: number; sourceFile: string }> {
+  const batch = await prisma.chromiaImportBatch.findUnique({
+    where: { id: importBatchId },
+    select: { id: true, sourceFile: true },
+  });
+  if (!batch) throw new NotFoundError('Import batch');
+
+  const slabs = await prisma.chromiaSlab.findMany({
+    where: { importBatchId },
+    select: { id: true, batchId: true },
+  });
+
+  await prisma.$transaction(async (tx) => {
+    // Each production batch loses exactly the slabs this import gave it.
+    const perBatch = new Map<string, number>();
+    for (const slab of slabs) perBatch.set(slab.batchId, (perBatch.get(slab.batchId) ?? 0) + 1);
+    for (const [batchId, count] of perBatch) {
+      await tx.chromiaBatch.update({
+        where: { id: batchId },
+        data: { totalSlabs: { decrement: count } },
+      });
+    }
+
+    // One id each, and everything removed with a slab is that slab's own
+    // children — the database's cascade, the same one deleteSlabRecord relies on.
+    if (slabs.length > 0) {
+      await tx.chromiaSlab.deleteMany({ where: { importBatchId } });
+    }
+
+    await tx.chromiaAuditLog.create({
+      data: {
+        entity: 'ImportBatch',
+        entityId: batch.id,
+        action: AuditAction.DELETE,
+        userId,
+        changes: { sourceFile: batch.sourceFile, deletedSlabs: slabs.length },
+      },
+    });
+
+    // No slab points at it now, so the batch row goes cleanly.
+    await tx.chromiaImportBatch.delete({ where: { id: batch.id } });
+  });
+
+  log.warn({ importBatchId, deleted: slabs.length }, 'Import batch deleted');
+  return { deleted: slabs.length, sourceFile: batch.sourceFile };
 }
 
 export { MAX_RECALIBRATION_ATTEMPTS };

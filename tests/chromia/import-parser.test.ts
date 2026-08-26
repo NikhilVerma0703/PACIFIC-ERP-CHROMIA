@@ -5,7 +5,9 @@ import {
   COLUMN,
   dispositionFromRemark,
   findDuplicateSlabNos,
+  gradeFromRemark,
   parseProRegister,
+  parseRegister,
   reasonCodeFromRemark,
   toCalendarDay,
 } from '@/lib/chromia/import/pro-register';
@@ -161,6 +163,163 @@ describe('duplicate detection', () => {
       row({ slabNo: '2', batchNo: '1', slabName: 'a' }),
     ]);
     expect(findDuplicateSlabNos(result.rows)).toEqual([]);
+  });
+});
+
+describe('remark → grade', () => {
+  it('maps each outcome to the grade the QC rules allow', () => {
+    expect(gradeFromRemark('Dispatch')).toBe('A');
+    expect(gradeFromRemark('STOCK')).toBe('A');
+    expect(gradeFromRemark('Sample Cutting')).toBe('B');
+    expect(gradeFromRemark('Sample Cut')).toBe('B');
+    expect(gradeFromRemark('RECALIBRATE - RED COLOUR')).toBe('C');
+  });
+
+  it('leaves an unrecognised or empty remark ungraded', () => {
+    expect(gradeFromRemark('some free text')).toBeNull();
+    expect(gradeFromRemark(null)).toBeNull();
+    expect(gradeFromRemark('WASTE')).toBeNull();
+  });
+});
+
+/** Build a flexible sheet: a header row, then one array per data row. */
+function flexSheet(headers: string[], dataRows: (string | number | null)[][]): unknown[][] {
+  return [headers, ...dataRows];
+}
+
+const REQUIRED_HEADERS = [
+  'Production Date',
+  'Batch Number',
+  'Slab Number',
+  'Base Material / Slab Name',
+  'File Name / Planned Design',
+  'Remarks',
+];
+
+describe('flexible header-name import', () => {
+  it('reads the six required columns in any order and grades from the remark', () => {
+    const result = parseRegister(
+      flexSheet(
+        ['Remarks', 'Slab Number', 'Production Date', 'File Name / Planned Design', 'Batch Number', 'Base Material / Slab Name'],
+        [['Stock', '130520', '2026-05-01', 'THAJ 3', '1245', 'robo trail']],
+      ),
+    );
+
+    expect(result.missingColumns).toBeUndefined();
+    expect(result.rows).toHaveLength(1);
+    const parsed = result.rows[0];
+    expect(parsed?.slabNo).toBe('130520');
+    expect(parsed?.batchNo).toBe('1245');
+    expect(parsed?.materialName).toBe('robo trail');
+    expect(parsed?.designFile).toBe('THAJ 3');
+    expect(parsed?.disposition).toBe(Disposition.STOCK);
+    expect(parsed?.grade).toBe('A');
+    expect(day(parsed?.receivedDate)).toBe('2026-05-01');
+  });
+
+  it('accepts minor header-name variations and ignores extra columns', () => {
+    const result = parseRegister(
+      flexSheet(
+        ['Date', 'Slab No.', 'Slab Batch Number', 'Slab Name', 'Program Name', 'Remarks', 'Some Extra Column'],
+        [['2026-05-02', '59183-A', 'B-9', 'quartz', 'design-7', 'Dispatch', 'ignored']],
+      ),
+    );
+
+    expect(result.missingColumns).toBeUndefined();
+    expect(result.rows).toHaveLength(1);
+    // Alphanumeric slab and batch numbers survive intact.
+    expect(result.rows[0]?.slabNo).toBe('59183-A');
+    expect(result.rows[0]?.batchNo).toBe('B-9');
+    expect(result.rows[0]?.disposition).toBe(Disposition.DISPATCH);
+    expect(result.rows[0]?.grade).toBe('A');
+  });
+
+  it('names the missing required column instead of failing blankly', () => {
+    const result = parseRegister(
+      flexSheet(
+        ['Production Date', 'Batch Number', 'Slab Number', 'Base Material', 'File Name'],
+        [['2026-05-01', '1245', '130520', 'robo', 'THAJ']],
+      ),
+    );
+
+    expect(result.rows).toHaveLength(0);
+    expect(result.missingColumns).toEqual(['Remarks']);
+  });
+
+  it('imports when the optional Thickness and In-time columns are present', () => {
+    const result = parseRegister(
+      flexSheet(
+        [...REQUIRED_HEADERS, 'Thickness', 'In-time'],
+        [['2026-05-01', '1245', '130520', 'robo', 'THAJ', 'Sample Cutting', '2', '14:53']],
+      ),
+    );
+
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]?.thicknessMm).toBe(20); // 2 cm → 20 mm
+    expect(result.rows[0]?.inTime).not.toBeNull();
+    expect(result.rows[0]?.disposition).toBe(Disposition.SAMPLE_CUTTING);
+    expect(result.rows[0]?.grade).toBe('B');
+  });
+
+  it('imports just as happily when Thickness and In-time are absent', () => {
+    const result = parseRegister(
+      flexSheet(REQUIRED_HEADERS, [
+        ['2026-05-01', '1245', '130520', 'robo', 'THAJ', 'Recalibrate - half print'],
+      ]),
+    );
+
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]?.thicknessMm).toBeNull();
+    expect(result.rows[0]?.inTime).toBeNull();
+    expect(result.rows[0]?.disposition).toBe(Disposition.RECALIBRATION);
+    expect(result.rows[0]?.grade).toBe('C');
+    expect(result.rows[0]?.recalibrationReasonCode).toBe('HALF-PRINT');
+  });
+
+  it('reports a row missing its slab number without dropping the rest', () => {
+    const result = parseRegister(
+      flexSheet(REQUIRED_HEADERS, [
+        ['2026-05-01', '1245', '', 'robo', 'THAJ', 'Stock'],
+        ['2026-05-01', '1245', '130521', 'robo', 'THAJ', 'Stock'],
+      ]),
+    );
+
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]?.slabNo).toBe('130521');
+    expect(result.issues[0]?.reason).toContain('Missing slab number');
+  });
+});
+
+describe('choosing the right parser', () => {
+  it('falls back to the legacy parser when no header row is recognisable', () => {
+    // The legacy fixture: blank header rows, values addressed by position.
+    const viaRegister = parseRegister([
+      ...HEADERS,
+      row({ date: '2026-05-01', slabNo: '130520', batchNo: '1245', slabName: 'robo trail' }),
+    ]);
+    expect(viaRegister.rows).toHaveLength(1);
+    expect(viaRegister.rows[0]?.slabNo).toBe('130520');
+  });
+
+  it('routes a sheet with a Fully Printed Date column to the legacy parser', () => {
+    const headers = new Array(30).fill(null);
+    headers[COLUMN.date] = 'Date';
+    headers[COLUMN.slabName] = 'Slab Name';
+    headers[COLUMN.batchNo] = 'Batch No';
+    headers[COLUMN.slabNo] = 'Slab No';
+    headers[COLUMN.fullyPrintedDate] = 'Fully Printed Date';
+    headers[COLUMN.remark] = 'Remarks';
+
+    const result = parseRegister([
+      headers,
+      [],
+      [],
+      [],
+      row({ date: '2026-05-01', slabNo: '130520', batchNo: '1245', slabName: 'robo trail' }),
+    ]);
+
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]?.slabNo).toBe('130520');
   });
 });
 
