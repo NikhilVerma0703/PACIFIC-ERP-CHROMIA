@@ -74,8 +74,12 @@ export async function updateSlabRecord(input: SlabRecordEditInput, userId: strin
     return { slabNo: record.slabNo, changed: 0 };
   }
 
-  const baseMaterialId = await resolveBaseMaterialId(input.baseMaterial);
-  const designId = await resolveDesignId(input.fileName);
+  // Independent lookups, resolved together so a correction save costs one
+  // round-trip here rather than two.
+  const [baseMaterialId, designId] = await Promise.all([
+    resolveBaseMaterialId(input.baseMaterial),
+    resolveDesignId(input.fileName),
+  ]);
   const thicknessMm = input.thicknessCm === undefined ? null : input.thicknessCm * 10;
   // The production date the operator chose dates the record — not the in-time,
   // which is optional now and may not be there at all. They agree whenever a
