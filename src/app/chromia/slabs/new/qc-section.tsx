@@ -9,7 +9,7 @@ import { DispositionBadge, GradeBadge } from '@/components/chromia/ui/status';
 import { DISPOSITION_LABELS, GRADE_ALLOWED_DISPOSITIONS } from '@/lib/chromia/constants/process-stages';
 import { ChromiaDisposition as Disposition, ChromiaSlabGrade as SlabGrade } from '@prisma/client';
 
-import { Divider, field, FieldGrid, OutcomePanel, selectField } from './ui';
+import { field, FieldGrid, OutcomePanel, selectField } from './ui';
 
 export interface Option {
   id: string;
@@ -18,8 +18,14 @@ export interface Option {
 
 interface Props {
   recalibrationReasons: Option[];
-  today: string;
   errors?: Record<string, string[] | undefined>;
+  /** Pre-filled values when correcting an already-graded slab (the Edit path). */
+  initial?: {
+    grade?: string;
+    disposition?: string;
+    slabRemarks?: string;
+    reasonName?: string;
+  };
 }
 
 const GRADE_OPTIONS = [
@@ -35,19 +41,20 @@ const GRADE_OPTIONS = [
  *   Grade B → Stock · Sample Cutting
  *   Grade C → Recalibration
  *
- * The allowed outcomes come from `GRADE_ALLOWED_DISPOSITIONS`, the same table
- * the server validates against — the dropdown can never offer something the
- * service would reject.
+ * QC decides two things and only two: the grade, and the outcome that grade
+ * allows. The dates a slab is dispatched, stocked or cut are captured later, on
+ * those sections' own screens, when the slab actually gets there — so nothing
+ * but the grade, the outcome, and (for recalibration) its reason appears here.
  *
- * Choosing an outcome writes it into Slab Remarks, which is how the paper
- * register works. Recalibration writes "RECALIBRATE - <reason>" instead, once
- * a reason is picked.
+ * The chosen outcome is still written into the slab's remark behind the scenes,
+ * the way the paper register records it, so the Slab Remarks column keeps
+ * reading true without QC having to ask for anything extra.
  */
-export function QcSection({ recalibrationReasons, today, errors }: Props) {
-  const [grade, setGrade] = useState<string>('');
-  const [disposition, setDisposition] = useState<string>('');
-  const [remarks, setRemarks] = useState('');
-  const [reasonName, setReasonName] = useState('');
+export function QcSection({ recalibrationReasons, errors, initial }: Props) {
+  const [grade, setGrade] = useState<string>(initial?.grade ?? '');
+  const [disposition, setDisposition] = useState<string>(initial?.disposition ?? '');
+  const [remarks, setRemarks] = useState(initial?.slabRemarks ?? '');
+  const [reasonName, setReasonName] = useState(initial?.reasonName ?? '');
 
   const allowed = grade
     ? GRADE_ALLOWED_DISPOSITIONS[grade as keyof typeof GRADE_ALLOWED_DISPOSITIONS]
@@ -63,8 +70,9 @@ export function QcSection({ recalibrationReasons, today, errors }: Props) {
   function chooseDisposition(value: string) {
     setDisposition(value);
     setReasonName('');
-    // Auto-fill the remark with the chosen outcome. Recalibration is filled
-    // from the reason instead, once one is picked.
+    // The remark still mirrors the chosen outcome (Dispatch, Stock, Sample
+    // cutting), the way the register does; recalibration fills it from the
+    // reason instead, once one is picked.
     setRemarks(
       value && value !== Disposition.RECALIBRATION
         ? DISPOSITION_LABELS[value as keyof typeof DISPOSITION_LABELS]
@@ -72,7 +80,7 @@ export function QcSection({ recalibrationReasons, today, errors }: Props) {
     );
   }
 
-  /** "RECALIBRATE - Roller Mark" — the reason is now typed or picked by name. */
+  /** "RECALIBRATE - Roller Mark" — the reason is typed or picked by name. */
   function chooseReason(value: string) {
     setReasonName(value);
     setRemarks(value.trim() ? `RECALIBRATE - ${value.trim()}` : '');
@@ -136,61 +144,10 @@ export function QcSection({ recalibrationReasons, today, errors }: Props) {
         </Field>
       </FieldGrid>
 
-      {/* ----------------------------------------------------- dispatch --- */}
-      {disposition === Disposition.DISPATCH ? (
-        <OutcomePanel title="Dispatch">
-          <FieldGrid>
-            <Field label="Dispatch Date" htmlFor="dispatchDate" hint="Blank = today">
-              <input
-                id="dispatchDate"
-                name="dispatchDate"
-                type="date"
-                defaultValue={today}
-                className={field}
-              />
-            </Field>
-          </FieldGrid>
-        </OutcomePanel>
-      ) : null}
-
-      {/* -------------------------------------------------------- stock --- */}
-      {disposition === Disposition.STOCK ? (
-        <OutcomePanel title="Stock">
-          <FieldGrid>
-            <Field label="Stock Date" htmlFor="stockDate" hint="Blank = today">
-              <input
-                id="stockDate"
-                name="stockDate"
-                type="date"
-                defaultValue={today}
-                className={field}
-              />
-            </Field>
-            <Field label="Notes" htmlFor="stockNotes">
-              <input id="stockNotes" name="stockNotes" className={field} />
-            </Field>
-          </FieldGrid>
-        </OutcomePanel>
-      ) : null}
-
-      {/* ----------------------------------------------- sample cutting --- */}
-      {disposition === Disposition.SAMPLE_CUTTING ? (
-        <OutcomePanel title="Sample cutting">
-          <FieldGrid>
-            <Field label="Sample Cut Date" htmlFor="cutDate" hint="Blank = today">
-              <input
-                id="cutDate"
-                name="cutDate"
-                type="date"
-                defaultValue={today}
-                className={field}
-              />
-            </Field>
-          </FieldGrid>
-        </OutcomePanel>
-      ) : null}
-
-      {/* ----------------------------------------------- recalibration --- */}
+      {/* Recalibration keeps its reason — the one outcome-specific field QC
+          still fills, because the reason is decided at the bench, not later.
+          Dispatch, Stock and Sample cutting no longer ask for a date here; those
+          are captured on their own screens when the slab actually gets there. */}
       {disposition === Disposition.RECALIBRATION ? (
         <OutcomePanel title="Recalibration">
           <FieldGrid>
@@ -213,18 +170,10 @@ export function QcSection({ recalibrationReasons, today, errors }: Props) {
         </OutcomePanel>
       ) : null}
 
-      <Divider />
-
-      <Field label="Slab Remarks" htmlFor="slabRemarks">
-        <input
-          id="slabRemarks"
-          name="slabRemarks"
-          className={field}
-          value={remarks}
-          onChange={(event) => setRemarks(event.target.value)}
-          placeholder={disposition === Disposition.RECALIBRATION ? 'RECALIBRATE - <reason>' : ''}
-        />
-      </Field>
+      {/* The chosen outcome, kept as the slab's remark the way the register
+          records it — but no longer a field anyone types. QC decides only Grade
+          and Outcome. */}
+      <input type="hidden" name="slabRemarks" value={remarks} />
     </div>
   );
 }

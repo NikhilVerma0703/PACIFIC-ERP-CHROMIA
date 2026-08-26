@@ -20,6 +20,7 @@ export const APP_ROUTES = {
    */
   slabIntake: '/chromia/operator',
   stockyard: '/chromia/stockyard',
+  dispatch: '/chromia/dispatch',
   recalibrations: '/chromia/recalibrations',
   recalibrationTracking: '/chromia/recalibration-tracking',
   import: '/chromia/import',

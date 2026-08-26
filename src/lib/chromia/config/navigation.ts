@@ -29,6 +29,7 @@ export const navigation: readonly NavItem[] = [
   { title: 'Operator Entry', href: '/chromia/operator', icon: 'operator' },
   { title: 'Slab Records', href: '/chromia/slabs', icon: 'slabs' },
   { title: 'Stockyard', href: '/chromia/stockyard', icon: 'stockyard' },
+  { title: 'Dispatch', href: '/chromia/dispatch', icon: 'dispatch' },
   { title: 'Recalibration', href: '/chromia/recalibrations', icon: 'recalibration' },
   { title: 'Recal. Tracking', href: '/chromia/recalibration-tracking', icon: 'tracking' },
   { title: 'Summary', href: '/chromia/reports', icon: 'reports' },

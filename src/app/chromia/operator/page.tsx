@@ -73,6 +73,9 @@ export default async function OperatorPage({
 }) {
   const params = await searchParams;
   const slabId = resolveSlabId(params.slab);
+  // `?edit=1` — opened from Slab Records "Edit" for a full correction of the
+  // record, QC included, rather than the normal grade-a-new-slab flow.
+  const editMode = (Array.isArray(params.edit) ? params.edit[0] : params.edit) === '1';
   // The filtered Slab Records view this slab was opened from, if any — carried
   // through so saving its QC returns there instead of the bare list. See
   // slabHref and completeSlabAction.
@@ -95,6 +98,14 @@ export default async function OperatorPage({
      link that exists always leads to something. */
   const qcOpen = selected !== null && needsIntakeQc(selected.status);
 
+  // A slab mid-recalibration has a multi-cycle journey the Recalibration page
+  // owns; its QC is not corrected here. Every other decided outcome can be.
+  const inRecalibration =
+    selected !== null &&
+    (selected.currentDisposition === 'RECALIBRATION' ||
+      selected.status === 'OUT_FOR_RECALIBRATION' ||
+      selected.status === 'RECEIVED_FROM_RECALIBRATION');
+
   return (
     <>
       <PageHeader
@@ -102,7 +113,9 @@ export default async function OperatorPage({
         title="Operator entry"
         description={
           selected
-            ? `Slab ${selected.slabNo} — correct the entry, or grade it below`
+            ? editMode
+              ? `Slab ${selected.slabNo} — correct any field, including QC, below`
+              : `Slab ${selected.slabNo} — correct the entry, or grade it below`
             : 'Book slabs onto the line'
         }
         actions={
@@ -151,13 +164,38 @@ export default async function OperatorPage({
       />
 
       {selected ? (
-        qcOpen ? (
+        editMode ? (
+          inRecalibration ? (
+            <SectionCard title="QC Section — correct" accent="grade" padded>
+              <EmptyState>
+                Slab {selected.slabNo} is in a recalibration cycle — correct it on the{' '}
+                <Link href={APP_ROUTES.recalibrations} className={link}>
+                  Recalibration
+                </Link>{' '}
+                page.
+              </EmptyState>
+            </SectionCard>
+          ) : (
+            <QcPanel
+              edit
+              key={selected.id}
+              slabId={selected.id}
+              slabNo={selected.slabNo}
+              recalibrationReasons={recalibrationReasons}
+              back={back}
+              initial={{
+                grade: selected.currentGrade ?? '',
+                disposition: selected.currentDisposition ?? '',
+                slabRemarks: selected.remarks ?? '',
+              }}
+            />
+          )
+        ) : qcOpen ? (
           <QcPanel
             key={selected.id}
             slabId={selected.id}
             slabNo={selected.slabNo}
             recalibrationReasons={recalibrationReasons}
-            today={toDateInput(new Date())}
             back={back}
           />
         ) : (
