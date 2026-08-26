@@ -5,10 +5,10 @@
 // shows a Quality Issue column to Admin, Finance and Commercial) is gated away
 // from them. The owner's decision (2026-08) is that Sales SHOULD see what is
 // wrong with a slab before quoting it — so this route serves exactly that, as
-// a CLOSED shape: slab number, grade, issues, status, barcode (the NB display
-// label for legacy no-number slabs). No inspector, no notes, no bay/frame, no
-// PI/customer — widen it deliberately, never by spreading a row (the same rule
-// as lib/batchQcList.ts).
+// a CLOSED shape: slab number, grade, issues, R/W status, repolish status,
+// stock status, barcode (the NB display label for legacy no-number slabs).
+// No inspector, no notes, no bay/frame, no PI/customer — widen it
+// deliberately, never by spreading a row (the same rule as lib/batchQcList.ts).
 //
 // SCOPE IS THE REGISTER'S OWN GROUPING, not the slab-search filters. The first
 // review of this route caught both sins of the easy path: feeding the raw
@@ -86,20 +86,57 @@ export async function GET(request: Request) {
     );
     const rows = await db.finishedSlab.findMany({
       where,
-      select: { slabNumber: true, grade: true, qualityIssue: true, status: true, barcode: true },
+      select: {
+        slabNumber: true, grade: true, qualityIssue: true, status: true, barcode: true,
+        rwStatus: true, repolishStatus: true,
+      },
       orderBy: { slabNumber: "asc" },
       take: CAP + 1,
     });
     const truncated = rows.length > CAP;
+    const page = truncated ? rows.slice(0, CAP) : rows;
+
+    // POLISH QC IS THE SOURCE; the inventory column only fills its silence.
+    // fg_finished_slab.quality_issue is itself just a mirror of QC ("mirrored
+    // from PolishQc each QC pass") and imported/older stock never got one:
+    // measured 2026-08, the mirror carried issues on 401 of 3,368 B-grade
+    // in-stock slabs while the latest polish_qc row carried them on 1,377.
+    // So each field reads the latest QC row first and falls back to the
+    // inventory mirror only when QC has no entry for it — a stale mirror can
+    // then never override what QC last said. Latest row per slab by
+    // COALESCE(created_time, imported_at): Airtable-era rows carry
+    // created_time, ERP rows leave it NULL, and imported_at alone loses
+    // everything after the June 2026 cutover.
+    const nums = page.map((r: any) => r.slabNumber).filter((n: unknown) => typeof n === "number");
+    const qcBySlab = new Map<number, any>();
+    if (nums.length) {
+      const qcRows = await db.polishQc.findMany({
+        where: { slabNumber: { in: nums } },
+        select: { slabNumber: true, qualityIssue: true, rwStatus: true, repolishStatus: true, createdTime: true, importedAt: true },
+      });
+      const at = (q: any) => new Date(q.createdTime ?? q.importedAt ?? 0).getTime();
+      for (const q of qcRows) {
+        const cur = qcBySlab.get(q.slabNumber);
+        if (!cur || at(q) > at(cur)) qcBySlab.set(q.slabNumber, q);
+      }
+    }
+
     return Response.json({
       truncated,
-      slabs: (truncated ? rows.slice(0, CAP) : rows).map((r: any) => ({
-        slab: r.slabNumber,
-        grade: r.grade?.trim() || null,
-        issues: Array.isArray(r.qualityIssue) ? r.qualityIssue.filter(Boolean) : [],
-        status: r.status ?? null,
-        barcode: r.barcode ?? null,
-      })),
+      slabs: page.map((r: any) => {
+        const qc = qcBySlab.get(r.slabNumber);
+        const fgIssues = Array.isArray(r.qualityIssue) ? r.qualityIssue.filter(Boolean) : [];
+        const qcIssues = Array.isArray(qc?.qualityIssue) ? qc.qualityIssue.filter(Boolean) : [];
+        return {
+          slab: r.slabNumber,
+          grade: r.grade?.trim() || null,
+          issues: qcIssues.length ? qcIssues : fgIssues,
+          rw: qc?.rwStatus?.trim() || r.rwStatus?.trim() || null,
+          repolish: qc?.repolishStatus?.trim() || r.repolishStatus?.trim() || null,
+          status: r.status ?? null,
+          barcode: r.barcode ?? null,
+        };
+      }),
     });
   } catch (e) {
     console.error("Batch quality error:", e);

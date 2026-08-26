@@ -5,8 +5,25 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { displaySlab } from "@/lib/slabLabel";
 
-interface QcSlab { slab: number; grade: string | null; issues: string[]; status: string | null; barcode: string | null }
+interface QcSlab { slab: number; grade: string | null; issues: string[]; rw: string | null; repolish: string | null; status: string | null; barcode: string | null }
 interface QcTarget { design: string; thickness: string; batch: string }
+
+// R/W and repolish, tinted by what they mean on the floor: "RW Required and
+// ongoing" is live rework (red), "Repolish Required" is pending polish work
+// (amber). "Can't be Reworked" is a REPAIRABILITY flag, not scrap — it stays
+// neutral. The Ok states print quietly; they are information, not alarm.
+const RW_ONGOING = /^rw required/i;
+const REPOLISH_REQUIRED = /^repolish required/i;
+const CANT_REWORK = /^can'?t be reworked/i;
+function WorkState({ v, alarm }: { v: string | null; alarm: RegExp }) {
+  if (!v) return <span className="text-gray-300">—</span>;
+  if (alarm.test(v)) {
+    const tone = alarm === RW_ONGOING ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-700";
+    return <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${tone}`}>{v}</span>;
+  }
+  if (CANT_REWORK.test(v)) return <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">{v}</span>;
+  return <span className="text-xs text-gray-400">{v}</span>;
+}
 
 interface Row {
   design: string; thickness: string; batch: string; rawBatch?: string; total: number; dispatched: number;
@@ -371,7 +388,7 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
       {!loading && <p className="text-xs text-gray-400">{groups.length.toLocaleString("en-IN")} colour(s) in stock.</p>}
       {qc && (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 sm:p-8" onClick={closeQuality}>
-          <div className="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+          <div className="w-full max-w-3xl rounded-2xl bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-xl font-semibold uppercase tracking-wide text-gray-900">{qc.design}</h2>
@@ -390,11 +407,17 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
               <p className="py-10 text-center text-gray-400">No slabs recorded for this line.</p>
             ) : (
               <div className="mt-4">
-                {(() => { const n = qcRows.filter((s) => s.issues.length > 0).length; return (
-                  <p className="mb-2 text-xs text-gray-500">
-                    {n === 0 ? "No quality issues recorded on any slab in this line." : `${n} of ${qcRows.length} slab(s) carry a quality note.`}
-                  </p>
-                ); })()}
+                {(() => {
+                  const n = qcRows.filter((s) => s.issues.length > 0).length;
+                  const rw = qcRows.filter((s) => s.rw && RW_ONGOING.test(s.rw)).length;
+                  const rp = qcRows.filter((s) => s.repolish && REPOLISH_REQUIRED.test(s.repolish)).length;
+                  const parts = [
+                    n === 0 ? "No quality issues recorded on any slab in this line" : `${n} of ${qcRows.length} slab(s) carry a quality note`,
+                    ...(rw ? [`${rw} in R/W`] : []),
+                    ...(rp ? [`${rp} repolish required`] : []),
+                  ];
+                  return <p className="mb-2 text-xs text-gray-500">{parts.join(" · ")}.</p>;
+                })()}
                 <div className="max-h-[60vh] overflow-y-auto rounded-xl border border-gray-200">
                   <table className="w-full text-sm">
                     <thead className="sticky top-0 bg-white">
@@ -402,6 +425,8 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
                         <th className="px-3 py-2">Slab #</th>
                         <th className="px-3 py-2">Grade</th>
                         <th className="px-3 py-2">Quality issue</th>
+                        <th className="px-3 py-2">R/W</th>
+                        <th className="px-3 py-2">Repolish</th>
                         <th className="px-3 py-2">Status</th>
                       </tr>
                     </thead>
@@ -413,6 +438,8 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
                           <td className="px-3 py-2">
                             {s.issues.length ? <span className="text-gray-700">{s.issues.join(", ")}</span> : <span className="text-gray-300">—</span>}
                           </td>
+                          <td className="px-3 py-2"><WorkState v={s.rw} alarm={RW_ONGOING} /></td>
+                          <td className="px-3 py-2"><WorkState v={s.repolish} alarm={REPOLISH_REQUIRED} /></td>
                           <td className="px-3 py-2">
                             {s.status ? <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">{s.status}</span> : <span className="text-gray-400">—</span>}
                           </td>
