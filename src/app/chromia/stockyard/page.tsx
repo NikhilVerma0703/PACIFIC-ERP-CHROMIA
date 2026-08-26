@@ -102,7 +102,10 @@ export default async function StockyardPage({
               <table className={dataTable.root}>
                 <thead className={dataTable.head}>
                   <tr>
-                    <th className={th}>Stock Date</th>
+                    {/* Production Date, not a separate Stock Date: a slab marked
+                        Stock at QC is stocked on its production date, so the two
+                        are the same day and the register's date is the one shown. */}
+                    <th className={th}>Production Date</th>
                     <th className={th}>Batch No.</th>
                     <th className={th}>Slab No.</th>
                     <th className={th}>Base Material / Slab Name</th>
@@ -117,7 +120,7 @@ export default async function StockyardPage({
                   {stocked.map((slab) => (
                     <tr key={slab.id} className={dataTable.row}>
                       <td className={`${td} font-medium whitespace-nowrap`}>
-                        {slab.stockDate ? dateFmt.format(slab.stockDate) : '—'}
+                        {dateFmt.format(slab.receivedDate)}
                       </td>
                       <td className={`${tdMuted} font-mono`}>{slab.batch.batchNo}</td>
                       <td className={`${td} font-mono`}>{slab.slabNo}</td>
