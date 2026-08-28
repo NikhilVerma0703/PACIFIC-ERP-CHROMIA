@@ -223,8 +223,11 @@ export interface ProductionRow {
   outTime: Date | null;
   fullyPrintedDate: Date | null;
   status: SlabStatus;
+  grade: SlabGrade | null;
   disposition: Disposition | null;
   recalibrationCount: number;
+  /** The slab's own remark — the same string Slab Records shows. */
+  remarks: string | null;
   dispatchDate: Date | null;
   stockDate: Date | null;
   cutDate: Date | null;
@@ -238,10 +241,12 @@ export async function loadProductionRows(range: DateRange): Promise<ProductionRo
       id: true,
       slabNo: true,
       status: true,
+      currentGrade: true,
       currentDisposition: true,
       recalibrationCount: true,
       receivedDate: true,
       currentThicknessMm: true,
+      remarks: true,
       batch: { select: { batchNo: true } },
       baseMaterial: { select: { name: true } },
       plannedDesign: { select: { name: true, fileName: true } },
@@ -274,8 +279,10 @@ export async function loadProductionRows(range: DateRange): Promise<ProductionRo
         outTime: cycle?.outTime ?? null,
         fullyPrintedDate: cycle?.fullyPrintedDate ?? null,
         status: row.status,
+        grade: row.currentGrade,
         disposition: row.currentDisposition,
         recalibrationCount: row.recalibrationCount,
+        remarks: row.remarks,
         dispatchDate: row.dispatches[0]?.dispatchDate ?? null,
         stockDate: row.stockEntries[0]?.stockDate ?? null,
         cutDate: row.sampleCuttings[0]?.cutDate ?? null,

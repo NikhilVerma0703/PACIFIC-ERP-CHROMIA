@@ -32,7 +32,7 @@ export function RowActions({ slabId, slabNo }: { slabId: string; slabNo: string 
   return (
     <span className="flex items-center justify-end gap-1.5 whitespace-nowrap">
       <Link
-        href={`${APP_ROUTES.slabs}/${slabId}/edit`}
+        href={`${APP_ROUTES.operator}?slab=${slabId}&edit=1`}
         aria-label={`Edit slab ${slabNo}`}
         className="border-line surface hover:border-line-strong inline-flex h-9 items-center justify-center rounded-lg border px-3 text-xs font-medium transition-colors hover:bg-[var(--surface-muted)]"
       >

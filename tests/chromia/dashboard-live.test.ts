@@ -43,7 +43,7 @@ describe('the Overall Production tiles', () => {
 
   it('shows the eight figures in the order they are read', () => {
     expect(tiles.map((tile) => tile.label)).toEqual([
-      'Total Slabs Received',
+      'Total Produced Slabs',
       'Total Slabs in the Plant',
       'Total In Processing Slabs',
       'Total Quality Checks Done',

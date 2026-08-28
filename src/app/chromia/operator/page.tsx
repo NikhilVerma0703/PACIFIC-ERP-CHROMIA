@@ -10,6 +10,7 @@ import { needsIntakeQc } from '@/lib/chromia/slab-links';
 import { link } from '@/lib/chromia/ui';
 import { listRecalibrationReasons } from '@/lib/chromia/server/repositories/recalibration-repository';
 import { loadSlabRecord } from '@/lib/chromia/server/repositories/slab-record-repository';
+import { PLANT_TIME_ZONE } from '@/lib/chromia/plant-time';
 import {
   loadBaseMaterialNames,
   loadDesignFileNames,
@@ -23,17 +24,14 @@ import { QcPanel } from './qc-panel';
 export const metadata: Metadata = { title: 'Operator Entry' };
 export const dynamic = 'force-dynamic';
 
-const timeFmt = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit' });
+const timeFmt = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: PLANT_TIME_ZONE });
 
 const dateFmt = new Intl.DateTimeFormat('en-GB', {
   day: '2-digit',
   month: 'short',
-  year: 'numeric',
-});
+  year: 'numeric', timeZone: PLANT_TIME_ZONE, });
 
 const { th, td } = dataTable;
-
-const pad = (value: number) => `${value}`.padStart(2, '0');
 
 /** `?slab=` — the one this screen is open on, if any. */
 function resolveSlabId(raw: string | string[] | undefined): string | null {
@@ -75,6 +73,14 @@ export default async function OperatorPage({
 }) {
   const params = await searchParams;
   const slabId = resolveSlabId(params.slab);
+  // `?edit=1` — opened from Slab Records "Edit" for a full correction of the
+  // record, QC included, rather than the normal grade-a-new-slab flow.
+  const editMode = (Array.isArray(params.edit) ? params.edit[0] : params.edit) === '1';
+  // The filtered Slab Records view this slab was opened from, if any — carried
+  // through so saving its QC returns there instead of the bare list. See
+  // slabHref and completeSlabAction.
+  const backRaw = Array.isArray(params.back) ? params.back[0] : params.back;
+  const back = backRaw && backRaw.trim() !== '' ? backRaw : undefined;
 
   const [rows, baseMaterials, fileNames, batchNos, selected, recalibrationReasons] =
     await Promise.all([
@@ -92,6 +98,14 @@ export default async function OperatorPage({
      link that exists always leads to something. */
   const qcOpen = selected !== null && needsIntakeQc(selected.status);
 
+  // A slab mid-recalibration has a multi-cycle journey the Recalibration page
+  // owns; its QC is not corrected here. Every other decided outcome can be.
+  const inRecalibration =
+    selected !== null &&
+    (selected.currentDisposition === 'RECALIBRATION' ||
+      selected.status === 'OUT_FOR_RECALIBRATION' ||
+      selected.status === 'RECEIVED_FROM_RECALIBRATION');
+
   return (
     <>
       <PageHeader
@@ -99,7 +113,9 @@ export default async function OperatorPage({
         title="Operator entry"
         description={
           selected
-            ? `Slab ${selected.slabNo} — correct the entry, or grade it below`
+            ? editMode
+              ? `Slab ${selected.slabNo} — correct any field, including QC, below`
+              : `Slab ${selected.slabNo} — correct the entry, or grade it below`
             : 'Book slabs onto the line'
         }
         actions={
@@ -140,9 +156,7 @@ export default async function OperatorPage({
                 fileName: selected.designFileName,
                 thicknessCm: selected.thicknessCm === null ? '' : String(selected.thicknessCm),
                 receivedDate: toDateInput(selected.receivedDate),
-                inTime: selected.inTime
-                  ? `${pad(selected.inTime.getHours())}:${pad(selected.inTime.getMinutes())}`
-                  : '',
+                inTime: selected.inTime ? toTimeInput(selected.inTime) : '',
                 remarks: selected.remarks ?? '',
               }
             : undefined
@@ -150,13 +164,39 @@ export default async function OperatorPage({
       />
 
       {selected ? (
-        qcOpen ? (
+        editMode ? (
+          inRecalibration ? (
+            <SectionCard title="QC Section — correct" accent="grade" padded>
+              <EmptyState>
+                Slab {selected.slabNo} is in a recalibration cycle — correct it on the{' '}
+                <Link href={APP_ROUTES.recalibrations} className={link}>
+                  Recalibration
+                </Link>{' '}
+                page.
+              </EmptyState>
+            </SectionCard>
+          ) : (
+            <QcPanel
+              edit
+              key={selected.id}
+              slabId={selected.id}
+              slabNo={selected.slabNo}
+              recalibrationReasons={recalibrationReasons}
+              back={back}
+              initial={{
+                grade: selected.currentGrade ?? '',
+                disposition: selected.currentDisposition ?? '',
+                slabRemarks: selected.remarks ?? '',
+              }}
+            />
+          )
+        ) : qcOpen ? (
           <QcPanel
             key={selected.id}
             slabId={selected.id}
             slabNo={selected.slabNo}
             recalibrationReasons={recalibrationReasons}
-            today={toDateInput(new Date())}
+            back={back}
           />
         ) : (
           <SectionCard title="QC Section" accent="grade" padded>

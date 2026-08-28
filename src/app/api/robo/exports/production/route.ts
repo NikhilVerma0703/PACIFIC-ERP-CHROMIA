@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { prisma } from "@/lib/prisma";
-import { fmtDurationLong, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
+import { formatSlabRemarks, machineLabel } from "@/lib/robo/utils";
 import { productionDateOf, productionDateWhere, setupProductionDate, setupProductionDateWhere } from "@/lib/robo/productionDate";
 import { roboGate } from "@/lib/rbac";
 import {
@@ -13,8 +13,10 @@ import {
 
 const MACHINE_ORDER = ["Roycut-1", "Roymix", "Roycut-2", "Roycut-3"];
 
+// Shift is gone from this sheet — it is an internal grouping the register does
+// not show. Design Name and the rest ride on each row now.
 const SETUP_COLUMNS = [
-  "Production Date", "Shift", "Design Name", "Thickness (cm)", "Target Slabs",
+  "Production Date", "Design Name", "Thickness (cm)", "Target Slabs",
   "Machine", "Program Name", "Tool Name", "Target Cycle Time (sec)",
   "Liquid Name", "Powder Name", "Roller Height (mm)", "Notes",
 ];
@@ -22,11 +24,23 @@ const SETUP_COLUMNS = [
 const dash = (v: string | number | null | undefined) =>
   v === null || v === undefined || v === "" ? "-" : v;
 
+/** Two blank spacer rows between one production date and the next. */
+const SPACER: ProductionRecordRow[] = [{}, {}];
+
+/** The "Total → X records" line that closes a date group and the whole sheet. */
+const recordsTotalRow = (label: string, count: number): ProductionRecordRow => ({
+  "Slab No.": label,
+  "Remarks": `${count} record${count === 1 ? "" : "s"}`,
+});
+
 /** GET /api/robo/exports/production?date=YYYY-MM-DD — omit date for every record to date. */
 export async function GET(req: NextRequest) {
   const refused = await roboGate();
   if (refused) return refused;
   const date = req.nextUrl.searchParams.get("date")?.trim() || "";
+  // "All" (no date) is the scope that groups the sheets date-wise. A single
+  // chosen date is one group, so it is left as a flat list with one total.
+  const grouped = date === "";
 
   const fetched = await prisma.roboProductionRecord.findMany({
     // Filtered on the date the operator entered, matching what the sheet
@@ -56,45 +70,64 @@ export async function GET(req: NextRequest) {
   /* Columns and row shaping live in lib/robo/productionExport.ts, together and
      under test: json_to_sheet appends any row key its header does not mention,
      so the two drifting apart is a silent blank column plus a stray one past
-     the end — which is what this sheet used to do with the Robo2 pair. */
-  const rows: ProductionRecordRow[] = records.map((r, i) =>
-    productionRecordRow(
+     the end — which is what this sheet used to do with the Robo2 pair.
+
+     Each record is shaped once, carrying the production date it belongs to so
+     the grouping below never has to resolve it a second time. The S.No.
+     fallback is the row's position across the WHOLE sheet, so it stays unique
+     even when the rows are split into date groups. */
+  const shaped = records.map((r, i) => ({
+    date: productionDateOf(r),
+    row: productionRecordRow(
       {
         serialNumber:     r.serialNumber,
         productionDate:   productionDateOf(r),
-        shiftNumber:      r.shift?.shiftNumber ?? null,
+        designName:       r.batchRecipe?.designName ?? null,
         thickness:        r.batchRecipe?.thickness ?? null,
+        batchNo:          r.batchRecipe?.batchNo ?? null,
         slabNumber:       r.slabNumber,
         roymixBodyWeight: r.roymixBodyWeight,
         roymixCycleTime:  r.roymixCycleTime,
         inTime:           r.inTime,
         outTime:          r.outTime,
-        status:           r.status,
-        delayCodes:       r.delayLogs.map(d => d.delayCode.code),
-        delayMinutes:     r.delayLogs.reduce((s, d) => s + d.durationMinutes, 0),
-        remarks:          r.remarks,
+        // The exact string Slabs Records shows: the slab's own note AND its
+        // delays, e.g. "C5 Robo1 15m [22:40-22:55]".
+        remarks:          formatSlabRemarks(r.remarks, r.delayLogs),
       },
       i + 1,
-      slabStatusLabel,
-      fmtDurationLong,
     ),
-  );
+  }));
 
-  const totalSlabDelay = records.reduce(
-    (s, r) => s + r.delayLogs.reduce((x, d) => x + d.durationMinutes, 0), 0
-  );
-
-  rows.push({});
-  rows.push({
-    "Slab Number": "TOTAL",
-    "Status": `${records.length} records`,
-    "Total Delay": fmtDurationLong(totalSlabDelay),
-  });
+  const rows: ProductionRecordRow[] = [];
+  if (grouped) {
+    // One group per production date, its own "Total → X records" at the end,
+    // then two blank rows before the next date.
+    let cursor = 0;
+    while (cursor < shaped.length) {
+      const day = shaped[cursor].date;
+      let end = cursor;
+      while (end < shaped.length && shaped[end].date === day) end++;
+      const group = shaped.slice(cursor, end);
+      for (const s of group) rows.push(s.row);
+      rows.push(recordsTotalRow("Total", group.length));
+      if (end < shaped.length) rows.push(...SPACER);
+      cursor = end;
+    }
+    // The final overall total, kept as it was — one line for the whole sheet.
+    if (shaped.length > 0) rows.push(...SPACER);
+    rows.push(recordsTotalRow("GRAND TOTAL", shaped.length));
+  } else {
+    for (const s of shaped) rows.push(s.row);
+    rows.push({});
+    rows.push(recordsTotalRow("TOTAL", shaped.length));
+  }
 
   const wsRecords = XLSX.utils.json_to_sheet(rows, { header: [...PRODUCTION_RECORD_COLUMNS] });
   wsRecords["!cols"] = PRODUCTION_RECORD_WIDTHS.map((wch) => ({ wch }));
 
-  /* Second sheet: the production setup each slab was produced under. */
+  /* Second sheet: the production setup each slab was produced under. Grouped
+     by date the same way, with two blank rows between dates — but no total
+     rows, because a setup count is not a figure anyone reads off this sheet. */
   const fetchedSetups = await prisma.roboBatchRecipe.findMany({
     // Through the same module as everything else, rather than a second
     // hand-written copy of the fallback that could drift from it.
@@ -109,15 +142,23 @@ export async function GET(req: NextRequest) {
   );
 
   const setupRows: Record<string, string | number>[] = [];
+  let prevSetupDate: string | null = null;
   for (const s of setups) {
+    const setupDate = setupProductionDate(s);
+    // A blank-row separator each time the date changes — but only when the
+    // sheet is grouped (the "All" scope). A single chosen date is one block.
+    if (grouped && prevSetupDate !== null && setupDate !== prevSetupDate) {
+      setupRows.push({}, {});
+    }
+    prevSetupDate = setupDate;
+
     const entries = [...s.entries].sort(
       (a, b) => MACHINE_ORDER.indexOf(a.machine.name) - MACHINE_ORDER.indexOf(b.machine.name)
     );
     for (const e of entries) {
       const isRoycut3 = e.machine.name === "Roycut-3";
       setupRows.push({
-        "Production Date":          String(dash(setupProductionDate(s))),
-        "Shift":                    String(dash(s.shift?.shiftNumber)),
+        "Production Date":          String(dash(setupDate)),
         "Design Name":              String(dash(s.designName)),
         "Thickness (cm)":           String(dash(s.thickness)),
         "Target Slabs":             String(dash(s.targetSlabs)),
@@ -137,7 +178,7 @@ export async function GET(req: NextRequest) {
 
   const wsSetup = XLSX.utils.json_to_sheet(setupRows, { header: SETUP_COLUMNS });
   wsSetup["!cols"] = [
-    { wch: 15 }, { wch: 7 }, { wch: 22 }, { wch: 13 }, { wch: 12 }, { wch: 12 },
+    { wch: 15 }, { wch: 22 }, { wch: 13 }, { wch: 12 }, { wch: 12 },
     { wch: 26 }, { wch: 16 }, { wch: 21 }, { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 24 },
   ];
 

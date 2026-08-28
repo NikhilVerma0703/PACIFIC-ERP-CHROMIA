@@ -24,6 +24,7 @@ export type NavIconName =
   | 'slabs'
   | 'intake'
   | 'stockyard'
+  | 'dispatch'
   | 'recalibration'
   | 'tracking'
   | 'reports'
@@ -71,6 +72,15 @@ const PATHS: Record<NavIconName, React.ReactNode> = {
       <path d="M3 12h18" />
       <path d="M7 8.5v3M11 8.5v3M15 8.5v3" />
       <path d="M7 15.5v3M11 15.5v3M15 15.5v3" />
+    </>
+  ),
+  // Van — outbound dispatch
+  dispatch: (
+    <>
+      <path d="M3 6h11v9H3z" />
+      <path d="M14 9h4l3 3v3h-7z" />
+      <circle cx="7" cy="18" r="1.6" />
+      <circle cx="17" cy="18" r="1.6" />
     </>
   ),
   // Cycle — recalibration loop

@@ -24,3 +24,17 @@ export const stockReleaseSchema = z.object({
 });
 
 export type StockReleaseInput = z.infer<typeof stockReleaseSchema>;
+
+/**
+ * Stock → Recalibration — a stocked slab pulled off the rack to be sent for
+ * recalibration.
+ *
+ * No date, unlike a dispatch: marking a slab for recalibration only opens the
+ * waiting record, and the day it physically leaves is recorded later on the
+ * Recalibration page's trip form. So the slab is all this needs.
+ */
+export const stockRecalibrationSchema = z.object({
+  slabId: z.string().uuid('Pick a slab from the list'),
+});
+
+export type StockRecalibrationInput = z.infer<typeof stockRecalibrationSchema>;

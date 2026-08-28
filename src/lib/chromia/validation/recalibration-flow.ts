@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { CLOCK_TIME_MESSAGE, normaliseClockTime } from '@/lib/chromia/clock-time';
+import { plantInstant, toPlantDateInput } from '@/lib/chromia/plant-time';
 
 /**
  * The two dates a recalibration trip is made of, and the register entry that
@@ -93,10 +94,16 @@ export interface RestartAfterRecalibrationInput
   inTime: Date;
 }
 
-/** "2026-08-10" + "11:34" → one instant on that local day. */
+/**
+ * "2026-08-10" + "11:34" → the instant that wall clock names in the plant.
+ *
+ * The time is read as plant-local (see plant-time.ts), so a restart entered at
+ * 11:34 comes back 11:34 through the plant-time formatters, matching the
+ * operator's in-time. The day is taken from `day`'s own plant calendar date, so
+ * a date stored as midnight lands on the right day whatever the server's clock.
+ */
 export function combineDayAndTime(day: Date, time: string): Date {
   const [hours, minutes] = time.split(':').map(Number);
-  const combined = new Date(day);
-  combined.setHours(hours ?? 0, minutes ?? 0, 0, 0);
-  return combined;
+  const [year, month, date] = toPlantDateInput(day).split('-').map(Number);
+  return plantInstant(year as number, month as number, date as number, hours ?? 0, minutes ?? 0);
 }

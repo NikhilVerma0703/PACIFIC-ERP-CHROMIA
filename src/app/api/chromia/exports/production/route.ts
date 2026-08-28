@@ -11,7 +11,7 @@ import {
   resolveRange,
 } from '@/lib/chromia/exports';
 import { loadProductionRows, type ProductionRow } from '@/lib/chromia/server/repositories/export-repository';
-import { dateTime, localDay, writeStyledWorkbook } from '@/lib/chromia/server/exports/sheet';
+import { localDay, timeOnly, writeStyledWorkbook } from '@/lib/chromia/server/exports/sheet';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -22,18 +22,23 @@ export const runtime = 'nodejs';
  * The outcome sheets answer "what did we dispatch". This one answers "what did
  * we make", which is a different question and needs no outcome filter at all.
  */
-function toValues(row: ProductionRow): (string | number)[] {
+function toValues(row: ProductionRow, index: number): (string | number)[] {
   return [
+    index + 1,
     localDay(row.receivedDate),
     row.batchNo,
     row.slabNo,
     row.baseMaterial,
     row.design ?? '',
     row.thicknessCm ?? '',
-    dateTime(row.inTime),
-    dateTime(row.outTime),
+    // The time of day only — the day is the Production Date column. Out-time is
+    // no longer carried.
+    timeOnly(row.inTime),
     slabStatusView(row.status, row.disposition).label,
     row.disposition ? DISPOSITION_LABELS[row.disposition] : '',
+    // Grade and the slab's own remark, straight from the Slab Records data.
+    row.grade ?? '',
+    row.remarks ?? '',
     row.recalibrationCount,
     localDay(row.dispatchDate),
     localDay(row.stockDate),
@@ -57,6 +62,8 @@ export const GET = withErrorHandling(async (request: NextRequest) => {
     columns: productionColumns(),
     rows: rows.map(toValues),
   });
+  // rows.map passes (row, index) straight through — the S.No. is the row's
+  // position in the sheet.
 
   return new Response(new Uint8Array(buffer), {
     headers: {

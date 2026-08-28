@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 
 import { EmptyState, PageHeader } from '@/components/chromia/ui';
 import { dataTable, SectionCard } from '@/components/chromia/ui/form';
-import { DispositionBadge, StatusBadge } from '@/components/chromia/ui/status';
+import { DispositionBadge, GradeBadge, StatusBadge } from '@/components/chromia/ui/status';
 import {
   baseColumns,
   baseFields,
@@ -25,6 +25,7 @@ import {
 import { DownloadForm } from './download-form';
 import { ProductionForm } from './production-form';
 import { API_ROUTES } from '@/lib/chromia/constants/app';
+import { formatPlantTime, PLANT_TIME_ZONE } from '@/lib/chromia/plant-time';
 
 export const metadata: Metadata = { title: 'Downloads' };
 export const dynamic = 'force-dynamic';
@@ -32,15 +33,7 @@ export const dynamic = 'force-dynamic';
 const dateFmt = new Intl.DateTimeFormat('en-GB', {
   day: '2-digit',
   month: 'short',
-  year: 'numeric',
-});
-
-const dateTimeFmt = new Intl.DateTimeFormat('en-GB', {
-  day: '2-digit',
-  month: 'short',
-  hour: '2-digit',
-  minute: '2-digit',
-});
+  year: 'numeric', timeZone: PLANT_TIME_ZONE, });
 
 const { td, tdMuted } = dataTable;
 
@@ -84,11 +77,9 @@ const PREVIEW_CELL: Record<
   },
   inTime: {
     className: tdMuted,
-    render: (row) => (row.inTime ? dateTimeFmt.format(row.inTime) : '—'),
-  },
-  outTime: {
-    className: tdMuted,
-    render: (row) => (row.outTime ? dateTimeFmt.format(row.outTime) : '—'),
+    // Time of day only — mirrors the workbook, where the day is the Production
+    // Date column and Out-time is gone.
+    render: (row) => (row.inTime ? formatPlantTime(row.inTime) : '—'),
   },
   status: {
     className: td,
@@ -165,6 +156,7 @@ export default async function DownloadsPage({
             <table className={dataTable.root}>
               <thead>
                 <tr>
+                  <th className={th('identity')}>S.No.</th>
                   <th className={th('identity')}>Production Date</th>
                   <th className={th('identity')}>Batch No.</th>
                   <th className={th('identity')}>Slab No.</th>
@@ -172,15 +164,17 @@ export default async function DownloadsPage({
                   <th className={th('product')}>File Name / Planned Design</th>
                   <th className={`${th('product')} text-right`}>Thickness (cm)</th>
                   <th className={th('timing')}>In-time</th>
-                  <th className={th('timing')}>Out-time</th>
                   <th className={th('state')}>Status</th>
                   <th className={th('state')}>Outcome</th>
+                  <th className={th('state')}>Grade</th>
+                  <th className={th('state')}>Slab Remarks</th>
                   <th className={th('outcome')}>Recal.</th>
                 </tr>
               </thead>
               <tbody>
-                {productionRows.map((row) => (
+                {productionRows.map((row, index) => (
                   <tr key={row.slabId} className={dataTable.row}>
+                    <td className={`${tdMuted} text-right tabular-nums`}>{index + 1}</td>
                     <td className={`${td} font-medium whitespace-nowrap`}>
                       {dateFmt.format(row.receivedDate)}
                     </td>
@@ -193,15 +187,18 @@ export default async function DownloadsPage({
                     <td className={`${tdMuted} text-right tabular-nums`}>
                       {row.thicknessCm ?? '—'}
                     </td>
-                    <td className={tdMuted}>{row.inTime ? dateTimeFmt.format(row.inTime) : '—'}</td>
-                    <td className={tdMuted}>
-                      {row.outTime ? dateTimeFmt.format(row.outTime) : '—'}
-                    </td>
+                    <td className={tdMuted}>{row.inTime ? formatPlantTime(row.inTime) : '—'}</td>
                     <td className={td}>
                       <StatusBadge status={row.status} disposition={row.disposition} />
                     </td>
                     <td className={td}>
                       <DispositionBadge disposition={row.disposition} />
+                    </td>
+                    <td className={td}>
+                      <GradeBadge grade={row.grade} />
+                    </td>
+                    <td className={`${tdMuted} max-w-[16rem] truncate`} title={row.remarks ?? ''}>
+                      {row.remarks ?? '—'}
                     </td>
                     <td className={`${tdMuted} text-right tabular-nums`}>
                       {row.recalibrationCount > 0 ? `${row.recalibrationCount}/5` : '—'}
@@ -244,6 +241,7 @@ export default async function DownloadsPage({
             <table className={dataTable.root}>
               <thead>
                 <tr>
+                  <th className={th('identity')}>S.No.</th>
                   {columns.map((column) => (
                     <th key={column.label} className={th(column.group)}>
                       {column.label}
@@ -254,11 +252,13 @@ export default async function DownloadsPage({
                       {column}
                     </th>
                   ))}
+                  <th className={th('state')}>Grade</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row, index) => (
                   <tr key={`${row.slabId}-${index}`} className={dataTable.row}>
+                    <td className={`${tdMuted} text-right tabular-nums`}>{index + 1}</td>
                     {fields.map((field) => (
                       <td key={field} className={PREVIEW_CELL[field].className}>
                         {PREVIEW_CELL[field].render(row)}
@@ -271,6 +271,9 @@ export default async function DownloadsPage({
                           : String(row.extra[column])}
                       </td>
                     ))}
+                    <td className={td}>
+                      <GradeBadge grade={row.grade} />
+                    </td>
                   </tr>
                 ))}
               </tbody>

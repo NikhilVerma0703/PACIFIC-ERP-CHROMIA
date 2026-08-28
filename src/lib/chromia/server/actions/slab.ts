@@ -10,11 +10,13 @@ import { isAppError } from '@/lib/chromia/errors';
 import { intakeQcSchema, type IntakeQcInput } from '@/lib/chromia/validation/slab';
 import {
   declareWaste,
-  recordDispatch,
   recordSampleCutting,
   recordStock,
 } from '@/lib/chromia/server/services/disposition-service';
-import { applyIntakeGrade } from '@/lib/chromia/server/services/intake-outcome-service';
+import {
+  applyIntakeGrade,
+  resetSlabQcForCorrection,
+} from '@/lib/chromia/server/services/intake-outcome-service';
 import { markAwaitingRecalibration } from '@/lib/chromia/server/services/recalibration-flow-service';
 import { resolveRecalibrationReasonId } from '@/lib/chromia/server/services/reference-service';
 import { completeSlabIntake } from '@/lib/chromia/server/services/slab-intake-service';
@@ -28,7 +30,10 @@ export interface SlabIntakeFormState {
 async function applyDisposition(slabId: string, qc: IntakeQcInput, userId: string) {
   switch (qc.disposition) {
     case Disposition.DISPATCH:
-      return recordDispatch({ slabId, dispatchDate: qc.dispatchDate }, userId);
+      // Grade A → Dispatch no longer dispatches on the spot. The slab is graded
+      // and joins the Dispatch page queue; its real dispatch date is recorded
+      // there when it is actually sent, days or weeks later. See /chromia/dispatch.
+      return undefined;
 
     case Disposition.STOCK:
       return recordStock(
@@ -85,6 +90,28 @@ export async function completeSlabAction(
   if (!slabId) return { error: 'This slab could not be identified. Reopen it from Slabs.' };
 
   return saveQc(formData, (userId) => completeSlabIntake(slabId, userId).then((slab) => slab.id));
+}
+
+/**
+ * Correct the QC on a slab that has already been graded — the Edit path.
+ *
+ * The whole grading flow is reused: the slab's current QC is undone, then the
+ * new grade and outcome are applied exactly as a first grading would, onto the
+ * same record. Nothing here is a second, parallel way to grade — it is the same
+ * one, run again — so the rules can never drift from the normal screen.
+ */
+export async function editSlabQcAction(
+  _previousState: SlabIntakeFormState,
+  formData: FormData,
+): Promise<SlabIntakeFormState> {
+  const raw = formData.get('slabId');
+  const slabId = typeof raw === 'string' ? raw : '';
+  if (!slabId) return { error: 'This slab could not be identified. Reopen it from Slab Records.' };
+
+  return saveQc(formData, async (userId) => {
+    await resetSlabQcForCorrection(slabId, userId);
+    return slabId;
+  });
 }
 
 async function saveQc(
@@ -174,7 +201,16 @@ async function saveQc(
     redirect(APP_ROUTES.recalibrations);
   }
 
-  // Back to the history table: the record the in-charge just completed is the
-  // top row, and there is no per-slab page to land on any more.
+  // Back to the history table — and to the SAME filtered view the slab was
+  // opened from, when it carried one. Processing a month of old records used to
+  // dump the in-charge back at the unfiltered list after every slab, so the
+  // February filter had to be retyped before each one. `back` is the filter
+  // query the row was found under; re-parsed through URLSearchParams so only a
+  // well-formed query string can ever become the destination.
+  const back = formData.get('back');
+  if (typeof back === 'string' && back.trim() !== '') {
+    const clean = new URLSearchParams(back).toString();
+    if (clean) redirect(`${APP_ROUTES.slabs}?${clean}`);
+  }
   redirect(APP_ROUTES.slabs);
 }

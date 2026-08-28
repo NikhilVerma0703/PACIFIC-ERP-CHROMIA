@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { latestSerialNumber, nextSerialNumber } from "@/lib/robo/nextNumbers";
+import { REGISTER_ORDER } from "@/lib/robo/registerOrderDb";
 import { slabSearchWhere } from "@/lib/robo/slabSearch";
 import { SLAB_COMPLETED, SLAB_IN_PROCESSING } from "@/lib/robo/utils";
 import { roboGate } from "@/lib/rbac";
@@ -88,15 +90,30 @@ export async function POST(req: Request) {
     const sent = Number(body.serialNumber);
     let serialNumber = Number.isFinite(sent) && sent > 0 ? Math.trunc(sent) : null;
     if (!serialNumber) {
-      // Counted across the WHOLE register, matching what the form is offered by
-      // /api/robo/production/next-number. This used to be `where: { shiftId }`
-      // with `orderBy: { serialNumber: "desc" }`, which was wrong twice: a shift
-      // row is created silently once per day, so the count restarted every
-      // morning; and serial_number is nullable, so Postgres' DESC NULLS FIRST
-      // put a single NULL at the top and pinned the answer at 1 for good. An
-      // aggregate max ignores NULLs by definition.
-      const agg = await tx.roboProductionRecord.aggregate({ _max: { serialNumber: true } });
-      serialNumber = (agg._max.serialNumber ?? 0) + 1;
+      // One past the S.No. on the last row saved, matching what the form is
+      // offered by /api/robo/production/next-number — the two must agree, or a
+      // save with the field cleared lands somewhere the operator was never
+      // shown.
+      //
+      // Two earlier versions of this were wrong. `where: { shiftId }` with
+      // `orderBy: { serialNumber: "desc" }` restarted the count every morning,
+      // because a shift row is created silently once per day, and serial_number
+      // is nullable so Postgres' DESC NULLS FIRST pinned the answer at 1 for
+      // good. `max(serial_number) + 1` fixed both and introduced a third: a
+      // maximum is not a position in a register, and the imported historical
+      // rows carry the old paper register's own S.No. column, so a line sitting
+      // at 19 was handed 241.
+      //
+      // REGISTER_ORDER is the shared answer to "which row is last" — by
+      // production day, then row number, not by insert time. See the note in
+      // lib/robo/registerOrderDb.ts for why createdAt is the wrong key here.
+      // The walk past rows with no S.No. is what makes a nullable column safe.
+      const recent = await tx.roboProductionRecord.findMany({
+        orderBy: REGISTER_ORDER,
+        take: 50,
+        select: { serialNumber: true },
+      });
+      serialNumber = nextSerialNumber(latestSerialNumber(recent.map((r) => r.serialNumber)));
     }
 
     const status: string = body.status || (body.outTime ? SLAB_COMPLETED : SLAB_IN_PROCESSING);

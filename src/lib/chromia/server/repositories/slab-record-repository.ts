@@ -22,6 +22,9 @@ export async function loadSlabRecord(slabId: string) {
       receivedDate: true,
       remarks: true,
       currentThicknessMm: true,
+      // The QC decision, so the Edit screen can pre-fill and correct it.
+      currentGrade: true,
+      currentDisposition: true,
       recalibrationCount: true,
       batch: { select: { id: true, batchNo: true } },
       baseMaterial: { select: { id: true, name: true } },
@@ -44,6 +47,8 @@ export async function loadSlabRecord(slabId: string) {
     status: slab.status,
     receivedDate: slab.receivedDate,
     remarks: slab.remarks,
+    currentGrade: slab.currentGrade,
+    currentDisposition: slab.currentDisposition,
     // Decimal does not survive the trip to a client component, and the register
     // works in centimetres while the database stores millimetres.
     thicknessCm:

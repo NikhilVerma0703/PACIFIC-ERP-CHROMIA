@@ -15,6 +15,16 @@ import { normaliseFileName } from '@/lib/chromia/operator-register';
  * what already exists — ignoring case and spacing, because "Roller mark" and
  * "ROLLER MARK" are the same thing — and creates the record only when it is
  * genuinely new. Nothing is ever duplicated by a difference in typing.
+ *
+ * ── PERFORMANCE ──────────────────────────────────────────────────────────
+ * The loose match cannot be expressed in SQL, so the fallback loads the list
+ * and compares in memory. That list grows every time an import invents a design
+ * from a file name, and it was being read in full on every single save — the
+ * biggest, most-typed one, the operator entry, does two of these. Each resolver
+ * now tries the stable `code` first, which is unique and indexed and is what a
+ * name picked from the list resolves to, so the common save never scans the
+ * table. The scan stays as the exact same fallback for a genuinely new or
+ * oddly-punctuated name, so the answer is unchanged — only the work is less.
  */
 
 /** Slug a free-text name into a stable business code. */
@@ -37,12 +47,22 @@ export async function resolveBaseMaterialId(name: string): Promise<string> {
   const wanted = name.trim();
   if (!wanted) throw new ValidationError('Enter a base material / slab name');
 
+  const code = toCode(wanted);
+
+  // The common path: the name maps to a code already on file — an indexed
+  // lookup, not a scan of every material. The full scan matches `code` too, so
+  // this returns exactly what it would; it only skips the read.
+  const byCode = await prisma.chromiaBaseMaterial.findFirst({
+    where: { code, deletedAt: null },
+    select: { id: true },
+  });
+  if (byCode) return byCode.id;
+
   const existing = await prisma.chromiaBaseMaterial.findMany({
     where: { deletedAt: null },
     select: { id: true, name: true, code: true },
   });
 
-  const code = toCode(wanted);
   const match = existing.find((row) => sameName(row.name, wanted) || row.code === code);
   if (match) return match.id;
 
@@ -64,6 +84,18 @@ export async function resolveDesignId(fileName: string): Promise<string> {
   const wanted = fileName.trim();
   if (!wanted) throw new ValidationError('Enter a file name / planned design');
 
+  const code = toCode(wanted);
+
+  // Fast path on the unique code, as for base materials — a file name picked
+  // from the list resolves to a code that already exists and returns at once,
+  // rather than reading every design on file (imports mint one per file name,
+  // so this list is the one that grows without bound).
+  const byCode = await prisma.chromiaDesign.findFirst({
+    where: { code, deletedAt: null },
+    select: { id: true },
+  });
+  if (byCode) return byCode.id;
+
   const normalised = normaliseFileName(wanted);
 
   const existing = await prisma.chromiaDesign.findMany({
@@ -71,7 +103,6 @@ export async function resolveDesignId(fileName: string): Promise<string> {
     select: { id: true, name: true, fileName: true, code: true },
   });
 
-  const code = toCode(wanted);
   const match = existing.find(
     (row) =>
       sameName(row.name, wanted) ||
@@ -92,12 +123,19 @@ export async function resolveRecalibrationReasonId(name: string): Promise<string
   const wanted = name.trim();
   if (!wanted) throw new ValidationError('Enter a recalibrate reason');
 
+  const code = toCode(wanted);
+
+  const byCode = await prisma.chromiaRecalibrationReason.findFirst({
+    where: { code, deletedAt: null },
+    select: { id: true },
+  });
+  if (byCode) return byCode.id;
+
   const existing = await prisma.chromiaRecalibrationReason.findMany({
     where: { deletedAt: null },
     select: { id: true, name: true, code: true },
   });
 
-  const code = toCode(wanted);
   const match = existing.find((row) => sameName(row.name, wanted) || row.code === code);
   if (match) return match.id;
 

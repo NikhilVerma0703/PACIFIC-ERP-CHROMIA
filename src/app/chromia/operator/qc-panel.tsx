@@ -4,7 +4,11 @@ import { useActionState } from 'react';
 
 import { FormError } from '@/components/chromia/ui';
 import { SectionCard } from '@/components/chromia/ui/form';
-import { completeSlabAction, type SlabIntakeFormState } from '@/lib/chromia/server/actions/slab';
+import {
+  completeSlabAction,
+  editSlabQcAction,
+  type SlabIntakeFormState,
+} from '@/lib/chromia/server/actions/slab';
 
 import { QcSection, type Option } from '../slabs/new/qc-section';
 
@@ -14,7 +18,15 @@ interface Props {
   slabId: string;
   slabNo: string;
   recalibrationReasons: Option[];
-  today: string;
+  /** The filtered Slab Records query to return to after saving — see slabHref. */
+  back?: string;
+  /**
+   * Correction mode (the Edit path): the QC section opens pre-filled with the
+   * slab's current grade and outcome, and saving corrects the same record
+   * instead of grading a fresh slab.
+   */
+  edit?: boolean;
+  initial?: { grade?: string; disposition?: string; slabRemarks?: string };
 }
 
 /**
@@ -35,19 +47,32 @@ interface Props {
  * `QcSection` itself is imported unchanged from where it has always lived, so
  * the allowed grade/outcome pairs stay decided in exactly one place.
  */
-export function QcPanel({ slabId, slabNo, recalibrationReasons, today }: Props) {
-  const [state, formAction, isPending] = useActionState(completeSlabAction, INITIAL_STATE);
+export function QcPanel({
+  slabId,
+  slabNo,
+  recalibrationReasons,
+  back,
+  edit = false,
+  initial,
+}: Props) {
+  const [state, formAction, isPending] = useActionState(
+    edit ? editSlabQcAction : completeSlabAction,
+    INITIAL_STATE,
+  );
 
   return (
     <div className="mb-6">
-      <SectionCard title="QC Section" accent="grade">
+      <SectionCard title={edit ? 'QC Section — correct' : 'QC Section'} accent="grade">
         <form action={formAction} className="flex flex-col gap-6">
           <input type="hidden" name="slabId" value={slabId} />
+          {/* The filtered view to return to once this is saved. Absent when the
+              slab was not opened from a filtered Slab Records search. */}
+          {back ? <input type="hidden" name="back" value={back} /> : null}
 
           <QcSection
             recalibrationReasons={recalibrationReasons}
-            today={today}
             errors={state.fieldErrors}
+            initial={edit ? initial : undefined}
           />
 
           <FormError message={state.error} />
@@ -58,10 +83,16 @@ export function QcPanel({ slabId, slabNo, recalibrationReasons, today }: Props) 
               disabled={isPending}
               className="bg-brand-600 hover:bg-brand-700 inline-flex h-11 items-center justify-center rounded-lg px-6 text-sm font-semibold text-white shadow-[0_1px_2px_rgba(16,24,40,0.12)] transition-colors disabled:cursor-not-allowed disabled:opacity-55"
             >
-              {isPending ? 'Saving…' : `Save QC for slab ${slabNo}`}
+              {isPending
+                ? 'Saving…'
+                : edit
+                  ? `Save QC changes for slab ${slabNo}`
+                  : `Save QC for slab ${slabNo}`}
             </button>
             <span className="text-muted text-sm">
-              The entry above stays In-Processing until this is saved.
+              {edit
+                ? 'This replaces the current grade and outcome on the same record.'
+                : 'The entry above stays In-Processing until this is saved.'}
             </span>
           </div>
         </form>

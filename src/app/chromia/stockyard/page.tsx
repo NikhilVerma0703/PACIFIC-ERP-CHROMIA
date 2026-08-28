@@ -1,11 +1,20 @@
 import type { Metadata } from 'next';
 
 import { EmptyState, PageHeader } from '@/components/chromia/ui';
+import { SimpleFilterBar } from '@/components/chromia/filter-bar-simple';
 import { dataTable, SectionCard } from '@/components/chromia/ui/form';
 import { GradeBadge } from '@/components/chromia/ui/status';
+import { APP_ROUTES } from '@/lib/chromia/constants/app';
+import {
+  hasSimpleFilters,
+  parseSimpleFilters,
+  type RawSearchParams,
+} from '@/lib/chromia/simple-filters';
 import { daysBetween } from '@/lib/chromia/utils/dates';
 import { listStockedSlabs, listStockReleases } from '@/lib/chromia/server/repositories/stockyard-repository';
+import { PLANT_TIME_ZONE } from '@/lib/chromia/plant-time';
 
+import { RecalibrateButton } from './recalibrate-button';
 import { ReleaseForm } from './release-form';
 
 export const metadata: Metadata = { title: 'Stockyard' };
@@ -14,8 +23,7 @@ export const dynamic = 'force-dynamic';
 const dateFmt = new Intl.DateTimeFormat('en-GB', {
   day: '2-digit',
   month: 'short',
-  year: 'numeric',
-});
+  year: 'numeric', timeZone: PLANT_TIME_ZONE, });
 
 const { th, td, tdMuted, tdNum } = dataTable;
 
@@ -35,8 +43,20 @@ function toDateInput(date: Date): string {
  * This page is that one step, kept deliberately apart from QC and Slab Intake:
  * the racks on top, the release log underneath.
  */
-export default async function StockyardPage() {
-  const [stocked, releases] = await Promise.all([listStockedSlabs(), listStockReleases()]);
+export default async function StockyardPage({
+  searchParams,
+}: {
+  searchParams: Promise<RawSearchParams>;
+}) {
+  const filters = parseSimpleFilters(await searchParams);
+  const filtered = hasSimpleFilters(filters);
+
+  // Filters narrow the rack list; the release log below is history and stays
+  // whole, the same way Slab Records filters the records and not the summary.
+  const [stocked, releases] = await Promise.all([
+    listStockedSlabs(filtered ? filters : undefined),
+    listStockReleases(),
+  ]);
 
   const now = new Date();
   const today = toDateInput(now);
@@ -47,10 +67,16 @@ export default async function StockyardPage() {
         title="Stockyard"
         description={
           stocked.length === 0
-            ? 'No slabs are in stock.'
-            : `${stocked.length} slab${stocked.length === 1 ? '' : 's'} in stock`
+            ? filtered
+              ? 'No slabs in stock match these filters.'
+              : 'No slabs are in stock.'
+            : `${stocked.length} slab${stocked.length === 1 ? '' : 's'} in stock${
+                filtered ? ' matching' : ''
+              }`
         }
       />
+
+      <SimpleFilterBar filters={filters} action={APP_ROUTES.stockyard} />
 
       {/* ------------------------------------------------------ on the rack --- */}
       <div className="mb-6">
@@ -66,13 +92,20 @@ export default async function StockyardPage() {
           }
         >
           {stocked.length === 0 ? (
-            <EmptyState>Nothing is on the racks right now.</EmptyState>
+            <EmptyState>
+              {filtered
+                ? 'No stocked slab matches these filters.'
+                : 'Nothing is on the racks right now.'}
+            </EmptyState>
           ) : (
             <div className="overflow-x-auto">
               <table className={dataTable.root}>
                 <thead className={dataTable.head}>
                   <tr>
-                    <th className={th}>Stock Date</th>
+                    {/* Production Date, not a separate Stock Date: a slab marked
+                        Stock at QC is stocked on its production date, so the two
+                        are the same day and the register's date is the one shown. */}
+                    <th className={th}>Production Date</th>
                     <th className={th}>Batch No.</th>
                     <th className={th}>Slab No.</th>
                     <th className={th}>Base Material / Slab Name</th>
@@ -80,14 +113,14 @@ export default async function StockyardPage() {
                     <th className={`${th} text-right`}>Thickness (cm)</th>
                     <th className={th}>Grade</th>
                     <th className={`${th} text-right`}>Days in Stock</th>
-                    <th className={`${th} text-right`}>Dispatch</th>
+                    <th className={`${th} text-right`}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {stocked.map((slab) => (
                     <tr key={slab.id} className={dataTable.row}>
                       <td className={`${td} font-medium whitespace-nowrap`}>
-                        {slab.stockDate ? dateFmt.format(slab.stockDate) : '—'}
+                        {dateFmt.format(slab.receivedDate)}
                       </td>
                       <td className={`${tdMuted} font-mono`}>{slab.batch.batchNo}</td>
                       <td className={`${td} font-mono`}>{slab.slabNo}</td>
@@ -105,7 +138,12 @@ export default async function StockyardPage() {
                         {slab.stockDate === null ? '—' : daysBetween(slab.stockDate, now)}
                       </td>
                       <td className={`${td} text-right`}>
-                        <ReleaseForm slabId={slab.id} today={today} />
+                        {/* Two exits from the rack, side by side: dispatch it,
+                            or send it for recalibration. */}
+                        <div className="flex items-center justify-end gap-2">
+                          <ReleaseForm slabId={slab.id} today={today} />
+                          <RecalibrateButton slabId={slab.id} slabNo={slab.slabNo} />
+                        </div>
                       </td>
                     </tr>
                   ))}

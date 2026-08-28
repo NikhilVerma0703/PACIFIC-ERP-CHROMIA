@@ -147,7 +147,6 @@ export default async function RecalibrationSlabPage({
           slabId={record.id}
           slabNo={record.slabNo}
           recalibrationReasons={recalibrationReasons}
-          today={toDateInput(new Date())}
         />
       </div>
     );

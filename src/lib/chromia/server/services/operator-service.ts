@@ -67,8 +67,12 @@ export async function recordOperatorEntry(input: OperatorEntryInput, userId: str
     throw new ConflictError(DUPLICATE_SLAB_NO_MESSAGE);
   }
 
-  const baseMaterialId = await resolveBaseMaterialId(input.baseMaterial);
-  const designId = await resolveDesignId(input.fileName);
+  // Independent of each other — resolved together rather than one after the
+  // other, so an entry save waits for one round-trip here, not two.
+  const [baseMaterialId, designId] = await Promise.all([
+    resolveBaseMaterialId(input.baseMaterial),
+    resolveDesignId(input.fileName),
+  ]);
   const thicknessMm = input.thicknessCm === undefined ? null : input.thicknessCm * 10;
 
   const slab = await prisma.$transaction(async (tx) => {

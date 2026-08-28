@@ -221,13 +221,20 @@ describe('the prefixed period picker', () => {
   });
 
   it('gives the production sheet a full column set', () => {
-    const columns = productionColumns();
-    expect(columns.map((column) => column.label)).toContain('Recalibrations');
-    expect(columns.map((column) => column.label)).toContain('Dispatch Date');
-    // Fourteen, not fifteen: Fully Printed Date went with the field. Nothing
-    // types it any more — see lib/chromia/validation/slab.ts.
-    expect(columns.map((column) => column.label)).not.toContain('Fully Printed Date');
-    expect(columns).toHaveLength(14);
+    const labels = productionColumns().map((column) => column.label);
+    expect(labels).toContain('Recalibrations');
+    expect(labels).toContain('Dispatch Date');
+    // S.No. leads it now, and Grade and Slab Remarks ride after the Outcome —
+    // both read from the Slab Records data.
+    expect(labels[0]).toBe('S.No.');
+    expect(labels).toContain('Grade');
+    expect(labels).toContain('Slab Remarks');
+    // Out-time is gone from every sheet; Fully Printed Date went with its field.
+    expect(labels).not.toContain('Out-time');
+    expect(labels).not.toContain('Fully Printed Date');
+    // Sixteen: fourteen as before, minus Out-time, plus S.No., Grade and Slab
+    // Remarks.
+    expect(labels).toHaveLength(16);
   });
 });
 
@@ -293,8 +300,8 @@ describe('the order a sheet writes its columns in', () => {
       'File Name / Planned Design',
       'Thickness (cm)',
       'In-time',
-      'Out-time',
-      // Fully Printed Date sat here until the field that fed it was removed.
+      // Out-time was dropped from every sheet; Fully Printed Date went with its
+      // field before that.
       'Status',
       'Outcome',
     ];
@@ -375,7 +382,8 @@ describe('the columns every sheet carries', () => {
   it('carries all three on the complete-production sheet too', () => {
     const labels = productionColumns().map((column) => column.label);
 
-    expect(labels.slice(3, 6)).toEqual([
+    // Now at 4–6, after S.No., Production Date, Batch No. and Slab No.
+    expect(labels.slice(4, 7)).toEqual([
       'Base Material / Slab Name',
       'File Name / Planned Design',
       'Thickness (cm)',

@@ -16,7 +16,7 @@ import {
   type ExportKind,
 } from '@/lib/chromia/exports';
 import { loadExportRows, type ExportRow } from '@/lib/chromia/server/repositories/export-repository';
-import { dateTime, localDay, writeStyledWorkbook } from '@/lib/chromia/server/exports/sheet';
+import { localDay, timeOnly, writeStyledWorkbook } from '@/lib/chromia/server/exports/sheet';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -47,12 +47,17 @@ function baseCells(row: ExportRow): Record<BaseField, string | number> {
     design: row.design ?? '',
     thicknessCm: thicknessCm(row.thicknessMm),
     receivedDate: localDay(row.receivedDate),
-    inTime: dateTime(row.inTime),
-    outTime: dateTime(row.outTime),
+    // The time of day only — the day is the Production Date column. Out-time is
+    // no longer carried on any sheet.
+    inTime: timeOnly(row.inTime),
     status: slabStatusView(row.status, row.disposition).label,
     disposition: row.disposition ? DISPOSITION_LABELS[row.disposition] : '',
   };
 }
+
+/** The one extra column added to every outcome sheet, read from the slab. */
+const SNO_COLUMN: ExportColumn = { label: 'S.No.', group: 'identity', width: 7 };
+const GRADE_COLUMN: ExportColumn = { label: 'Grade', group: 'state', width: 10 };
 
 /**
  * The values, in whatever order this sheet puts its columns.
@@ -86,17 +91,24 @@ export const GET = withErrorHandling(async (request: NextRequest) => {
   const rows = await loadExportRows(query.kind, range);
 
   // Outcome-specific columns are discovered from the data, so Stock and Sample
-  // Cutting bring their own fields without the route knowing about them.
+  // Cutting bring their own fields without the route knowing about them. S.No.
+  // leads the sheet and Grade — read from the slab record — closes it.
   const extraKeys = Object.keys(rows[0]?.extra ?? {});
   const columns: ExportColumn[] = [
+    SNO_COLUMN,
     ...baseColumns(query.kind),
     ...extraKeys.map((label) => ({ label, group: 'outcome' as const, width: 20 })),
+    GRADE_COLUMN,
   ];
 
   const buffer = writeStyledWorkbook({
     sheetName: EXPORT_KIND_LABELS[query.kind],
     columns,
-    rows: rows.map((row) => toValues(row, query.kind, extraKeys)),
+    rows: rows.map((row, index) => [
+      index + 1,
+      ...toValues(row, query.kind, extraKeys),
+      row.grade ?? '',
+    ]),
   });
 
   return new Response(new Uint8Array(buffer), {

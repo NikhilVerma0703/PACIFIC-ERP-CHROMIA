@@ -39,4 +39,18 @@ describe('where a slab number leads', () => {
     expect(slabHref('abc', SlabStatus.OUT_FOR_RECALIBRATION)).toBeNull();
     expect(slabHref('abc', SlabStatus.RECEIVED_FROM_RECALIBRATION)).toBeNull();
   });
+
+  it('carries the filters back through QC when given a `back` query', () => {
+    // The filtered Slab Records view the row was found under, so completing QC
+    // returns there instead of the bare list. Encoded so its own & and = are
+    // one parameter's value, not more parameters on the operator URL.
+    const back = 'batchNo=1245&receivedFrom=2026-02-01&receivedTo=2026-02-28';
+    expect(slabHref('abc', SlabStatus.IN_PROCESS, back)).toBe(
+      `/chromia/operator?slab=abc&back=${encodeURIComponent(back)}`,
+    );
+    // A blank back changes nothing.
+    expect(slabHref('abc', SlabStatus.IN_PROCESS, '')).toBe('/chromia/operator?slab=abc');
+    // And it is never bolted onto a slab that has nowhere to go.
+    expect(slabHref('abc', SlabStatus.IN_STOCK, back)).toBeNull();
+  });
 });

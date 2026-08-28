@@ -4,7 +4,9 @@ import { EmptyState, PageHeader, Section } from '@/components/chromia/ui';
 import { actorNames } from '@/lib/chromia/actors';
 import { prisma } from '@/lib/chromia/db';
 import { table } from '@/lib/chromia/ui';
+import { PLANT_TIME_ZONE } from '@/lib/chromia/plant-time';
 
+import { DeleteImportButton } from './delete-import-button';
 import { ImportForm } from './import-form';
 
 export const metadata: Metadata = { title: 'Import' };
@@ -14,8 +16,7 @@ const dateFmt = new Intl.DateTimeFormat('en-GB', {
   day: '2-digit',
   month: 'short',
   hour: '2-digit',
-  minute: '2-digit',
-});
+  minute: '2-digit', timeZone: PLANT_TIME_ZONE, });
 
 export default async function ImportPage() {
   const history = await prisma.chromiaImportBatch.findMany({
@@ -48,6 +49,7 @@ export default async function ImportPage() {
                   <th className={table.th}>Skipped</th>
                   <th className={table.th}>Failed</th>
                   <th className={table.th}>When</th>
+                  <th className={`${table.th} text-right`}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -63,6 +65,13 @@ export default async function ImportPage() {
                     <td className={table.tdMuted}>
                       {dateFmt.format(run.createdAt)}
                       {run.importedById ? ` · ${importers.get(run.importedById) ?? 'Unknown'}` : ''}
+                    </td>
+                    <td className={`${table.td} text-right`}>
+                      <DeleteImportButton
+                        importBatchId={run.id}
+                        fileName={run.sourceFile}
+                        slabCount={run.importedRows}
+                      />
                     </td>
                   </tr>
                 ))}

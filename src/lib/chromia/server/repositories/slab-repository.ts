@@ -56,16 +56,26 @@ export type SlabListItem = Awaited<ReturnType<typeof listRecentSlabs>>[number];
 /**
  * Filtered, paged slab search — the traceability lookup.
  * Returns the page of rows plus the total, so the UI can page accurately.
+ *
+ * `unpaged` returns every matching row in one go, skip and take dropped. It is
+ * how the list currently answers a filtered search — a filtered set is small
+ * and bounded by the filters, and processing old records one screen at a time
+ * is the job the pagination got in the way of. The paging arguments are still
+ * built and passed the moment the flag is off, so restoring or changing paging
+ * later is a one-line decision at the call site, not a rewrite here.
  */
-export async function searchSlabs(filters: SlabFilters) {
+export async function searchSlabs(filters: SlabFilters, options: { unpaged?: boolean } = {}) {
   const where = buildSlabWhere(filters) as Prisma.ChromiaSlabWhereInput;
+
+  const pageArgs: { skip?: number; take?: number } = options.unpaged
+    ? {}
+    : { skip: (filters.page - 1) * filters.pageSize, take: filters.pageSize };
 
   const [rows, total] = await Promise.all([
     prisma.chromiaSlab.findMany({
       where,
       orderBy: [{ receivedDate: 'desc' }, { createdAt: 'desc' }],
-      skip: (filters.page - 1) * filters.pageSize,
-      take: filters.pageSize,
+      ...pageArgs,
       select: {
         id: true,
         slabNo: true,

@@ -12,17 +12,18 @@ import {
 } from '@/lib/chromia/operator-register';
 
 describe('combineDateAndTime', () => {
-  it('builds a local Date from the register date and in-time', () => {
+  it('builds the instant the register date and in-time name in plant time', () => {
+    // Asserted through the plant-time formatters rather than getHours(), which
+    // reads the server's own clock: on the UTC host this runs on, 09:15 in the
+    // plant is 03:45 there, and the whole point is that it comes back 09:15.
     const result = combineDateAndTime('2026-08-03', '09:15');
     expect(result).not.toBeNull();
-    expect(result?.getFullYear()).toBe(2026);
-    expect(result?.getMonth()).toBe(7);
-    expect(result?.getDate()).toBe(3);
-    expect(result?.getHours()).toBe(9);
-    expect(result?.getMinutes()).toBe(15);
+    expect(toDateInput(result as Date)).toBe('2026-08-03');
+    expect(toTimeInput(result as Date)).toBe('09:15');
   });
 
-  it('accepts a seconds component', () => {
+  it('keeps the seconds it was given', () => {
+    // The India offset is a whole number of minutes, so seconds never move.
     expect(combineDateAndTime('2026-08-03', '09:15:30')?.getSeconds()).toBe(30);
   });
 
@@ -55,14 +56,18 @@ describe('day boundaries', () => {
 });
 
 describe('input formatting', () => {
-  it('formats the date in local time, not UTC', () => {
-    expect(toDateInput(new Date(2026, 7, 3, 23, 30))).toBe('2026-08-03');
-    expect(toDateInput(new Date(2026, 0, 9, 1, 5))).toBe('2026-01-09');
+  // Fed instants built from a known plant wall clock, so the assertions hold
+  // whatever timezone the test host is in — the whole reason plant-time.ts
+  // exists. A date that crosses UTC midnight in the plant is the interesting
+  // case: 23:30 on the 3rd, plant time, must still read as the 3rd.
+  it('formats the date in plant time', () => {
+    expect(toDateInput(combineDateAndTime('2026-08-03', '23:30') as Date)).toBe('2026-08-03');
+    expect(toDateInput(combineDateAndTime('2026-01-09', '01:05') as Date)).toBe('2026-01-09');
   });
 
-  it('pads the time', () => {
-    expect(toTimeInput(new Date(2026, 7, 3, 9, 5))).toBe('09:05');
-    expect(toTimeInput(new Date(2026, 7, 3, 14, 30))).toBe('14:30');
+  it('pads the time in plant time', () => {
+    expect(toTimeInput(combineDateAndTime('2026-08-03', '09:05') as Date)).toBe('09:05');
+    expect(toTimeInput(combineDateAndTime('2026-08-03', '14:30') as Date)).toBe('14:30');
   });
 });
 
@@ -104,12 +109,14 @@ describe('the day a register entry belongs to', () => {
     expect(day?.getMinutes()).toBe(0);
   });
 
-  it('agrees with the in-time whenever there is one', () => {
-    // The rule this replaces was startOfDay(date + time). Nothing may move for
-    // a row that does carry a time, or every existing record shifts.
+  it('keeps the in-time on the day it was entered, whatever the hour', () => {
+    // The production date is the day the operator typed. Its in-time, at any
+    // hour of that day, stays on the same plant day — 00:00 does not slip to
+    // the day before, nor 23:59 to the day after, which is what a naive UTC
+    // parse would have done at the edges.
     for (const time of ['00:00', '09:15', '23:59']) {
       const combined = combineDateAndTime('2026-08-03', time);
-      expect(startOfDay(combined as Date).getTime()).toBe(registerDay('2026-08-03')?.getTime());
+      expect(toDateInput(combined as Date)).toBe('2026-08-03');
     }
   });
 

@@ -75,7 +75,11 @@ export function ImportForm() {
       {/* ------------------------------------------------------------ result */}
       {result.summary ? (
         <Card>
-          <h2 className="mb-1 text-sm font-semibold tracking-tight">Import complete</h2>
+          <h2 className="mb-1 text-sm font-semibold tracking-tight">
+            {result.summary.failed === 0 && result.summary.unreadable === 0
+              ? 'Import Successful'
+              : 'Import completed with issues'}
+          </h2>
           {/* The one-line answer, written by the same module that decides the
               status — so the sentence and the status can never disagree. It is
               above the numbers because "nothing new, everything was already
@@ -158,6 +162,7 @@ export function ImportForm() {
                       <th className={table.th}>Date</th>
                       <th className={table.th}>Remark</th>
                       <th className={table.th}>Reads as</th>
+                      <th className={table.th}>Grade</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -175,6 +180,7 @@ export function ImportForm() {
                             ? row.disposition.replace(/_/g, ' ').toLowerCase()
                             : 'in processing'}
                         </td>
+                        <td className={table.td}>{row.grade ?? '—'}</td>
                       </tr>
                     ))}
                   </tbody>

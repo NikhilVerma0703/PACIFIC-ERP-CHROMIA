@@ -20,6 +20,7 @@ import { TimeInput } from "./TimeInput";
 import { isValidTime } from "@/lib/robo/time";
 import { CATEGORY_META, CATEGORY_ORDER, guessCategory, defaultRobotSpecific } from "@/lib/robo/delayCategories";
 import { findDesignPreset, presetFieldsFor } from "@/lib/robo/design-presets";
+import { nextSlabNumber } from "@/lib/robo/nextNumbers";
 import { SETUP_EDIT_WINDOW_DAYS, daysBetween, describeAge, isSetupStale } from "@/lib/robo/setupAge";
 import { productionDateOf } from "@/lib/robo/productionDate";
 import { SLAB_IN_PROCESSING, formatSlabRemarks, slabStatusClass, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
@@ -156,6 +157,7 @@ type MachineEntry = { programName: string; toolName: string; liquidName: string;
 const emptyEntry = (): MachineEntry => ({ programName: "", toolName: "", liquidName: "", powderName: "", rollerHeight: "", targetCycleTime: "" });
 
 const emptySlab = () => ({ serialNumber: "", slabNumber: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" });
+const emptyDelayForm = () => ({ selectedCodeId: "", machineId: "", machineName: "", startTime: "", endTime: "", remarks: "" });
 
 /** What the Recent slabs table prints under Remarks: the slab's own note AND
  *  its delays, through the same formatter Slabs Records uses, with this
@@ -251,6 +253,18 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
   const [slabError, setSlabError] = useState("");
   const [slabSaving, setSlabSaving] = useState(false);
   const [slabTaken, setSlabTaken] = useState(false);
+  /** Bumped when the form needs the server to restate where the register ends:
+   *  a slab deleted, a correction saved, a save refused as a duplicate, or a
+   *  save this form could not count on from itself. An ordinary save does NOT
+   *  bump it — that path already knows the answer.
+   *
+   *  The numbering effect used to key off `records.length` instead, which stops
+   *  moving: /api/robo/shifts/active returns `take: 25` production records, so
+   *  on the 26th slab of a shift the length is 25 before the save and 25 after,
+   *  the effect never re-ran, and the operator was left with the S.No. from
+   *  slab 25 and a slab-number field that had just been cleared. A count that
+   *  saturates is not an event. */
+  const [registerVersion, setRegisterVersion] = useState(0);
   /** Set while an existing slab is loaded into the form — save PATCHes that
    *  record instead of creating a duplicate. */
   const [editingId, setEditingId] = useState<string | null>(recordId ?? null);
@@ -263,7 +277,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
 
   // ---- delays inside the slab entry ----
   const [delays, setDelays] = useState<PendingDelay[]>([]);
-  const [delayForm, setDelayForm] = useState({ selectedCodeId: "", machineId: "", machineName: "", startTime: "", endTime: "", remarks: "" });
+  const [delayForm, setDelayForm] = useState(emptyDelayForm);
   const [delayError, setDelayError] = useState("");
   const [codeSearch, setCodeSearch] = useState("");
   const [codeOpen, setCodeOpen] = useState(false);
@@ -273,6 +287,32 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
   const [newCode, setNewCode] = useState({ open: false, code: "", description: "", category: "GENERAL", isRobotSpecific: true });
   const [newCodeError, setNewCodeError] = useState("");
   const [savingCode, setSavingCode] = useState(false);
+
+  /**
+   * Empty the delay-entry panel: the picked code, the search box, the machine,
+   * the times, the remark, the inline "new code" form and any error.
+   *
+   * Everything here except `delays` itself, which each caller decides about —
+   * saving a slab sends the pending delays with it, cancelling an edit throws
+   * them away, and both then want the panel blank.
+   *
+   * WHY. `+ Add` cleared this, so an operator who logs delays the ordinary way
+   * never saw a problem — which is why only one of them reported it and it
+   * could not be reproduced. Pick a code and then save the slab WITHOUT
+   * pressing Add and it survived: `delays` was emptied on save, the picker was
+   * not, so the next slab opened with the previous slab's code sitting
+   * selected. Nothing wrong was ever written — the code was only staged, not
+   * attached — but the operator is reading a screen that says the next slab
+   * already has a delay on it, and the next `+ Add` would have used it.
+   */
+  const resetDelayEntry = () => {
+    setDelayForm(emptyDelayForm());
+    setCodeSearch("");
+    setCodeOpen(false);
+    setDelayError("");
+    setNewCode((p) => ({ ...p, open: false }));
+    setNewCodeError("");
+  };
 
   const refetchShift = async () => {
     const s = await getJson<ActiveShift | null>("/api/robo/shifts/active", null);
@@ -300,6 +340,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     setSlabError("");
     setSlabTaken(false);
     setDelays([]);
+    resetDelayEntry();
     setEditLoading(false);
     return rec;
   };
@@ -426,10 +467,30 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     setEditingBatchId(latestBatch.id);
     setBatchOpen(true);
   };
+  /**
+   * Empty the batch-setup half — every field blank, every machine ticked on
+   * and cleared. This is what the seeding effect above already does for a run
+   * with no saved setup, but that effect is keyed on `editingBatchId`, and
+   * opening a new batch straight after saving one is a null → null transition:
+   * React sees no change, the effect never re-fires, and the design, thickness,
+   * targets and all four machine cards from the batch just saved were still on
+   * screen. So the new run is seeded here explicitly, the same way the delay
+   * picker is cleared between slabs.
+   */
+  const seedBlankBatch = () => {
+    const e: Record<string, MachineEntry> = {};
+    const a: Record<string, boolean> = {};
+    for (const m of machines) { e[m.id] = emptyEntry(); a[m.id] = true; }
+    setEntries(e);
+    setActiveMachines(a);
+    setBatch({ productionDate: localDate(), batchNo: "", designName: "", targetSlabs: "", thickness: "", notes: "" });
+  };
   /** Configure a genuinely different run — a second design in the same shift. */
   const startNewBatch = () => {
     setBatchError("");
     setEditingBatchId(null);
+    // Nothing of the batch just saved is carried into the next one.
+    seedBlankBatch();
     setBatchOpen(true);
   };
   /** Close the batch half; leaving edit mode re-seeds the cards blank. */
@@ -443,23 +504,26 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
    * Suggest the next S.No. and slab number — but never while an existing slab
    * is loaded for editing, where the fields hold that record's own numbers.
    *
-   * Both come from the server now (/api/robo/production/next-number), counted
-   * across the WHOLE register. They used to be worked out here from
-   * `shift.productionRecords`, i.e. from the ACTIVE SHIFT ONLY, and a shift row
-   * is created silently once per day — so every morning the S.No. restarted at
-   * 1 against a register sitting at 34, and the slab number came up blank
-   * because there was no earlier record in that shift to add one to. Neither is
-   * a per-day count: the S.No. is the register's running row number and the
-   * slab number is the plant's.
+   * Both come from the server (/api/robo/production/next-number), and both are
+   * one past what is on the LAST SAVED SLAB — S.No. 19 / slab 43567 offers 20 /
+   * 43568. They used to be worked out here from `shift.productionRecords`, i.e.
+   * from the ACTIVE SHIFT ONLY, and a shift row is created silently once per
+   * day — so every morning the S.No. restarted at 1 against a register sitting
+   * at 34, and the slab number came up blank because there was no earlier
+   * record in that shift to add one to. Neither is a per-day count: the S.No. is
+   * the register's running row number and the slab number is the plant's.
    *
-   * It re-runs on the same three things as before — the shift, the number of
-   * records (so it advances after each save) and leaving edit mode — plus
-   * `loading`, so it does not fire once against a form that has not finished
-   * loading and again the moment the shift arrives, throwing the first answer
-   * away.
+   * THIS IS THE OPENING SUGGESTION, NOT THE RUNNING ONE. After a slab is
+   * saved, saveSlab counts on from the slab it just wrote, in the browser,
+   * without asking anyone — see the block there. So this runs on a fresh page,
+   * on a shift change, on leaving edit mode, after a delete, after a 409, and
+   * when saveSlab had nothing to count from (a blank S.No., a slab number like
+   * 140748-A). `registerVersion` is what those cases bump; `loading` keeps it
+   * from firing once against a half-loaded form and again the moment the shift
+   * arrives, throwing the first answer away.
    *
-   * NEITHER FIELD OVERWRITES WHAT THE OPERATOR TYPED. The slab number never
-   * did (`p.slabNumber ||`). The S.No. used to be replaced outright, which was
+   * NEITHER FIELD OVERWRITES WHAT THE OPERATOR TYPED. The slab number never did
+   * (`p.slabNumber ||`). The S.No. used to be replaced outright, which was
    * survivable while it was computed in the browser in the same tick — but it
    * is a round trip now, so a corrected S.No. could be wiped seconds later by
    * an answer already in flight, or by the effect re-firing after a delete.
@@ -489,7 +553,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     })();
     return () => { ignore = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, shift?.id, records.length, editingId]);
+  }, [loading, shift?.id, registerVersion, editingId]);
 
   /* The setup driving this slab: when editing, the record's OWN batch setup —
      not the shift's latest. A slab logged under the morning's design must keep
@@ -744,14 +808,19 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
    * than on save. `excludeId` keeps a slab being edited from clashing with
    * itself. The API enforces the same rule with a 409, so this is only the
    * earlier, friendlier half of the check.
+   *
+   * Returns whether the number is free, for the one caller that acts on the
+   * answer rather than just showing it — saveSlab, checking the number it just
+   * suggested for itself.
    */
-  const checkSlabNumber = async (value: string) => {
+  const checkSlabNumber = async (value: string): Promise<boolean> => {
     const n = value.trim();
-    if (!n) { setSlabTaken(false); return; }
+    if (!n) { setSlabTaken(false); return true; }
     const qs = new URLSearchParams({ slabNumber: n });
     if (editingId) qs.set("excludeId", editingId);
     const data = await getJson<{ available: boolean }>(`/api/robo/production/check-slab?${qs.toString()}`, { available: true });
     setSlabTaken(!data.available);
+    return data.available;
   };
 
   // ---- delays ----
@@ -770,8 +839,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
       durationMinutes: dur.minutes + (dur.seconds > 0 ? 1 : 0),
       startTime: delayForm.startTime, endTime: delayForm.endTime, remarks: delayForm.remarks,
     }]);
-    setDelayForm({ selectedCodeId: "", machineId: "", machineName: "", startTime: "", endTime: "", remarks: "" });
-    setCodeSearch("");
+    resetDelayEntry();
   };
 
   /** Open the inline panel pre-filled with whatever the operator typed. */
@@ -836,6 +904,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     setEditingId(null);
     setEditRecord(null);
     setDelays([]);
+    resetDelayEntry();
     setSlabTaken(false);
     setSlab(emptySlab());
   };
@@ -859,6 +928,9 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     }
     const body = await res.json().catch(() => ({}));
     if (editingId === r.id) cancelEdit();
+    // A delete moves the register's last row too, so the suggestion is restated
+    // from whatever is now newest rather than counting on from a deleted slab.
+    setRegisterVersion((v) => v + 1);
     await refetchShift();
     say(`Slab ${body.slabNumber ?? r.slabNumber} deleted${body.deletedDelayLogs ? ` with ${body.deletedDelayLogs} delay log(s)` : ""}.`);
   };
@@ -910,7 +982,16 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     ).catch(() => null);
     if (!res?.ok) {
       const d = res ? await res.json().catch(() => ({})) : {};
-      if (res?.status === 409) setSlabTaken(true);
+      if (res?.status === 409) {
+        setSlabTaken(true);
+        // Somebody else took that number. The one in the box has been refused,
+        // so it is no longer a suggestion worth keeping — clear it and let the
+        // effect ask for a fresh one, rather than leaving the operator holding
+        // a number they have just been told is taken with no way forward but a
+        // reload.
+        setSlab((p) => ({ ...p, slabNumber: "" }));
+        setRegisterVersion((v) => v + 1);
+      }
       setSlabError(d.error || (editingId ? "Failed to update the slab." : "Failed to save the slab."));
       setSlabSaving(false);
       return;
@@ -925,8 +1006,60 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     setEditingId(null);
     setEditRecord(null);
     setDelays([]);
+    // The delay picker goes with them. It used to be left as it was, so a code
+    // chosen but never added with + Add stayed selected on the next slab — see
+    // resetDelayEntry.
+    resetDelayEntry();
     setSlabTaken(false);
-    setSlab((p) => ({ ...p, slabNumber: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" }));
+
+    /*
+     * THE NEXT PAIR, COUNTED FROM THE SLAB JUST WRITTEN.
+     *
+     * This is the whole of "after saving each slab, the next entry uses the
+     * latest saved S.No. + 1 and Slab Number + 1", and it is done here rather
+     * than by asking the server because here we KNOW what the last slab was —
+     * we just wrote it. No round trip, nothing to go stale, and nothing for a
+     * dropped request on plant wifi to leave behind.
+     *
+     * The server is still asked when this cannot answer: a blank or
+     * non-numeric S.No., a slab number like 140748-A that nothing follows
+     * from, and every correction — see below.
+     */
+    const savedSerial = Number(slab.serialNumber);
+    const nextSerial = Number.isFinite(savedSerial) && savedSerial > 0 ? String(savedSerial + 1) : "";
+    // Same helper the server uses, so the width rule is the same one: 09999
+    // becomes 10000 and 00042 becomes 00043.
+    const nextSlab = wasEdit ? "" : nextSlabNumber(saved);
+
+    if (wasEdit) {
+      /* A correction says nothing about where the register ends — the slab
+         being fixed can be from any day. Counting on from it would offer the
+         number after THAT row, which is very likely one that already exists.
+         Both fields are emptied and the effect below fetches the real end of
+         the register. */
+      suggested.current = "";
+      setSlab((p) => ({ ...p, serialNumber: "", slabNumber: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" }));
+      setRegisterVersion((v) => v + 1);
+    } else {
+      suggested.current = nextSerial;
+      setSlab((p) => ({ ...p, serialNumber: nextSerial, slabNumber: nextSlab, inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" }));
+      // Only when this could not work it out. Asking every time would let the
+      // server's answer overwrite a pair we know is right.
+      if (!nextSerial || !nextSlab) setRegisterVersion((v) => v + 1);
+      /* The server's suggestion skips numbers that already exist; counting on
+         from the last slab cannot. So it is checked, and if the plant has
+         already used it — an import filled the block above, another tablet got
+         there first — the field is emptied and the server asked for one that
+         skips. The operator never sees a number they will be refused, and the
+         guard on `p.slabNumber` means a number typed in the meantime wins. */
+      if (nextSlab) {
+        void (async () => {
+          if (await checkSlabNumber(nextSlab)) return;
+          setSlab((p) => (p.slabNumber === nextSlab ? { ...p, slabNumber: "" } : p));
+          setRegisterVersion((v) => v + 1);
+        })();
+      }
+    }
     await refetchShift();
     say(wasEdit
       ? `Slab ${saved} updated${finished ? " and completed" : ""}.`
@@ -1065,7 +1198,12 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
           {batchError && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{batchError}</div>}
 
           <form onSubmit={saveBatch} className="space-y-5">
-            <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+            {/* Two up, then Design across, then two up — the register's own
+                grouping, and what a tablet gets. The four-across desktop row
+                is unchanged; it just starts at lg (1024px) now instead of md
+                (768px), which was exactly iPad-portrait width, so every tablet
+                on the floor was being handed the desktop grid. */}
+            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
               <div>
                 <span className={label}>Production date</span>
                 <input type="date" value={batch.productionDate} onChange={(e) => setBatch((p) => ({ ...p, productionDate: e.target.value }))} className={inp} />
@@ -1101,43 +1239,92 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                       <input type="checkbox" checked={on} onChange={() => setActiveMachines((p) => ({ ...p, [m.id]: !p[m.id] }))}
                         className="h-4 w-4 rounded border-gray-300 text-brand focus:ring-brand/30" />
                       <h3 className="text-sm font-medium text-gray-900">{machineLabel(m.name)}</h3>
-                      {isRoymix && <Badge tone="green">liquid optional</Badge>}
+                      {/* The green "liquid optional" badge that used to sit
+                          here has moved onto the Liquid label itself — see
+                          the field below. */}
                       {!on && <span className="ml-auto text-xs text-gray-400">Not in use</span>}
                     </div>
                     {on && (
-                      <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-                        <div className={isRoymix ? "col-span-2" : ""}>
+                      /*
+                       * Three layouts, one DOM.
+                       *
+                       * TABLET (sm–lg, which is every iPad in portrait): six
+                       * columns, laid out the way the line reads a machine —
+                       * the Program across the top, then the three consumables
+                       * together, then the numbers.
+                       *
+                       *   Robo1 / Robo3   Program
+                       *                   Tool · Liquid · Powder
+                       *                   Target cycle time · Roller height
+                       *   Robo2           Program
+                       *                   Liquid
+                       *   Robo4           Program
+                       *                   Tool · Liquid · Powder
+                       *                   Target cycle time
+                       *
+                       * PHONE (below sm): the same rows, but the consumables
+                       * stack one per line. Three dropdowns across 253px is
+                       * 76px each — narrower than the cell this whole change
+                       * exists to escape, and a dropdown that narrow is not a
+                       * control, it is a hazard. The two plain numbers still
+                       * pair up; they are three digits.
+                       *
+                       * DESKTOP (lg and up): the three-column grid exactly as
+                       * it was, restored by the `lg:order-*` classes.
+                       *
+                       * The DOM is in TABLET order, not desktop order, and the
+                       * reordering is spent on the desktop instead. Tab order
+                       * follows the DOM: on the tablet — the shop floor's
+                       * device, where somebody is going field by field through
+                       * a slab — what you tab to is what you see next. The
+                       * in-charge on a desktop gets the mismatch, on a two-row
+                       * grid where it is hard to get lost.
+                       *
+                       * The tablet/desktop split was at md (768px), which is
+                       * iPad-portrait width to the pixel, so tablets landed on
+                       * the desktop side of it and every dropdown was clipped
+                       * to a ~135px cell. SearchableSelect's own breakpoint
+                       * moved with this one; the two have to agree or a value
+                       * wraps in a cell that is no longer narrow, or worse,
+                       * does not in one that is.
+                       */
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-6 lg:grid-cols-3">
+                        <div className={`col-span-2 sm:col-span-6 lg:order-1 ${isRoymix ? "lg:col-span-2" : "lg:col-span-1"}`}>
                           <span className={label}>Program</span>
                           <SearchableSelect value={entry.programName} options={programOptions} placeholder="Search programs or add new…"
                             onSelect={(name) => setEntry(m.id, "programName", name)} onCreate={addProgram} />
                         </div>
                         {!isRoymix && (
-                          <div>
+                          <div className="col-span-2 lg:order-2 lg:col-span-1">
                             <span className={label}>Tool</span>
                             <SearchableSelect value={entry.toolName} options={tools} placeholder="Search tools…"
                               onSelect={(name) => setEntry(m.id, "toolName", name)} onCreate={addTool} />
                           </div>
                         )}
-                        {!isRoymix && (
-                          <div>
-                            <span className={label}>Target cycle time (sec)</span>
-                            <input type="number" value={entry.targetCycleTime} onChange={(e) => setEntry(m.id, "targetCycleTime", e.target.value)} placeholder="e.g. 214" className={inp} />
-                          </div>
-                        )}
-                        <div>
-                          <span className={label}>Liquid</span>
+                        {/* Robo2 takes liquid and nothing else, and the fact
+                            that it is optional belongs on the field — it used
+                            to be a green badge up in the card's title bar,
+                            where it read as being about the machine. */}
+                        <div className={`lg:order-4 lg:col-span-1 ${isRoymix ? "col-span-2 sm:col-span-6" : "col-span-2"}`}>
+                          <span className={label}>Liquid{isRoymix ? " (optional)" : ""}</span>
                           <SearchableSelect value={entry.liquidName} options={liquids} placeholder="Search liquids…"
                             onSelect={(name) => setEntry(m.id, "liquidName", name)} onCreate={addLiquid} />
                         </div>
                         {!isRoymix && (
-                          <div>
+                          <div className="col-span-2 lg:order-5 lg:col-span-1">
                             <span className={label}>Powder</span>
                             <SearchableSelect value={entry.powderName} options={powders} placeholder="Search powders…"
                               onSelect={(name) => setEntry(m.id, "powderName", name)} onCreate={addPowder} />
                           </div>
                         )}
+                        {!isRoymix && (
+                          <div className="col-span-1 sm:col-span-3 lg:order-3 lg:col-span-1">
+                            <span className={label}>Target cycle time (sec)</span>
+                            <input type="number" value={entry.targetCycleTime} onChange={(e) => setEntry(m.id, "targetCycleTime", e.target.value)} placeholder="e.g. 214" className={inp} />
+                          </div>
+                        )}
                         {!isRoymix && !isRoycut3 && (
-                          <div>
+                          <div className="col-span-1 sm:col-span-3 lg:order-6 lg:col-span-1">
                             <span className={label}>Roller height (mm)</span>
                             <input value={entry.rollerHeight} onChange={(e) => setEntry(m.id, "rollerHeight", e.target.value)} placeholder="e.g. 20" className={inp} />
                           </div>
@@ -1197,7 +1384,11 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+            {/* Two up on a tablet, four across on the desktop. The four-across
+                row itself is unchanged; it starts at lg now rather than md,
+                which put S.No., Slab number, In time and Out time into ~95px
+                cells on the iPad the operator actually types this on. */}
+            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
               <div>
                 <span className={label}>S.No.</span>
                 <input type="number" value={slab.serialNumber} onChange={(e) => setSlab((p) => ({ ...p, serialNumber: e.target.value }))} className={inp} {...advanceProps("slab")} />
@@ -1234,7 +1425,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                   </div>
                 </>
               )}
-              <div className={hasRoymix ? "col-span-2" : "col-span-2 md:col-span-4"}>
+              <div className={hasRoymix ? "col-span-2" : "col-span-2 lg:col-span-4"}>
                 <span className={label}>Remarks</span>
                 <input value={slab.remarks} onChange={(e) => setSlab((p) => ({ ...p, remarks: e.target.value }))} placeholder="Optional notes for this slab" className={inp} {...advanceProps("slab")} />
               </div>
@@ -1307,8 +1498,13 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
 
               {delayError && <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{delayError}</div>}
 
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
-                <div ref={codeRef} className="relative col-span-2 md:col-span-3">
+              {/* Below lg the code takes a row to itself, the three times share
+                  the next one and the remark and + Add have the last — a delay
+                  is read code-first, and the code is the widest thing here. The
+                  desktop row is the same six columns it always was; only the
+                  breakpoint moved, off iPad-portrait width. */}
+              <div className="grid grid-cols-6 gap-3">
+                <div ref={codeRef} className="relative col-span-6 lg:col-span-3">
                   <span className={label}>Delay code</span>
                   {selectedCode ? (
                     <div className="flex items-center gap-1.5">
@@ -1385,7 +1581,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                   )}
                 </div>
                 {selectedCode?.isRobotSpecific && (
-                  <div className="col-span-2 md:col-span-3">
+                  <div className="col-span-6 lg:col-span-3">
                     <span className={label}>Machine</span>
                     <select value={delayForm.machineId}
                       onChange={(e) => { const m = machines.find((x) => x.id === e.target.value); setDelayForm((p) => ({ ...p, machineId: e.target.value, machineName: m?.name || "" })); }}
@@ -1395,15 +1591,15 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                     </select>
                   </div>
                 )}
-                <div>
+                <div className="col-span-2 lg:col-span-1">
                   <span className={label}>Start <span className="text-red-500">*</span></span>
                   <TimeInput value={delayForm.startTime} onChange={(v) => setDelayForm((p) => ({ ...p, startTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("delay")} />
                 </div>
-                <div>
+                <div className="col-span-2 lg:col-span-1">
                   <span className={label}>End <span className="text-red-500">*</span></span>
                   <TimeInput value={delayForm.endTime} onChange={(v) => setDelayForm((p) => ({ ...p, endTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("delay")} />
                 </div>
-                <div>
+                <div className="col-span-2 lg:col-span-1">
                   <span className={label}>Duration</span>
                   <div className={`w-full rounded-lg border px-3 py-2 text-sm ${
                     delayDuration ? "border-green-200 bg-green-50 font-semibold text-green-800"
@@ -1412,7 +1608,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                     {delayDuration ? fmtDuration(delayDuration) : delayForm.startTime && delayForm.endTime ? "Invalid" : "Auto"}
                   </div>
                 </div>
-                <div className="flex items-end gap-2 md:col-span-3">
+                <div className="col-span-6 flex items-end gap-2 lg:col-span-3">
                   <input value={delayForm.remarks} onChange={(e) => setDelayForm((p) => ({ ...p, remarks: e.target.value }))} placeholder="Delay remarks (optional)" className={inp} {...advanceProps("delay")} />
                   <button type="button" onClick={addDelay} className="shrink-0 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-amber-700">+ Add</button>
                 </div>
@@ -1441,7 +1637,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs uppercase tracking-wide text-gray-400">
-                  <th className="py-2 pr-4 font-medium">#</th>
+                  <th className="py-2 pr-4 font-medium">S.No.</th>
                   <th className="py-2 pr-4 font-medium">Slab</th>
                   <th className="py-2 pr-4 font-medium">Status</th>
                   <th className="py-2 pr-4 font-medium">In → Out</th>
