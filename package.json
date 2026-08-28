@@ -16,6 +16,7 @@
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
+    "db:seed:catalogue": "tsx prisma/seed-catalogue.ts",
     "db:seed:chromia": "tsx prisma/seed-chromia.ts",
     "db:seed:robo": "tsx prisma/seed-robo.ts",
     "db:seed:qc": "tsx prisma/seed-qc.ts",

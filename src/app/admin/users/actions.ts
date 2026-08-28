@@ -2,8 +2,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { revalidatePath } from "next/cache";
-import { currentUser, currentRole, canManageUsers, creatableRoles, rankOf, ROLE_RANK, STATIONS, roleLabelFor } from "@/lib/rbac";
-import { createUserRecord, setActiveRecord, resetPasswordRecord, setStationRecord, getUserRole, bumpSessionVersion, bumpAllSessionVersions } from "@/lib/users";
+import { currentUser, currentRole, canManageUsers, creatableRoles, assignableBranches, rankOf, STATIONS, roleLabelFor } from "@/lib/rbac";
+import { createUserRecord, setActiveRecord, resetPasswordRecord, setStationRecord, getUserRoles, getUserPrimary, setAltContextRecord, bumpSessionVersion, bumpAllSessionVersions } from "@/lib/users";
+import { contextKey } from "@/lib/roleContext";
 import { isAdmin } from "@/lib/rbac";
 import { salesTierOf } from "@/lib/sales/access";
 import { salesDutyFor } from "@/lib/sales/session";
@@ -25,12 +26,29 @@ const SALES_DUTY_TO_ROLE: Record<string, string> = {
 };
 const SALES_DUTIES = Object.keys(SALES_DUTY_TO_ROLE);
 
+/**
+ * THE TARGET IS RANKED BY THE HIGHEST ROLE IT CAN WEAR, NOT ITS PRIMARY.
+ *
+ * This used to read the primary role alone (getUserRole selects `{ role }` and
+ * nothing else), so an account's second job was invisible to the check that
+ * guards password resets, disabling, station changes and alternate grants. A
+ * rank-2 INCHARGE could reset the password of a rank-1 OPERATOR who also held a
+ * rank-3 LINE_MANAGER alternate, sign in as them, switch context, and gain
+ * /maintenance, /office/batch-verify and canRaiseMaintenance — an escalation
+ * that needed no bug beyond this one comparison.
+ *
+ * The CALLER is still ranked by their ACTIVE context, which is what
+ * currentRole() resolves through the role-context overlay. That is deliberate
+ * and the conservative half of the pair: you wield the authority of the hat you
+ * are wearing, not the best hat you own, so a manager working a shop-floor
+ * shift does not carry manager powers into it.
+ */
 async function canManageTarget(id: string): Promise<{ ok: boolean; message: string }> {
   if (!(await canManageUsers())) return { ok: false, message: "You don't have permission to manage users." };
   const me = await currentUser();
   if (me?.id === id) return { ok: false, message: "You cannot manage your own account here." };
   const myRank = rankOf(await currentRole());
-  const targetRank = rankOf(await getUserRole(id));
+  const targetRank = Math.max(0, ...(await getUserRoles(id)).map(rankOf));
   if (targetRank >= myRank) return { ok: false, message: "You can only manage users below your own role." };
   return { ok: true, message: "" };
 }
@@ -79,9 +97,7 @@ export async function createUser(_prev: string | undefined, fd: FormData): Promi
   }
 
   const branchRaw = String(fd.get("branch") || "").trim();
-  const assignable = rankOf(myRole) >= ROLE_RANK.ADMIN
-    ? (myBranch === "OFFICE" ? ["OFFICE"] : ["SHOP_FLOOR", "FABRICATION"])
-    : [myBranch];
+  const assignable = assignableBranches(myRole, myBranch);
   const branch = assignable.includes(branchRaw) ? branchRaw : myBranch;
   const allowed = creatableRoles(myRole, branch);
   if (!allowed.includes(role as any)) return `You can only create: ${allowed.map((r) => roleLabelFor(r, branch)).join(", ") || "(no roles)"}.`;
@@ -134,6 +150,93 @@ export async function setStation(id: string, station: string | null): Promise<Re
   await setStationRecord(id, station);
   revalidatePath("/admin/users");
   return { ok: true, message: "Station updated." };
+}
+
+/**
+ * Grant — or take away — a SECOND ROLE AND DEPARTMENT on one login.
+ *
+ * One person does two jobs (Line Manager on the line, Fabrication Supervisor
+ * next door) and had two email accounts to do them. This is where the second
+ * job is handed out: users.alt_role + users.alt_branch, NULL for everybody
+ * else, and a login with either half NULL has no switcher and behaves exactly
+ * as it always did.
+ *
+ * THE PAIR IS MATCHED, NEVER PARSED. `key` comes from a <select> and is
+ * therefore untrusted, so it is not split into a role and a branch — every pair
+ * this admin may actually grant is enumerated from creatableRoles() and
+ * assignableBranches() (the SAME two functions the Create-a-login form is
+ * filtered by, so a role nobody may create is not a role anybody may be handed
+ * as a second job), and the request has to equal one of their keys. Anything
+ * else is refused. That is the same shape lib/roleContext.ts's selectContext
+ * uses, for the same reason: a value that is only ever compared cannot become a
+ * permission.
+ *
+ * canManageTarget first, so the ordinary rules still hold: you cannot do this to
+ * yourself, and you cannot do it to anybody at or above your own rank. Combined
+ * with creatableRoles, that also means ADMIN can never be a second role —
+ * creatableRoles only ever returns roles strictly below the caller's.
+ *
+ * IT SIGNS THE TARGET OUT OF EVERY DEVICE, and that is not politeness. Both
+ * granted pairs travel in the JWT (there is nowhere else the two edge gates
+ * could read them), and this app refreshes a JWT's role and branch only at
+ * sign-in — so without the bump a revoked second job would keep working for the
+ * rest of an 8-hour token. Bumping sessionVersion is how a grant, and more
+ * importantly a REVOCATION, takes effect immediately on every device.
+ */
+export async function setAltContext(id: string, key: string): Promise<Res> {
+  const guard = await canManageTarget(id);
+  if (!guard.ok) return guard;
+
+  const me = await currentUser();
+  const myRole = String(me?.role ?? "");
+  const myBranch = (((me as any)?.branch as string | undefined) ?? "SHOP_FLOOR");
+
+  const target = await getUserPrimary(id);
+  if (!target) return { ok: false, message: "That login no longer exists." };
+  // Their own screen, their own duty model, and — the reason that matters —
+  // seven of its route handlers judge a request by the RAW session rather than
+  // currentUser(), so a sales login in a second job would keep its sales
+  // permissions while wearing the other hat. See assignableBranches().
+  if (target.branch === "INTERNATIONAL_SALES") {
+    return { ok: false, message: "International Sales logins cannot hold a second role." };
+  }
+
+  const signedOut = " That login is signed out of every device and signs in again.";
+
+  if (!key) {
+    const cleared = await setAltContextRecord(id, null, null);
+    if (!cleared.ok) return { ok: false, message: cleared.reason };
+    await bumpSessionVersion(id).catch(() => { /* session_version not migrated */ });
+    revalidatePath("/admin/users");
+    return { ok: true, message: "Second role removed." + signedOut };
+  }
+
+  // INTERNATIONAL SALES IS REFUSED IN BOTH DIRECTIONS.
+  //
+  // The check above stops a sales login taking a second job elsewhere. This
+  // stops the reverse — a shop-floor login being handed a second job INSIDE
+  // sales — which is the same hole seen from the other side, and the more
+  // reachable one: assignableBranches() hands INTERNATIONAL_SALES back to any
+  // caller already on that branch (contradicting its own doc block), so a Sales
+  // Admin's grantable set contains sales pairs. Filtered here rather than in
+  // assignableBranches because that function also feeds createUser, where a
+  // Sales Admin creating sales logins is exactly right.
+  const grantable = assignableBranches(myRole, myBranch)
+    .filter((b) => b !== "INTERNATIONAL_SALES")
+    .flatMap((b) => creatableRoles(myRole, b).map((r) => ({ role: String(r), branch: b })));
+  const pair = grantable.find((p) => contextKey(p.role, p.branch) === key);
+  if (!pair) return { ok: false, message: "That is not a role and department you can grant." };
+  if (pair.role === target.role && pair.branch === target.branch) {
+    return { ok: false, message: "That is already their main role — a second role has to be a different job." };
+  }
+
+  // The reason comes from Postgres, not from a guess. The old single message
+  // told an admin who HAD applied 0052 to apply it again.
+  const written = await setAltContextRecord(id, pair.role, pair.branch);
+  if (!written.ok) return { ok: false, message: written.reason };
+  await bumpSessionVersion(id).catch(() => { /* session_version not migrated */ });
+  revalidatePath("/admin/users");
+  return { ok: true, message: `Second role: ${roleLabelFor(pair.role, pair.branch)}.` + signedOut };
 }
 
 /** Sign one user out of all their devices (phones, tablets, PCs). */

@@ -3,6 +3,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
+import { rowLabel } from "@/lib/fab/pieceNaming";
 
 export async function GET() {
   const g = await fabGate("EMPLOYEE");
@@ -16,7 +17,7 @@ export async function GET() {
             include: {
               project:     { select: { projectCode: true, customerName: true } },
               drawing:     { select: { drawingNumber: true } },
-              requirement: { select: { pieceLabel: true, length: true, width: true } },
+              requirement: { select: { pieceLabel: true, rowLetter: true, length: true, width: true, po: { select: { poNumber: true } } } },
               slab:        { select: { slabCode: true, colour: true } },
             },
           },
@@ -40,7 +41,8 @@ export async function GET() {
       projectCode:   pp.piece.project?.projectCode ?? "UNKNOWN",
       customerName:  pp.piece.project?.customerName ?? "",
       drawingNumber: pp.piece.drawing?.drawingNumber ?? null,
-      pieceLabel:    pp.piece.requirement?.pieceLabel ?? null,
+      pieceLabel:    rowLabel(pp.piece.requirement?.rowLetter, pp.piece.requirement?.pieceLabel),
+      poNumber:      pp.piece.requirement?.po?.poNumber ?? null,
       length:        pp.piece.requirement?.length ?? null,
       width:         pp.piece.requirement?.width ?? null,
       slabCode:      pp.piece.slab?.slabCode ?? null,

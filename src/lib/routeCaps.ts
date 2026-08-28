@@ -88,6 +88,45 @@ export function operatorMayVisit(p: string): boolean {
   return alwaysOk(p) || p.startsWith("/entry") || p.startsWith("/tables");
 }
 
+/**
+ * Sampling Incharge (Role.SAMPLING). The sampling module and ITS APIs - nothing
+ * else, exactly like the ROBO and CHROMIA tablet roles.
+ *
+ * SAMPLING IS A ROLE, NOT A BRANCH. It was designed as a department (Branch
+ * SAMPLING carrying the shared OPERATOR/INCHARGE/LINE_MANAGER ranks) while
+ * Chromia was still one. Chromia has since been retired AS a department -
+ * lib/branchNames.ts keeps the value only so old rows decode, and
+ * scripts/0046-migrate-chromia-branch-users.sql moves those logins onto
+ * Role.CHROMIA - so the surviving shape for a single-purpose module is a capped
+ * role, and this follows it. No Branch value was added.
+ *
+ * NOT alwaysOk: that helper hands out all of /api and /live. The ROBO cap's own
+ * comment in middleware.ts records what a bare `startsWith("/api")` costs -
+ * it said "nothing else" and meant the opposite, handing a shop-floor tablet
+ * /api/sales, /api/admin, /api/office and the rest.
+ *
+ * The refusal page IS reachable, so a refused sampling login is not bounced off
+ * the page it was just sent to; see the note on REFUSAL_PAGE.
+ *
+ * Written as exact-or-subpath rather than a bare prefix, so a future
+ * /sampling-admin or /api/sampling-export is not opened by accident the day
+ * somebody adds one - the same near-miss the Store Incharge's
+ * /office/batch-verify clause is anchored against.
+ *
+ * WHO ELSE REACHES THE MODULE is a different question, and is NOT answered
+ * here: a Fabrication Supervisor may add sample stock (the offcuts are his) and
+ * is capped by his own branch block, not by this. That rule lives once, in
+ * lib/sampling/actions.ts, which middleware and every route gate both call.
+ */
+export function samplingMayVisit(p: string): boolean {
+  // Strip a query string once, as maintenanceMayVisit does, so a caller that
+  // passes one cannot get a different answer than the same page without it.
+  const q = p.indexOf("?");
+  const path = q === -1 ? p : p.slice(0, q);
+  const under = (base: string) => path === base || path.startsWith(base + "/");
+  return path === REFUSAL_PAGE || under("/sampling") || under("/api/sampling") || isPublicAsset(path);
+}
+
 /** Where each capped role is sent when it asks for something outside its cap. */
 export const STORE_HOME = "/live";
 export const OPERATOR_HOME = "/entry";
@@ -132,6 +171,14 @@ export function homeFor(role: string, branch: string): string {
 
   // Then the role caps, in middleware's order.
   if (role === "ROBO") return "/robo";
+  // mw: `role === "SAMPLING"`, a ROLE block sitting with ROBO's at the foot of
+  // middleware - so, like ROBO and unlike CHROMIA, a SAMPLING login on a branch
+  // that has its own block belongs to the BRANCH, which returns first. Answering
+  // "/sampling" for a fabrication-branch sampling login would be a refusal on
+  // the next hop. Its cap excludes "/", so this arm is not optional: a capped
+  // role without one inherits the "/" fallthrough at the foot of this function,
+  // which is the infinite redirect role CHROMIA shipped.
+  if (role === "SAMPLING") return "/sampling";
   // SALES normally carries branch OFFICE. Letting OFFICE answer first sent them
   // to /office, which the SALES cap refuses, so "Go to my start page" led
   // straight back to the refusal page. /inventory is allowed by both caps -
@@ -253,13 +300,13 @@ export function maySeeMaterialTrace(role: string): boolean {
  * for /mis: no capped role has it in its allowlist (storeMayVisit,
  * operatorMayVisit), the Fabrication and International Sales blocks never reach
  * a production page, the Chromia cap is the module alone, Commercial and Sales
- * are refused by name, and ROBO is capped to /robo. MAINTENANCE is the one
- * capped role whose allowlist includes /mis (maintenanceMayVisit), and is
- * therefore NOT refused here. Admins span every department. If a block in
- * middleware.ts changes who reaches /mis, change this with it - the test in
- * tests/misAudience.test.ts pins the caps it can check.
+ * are refused by name, and ROBO and SAMPLING are each capped to their own
+ * module. MAINTENANCE is the one capped role whose allowlist includes /mis
+ * (maintenanceMayVisit), and is therefore NOT refused here. Admins span every
+ * department. If a block in middleware.ts changes who reaches /mis, change this
+ * with it - the test in tests/misAudience.test.ts pins the caps it can check.
  */
-const MIS_BLIND_ROLES = new Set(["OPERATOR", "STORE", "COMMERCIAL", "SALES", "ROBO", "CHROMIA"]);
+const MIS_BLIND_ROLES = new Set(["OPERATOR", "STORE", "COMMERCIAL", "SALES", "ROBO", "CHROMIA", "SAMPLING"]);
 const MIS_BLIND_BRANCHES = new Set(["FABRICATION", "INTERNATIONAL_SALES", "CHROMIA"]);
 
 export function maySeeMis(role: string, branch: string): boolean {

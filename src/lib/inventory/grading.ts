@@ -14,6 +14,29 @@ export const canonicalGrade = (g: unknown): string | null => {
  *  deliberately, because they mean the same thing about the physical slab. */
 export const CUT_TO_SIZE_GRADE = "CTS";
 
+/** The one that means "cut down for samples". A separate word because it is a
+ *  separate history — that stone went to the sample shelf, not to a customer's
+ *  countertop — and the CEO board shows which. */
+export const SAMPLE_GRADE = "SAMPLE";
+
+/**
+ * EVERY WAY A SLAB CAN HAVE BEEN CUT.
+ *
+ * The owner's model, in his words: "a slab when it's ready is full — it can be
+ * sold directly, or cut for fabrication, or cut to samples." Three states, and
+ * the last two are both CUT:
+ *
+ *     FULL_SLAB   whole. Sellable as a full slab.
+ *     CTS         fabrication took it.
+ *     SAMPLE      sampling took it. "Samples are always in cut pieces."
+ *
+ * Dispatch cares about exactly one thing — is it still whole — so both cut
+ * states belong here. src/lib/fab/slabMark.ts holds the same three values as a
+ * proper mark column; this list is the DISPATCH-SIDE copy, because that module
+ * imports nothing and neither does this one.
+ */
+export const CUT_GRADES = [CUT_TO_SIZE_GRADE, SAMPLE_GRADE] as const;
+
 /**
  * Whether a slab's GRADE forbids dispatching it as a full slab.
  *
@@ -32,10 +55,23 @@ export const CUT_TO_SIZE_GRADE = "CTS";
  * case — its own tests assert canonicalGrade("c (reject)") === "c" — so an exact
  * comparison would let a slab graded "cts" or "Cts" dispatch as a full slab, which is
  * the precise failure this function exists to prevent.
+ *
+ * ─────────────────────────────────────────── AND SAMPLE, FROM 2026-08-25 ────
+ * The owner: "samples are always in cut pieces — so when a slab is ready it's
+ * full, it can be sold directly, or cut for fabrication, or cut to samples."
+ *
+ * A slab cut down for samples is no more dispatchable whole than one cut to
+ * size, and until now nothing stopped it: the sampling intake recorded the
+ * PIECES and left the slab reading exactly as it had before. This change is
+ * purely ADDITIVE — it can only ever refuse more, never allow something that
+ * was refused before — which is the only safe direction for a rule that is the
+ * last thing between an already-cut slab and a lorry.
  */
 export function gradeBlocksDispatch(grade: unknown): boolean {
   const g = canonicalGrade(grade);
-  return g != null && g.toUpperCase() === CUT_TO_SIZE_GRADE;
+  if (g == null) return false;
+  const upper = g.toUpperCase();
+  return (CUT_GRADES as readonly string[]).includes(upper);
 }
 
 export type StatusAction = "reserve" | "release" | "pack" | "dispatch" | "return" | "cts" | "uncts";

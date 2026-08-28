@@ -20,7 +20,7 @@ export async function GET() {
     include: {
       project: { select: { projectCode: true, customerName: true } },
       drawing: { select: { drawingNumber: true } },
-      requirement: { select: { pieceLabel: true, description: true, length: true, width: true, sinkModel: true } },
+      requirement: { select: { pieceLabel: true, rowLetter: true, po: { select: { poNumber: true } }, description: true, length: true, width: true, sinkModel: true } },
       slab: { select: { slabCode: true, colour: true } },
       pieceOperations: { select: { operationType: true, isCompleted: true, completedAt: true } },
     },

@@ -20,6 +20,7 @@ import { parsePoPdfUpload } from "@/lib/fab/poPdf";
 import { flatRowLabel } from "@/lib/fab/flatSheetParser";
 import { PO_REQUIREMENT_SLAB_CODE } from "@/lib/fab/poParser";
 import { deriveRoutingFlags } from "@/lib/fab/requirement-derive";
+import { assignRowLetters } from "@/lib/fab/pieceNaming";
 
 // pdfjs-dist is loaded at request time from its LEGACY build and is listed in
 // next.config.mjs serverExternalPackages. Both facts only hold on the Node
@@ -85,10 +86,39 @@ export async function POST(req: Request) {
   // drift from what the release path believes.
   const flags = deriveRoutingFlags({ sinkQuantity: null });
 
-  const rows: Prisma.FabRequirementCreateManyInput[] = parsed.rows.map(r => ({
+  // THE ROW LETTERS, ASSIGNED ONCE, HERE.
+  //
+  // A letter per ordered row is the first half of the piece code
+  // {projectCode}-{LETTER}-{n}. They continue after whatever the PROJECT
+  // already uses — not the PO — because the code's root is the project code and
+  // fab_piece.piece_code is unique globally, so a second purchase order must
+  // never restart at A.
+  //
+  // Read and assigned in ONE call (assignRowLetters, not a loop of
+  // nextRowLetter) so two rows of the same import cannot be handed the same
+  // letter from a list neither has written to yet. The raw read is guarded: a
+  // database without scripts/0054 reports no letters, and every row here gets
+  // null — which renders as its imported "Row 3" label rather than a letter no
+  // stone carries.
+  let usedLetters: string[] = [];
+  try {
+    const taken = await prisma.$queryRaw<Array<{ row_letter: string | null }>>`
+      SELECT row_letter FROM fab_requirement
+      WHERE project_id = ${po.projectId} AND row_letter IS NOT NULL
+    `;
+    usedLetters = taken.map(t => t.row_letter).filter((l): l is string => !!l);
+  } catch {
+    usedLetters = [];   // 0054 not applied — see rowLabel()
+  }
+  const letters = assignRowLetters(usedLetters, parsed.rows.length);
+
+  const rows: Prisma.FabRequirementCreateManyInput[] = parsed.rows.map((r, i) => ({
     projectId: po.projectId,
     poId: po.id,
     pieceLabel: flatRowLabel(r.rowNumber),
+    // Which row of the PDF this was stays in pieceLabel above, as provenance;
+    // the LETTER is what the shop floor reads.
+    rowLetter: letters[i],
     // fab_requirement.slab_code is NOT NULL and a purchase order has no slab
     // code — the slab is the supervisor's choice, later. See the constant.
     slabCode: PO_REQUIREMENT_SLAB_CODE,

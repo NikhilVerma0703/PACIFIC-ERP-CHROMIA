@@ -20,11 +20,55 @@
 // what he asked for — and resolveSinkQuantity, which the release path reads the
 // value back with, has the last word on what actually lands in the column.
 
+// ═════════════════════════════════════════════════════════════════════════════
+// RETIRED 2026-08-25. THE SUPERVISOR NO LONGER DECIDES SINKS.
+//
+// The owner: "remove this decision from the supervisor itself about sink. If he
+// wants to change he can edit them manually, because having this and that
+// changes the complete flow."
+//
+// The sink count is now set ONCE, on the purchase order —
+// POST /api/fab/manager/pos/rows/[id]/sink — where a partial SPLITS the row in
+// two so that every row downstream is one size, one thickness, one routing.
+// This endpoint could set a partial WITHOUT splitting, which would quietly
+// re-create the mixed row that change exists to remove.
+//
+// IT ANSWERS RATHER THAN 404s. A supervisor with yesterday's tab open still has
+// the old board rendered in front of him; a 404 tells him the system is broken,
+// and a silent success would tell him a lie. 410 Gone, with the sentence that
+// says where the decision lives now.
+//
+// The original handler is preserved below the guard, per house convention.
+// ═════════════════════════════════════════════════════════════════════════════
+
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
 import { planSinkAssignment } from "@/lib/fab/sinkBoard";
 import { resolveSinkQuantity } from "@/lib/fab/requirement-derive";
+
+export async function POST(_req: NextRequest) {
+  // The gate still runs first, so this says nothing about a project to somebody
+  // who may not sign in at all.
+  const gate = await fabGate("SUPERVISOR");
+  if (!gate.ok) {
+    return Response.json(
+      { error: gate.status === 401 ? "Your session has ended — sign in again." : "Not authorized" },
+      { status: gate.status },
+    );
+  }
+  return Response.json(
+    {
+      error:
+        "Sinks are no longer set here. They are decided on the purchase order, where splitting " +
+        "a row separates the pieces with sinks from the ones without. Ask the manager to change " +
+        "it on the project's PO rows — then reload this page.",
+    },
+    { status: 410 },
+  );
+}
+
+/* THE ORIGINAL HANDLER, kept for reference.
 
 export async function POST(req: NextRequest) {
   const g = await fabGate("SUPERVISOR");
@@ -95,3 +139,10 @@ export async function POST(req: NextRequest) {
     sinkQuantity: updated.sinkQuantity,
   });
 }
+
+*/
+
+// Imports kept live so the commented handler above still reads as code rather
+// than as prose, and so restoring it is one block move. Referenced here to keep
+// the linter honest about that being deliberate.
+void prisma; void planSinkAssignment; void resolveSinkQuantity;

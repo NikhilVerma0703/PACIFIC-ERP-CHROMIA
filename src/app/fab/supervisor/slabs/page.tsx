@@ -9,14 +9,31 @@
 //
 //   1. the slab            — which one he is standing at, and how full it is
 //   2. pieces on this slab — add piece rows to it, with quantities
-//   3. sinks for those pieces — the sink board, scoped to THIS slab's rows
-//   4. send to cutting     — last, once 2 and 3 are both decided
+//   3. sinks for those pieces — READ ONLY. Decided on the PO, shown here.
+//   4. finished edges      — the supervisor's own charge to make
+//   5. send to cutting     — last, once the pieces are on the slab
 //
-// Step 3 used to be a separate screen (/fab/supervisor/sinks). It was the same
-// board, over the whole project, decided in a different sitting — which is not
-// how the work happens: he decides sinks for the pieces he is about to cut out
-// of the slab in front of him. That route now redirects here and the board lives
-// in components/fab/SinkBoard.tsx, unchanged in behaviour.
+// ON A SAMPLE ORDER IT IS THREE STEPS, not five. "No sink and fabri in the
+// samples": a sample is a flat piece of stone, so there is no sink count to show
+// and no edge charge to make — edge work IS fabrication work (pricing.ts). Steps
+// 3 and 4 are ABSENT rather than disabled, and a line in their place says why;
+// a greyed-out sink board invites somebody to wonder what is wrong with it.
+// Which order it is comes from the project's kind — lib/fab/sampleOrder.ts.
+//
+// STEP 3 STOPPED BEING A DECISION. The owner: "remove this decision from the
+// supervisor itself about sink. If he wants to change he can edit them manually,
+// because having this and that changes the complete flow."
+//
+// It had already moved twice: a separate screen (/fab/supervisor/sinks) over the
+// whole project, then a board on this card scoped to the slab in front of him.
+// Both let him set a PARTIAL — 30 of a row of 60 — which is the mixed row the
+// PO-time split now exists to remove. Two screens deciding one thing, one able
+// to undo what the other made homogeneous, is not a second chance; it is two
+// answers. So the sink count is set once, on the PO, where a partial splits the
+// row in two, and this screen only shows it.
+//
+// The board is commented out in place, and components/fab/SinkBoard.tsx is left
+// in the tree with a note at its head.
 //
 // WHY IT IS NOT THE PLANNING BOARD. That board works requirement-first: pick a
 // piece row, hand it a slab. The shop works the other way round. A slab is a
@@ -42,12 +59,34 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { FabAlerts } from "@/components/fab/FabAlerts";
 import { FabProjectSelect, useFabBoardProjects } from "@/components/fab/FabProjectSelect";
-import { SinkBoard, type SinkBoardRow } from "@/components/fab/SinkBoard";
+import { SampleCutControl, type SamplingPickLists } from "@/components/fab/SampleCutControl";
+// THE SINK BOARD IS RETIRED FROM THIS SCREEN.
+//
+// The owner: "remove this decision from the supervisor itself about sink. If he
+// wants to change he can edit them manually, because having this and that
+// changes the complete flow."
+//
+// Sinks are decided ONCE now, on the PO (manager/[projectId]/PoRequirementTable
+// -> api/fab/manager/pos/rows/[id]/sink), where a partial SPLITS the row in two
+// so every row downstream is one size, one thickness, one routing. This screen
+// still SHOWS the answer — the supervisor has to know which pieces on the slab
+// carry a sink — but it no longer sets it. The type is still imported because
+// SinkSummary reads the same row shape.
+//
+// import { SinkBoard } from "@/components/fab/SinkBoard";
+import { type SinkBoardRow } from "@/components/fab/SinkBoard";
+// THE GRAPHICAL EDGE PICKER. This one IS the supervisor's to make, and it is the
+// only place finished_edges is written.
+import { EdgeBoard, type EdgePickerRow } from "@/components/fab/EdgePicker";
+import { isSampleProject } from "@/lib/fab/sampleOrder";
+import { useSamplingPickLists } from "@/components/sampling/SampleIntakeForm";
 import { deleteJson, getJson, patchJson, postJson, type PostResult } from "@/lib/fab/postJson";
 import { useQcSlabs } from "@/lib/fab/qcSlabs";
 import { computeSlabLoss } from "@/lib/fab/slabLoss";
 import { assignedPieceCount, decideAllocation, decideSendToCutting, slabLossPieces } from "@/lib/fab/slabAssignment";
 import { describeRequirement } from "@/lib/fab/releasePlan";
+import { rowLabel } from "@/lib/fab/pieceNaming";
+import { offersReason } from "@/lib/sampling/fabIntake";
 
 /* -- Types ----------------------------------------------------------------- */
 
@@ -64,6 +103,8 @@ interface BoardRequirement {
   poNumber: string | null;
   drawingNumber: string | null;
   pieceLabel: string | null;
+  /** A, B, C … The row's letter, and what its pieces are stickered with. */
+  rowLetter: string | null;
   description: string | null;
   lengthIn: number | null;
   widthIn: number | null;
@@ -87,6 +128,10 @@ interface BoardSlabRow {
   /** fab_requirement.sink_quantity — the ORDER ROW's decision, carried on the
    *  slab view so step 3 sits under step 2. NULL = not looked at yet. */
   sinkQuantity: number | null;
+  /** fab_requirement.finished_edges — also the ORDER ROW's decision, and the
+   *  other half of what this row is worth. NULL = nobody has marked the edges,
+   *  which is NOT the same as "no edges finished". */
+  finishedEdges: string | null;
   allocatedQuantity: number;
 }
 interface BoardSlab {
@@ -97,6 +142,9 @@ interface BoardSlab {
   lengthMm: number | null;
   widthMm: number | null;
   pacificQcId: string | null;
+  /** Square feet already cut off this slab for samples — spent, not scrap,
+   *  and not available to the purchase order. */
+  sampledAreaSqft?: number | null;
   slabJobId: string | null;
   slabJobStatus: string | null;
   sent: boolean;
@@ -105,18 +153,41 @@ interface BoardSlab {
 
 /* -- Helpers --------------------------------------------------------------- */
 
-/** "PO 10026 Row 7" / "D-101 piece 2B" — the same naming the blocked-release
- *  message uses, so a row is called the same thing everywhere. */
+/** "PO 10026 A" / "D-101 piece B" — the same naming the blocked-release
+ *  message uses, so a row is called the same thing everywhere.
+ *
+ *  THE LETTER IS PASSED IN. describeRequirement leads with it deliberately —
+ *  "piece A" is what is written on the stone — and this function used to drop
+ *  it on the floor, so every row here was named by its piece_label instead. On
+ *  a sample row that label is the colour, the finish AND the size, printed
+ *  next to the size column. */
 function nameOf(r: {
   drawingNumber?: string | null; poNumber?: string | null;
-  pieceLabel?: string | null; description?: string | null;
+  pieceLabel?: string | null; rowLetter?: string | null; description?: string | null;
 }): string {
   return describeRequirement({
     drawingNumber: r.drawingNumber,
     poNumber: r.poNumber,
     pieceLabel: r.pieceLabel,
+    rowLetter: r.rowLetter,
     description: r.description,
   });
+}
+
+/**
+ * WHAT THE ROW IS OF, when the letter does not say.
+ *
+ * A sample order's rows are each a different colour and finish and there is no
+ * column for either, so "A" alone would make three rows indistinguishable. This
+ * returns the piece_label only when it adds something the letter has not
+ * already said — so a PO row shows its PDF row number, a sample row shows its
+ * colour and finish, and a row whose label IS its letter shows nothing twice.
+ */
+function qualifierOf(r: { rowLetter?: string | null; pieceLabel?: string | null }): string | null {
+  const letter = String(r.rowLetter ?? "").trim().toUpperCase();
+  if (!/^[A-Z]+$/.test(letter)) return null;   // no letter — the label is the name
+  const labelText = String(r.pieceLabel ?? "").trim();
+  return labelText && labelText.toUpperCase() !== letter ? labelText : null;
 }
 
 function dims(lengthIn: number | null, widthIn: number | null): string {
@@ -231,11 +302,66 @@ function AddSlabPicker({ busy, onPick }: { busy: boolean; onPick: (qcId: string)
   );
 }
 
+/* -- What the order says about sinks. READ ONLY ----------------------------- *
+ *
+ * The supervisor no longer decides this — the PO does, and a partial there
+ * splits the row — but he still has to know which pieces on the slab in front of
+ * him carry a sink, because it changes what he is looking at and which rows go
+ * on to fabrication.
+ *
+ * A PARTIAL ROW IS CALLED OUT rather than quietly averaged. After the PO-time
+ * split a row is homogeneous, so "18 of 60" can only be a row that predates the
+ * split — and that is worth a manager's attention, not a silent rounding.
+ */
+function SinkSummary({ rows }: { rows: SinkBoardRow[] }) {
+  if (rows.length === 0) {
+    return <p className="text-[11px] text-gray-400">No pieces on this slab yet.</p>;
+  }
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap gap-1.5">
+        {rows.map(r => {
+          const q = r.orderedQuantity;
+          const s = Math.max(0, Math.min(q, r.sinkQuantity ?? 0));
+          const all = s > 0 && s >= q;
+          const none = s === 0;
+          const skin = all
+            ? "bg-indigo-50 text-indigo-700 border-indigo-200"
+            : none
+              ? "bg-white text-gray-500 border-gray-200"
+              : "bg-amber-50 text-amber-700 border-amber-200";
+          return (
+            <span key={r.requirementId}
+              title={
+                all ? `All ${q} pieces of this row carry a sink`
+                  : none ? `No sinks on this row — it does not go to fabrication`
+                    : `${s} of ${q} pieces carry a sink. Rows are meant to be all or nothing since sinks moved to the PO — split this one there.`
+              }
+              className={`text-[10px] font-bold px-2 py-1 rounded border whitespace-nowrap ${skin}`}>
+              <span className="font-mono">{r.pieceLabel ?? "?"}</span>
+              {" · "}
+              {all ? "Sink" : none ? "Plain" : `${s} of ${q} — mixed`}
+            </span>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-gray-400">
+        {/* Where it IS changed, said plainly — otherwise the first reaction to a
+            wrong sink count is to look for a control that is no longer here. */}
+        Set on the purchase order, not here. To change one, open the project&apos;s PO
+        rows and use the Sink column &mdash; a partial there splits the row in two.
+      </p>
+    </div>
+  );
+}
+
 /* -- One slab -------------------------------------------------------------- */
 
 function SlabCard({
   slab, outstanding, projectId, busy,
-  onAddRow, onChangeRow, onRemoveRow, onSend, onRemoveSlab, onSinkQuantityChange,
+  onAddRow, onChangeRow, onRemoveRow, onSend, onRemoveSlab,
+  onFinishedEdgesChange, isSample,
+  samplingLists, onSampleOpen, onSampleSaved,
 }: {
   slab: BoardSlab;
   outstanding: BoardRequirement[];
@@ -246,7 +372,18 @@ function SlabCard({
   onRemoveRow: (allocationId: string) => Promise<void>;
   onSend: (slab: BoardSlab) => Promise<void>;
   onRemoveSlab: (slab: BoardSlab) => Promise<void>;
-  onSinkQuantityChange: (requirementId: string, sinkQuantity: number | null) => void;
+  // onSinkQuantityChange: retired with the sink board — the PO owns the sink
+  // decision now, and this screen only displays it. See the import note.
+  /** The edge decision is the ROW'S, not the slab's, so it must land on every
+   *  slab the row sits on — the same contract the sink handler used to have. */
+  onFinishedEdgesChange: (requirementId: string, finishedEdges: string | null) => void;
+  /** This project is a sample order — cut, polish, pack, and nothing else. */
+  isSample: boolean;
+  /** The sampling colour chart and size list, loaded ONCE for the whole board.
+   *  See the note where the page calls useSamplingPickLists. */
+  samplingLists: SamplingPickLists;
+  onSampleOpen: () => void;
+  onSampleSaved: (message: string) => void;
 }) {
   const [pickedId, setPickedId] = useState("");
   const [qty, setQty] = useState("");
@@ -261,6 +398,7 @@ function SlabCard({
       slabLengthMm: slab.lengthMm,
       slabWidthMm: slab.widthMm,
       pieces: slabLossPieces(slab.rows),
+      sampledAreaSqft: slab.sampledAreaSqft ?? 0,
     }),
     [slab.lengthMm, slab.widthMm, slab.rows],
   );
@@ -272,6 +410,9 @@ function SlabCard({
     overCommitted: loss.overCommitted,
     usedAreaSqft: loss.usedAreaSqft,
     slabAreaSqft: loss.slabAreaSqft,
+    // So the greyed-out button explains the sample take-off rather than blaming
+    // rows the supervisor can see and count for himself.
+    sampledAreaSqft: loss.sampledAreaSqft,
   });
 
   // STEP 3's rows: the requirement rows on THIS slab, and only those. One card
@@ -298,6 +439,29 @@ function SlabCard({
     }
     return [...byRequirement.values()];
   }, [slab.rows]);
+
+  // STEP 3b's rows: the same requirement rows, plus what they are worth. The
+  // THICKNESS comes from the SLAB, not the row — a requirement does not know
+  // what stone it will be cut from until it is on one, and the rate card is
+  // keyed on the stone (2 cm ₹15/ft, 3 cm ₹20/ft). Folded the same way, for the
+  // same reason: one card per requirement, never two.
+  const edgeRows = useMemo<EdgePickerRow[]>(() => {
+    const byRequirement = new Map<string, EdgePickerRow>();
+    for (const row of slab.rows) {
+      if (byRequirement.has(row.requirementId)) continue;
+      byRequirement.set(row.requirementId, {
+        requirementId: row.requirementId,
+        pieceLabel: row.pieceLabel,
+        lengthIn: row.lengthIn,
+        widthIn: row.widthIn,
+        orderedQuantity: row.orderedQuantity,
+        sinkQuantity: row.sinkQuantity,
+        finishedEdges: row.finishedEdges,
+        thicknessMm: slab.thicknessMm,
+      });
+    }
+    return [...byRequirement.values()];
+  }, [slab.rows, slab.thicknessMm]);
 
   const picked = outstanding.find(r => r.id === pickedId) ?? null;
   const wanted = Number(qty);
@@ -387,6 +551,26 @@ function SlabCard({
         </div>
       )}
 
+      {/* STILL STEP 1 — the other thing that can be decided about a slab the
+          moment it is picked: send it to the saw FOR SAMPLES instead of putting
+          purchase-order pieces on it. It sits here, at the tail of step 1,
+          because that is when the choice is made — not at the foot with step 4,
+          which is about the PO work this slab would then not be doing.
+          Deliberately NOT a numbered step: the four-step flow below is
+          unchanged, and this is an alternative to it rather than a fifth thing
+          to do. Nothing here creates a cutting job or touches an allocation. */}
+      {offersReason("SPECIAL_CUT", slab) && (
+        <div className="px-5 pb-3">
+          <SampleCutControl
+            reason="SPECIAL_CUT"
+            slab={{ id: slab.id, slabCode: slab.slabCode, colour: slab.colour, thicknessMm: slab.thicknessMm, pacificQcId: slab.pacificQcId }}
+            lists={samplingLists}
+            onOpen={onSampleOpen}
+            onSaved={onSampleSaved}
+          />
+        </div>
+      )}
+
       {/* STEP 2 — the pieces coming off this slab. */}
       <div className="border-t border-gray-100 px-5 py-2">
         <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-400">
@@ -468,7 +652,12 @@ function SlabCard({
               </option>
               {outstanding.map(r => (
                 <option key={r.id} value={r.id}>
-                  {nameOf(r)} · {dims(r.lengthIn, r.widthIn)} · {r.remainingQuantity} of {r.quantity} left
+                  {[
+                    nameOf(r),
+                    qualifierOf(r),
+                    dims(r.lengthIn, r.widthIn),
+                    `${r.remainingQuantity} of ${r.quantity} left`,
+                  ].filter(Boolean).join(" · ")}
                 </option>
               ))}
             </select>
@@ -502,12 +691,33 @@ function SlabCard({
         </div>
       )}
 
-      {/* STEP 3 — sinks for the pieces that are now on this slab, and only
-          those. Same board as the retired /fab/supervisor/sinks screen: click
-          or drag, the Sink column appearing on first use and gone again when
-          the last row leaves, full quantity by default, partial typed, saved on
-          every move, undoable. It writes against the ORDERED quantity, which is
-          why every row carries both numbers. */}
+      {/* STEP 3 — WHAT THE ORDER SAYS ABOUT SINKS. READ ONLY.
+          The owner: "remove this decision from the supervisor itself about sink.
+          If he wants to change he can edit them manually, because having this
+          and that changes the complete flow."
+
+          The sink board used to live here and could set a PARTIAL — 30 of a row
+          of 60 — which is exactly the mixed row the PO-time split exists to
+          remove. Two screens deciding the same thing, one of them able to undo
+          what the other just made homogeneous, is not a second chance; it is two
+          answers to one question.
+
+          So it is now decided ONCE, on the PO, where a partial splits the row in
+          two. This panel SHOWS the answer, because the supervisor still has to
+          know which pieces on the slab in front of him carry a sink — he just no
+          longer changes it here.
+
+          The old board is commented out below rather than deleted, and
+          components/fab/SinkBoard.tsx is left in the tree with a note. */}
+      {!isSample && (
+        <div className="border-t border-gray-100 px-5 py-3">
+          <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2">
+            Step 3 &middot; Sinks &mdash; as ordered
+          </h3>
+          <SinkSummary rows={sinkRows} />
+        </div>
+      )}
+      {/*
       <div className="border-t border-gray-100 px-5 py-3">
         <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2">
           Step 3 &middot; Sinks for these pieces
@@ -521,13 +731,46 @@ function SlabCard({
           onSinkQuantityChange={onSinkQuantityChange}
         />
       </div>
+      */}
 
-      {/* STEP 4 — and only now. */}
+      {/* STEP 4 — THE EDGES, and what they are worth.
+          The owner's rule: "same row all have same, so let it be — we show them
+          a graphical piece, they choose sides, and feet is calculated and paid."
+          So one diagram per ORDERED ROW, not per piece, and the running feet and
+          rupees move as he clicks. It writes fab_requirement.finished_edges, the
+          same column the CEO board bills from, through the same pricing module —
+          so what he sees here and what the CEO sees are one calculation.
+
+          Deliberately AFTER the sinks and BEFORE Send to cutting: this IS the
+          supervisor's charge to make, unlike the sink count above which the
+          order settled. It does not block the send — a row with no edge decision
+          is reported unpriced, not free. */}
+      {isSample ? (
+        /* THE TWO MISSING STEPS, NAMED. "No sink and fabri in the samples" — so
+           there is no sink count to show and no edge charge to make, because
+           edge work IS fabrication work. Saying so is the difference between a
+           board that is deliberately shorter and one that looks broken. */
+        <div className="border-t border-gray-100 px-5 py-3">
+          <p className="text-[11px] text-violet-700 bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
+            <strong>Sample order.</strong> No sinks and no fabrication on these pieces — they are
+            cut, polished and packed. Packing one puts it on the sample shelf.
+          </p>
+        </div>
+      ) : (
+        <div className="border-t border-gray-100 px-5 py-3">
+          <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2">
+            Step 4 &middot; Finished edges &mdash; click the sides that get polished
+          </h3>
+          <EdgeBoard rows={edgeRows} busy={busy} onChange={onFinishedEdgesChange} />
+        </div>
+      )}
+
+      {/* STEP 5 — and only now. */}
       {!slab.sent && (
         <div className="border-t border-gray-100 px-5 py-3 flex items-center justify-between gap-3 flex-wrap">
           <div className="min-w-0">
             <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-400">
-              Step 4 &middot; Send to cutting
+              Step {isSample ? 3 : 5} &middot; Send to cutting
             </h3>
             <p className="text-[11px] text-gray-400 mt-0.5">
               {send.ok
@@ -548,6 +791,31 @@ function SlabCard({
           </button>
         </div>
       )}
+
+      {/* AFTER THE CUT — and only after it, which is why this is not up with the
+          other control. A slab that has not been sent has no leftovers; it has
+          unused space, which is the loss figure's business. Once it HAS been
+          cut, the usable pieces that remain are the fab supervisor's to send to
+          samples, and he is the only person who knows they exist.
+
+          It replaces nothing: step 4 has already gone from this card by the time
+          this appears (the block above renders only while !slab.sent), so the
+          four steps still read 1, 2, 3, 4 in order and this is what the card
+          says afterwards. */}
+      {offersReason("OFFCUT", slab) && (
+        <div className="border-t border-gray-100 px-5 py-3">
+          <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2">
+            After the cut &middot; Leftovers
+          </h3>
+          <SampleCutControl
+            reason="OFFCUT"
+            slab={{ id: slab.id, slabCode: slab.slabCode, colour: slab.colour, thicknessMm: slab.thicknessMm, pacificQcId: slab.pacificQcId }}
+            lists={samplingLists}
+            onOpen={onSampleOpen}
+            onSaved={onSampleSaved}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -556,6 +824,11 @@ function SlabCard({
 
 export default function FabSlabAssignmentPage() {
   const { projects, projectId, setProjectId, loading: loadingProjects, error: projectsError } = useFabBoardProjects();
+  // A SAMPLE ORDER RUNS THIS SAME BOARD, minus the two steps a flat sample
+  // never sees: "no sink and fabri in the samples". The steps are not disabled,
+  // they are absent — a greyed-out sink board on a sample order invites somebody
+  // to wonder what is wrong with it.
+  const isSample = isSampleProject(projects.find(p => p.id === projectId)?.kind);
 
   const [requirements, setRequirements] = useState<BoardRequirement[]>([]);
   const [slabs, setSlabs] = useState<BoardSlab[]>([]);
@@ -564,6 +837,17 @@ export default function FabSlabAssignmentPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // THE SAMPLING PICK-LISTS, LOADED ONCE FOR THE WHOLE BOARD AND ONLY ON
+  // DEMAND. Every slab card carries a sample-stock control, so a per-card hook
+  // would fetch the 56-colour chart once per card; and most visits to this
+  // screen never open one at all, so nothing is fetched until the first control
+  // is opened (wantSamples). It is held here rather than inside SampleCutControl
+  // for the same reason the sink decision is held here: one copy, shared by
+  // every card.
+  const [wantSamples, setWantSamples] = useState(false);
+  const samplingLists = useSamplingPickLists(wantSamples);
+  const onSampleOpen = useCallback(() => setWantSamples(true), []);
 
   const load = useCallback(async () => {
     if (!projectId) { setRequirements([]); setSlabs([]); return; }
@@ -602,7 +886,12 @@ export default function FabSlabAssignmentPage() {
     await load();
   }
 
-  /**
+  /*
+   * RETIRED WITH THE SINK BOARD. Nothing on this screen writes sink_quantity any
+   * more — the PO does, and a partial there splits the row. Kept rather than
+   * deleted because it is the exact pattern onFinishedEdgesChange below follows,
+   * and the reasoning in it is the reason that one exists.
+   *
    * ONE SINK DECISION, APPLIED EVERYWHERE IT SHOWS.
    *
    * sink_quantity belongs to the REQUIREMENT, not to the slab — so a row split
@@ -615,12 +904,30 @@ export default function FabSlabAssignmentPage() {
    * It is called twice per save — optimistically, then with what the server
    * actually stored (or with the old value, if the write failed and SinkBoard
    * is putting the row back).
+   *
+   * const onSinkQuantityChange = useCallback((requirementId: string, sinkQuantity: number | null) => {
+   *   setRequirements(rs => rs.map(r => (r.id === requirementId ? { ...r, sinkQuantity } : r)));
+   *   setSlabs(ss => ss.map(s => ({
+   *     ...s,
+   *     rows: s.rows.map(row => (row.requirementId === requirementId ? { ...row, sinkQuantity } : row)),
+   *   })));
+   * }, []);
    */
-  const onSinkQuantityChange = useCallback((requirementId: string, sinkQuantity: number | null) => {
-    setRequirements(rs => rs.map(r => (r.id === requirementId ? { ...r, sinkQuantity } : r)));
+
+  /**
+   * ONE EDGE DECISION, APPLIED EVERYWHERE IT SHOWS.
+   *
+   * Identical to the sink handler above, and for the identical reason:
+   * finished_edges belongs to the REQUIREMENT. A row split across five slabs
+   * gets its edges polished once, so the picker under slab 1 has just changed
+   * what the picker under slab 4 must show — and the running feet under slab 4
+   * with it, or the same row would appear to be worth two different amounts on
+   * one screen.
+   */
+  const onFinishedEdgesChange = useCallback((requirementId: string, finishedEdges: string | null) => {
     setSlabs(ss => ss.map(s => ({
       ...s,
-      rows: s.rows.map(row => (row.requirementId === requirementId ? { ...row, sinkQuantity } : row)),
+      rows: s.rows.map(row => (row.requirementId === requirementId ? { ...row, finishedEdges } : row)),
     })));
   }, []);
 
@@ -724,7 +1031,16 @@ export default function FabSlabAssignmentPage() {
                   outstanding={outstanding}
                   projectId={projectId}
                   busy={busy}
-                  onSinkQuantityChange={onSinkQuantityChange}
+                  onFinishedEdgesChange={onFinishedEdgesChange}
+                  isSample={isSample}
+                  samplingLists={samplingLists}
+                  onSampleOpen={onSampleOpen}
+                  // The board is NOT reloaded after a sample intake: nothing on
+                  // it changes. No allocation is written, no slab state moves,
+                  // and the loss figure is about the PO pieces on the slab. A
+                  // refresh here would only make the screen flicker and hide the
+                  // confirmation the supervisor is reading.
+                  onSampleSaved={setNotice}
                   onAddRow={(slabId, requirementId, quantity) => run(
                     () => postJson("/api/fab/supervisor/slab-assignment", {
                       action: "assign", slabId, requirementId, allocatedQuantity: quantity,
@@ -794,8 +1110,20 @@ export default function FabSlabAssignmentPage() {
                   {requirements.map(r => (
                     <tr key={r.id} className={r.remainingQuantity === 0 ? "bg-green-50/40" : "hover:bg-gray-50/60"}>
                       <td className="px-4 py-2 text-gray-400">{r.poNumber ?? r.drawingNumber ?? "—"}</td>
-                      <td className="px-4 py-2 font-mono font-bold text-gray-800">
-                        {r.pieceLabel ?? r.description ?? "—"}
+                      {/* THE LETTER, then what the row is of. The letter is what
+                          the stone is stickered with, so it leads; the colour
+                          and finish sit under it in grey because on a sample
+                          order three rows would otherwise read A, B, C with
+                          nothing to tell them apart. */}
+                      <td className="px-4 py-2">
+                        <span className="font-mono font-bold text-gray-800">
+                          {rowLabel(r.rowLetter, r.pieceLabel ?? r.description)}
+                        </span>
+                        {qualifierOf(r) && (
+                          <span className="block text-[11px] text-gray-400 font-normal">
+                            {qualifierOf(r)}
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-2 font-mono text-gray-600">{dims(r.lengthIn, r.widthIn)}</td>
                       <td className="px-4 py-2 text-gray-700">{r.quantity}</td>

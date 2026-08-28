@@ -49,9 +49,21 @@ export interface StageCounts {
   sinkCutting: number;
   fabrication: number;
   packaging: number;
-  /** Pieces finished at any stage that day. A piece is counted once per stage
-   *  it passes, so this is "operations completed", not "distinct pieces". */
-  total: number;
+  /**
+   * STAGE COMPLETIONS THAT DAY — not pieces, and the name says so now.
+   *
+   * One piece that is cut, polished, sink-cut, fabricated and packed counts
+   * FIVE times here. That is the right number for "how much work did the floor
+   * do", and the wrong number for "how many pieces did we make": on 25 Aug the
+   * columns read 238 cut, 3 polished, 3 sink, 3 fab, 3 packed, and a column
+   * headed "Total" showing 250 invited everyone to read it as 250 pieces. There
+   * were 238, three of which went all the way through.
+   *
+   * It was called `total` and the screen printed it under "Total" with a
+   * "/ day avg" beneath. Renaming it is the fix: a field called `operations`
+   * cannot be quietly summed into a piece count.
+   */
+  operations: number;
 }
 
 export interface StageDayRow extends StageCounts {
@@ -197,7 +209,7 @@ export function resolveRange(input: RangeInput): { from: string; to: string } {
 }
 
 function emptyCounts(): StageCounts {
-  return { cutting: 0, polishing: 0, sinkCutting: 0, fabrication: 0, packaging: 0, total: 0 };
+  return { cutting: 0, polishing: 0, sinkCutting: 0, fabrication: 0, packaging: 0, operations: 0 };
 }
 
 export interface BuildInput {
@@ -212,6 +224,7 @@ export interface BuildInput {
 }
 
 /** The series: one row per calendar day, plus the totals for the range.
+ *  `operations` is stage completions, NOT distinct pieces — see StageCounts.
  *
  *  Buckets outside [from, to] are dropped rather than folded into the nearest
  *  edge, so the totals row is always exactly the sum of the rows printed above
@@ -229,7 +242,7 @@ export function buildStageSeries(input: BuildInput): StageSeries {
     if (!field) continue; // an operation_type this dashboard does not print
     const n = safeCount(b.count);
     row[field] += n;
-    row.total += n;
+    row.operations += n;
   }
 
   for (const b of input.cuts ?? []) {
@@ -237,7 +250,7 @@ export function buildStageSeries(input: BuildInput): StageSeries {
     if (!row) continue;
     const n = safeCount(b.pieces);
     row.cutting += n;
-    row.total += n;
+    row.operations += n;
   }
 
   const totals = emptyCounts();
@@ -248,7 +261,7 @@ export function buildStageSeries(input: BuildInput): StageSeries {
     totals.sinkCutting += r.sinkCutting;
     totals.fabrication += r.fabrication;
     totals.packaging += r.packaging;
-    totals.total += r.total;
+    totals.operations += r.operations;
   }
 
   return {

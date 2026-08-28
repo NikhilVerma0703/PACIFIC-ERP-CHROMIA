@@ -83,6 +83,10 @@ export function buildReleasePlan(input: ReleasePlanInput): ReleasePlan {
 // seven rows the server has already identified. Name them.
 
 export interface UnresolvedRequirement {
+  /** fab_requirement.row_letter — the name every piece of this row carries
+   *  ({projectCode}-{LETTER}-{n}). Preferred over pieceLabel wherever it
+   *  exists, so a refusal names the row the way the floor does. */
+  rowLetter?: string | null;
   drawingNumber?: string | null;
   /** The customer's purchase order number, for rows that came off a PO PDF
    *  rather than a drawing. Those have no drawing at all. */
@@ -96,7 +100,11 @@ export interface UnresolvedRequirement {
 export function describeRequirement(r: UnresolvedRequirement): string {
   const drawing = r.drawingNumber?.trim();
   const po = r.poNumber?.trim();
-  const label = r.pieceLabel?.trim() || r.description?.trim();
+  // The LETTER first: it is what the pieces are named after, so a message
+  // that says "piece A" matches the sticker. "Row 3" only survives for rows
+  // imported before scripts/0054.
+  const letter = r.rowLetter?.trim().toUpperCase();
+  const label = (letter && /^[A-Z]+$/.test(letter) ? letter : null) || r.pieceLabel?.trim() || r.description?.trim();
   if (drawing && label) return `${drawing} piece ${label}`;
   if (drawing) return `drawing ${drawing}`;
   // A PO row's handle is the customer's PO number and the PDF row number
@@ -162,9 +170,16 @@ export function describeUnresolvedRequirements(
 /** How the pieces of one requirement are numbered inside a project:
  *  `{projectCode}-{NNNN}`. Four digits pads a 902-piece project comfortably and
  *  a bigger one simply gets a longer number — it stays unique either way. */
-export function formatPieceCode(projectCode: string, n: number): string {
-  return `${projectCode}-${String(n).padStart(4, "0")}`;
-}
+// RETIRED 2026-08 — replaced by lib/fab/pieceNaming.ts.
+//
+// This minted {projectCode}-{NNNN} ("PRJ1-0007"), one sequence across a whole
+// project, which said nothing about which ordered row a piece belonged to. The
+// owner's format is {projectCode}-{LETTER}-{n} — a letter per row, a number per
+// piece — so a cutter reading a piece of stone knows the row without a lookup.
+//
+// export function formatPieceCode(projectCode: string, n: number): string {
+//   return `${projectCode}-${String(n).padStart(4, "0")}`;
+// }
 
 /**
  * Where the piece counter resumes.
@@ -178,16 +193,19 @@ export function formatPieceCode(projectCode: string, n: number): string {
  * the cutting queue used to mint `{projectCode}-{label}-{NNN}-{slabSuffix}`,
  * and a tail like "2B-003-9f1c" is not a number this counter can continue.
  */
-export function nextPieceNumber(projectCode: string, existingPieceCodes: string[]): number {
-  const prefix = `${projectCode}-`;
-  let next = 1;
-  for (const code of existingPieceCodes ?? []) {
-    if (typeof code !== "string" || !code.startsWith(prefix)) continue;
-    const tail = code.slice(prefix.length);
-    if (/^\d+$/.test(tail)) next = Math.max(next, Number(tail) + 1);
-  }
-  return next;
-}
+// RETIRED 2026-08 — superseded by nextPieceNumberInRow in
+// lib/fab/pieceNaming.ts, which resumes a ROW rather than a project.
+//
+// export function nextPieceNumber(projectCode: string, existingPieceCodes: string[]): number {
+//   const prefix = `${projectCode}-`;
+//   let next = 1;
+//   for (const code of existingPieceCodes ?? []) {
+//     if (typeof code !== "string" || !code.startsWith(prefix)) continue;
+//     const tail = code.slice(prefix.length);
+//     if (/^\d+$/.test(tail)) next = Math.max(next, Number(tail) + 1);
+//   }
+//   return next;
+// }
 
 /** Whole, non-negative pieces. Junk (NaN, null, -1, 1.6) can never widen a loop
  *  or mint a piece nobody ordered. */
@@ -241,28 +259,42 @@ export interface SlabReleaseRow {
   sinksAlreadyCreated: number;
   /** fab_requirement.sink_quantity, raw. */
   sinkQuantity: number | null | undefined;
+  /** fab_requirement.row_letter — the row's letter in {project}-{LETTER}-{n}.
+   *  See lib/fab/pieceNaming.ts. */
+  rowLetter: string;
+  /** Where THIS ROW's numbering resumes: nextPieceNumberInRow(...). A row is
+   *  not cut in one go — 28 pieces can be 12 on one slab and 16 on the next —
+   *  and piece_code is @unique globally, so a restart at 1 fails to insert. */
+  nextNumberInRow: number;
 }
 
 export interface SlabReleaseInput {
-  /** fab_project.project_code — the piece-code prefix. */
-  projectCode: string;
-  /** First piece number to use; see nextPieceNumber. */
-  startNumber: number;
-  /** The rows on this slab, in the order they were put on it. */
+  /** The rows on this slab, in the order they were put on it. Each carries its
+   *  OWN letter and its own resume number: numbering is per row now, not one
+   *  sequence across the project. */
   rows: SlabReleaseRow[];
 }
 
 export interface PlannedSlabPiece {
   requirementId: string;
-  pieceCode: string;
+  /** The row's letter in {projectCode}-{LETTER}-{n}. */
+  rowLetter: string;
+  /** This piece's number WITHIN ITS ROW. */
+  n: number;
   hasSink: boolean;
 }
+
+// THE PLAN EMITS THE PARTS, NOT THE STRING, and that is deliberate.
+//
+// This module imports nothing (the rule at the top of the file), so it cannot
+// call formatPieceCode in lib/fab/pieceNaming.ts — and writing the format out a
+// second time here is precisely how the shop floor ended up carrying two
+// incompatible piece codes at once. The caller has both modules in scope and
+// does the formatting, so the format lives in exactly one place.
 
 export interface SlabReleasePlan {
   /** One entry per fab_piece to create, in cut order. */
   pieces: PlannedSlabPiece[];
-  /** The number the NEXT slab of this project starts its codes from. */
-  nextNumber: number;
   /** Rows released short of what the slab claimed — the allocation data is
    *  wrong and someone has to look at it, but the rest of the slab still goes. */
   warnings: string[];
@@ -284,8 +316,6 @@ export function planSlabRelease(input: SlabReleaseInput): SlabReleasePlan {
   const pieces: PlannedSlabPiece[] = [];
   const warnings: string[] = [];
   const blocked: { name: string; orderedQuantity: number }[] = [];
-
-  let n = Number.isFinite(input.startNumber) ? Math.max(1, Math.floor(input.startNumber)) : 1;
 
   for (const row of input.rows ?? []) {
     const ordered = whole(row.orderedQuantity);
@@ -317,10 +347,13 @@ export function planSlabRelease(input: SlabReleaseInput): SlabReleasePlan {
       piecesOnThisSlab: toCreate,
     });
 
+    // Per row, resuming where this row left off on any earlier slab.
+    let n = Number.isFinite(row.nextNumberInRow) ? Math.max(1, Math.floor(row.nextNumberInRow)) : 1;
     for (let i = 0; i < toCreate; i++) {
       pieces.push({
         requirementId: row.requirementId,
-        pieceCode: formatPieceCode(input.projectCode, n++),
+        rowLetter: row.rowLetter,
+        n: n++,
         // The sinks go on the first pieces this slab makes, which is what makes
         // the top-up across slabs come out at exactly sink_quantity.
         hasSink: i < sinksHere,
@@ -328,7 +361,7 @@ export function planSlabRelease(input: SlabReleaseInput): SlabReleasePlan {
     }
   }
 
-  return { pieces, nextNumber: n, warnings, blocked };
+  return { pieces, warnings, blocked };
 }
 
 /**

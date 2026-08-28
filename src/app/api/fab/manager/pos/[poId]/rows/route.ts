@@ -7,6 +7,7 @@ import { fabGate } from "@/lib/fab/access";
 import { PO_REQUIREMENT_SLAB_CODE } from "@/lib/fab/poParser";
 import { deriveRoutingFlags } from "@/lib/fab/requirement-derive";
 import { parseRequirementRowInput, rowSqft } from "@/lib/fab/requirementRow";
+import { nextRowLetter } from "@/lib/fab/pieceNaming";
 
 export async function GET(
   _req: Request,
@@ -34,9 +35,15 @@ export async function GET(
     select: {
       id: true,
       pieceLabel: true,
+      rowLetter: true,
       length: true,
       width: true,
       quantity: true,
+      // The sink decision now STARTS HERE rather than on the shop floor, and a
+      // partial SPLITS the row in two — see rows/[id]/sink. The screen needs the
+      // current count both to draw the control and to plan a split with the same
+      // module the route uses, so the button and the server cannot disagree.
+      sinkQuantity: true,
       totalSqft: true,
       notes: true,
       allocations: { select: { allocatedQuantity: true } },
@@ -50,9 +57,16 @@ export async function GET(
       return {
         id: r.id,
         pieceLabel: r.pieceLabel,
+        // The row's LETTER — what every piece cut from it is named after
+        // ({projectCode}-{LETTER}-{n}). Null for rows imported before 0054.
+        rowLetter: r.rowLetter,
         length: r.length,
         width: r.width,
         quantity: r.quantity,
+        /** fab_requirement.sink_quantity. NULL = nobody has decided, which is a
+         *  different fact from 0 and is drawn differently. After a split a row
+         *  is homogeneous: this is either 0 or equal to quantity. */
+        sinkQuantity: r.sinkQuantity,
         totalSqft: r.totalSqft,
         notes: r.notes,
         allocatedQty,
@@ -101,11 +115,33 @@ export async function POST(
   const sq = rowSqft(v.lengthIn, v.widthIn, v.quantity);
 
   const row = await prisma.$transaction(async (tx) => {
+    // A HAND-ADDED ROW NEEDS A LETTER TOO.
+    //
+    // Without one its pieces fall back to a letter derived from the row's
+    // POSITION, which can land on a letter another row already stores — and two
+    // rows sharing a letter means two piece codes that collide on a UNIQUE
+    // column, so the send fails rather than merely mislabelling.
+    //
+    // Read INSIDE the transaction so two managers adding a row at the same
+    // moment cannot both read the same maximum and be handed the same letter.
+    let taken: string[] = [];
+    try {
+      const used = await tx.$queryRaw<Array<{ row_letter: string | null }>>`
+        SELECT row_letter FROM fab_requirement
+        WHERE project_id = ${po.projectId} AND row_letter IS NOT NULL
+        FOR UPDATE
+      `;
+      taken = used.map(u => u.row_letter).filter((l): l is string => !!l);
+    } catch {
+      taken = [];   // scripts/0054 not applied — the row keeps its label only
+    }
+
     const created = await tx.fabRequirement.create({
       data: {
         projectId: po.projectId,
         poId: po.id,
         pieceLabel: v.pieceLabel,
+        rowLetter: nextRowLetter(taken),
         slabCode: PO_REQUIREMENT_SLAB_CODE,
         length: v.lengthIn,
         width: v.widthIn,

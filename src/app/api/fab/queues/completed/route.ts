@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
 import { workersForOperations, workersForSlabJobs } from "@/lib/fab/workerLookups";
+import { rowLabel } from "@/lib/fab/pieceNaming";
 
 export async function GET(req: Request) {
   const g = await fabGate("EMPLOYEE");
@@ -62,7 +63,7 @@ export async function GET(req: Request) {
           include: {
             project:     { select: { projectCode: true, customerName: true } },
             drawing:     { select: { drawingNumber: true } },
-            requirement: { select: { pieceLabel: true, description: true, length: true, width: true } },
+            requirement: { select: { pieceLabel: true, rowLetter: true, description: true, length: true, width: true, po: { select: { poNumber: true } } } },
             slab:        { select: { slabCode: true, colour: true } },
           },
         },
@@ -104,7 +105,7 @@ export async function GET(req: Request) {
                 project: { select: { projectCode: true } },
                 requirementAllocations: {
                   include: {
-                    requirement: { select: { pieceLabel: true, length: true, width: true } },
+                    requirement: { select: { pieceLabel: true, rowLetter: true, length: true, width: true, po: { select: { poNumber: true } } } },
                   },
                 },
               },
@@ -175,7 +176,9 @@ export async function GET(req: Request) {
     pieceCode:     op.piece.pieceCode,
     projectCode:   op.piece.project.projectCode,
     drawingNumber: op.piece.drawing?.drawingNumber ?? null,
-    pieceLabel:    op.piece.requirement?.pieceLabel ?? op.piece.requirement?.description ?? null,
+    // The row LETTER — the same name the piece code is built from.
+    pieceLabel:    rowLabel(op.piece.requirement?.rowLetter, op.piece.requirement?.pieceLabel ?? op.piece.requirement?.description),
+    poNumber:      op.piece.requirement?.po?.poNumber ?? null,
     length:        op.piece.requirement?.length ?? null,
     width:         op.piece.requirement?.width  ?? null,
     slabCode:      op.piece.slab?.slabCode ?? null,

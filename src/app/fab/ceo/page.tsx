@@ -1,5 +1,11 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
+import { rowLabel } from "@/lib/fab/pieceNaming";
+import { CeoOverviewBoard } from "@/components/fab/CeoOverviewBoard";
+// GRADE AND MARK ARE TWO QUESTIONS, SO TWO CHIPS — components/fab/SlabChips.tsx.
+// "CTS is not a grade, it's a mark. Marks should be full slab, CTS, sample."
+import { GradeChip, MarkChip } from "@/components/fab/SlabChips";
+import { FabPeriodReport } from "@/components/fab/FabPeriodReport";
 
 const TYPE_META: Record<string, { label: string; color: string; bg: string }> = {
   CUTTING:      { label: "Cutting",      color: "#3b82f6", bg: "#eff6ff" },
@@ -33,6 +39,31 @@ function fmtDuration(mins: number) {
   if (mins < 60) return `${mins}m`;
   return `${Math.floor(mins / 60)}h ${mins % 60}m`;
 }
+// RETIRED — replaced by GradeChip + MarkChip from components/fab/SlabChips.tsx.
+//
+// It coloured by FIRST LETTER, so 'CTS' — which markQcSlabCts writes into the
+// grade column when fabrication takes a slab — came out red, indistinguishable
+// from grade C, the worst verdict there is. Every fabrication slab on the board
+// looked like a reject. The fix is not a better colour rule here; it is that
+// the two facts are separate:
+//
+//   GRADE  A / A2 / B / C            how good the stone is
+//   MARK   FULL_SLAB / CTS / SAMPLE  what became of it
+//
+// Kept rather than deleted, per house convention, so the old rendering is
+// readable beside the new one.
+//
+// function QcGrade({ grade }: { grade?: string | null }) {
+//   const g = String(grade ?? "").trim().toUpperCase();
+//   if (!g) return <span className="text-slate-300">—</span>;
+//   const skin =
+//     g.startsWith("A") ? "bg-emerald-50 text-emerald-700 border-emerald-200" :
+//     g.startsWith("B") ? "bg-amber-50 text-amber-700 border-amber-200" :
+//     g.startsWith("C") ? "bg-red-50 text-red-600 border-red-200" :
+//                         "bg-slate-50 text-slate-600 border-slate-200";
+//   return <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${skin}`}>{g}</span>;
+// }
+
 function mm2ToSqft(mm2: number) { return (mm2 / 92903).toFixed(2); }
 
 type StageFlag = "na" | "pending" | "done" | "rejected";
@@ -42,6 +73,12 @@ interface SlabBoardPiece {
 }
 interface SlabBoard {
   slabId: string; slabCode: string; colour: string | null; projectCode: string;
+  /** polish_qc.quality_grade — A / B / C. */
+  qualityGrade?: string | null;
+  /** polish_qc.slab_mark — FULL_SLAB / CTS / SAMPLE. What became of the slab. */
+  slabMark?: string | null;
+  /** polish_qc.quality_grade_before_cts — the verdict fabrication overwrote. */
+  gradeBeforeCts?: string | null;
   total: number; packaged: number; rejected: number; waitingCut: number; inProcess: number;
   pieces: SlabBoardPiece[];
 }
@@ -53,15 +90,41 @@ function StageDot({ flag }: { flag: StageFlag }) {
 }
 
 interface MachineStat { machineId: string; name: string; type: string; code: string; isActive: boolean; isIdle: boolean; currentOperator: string | null; sessionId: string | null; piecesToday: number; pendingCount: number }
-interface SlabWastage { slabId: string; slabCode: string; pacificQcId: string; projectCode: string; wastePct: number; pieceCount: number; slabAreaMm2: number; piecesAreaMm2: number }
+interface SlabWastage {
+  slabId: string; slabCode: string; pacificQcId: string; projectCode: string;
+  wastePct: number; pieceCount: number; slabAreaMm2: number; piecesAreaMm2: number;
+  /** polish_qc.quality_grade — A / B / C, the polishing line's verdict on the
+   *  stone. 13% wastage on a grade C slab is a different conversation from the
+   *  same figure on grade A, which is why it belongs beside the number. */
+  qualityGrade?: string | null;
+  /** polish_qc.slab_mark — FULL_SLAB / CTS / SAMPLE. A DIFFERENT FACT from the
+   *  grade: a grade C slab cut to size is grade C AND CTS. Null before
+   *  scripts/0057, and the chip falls back to the legacy qualityGrade signal. */
+  slabMark?: string | null;
+  /** polish_qc.quality_grade_before_cts — the verdict as it was before
+   *  fabrication overwrote quality_grade with 'CTS' (scripts/0056). */
+  gradeBeforeCts?: string | null;
+  /** polish_qc.design — the colour, as QC named it. */
+  design?: string | null;
+}
 interface MachineLeaderEntry { operatorId: string; operatorName: string; machineName: string | null; piecesDay: number; slabsDay: number; avgCutMinutes: number | null; fastestCutMinutes: number | null; slowestCutMinutes: number | null }
 interface OperatorDay {
   operatorId: string; operatorName: string;
   sessions: Array<{ machineName: string; machineType: string; loginTime: string; logoutTime: string | null; isActive: boolean; durationMinutes: number }>;
   totalMinutes: number; piecesByType: Record<string, number>;
 }
-interface StageCounts { cutting: number; polishing: number; sinkCutting: number; fabrication: number; packaging: number; total: number }
+/** Mirrors lib/fab/stageSeries.ts. `operations` is STAGE COMPLETIONS, not
+ *  pieces: one piece cut, polished, sink-cut, fabricated and packed counts five
+ *  times. It was called `total`, printed under a "Total" heading with a
+ *  "/ day avg" beneath, and read as a piece count by everyone who saw it. */
+interface StageCounts { cutting: number; polishing: number; sinkCutting: number; fabrication: number; packaging: number; operations: number }
 interface StageDayRow extends StageCounts { date: string }
+/** Ordered rows with everything lib/fab/pricing.ts needs — see the CEO route. */
+interface PricingRowDto {
+  projectCode: string; rowLetter: string | null; pieceLabel: string | null;
+  lengthIn: number | null; widthIn: number | null; quantity: number;
+  sinkQuantity: number | null; thicknessMm: number | null; finishedEdges: string | null;
+}
 /** Date-wise, stage-wise completions. `rows` always covers every calendar day
  *  in [from, to] — a day nothing happened on is a row of zeros, not a gap.
  *  Null when the API could not build it; the panel says so rather than
@@ -85,10 +148,16 @@ interface CeoData {
   pendingByType: Record<string, number>;
   cloSlabsPending: number;
   slabWastage: SlabWastage[];
+  pricingRows?: PricingRowDto[];
   slabBoard?: SlabBoard[];
   idleAlerts: Array<{ sessionId: string; operatorName: string; machineType: string; machineName: string; idleMinutes: number; hasPendingJobs: boolean; pendingCount: number; lastActivity: string }>;
   dailyThroughput: { cutting: number; polishing: number; sinkCutting: number; fabrication: number; packaging: number };
   stageSeries: StageSeries | null;
+  /** One row per (day, ordered row): what was packed and what it earned. Folded
+   *  into day / week / month on this screen — see FabPeriodReport. */
+  periodMoney?: Array<{ dayKey: string; edgeCost: number; sinkCost: number; piecesPacked: number }>;
+  /** The window the series covers, so the report shows its empty days. */
+  stageRange?: { from: string; to: string } | null;
   operatorsToday: OperatorDay[];
   downtimeLog?: CeoDowntime[];
 }
@@ -276,7 +345,7 @@ export default function CeoDashboard() {
   const [loading,     setLoading]     = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [error,       setError]       = useState("");
-  const [tab,           setTab]           = useState<"overview"|"flow"|"slabs"|"operators"|"downtime">("overview");
+  const [tab,           setTab]           = useState<"overview"|"report"|"flow"|"slabs"|"operators"|"downtime">("overview");
   const [dateFilter,    setDateFilter]    = useState(todayStr());
   // Two working weeks ending on the selected date — see DEFAULT_RANGE_DAYS in
   // src/lib/fab/stageSeries.ts for why. Only the new breakdown reads this;
@@ -346,12 +415,12 @@ export default function CeoDashboard() {
   if (error)   return <div className="flex items-center justify-center h-64 text-red-400 text-sm">{error}</div>;
   if (!data)   return null;
 
-  const { activeSessions, pieceFunnel, projectProgress, machineLeaderboard, machineStats, pendingByType, cloSlabsPending, slabWastage, slabBoard = [], idleAlerts, dailyThroughput, stageSeries, operatorsToday, downtimeLog = [] } = data;
+  const { activeSessions, pieceFunnel, projectProgress, machineLeaderboard, machineStats, pendingByType, cloSlabsPending, slabWastage, pricingRows = [], slabBoard = [], idleAlerts, dailyThroughput, stageSeries, periodMoney = [], stageRange = null, operatorsToday, downtimeLog = [] } = data;
   const openDowntime = downtimeLog.filter(d => d.open);
   const isToday = dateFilter === todayStr();
   // Busiest day in the range, so every bar below is drawn to the same scale.
   // Hoisted out of the row loop: the range can be 92 days.
-  const stagePeak = stageSeries ? Math.max(1, ...stageSeries.rows.map(r => r.total)) : 1;
+  const stagePeak = stageSeries ? Math.max(1, ...stageSeries.rows.map(r => r.operations)) : 1;
 
   const funnelSteps = [
     { label: "Pending",     count: pieceFunnel.pending,     color: "#94a3b8" },
@@ -398,10 +467,16 @@ export default function CeoDashboard() {
 
       {/* Tab switcher */}
       <div className="flex gap-1 bg-slate-100 rounded-xl p-1 w-fit">
-        {(["overview","slabs","flow","operators","downtime"] as const).map(t => (
+        {(["overview","report","slabs","flow","operators","downtime"] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition ${tab === t ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+            {/* EVERY TAB IN THE LIST NEEDS ITS OWN BRANCH HERE. This chain
+                ends in a bare else that says "Operators", so a tab added above
+                without a label does not look broken — it appears as a SECOND
+                Operators button. That is exactly what happened to Report, and
+                it is worse than a blank one because nothing looks wrong. */}
             {t === "overview" ? "Overview"
+              : t === "report" ? "Report"
               : t === "flow" ? "Live Flow"
               : t === "slabs" ? `Slabs${slabBoard.length ? ` (${slabBoard.length})` : ""}`
               : t === "downtime" ? `Downtime${openDowntime.length ? ` (${openDowntime.length} open)` : downtimeLog.length ? ` (${downtimeLog.length})` : ""}`
@@ -413,6 +488,14 @@ export default function CeoDashboard() {
       {/* ── OVERVIEW TAB ── */}
       {tab === "overview" && (
         <div className="space-y-5">
+          {/* PROJECT AND SLAB FIRST, WORKERS BELOW.
+              The owner's order: the tiles and the project tree are what this
+              screen is for; who is clocked in is context underneath it. Every
+              figure comes from lib/fab/ceoOverview.ts and lib/fab/pricing.ts —
+              nothing is computed in the template, which is how the old
+              "Total" column came to disagree with its own rows. */}
+          <CeoOverviewBoard slabWastage={slabWastage} pricingRows={pricingRows} />
+
           {isToday && openDowntime.length > 0 && (
             <div className="space-y-2">
               {openDowntime.map(d => (
@@ -586,13 +669,14 @@ export default function CeoDashboard() {
             <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
               <div>
                 <h2 className="text-sm font-bold text-slate-900">Completed by Day and Stage</h2>
+                <span className="text-[11px] text-slate-400">one piece counts once per stage it passes</span>
                 <p className="text-xs text-slate-400 mt-0.5">
                   {stageSeries
                     ? `${fmtDayLabel(stageSeries.from)} to ${fmtDayLabel(stageSeries.to)} · ${stageSeries.days} days`
                     : "Pieces finished at each stage, per day"}
                 </p>
               </div>
-              {stageSeries && stageSeries.totals.total > 0 && (
+              {stageSeries && stageSeries.totals.operations > 0 && (
                 <div className="flex items-center gap-3 text-xs">
                   {STAGE_COLS.map(c => (
                     <span key={c.key} className="flex items-center gap-1.5">
@@ -616,7 +700,10 @@ export default function CeoDashboard() {
                     <tr className="text-xs text-slate-400 border-b border-slate-100">
                       <th className="text-left font-medium pb-2 pl-1">Date</th>
                       {STAGE_COLS.map(c => <th key={c.key} className="text-right font-medium pb-2 w-16">{c.label}</th>)}
-                      <th className="text-right font-medium pb-2 w-16">Total</th>
+                      {/* NOT "Total". One piece cut, polished, sink-cut, fabricated and
+                          packed counts five times — 238+3+3+3+3 = 250 is stage
+                          completions, not 250 pieces. See StageCounts.operations. */}
+                      <th className="text-right font-medium pb-2 w-20" title="Stage completions — one piece counts once per stage it passes">Ops</th>
                       <th className="pb-2 pl-4 w-2/5"></th>
                     </tr>
                   </thead>
@@ -626,7 +713,7 @@ export default function CeoDashboard() {
                       // range (stagePeak), drawn with plain divs — the same way
                       // the funnel and project bars on this page already are.
                       // No chart library is involved.
-                      const quiet = r.total === 0;
+                      const quiet = r.operations === 0;
                       return (
                         <tr key={r.date} className={quiet ? "bg-slate-50/50" : ""}>
                           <td className="py-1.5 pl-1 text-xs text-slate-600 whitespace-nowrap">{fmtDayLabel(r.date)}</td>
@@ -635,11 +722,11 @@ export default function CeoDashboard() {
                               {r[c.key]}
                             </td>
                           ))}
-                          <td className={`py-1.5 text-right font-bold tabular-nums ${quiet ? "text-slate-300" : "text-slate-800"}`}>{r.total}</td>
+                          <td className={`py-1.5 text-right font-bold tabular-nums ${quiet ? "text-slate-300" : "text-slate-800"}`}>{r.operations}</td>
                           <td className="py-1.5 pl-4">
-                            <div className="flex h-3 rounded-full overflow-hidden bg-slate-100" style={{ width: `${(r.total / stagePeak) * 100}%`, minWidth: r.total > 0 ? "2px" : "0" }}>
+                            <div className="flex h-3 rounded-full overflow-hidden bg-slate-100" style={{ width: `${(r.operations / stagePeak) * 100}%`, minWidth: r.operations > 0 ? "2px" : "0" }}>
                               {STAGE_COLS.map(c => r[c.key] > 0 && (
-                                <div key={c.key} className={c.bar} style={{ width: `${(r[c.key] / r.total) * 100}%` }}
+                                <div key={c.key} className={c.bar} style={{ width: `${(r[c.key] / r.operations) * 100}%` }}
                                   title={`${c.label} ${r[c.key]}`}></div>
                               ))}
                             </div>
@@ -650,13 +737,13 @@ export default function CeoDashboard() {
                   </tbody>
                   <tfoot>
                     <tr className="border-t-2 border-slate-200 font-bold text-slate-900">
-                      <td className="pt-2 pl-1 text-xs">Total</td>
+                      <td className="pt-2 pl-1 text-xs">Total ops</td>
                       {STAGE_COLS.map(c => (
                         <td key={c.key} className="pt-2 text-right tabular-nums">{stageSeries.totals[c.key]}</td>
                       ))}
-                      <td className="pt-2 text-right tabular-nums">{stageSeries.totals.total}</td>
+                      <td className="pt-2 text-right tabular-nums">{stageSeries.totals.operations}</td>
                       <td className="pt-2 pl-4 text-xs font-normal text-slate-400">
-                        {Math.round((stageSeries.totals.total / Math.max(1, stageSeries.days)) * 10) / 10} / day avg
+                        {Math.round((stageSeries.totals.operations / Math.max(1, stageSeries.days)) * 10) / 10} ops / day
                       </td>
                     </tr>
                   </tfoot>
@@ -710,6 +797,16 @@ export default function CeoDashboard() {
       )}
 
       {/* ── LIVE FLOW TAB ── */}
+      {/* ── REPORT TAB ──
+          "There is report in the full project, same like I need that type for
+          my fabrication module — day wise, month wise, weekly, along with
+          pricing." One payload, three grains folded on the client, so switching
+          costs no request and a week cannot be built from different data than
+          the days beneath it. */}
+      {tab === "report" && (
+        <FabPeriodReport days={stageSeries?.rows ?? null} money={periodMoney} range={stageRange} />
+      )}
+
       {tab === "flow" && (
         <div className="space-y-4">
           {/* Non-linear flow:
@@ -970,6 +1067,8 @@ export default function CeoDashboard() {
               <details key={s.slabId} className="bg-white rounded-xl border border-slate-100 overflow-hidden" open={s.inProcess + s.waitingCut > 0}>
                 <summary className="px-5 py-3 cursor-pointer hover:bg-slate-50 flex items-center gap-3">
                   <span className="font-mono text-sm font-bold text-slate-800">Slab {s.slabCode}</span>
+                  <GradeChip grade={s.qualityGrade} beforeCts={s.gradeBeforeCts} />
+                  <MarkChip mark={s.slabMark} legacyGrade={s.qualityGrade} />
                   {s.colour && <span className="text-xs text-slate-500">{s.colour}</span>}
                   <span className="text-xs text-slate-400">{s.projectCode}</span>
                   <span className="ml-auto flex flex-wrap gap-2 text-[11px] font-semibold">
@@ -985,7 +1084,7 @@ export default function CeoDashboard() {
                   <thead className="bg-slate-50 text-xs text-slate-500">
                     <tr>
                       <th className="text-left px-5 py-2">Piece</th>
-                      <th className="text-left px-3 py-2">Label</th>
+                      <th className="text-left px-3 py-2">Row</th>
                       <th className="text-center px-2 py-2">Cut</th>
                       <th className="text-center px-2 py-2">Polish</th>
                       <th className="text-center px-2 py-2">Sink</th>
@@ -1039,6 +1138,9 @@ export default function CeoDashboard() {
                 <thead className="bg-slate-50 text-xs text-slate-500 border-b border-slate-100">
                   <tr>
                     <th className="text-left px-5 py-3">Slab</th>
+                    <th className="text-center px-5 py-3">Grade</th>
+                    <th className="text-center px-5 py-3">Mark</th>
+                    <th className="text-left px-5 py-3">Colour</th>
                     <th className="text-left px-5 py-3">Project</th>
                     <th className="text-center px-5 py-3">Pcs</th>
                     <th className="text-right px-5 py-3">Slab Area</th>
@@ -1054,6 +1156,13 @@ export default function CeoDashboard() {
                     return (
                       <tr key={s.slabId} className="hover:bg-slate-50">
                         <td className="px-5 py-3 font-mono text-xs font-semibold text-slate-700">{s.slabCode}</td>
+                        <td className="px-5 py-3 text-center">
+                          <GradeChip grade={s.qualityGrade} beforeCts={s.gradeBeforeCts} />
+                        </td>
+                        <td className="px-5 py-3 text-center">
+                          <MarkChip mark={s.slabMark} legacyGrade={s.qualityGrade} />
+                        </td>
+                        <td className="px-5 py-3 text-slate-500 text-xs truncate max-w-[10rem]">{s.design ?? "—"}</td>
                         <td className="px-5 py-3 text-slate-600">{s.projectCode}</td>
                         <td className="px-5 py-3 text-center font-semibold text-slate-700">{s.pieceCount}</td>
                         <td className="px-5 py-3 text-right text-slate-500 font-mono text-xs">{mm2ToSqft(s.slabAreaMm2)} sqft</td>

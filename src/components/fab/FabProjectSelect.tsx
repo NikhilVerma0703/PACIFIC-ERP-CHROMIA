@@ -10,12 +10,17 @@
 
 import { useEffect, useState } from "react";
 import { getJson } from "@/lib/fab/postJson";
+import { isSampleProject } from "@/lib/fab/sampleOrder";
 
 export interface FabBoardProject {
   id: string;
   projectCode: string;
   customerName: string | null;
   status: string;
+  /** PO or SAMPLE. A sample order runs this same board with sink and
+   *  fabrication switched off — see lib/fab/sampleOrder.ts. "PO" on a database
+   *  without scripts/0059, which every project there is. */
+  kind?: string | null;
   requirementCount: number;
   poCount: number;
 }
@@ -73,13 +78,25 @@ export function FabProjectSelect({
         {projects.length === 0 && <option value="">No projects waiting to be planned</option>}
         {projects.map(p => (
           <option key={p.id} value={p.id}>
-            {p.projectCode}{p.customerName ? ` — ${p.customerName}` : ""}
+            {isSampleProject(p.kind) ? "Sample · " : ""}{p.projectCode}
+            {p.customerName ? ` — ${p.customerName}` : ""}
           </option>
         ))}
       </select>
+      {current && isSampleProject(current.kind) && (
+        // SAID OUT LOUD, not left to be inferred. This board looks identical for
+        // a sample order, and the two steps that are missing from it are missing
+        // BECAUSE it is one — a supervisor who does not know that reads it as a
+        // screen that has failed to load.
+        <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-violet-50 text-violet-700 border border-violet-200 whitespace-nowrap">
+          Sample order &middot; no sinks, no fabrication
+        </span>
+      )}
       {current && (
         <span className="text-xs text-slate-400">
-          {current.poCount} PO{current.poCount === 1 ? "" : "s"} &middot;{" "}
+          {isSampleProject(current.kind)
+            ? null
+            : <>{current.poCount} PO{current.poCount === 1 ? "" : "s"} &middot; </>}
           {current.requirementCount} piece row{current.requirementCount === 1 ? "" : "s"} &middot;{" "}
           {current.status.replace(/_/g, " ").toLowerCase()}
         </span>

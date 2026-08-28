@@ -1,7 +1,25 @@
+// PACKING A SAMPLE PIECE IS WHAT CREATES SAMPLE STOCK.
+//
+// The owner: "they create the request — catalogue requirement — and request the
+// samples and send to supervisor. He the same way chooses the slab and adds
+// pieces and quantity and sends to cutting, then polished (no sink and fabri in
+// the samples) and pushed to package."
+//
+// So the end of the line is here. A piece on a SAMPLE project has been cut and
+// polished; packing it is the moment it stops being stone in progress and
+// becomes a sample on a shelf. Nothing else in the system makes that happen, and
+// doing it anywhere earlier would count stock that could still be rejected.
+//
+// IN THE SAME TRANSACTION as the packing itself. A piece marked PACKAGED with no
+// stock behind it is a sample nobody can find; stock with no packed piece behind
+// it is a count nobody can explain. Neither is allowed to exist on its own.
+
 import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@prisma/client";
 import { fabGate } from "@/lib/fab/access";
 import { requireProcessSession } from "@/lib/fab/processSessionServer";
 import { stampOperationWorker } from "@/lib/fab/stampWorker";
+import { isSampleProject, planSampleCredit } from "@/lib/fab/sampleOrder";
 
 // Declared before use. They were below the handler, which works only because
 // the handler runs after module evaluation — a detail nobody should have to
@@ -9,6 +27,103 @@ import { stampOperationWorker } from "@/lib/fab/stampWorker";
 class AlreadyPackaged { constructor(readonly n: number) {} }
 class MissingPieces { constructor(readonly n: number) {} }
 class DuplicateCode {}
+
+interface SampleCredit {
+  /** Pieces that reached a shelf. */
+  credited: number;
+  /** Sample pieces whose row could not say WHICH shelf — packed, not counted.
+   *  Reported rather than guessed at: crediting the wrong shelf makes a count
+   *  wrong and nobody ever finds out. */
+  unattributed: number;
+}
+
+/**
+ * TURN PACKED SAMPLE PIECES INTO SAMPLE STOCK.
+ *
+ * ONE INTAKE ROW PER PIECE, quantity one. That is what makes a re-run safe:
+ * fab_piece.sampling_intake_id is unique, so a piece can be the reason for
+ * exactly one intake, ever. A package of forty writes forty ledger rows, which
+ * is nothing for an append-only table and gives every sample on the shelf a
+ * piece code it can be traced back to.
+ *
+ * THE STOCK INCREMENT IS GROUPED, because that table holds a count and not a
+ * history: forty pieces of one colour+finish and size are one `increment: 40`,
+ * not forty round trips.
+ */
+async function creditSampleStock(
+  tx: Prisma.TransactionClient,
+  pieceIds: string[],
+): Promise<SampleCredit> {
+  const pieces = await tx.fabPiece.findMany({
+    where: { id: { in: pieceIds }, samplingIntakeId: null },
+    select: {
+      id: true,
+      slabId: true,
+      project: { select: { kind: true } },
+      requirement: { select: { colourFinishId: true, samplingSizeId: true } },
+      slab: { select: { slabCode: true, pacificQcId: true } },
+    },
+  });
+
+  const out: SampleCredit = { credited: 0, unattributed: 0 };
+  // colourFinishId + sizeId -> how many pieces landed on that shelf.
+  const shelves = new Map<string, { colourFinishId: string; sizeId: string; n: number }>();
+
+  for (const piece of pieces) {
+    if (!isSampleProject(piece.project?.kind)) continue;   // a PO piece just ships
+
+    const credit = planSampleCredit({
+      colourFinishId: piece.requirement?.colourFinishId,
+      samplingSizeId: piece.requirement?.samplingSizeId,
+      quantity: 1,
+      slabCode: piece.slab?.slabCode,
+      pacificQcId: piece.slab?.pacificQcId,
+      fabSlabId: piece.slabId,
+    });
+    // A sample row that cannot name its shelf. The piece is packed — it exists,
+    // it is finished — and nothing is credited. See planSampleCredit.
+    if (!credit) { out.unattributed++; continue; }
+
+    const intake = await tx.samplingIntake.create({
+      data: {
+        colourFinishId: credit.colourFinishId,
+        sizeId: credit.sizeId,
+        quantity: credit.quantity,
+        // SAMPLE_CUTTING, not FAB_OFFCUT: this stone was cut FOR samples on an
+        // order, which is the distinction the column exists to record.
+        source: "SAMPLE_CUTTING",
+        sourceRef: credit.sourceRef,
+        sourceQcId: credit.sourceQcId,
+        sourceSlabId: credit.sourceSlabId,
+        note: null,
+        createdById: null,
+      },
+      select: { id: true },
+    });
+    await tx.fabPiece.update({
+      where: { id: piece.id },
+      data: { samplingIntakeId: intake.id },
+    });
+
+    const key = `${credit.colourFinishId}::${credit.sizeId}`;
+    const seen = shelves.get(key);
+    if (seen) seen.n += credit.quantity;
+    else shelves.set(key, { colourFinishId: credit.colourFinishId, sizeId: credit.sizeId, n: credit.quantity });
+    out.credited += credit.quantity;
+  }
+
+  for (const shelf of shelves.values()) {
+    await tx.samplingStock.upsert({
+      where: { colourFinishId_sizeId: { colourFinishId: shelf.colourFinishId, sizeId: shelf.sizeId } },
+      create: { colourFinishId: shelf.colourFinishId, sizeId: shelf.sizeId, quantity: shelf.n },
+      // increment, never a read-then-write: the sampling desk may be adding to
+      // the same shelf by hand at this moment.
+      update: { quantity: { increment: shelf.n } },
+    });
+  }
+
+  return out;
+}
 
 export async function POST(req: Request) {
   const g = await fabGate("EMPLOYEE");
@@ -85,7 +200,17 @@ export async function POST(req: Request) {
       });
       await stampOperationWorker(tx, op.id, sess.workerId, sess.shift);
     }
-    return p;
+
+    // ---- AND IF THESE WERE SAMPLES, THEY ARE NOW STOCK -------------------
+    //
+    // Read AFTER the claim, so only pieces this request actually took are
+    // credited. sampling_intake_id is the guard: a piece that already has one
+    // was credited by an earlier run — a re-scanned trolley, a retried request —
+    // and must not be counted a second time. The column is UNIQUE, so even a
+    // race that got past this check would fail rather than double the shelf.
+    const sampleCredit = await creditSampleStock(tx, pieceIds);
+
+    return { pkg: p, sampleCredit };
   }).catch((e: unknown) => {
     if (e instanceof AlreadyPackaged || e instanceof MissingPieces) return e;
     if (typeof e === "object" && e && (e as { code?: string }).code === "P2002") return new DuplicateCode();
@@ -99,5 +224,21 @@ export async function POST(req: Request) {
   if (result instanceof DuplicateCode)
     return Response.json({ error: `Package code "${code}" is already used — choose another` }, { status: 409 });
 
-  return Response.json({ success: true, packageCode: result.packageCode });
+  const { pkg, sampleCredit } = result;
+  return Response.json({
+    success: true,
+    packageCode: pkg.packageCode,
+    /** Sample pieces that reached a shelf in this package, and any that could
+     *  not. Both are said out loud: "40 packed" and "40 packed, 3 not counted"
+     *  are different afternoons for the sampling desk. */
+    samplesCredited: sampleCredit.credited,
+    samplesUnattributed: sampleCredit.unattributed,
+    message:
+      sampleCredit.credited > 0 || sampleCredit.unattributed > 0
+        ? `${sampleCredit.credited} sample piece${sampleCredit.credited === 1 ? "" : "s"} added to stock` +
+          (sampleCredit.unattributed > 0
+            ? `. ${sampleCredit.unattributed} could not be counted — the row does not say which colour, finish and size it was ordered against.`
+            : ".")
+        : undefined,
+  });
 }

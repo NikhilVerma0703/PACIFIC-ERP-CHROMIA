@@ -8,7 +8,7 @@
 import { Prisma, type SlabStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
-  canonicalGrade, gradeBlocksDispatch, CUT_TO_SIZE_GRADE, TRANSITIONS,
+  canonicalGrade, gradeBlocksDispatch, CUT_TO_SIZE_GRADE, SAMPLE_GRADE, CUT_GRADES, TRANSITIONS,
   DEFAULT_RESERVATION_DAYS, type StatusAction,
 } from "./grading";
 
@@ -206,7 +206,16 @@ export async function changeSlabStatus(
     // status says. Checked here rather than in TRANSITIONS because that table is
     // keyed by status alone; this is the second, independent signal.
     if (action === "dispatch" && gradeBlocksDispatch(slab.grade)) {
-      res.skipped.push({ slab: sn, reason: `graded ${CUT_TO_SIZE_GRADE} — cut to size, not dispatchable as a full slab` });
+      // WHICH WAY IT WAS CUT, in the message. "Cut to size" and "cut down for
+      // samples" send an inventory user to two different people to ask why, and
+      // a single wording would send half of them to the wrong one.
+      const cutAs = String(canonicalGrade(slab.grade) ?? "").toUpperCase();
+      res.skipped.push({
+        slab: sn,
+        reason: cutAs === SAMPLE_GRADE
+          ? `cut down for samples — not dispatchable as a full slab`
+          : `graded ${CUT_TO_SIZE_GRADE} — cut to size, not dispatchable as a full slab`,
+      });
       continue;
     }
 
@@ -244,9 +253,12 @@ export async function changeSlabStatus(
       status: { in: t.from as SlabStatus[] },
     };
     if (action === "dispatch") {
+      // BOTH cut states, or the race this guard exists to lose stays open for
+      // one of them: a slab pushed to sampling between the read above and this
+      // write would still go out whole.
       guard.OR = [
         { grade: null },
-        { NOT: { grade: { equals: CUT_TO_SIZE_GRADE, mode: "insensitive" } } },
+        { AND: CUT_GRADES.map(g => ({ NOT: { grade: { equals: g, mode: "insensitive" as const } } })) },
       ];
     }
     const n = await db.finishedSlab.updateMany({ where: guard, data });

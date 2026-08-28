@@ -1,5 +1,8 @@
 import type { NextAuthConfig } from "next-auth";
 import { storeMayVisit, operatorMayVisit, isPublicAsset, STORE_HOME, OPERATOR_HOME } from "./lib/routeCaps.ts";
+// The active role context. Pure and import-free, exactly like routeCaps above —
+// it must be, because this file is edge-safe and Prisma-free.
+import { ROLE_CONTEXT_COOKIE, activeContextOf, type GrantedContexts } from "./lib/roleContext.ts";
 import type { Role } from "@prisma/client";
 
 /**
@@ -30,7 +33,8 @@ export const authConfig = {
   pages: { signIn: "/login" },
   providers: [],
   callbacks: {
-    authorized({ auth, request: { nextUrl } }) {
+    authorized({ auth, request }) {
+      const { nextUrl } = request;
       const isLoggedIn = !!auth?.user;
       const isPublic =
         nextUrl.pathname === "/login" ||
@@ -78,7 +82,29 @@ export const authConfig = {
       // Gate on BRANCH, not role: fab LINE_MANAGER and INCHARGE work today only
       // because their roles happen to be absent from the caps below, so a future
       // capped role in Fabrication would reopen the same loop.
-      const branch = (auth?.user as { branch?: string } | undefined)?.branch;
+      //
+      // ---- THE ACTIVE ROLE CONTEXT ----------------------------------------
+      // Judge the request by the pair it is RUNNING AS, not the pair it was
+      // issued with. A login that holds two jobs carries both in its JWT
+      // (altRole/altBranch); the cookie says which is live, and
+      // activeContextOf() overlays it — the SAME pure function currentUser()
+      // uses, with the same inputs, so this gate, middleware.ts and every
+      // server render answer "who is this" identically. A gate that disagreed
+      // with currentUser() about who somebody is, is precisely the failure
+      // lib/routeCaps.ts was written to end.
+      //
+      // The cookie cannot widen anything: it is compared against keys built
+      // from the two granted pairs and falls back to the primary when it
+      // matches neither, so a forged, stale or revoked selector lands the user
+      // exactly where they were before the switcher existed. Nothing here is
+      // read OUT of the cookie.
+      //
+      // `request.cookies` is a NextRequest cookie jar — no `next/headers`, no
+      // Prisma, so this file stays edge-safe. Optional-chained because the
+      // fallback (no selector -> the primary) is the safe direction.
+      const sessionUser = (auth?.user ?? {}) as GrantedContexts;
+      const activeUser = activeContextOf(sessionUser, request.cookies?.get?.(ROLE_CONTEXT_COOKIE)?.value);
+      const branch = (activeUser as { branch?: string }).branch;
       if (branch === "FABRICATION") return true;
       // TRANSITIONAL: the retired Chromia department. A CHROMIA-branch login
       // capped to /entry by the role check below would be bounced back to
@@ -92,7 +118,7 @@ export const authConfig = {
       // Incharge only /live, /store and /api while middleware also granted
       // /tables, /consumables and /office/batch-verify — and this one runs
       // first, so those three screens bounced to /live.
-      const role = (auth?.user as { role?: string } | undefined)?.role;
+      const role = (activeUser as { role?: string }).role;
       // Their OWN home, not homeFor(role, branch). This gate caps by ROLE and
       // refuses anything outside that role's allowlist - including the branch home
       // homeFor would name. Sending a STORE login on the Office branch to /office
@@ -111,6 +137,8 @@ export const authConfig = {
         token.uid = user.id as string;
         token.station = (user as { station?: string | null }).station ?? null;
         token.branch = (user as { branch?: string | null }).branch ?? null;
+        token.altRole = (user as { altRole?: string | null }).altRole ?? null;
+        token.altBranch = (user as { altBranch?: string | null }).altBranch ?? null;
         token.sv = (user as { sv?: number }).sv ?? 1;
       }
       return token;
@@ -121,6 +149,14 @@ export const authConfig = {
         session.user.role = token.role as Role;
         session.user.station = (token.station as string | null) ?? null;
         session.user.branch = (token.branch as string | null) ?? null;
+        // THE SECOND GRANTED PAIR MUST BE COPIED HERE, not only in auth.ts.
+        // middleware.ts builds its `req.auth` from `NextAuth(authConfig)` —
+        // THIS session callback, not the one in auth.ts — so a pair that
+        // reached the token and stopped here would be invisible to the gate
+        // that needs it most, and middleware would judge a switched user by
+        // their primary while every server render judged them by the alternate.
+        session.user.altRole = (token.altRole as string | null) ?? null;
+        session.user.altBranch = (token.altBranch as string | null) ?? null;
         (session.user as { sv?: number }).sv = (token.sv as number | undefined) ?? 1;
       }
       return session;

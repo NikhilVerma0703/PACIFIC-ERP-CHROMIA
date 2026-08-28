@@ -1,6 +1,10 @@
 import { cache } from "react";
 import { auth } from "@/auth";
 import { sessionUserRow } from "@/lib/sessionRevalidation";
+// The active role context. THE ONE PLACE the two granted pairs are collapsed
+// into the one this request runs as — see currentUser() below.
+import { applyRoleContext, resolveRoleContext } from "@/lib/roleContext";
+import { readRoleContextCookie } from "@/lib/roleContextServer";
 
 // Role hierarchy: ROLE_RANK/rankOf moved to lib/roles.ts (a pure, import-free
 // module) so node --test can reach them — imported AND re-exported here so
@@ -29,8 +33,17 @@ export const sessionOnce = cache(() => auth());
  * immediately, on every device. Request-cached so gates share one query —
  * and the row itself comes from sessionUserRow, the same request-scoped
  * lookup the jwt callback uses, so the check runs on every request but the
- * query runs once per request. */
-export const currentUser = cache(async () => {
+ * query runs once per request.
+ *
+ * AS THE ADMIN GRANTED IT: role/branch are the login's own primary pair, and
+ * altRole/altBranch (the second job, NULL for almost everybody) are alongside
+ * them. NO active-context overlay — this is the "what were you given" question,
+ * and only the switcher asks it. Every gate wants currentUser() below.
+ *
+ * This is verbatim what currentUser() was before the role switcher landed; the
+ * switcher needs an un-overlaid user to list the pairs it may offer, because an
+ * overlaid one describes the job you are standing in as your primary. */
+export const grantedUser = cache(async () => {
   const session = await sessionOnce();
   const u = session?.user;
   if (!u?.id) return null;
@@ -42,6 +55,33 @@ export const currentUser = cache(async () => {
     if (Number(row.sessionVersion ?? 1) !== tokenSv) return null; // revoked -> signed out everywhere
   } catch { /* sessionVersion not migrated yet — allow */ }
   return u;
+});
+
+/**
+ * The session user AS THE ACTIVE ROLE CONTEXT — the same revalidated login,
+ * with role/branch set to whichever of the granted pairs the request is running
+ * as.
+ *
+ * THIS IS THE ONLY PLACE THE OVERLAY HAPPENS. Every gate downstream —
+ * canRectify, canManageUsers, fabTierOf, chromiaGate, samplingGate,
+ * canSeeModel, the whole of lib/branch.ts — keeps working untouched, because
+ * each still does nothing but read `.role` and `.branch`. Teaching individual
+ * gates about contexts is exactly the drift lib/routeCaps.ts exists to end, one
+ * layer up: two gates disagreeing about who somebody is.
+ *
+ * A login with no alternate is not merely treated the same, it is UNTOUCHED:
+ * applyRoleContext returns the identical object when the primary is active, so
+ * this adds a cookie read and nothing else for everybody but the handful of
+ * people who hold two jobs.
+ *
+ * The cookie cannot widen anything. It names a pair; resolveRoleContext
+ * compares that name against the pairs THIS user was granted and falls back to
+ * the primary when it matches neither. See lib/roleContext.ts.
+ */
+export const currentUser = cache(async () => {
+  const u = await grantedUser();
+  if (!u) return null;
+  return applyRoleContext(u, resolveRoleContext(u, await readRoleContextCookie()));
 });
 export async function currentRole(): Promise<string> {
   return String((await currentUser())?.role ?? "");
@@ -89,8 +129,34 @@ export function creatableRoles(role?: string | null, branch?: string | null): Ro
   if (branch === "CHROMIA") return [];
   // CHROMIA sits before ROBO deliberately: UserAdmin defaults the Role dropdown
   // to the LAST creatable role, so appending would silently change what an
-  // admin creates when they don't touch the dropdown.
-  return (["LINE_MANAGER", "INCHARGE", "OPERATOR", "STORE", "MAINTENANCE", "CHROMIA", "ROBO"] as RoleName[]).filter((x) => ROLE_RANK[x] < r);
+  // admin creates when they don't touch the dropdown. SAMPLING is inserted
+  // before ROBO for exactly that reason and NOT appended — the default must
+  // stay what it was.
+  return (["LINE_MANAGER", "INCHARGE", "OPERATOR", "STORE", "MAINTENANCE", "CHROMIA", "SAMPLING", "ROBO"] as RoleName[]).filter((x) => ROLE_RANK[x] < r);
+}
+
+/**
+ * The departments a given login may put a user in — and, since the role
+ * switcher, the departments a SECOND role may be granted in.
+ *
+ * ONE COPY. This expression was written out twice, in admin/users/page.tsx (to
+ * build the Department dropdown and the visible list) and in
+ * admin/users/actions.ts (to check what createUser was sent); the alternate-role
+ * grant needed the same answer a third time, which is the point at which a
+ * duplicated rule stops being a duplicate and starts being a drift. Same reason
+ * lib/routeCaps.ts exists.
+ *
+ * INTERNATIONAL_SALES IS ABSENT AND MUST STAY ABSENT. That department has its
+ * own screen (the `sales` mode of UserAdmin, keyed on duties rather than
+ * roles), and — the reason that matters here — seven of its route handlers read
+ * the role straight off the raw session instead of currentUser(), so they would
+ * answer from the login's PRIMARY pair no matter which job it had switched
+ * into. A second role that touched that branch would leave both sets of
+ * permissions live at once. Nothing to add here; just do not add it.
+ */
+export function assignableBranches(role?: string | null, branch?: string | null): string[] {
+  if (rankOf(role) < ROLE_RANK.ADMIN) return [String(branch ?? "SHOP_FLOOR")];
+  return branch === "OFFICE" ? ["OFFICE"] : ["SHOP_FLOOR", "FABRICATION"];
 }
 
 /** Store Incharge (or incharge+) manage the two-tier RM store (upload + assign). */

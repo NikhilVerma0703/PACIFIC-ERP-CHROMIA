@@ -1,10 +1,29 @@
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
 import { workersForSlabJobs } from "@/lib/fab/workerLookups";
+import { readProcessSession } from "@/lib/fab/processSessionServer";
+import { rowLabel } from "@/lib/fab/pieceNaming";
 
 export async function GET() {
   const g = await fabGate("EMPLOYEE");
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+
+  // THE CALLER'S OWN MACHINE, answered by the server.
+  //
+  // The card decides "is this slab mine" by comparing the job's machine against
+  // this station's machine. The client used to read that from a `fab_machine_id`
+  // cookie — a cookie NOTHING IN THIS REPO EVER SETS. It is read in
+  // fab/cutting/page.tsx and deleted in fab/sign-out-action.ts, and written
+  // nowhere: a leftover of the session model that per-process `fab_ps_*`
+  // sessions replaced. So the value was permanently null, the machine
+  // comparison was permanently false, and the whole discriminator the comments
+  // below describe never once ran.
+  //
+  // It is sent from here instead, off the same FabMachineSession the queue is
+  // being viewed under. Null when there is no session, which is a real answer:
+  // we cannot tell, so the card claims nothing.
+  const viewerSession = await readProcessSession("CUTTING");
+  const viewerMachineId = viewerSession?.machineId ?? null;
 
   // ── NEW CLO flow: FabSlabJob (READY / IN_PROGRESS) ──────────────────────
   // Read first: the legacy query below excludes the slabs these jobs hold, so
@@ -20,7 +39,7 @@ export async function GET() {
           requirementAllocations: {
             include: {
               requirement: {
-                include: { drawing: { select: { drawingNumber: true } } },
+                include: { drawing: { select: { drawingNumber: true } }, po: { select: { poNumber: true } } },
               },
             },
           },
@@ -97,8 +116,15 @@ export async function GET() {
     const qc = job.slab.pacificQcId ? qcById.get(job.slab.pacificQcId) : null;
     const requirements = job.slab.requirementAllocations.map(a => ({
       requirementId: a.requirementId,
-      drawingNumber: a.requirement.drawing?.drawingNumber ?? "?",
-      pieceLabel:    a.requirement.pieceLabel ?? a.requirement.description ?? "?",
+      // The PO the row came from. "Dwg" is dead in the PO flow — drawings do
+      // not exist there — and a column that is always "?" teaches an operator
+      // to ignore it.
+      poNumber:      a.requirement.po?.poNumber ?? null,
+      drawingNumber: a.requirement.drawing?.drawingNumber ?? null,
+      // The row's LETTER, which is what every piece cut from it is named after
+      // ({projectCode}-{LETTER}-{n}). Falls back to the imported "Row 3" for
+      // rows that predate scripts/0054 — see rowLabel().
+      pieceLabel:    rowLabel(a.requirement.rowLetter, a.requirement.pieceLabel ?? a.requirement.description),
       description:   a.requirement.description ?? null,
       lengthIn:      a.requirement.length ?? null,
       widthIn:       a.requirement.width  ?? null,
@@ -110,8 +136,25 @@ export async function GET() {
       slabJobId:    job.id,
       jobStatus:    job.status,
       startTime:    job.startTime?.toISOString() ?? null,
-      operatorId:   worker?.workerId ?? job.operatorId ?? null,
+      // operatorId IS A LOGIN ID (users.id) AND MUST STAY ONE. The card compares
+      // it against the id from /api/auth/session to answer "did I start this".
+      //
+      // It used to be `worker?.workerId ?? job.operatorId`, which put a
+      // fab_worker.id here the moment a named worker was stamped on the job.
+      // Those are different id spaces, so the comparison could never match: the
+      // card concluded the slab belonged to somebody else, rendered the 🔒 lock,
+      // and — because a locked card renders no action buttons — the operator who
+      // had just cut the slab had no way to mark it cut. It only worked where no
+      // worker was stamped (a dev database with no worker session), which is
+      // exactly why this passed locally and blocked the floor in production.
+      //
+      // The worker's NAME is what belongs on screen, and it is still preferred
+      // for display one line down. Only the id had to stop being borrowed.
+      operatorId:   job.operatorId ?? null,
       operatorName: worker?.name ?? job.operator?.name ?? job.operator?.email ?? null,
+      // The station viewing this queue, so the card can compare machines rather
+      // than logins — see the note at the top of the handler.
+      viewerMachineId,
       // WHICH MACHINE holds this job, not just which login started it.
       //
       // Fabrication runs on ONE shared operator account, so operatorId is the

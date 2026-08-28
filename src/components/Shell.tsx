@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
-import { currentUser, sessionOnce } from "@/lib/rbac";
+import { currentUser, grantedUser, sessionOnce } from "@/lib/rbac";
 import { logout } from "@/app/actions";
+import { contextKey, grantedContexts } from "@/lib/roleContext";
+import { RoleSwitcher } from "./RoleSwitcher";
 import { Nav } from "./Nav";
 import { CollapsibleSidebar } from "./CollapsibleSidebar";
 import { fabTierOf } from "@/lib/fab/access";
@@ -10,7 +12,7 @@ import { consumablesTierOf } from "@/lib/consumables/access";
 import { salesTierOf } from "@/lib/sales/access";
 import { salesDutyFor } from "@/lib/sales/session";
 import { MobileNav } from "./MobileNav";
-import { ROLE_LABEL, STATION_LABEL, rankOf, ROLE_RANK } from "@/lib/rbac";
+import { STATION_LABEL, rankOf, ROLE_RANK, roleLabelFor } from "@/lib/rbac";
 import { BRANCH_LABEL } from "@/lib/branch";
 import { signableSides } from "@/lib/costing/verification";
 
@@ -19,9 +21,24 @@ export async function Shell({ children }: { children: ReactNode }) {
   // inside currentUser() used to run the jwt-callback User query twice per
   // navigation (measured 2026-08-14). Same session object, one decode+query.
   const session = await sessionOnce();
+  // THE ACTIVE ROLE CONTEXT, not the issued one. Everything below reads
+  // `user.role` and `user.branch` — the nav sections, the fab/sales/consumables
+  // tiers, the branch label, the admin link — so taking the user from
+  // currentUser() is what makes a switch change the sidebar and the dashboard.
+  // Reading session.user here instead would leave the shell describing the job
+  // the person switched OUT of while every gate behind it enforced the one they
+  // switched INTO. For the overwhelming majority (no second job) currentUser()
+  // returns the identical object, so this is the same value it always was.
+  //
   // revoked / deactivated sessions get bounced even though a cookie exists
-  if (session?.user && !(await currentUser())) redirect("/login");
-  const user = session?.user;
+  const activeUser = await currentUser();
+  if (session?.user && !activeUser) redirect("/login");
+  const user = activeUser ?? session?.user;
+  // What was GRANTED — for the picker's option list only. currentUser() has the
+  // active pair overlaid onto role/branch, so it cannot answer "which jobs does
+  // this person hold"; grantedUser() is the un-overlaid login.
+  const contexts = grantedContexts(await grantedUser());
+  const activeContextKey = contextKey(user?.role, (user as { branch?: string | null } | undefined)?.branch);
   const initials = (user?.name || user?.email || "?").slice(0, 2).toUpperCase();
   const branchForNav = ((user as { branch?: string | null } | undefined)?.branch as string | undefined) ?? "SHOP_FLOOR";
   const showAdmin = branchForNav === "OFFICE"
@@ -58,11 +75,17 @@ export async function Shell({ children }: { children: ReactNode }) {
           <Nav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} />
         </div>
         <div className="mt-3 shrink-0 rounded-xl border border-gray-200 bg-white p-3">
+          {/* Two jobs, one login — renders nothing at all for everybody else. */}
+          <RoleSwitcher contexts={contexts} activeKey={activeContextKey} />
           <div className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-brand/10 text-xs font-semibold text-brand">{initials}</div>
             <div className="min-w-0 leading-tight">
               <div className="truncate text-xs font-medium text-gray-900">{user?.name || user?.email}</div>
-              <div className="text-[11px] text-gray-400">{user?.role ? (ROLE_LABEL[user.role] ?? user.role) : ""}{stationLabel ? ` · ${STATION_LABEL[stationLabel] ?? stationLabel}` : ""}{` · ${BRANCH_LABEL[branch] ?? branch}`}</div>
+              {/* roleLabelFor, not the bare ROLE_LABEL table: it is the
+                  department-aware one, so a login standing in Fabrication reads
+                  "Fabrication Supervisor" here and in the picker above rather
+                  than the two disagreeing about the job it is in. */}
+              <div className="text-[11px] text-gray-400">{user?.role ? roleLabelFor(user.role, branch) : ""}{stationLabel ? ` · ${STATION_LABEL[stationLabel] ?? stationLabel}` : ""}{` · ${BRANCH_LABEL[branch] ?? branch}`}</div>
             </div>
           </div>
           <form action={logout} className="mt-2.5">
@@ -78,7 +101,7 @@ export async function Shell({ children }: { children: ReactNode }) {
             which put this bar (hamburger, Sign out) at the top of printed reports */}
         <header className="flex items-center justify-between gap-3 border-b border-gray-200/70 bg-white/70 px-5 py-2 backdrop-blur md:hidden print:hidden">
           <div className="flex items-center gap-3">
-            <MobileNav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} />
+            <MobileNav contexts={contexts} activeKey={activeContextKey} showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} />
             <span className="text-base font-semibold text-brand">Pacific ERP</span>
           </div>
           <form action={logout}><button className="min-h-[44px] text-sm text-gray-500">Sign out</button></form>

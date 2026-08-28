@@ -1,6 +1,18 @@
 import NextAuth from "next-auth";
 import { authConfig } from "./auth.config";
-import { storeMayVisit, operatorMayVisit, maintenanceMayVisit, homeFor, isPublicAsset } from "./lib/routeCaps.ts";
+import { storeMayVisit, operatorMayVisit, maintenanceMayVisit, samplingMayVisit, homeFor, isPublicAsset } from "./lib/routeCaps.ts";
+// The sampling module's audience, imported rather than restated here. It is a
+// pure module (its only import is lib/roles.ts, which imports nothing), so it
+// is edge-safe — and it has to be imported rather than copied because the same
+// rule decides what the ROUTE does with the request: this file may only say yes
+// or no to a path, and "the fabrication supervisor may add stock but may not
+// view the inventory" is not a statement about a path.
+import { maySeeSamplingModule } from "./lib/sampling/actions.ts";
+// The active role context — which of the (at most two) role+branch pairs an
+// admin granted this login is the one the request is running as. Pure and
+// import-free like routeCaps, because this file and auth.config.ts are edge
+// code; see the safety note at block 4 below.
+import { ROLE_CONTEXT_COOKIE, activeContextOf, type GrantedContexts } from "./lib/roleContext.ts";
 
 // Edge-safe middleware (Prisma-free config). IMPORTANT: with the auth(fn)
 // wrapper form, Auth.js does NOT auto-redirect — ALL gating is explicit here.
@@ -84,10 +96,32 @@ export default auth((req) => {
   }
 
   // 4) capped roles
-  const role = (req.auth.user as { role?: string }).role;
+  //
+  // ---- THE ACTIVE ROLE CONTEXT ---------------------------------------------
+  // One person can hold two jobs (Line Manager on the line, Fabrication
+  // Supervisor next door). Both granted pairs ride in the JWT
+  // (role/branch and altRole/altBranch); a cookie says which is live. Every
+  // block below still reads exactly two locals, `role` and `branch` — they are
+  // now the ACTIVE pair rather than the issued one, and nothing else in this
+  // file changes.
+  //
+  // activeContextOf() is the same pure function auth.config.ts's authorized()
+  // callback and lib/rbac.ts's currentUser() call, given the same JWT and the
+  // same cookie. All three therefore give the same answer by construction: a
+  // gate that disagreed with currentUser() about who somebody is would be the
+  // failure lib/routeCaps.ts exists to end, one layer up.
+  //
+  // THE COOKIE CANNOT WIDEN ANYTHING. It is compared, as a string, against keys
+  // computed from the two pairs the ADMIN granted; the pair returned is built
+  // from the JWT's own values. A forged selector, one left from a session whose
+  // second job has since been revoked, or any cookie at all on a login with no
+  // alternate, matches nothing and falls back to the primary — the pair that
+  // login held before the switcher existed. Nothing is read OUT of the cookie.
+  const activeUser = activeContextOf(req.auth.user as GrantedContexts, req.cookies.get(ROLE_CONTEXT_COOKIE)?.value);
+  const role = (activeUser as { role?: string }).role;
 
   // ---- Department separation by branch. Admins (role ADMIN) span every dept. ----
-  const branch = (req.auth.user as { branch?: string }).branch;
+  const branch = (activeUser as { branch?: string }).branch;
   const isAdmin = role === "ADMIN";
   const fabPath = p.startsWith("/fab") || p === "/cutting";
 
@@ -118,6 +152,37 @@ export default auth((req) => {
   // cap below contains them meanwhile. Remove both clauses after that runs. ----
   if (p.startsWith("/chromia") || p.startsWith("/api/chromia")) {
     if (!isAdmin && role !== "CHROMIA" && branch !== "CHROMIA") {
+      return denied(p, nextUrl, role ?? "", branch ?? "");
+    }
+  }
+
+  // ---- Sampling module: the same shape as the robo and chromia gates above,
+  // and here for the same ordering reason — it must run BEFORE the branch
+  // blocks below, whose generic `/api` allowances would otherwise hand every
+  // department the sample inventory and the dispatch board.
+  //
+  // ITS AUDIENCE IS NOT THE SAME, and that is the one line worth reading. Robo
+  // and Chromia admit their own role and admins, full stop. Sampling also
+  // admits the FABRICATION SUPERVISOR, because a usable offcut from a
+  // cut-to-size job becomes sample stock the moment it comes off the saw and he
+  // is the man who knows it exists. He may ADD STOCK AND NOTHING ELSE — not the
+  // inventory, not a dispatch. (He reaches the API only: the /sampling PAGES
+  // are refused to him a few blocks down by his own FABRICATION branch cap,
+  // which is the correct answer — the screens are not his.)
+  //
+  // So this is the COARSE gate, the same split this file already makes on
+  // /office/batch-verify: matching a path prefix cannot tell an intake POST
+  // from an inventory GET, so it cannot say "add but not view". WHICH action a
+  // caller may perform is decided in the route itself by samplingGate(action)
+  // (lib/sampling/access.ts). Both call lib/sampling/actions.ts, so the door
+  // and the route cannot drift apart — the failure lib/routeCaps.ts exists to
+  // end, one module later.
+  //
+  // Role SAMPLING itself is capped to this module further down, with ROBO. It
+  // is a ROLE, not a branch: no Branch value was added for it, and none should
+  // be — Chromia's retirement as a department is why.
+  if (p.startsWith("/sampling") || p.startsWith("/api/sampling")) {
+    if (!maySeeSamplingModule({ role, branch })) {
       return denied(p, nextUrl, role ?? "", branch ?? "");
     }
   }
@@ -360,6 +425,21 @@ export default auth((req) => {
       // to an HTML page fails as a confusing parse error instead of a refusal.
       return denied(p, nextUrl, role ?? "", branch ?? "");
     }
+  }
+  if (role === "SAMPLING") {
+    // Sampling Incharge: the sampling module and ITS APIs — nothing else. The
+    // narrow form the ROBO comment directly above argues for, written that way
+    // from the start rather than after a tablet had been handed every API in
+    // the ERP.
+    //
+    // A ROLE block, so it sits here rather than up with the Chromia one: a
+    // branch that has its own block returns before this line is reached and
+    // that login belongs to the branch. homeFor() mirrors the same ordering.
+    //
+    // The cap itself lives in lib/routeCaps beside the Store, Operator and
+    // Maintenance ones, so it is unit-tested and cannot drift from a second
+    // copy written out here — the failure that file was created to end.
+    if (!samplingMayVisit(p)) return denied(p, nextUrl, role ?? "", branch ?? "");
   }
 });
 

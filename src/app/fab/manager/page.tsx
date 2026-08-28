@@ -1,4 +1,4 @@
-import { auth } from "@/auth";
+import { currentUser } from "@/lib/rbac";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import Link from "next/link";
@@ -13,9 +13,14 @@ import { NewProjectForm } from "./NewProjectForm";
 // exactly as it was and still works; retiring it is a separate change.
 
 export default async function FabManagerPage() {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  const tier = fabTierOf(session.user);
+  // currentUser(), NOT auth(): fabTierOf answers from role + branch, so it has
+  // to be asked about the ACTIVE pair. A login holding two jobs that has
+  // switched into its Fabrication one carries SHOP_FLOOR in the raw session and
+  // would be turned away here by the gate that admitted it a moment earlier.
+  // It also revalidates the session, which auth() alone did not.
+  const user = await currentUser();
+  if (!user) redirect("/login");
+  const tier = fabTierOf(user);
   if (!tier) redirect("/");
   // Manager-only surface. Anyone else in fabrication lands on the project list,
   // which every tier can read — /fab/supervisor is a client board that would

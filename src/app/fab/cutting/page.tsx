@@ -2,20 +2,24 @@
 import { useEffect, useState, useCallback } from "react";
 import { postJson, getJson } from "@/lib/fab/postJson";
 import { ProcessSessionGate } from "@/components/fab/ProcessSessionGate";
+import { rowLabel } from "@/lib/fab/pieceNaming";
 
 interface Piece {
   id: string; pieceCode: string;
   project: { projectCode: string; customerName: string };
   drawing: { drawingNumber: string } | null;
-  requirement: { pieceLabel: string | null; description: string | null; length: number | null; width: number | null } | null;
+  requirement: { pieceLabel: string | null; rowLetter: string | null; description: string | null; length: number | null; width: number | null } | null;
   hasSink: boolean; polishRequired: boolean; fabricationRequired: boolean;
 }
 interface LegacyGroup { type: "legacy"; slab: { id: string; slabCode: string; colour: string | null }; pieces: Piece[] }
-interface CloReq { requirementId: string; drawingNumber: string; pieceLabel: string; description: string | null; lengthIn: number | null; widthIn: number | null; qty: number }
+interface CloReq { requirementId: string; poNumber: string | null; drawingNumber: string | null; pieceLabel: string; description: string | null; lengthIn: number | null; widthIn: number | null; qty: number }
 interface CloGroup {
   type: "clo"; slabJobId: string; jobStatus: string; startTime: string | null;
   operatorId: string | null; operatorName: string | null;
   machineId: string | null; machineName: string | null;
+  /** This station's machine, answered by the server from the CUTTING process
+   *  session. Replaces the `fab_machine_id` cookie, which nothing ever set. */
+  viewerMachineId: string | null;
   slab: { id: string; slabCode: string; qcSlabCode: string | null; qcColour: string | null };
   project: { projectCode: string; customerName: string };
   requirements: CloReq[]; totalPcs: number;
@@ -52,15 +56,15 @@ function FlagChip({ label, col }: { label: string; col: string }) {
 }
 
 function CloCard({
-  entry, currentUserId, myMachineId, completing, starting,
+  entry, currentUserId, completing, starting,
   onStart, onComplete,
 }: {
   entry: CloGroup;
   currentUserId: string | null;
-  myMachineId: string | null;
   completing: boolean; starting: boolean;
   onStart: () => void; onComplete: () => void;
 }) {
+  const myMachineId = entry.viewerMachineId;
   const elapsed = useElapsed(entry.startTime);
   const slabName = entry.slab.qcSlabCode
     ? `Slab ${entry.slab.qcSlabCode}${entry.slab.qcColour ? " - " + entry.slab.qcColour : ""}`
@@ -141,7 +145,7 @@ function CloCard({
       <table className="w-full text-sm">
         <thead className="bg-gray-50 text-xs text-gray-500">
           <tr>
-            <th className="text-left px-5 py-2">Dwg</th>
+            <th className="text-left px-5 py-2">PO</th>
             <th className="text-left px-5 py-2">Piece</th>
             <th className="text-left px-5 py-2">Description</th>
             <th className="text-left px-5 py-2">L (in)</th>
@@ -152,7 +156,7 @@ function CloCard({
         <tbody className="divide-y divide-gray-50">
           {entry.requirements.map((r, i) => (
             <tr key={i} className="hover:bg-gray-50/50">
-              <td className="px-5 py-2.5 font-mono text-xs text-gray-400">{r.drawingNumber}</td>
+              <td className="px-5 py-2.5 font-mono text-xs text-gray-400">{r.poNumber ?? r.drawingNumber ?? "—"}</td>
               <td className="px-5 py-2.5 font-semibold text-gray-800">{r.pieceLabel}</td>
               <td className="px-5 py-2.5 text-gray-500 max-w-xs truncate">{r.description ?? "-"}</td>
               <td className="px-5 py-2.5 font-mono text-gray-600">{r.lengthIn ?? "-"}</td>
@@ -167,21 +171,27 @@ function CloCard({
   );
 }
 
-/** The machine this tablet holds, from the cookie /fab/session sets.
- *
- *  Fabrication runs on ONE shared operator login, so the user id is identical
- *  for everyone on the floor and cannot answer "is this job mine". The machine
- *  can. Read from the cookie rather than fetched because it is already there,
- *  and a missing value is a real answer: no machine session means we cannot
- *  tell, and the UI says nothing rather than something false. */
-function useMachineId(): string | null {
-  const [id, setId] = useState<string | null>(null);
-  useEffect(() => {
-    const m = document.cookie.match(/(?:^|;\s*)fab_machine_id=([^;]*)/);
-    setId(m ? decodeURIComponent(m[1]) : null);
-  }, []);
-  return id;
-}
+// RETIRED 2026-08 — this read a cookie that nothing in the repo ever set.
+//
+// `fab_machine_id` was a leftover of the session model that the per-process
+// `fab_ps_*` sessions replaced. It is deleted on sign-out (fab/sign-out-action)
+// and read here, and written NOWHERE, so this hook returned null on every
+// render, on every machine, forever. The machine comparison it fed was
+// therefore dead: `otherMachine` could never be true, and the card fell back to
+// comparing logins — the one comparison its own comments say cannot work.
+//
+// The station's machine now comes down with the queue as `viewerMachineId`,
+// read server-side off the same FabMachineSession the page is gated on.
+//
+// /** The machine this tablet holds, from the cookie /fab/session sets. */
+// function useMachineId(): string | null {
+//   const [id, setId] = useState<string | null>(null);
+//   useEffect(() => {
+//     const m = document.cookie.match(/(?:^|;\s*)fab_machine_id=([^;]*)/);
+//     setId(m ? decodeURIComponent(m[1]) : null);
+//   }, []);
+//   return id;
+// }
 
 export default function FabCuttingPage() {
   return (
@@ -201,7 +211,6 @@ function CuttingQueue() {
   const [undoing,       setUndoing]      = useState<Record<string, boolean>>({});
   const [doneDate,      setDoneDate]     = useState(todayStr());
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const myMachineId = useMachineId();
   const [actionError,   setActionError]  = useState<string | null>(null);
   const [loadError,     setLoadError]    = useState<string | null>(null);
 
@@ -342,7 +351,6 @@ function CuttingQueue() {
                 return (
                   <CloCard key={entry.slabJobId} entry={entry}
                     currentUserId={currentUserId}
-                    myMachineId={myMachineId}
                     completing={!!completing[entry.slabJobId]}
                     starting={!!starting[entry.slabJobId]}
                     onStart={() => startClo(entry.slabJobId)}
@@ -368,7 +376,7 @@ function CuttingQueue() {
                     <thead className="bg-gray-50 text-xs text-gray-500">
                       <tr>
                         <th className="text-left px-5 py-2">Piece</th>
-                        <th className="text-left px-5 py-2">Label</th>
+                        <th className="text-left px-5 py-2">Row</th>
                         <th className="text-left px-5 py-2">Size</th>
                         <th className="text-left px-5 py-2">Project</th>
                         <th className="text-left px-5 py-2">Flags</th>
@@ -378,7 +386,7 @@ function CuttingQueue() {
                       {pieces.map(p => (
                         <tr key={p.id} className="hover:bg-gray-50/50">
                           <td className="px-5 py-2.5 font-mono text-xs text-gray-700">{p.pieceCode}</td>
-                          <td className="px-5 py-2.5 text-gray-600">{p.requirement?.pieceLabel ?? p.requirement?.description ?? "-"}</td>
+                          <td className="px-5 py-2.5 text-gray-600">{rowLabel(p.requirement?.rowLetter, p.requirement?.pieceLabel ?? p.requirement?.description)}</td>
                           <td className="px-5 py-2.5 text-gray-500">
                             {p.requirement?.length && p.requirement?.width ? `${p.requirement.length} × ${p.requirement.width}` : "-"}
                           </td>
