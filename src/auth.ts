@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { sessionUserRow } from "@/lib/sessionRevalidation";
+import { getAltContext } from "@/lib/users";
 import { authConfig } from "./auth.config";
 
 // ---- failed-login throttle (per email+IP, fixed window) ----
@@ -89,6 +90,20 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (branch && !isAdmin && side(userBranch) !== side(branch)) return null;
         await clearFailures(tkey); // fully valid sign-in — reset the counter
         const effectiveBranch = isAdmin ? (branch ?? userBranch) : userBranch;
+        // The SECOND GRANTED PAIR, read here so it can ride in the JWT: both
+        // gates are Prisma-free and have nothing else to read it from, and a
+        // gate that cannot see what was granted cannot agree with currentUser()
+        // about which pair is active. Read by raw SQL and guarded (see
+        // lib/users.ts) because the generated client does not know the columns
+        // until scripts/0052 is applied and `prisma generate` re-runs; until
+        // then this is nulls, which is "one job" — today's behaviour exactly.
+        //
+        // A REVOKED SECOND JOB THEREFORE LIVES UNTIL THE NEXT SIGN-IN, the same
+        // as a changed role or branch already does in this app (the jwt
+        // callback below revalidates sessionVersion and nothing else). Users &
+        // Roles closes that window by bumping sessionVersion whenever it
+        // changes the grant, which signs the login out of every device.
+        const alt = await getAltContext(user.id);
         return {
           id: user.id,
           email: user.email,
@@ -96,6 +111,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           role: user.role,
           station: (user as { station?: string | null }).station ?? null,
           branch: effectiveBranch,
+          altRole: alt.altRole,
+          altBranch: alt.altBranch,
           sv: (user as { sessionVersion?: number }).sessionVersion ?? 1,
         } as never;
       },
@@ -113,11 +130,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
       // Initial sign-in: user object present — set token fields
       if (user) {
-        token.role     = (user as any).role;
-        token.uid      = user.id as string;
-        token.station  = (user as any).station ?? null;
-        token.branch   = (user as any).branch ?? null;
-        token.sv       = (user as any).sv ?? 1;
+        token.role      = (user as any).role;
+        token.uid       = user.id as string;
+        token.station   = (user as any).station ?? null;
+        token.branch    = (user as any).branch ?? null;
+        // The second granted pair. Carried, never derived: the gates compare a
+        // cookie against these two values and fall back to role/branch above.
+        token.altRole   = (user as any).altRole ?? null;
+        token.altBranch = (user as any).altBranch ?? null;
+        token.sv        = (user as any).sv ?? 1;
         return token;
       }
 

@@ -202,7 +202,7 @@ function SlabCard({ slab, onAssign, onSend, printerEmail }: {
       ``,
       `LABELS TO PRINT:`,
       `------------------------------`,
-      ...slab.pieces.map(p => `${p.drawingNumber}-${p.pieceLabel}  x  ${p.qty}`),
+      ...slab.pieces.map(p => `${p.pieceLabel}  x  ${p.qty}`),
       `------------------------------`,
       `Total labels: ${totalPcs}`,
       ``,
@@ -380,20 +380,50 @@ function CutQueue() {
 
   useEffect(() => { load(); }, [load]);
 
+  // A REFUSAL MUST BE SAID OUT LOUD.
+  //
+  // Both of these used to `await fetch(...)` and throw the answer away, so a
+  // route that refused — approve-slab returns 409 for a slab already on the
+  // cutting floor, 422 for one it cannot release — looked to the supervisor
+  // exactly like one that worked: the button settled, the board reloaded, and
+  // nothing had happened. He presses it again, and again, and eventually rings
+  // someone. The reload even makes it convincing, because the screen visibly
+  // does something.
+  //
+  // The slab board at /fab/supervisor/slabs already reads these answers. This
+  // screen is the older project list and did not.
+  async function post(url: string, body: unknown, whatFailed: string) {
+    setActionError(null);
+    try {
+      const res = await fetch(url, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        // The route's own sentence when it has one. Those are written for the
+        // person reading them — "this slab has already been sent to the cutter"
+        // tells him what to do next, and "request failed" does not.
+        setActionError(String(data?.error ?? `${whatFailed} (${res.status}).`));
+        return false;
+      }
+      return true;
+    } catch {
+      setActionError(`${whatFailed} — the server could not be reached.`);
+      return false;
+    } finally {
+      await load();
+    }
+  }
+
   async function assignQcSlab(fabSlabId: string, qcId: string | null) {
-    await fetch("/api/fab/assign-qc-slab", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fabSlabId, pacificQcId: qcId }),
-    });
-    await load();
+    await post("/api/fab/assign-qc-slab", { fabSlabId, pacificQcId: qcId },
+      "That QC slab could not be attached");
   }
 
   async function sendToCutter(slabId: string) {
-    await fetch("/api/fab/approve-slab", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slabId }),
-    });
-    await load();
+    await post("/api/fab/approve-slab", { slabId },
+      "That slab was not sent to the cutter");
   }
 
   // RETIRED 2026-08 with the fix-cascade endpoint (see the button below).
@@ -401,6 +431,9 @@ function CutQueue() {
 //   const [fixingCascade,  setFixingCascade]  = useState(false);
   const [endingSessions, setEndingSessions] = useState(false);
   const [fixResult,     setFixResult]     = useState<string | null>(null);
+  /** The last refusal from a write. Cleared by the next attempt, so it always
+   *  describes the button just pressed and never an old failure. */
+  const [actionError,   setActionError]   = useState<string | null>(null);
 //   async function runCascadeFix() {
 //     setFixingCascade(true);
 //     setFixResult(null);
@@ -491,7 +524,10 @@ function CutQueue() {
         )}
       </div>
 
-      <FabAlerts loadError={loadError} noun="cut queue" />
+      {/* actionError is the house banner, not a local one: FabAlerts exists so
+          all five station screens say a refusal in the same words. */}
+      <FabAlerts loadError={loadError} actionError={actionError}
+        onDismiss={() => setActionError(null)} noun="cut queue" />
 
       {/* Printer email settings */}
       <div className="mb-5 flex items-center gap-2 bg-teal-50 border border-teal-200 rounded-xl px-4 py-2.5 flex-wrap">

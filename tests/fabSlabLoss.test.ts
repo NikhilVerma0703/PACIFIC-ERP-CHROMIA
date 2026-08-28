@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   computeSlabLoss, sqftFromSqMm, sqftFromInches,
   STANDARD_SLAB_INCHES, STANDARD_SLAB_MM, SQ_MM_PER_SQ_FT, INCH_TO_MM,
+  sampleAreaSqft,
 } from "../src/lib/fab/slabLoss.ts";
 
 // FabRequirement.length/width are INCHES. FabSlab.length/width are MILLIMETRES.
@@ -249,4 +250,90 @@ test("the result maps one-for-one onto the three fab_slab_job columns", () => {
   for (const v of Object.values(row)) {
     if (typeof v === "number") assert.equal(v, Math.round(v * 100) / 100);
   }
+});
+
+// ── SAMPLED STONE IS SPENT, NOT WASTED ─────────────────────────────────────
+//
+// Two defects in one number. With no record of what left as samples:
+//   1. the area fell into remainingAreaSqft and was reported as WASTAGE, so the
+//      more the shop recovered, the worse its yield looked — the same square
+//      foot booked once as sample stock and once as loss;
+//   2. it left PO CAPACITY untouched, so a slab could be filled to its full
+//      nominal area after part of it had already been cut away.
+//
+// The standard slab is 137 x 79 in = 75.16 sqft (STANDARD_SLAB_MM).
+
+const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+const SAMPLED_SLAB = { slabLengthMm: STANDARD_SLAB_MM.lengthMm, slabWidthMm: STANDARD_SLAB_MM.widthMm };
+
+test("sampled: area taken for samples is NOT reported as wastage", () => {
+  const pieces = [{ lengthIn: 100, widthIn: 25, quantity: 2 }]; // 34.72 sqft
+  const without = computeSlabLoss({ ...SAMPLED_SLAB, pieces });
+  const withSamples = computeSlabLoss({ ...SAMPLED_SLAB, pieces, sampledAreaSqft: 10 });
+
+  // The PO figure is untouched — sampling does not flatter the order.
+  assert.equal(withSamples.usedAreaSqft, without.usedAreaSqft);
+  // But 10 sqft stops being counted as loss.
+  assert.equal(withSamples.remainingAreaSqft, round2(without.remainingAreaSqft - 10));
+  assert.ok((withSamples.totalWastagePct as number) < (without.totalWastagePct as number));
+  assert.equal(withSamples.sampledAreaSqft, 10);
+  assert.equal(withSamples.committedAreaSqft, round2(without.usedAreaSqft + 10));
+});
+
+test("sampled: capacity is the slab MINUS what sampling already took", () => {
+  // The scenario from the audit: 60 sample pieces (10 sqft) off a 75.16 sqft
+  // slab, then 70 sqft of PO rows. 70 <= 75.16, so every guard used to agree —
+  // and the slab physically needed 80.
+  const pieces = [{ lengthIn: 144, widthIn: 70, quantity: 1 }]; // 70 sqft
+  const loss = computeSlabLoss({ ...SAMPLED_SLAB, pieces, sampledAreaSqft: 10 });
+
+  assert.equal(loss.usedAreaSqft, 70);
+  assert.ok(loss.usedAreaSqft < loss.slabAreaSqft, "PO pieces alone still fit — that was the trap");
+  assert.equal(loss.overCommitted, true, "but the slab is over-committed once samples count");
+  assert.ok(loss.remainingAreaSqft < 0);
+
+  // Without the sample take-off it passes, which is exactly the old behaviour.
+  assert.equal(computeSlabLoss({ ...SAMPLED_SLAB, pieces }).overCommitted, false);
+});
+
+test("sampled: it is a separate number from reclaimed remnant", () => {
+  // Reclaimed stone is still fabrication's and still on the premises; sampled
+  // stone has left. Only the first is a share of what remains.
+  const pieces = [{ lengthIn: 100, widthIn: 25, quantity: 1 }]; // 17.36 sqft
+  const l = computeSlabLoss({ ...SAMPLED_SLAB, pieces, sampledAreaSqft: 5, reclaimedAreaSqft: 3 });
+  assert.equal(l.sampledAreaSqft, 5);
+  assert.equal(l.reclaimedAreaSqft, 3);
+  // remaining excludes sampled; trueScrap then excludes reclaimed from remaining.
+  assert.equal(l.remainingAreaSqft, round2(l.slabAreaSqft - l.usedAreaSqft - 5));
+  assert.equal(l.trueScrapPct, round2(((l.remainingAreaSqft - 3) / l.slabAreaSqft) * 100));
+});
+
+test("sampled: defaults to zero, so every existing caller is unchanged", () => {
+  const pieces = [{ lengthIn: 100, widthIn: 25, quantity: 2 }];
+  for (const v of [undefined, null, 0, -5, NaN]) {
+    const l = computeSlabLoss({ ...SAMPLED_SLAB, pieces, sampledAreaSqft: v as number });
+    assert.equal(l.sampledAreaSqft, 0, String(v));
+    assert.equal(l.committedAreaSqft, l.usedAreaSqft, String(v));
+    assert.equal(l.remainingAreaSqft, round2(l.slabAreaSqft - l.usedAreaSqft), String(v));
+  }
+});
+
+test("sampleAreaSqft: inches in, square feet out, same rule as the piece sum", () => {
+  // sampling_size stores inches, like a fab piece — which is why one function
+  // can do both and the two sides of the comparison cannot drift apart.
+  assert.equal(sampleAreaSqft([{ lengthIn: 12, widthIn: 12, quantity: 1 }]), 1);
+  assert.equal(sampleAreaSqft([{ lengthIn: 4, widthIn: 6, quantity: 60 }]), 10);
+  assert.equal(sampleAreaSqft([]), 0);
+  // Junk contributes nothing rather than NaN — one bad row must not erase a
+  // whole slab's take-off.
+  assert.equal(
+    sampleAreaSqft([
+      { lengthIn: 12, widthIn: 12, quantity: 1 },
+      { lengthIn: null, widthIn: 6, quantity: 10 },
+      { lengthIn: 4, widthIn: undefined, quantity: 10 },
+      { lengthIn: -4, widthIn: 6, quantity: 10 },
+      { lengthIn: 4, widthIn: 6, quantity: 0 },
+    ]),
+    1,
+  );
 });

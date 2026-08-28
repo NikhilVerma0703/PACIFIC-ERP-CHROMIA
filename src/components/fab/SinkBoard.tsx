@@ -1,5 +1,27 @@
 "use client";
 
+// ─────────────────────────────────────────────────────────────────────────────
+// RETIRED FROM THE SUPERVISOR SCREEN, 2026-08-25 — but not deleted.
+//
+// The owner: "remove this decision from the supervisor itself about sink. If he
+// wants to change he can edit them manually, because having this and that
+// changes the complete flow."
+//
+// Sinks are decided ONCE now, on the purchase order, where a partial SPLITS the
+// row in two — lib/fab/sinkSplit.ts, and the Sink column in
+// app/fab/manager/[projectId]/PoRequirementTable.tsx. This board could set a
+// partial WITHOUT splitting, which quietly re-created the mixed row that change
+// exists to remove.
+//
+// The component is left whole and working, and SinkBoardRow below is still
+// imported by the supervisor screen for the READ-ONLY summary that replaced it.
+// /api/fab/supervisor/sink-quantity now answers 410, so mounting this again
+// would fail loudly rather than half-work — restoring it means restoring that
+// route too, and deciding what happens to the split.
+//
+// Everything below this line is the board as it was.
+// ─────────────────────────────────────────────────────────────────────────────
+
 // SINK ASSIGNMENT — the board, extracted so it can sit UNDER one slab's pieces.
 //
 // This is the board the owner described, unchanged in behaviour and moved here

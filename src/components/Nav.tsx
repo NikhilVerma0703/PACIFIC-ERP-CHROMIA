@@ -194,6 +194,38 @@ export function Nav({
   // the dedicated CHROMIA tablet role below, and as a Shop Floor section for
   // admins, who reach every department. Icons mirror Robo's where the screen is
   // the same idea, so the two shop-floor modules read as one family.
+  // Sampling module — the three screens the Sampling Incharge works from,
+  // declared once and used twice, exactly as chromiaItems below is: as the whole
+  // nav for the capped SAMPLING role, and as a section for admins, who span
+  // every department.
+  //
+  // WITHOUT THE ROLE ARM THIS LOGIN HAD NO NAV AT ALL. Role.SAMPLING is capped
+  // to /sampling + /api/sampling (lib/routeCaps.ts samplingMayVisit), and with
+  // no arm of its own it fell through to the shop-floor nav at the foot of this
+  // file — Live Status, Data Entry, Tables, the lot — every one of which
+  // middleware then refused. A sidebar of links that all lead to /no-access is
+  // worse than no sidebar: it reads as a broken ERP rather than as a focused one.
+  //
+  // "exact" on /sampling: /sampling/add-stock and /sampling/dispatch are nav
+  // rows of their own, and the default prefix rule would light Inventory
+  // alongside whichever of them is open.
+  //
+  // NOT the Fabrication Supervisor's, and there is deliberately no arm for him.
+  // He may add sample stock and nothing else, he cannot open these PAGES at all
+  // (his FABRICATION branch block refuses them), and his control lives on
+  // /fab/supervisor/slabs where the slab is. A row here would be a link to a
+  // refusal.
+  const samplingItems = [
+    { href: "/sampling",            icon: I.box,       label: "Inventory", exact: true },
+    // ASKING FOR SAMPLES IS NOT ADDING THEM, which is why this is its own row
+    // and not a tab inside Add Stock. Add Stock records pieces that ALREADY
+    // EXIST — offcuts found on the floor. A request asks the floor to cut pieces
+    // that do not exist yet, and the answer arrives days later as stock.
+    { href: "/sampling/requests",   icon: I.factory,   label: "Requests" },
+    { href: "/sampling/add-stock",  icon: I.entry,     label: "Add Stock" },
+    { href: "/sampling/dispatch",   icon: I.packaging, label: "Dispatch" },
+  ];
+
   const chromiaItems = [
     { href: "/chromia/dashboard",              icon: I.overview, label: "Dashboard" },
     { href: "/chromia/operator",               icon: I.factory,  label: "Operator Entry" },
@@ -269,6 +301,17 @@ export function Nav({
         <Section label="Recalibration" items={chromiaItems.filter(t => t.href.startsWith("/chromia/recalibration"))} path={path} />
         <Section label="Reports" items={chromiaItems.filter(t => t.href === "/chromia/reports" || t.href === "/chromia/downloads")} path={path} />
         <Section label="Setup" items={chromiaItems.filter(t => t.href === "/chromia/import")} path={path} />
+      </nav>
+    );
+  if (role === "SAMPLING")
+    // sampling incharge — the sampling module is their whole ERP, the same
+    // whole-nav takeover ROBO and CHROMIA get directly above. Two sections
+    // rather than three flat rows, because that is what the module is: the
+    // shelf, and what leaves it.
+    return (
+      <nav className="flex flex-col">
+        <Section label="Stock" items={samplingItems.filter(t => t.href !== "/sampling/dispatch")} path={path} />
+        <Section label="Outward" items={samplingItems.filter(t => t.href === "/sampling/dispatch")} path={path} />
       </nav>
     );
   if (role === "OPERATOR" && branch !== "FABRICATION")
@@ -376,6 +419,10 @@ export function Nav({
       {/* Shop Floor -> Chromia. Admins only: the CHROMIA role gets the whole-nav
           takeover above, and no other role may open the module (middleware). */}
       {isAdmin && <Section label="Chromia" items={chromiaItems} path={path} />}
+      {/* Shop Floor -> Sampling. Admins only, for the same reason as Chromia
+          above: the SAMPLING role gets the whole-nav takeover, and the only
+          other login middleware admits to these pages is an admin. */}
+      {isAdmin && <Section label="Sampling" items={samplingItems} path={path} />}
       {inventory && <Section label="Inventory" items={[{ href: "/inventory", icon: I.box, label: "Finished Goods" }]} path={path} />}
       {consumables && <Section label="Consumables" items={[{ href: "/consumables", icon: I.box, label: "Consumables" }]} path={path} />}
       {intlSales && <Section label="International Sales" items={intlSalesItems} path={path} />}

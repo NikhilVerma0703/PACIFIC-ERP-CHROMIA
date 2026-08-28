@@ -68,18 +68,19 @@ import { NextRequest } from "next/server";
 import { Prisma } from "@prisma/client";
 import { fabGate } from "@/lib/fab/access";
 import { prisma } from "@/lib/prisma";
+import { sampledAreaForSlab } from "@/lib/fab/sampledArea";
 import { computeSlabLoss } from "@/lib/fab/slabLoss";
 import { assignedPieceCount, decideSendToCutting, slabLossPieces } from "@/lib/fab/slabAssignment";
 import {
   describeAlreadyReleasedRows,
   describeRequirement,
-  nextPieceNumber,
   planSlabRelease,
   type PlannedSlabPiece,
   type SlabReleaseRow,
 } from "@/lib/fab/releasePlan";
 import { deriveRoutingFlags } from "@/lib/fab/requirement-derive";
 import { planPieceOperations } from "@/lib/fab/pieceOperations";
+import { assignRowLetters, formatPieceCode, nextPieceNumberInRow } from "@/lib/fab/pieceNaming";
 
 /** Pieces per write chunk — the same ceiling release-project writes under, so a
  *  freak slab carrying hundreds of rows cannot overrun Postgres' 65,535
@@ -90,8 +91,23 @@ const OPERATION_CHUNK = 2000;
 const TX_TIMEOUT_MS = 60_000;
 const TX_MAX_WAIT_MS = 15_000;
 
-/** Job states that mean this slab has already gone to the cutting floor. */
-const ACTIVE_JOB_STATUSES = ["READY", "IN_PROGRESS"] as const;
+/** Job states that mean this slab has already gone to the cutting floor.
+ *
+ *  ALL THREE OF THEM. FabSlabProductionStatus has exactly READY, IN_PROGRESS
+ *  and COMPLETED, so this is "any job at all" — spelt out rather than dropping
+ *  the filter, because the list is what says why the question is being asked.
+ *
+ *  COMPLETED used to be missing, and the hole it left is not obvious: a slab
+ *  whose cutting had FINISHED read as having no job, so a second send sailed
+ *  past the idempotency check. It could not double the pieces — piecesAlreadyPresent
+ *  stops that — but it created a SECOND fab_slab_job on the same stone, and the
+ *  CEO dashboard counts cutting by job. One slab, cut once, counted twice, with
+ *  the duplicate carrying no operator and no end time to give it away.
+ *
+ *  A finished slab that genuinely has to go back to the saw is reverted first
+ *  (queues/cutting/revert-job), which returns its job to READY — still caught
+ *  here, and by then it is the same job rather than a new one. */
+const ACTIVE_JOB_STATUSES = ["READY", "IN_PROGRESS", "COMPLETED"] as const;
 
 export const maxDuration = 60;
 
@@ -170,6 +186,9 @@ export async function POST(req: NextRequest) {
                 quantity: true, sinkQuantity: true,
                 length: true, width: true, shapeType: true,
                 pieceLabel: true, description: true,
+                // The piece code's letter, and the tie-break the pre-0054
+                // fallback orders by. See letterFor().
+                rowLetter: true, createdAt: true,
                 po: { select: { poNumber: true } },
                 drawing: { select: { drawingNumber: true } },
               },
@@ -201,10 +220,17 @@ export async function POST(req: NextRequest) {
           widthIn: r.requirement.width,
           allocatedQuantity: r.allocatedOnThisSlab,
         }));
+        // Stone already cut off this slab for sampling. It is spent — it is not
+        // available to the purchase order and it is not scrap — so it counts
+        // toward capacity here exactly as an assigned piece does. Read inside
+        // the same transaction as the allocations so a sample recorded while
+        // this runs cannot slip past the check.
+        const sampledAreaSqft = await sampledAreaForSlab(slab.id);
         const loss = computeSlabLoss({
           slabLengthMm: slab.length,
           slabWidthMm: slab.width,
           pieces: slabLossPieces(lossRows),
+          sampledAreaSqft,
         });
 
         // The same pure rule the board greys the button with, so the screen
@@ -215,6 +241,9 @@ export async function POST(req: NextRequest) {
           overCommitted: loss.overCommitted,
           usedAreaSqft: loss.usedAreaSqft,
           slabAreaSqft: loss.slabAreaSqft,
+          // So the refusal names the sample take-off instead of accusing the
+          // supervisor of rows he did not put there.
+          sampledAreaSqft: loss.sampledAreaSqft,
         });
         if (!decision.ok) return { kind: "refused", error: decision.error };
 
@@ -237,8 +266,23 @@ export async function POST(req: NextRequest) {
           // What each row has already had made, anywhere. sink_quantity is per
           // ORDER ROW, not per slab, so the sinks this slab owes are the
           // balance — see planSlabRelease.
+          //
+          // A REJECTED PIECE DOES NOT COUNT AS MADE. It is broken stone: the
+          // customer ordered ten and still has nine, so the row owes one more
+          // and a replacement slab must be able to cut it.
+          //
+          // Counting them was a quiet trap. planSlabRelease computes headroom as
+          // ordered − created, so one rejection took a ten-piece row to zero
+          // headroom, and the supervisor sending the replacement slab was told
+          // "all 10 already released" — a sentence that is true of the pieces
+          // and false of the order, and gives him nothing to do about it.
+          //
+          // The piece NUMBER is a different question and is answered
+          // differently: existingCodes below deliberately does NOT filter, so a
+          // rejected piece's number stays spent. Its code may be written on
+          // stone in a skip; nothing may ever carry it again.
           const madeAlready = await tx.fabPiece.findMany({
-            where: { requirementId: { in: requirementIds } },
+            where: { requirementId: { in: requirementIds }, status: { not: "REJECTED" } },
             select: { requirementId: true, hasSink: true },
           });
           const tally = new Map<string, { pieces: number; sinks: number }>();
@@ -267,11 +311,45 @@ export async function POST(req: NextRequest) {
             select: { pieceCode: true },
           });
 
+          // A ROW'S LETTER, with a fallback that CANNOT COLLIDE.
+          //
+          // Every row should carry one: the importer assigns them and so does
+          // the manager's add-row. A row from before scripts/0054 does not, and
+          // refusing the whole send over a missing migration would stop the
+          // floor — so those are lettered here instead.
+          //
+          // The fallback CONTINUES PAST the highest letter any row on this slab
+          // already stores, rather than counting from A. Counting from A hands
+          // an unlettered row the letter a lettered one already owns, and two
+          // rows sharing a letter is not a cosmetic problem: the piece codes
+          // collide on a UNIQUE column and the send fails outright.
+          const stored = [...rows.values()]
+            .map(r => String(r.requirement.rowLetter ?? "").trim().toUpperCase())
+            .filter(l => /^[A-Z]+$/.test(l));
+          const needLetters = [...rows.values()]
+            .map(r => r.requirement)
+            .filter(r => !/^[A-Z]+$/.test(String(r.rowLetter ?? "").trim().toUpperCase()))
+            .sort((a, b) => {
+              const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+              const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+              return ta !== tb ? ta - tb : String(a.id).localeCompare(String(b.id));
+            });
+          const fallback = new Map<string, string>();
+          assignRowLetters(stored, needLetters.length)
+            .forEach((letter, i) => fallback.set(needLetters[i].id, letter));
+
+          const letterFor = (req: { id: string; rowLetter?: string | null }): string => {
+            const l = String(req.rowLetter ?? "").trim().toUpperCase();
+            if (/^[A-Z]+$/.test(l)) return l;
+            return fallback.get(req.id) ?? "A";
+          };
+
           const planRows: SlabReleaseRow[] = [...rows.values()].map(r => ({
             requirementId: r.requirement.id,
             name: describeRequirement({
               drawingNumber: r.requirement.drawing?.drawingNumber,
               poNumber: r.requirement.po?.poNumber,
+              rowLetter: letterFor(r.requirement),
               pieceLabel: r.requirement.pieceLabel,
               description: r.requirement.description,
             }),
@@ -280,13 +358,23 @@ export async function POST(req: NextRequest) {
             piecesAlreadyCreated: tally.get(r.requirement.id)?.pieces ?? 0,
             sinksAlreadyCreated: tally.get(r.requirement.id)?.sinks ?? 0,
             sinkQuantity: r.requirement.sinkQuantity,
+            // {projectCode}-{LETTER}-{n}. A row with no letter yet (imported
+            // before scripts/0054) falls back to a letter derived from its
+            // position among this project's rows, so a send never fails for
+            // want of a migration — but a lettered row always wins.
+            rowLetter: letterFor(r.requirement),
+            // Each row resumes ITS OWN numbering: 28 ordered pieces can be 12
+            // on this slab and 16 on the next, and piece_code is unique
+            // globally, so restarting at 1 fails to insert rather than merely
+            // mislabelling.
+            nextNumberInRow: nextPieceNumberInRow(
+              project.projectCode,
+              letterFor(r.requirement),
+              existingCodes.map(c => c.pieceCode),
+            ),
           }));
 
-          const plan = planSlabRelease({
-            projectCode: project.projectCode,
-            startNumber: nextPieceNumber(project.projectCode, existingCodes.map(c => c.pieceCode)),
-            rows: planRows,
-          });
+          const plan = planSlabRelease({ rows: planRows });
 
           // Every row on the slab was already released somewhere else, so this
           // send would create a job with nothing in it. Name them and refuse —
@@ -328,7 +416,7 @@ export async function POST(req: NextRequest) {
             const data: Prisma.FabPieceCreateManyInput[] = batch.map(p => {
               const r = rows.get(p.requirementId)!.requirement;
               return {
-                pieceCode: p.pieceCode,
+                pieceCode: formatPieceCode(project.projectCode, p.rowLetter, p.n),
                 projectId: r.projectId,
                 drawingId: r.drawingId ?? undefined,
                 requirementId: r.id,
@@ -356,8 +444,11 @@ export async function POST(req: NextRequest) {
             const slabAllocations: Prisma.FabSlabAllocationCreateManyInput[] = [];
             const operations: Prisma.FabPieceOperationCreateManyInput[] = [];
             for (const p of batch) {
-              const pieceId = idByCode.get(p.pieceCode);
-              if (!pieceId) throw new Error(`Piece ${p.pieceCode} was not returned by the insert`);
+              // The same formatter the insert used, so the lookup key cannot
+              // drift from the key that was written.
+              const code = formatPieceCode(project.projectCode, p.rowLetter, p.n);
+              const pieceId = idByCode.get(code);
+              if (!pieceId) throw new Error(`Piece ${code} was not returned by the insert`);
               // fab_slab_allocation as well as fab_piece.slab_id. A piece
               // created without one is invisible to the legacy cutting queue
               // for good — it joins through this table, not through the column.

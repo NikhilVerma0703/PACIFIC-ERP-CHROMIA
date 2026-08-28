@@ -2,12 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   describeAlreadyReleasedRows,
-  formatPieceCode,
-  nextPieceNumber,
   planSlabRelease,
   sinkPiecesForSlab,
   type SlabReleaseRow,
 } from "../src/lib/fab/releasePlan.ts";
+import { formatPieceCode, nextPieceNumberInRow } from "../src/lib/fab/pieceNaming.ts";
 
 // SENDING A SLAB TO THE CUTTER IS WHERE PIECES ARE BORN NOW.
 //
@@ -22,9 +21,11 @@ import {
 //      sink" is one decision that spans every slab the row is split across. Read
 //      per slab it becomes 30 sinks on EACH of them, and the shop cuts thirty
 //      holes nobody ordered. The rule is a top-up against what already exists.
-//   2. THE PIECE CODE IS PER PROJECT. fab_piece.piece_code is @unique globally,
-//      so a counter that restarts at 1 on the second slab collides with the
-//      first one's work and the whole transaction rolls back.
+//   2. THE PIECE CODE IS PER ROW: {projectCode}-{LETTER}-{n}, a letter per
+//      ordered row and a number per piece (lib/fab/pieceNaming.ts).
+//      fab_piece.piece_code is @unique globally, so a counter that restarts at
+//      1 when a row continues onto its second slab collides with the first
+//      slab's work and the whole transaction rolls back.
 //   3. SENDING TWICE MUST NOT DOUBLE THE WORK. The plan is a function of what
 //      already exists, so feeding it the state left by its own first run leaves
 //      it nothing to do.
@@ -47,16 +48,17 @@ function makeShop(projectCode: string) {
      *  way the route's transaction does. */
     send(rows: Omit<SlabReleaseRow, "piecesAlreadyCreated" | "sinksAlreadyCreated">[]) {
       const plan = planSlabRelease({
-        projectCode,
-        startNumber: nextPieceNumber(projectCode, codes),
         rows: rows.map(r => ({
           ...r,
           piecesAlreadyCreated: made.get(r.requirementId)?.pieces ?? 0,
           sinksAlreadyCreated: made.get(r.requirementId)?.sinks ?? 0,
+          // Each row resumes its OWN numbering, read back from the codes this
+          // project already carries — exactly what the route's transaction does.
+          nextNumberInRow: nextPieceNumberInRow(projectCode, r.rowLetter, codes),
         })),
       });
       for (const p of plan.pieces) {
-        codes.push(p.pieceCode);
+        codes.push(formatPieceCode(projectCode, p.rowLetter, p.n));
         const t = made.get(p.requirementId) ?? { pieces: 0, sinks: 0 };
         t.pieces += 1;
         if (p.hasSink) t.sinks += 1;
@@ -71,6 +73,8 @@ function makeShop(projectCode: string) {
 function row(over: Partial<SlabReleaseRow> = {}): Omit<SlabReleaseRow, "piecesAlreadyCreated" | "sinksAlreadyCreated"> {
   return {
     requirementId: "r1",
+    rowLetter: "A",
+    nextNumberInRow: 1,
     name: "PO 10026 Row 7",
     orderedQuantity: 60,
     allocatedOnThisSlab: 12,
@@ -135,9 +139,7 @@ test("sinks already made by a project-wide release are counted, not repeated", (
   // release-project is still in the tree and still creates pieces if anyone
   // calls it. A slab sent afterwards must see its sinks.
   const plan = planSlabRelease({
-    projectCode: "PS-101",
-    startNumber: 41,
-    rows: [{
+        rows: [{
       requirementId: "r1",
       name: "PO 10026 Row 7",
       orderedQuantity: 60,
@@ -204,45 +206,48 @@ test("sinkPiecesForSlab on its own: the balance, never more than the slab makes"
 
 /* -- Piece codes across successive slabs ------------------------------------ */
 
-test("the piece counter carries across slabs instead of restarting", () => {
-  // fab_piece.piece_code is @unique GLOBALLY. Numbering from 1 on the second
-  // slab duplicates the first slab's codes, P2002 aborts the transaction, and
-  // the supervisor is told the send failed with the slab still on the board.
+test("A ROW'S NUMBERING CARRIES ACROSS SLABS instead of restarting", () => {
+  // fab_piece.piece_code is @unique GLOBALLY. Numbering from 1 when a row
+  // continues onto its second slab duplicates the first slab's codes, P2002
+  // aborts the transaction, and the supervisor is told the send failed with the
+  // slab still on the board.
   const shop = makeShop("PS-101");
 
   const slab1 = shop.send([row({ allocatedOnThisSlab: 3 })]);
-  assert.deepEqual(slab1.pieces.map(p => p.pieceCode), ["PS-101-0001", "PS-101-0002", "PS-101-0003"]);
+  assert.deepEqual(shop.codes, ["PS-101-A-1", "PS-101-A-2", "PS-101-A-3"]);
+  assert.deepEqual(slab1.pieces.map(p => `${p.rowLetter}-${p.n}`), ["A-1", "A-2", "A-3"]);
 
   const slab2 = shop.send([row({ allocatedOnThisSlab: 2 })]);
-  assert.deepEqual(slab2.pieces.map(p => p.pieceCode), ["PS-101-0004", "PS-101-0005"]);
+  assert.deepEqual(slab2.pieces.map(p => `${p.rowLetter}-${p.n}`), ["A-4", "A-5"]);
+  assert.deepEqual(shop.codes.slice(3), ["PS-101-A-4", "PS-101-A-5"]);
 
   assert.equal(new Set(shop.codes).size, shop.codes.length, "a code was minted twice");
 });
 
-test("two piece rows on one slab share the project's counter", () => {
+test("EACH ROW COUNTS FROM 1, independently of the others", () => {
+  // The change from the old scheme: the counter is per ORDERED ROW now, not one
+  // sequence across the project. Row B starting at 1 while row A is at 3 is the
+  // point — a cutter reading PS-101-B-1 knows it is the first piece of row B.
   const shop = makeShop("PS-101");
   const slab = shop.send([
-    row({ requirementId: "r1", allocatedOnThisSlab: 2 }),
-    row({ requirementId: "r2", name: "PO 10026 Row 9", allocatedOnThisSlab: 2 }),
+    row({ requirementId: "r1", rowLetter: "A", allocatedOnThisSlab: 2 }),
+    row({ requirementId: "r2", rowLetter: "B", name: "PO 10026 Row 9", allocatedOnThisSlab: 2 }),
   ]);
   assert.deepEqual(
-    slab.pieces.map(p => `${p.requirementId}:${p.pieceCode}`),
-    ["r1:PS-101-0001", "r1:PS-101-0002", "r2:PS-101-0003", "r2:PS-101-0004"],
+    slab.pieces.map(p => `${p.requirementId}:${p.rowLetter}-${p.n}`),
+    ["r1:A-1", "r1:A-2", "r2:B-1", "r2:B-2"],
   );
+  assert.deepEqual(shop.codes, ["PS-101-A-1", "PS-101-A-2", "PS-101-B-1", "PS-101-B-2"]);
 });
 
-test("nextPieceNumber resumes past what exists and ignores the retired format", () => {
-  assert.equal(nextPieceNumber("PS-101", []), 1);
-  assert.equal(nextPieceNumber("PS-101", ["PS-101-0001", "PS-101-0007", "PS-101-0003"]), 8);
-  // The cutting queue used to mint `{projectCode}-{label}-{NNN}-{slabSuffix}`.
-  // Those are not numbers this counter can continue, and reading "2B" as one
-  // would either throw or restart the sequence on top of live work.
-  assert.equal(nextPieceNumber("PS-101", ["PS-101-2B-003-9f1c", "PS-101-0002"]), 3);
-  // Another project's codes are not this project's business.
-  assert.equal(nextPieceNumber("PS-101", ["PS-999-0044"]), 1);
-  assert.equal(formatPieceCode("PS-101", 42), "PS-101-0042");
-  // A project past 9,999 pieces gets a longer number rather than a wrapped one.
-  assert.equal(formatPieceCode("PS-101", 12345), "PS-101-12345");
+test("a row past Z keeps counting — the 28-row sheet is a real order", () => {
+  const shop = makeShop("PS-101");
+  const slab = shop.send([
+    row({ requirementId: "r27", rowLetter: "AA", allocatedOnThisSlab: 2 }),
+    row({ requirementId: "r28", rowLetter: "AB", allocatedOnThisSlab: 1 }),
+  ]);
+  assert.deepEqual(shop.codes, ["PS-101-AA-1", "PS-101-AA-2", "PS-101-AB-1"]);
+  assert.equal(slab.pieces.length, 3);
 });
 
 /* -- Sending the same slab twice -------------------------------------------- */
@@ -289,9 +294,7 @@ test("re-sending one slab of several leaves the other slabs' work alone", () => 
 
 test("a slab claiming more than the order has left releases the balance and says so", () => {
   const plan = planSlabRelease({
-    projectCode: "PS-101",
-    startNumber: 9,
-    rows: [{
+        rows: [{
       requirementId: "r1",
       name: "PO 10026 Row 7",
       orderedQuantity: 10,
@@ -332,25 +335,23 @@ test("a long list of blocked rows is capped, and still says how many there are",
 
 test("junk quantities cannot spin the loop or mint stray pieces", () => {
   const plan = planSlabRelease({
-    projectCode: "PS-101",
-    startNumber: 1,
-    rows: [
-      { requirementId: "a", name: "A", orderedQuantity: 5, allocatedOnThisSlab: -3, sinkQuantity: 1, piecesAlreadyCreated: 0, sinksAlreadyCreated: 0 },
-      { requirementId: "b", name: "B", orderedQuantity: 5, allocatedOnThisSlab: 1.9, sinkQuantity: 1, piecesAlreadyCreated: 0, sinksAlreadyCreated: 0 },
-      { requirementId: "c", name: "C", orderedQuantity: Number.NaN, allocatedOnThisSlab: 2, sinkQuantity: 1, piecesAlreadyCreated: 0, sinksAlreadyCreated: 0 },
+        rows: [
+      { requirementId: "a", rowLetter: "A", nextNumberInRow: 1, name: "A", orderedQuantity: 5, allocatedOnThisSlab: -3, sinkQuantity: 1, piecesAlreadyCreated: 0, sinksAlreadyCreated: 0 },
+      { requirementId: "b", rowLetter: "A", nextNumberInRow: 1, name: "B", orderedQuantity: 5, allocatedOnThisSlab: 1.9, sinkQuantity: 1, piecesAlreadyCreated: 0, sinksAlreadyCreated: 0 },
+      { requirementId: "c", rowLetter: "C", nextNumberInRow: 1, name: "C", orderedQuantity: Number.NaN, allocatedOnThisSlab: 2, sinkQuantity: 1, piecesAlreadyCreated: 0, sinksAlreadyCreated: 0 },
     ],
   });
   // A negative allocation is not a row; 1.9 is one whole piece; a requirement
   // with no usable quantity has no headroom and is blocked rather than released.
   assert.deepEqual(plan.pieces.map(p => p.requirementId), ["b"]);
   assert.deepEqual(plan.blocked.map(b => b.name), ["C"]);
-  assert.equal(plan.nextNumber, 2);
+  // Numbering is per row now, so the one released piece is that row's first.
+  assert.deepEqual(plan.pieces.map(p => `${p.rowLetter}-${p.n}`), ["A-1"]);
 });
 
 test("a slab with no rows on it plans nothing and blocks nothing", () => {
-  const plan = planSlabRelease({ projectCode: "PS-101", startNumber: 1, rows: [] });
+  const plan = planSlabRelease({ rows: [] });
   assert.deepEqual(plan.pieces, []);
   assert.deepEqual(plan.blocked, []);
   assert.deepEqual(plan.warnings, []);
-  assert.equal(plan.nextNumber, 1);
 });

@@ -1,7 +1,9 @@
-import { auth } from "@/auth";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { Shell } from "@/components/Shell";
+import { currentUser, grantedUser } from "@/lib/rbac";
+import { contextKey, grantedContexts } from "@/lib/roleContext";
+import { RoleSwitcher } from "@/components/RoleSwitcher";
 import { fabSignOut } from "./sign-out-action";
 import { OperatorQueueNav } from "@/components/fab/OperatorQueueNav";
 
@@ -33,10 +35,22 @@ function SLink({ href, icon, label, sub }: { href: string; icon: string; label: 
 }
 
 export default async function FabLayout({ children }: { children: React.ReactNode }) {
-  const session = await auth();
-  if (!session?.user) redirect("/login");
-  const mainRole  = (session.user as any).role   as string | null;
-  const fabBranch = (session.user as any).branch as string | null;
+  // currentUser(), NOT auth(): this layout decides who may be in the
+  // fabrication module at all, from role and branch, so it has to read the
+  // ACTIVE pair. With the raw session it would read the pair the login was
+  // ISSUED with — and a Line Manager who had just switched into their
+  // Fabrication Supervisor job would be sent to "/" from here while middleware,
+  // which does resolve the context, kept sending them back to /fab. Two gates
+  // redirecting to each other's forbidden page is the loop this module already
+  // shipped once (see the FABRICATION escape in auth.config.ts).
+  //
+  // It also revalidates the session, which auth() alone did not: a deactivated
+  // or signed-out-everywhere login now stops at this layout like every other
+  // module's, instead of holding the fab screens for the rest of the token.
+  const user = await currentUser();
+  if (!user) redirect("/login");
+  const mainRole  = (user as any).role   as string | null;
+  const fabBranch = (user as any).branch as string | null;
 
   // Admins use the main ERP Shell; only Fabrication-department staff use this layout.
   if (mainRole === "ADMIN") return <Shell>{children}</Shell>;
@@ -46,6 +60,12 @@ export default async function FabLayout({ children }: { children: React.ReactNod
   const isManager   = mainRole === "LINE_MANAGER";
   const isSupervisor= mainRole === "INCHARGE";
   const roleLabel   = isManager ? "Manager" : isSupervisor ? "Supervisor" : "Employee";
+
+  // The other job, if this person holds one. grantedUser() rather than the
+  // overlaid `user` above, for the reason lib/roleContext.ts's grantedContexts
+  // gives: the overlaid one describes the job you are standing in as your only.
+  const contexts = grantedContexts(await grantedUser());
+  const activeContextKey = contextKey(mainRole, fabBranch);
 
   const SIGN_OUT_PATH = "M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9";
 
@@ -65,13 +85,15 @@ export default async function FabLayout({ children }: { children: React.ReactNod
           <OperatorQueueNav />
 
           <div className="space-y-1 pt-4 border-t border-slate-800">
+            {/* Two jobs, one login — nothing at all for everybody else. */}
+            <RoleSwitcher contexts={contexts} activeKey={activeContextKey} tone="dark" />
             <form action={fabSignOut}>
               <button type="submit" className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium text-slate-400 hover:text-slate-200 hover:bg-white/5 transition">
                 <Icon d={SIGN_OUT_PATH} />
                 Sign Out
               </button>
             </form>
-            <p className="text-xs text-slate-600 px-3 pt-1 truncate">{session.user.name ?? session.user.email}</p>
+            <p className="text-xs text-slate-600 px-3 pt-1 truncate">{user.name ?? user.email}</p>
           </div>
         </aside>
       ) : (
@@ -79,7 +101,7 @@ export default async function FabLayout({ children }: { children: React.ReactNod
         <aside className="w-60 h-screen sticky top-0 bg-white border-r border-slate-100 flex flex-col p-4">
           <div className="px-3 mb-5">
             <p className="text-xs font-bold text-slate-900 tracking-tight">Pacific Fabrication</p>
-            <p className="text-[11px] text-slate-400 mt-0.5 truncate">{session.user.name} {roleLabel}</p>
+            <p className="text-[11px] text-slate-400 mt-0.5 truncate">{user.name} {roleLabel}</p>
           </div>
 
           <nav className="flex-1 overflow-y-auto">
@@ -141,8 +163,19 @@ export default async function FabLayout({ children }: { children: React.ReactNod
             <SLink href="/fab/packaging"    icon="M21 16V8l-9-5-9 5v8l9 5 9-5z" label="Packaging" />
           </nav>
 
+          {/* ONE PLACEMENT, EVERYWHERE: the switcher lives at the FOOT of the
+              rail, with the name and Sign Out.
+
+              It used to sit at the top here and at the bottom in the main
+              Shell, so the same person found it in a different place depending
+              on which half of the app they were standing in — which is the one
+              thing a control for moving BETWEEN those halves must not do. It is
+              an identity control ("who am I acting as"), so it belongs with the
+              other identity controls, and those are already at the bottom in
+              both other rails. Renders nothing at all for a single-job login. */}
           <div className="pt-3 mt-3 border-t border-slate-100">
-            <p className="text-[11px] text-slate-400 px-3 mb-2 truncate">{session.user.name ?? session.user.email}</p>
+            <RoleSwitcher contexts={contexts} activeKey={activeContextKey} />
+            <p className="text-[11px] text-slate-400 px-3 mb-2 mt-2 truncate">{user.name ?? user.email}</p>
             <form action="/api/auth/signout" method="POST">
               <button type="submit"
                 className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 bg-slate-50 hover:bg-red-50 hover:text-red-600 border border-slate-200 hover:border-red-200 transition">

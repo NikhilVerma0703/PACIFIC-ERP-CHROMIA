@@ -140,15 +140,15 @@ test("a day with no activity is a row of zeros, not a missing row", () => {
   const quiet = s.rows[1];
   assert.deepEqual(quiet, {
     date: "2026-08-17",
-    cutting: 0, polishing: 0, sinkCutting: 0, fabrication: 0, packaging: 0, total: 0,
+    cutting: 0, polishing: 0, sinkCutting: 0, fabrication: 0, packaging: 0, operations: 0,
   });
 });
 
 test("a range in which nothing at all happened is still a full block of zeros", () => {
   const s = buildStageSeries({ from: "2026-08-16", to: "2026-08-20", ops: [], cuts: [] });
   assert.equal(s.rows.length, 5);
-  assert.ok(s.rows.every(r => r.total === 0));
-  assert.equal(s.totals.total, 0);
+  assert.ok(s.rows.every(r => r.operations === 0));
+  assert.equal(s.totals.operations, 0);
   assert.deepEqual(s.rows.map(r => r.date),
     ["2026-08-16", "2026-08-17", "2026-08-18", "2026-08-19", "2026-08-20"]);
 });
@@ -164,7 +164,7 @@ test("each stage lands in its own column", () => {
   assert.equal(row.sinkCutting, 3);
   assert.equal(row.fabrication, 4);
   assert.equal(row.packaging, 5);
-  assert.equal(row.total, 15);
+  assert.equal(row.operations, 15);
   // and the mapping the page reads by is the one used here
   assert.equal(STAGE_FIELD.SINK_CUTTING, "sinkCutting");
 });
@@ -178,7 +178,7 @@ test("an operation_type the dashboard does not print is ignored, not crashed on"
     ],
   });
   assert.equal(s.rows[0].cutting, 3);
-  assert.equal(s.rows[0].total, 3, "the unknown stage must not inflate the total either");
+  assert.equal(s.rows[0].operations, 3, "the unknown stage must not inflate the total either");
 });
 
 /* -- Cutting's two sources ------------------------------------------------- */
@@ -191,7 +191,7 @@ test("cutting on a day is piece operations PLUS the CLO slab-job quantities", ()
     cuts: [{ day: "2026-08-18", pieces: 11 }],
   });
   assert.equal(s.rows[0].cutting, 17);
-  assert.equal(s.rows[0].total, 17);
+  assert.equal(s.rows[0].operations, 17);
   assert.equal(s.totals.cutting, 17);
 });
 
@@ -216,7 +216,7 @@ test("CLO quantities add to cutting only, never to another stage", () => {
   assert.equal(s.rows[0].cutting, 7);
   assert.equal(s.rows[0].polishing, 5);
   assert.equal(s.rows[0].sinkCutting, 0);
-  assert.equal(s.rows[0].total, 12);
+  assert.equal(s.rows[0].operations, 12);
 });
 
 /* -- Totals ---------------------------------------------------------------- */
@@ -243,12 +243,12 @@ test("the totals row is exactly the sum of the rows printed above it", () => {
   assert.equal(s.totals.sinkCutting, sum(r => r.sinkCutting));
   assert.equal(s.totals.fabrication, sum(r => r.fabrication));
   assert.equal(s.totals.packaging, sum(r => r.packaging));
-  assert.equal(s.totals.total, sum(r => r.total));
+  assert.equal(s.totals.operations, sum(r => r.operations));
 
   // and the arithmetic itself, spelled out once so a wrong sum is not merely
   // consistently wrong on both sides of the assertion above
   assert.equal(s.totals.cutting, 3 + 10 + 4);
-  assert.equal(s.totals.total, 3 + 2 + 5 + 1 + 8 + 10 + 4);
+  assert.equal(s.totals.operations, 3 + 2 + 5 + 1 + 8 + 10 + 4);
 });
 
 test("the grand total is the sum of the five stage totals", () => {
@@ -262,8 +262,8 @@ test("the grand total is the sum of the five stage totals", () => {
     cuts: [{ day: "2026-08-11", pieces: 6 }],
   });
   const t = s.totals;
-  assert.equal(t.total, t.cutting + t.polishing + t.sinkCutting + t.fabrication + t.packaging);
-  assert.equal(t.total, 15);
+  assert.equal(t.operations, t.cutting + t.polishing + t.sinkCutting + t.fabrication + t.packaging);
+  assert.equal(t.operations, 15);
 });
 
 /* -- Boundaries ------------------------------------------------------------ */
@@ -307,7 +307,7 @@ test("a day just outside either end is dropped, not folded into the edge row", (
   assert.equal(s.totals.cutting, 7, "only the day inside the range counts");
   assert.equal(s.rows[0].cutting, 0);
   assert.equal(s.rows[2].cutting, 0);
-  assert.equal(s.totals.total, s.rows.reduce((a, r) => a + r.total, 0));
+  assert.equal(s.totals.operations, s.rows.reduce((a, r) => a + r.operations, 0));
 });
 
 test("several buckets on the same day and stage add up rather than overwrite", () => {
@@ -337,16 +337,18 @@ test("a bigint count and a null sum survive the trip from Postgres", () => {
     cuts: [{ day: "2026-08-18", pieces: null as unknown as number }],
   });
   assert.equal(s.rows[0].cutting, 5);
-  assert.equal(s.rows[0].total, 5);
-  assert.ok(Number.isFinite(s.totals.total));
+  assert.equal(s.rows[0].operations, 5);
+  assert.ok(Number.isFinite(s.totals.operations));
 });
 
 test("no buckets at all, from a failed or empty query, is an empty-but-shaped series", () => {
   const s = buildStageSeries({ from: "2026-08-17", to: "2026-08-18" });
   assert.equal(s.rows.length, 2);
-  assert.equal(s.totals.total, 0);
+  assert.equal(s.totals.operations, 0);
+  // `operations`, not `total` — the field counts STAGE COMPLETIONS, and the
+  // old name let the screen print it under "Total" where it read as pieces.
   assert.deepEqual(Object.keys(s.totals).sort(),
-    ["cutting", "fabrication", "packaging", "polishing", "sinkCutting", "total"]);
+    ["cutting", "fabrication", "operations", "packaging", "polishing", "sinkCutting"]);
 });
 
 test("the series covers the default window end to end when driven by resolveRange", () => {
@@ -357,4 +359,28 @@ test("the series covers the default window end to end when driven by resolveRang
   assert.equal(s.rows[0].date, "2026-08-05");
   assert.equal(s.rows[0].cutting, 1, "the oldest day of the default window is inside it");
   assert.equal(s.rows[s.rows.length - 1].date, "2026-08-18");
+});
+
+test("OPERATIONS IS NOT A PIECE COUNT — the same piece is counted at every stage", () => {
+  // The dashboard on 25 Aug: 238 cut, 3 polished, 3 sink, 3 fab, 3 packed. The
+  // column headed "Total" showed 250 and everyone read it as 250 pieces. There
+  // were 238, three of which went all the way through.
+  const s = buildStageSeries({
+    from: "2026-08-18", to: "2026-08-18",
+    ops: [
+      { day: "2026-08-18", stage: "CUTTING",      count: 238 },
+      { day: "2026-08-18", stage: "POLISHING",    count: 3 },
+      { day: "2026-08-18", stage: "SINK_CUTTING", count: 3 },
+      { day: "2026-08-18", stage: "FABRICATION",  count: 3 },
+      { day: "2026-08-18", stage: "PACKAGING",    count: 3 },
+    ],
+  });
+  assert.equal(s.totals.operations, 250);
+  // The piece count is the CUT column — a piece is cut exactly once.
+  assert.equal(s.totals.cutting, 238);
+  assert.ok(s.totals.operations > s.totals.cutting,
+    "operations exceeds pieces whenever anything moved past cutting");
+  // And the three that finished are counted five times between them.
+  const beyondCut = s.totals.operations - s.totals.cutting;
+  assert.equal(beyondCut, 12, "3 pieces x 4 later stages");
 });

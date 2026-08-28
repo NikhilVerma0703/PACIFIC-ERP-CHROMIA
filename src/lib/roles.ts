@@ -9,11 +9,15 @@
 //
 // Role hierarchy (low -> high). Kept as string-typed so this compiles even
 // before `prisma generate` refreshes the @prisma/client enum.
-export type RoleName = "OPERATOR" | "INCHARGE" | "LINE_MANAGER" | "ADMIN" | "FINANCE" | "ACCOUNTS" | "SALES" | "COMMERCIAL" | "STORE" | "MAINTENANCE" | "ROBO" | "CHROMIA";
+export type RoleName = "OPERATOR" | "INCHARGE" | "LINE_MANAGER" | "ADMIN" | "FINANCE" | "ACCOUNTS" | "SALES" | "COMMERCIAL" | "STORE" | "MAINTENANCE" | "ROBO" | "CHROMIA" | "SAMPLING";
 
 // FINANCE and ACCOUNTS are flat office roles directly under ADMIN (rank 2:
 // they may edit office tables, but user management stays admin-only in Office).
-export const ROLE_RANK: Record<string, number> = { OPERATOR: 1, STORE: 1, MAINTENANCE: 1, SALES: 1, COMMERCIAL: 1, ROBO: 1, CHROMIA: 1, INCHARGE: 2, FINANCE: 2, ACCOUNTS: 2, LINE_MANAGER: 3, ADMIN: 4 };
+// SAMPLING sits on rank 1 with the other capped module roles (ROBO, CHROMIA,
+// STORE, MAINTENANCE): below every rank test in the ERP, so it inherits
+// nothing and is named explicitly wherever it is wanted. Its own module gates
+// on the ACTION rather than on a rank — see lib/sampling/actions.ts.
+export const ROLE_RANK: Record<string, number> = { OPERATOR: 1, STORE: 1, MAINTENANCE: 1, SALES: 1, COMMERCIAL: 1, ROBO: 1, CHROMIA: 1, SAMPLING: 1, INCHARGE: 2, FINANCE: 2, ACCOUNTS: 2, LINE_MANAGER: 3, ADMIN: 4 };
 
 export function rankOf(role?: string | null): number { return ROLE_RANK[String(role ?? "")] ?? 0; }
 
@@ -35,6 +39,10 @@ export const ROLE_LABEL: Record<string, string> = {
   FINANCE: "Finance", ACCOUNTS: "Accounts", SALES: "Sales", COMMERCIAL: "Commercial", STORE: "Store Incharge", MAINTENANCE: "Maintenance Manager",
   ROBO: "Robo Operator",
   CHROMIA: "Chromia Operator",
+  // The owner's own word for this person. Not "Sampling Operator": there is one
+  // sampling login and it runs the whole module — the inventory, the intake and
+  // all three dispatch transitions.
+  SAMPLING: "Sampling Incharge",
 };
 
 /** Fabrication shares the ONE role hierarchy with Shop Floor (LINE_MANAGER /

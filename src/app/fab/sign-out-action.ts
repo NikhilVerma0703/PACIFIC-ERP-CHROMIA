@@ -3,6 +3,7 @@
 import { auth, signOut } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { cookies } from "next/headers";
+import { ROLE_CONTEXT_COOKIE } from "@/lib/roleContext";
 
 /**
  * Combined fab sign-out — logs out from ALL devices:
@@ -32,6 +33,12 @@ export async function fabSignOut() {
     for (const name of [
       "fab_machine_type","fab_machine_id","fab_machine_name","fab_session_id",
       "fab_ps_CUTTING","fab_ps_POLISHING","fab_ps_SINK_CUTTING","fab_ps_FABRICATION","fab_ps_PACKAGING",
+      // The active-role selector, by the shared constant rather than a tenth
+      // string literal — the whole list above is a copy this one refuses to
+      // join. Cleared for the reason app/actions.ts's logout clears it: the
+      // next sign-in must start in the primary job, which is the one
+      // login/actions.ts computes its landing page from.
+      ROLE_CONTEXT_COOKIE,
     ]) {
       cookieStore.delete(name);
     }

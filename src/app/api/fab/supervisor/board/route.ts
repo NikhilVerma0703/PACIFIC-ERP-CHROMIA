@@ -22,6 +22,9 @@ import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
 import { allocatedTotal, remainingQuantity } from "@/lib/fab/slabAssignment";
+import { sampledAreaBySlab } from "@/lib/fab/sampledArea";
+import { rowLabel } from "@/lib/fab/pieceNaming";
+import { projectKindOf } from "@/lib/fab/sampleOrder";
 
 /** Projects that are still being planned. A released project's slabs are the
  *  Cut Queue's business, not this board's. */
@@ -52,6 +55,11 @@ export async function GET(req: NextRequest) {
         projectCode: true,
         customerName: true,
         status: true,
+        // PO or SAMPLE. A sample order runs this same board with sink and
+        // fabrication switched off, and the card says which it is looking at —
+        // "no sinks on this one" is not something a supervisor should have to
+        // infer from an empty column.
+        kind: true,
         _count: { select: { requirements: true, pos: true } },
       },
     });
@@ -61,6 +69,7 @@ export async function GET(req: NextRequest) {
         projectCode: p.projectCode,
         customerName: p.customerName,
         status: p.status,
+        kind: projectKindOf(p.kind),
         requirementCount: p._count.requirements,
         poCount: p._count.pos,
       })),
@@ -78,6 +87,17 @@ export async function GET(req: NextRequest) {
       select: {
         id: true,
         pieceLabel: true,
+        // THE ROW'S LETTER. Selected here because the screen names rows by it —
+        // pieces are stickered {projectCode}-{LETTER}-{n}, and a board that
+        // calls a row anything else does not match what is written on stone.
+        //
+        // The slabs view below has always sent it. This view did not, so every
+        // row on the outstanding list and in the add-a-row dropdown fell back
+        // to its piece_label. On a purchase order that is "Row 7" and looks
+        // fine; on a sample order it is the entire "Cappuccino Dark Polished
+        // 11 x 11 in · 20 mm", printed immediately beside the size column that
+        // already says the same thing.
+        rowLetter: true,
         description: true,
         length: true,
         width: true,
@@ -112,6 +132,11 @@ export async function GET(req: NextRequest) {
           poNumber: r.po?.poNumber ?? null,
           drawingNumber: r.drawing?.drawingNumber ?? null,
           pieceLabel: r.pieceLabel,
+          // Sent RAW beside the label rather than folded into it, so the screen
+          // can lead with the letter and still say what the row is of — a
+          // sample project's rows differ by colour and finish, and the
+          // outstanding table has no column for either.
+          rowLetter: r.rowLetter,
           description: r.description,
           // INCHES, as fab_requirement stores them. Named so, because the slab
           // beside them is in millimetres — see slabLoss.ts.
@@ -159,6 +184,7 @@ export async function GET(req: NextRequest) {
                 // it and the sink board sits under that slab's pieces. NULL
                 // means the supervisor has not looked at this row yet.
                 sinkQuantity: true,
+                rowLetter: true,
                 po: { select: { poNumber: true } },
                 drawing: { select: { drawingNumber: true } },
               },
@@ -167,6 +193,36 @@ export async function GET(req: NextRequest) {
         },
       },
     });
+
+    // Stone already cut off these slabs for sampling. One query for the whole
+    // board, and the SAME number /api/fab/approve-slab enforces with — the
+    // screen must not offer a send the route will refuse.
+    const sampled = await sampledAreaBySlab(slabs.map(s => s.id));
+
+    // ── WHICH EDGES ARE POLISHED, for the picker under each slab ────────────
+    //
+    // The decision belongs to the ORDER ROW — "same row all have same" — so it
+    // travels with the requirement, not the allocation, and the same row under
+    // slab 4 shows what was chosen under slab 1.
+    //
+    // RAW AND WRAPPED, like the CEO route reads it: finished_edges arrived in
+    // scripts/0055, and a deploy whose Prisma client predates it would take the
+    // whole supervisor board down over a column that only feeds a price. A
+    // missing column leaves every row "not chosen", which is exactly what it is.
+    const edgeIds = [...new Set(
+      slabs.flatMap(s => s.requirementAllocations.map(a => a.requirement.id))
+    )];
+    const edgesByRequirement = new Map<string, string | null>();
+    if (edgeIds.length) {
+      try {
+        const edgeRows = await prisma.$queryRaw<Array<{ id: string; finished_edges: string | null }>>`
+          SELECT id, finished_edges FROM fab_requirement WHERE id = ANY(${edgeIds}::text[])
+        `;
+        for (const r of edgeRows) edgesByRequirement.set(r.id, r.finished_edges ?? null);
+      } catch {
+        // scripts/0055 not applied. Every row reads as not chosen.
+      }
+    }
 
     return Response.json(
       slabs.map(s => {
@@ -182,6 +238,11 @@ export async function GET(req: NextRequest) {
           lengthMm: s.length,
           widthMm: s.width,
           pacificQcId: s.pacificQcId,
+          /** Square feet of this slab that left as sample stock. Spent, not
+           *  scrap, and not available to the purchase order — the card feeds it
+           *  to computeSlabLoss so the remaining area and the Send-to-cutter
+           *  button both account for it. */
+          sampledAreaSqft: sampled.get(s.id) ?? 0,
           slabJobId: job?.id ?? null,
           slabJobStatus: job?.status ?? null,
           sent: !!job && (SENT_STATUSES as readonly string[]).includes(job.status),
@@ -190,12 +251,18 @@ export async function GET(req: NextRequest) {
             requirementId: a.requirement.id,
             poNumber: a.requirement.po?.poNumber ?? null,
             drawingNumber: a.requirement.drawing?.drawingNumber ?? null,
-            pieceLabel: a.requirement.pieceLabel,
+            // The row LETTER — what every piece cut from this row is named
+            // after. Falls back to the imported "Row 3" before scripts/0054.
+            pieceLabel: rowLabel(a.requirement.rowLetter, a.requirement.pieceLabel),
             description: a.requirement.description,
             lengthIn: a.requirement.length,
             widthIn: a.requirement.width,
             orderedQuantity: a.requirement.quantity,
             sinkQuantity: a.requirement.sinkQuantity,
+            /** fab_requirement.finished_edges — canonical CSV, or NULL when
+             *  nobody has marked this row's edges. NULL is not "no edges": one
+             *  is an unanswered question and the other is an answer. */
+            finishedEdges: edgesByRequirement.get(a.requirement.id) ?? null,
             allocatedQuantity: a.allocatedQuantity,
           })),
         };

@@ -142,10 +142,21 @@ export interface SendToCuttingInput {
   assignedPieceCount: number;
   /** computeSlabLoss(...).overCommitted */
   overCommitted: boolean;
-  /** computeSlabLoss(...).usedAreaSqft */
+  /** computeSlabLoss(...).usedAreaSqft — PO pieces only. */
   usedAreaSqft: number;
   /** computeSlabLoss(...).slabAreaSqft */
   slabAreaSqft: number;
+  /**
+   * computeSlabLoss(...).sampledAreaSqft — stone already cut off this slab for
+   * sampling. Optional, so a caller with nothing to report keeps the original
+   * wording exactly; when it is present and non-zero the refusal SAYS SO.
+   *
+   * Without it the message is baffling: a supervisor who put 68 sqft of rows on
+   * a 75 sqft slab is told he has over-committed it, and nothing on the screen
+   * mentions the 10 sqft that left as samples last week. A refusal that cannot
+   * be acted on is only half a refusal.
+   */
+  sampledAreaSqft?: number | null;
 }
 
 export type SendToCuttingDecision = { ok: true } | { ok: false; error: string };
@@ -172,11 +183,20 @@ export function decideSendToCutting(input: SendToCuttingInput): SendToCuttingDec
   }
 
   if (input.overCommitted) {
-    const over = Math.round((input.usedAreaSqft - input.slabAreaSqft) * 100) / 100;
+    const sampled = Number(input.sampledAreaSqft);
+    const takenBySamples = Number.isFinite(sampled) && sampled > 0 ? Math.round(sampled * 100) / 100 : 0;
+    const committed = Math.round((input.usedAreaSqft + takenBySamples) * 100) / 100;
+    const over = Math.round((committed - input.slabAreaSqft) * 100) / 100;
+    // Name the sample take-off when there is one. The supervisor's own rows are
+    // the only thing he can change, so he has to be told the rest of the slab
+    // has already gone somewhere else.
+    const because = takenBySamples > 0
+      ? `${input.usedAreaSqft} sqft of pieces plus ${takenBySamples} sqft already cut for samples, on a `
+      : `${input.usedAreaSqft} sqft of pieces on a `;
     return {
       ok: false,
       error:
-        `${input.slabLabel} is over-committed: ${input.usedAreaSqft} sqft of pieces on a ` +
+        `${input.slabLabel} is over-committed: ${because}` +
         `${input.slabAreaSqft} sqft slab, ${over} sqft too much. Take rows off it and put them ` +
         `on another slab — nothing was sent to the cutter.`,
     };

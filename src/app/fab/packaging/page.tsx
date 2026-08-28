@@ -3,13 +3,16 @@ import { useEffect, useState, useCallback, useMemo } from "react";
 import { ProcessSessionGate } from "@/components/fab/ProcessSessionGate";
 import { OtherStageChips } from "@/components/fab/OtherStageChips";
 import { RejectPieceButton } from "@/components/fab/RejectPieceButton";
+import { rowLabel } from "@/lib/fab/pieceNaming";
+import { getJson, postJson } from "@/lib/fab/postJson";
+import { FabAlerts } from "@/components/fab/FabAlerts";
 
 interface Piece {
   id: string; pieceCode: string;
   projectId: string;
   project: { projectCode: string; customerName: string };
   drawing: { drawingNumber: string } | null;
-  requirement: { pieceLabel: string | null; length: number | null; width: number | null } | null;
+  requirement: { pieceLabel: string | null; rowLetter: string | null; po: { poNumber: string } | null; length: number | null; width: number | null } | null;
   slab: { slabCode: string; colour: string | null } | null;
   otherDone?: string[];
   recent?: boolean;
@@ -39,6 +42,12 @@ function PackagingQueue() {
   const [pieces, setPieces]     = useState<Piece[]>([]);
   const [packages, setPackages] = useState<Package[]>([]);
   const [loading, setLoading]   = useState(true);
+  /** WHY THIS EXISTS. Both loaders below used a bare fetch and coerced anything
+   *  that was not an array to []. So a 500, an expired session or a dropped
+   *  connection drew the SAME screen as a genuinely empty queue: "nothing to
+   *  pack". The packer goes home. This is the last stage before a piece ships,
+   *  and it is the worst place in the plant for a failure to look like calm. */
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Multi-select state
   const [selected, setSelected]     = useState<Set<string>>(new Set());
@@ -50,20 +59,21 @@ function PackagingQueue() {
   const [remarks, setRemarks]         = useState("");
   const [successCode, setSuccessCode] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
+  /** Not an error — the package WAS created. Sample pieces inside it that
+   *  reached no shelf, which nobody was being told about. */
+  const [createNotice, setCreateNotice] = useState<string | null>(null);
 
   // Package expand
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const loadQueue = useCallback(async () => {
-    const res = await fetch("/api/fab/queues/packaging");
-    const data = await res.json();
-    setPieces(Array.isArray(data) ? data : []);
+    const r = await getJson<Piece>("/api/fab/queues/packaging");
+    if (r.ok) { setPieces(r.data); setLoadError(null); } else setLoadError(r.error);
   }, []);
 
   const loadPackages = useCallback(async () => {
-    const res = await fetch("/api/fab/packages");
-    const data = await res.json();
-    setPackages(Array.isArray(data) ? data : []);
+    const r = await getJson<Package>("/api/fab/packages");
+    if (r.ok) { setPackages(r.data); setLoadError(null); } else setLoadError(r.error);
   }, []);
 
   useEffect(() => {
@@ -131,24 +141,42 @@ function PackagingQueue() {
     setCreating(true);
     setSuccessCode(null);
     setCreateError(null);
-    const res = await fetch("/api/fab/queues/packaging/complete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        pieceIds:    [...selected],
-        packageCode: pkgCode.trim() || undefined,
-        remarks:     remarks.trim() || undefined,
-      }),
+    // postJson, not fetch. The loaders above were moved off a bare fetch and
+    // this write was left on one — with an UNGUARDED res.json(). An expired
+    // session returns the login page as 200 + HTML, res.json() throws inside an
+    // async handler with no try, and setCreating(false) below never runs: the
+    // button reads "Creating…" for ever, createError stays null, and the
+    // operator is looking at a wedged screen having packed nothing.
+    const res = await postJson("/api/fab/queues/packaging/complete", {
+      pieceIds:    [...selected],
+      packageCode: pkgCode.trim() || undefined,
+      remarks:     remarks.trim() || undefined,
     });
-    const data = await res.json();
     if (res.ok) {
-      setSuccessCode(data.packageCode);
+      const data = (res.data ?? {}) as {
+        packageCode?: string; samplesCredited?: number; samplesUnattributed?: number;
+      };
+      setSuccessCode(data.packageCode ?? null);
+      // WHAT THE SHELF DID NOT GET. The route counts sample pieces it could not
+      // credit — a row that does not say which colour, finish and size it was
+      // ordered against — and this screen used to read only packageCode and
+      // throw the rest away. Those pieces are PACKAGED with no sampling_intake
+      // and nobody downstream is told; the sampling desk finds out days later,
+      // if ever, from a number that does not add up.
+      setCreateNotice(
+        data.samplesUnattributed
+          ? `${data.samplesUnattributed} sample piece${data.samplesUnattributed === 1 ? "" : "s"} ` +
+            `reached no shelf — the row does not say which colour, finish and size ` +
+            `${data.samplesUnattributed === 1 ? "it was" : "they were"} ordered against. ` +
+            `Tell the sampling desk.`
+          : null,
+      );
       setSelected(new Set());
       setPkgCode("");
       setRemarks("");
       await Promise.all([loadQueue(), loadPackages()]);
     } else {
-      setCreateError(data.error ?? "Failed to create package");
+      setCreateError(res.error ?? "Failed to create package");
     }
     setCreating(false);
   }
@@ -179,6 +207,9 @@ function PackagingQueue() {
         </div>
       </div>
 
+      {/* A failed load must not read as an empty queue — see loadError above. */}
+      <FabAlerts loadError={loadError} noun="packing queue" />
+
       {/* Queue tab */}
       {tab === "queue" && (
         <>
@@ -189,6 +220,16 @@ function PackagingQueue() {
                 <p className="text-xs text-green-600 font-mono mt-0.5">{successCode}</p>
               </div>
               <button onClick={() => setSuccessCode(null)} className="text-green-400 hover:text-green-600 text-lg">×</button>
+            </div>
+          )}
+
+          {/* AMBER, not green, and separate from the package banner: the package
+              was created, and something in it did not reach the shelf. */}
+          {createNotice && (
+            <div className="mb-4 bg-amber-50 border border-amber-200 rounded-xl px-5 py-3 flex items-start justify-between gap-3">
+              <p className="text-xs text-amber-800">{createNotice}</p>
+              <button onClick={() => setCreateNotice(null)}
+                className="text-amber-400 hover:text-amber-600 text-lg shrink-0">×</button>
             </div>
           )}
 
@@ -233,8 +274,8 @@ function PackagingQueue() {
                         <tr>
                           <th className="w-10 px-5 py-2"></th>
                           <th className="text-left px-3 py-2">Piece</th>
-                          <th className="text-left px-3 py-2">Label</th>
-                          <th className="text-left px-3 py-2">Drawing</th>
+                          <th className="text-left px-3 py-2">Row</th>
+                          <th className="text-left px-3 py-2">PO</th>
                           <th className="text-left px-3 py-2">Size</th>
                           <th className="text-left px-3 py-2">Slab</th>
                           <th className="w-20 px-3 py-2"></th>
@@ -255,8 +296,8 @@ function PackagingQueue() {
                               <span className="font-mono text-xs text-gray-700">{p.pieceCode}</span>
                               <OtherStageChips otherDone={p.otherDone} recent={p.recent} />
                             </td>
-                            <td className="px-3 py-2.5 text-gray-500">{p.requirement?.pieceLabel ?? "—"}</td>
-                            <td className="px-3 py-2.5 text-gray-500">{p.drawing?.drawingNumber ?? "—"}</td>
+                            <td className="px-3 py-2.5 text-gray-500">{rowLabel(p.requirement?.rowLetter, p.requirement?.pieceLabel)}</td>
+                            <td className="px-3 py-2.5 text-gray-500">{p.requirement?.po?.poNumber ?? p.drawing?.drawingNumber ?? "—"}</td>
                             <td className="px-3 py-2.5 text-gray-500">
                               {p.requirement?.length && p.requirement?.width
                                 ? `${p.requirement.length} × ${p.requirement.width}` : "—"}
@@ -356,8 +397,8 @@ function PackagingQueue() {
                     <thead className="bg-gray-50 text-gray-400">
                       <tr>
                         <th className="text-left px-5 py-2">Piece</th>
-                        <th className="text-left px-5 py-2">Label</th>
-                        <th className="text-left px-5 py-2">Drawing</th>
+                        <th className="text-left px-5 py-2">Row</th>
+                        <th className="text-left px-5 py-2">PO</th>
                         <th className="text-left px-5 py-2">Size</th>
                         <th className="text-left px-5 py-2">Slab</th>
                         <th className="text-left px-5 py-2">Project</th>

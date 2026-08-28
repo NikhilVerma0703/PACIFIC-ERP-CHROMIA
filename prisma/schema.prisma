@@ -31,6 +31,7 @@ enum Role {
   MAINTENANCE
   ROBO
   CHROMIA // Chromia line tablet role — capped to /chromia + /api/chromia, exactly like ROBO
+  SAMPLING // Sampling Incharge — capped to /sampling + /api/sampling, exactly like ROBO and CHROMIA. A ROLE, not a Branch: see the SAMPLING MODULE banner at the foot of this file. Added by scripts/0051.
 }
 
 enum Station {
@@ -69,6 +70,47 @@ model User {
   // Columns arrive via scripts/0020-sales-user-columns.sql (user-applied).
   salesRole          String?             @map("sales_role")
   salesFactory       String?             @map("sales_factory")
+  /// Per-salesperson outbound mailbox (Sales -> Settings -> SMTP), scripts/0021.
+  /// Types match that script exactly — text, integer, text, text — so declaring
+  /// them changes no column, it only stops `db push` DROPPING them and taking
+  /// every configured mailbox with it. Access stays raw SQL in
+  /// lib/sales/mailer.ts, which degrades to "mail no-ops" while they are absent.
+  ///
+  /// smtpPass IS A STORED PASSWORD. listUsersRows() selects an explicit column
+  /// list so it is never fetched into the Users screen, and src/auth.ts builds
+  /// its return object field by field rather than spreading the row. Keep both
+  /// that way.
+  smtpHost           String?             @map("smtp_host")
+  smtpPort           Int?                @map("smtp_port")
+  smtpUser           String?             @map("smtp_user")
+  smtpPass           String?             @map("smtp_pass")
+  /// THE SECOND GRANTED JOB — one login, two role+branch pairs, a cookie
+  /// selecting which is live (src/lib/roleContext.ts). Both halves move
+  /// together: a role without a branch is not a job, and roleContext treats a
+  /// half-filled grant as no grant at all.
+  ///
+  /// DECLARED HERE ON PURPOSE, and that is a correction rather than a
+  /// preference. scripts/0052 argued these should stay out of the model,
+  /// following what 0019 and 0024 did for sales_role and amount_received — but
+  /// BOTH of those are in this model now (lines above, and BatchCosting), and
+  /// amountReceived carries a comment saying it was added precisely because
+  /// `prisma db push` proposed dropping it WITH ITS DATA. The precedent had
+  /// already been reversed; only 0052 still relied on it.
+  ///
+  /// Leaving them undeclared is not neutral. `db push` compares the database to
+  /// this file, sees two columns nothing describes, and drops them — silently,
+  /// with every grant in them. That is not hypothetical: it happened on the dev
+  /// database on 24 Aug 2026, between applying 0052 and the next `db push`, and
+  /// the same sequence against Neon would delete real grants from real people.
+  /// `db:push` is in package.json, in the README, in setup-cloud.bat, and the
+  /// admin page tells admins to run it.
+  ///
+  /// The raw-SQL readers in lib/users.ts stay as they are: they fail open when
+  /// the columns are absent, which keeps a stale deploy from 500-ing the whole
+  /// Users screen. Declaring the fields makes the columns SURVIVE; the raw
+  /// reads make their absence SURVIVABLE. Both are wanted.
+  altRole            Role?               @map("alt_role")
+  altBranch          Branch?             @map("alt_branch")
   createdById        String?
   createdBy          User?               @relation("UserCreator", fields: [createdById], references: [id])
   createdUsers       User[]              @relation("UserCreator")
@@ -662,6 +704,16 @@ model PolishQc {
   slabThickness       String?   @map("slab_thickness")
   qualityIssue        String[]  @default([]) @map("quality_issue")
   qualityGrade        String?   @map("quality_grade")
+  // TWO FACTS, NOT ONE. quality_grade above holds the polishing line's verdict
+  // (A/A2/B/C) — but markQcSlabCts overwrites it with 'CTS' when fabrication
+  // takes the slab, which destroys that verdict and answers a different
+  // question in its place. So:
+  //   quality_grade_before_cts  the verdict as it was, kept by scripts/0056
+  //   slab_mark                 FULL_SLAB / CTS / SAMPLE, by scripts/0057
+  // DECLARED HERE BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS — that is
+  // exactly how alt_role and alt_branch were lost. Do not remove either line.
+  qualityGradeBeforeCts String?  @map("quality_grade_before_cts")
+  slabMark            String    @default("FULL_SLAB") @map("slab_mark")
   topPolish           Boolean   @default(false) @map("top_polish")
   bottomPolish        Boolean   @default(false) @map("bottom_polish")
   lamination          Boolean   @default(false) @map("lamination")
@@ -2446,6 +2498,11 @@ model FabMachineDowntime {
 model FabProject {
   id             String           @id @default(cuid())
   projectCode    String           @unique @map("project_code")
+  /// PO or SAMPLE — what this project is FOR. A SAMPLE project is the sampling
+  /// desk's own job and runs the same pipeline with sink and fabrication
+  /// switched off. See src/lib/fab/sampleOrder.ts and scripts/0059.
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  kind           String           @default("PO")
   customerName   String           @map("customer_name")
   status         FabProjectStatus @default(PLANNING)
   numberOfPieces Int              @default(0) @map("number_of_pieces")
@@ -2563,6 +2620,16 @@ model FabRequirement {
   id                  String                     @id @default(cuid())
   projectId           String                     @map("project_id")
   project             FabProject                 @relation(fields: [projectId], references: [id])
+  /// WHICH SHELF THIS SAMPLE ROW CREDITS when its pieces are packed — the
+  /// colour AND its finish, never the colour alone. NULL on every purchase-order
+  /// row. scripts/0059; declared here because db push drops undeclared columns.
+  colourFinishId      String?                    @map("colour_finish_id")
+  colourFinish        ProductColourFinish?       @relation(fields: [colourFinishId], references: [id])
+  /// The catalogue size ordered. The row also carries length/width in inches for
+  /// the saw; this is the shelf those inches came from, so packing credits what
+  /// was ORDERED rather than something that merely measures the same.
+  samplingSizeId      String?                    @map("sampling_size_id")
+  samplingSize        SamplingSize?              @relation(fields: [samplingSizeId], references: [id])
   drawingId           String?                    @map("drawing_id")
   drawing             FabDrawing?                @relation(fields: [drawingId], references: [id])
   /// The purchase order this row came off, when it came from a PO PDF.
@@ -2570,6 +2637,30 @@ model FabRequirement {
   poId                String?                    @map("po_id")
   po                  FabPo?                     @relation(fields: [poId], references: [id])
   pieceLabel          String?                    @map("piece_label")
+  /// THE ROW'S LETTER in the piece code {projectCode}-{LETTER}-{n}: A, B … Z,
+  /// AA, AB (lib/fab/pieceNaming.ts). Assigned ONCE when the row is imported
+  /// and never recomputed — deriving it from row order at read time would
+  /// silently re-letter every piece already cut and stickered the moment a
+  /// second purchase order joined the project, and a label on stone cannot be
+  /// migrated. Unique per PROJECT, because the code's root is the project code.
+  ///
+  /// Nullable for the rows that predate scripts/0054; those keep showing their
+  /// imported piece_label ("Row 3") rather than being given a letter no piece
+  /// of stone carries. See rowLabel().
+  rowLetter           String?                    @map("row_letter")
+  /// WHICH EDGES OF THIS ROW'S PIECES ARE FINISHED, and therefore charged:
+  /// a canonical comma-separated list, "front,back,left,right". Empty string
+  /// means none; NULL means nobody has chosen yet, which is not the same thing
+  /// and is why it is nullable.
+  ///
+  /// PER ROW, not per piece — the owner's rule: "same row all have same". Every
+  /// piece of row A is the same size and gets the same treatment, so one picker
+  /// per row is enough and one per piece would be absurd.
+  ///
+  /// Edge work is charged by the RUNNING FOOT (2 cm ₹15, 3 cm ₹20), so this
+  /// column times the row's dimensions and quantity is the whole edge charge.
+  /// See lib/fab/pricing.ts, which owns the arithmetic and the rate card.
+  finishedEdges       String?                    @map("finished_edges")
   description         String?
   slabCode            String                     @map("slab_code")
   length              Float?
@@ -2633,6 +2724,11 @@ model FabRequirementAllocation {
 model FabPiece {
   id                   String              @id @default(cuid())
   pieceCode            String              @unique @map("piece_code")
+  /// The sampling_intake row this piece created when it was PACKED, if it is a
+  /// sample piece. Its presence is what stops a re-run of packaging crediting
+  /// the shelf twice. NULL for a purchase-order piece. scripts/0059.
+  samplingIntakeId     String?             @unique @map("sampling_intake_id")
+  samplingIntake       SamplingIntake?     @relation(fields: [samplingIntakeId], references: [id])
   projectId            String              @map("project_id")
   project              FabProject          @relation(fields: [projectId], references: [id])
   slabId               String?             @map("slab_id")
@@ -3661,6 +3757,18 @@ model SalesConfig {
   /// same type, same nullability, same default — so the schema now
   /// matches the database instead of asking to change it.
   invoiceConfigQuartz  Json?    @map("invoice_config_quartz")
+
+  /// The same reconciliation as the two invoice_config_* columns above, for the
+  /// two the mail templates live in (scripts/0021). Left undeclared they are
+  /// what `db push` drops next — the identical failure that took alt_role and
+  /// alt_branch on the dev database on 24 Aug 2026. Types copied from 0021
+  /// verbatim (jsonb NOT NULL DEFAULT '{}'), so this describes the columns
+  /// rather than changing them.
+  ///
+  /// Readers stay raw SQL and keep falling back to built-in defaults when the
+  /// columns are missing — see lib/sales/mailBodies.ts and mailSubjects.ts.
+  mailSubjects         Json  @default("{}") @map("mail_subjects")
+  mailBodies           Json  @default("{}") @map("mail_bodies")
 
   @@map("sales_config")
 }
@@ -5629,4 +5737,362 @@ model ChromiaImportBatch {
 
   @@index([status])
   @@map("chromia_import_batch")
+}
+
+// ============================================================================
+// PRODUCT CATALOGUE (shared, product_*) + SAMPLING MODULE (sampling_*)
+//
+// The sampling module cuts quartz slabs into sample pieces, keeps them in one
+// place, and packs and ships them to customers. Extra usable pieces left over
+// from cut-to-size fabrication jobs become sample stock too.
+//
+// SAMPLING IS A ROLE, NOT A DEPARTMENT. Role.SAMPLING is a capped login gated
+// exactly like ROBO and CHROMIA — the module and its APIs, nothing else — and
+// NO Branch value was added for it. It was designed as a department, back when
+// Chromia was one; Chromia has since been retired AS a department (Branch
+// CHROMIA survives only so old rows decode, and scripts/0046 moves those logins
+// onto Role.CHROMIA), so the surviving shape for a single-purpose module is the
+// capped role. See lib/sampling/actions.ts for who may do what — including the
+// Fabrication Supervisor, who may add stock and nothing else because the
+// offcuts are his — lib/sampling/size.ts for the size rules, and
+// lib/sampling/lifecycle.ts for the status machine.
+//
+// WHY THE CATALOGUE IS NOT CALLED Sampling*. Sampling is the first module that
+// needs a curated series/colour master, but it is not the only one that will
+// use it: fabrication buys against these colour names already ("Arva White" is
+// the material on PO 10026, lib/fab/poParser.ts) and the polishing line calls
+// the same string a "design" (polish_qc.design). So the three catalogue tables
+// are product_*, they carry nothing sampling-specific, and product_colour.name
+// is globally UNIQUE so a PO line or a QC row can resolve one colour by name
+// without knowing its series. Only the tables that are genuinely about sample
+// pieces are sampling_*.
+//
+// FINISH IS A VARIANT OF A COLOUR, NOT A COLOUR (the owner's decision 3).
+// Cappuccino comes in Polished and Leather: ONE product_colour row, TWO
+// product_colour_finish rows. Stock, intake and dispatch lines all point at
+// the colour+finish row, never at the colour — because "50 Cappuccino 4x4" is
+// not a stock figure until you know which finish. The finish vocabulary is a
+// string, not an enum, so adding one needs no DDL; the canonical spellings
+// live in lib/catalogue/colours.ts.
+//
+// UNITS. sampling_size stores length and width in INCHES and thickness in
+// MILLIMETRES, and every column name says which. This is the fabrication
+// convention (fab_requirement is inches, fab_slab and
+// chromia_base_material.default_thickness_mm are millimetres) and it is named
+// in full because lib/fab/slabLoss.ts is this repo's standing warning about
+// what silent unit-mixing costs. See lib/sampling/size.ts.
+//
+// Seeded by prisma/seed-catalogue.ts (`npm run db:seed:catalogue`), which is
+// safe against production. Applied to Neon via
+// scripts/0051-sampling-and-catalogue.sql (NOT db push). Hand-maintained; NOT
+// touched by gen-schema.py.
+// ============================================================================
+
+/// A range in the colour chart — Kosmic, Nebula, Eclipse, Aurora, Solids,
+/// Celestia, Luminara. Seven of them; the owner says six, because Solids is
+/// two plain whites rather than a range. See prisma/seed-catalogue.ts.
+model ProductSeries {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  /// Chart order, so a pick-list reads the way the printed chart does.
+  position  Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  colours ProductColour[]
+
+  @@map("product_series")
+}
+
+/// One colour, in one series. "Cappuccino (Leather)" is NOT one of these — it
+/// is the Leather finish of Cappuccino. "Cappuccino Dark" IS one of these: a
+/// darker colour, not a finish.
+model ProductColour {
+  id       String        @id @default(cuid())
+  seriesId String        @map("series_id")
+  series   ProductSeries @relation(fields: [seriesId], references: [id])
+  /// UNIQUE ACROSS EVERY SERIES, deliberately: fabrication and QC name a
+  /// colour without naming its series, so a duplicate would make that lookup
+  /// ambiguous. prisma/seed-catalogue.ts refuses to run if the chart ever
+  /// lists one name twice.
+  name     String        @unique
+  /// Chart order within the series.
+  position Int           @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  finishes ProductColourFinish[]
+
+  /// "The colours of this series" — the pick-list behind step 2 of adding
+  /// stock (series -> colour -> finish -> size). Postgres does not index a
+  /// foreign key for you.
+  @@index([seriesId])
+  @@map("product_colour")
+}
+
+/// A colour in one finish — Polished, Leather, Suede, Honed. This is the row
+/// stock is actually counted against. Every colour has at least the default
+/// (Polished); three of today's 56 carry a second finish.
+model ProductColourFinish {
+  id       String        @id @default(cuid())
+  colourId String        @map("colour_id")
+  colour   ProductColour @relation(fields: [colourId], references: [id])
+  /// One of lib/catalogue/colours.ts FINISHES. A string rather than an enum so
+  /// adding a finish is a seed edit, not a migration.
+  finish   String
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  stock         SamplingStock[]
+  intakes       SamplingIntake[]
+  dispatchLines SamplingDispatchLine[]
+  /// Sample ORDERS placed against this colour+finish — fab_requirement rows on a
+  /// SAMPLE project. The other half of the relation added in scripts/0059.
+  sampleRows    FabRequirement[]
+
+  /// One row per colour+finish, and the index for "the finishes of this
+  /// colour" — its colour_id prefix serves the foreign key too.
+  @@unique([colourId, finish])
+  @@map("product_colour_finish")
+}
+
+/// A sample size, created the first time it is typed and reused from then on.
+/// There are no standard sizes (the owner's decision 1) and nobody curates the
+/// list, so the normalisation in lib/sampling/size.ts is the only thing
+/// stopping two spellings of one size splitting a pile of stock into two
+/// half-counts. THICKNESS IS PART OF THE SIZE (decision 2): Cappuccino 4x4 in
+/// 2 cm and Cappuccino 4x4 in 3 cm are different stock.
+model SamplingSize {
+  id          String  @id @default(cuid())
+  /// INCHES. The LONGER edge — 4x6 and 6x4 are the same size and fold onto one
+  /// row (a sample piece has no orientation; see lib/sampling/size.ts). The
+  /// ordering is enforced in code, not by a CHECK constraint, because Prisma
+  /// cannot model one and an unmodelled constraint reads as drift.
+  lengthIn    Decimal @map("length_in") @db.Decimal(10, 2)
+  /// INCHES. The shorter edge.
+  widthIn     Decimal @map("width_in") @db.Decimal(10, 2)
+  /// MILLIMETRES, whole. 20 for 2 cm, 30 for 3 cm, 12 for 12 mm.
+  thicknessMm Int     @map("thickness_mm")
+
+  /// users.id of whoever typed it first (no hard FK — the Sales/Chromia
+  /// precedent), so a size nobody recognises can be traced to a person.
+  createdById String?  @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  stock         SamplingStock[]
+  intakes       SamplingIntake[]
+  dispatchLines SamplingDispatchLine[]
+  /// Sample ORDERS placed against this size — fab_requirement rows on a SAMPLE
+  /// project. The other half of the relation added in scripts/0059.
+  sampleRows    FabRequirement[]
+
+  /// The identity of a size, and the constraint that makes "typed twice" one
+  /// row. NUMERIC scale does the rest: 4, 4.0 and 4.00 are the same value.
+  @@unique([lengthIn, widthIn, thicknessMm])
+  @@map("sampling_size")
+}
+
+/// Pieces on the shelf, per colour+finish and size. One row per combination;
+/// the quantity moves, the row does not. Stock leaves at RELEASE, not at
+/// dispatch — the pieces are physically pulled when the package is packed.
+model SamplingStock {
+  id             String              @id @default(cuid())
+  colourFinishId String              @map("colour_finish_id")
+  colourFinish   ProductColourFinish @relation(fields: [colourFinishId], references: [id])
+  sizeId         String              @map("size_id")
+  size           SamplingSize        @relation(fields: [sizeId], references: [id])
+  /// Never negative. Enforced in lib/sampling/lifecycle.ts checkRelease, which
+  /// the release transaction runs against a re-read count.
+  quantity       Int                 @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// The point lookup every intake and every release does, and the index for
+  /// "every size of this colour+finish" — the inventory screen's main row.
+  @@unique([colourFinishId, sizeId])
+  /// The other way round: "who has 4x4 in 2 cm, across all colours" — the
+  /// question asked when a customer wants a size rather than a colour.
+  @@index([sizeId])
+  @@map("sampling_stock")
+}
+
+/// Where a piece came from. Deliberate sample cutting, or a usable offcut from
+/// a cut-to-size fabrication job.
+enum SamplingIntakeSource {
+  SAMPLE_CUTTING
+  FAB_OFFCUT
+
+  @@map("sampling_intake_source")
+}
+
+/// One addition of stock. Append-only: sampling_stock carries the running
+/// count, this carries how it got there.
+///
+/// NO FOREIGN KEY TO fab_residual_piece, on purpose. The offcut side already
+/// has designed-for-it models (FabResidualBag / FabResidualPiece) but NOTHING
+/// writes them — they are dead, and a hard link would make sampling intake
+/// wait on a fabrication feature that has no owner. They also cannot carry
+/// what a sample needs: a residual piece has length and width but no thickness
+/// and no colour, and thickness is half of what makes a sample size. sourceRef
+/// is the seam — the slab or bag number as written on the piece — so the day
+/// fab_residual_bag is really written, the bridge is one nullable column and a
+/// match on that text, not a re-model.
+model SamplingIntake {
+  id             String               @id @default(cuid())
+  colourFinishId String               @map("colour_finish_id")
+  colourFinish   ProductColourFinish  @relation(fields: [colourFinishId], references: [id])
+  sizeId         String               @map("size_id")
+  size           SamplingSize         @relation(fields: [sizeId], references: [id])
+  quantity       Int
+  source         SamplingIntakeSource
+  /// Free text: the slab number, bag code or job the pieces came off. REQUIRED
+  /// in practice for the two fabrication sources — the route refuses a
+  /// SAMPLE_CUTTING or FAB_OFFCUT intake without one, because stock nobody can
+  /// trace back to a slab cannot be repaired once the slab has gone. Left
+  /// nullable in the column so the sampling desk's own additions, which have no
+  /// slab behind them, do not have to invent a reference.
+  sourceRef      String?              @map("source_ref")
+  /// polish_qc.id — the QC slab these pieces were cut from.
+  ///
+  /// NO HARD FOREIGN KEY, matching source_ref's own note and the Sales/Chromia
+  /// precedent: polish_qc is imported from the polishing line and its rows are
+  /// re-imported, so a constraint here would make a QC re-import fail on
+  /// sampling history. source_ref stays the human answer ("slab 154700"); this
+  /// is what "every sample cut off this slab" actually joins on.
+  sourceQcId     String?              @map("source_qc_id")
+  /// fab_slab.id — the slab on the supervisor's board these came off.
+  ///
+  /// source_qc_id answers "which stone"; this answers "which slab card", and
+  /// they are not the same question: fabrication's accounting is per fab_slab
+  /// (that is what carries the allocations and the loss figures), and a QC slab
+  /// can be put on the board more than once across projects. This is the column
+  /// computeSlabLoss's sampledAreaSqft is summed over — without it, stone that
+  /// left as samples was reported as scrap AND left the slab's PO capacity
+  /// unchanged.
+  ///
+  /// No hard FK, like the two references above it: deleting fab test data
+  /// (scripts/0037) must not have to reason about sampling history, and a
+  /// dangling reference is still a better record than none.
+  sourceSlabId   String?              @map("source_slab_id")
+  note           String?
+
+  /// users.id of whoever added it (no hard FK). A Fabrication Supervisor may
+  /// add stock and nothing else, so this is not always sampling staff.
+  createdById String?  @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  /// "What came in recently" — the intake list, newest first.
+  @@index([createdAt])
+  /// "How did this stock row get to that number" — the audit when a count
+  /// looks wrong.
+  @@index([colourFinishId, sizeId])
+  /// "How much of our stock is offcut rather than cut-to-sample, this month" —
+  /// the question the source column exists to answer.
+  @@index([source, createdAt])
+  /// The size_id foreign key. Nothing above covers it — both composites lead
+  /// with colour_finish_id — and an unindexed FK makes a size lookup a
+  /// sequential scan.
+  @@index([sizeId])
+  /// "Everything cut off slab 154700" — the traceability question source_qc_id
+  /// exists to answer, asked from the QC side.
+  @@index([sourceQcId])
+  /// "How much of THIS slab left as samples" — read on every send-to-cutter and
+  /// on every board load, so it is the hottest of the three.
+  @@index([sourceSlabId])
+  /// The packed sample PIECE that created this intake, when it came from a
+  /// sample order rather than from an offcut. One piece, one intake — the
+  /// unique link is what stops a re-run of packaging crediting twice.
+  fabPiece FabPiece?
+
+  @@map("sampling_intake")
+}
+
+/// Domestic or international. Free-form for now (the owner's decision 4): no
+/// link to the Sales module, no client table, just what the person typing
+/// knows.
+enum SamplingDestination {
+  DOMESTIC
+  INTERNATIONAL
+
+  @@map("sampling_destination")
+}
+
+/// The three states a dispatch can be in. IN STOCK is deliberately absent: it
+/// is where a piece is BEFORE any dispatch claims it, so it is a sampling_stock
+/// quantity, not a status. Creating the dispatch is the first transition. See
+/// lib/sampling/lifecycle.ts.
+enum SamplingDispatchStatus {
+  RELEASED
+  DISPATCHED
+  DELIVERED
+
+  @@map("sampling_dispatch_status")
+}
+
+/// One package going to one customer, and its three timestamps. Every
+/// transition records when it happened and who did it — the whole point of
+/// keeping the lifecycle here rather than in a status column that changes with
+/// nobody's name on it.
+model SamplingDispatch {
+  id           String                 @id @default(cuid())
+  customerName String                 @map("customer_name")
+  destination  SamplingDestination
+  /// The customer's reference, if they gave one. Optional by decision 4.
+  reference    String?
+  status       SamplingDispatchStatus @default(RELEASED)
+
+  releasedAt     DateTime  @default(now()) @map("released_at")
+  releasedById   String?   @map("released_by_id")
+  dispatchedAt   DateTime? @map("dispatched_at")
+  dispatchedById String?   @map("dispatched_by_id")
+  deliveredAt    DateTime? @map("delivered_at")
+  deliveredById  String?   @map("delivered_by_id")
+
+  notes     String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  lines SamplingDispatchLine[]
+
+  /// The board: "what is packed but not gone", "what is gone but not
+  /// confirmed", newest first.
+  @@index([status, createdAt])
+  /// "What have we sent this customer before" — free-text name, so this serves
+  /// the exact and prefix match a lookup starts with.
+  @@index([customerName])
+  @@map("sampling_dispatch")
+}
+
+/// One colour+finish and size on a package, and how many pieces.
+model SamplingDispatchLine {
+  id             String              @id @default(cuid())
+  dispatchId     String              @map("dispatch_id")
+  dispatch       SamplingDispatch    @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  colourFinishId String              @map("colour_finish_id")
+  colourFinish   ProductColourFinish @relation(fields: [colourFinishId], references: [id])
+  sizeId         String              @map("size_id")
+  size           SamplingSize        @relation(fields: [sizeId], references: [id])
+  quantity       Int
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  /// One line per item on a package — adding the same item twice is a quantity
+  /// change, not a second line. The dispatch_id prefix is also the index for
+  /// "the lines of this package", which every read of a dispatch does.
+  ///
+  /// NAMED EXPLICITLY, unlike every other index here. Prisma's default would be
+  /// sampling_dispatch_line_dispatch_id_colour_finish_id_size_id_key — exactly
+  /// 63 characters, which is Postgres's identifier limit to the character. It
+  /// fits today, but one letter added to any of those column names and Prisma
+  /// silently truncates while scripts/0051 does not, leaving two names for one
+  /// constraint. Short name, no cliff edge.
+  @@unique([dispatchId, colourFinishId, sizeId], map: "sampling_dispatch_line_item_key")
+  /// "Where did our 4x4 Cappuccino go" — the reverse lookup from a stock row.
+  @@index([colourFinishId, sizeId])
+  /// The size_id foreign key, for the same reason as on sampling_intake.
+  @@index([sizeId])
+  @@map("sampling_dispatch_line")
 }

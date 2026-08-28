@@ -5,12 +5,13 @@ import { FabAlerts } from "@/components/fab/FabAlerts";
 import { ProcessSessionGate } from "@/components/fab/ProcessSessionGate";
 import { OtherStageChips, activityRowClass } from "@/components/fab/OtherStageChips";
 import { RejectPieceButton } from "@/components/fab/RejectPieceButton";
+import { rowLabel } from "@/lib/fab/pieceNaming";
 
 interface Piece {
   id: string; pieceCode: string; hasSink: boolean;
   project: { projectCode: string };
   drawing: { drawingNumber: string } | null;
-  requirement: { pieceLabel: string | null; length: number | null; width: number | null } | null;
+  requirement: { pieceLabel: string | null; rowLetter: string | null; po: { poNumber: string } | null; length: number | null; width: number | null } | null;
   slab: { slabCode: string; colour: string | null } | null;
   otherDone?: string[];
   recent?: boolean;
@@ -52,8 +53,8 @@ function PieceRow({ p, startMs, onStart, onComplete, completing, onRejected, onE
         <span className="font-mono text-xs text-gray-700">{p.pieceCode}</span>
         <OtherStageChips otherDone={p.otherDone} recent={p.recent} />
       </td>
-      <td className="px-5 py-3 text-gray-500">{p.requirement?.pieceLabel ?? "—"}</td>
-      <td className="px-5 py-3 text-gray-500">{p.drawing?.drawingNumber ?? "—"}</td>
+      <td className="px-5 py-3 text-gray-500">{rowLabel(p.requirement?.rowLetter, p.requirement?.pieceLabel)}</td>
+      <td className="px-5 py-3 text-gray-500">{p.requirement?.po?.poNumber ?? p.drawing?.drawingNumber ?? "—"}</td>
       <td className="px-5 py-3 text-gray-500">
         {p.requirement?.length && p.requirement?.width ? `${p.requirement.length} × ${p.requirement.width}` : "—"}
       </td>
@@ -191,8 +192,8 @@ function PolishingQueue() {
               <thead className="bg-gray-50 text-xs text-gray-500">
                 <tr>
                   <th className="text-left px-5 py-3">Piece</th>
-                  <th className="text-left px-5 py-3">Label</th>
-                  <th className="text-left px-5 py-3">Drawing</th>
+                  <th className="text-left px-5 py-3">Row</th>
+                  <th className="text-left px-5 py-3">PO</th>
                   <th className="text-left px-5 py-3">Size</th>
                   <th className="text-left px-5 py-3">Slab</th>
                   <th className="text-left px-5 py-3">Project</th>
@@ -223,7 +224,7 @@ function PolishingQueue() {
               <thead className="bg-gray-50 text-xs text-gray-500">
                 <tr>
                   <th className="text-left px-5 py-3">Piece</th>
-                  <th className="text-left px-5 py-3">Drawing</th>
+                  <th className="text-left px-5 py-3">PO</th>
                   <th className="text-left px-5 py-3">Size</th>
                   <th className="text-left px-5 py-3">Slab</th>
                   <th className="text-left px-5 py-3">Project</th>

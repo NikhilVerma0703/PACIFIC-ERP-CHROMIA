@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { canonicalGrade, gradeBlocksDispatch, TRANSITIONS, DEFAULT_RESERVATION_DAYS } from "../src/lib/inventory/grading.ts";
+import { canonicalGrade, gradeBlocksDispatch, CUT_GRADES, TRANSITIONS, DEFAULT_RESERVATION_DAYS } from "../src/lib/inventory/grading.ts";
 
 test("canonicalGrade normalizes QC grades", () => {
   assert.equal(canonicalGrade("A"), "A");
@@ -86,8 +86,30 @@ test("a slab graded CTS is refused dispatch, whatever its case", () => {
   assert.equal(gradeBlocksDispatch("  CTS  "), true);
 });
 
+test("A SLAB CUT DOWN FOR SAMPLES IS REFUSED TOO", () => {
+  // The owner: "samples are always in cut pieces — so when a slab is ready it's
+  // full, it can be sold directly, or cut for fabrication, or cut to samples."
+  // Two of those three are CUT, and a cut slab does not go out whole. Before
+  // this the sampling intake recorded the PIECES and left the slab graded A and
+  // dispatchable.
+  assert.equal(gradeBlocksDispatch("SAMPLE"), true);
+  assert.equal(gradeBlocksDispatch("sample"), true);
+  assert.equal(gradeBlocksDispatch("  Sample  "), true);
+  // Both cut states come from ONE list, so a third can never be added to one
+  // place and forgotten in the other.
+  assert.deepEqual([...CUT_GRADES], ["CTS", "SAMPLE"]);
+  for (const g of CUT_GRADES) assert.equal(gradeBlocksDispatch(g), true, g);
+});
+
 test("every other grade still dispatches", () => {
+  // The change is ADDITIVE — it may refuse MORE, never allow more. This is the
+  // half of that promise a test can hold.
   for (const g of ["A", "A2", "B", "C", "C (Reject)", "c (reject)", "Printing"]) {
+    assert.equal(gradeBlocksDispatch(g), false, `${g} must remain dispatchable`);
+  }
+  // Not a cut state merely for starting with the same letters — a slab graded
+  // "Sample cutting" by an inspector is not one the system may quietly impound.
+  for (const g of ["SAMPLES", "SAMPLED", "CT", "CTSX", "Sample cutting"]) {
     assert.equal(gradeBlocksDispatch(g), false, `${g} must remain dispatchable`);
   }
 });

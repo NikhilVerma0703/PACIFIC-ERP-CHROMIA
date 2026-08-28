@@ -4,8 +4,14 @@ import { useState, useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { createPortal } from "react-dom";
 import { Nav } from "./Nav";
+import { RoleSwitcher } from "./RoleSwitcher";
 
-export function MobileNav({ showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false, intlSales = false, salesDuty = "", batchVerify = false }: { showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; inventory?: boolean; consumables?: boolean; intlSales?: boolean; salesDuty?: string; batchVerify?: boolean }) {
+export function MobileNav({
+  contexts, activeKey, showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false, intlSales = false, salesDuty = "", batchVerify = false }: { showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; inventory?: boolean; consumables?: boolean; intlSales?: boolean; salesDuty?: string; batchVerify?: boolean
+  /** Same shape the desktop rail passes — grantedContexts(). */
+  contexts?: React.ComponentProps<typeof RoleSwitcher>["contexts"];
+  activeKey?: string;
+}) {
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
   const path = usePathname();
@@ -53,6 +59,18 @@ export function MobileNav({ showAdmin = false, branch = "SHOP_FLOOR", role = "",
         <div className="flex-1 overflow-y-auto pb-6">
           <Nav showAdmin={showAdmin} branch={branch} role={role} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} />
         </div>
+
+        {/* THE SWITCHER, ON A PHONE OR A SHOP TABLET.
+            Its only other mount is inside the desktop sidebar, which is
+            `hidden md:flex` — so under 768px a dual-role user could switch INTO
+            a context from a desktop and then have no way back out. One-way is
+            worse than absent. Same component, same foot-of-the-rail placement
+            as everywhere else; renders nothing for a single-job login. */}
+        {contexts && contexts.length > 1 && (
+          <div className="shrink-0 border-t border-gray-200 p-3">
+            <RoleSwitcher contexts={contexts} activeKey={activeKey ?? ""} />
+          </div>
+        )}
 
       </div>
     </div>,

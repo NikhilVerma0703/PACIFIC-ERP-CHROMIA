@@ -83,6 +83,59 @@ export interface SlabLossInput {
    * everything not used is scrap.
    */
   reclaimedAreaSqft?: number | null;
+  /**
+   * Area (SQUARE FEET) cut off this slab AND SENT TO SAMPLING — sampling_intake
+   * rows whose source_slab_id is this slab.
+   *
+   * A SEPARATE NUMBER FROM reclaimedAreaSqft, AND NOT A KIND OF WASTE.
+   *
+   * Sample pieces have left fabrication. They are on a shelf in sampling, they
+   * were counted into sampling_stock, and somebody will post them to a
+   * customer. Two things follow, and the module got both wrong by not knowing
+   * about them at all:
+   *
+   *   1. THEY ARE NOT SCRAP. With nothing recorded, everything not used by PO
+   *      pieces fell into remainingAreaSqft and was reported as wastage — so
+   *      the more material the shop recovered as samples, the worse its yield
+   *      looked. The same square foot was booked twice: once as sample stock,
+   *      once as loss.
+   *   2. THEY ARE GONE. The stone is cut. Capacity for PO pieces is the slab
+   *      MINUS what sampling took, so this counts toward over-commitment
+   *      exactly as an assigned piece does. Without it a supervisor could take
+   *      60 sample pieces off a slab and then fill it to its full nominal area,
+   *      and every guard would agree.
+   *
+   * Reclaimed material, by contrast, is still fabrication's and still on the
+   * premises. That is why the two cannot be one field.
+   */
+  sampledAreaSqft?: number | null;
+}
+
+/** One sampling_intake row, for the area sum below. sampling_size stores
+ *  length_in / width_in in INCHES — the same unit as a fab piece, which is why
+ *  this can share sqftFromInches. */
+export interface SampleTakeoff {
+  lengthIn: number | null | undefined;
+  widthIn: number | null | undefined;
+  quantity: number | null | undefined;
+}
+
+/**
+ * Square feet of stone taken off a slab as samples.
+ *
+ * Kept here beside the piece sum rather than in lib/sampling, because it is the
+ * FABRICATION side of the question — "how much of this slab left as samples" —
+ * and it has to agree with usedAreaSqft to the square foot. One rounding rule,
+ * one unit conversion, one place.
+ */
+export function sampleAreaSqft(samples: SampleTakeoff[]): number {
+  const raw = (samples ?? []).reduce((sum, s) => {
+    const l = positive(s.lengthIn);
+    const w = positive(s.widthIn);
+    const q = positive(s.quantity);
+    return sum + sqftFromInches(l, w) * q;
+  }, 0);
+  return round2(raw);
 }
 
 export interface SlabLossResult {
@@ -91,12 +144,18 @@ export interface SlabLossResult {
   /** Sum of lengthIn x widthIn x quantity / 144 over the pieces, square feet. */
   usedAreaSqft: number;
   /**
-   * slabAreaSqft - usedAreaSqft, square feet. SIGNED: negative means more has
-   * been assigned to this slab than it physically holds.
+   * slabAreaSqft - usedAreaSqft - sampledAreaSqft, square feet. SIGNED:
+   * negative means more has been committed to this slab than it physically
+   * holds.
    */
   remainingAreaSqft: number;
   /** Of remainingAreaSqft, the part kept as a reusable remnant. Square feet. */
   reclaimedAreaSqft: number;
+  /** Square feet that left this slab as sample stock. Consumed, not wasted. */
+  sampledAreaSqft: number;
+  /** usedAreaSqft + sampledAreaSqft — everything the stone has been spent on.
+   *  This, not usedAreaSqft, is what capacity is measured against. */
+  committedAreaSqft: number;
   /**
    * 100 x remainingAreaSqft / slabAreaSqft. Null when the slab has no usable
    * dimensions, because "0% wasted" and "we do not know" are different facts and
@@ -160,7 +219,13 @@ export function computeSlabLoss(input: SlabLossInput): SlabLossResult {
   const usedAreaSqft = round2(usedRaw);
 
   const reclaimedAreaSqft = round2(positive(input.reclaimedAreaSqft));
-  const remainingAreaSqft = round2(slabAreaSqft - usedAreaSqft);
+  const sampledAreaSqft = round2(positive(input.sampledAreaSqft));
+
+  // WHAT THE STONE HAS BEEN SPENT ON — PO pieces plus whatever left as
+  // samples. Capacity and wastage are both measured against this, not against
+  // usedAreaSqft, which only ever knew about the purchase order.
+  const committedAreaSqft = round2(usedAreaSqft + sampledAreaSqft);
+  const remainingAreaSqft = round2(slabAreaSqft - committedAreaSqft);
 
   // No slab dimensions means no denominator. Say so with null rather than
   // inventing a 100% or a 0%.
@@ -175,8 +240,10 @@ export function computeSlabLoss(input: SlabLossInput): SlabLossResult {
     usedAreaSqft,
     remainingAreaSqft,
     reclaimedAreaSqft,
+    sampledAreaSqft,
+    committedAreaSqft,
     totalWastagePct,
     trueScrapPct,
-    overCommitted: known && usedAreaSqft > slabAreaSqft,
+    overCommitted: known && committedAreaSqft > slabAreaSqft,
   };
 }
