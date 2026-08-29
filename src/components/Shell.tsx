@@ -15,6 +15,7 @@ import { MobileNav } from "./MobileNav";
 import { STATION_LABEL, rankOf, ROLE_RANK, roleLabelFor } from "@/lib/rbac";
 import { BRANCH_LABEL } from "@/lib/branch";
 import { signableSides } from "@/lib/costing/verification";
+import { canUseSlabIntake } from "@/lib/inventory/intakeAccess";
 
 export async function Shell({ children }: { children: ReactNode }) {
   // sessionOnce = request-cached auth(): Shell's own auth() call plus the one
@@ -66,13 +67,22 @@ export async function Shell({ children }: { children: ReactNode }) {
     user?.email,
     process.env.WEIGHTS_VERIFIER_EMAILS,
   ).length > 0;
+  // Whether this login uses the slab intake form — the three named intake
+  // people (SLAB_INTAKE_EMAILS) and admins, the batchVerify shape one line up:
+  // decided here because Nav is a client component and must not read the env
+  // var, and on the same pure rule middleware and the page gate run.
+  const slabIntake = canUseSlabIntake(
+    user?.role as string | undefined,
+    user?.email,
+    process.env.SLAB_INTAKE_EMAILS,
+  );
 
   return (
     <div className="flex min-h-screen">
       {/* Sidebar — the logo tile hides it, and brings it back (CollapsibleSidebar) */}
       <CollapsibleSidebar subtitle={BRANCH_LABEL[branch] ?? "Production system"}>
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
-          <Nav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} />
+          <Nav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} slabIntake={slabIntake} />
         </div>
         <div className="mt-3 shrink-0 rounded-xl border border-gray-200 bg-white p-3">
           {/* Two jobs, one login — renders nothing at all for everybody else. */}
@@ -101,7 +111,7 @@ export async function Shell({ children }: { children: ReactNode }) {
             which put this bar (hamburger, Sign out) at the top of printed reports */}
         <header className="flex items-center justify-between gap-3 border-b border-gray-200/70 bg-white/70 px-5 py-2 backdrop-blur md:hidden print:hidden">
           <div className="flex items-center gap-3">
-            <MobileNav contexts={contexts} activeKey={activeContextKey} showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} />
+            <MobileNav contexts={contexts} activeKey={activeContextKey} showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} slabIntake={slabIntake} />
             <span className="text-base font-semibold text-brand">Pacific ERP</span>
           </div>
           <form action={logout}><button className="min-h-[44px] text-sm text-gray-500">Sign out</button></form>

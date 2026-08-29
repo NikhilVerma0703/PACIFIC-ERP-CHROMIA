@@ -2906,6 +2906,7 @@ enum SlabStatus {
 enum SlabSource {
   QC_AUTOLINK
   BULK_UPLOAD
+  MANUAL_ENTRY // typed in on /slab-intake — a slab finished goods was missing (already-made stock, Chromia printed slabs)
 }
 
 model FinishedSlab {

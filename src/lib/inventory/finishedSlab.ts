@@ -16,7 +16,11 @@ export { DEFAULT_RESERVATION_DAYS, type StatusAction } from "./grading";
 
 const db = prisma as any;
 
-async function writeSlabEvent(
+/** Append one audit line to fg_slab_event, best-effort (the event log never
+ *  blocks the write it describes). Exported for the slab-intake actions, which
+ *  log one event per manually corrected field through the same helper the QC
+ *  autolink and the lifecycle actions below use — one pattern, not a fork. */
+export async function writeSlabEvent(
   slabNumber: number,
   kind: string,
   opts: { field?: string | null; oldValue?: string | null; newValue?: string | null; by?: string | null; source?: string | null } = {}

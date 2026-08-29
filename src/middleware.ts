@@ -13,6 +13,11 @@ import { maySeeSamplingModule } from "./lib/sampling/actions.ts";
 // import-free like routeCaps, because this file and auth.config.ts are edge
 // code; see the safety note at block 4 below.
 import { ROLE_CONTEXT_COOKIE, activeContextOf, type GrantedContexts } from "./lib/roleContext.ts";
+// The slab-intake audience, imported rather than restated for the same reason
+// as maySeeSamplingModule above: pure and import-free, so it is edge-safe, and
+// the SAME rule the page gate runs — the carve-out below and the gate cannot
+// drift apart.
+import { canUseSlabIntake } from "./lib/inventory/intakeAccess.ts";
 
 // Edge-safe middleware (Prisma-free config). IMPORTANT: with the auth(fn)
 // wrapper form, Auth.js does NOT auto-redirect — ALL gating is explicit here.
@@ -273,6 +278,24 @@ export default auth((req) => {
     if (!verifyOk) {
       return denied(p, nextUrl, role ?? "", branch ?? "");
     }
+  }
+
+  // ---- Slab intake: the three named intake people (SLAB_INTAKE_EMAILS) and
+  // admins. AN ADMISSION, NOT A REFUSAL — and it must sit ABOVE the branch
+  // caps directly below, which is the whole reason it exists here at all: two
+  // of the three sign in on capped branches (the Chromia manager's login is
+  // capped to /chromia, the fabrication manager's to /fab), so without this
+  // early `return` their own caps would bounce them off the one screen that
+  // was built for them before its gate ever ran. The token carries email and
+  // role; the rule is the same pure function the page gate runs, on the same
+  // env var. Everyone ELSE falls through unchanged to the existing rules —
+  // whoever those admit reaches the page, and the page's own slabIntakeGate()
+  // refuses them there (a UI condition is not an authorisation; nor is a
+  // path rule). Server actions POST to the page's own path, so admitting the
+  // path admits the form's saves too — no /api carve-out to keep in step.
+  if (p === "/slab-intake" || p.startsWith("/slab-intake/")) {
+    const email = (req.auth.user as { email?: string | null }).email;
+    if (canUseSlabIntake(role, email, process.env.SLAB_INTAKE_EMAILS)) return;
   }
 
   if (role === "CHROMIA" || (!isAdmin && branch === "CHROMIA")) {

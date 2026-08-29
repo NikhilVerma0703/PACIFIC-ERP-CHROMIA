@@ -153,13 +153,17 @@ function Section({ label, items, path }: { label: string; items: { href: string;
 
 /* Main Nav export — flat, access-filtered sections (no dropdowns) */
 export function Nav({
-  showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false, intlSales = false, salesDuty = "", batchVerify = false,
+  showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false, intlSales = false, salesDuty = "", batchVerify = false, slabIntake = false,
 }: {
   showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; inventory?: boolean; consumables?: boolean; intlSales?: boolean; salesDuty?: string;
   /** This login signs batch verifications (/office/batch-verify): the store
    *  incharge by role, the production verifier by WEIGHTS_VERIFIER_EMAILS.
    *  Computed in Shell — this client component must not read the env var. */
   batchVerify?: boolean;
+  /** This login uses the slab intake form (/slab-intake): the three named
+   *  intake people by SLAB_INTAKE_EMAILS, plus admins. Computed in Shell for
+   *  the same reason as batchVerify — the env var never reaches the client. */
+  slabIntake?: boolean;
 }) {
   const path    = usePathname();
   const office  = branch === "OFFICE";
@@ -301,6 +305,11 @@ export function Nav({
         <Section label="Recalibration" items={chromiaItems.filter(t => t.href.startsWith("/chromia/recalibration"))} path={path} />
         <Section label="Reports" items={chromiaItems.filter(t => t.href === "/chromia/reports" || t.href === "/chromia/downloads")} path={path} />
         <Section label="Setup" items={chromiaItems.filter(t => t.href === "/chromia/import")} path={path} />
+        {/* The ONE page outside /chromia this login can hold: the Chromia
+            manager is a named slab-intake person (printed slabs enter finished
+            goods by hand), and middleware carves /slab-intake through this
+            login's own cap for exactly the people this flag is true for. */}
+        {slabIntake && <Section label="Inventory" items={[{ href: "/slab-intake", icon: I.entry, label: "Slab Intake" }]} path={path} />}
       </nav>
     );
   if (role === "SAMPLING")
@@ -339,7 +348,11 @@ export function Nav({
           // Costing prices the whole cost base — strictly ADMIN, like the scoreboard.
           ...(isAdmin ? [{ href: "/office/costing", icon: I.ceo, label: "Batch Costing" }] : []),
         ]} path={path} />
-        {inventory && <Section label="Inventory" items={[{ href: "/inventory", icon: I.box, label: "Finished Goods" }]} path={path} />}
+        {(inventory || slabIntake) && <Section label="Inventory" items={[
+          ...(inventory ? [{ href: "/inventory", icon: I.box, label: "Finished Goods" }] : []),
+          // Admins see the intake form where the stock it feeds lives.
+          ...(slabIntake ? [{ href: "/slab-intake", icon: I.entry, label: "Slab Intake" }] : []),
+        ]} path={path} />}
         {showAdmin && <Section label="Admin" items={[{ href: "/admin/users", icon: I.users, label: "Users & Roles" }]} path={path} />}
       </nav>
     );
@@ -371,6 +384,10 @@ export function Nav({
     // The named verifiers keep this row: their page deliberately never shows
     // a computed sheet, and the costing page is ADMIN-only.
     ...(batchVerify && !isAdmin ? [{ href: "/office/batch-verify", icon: I.samples, label: "Batch Sign-off" }] : []),
+    // Only for a named slab-intake person (SLAB_INTAKE_EMAILS) — the polishing
+    // line manager works from this section. Not for admins, who get the row
+    // under Inventory below with the rest of the finished-goods screens.
+    ...(slabIntake && !isAdmin ? [{ href: "/slab-intake", icon: I.entry, label: "Slab Intake" }] : []),
   ];
   const fabrication = [
     ...(mgmt ? [
@@ -388,6 +405,10 @@ export function Nav({
     { href: "/fab/fabrication",  icon: I.fabrication, label: "Fabrication" },
     { href: "/fab/packaging",    icon: I.packaging,   label: "Packaging" },
     { href: "/fab/supervisor/samples", icon: I.samples, label: "Samples" },
+    // Only for a named slab-intake person — the fabrication manager reaches the
+    // form from his own section (middleware carves /slab-intake through the
+    // FABRICATION branch cap for him). Admins get it under Inventory instead.
+    ...(slabIntake && !isAdmin ? [{ href: "/slab-intake", icon: I.entry, label: "Slab Intake" }] : []),
   ];
   const admin = [
     ...(showAdmin ? [{ href: "/admin/users", icon: I.users, label: "Users & Roles" }] : []),
@@ -423,7 +444,13 @@ export function Nav({
           above: the SAMPLING role gets the whole-nav takeover, and the only
           other login middleware admits to these pages is an admin. */}
       {isAdmin && <Section label="Sampling" items={samplingItems} path={path} />}
-      {inventory && <Section label="Inventory" items={[{ href: "/inventory", icon: I.box, label: "Finished Goods" }]} path={path} />}
+      {(inventory || (slabIntake && isAdmin)) && <Section label="Inventory" items={[
+        ...(inventory ? [{ href: "/inventory", icon: I.box, label: "Finished Goods" }] : []),
+        // Admins only here: a named intake person on the shop floor already
+        // has the row in Lookups & Reports above, and two rows to one page
+        // is the duplication the batch-verify row's own comment retired.
+        ...(slabIntake && isAdmin ? [{ href: "/slab-intake", icon: I.entry, label: "Slab Intake" }] : []),
+      ]} path={path} />}
       {consumables && <Section label="Consumables" items={[{ href: "/consumables", icon: I.box, label: "Consumables" }]} path={path} />}
       {intlSales && <Section label="International Sales" items={intlSalesItems} path={path} />}
       <Section label="Admin" items={admin} path={path} />
