@@ -201,7 +201,7 @@ export async function getDailyReport(date: string) {
 // Built from the MIS rows, not from maintenance_ticket: that table has never
 // been written to (0 rows, all time), so reading it would print an empty page
 // and imply a quiet day. The page says where its figures come from.
-function getMaintenance(hours: HourRow[]) {
+export function getMaintenance(hours: HourRow[]) {
   // THE SAME RECLASSIFICATION THE DOWNTIME TABLE APPLIES, FOR THE SAME REASON.
   // An hour whose reasons say POWER had its minutes booked to the breakdown
   // column but was a grid cut, not a machine fault. Counting it here would put

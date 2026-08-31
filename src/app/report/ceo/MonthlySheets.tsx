@@ -174,7 +174,7 @@ function SheetMonth({ r }: { r: MonthlyReport }) {
 
       <div className={s.foot}>
         <span>Pacific Surfaces &nbsp;·&nbsp; Monthly Report &nbsp;·&nbsp; {monthLong(r.month)}</span>
-        <span>Page 1 of 2</span>
+        <span>Page 1 of 3</span>
       </div>
     </div>
   );
@@ -182,8 +182,8 @@ function SheetMonth({ r }: { r: MonthlyReport }) {
 
 /* ------------------------------------------------------------ sheet two */
 function SheetDepth({ r }: { r: MonthlyReport }) {
-  const q = r.quality;
-  const faultTop = q.faultsAll.slice(0, 6);
+  const m = r.maintenance;
+  const worstArea = m.byArea[0] ?? null;
   return (
     <div className={s.sheet}>
       <Mast r={r} />
@@ -214,6 +214,67 @@ function SheetDepth({ r }: { r: MonthlyReport }) {
         </tbody>
       </table>
 
+      <Section name="Maintenance across the month"
+        note="Summed from each day's own maintenance page — power cuts sit apart, as there: nothing failed in the plant" />
+      <p className={s.prose}>
+        {m.events === 0 ? (
+          <>No machine or electrical breakdown was recorded this month.</>
+        ) : (
+          <>
+            <strong>{m.events} breakdown hour{m.events === 1 ? "" : "s"}</strong> across {m.daysAffected} day{m.daysAffected === 1 ? "" : "s"} cost{" "}
+            <strong>{hm(m.minutes)}</strong>
+            {worstArea && <> — most of it in the <strong>{worstArea.area}</strong> ({num(worstArea.minutes)} minutes over {worstArea.days} day{worstArea.days === 1 ? "" : "s"})</>}.{" "}
+            {m.withRca === 0 ? "No RCA number was raised against any of them." : `${m.withRca} carried an RCA number.`}{" "}
+            {m.sparesHours > 0 && `Spares were used in ${m.sparesHours} hour${m.sparesHours === 1 ? "" : "s"}.`}{" "}
+            {m.power.minutes > 0 && <>The grid went down for <strong>{hm(m.power.minutes)}</strong> across {m.power.hours} hour{m.power.hours === 1 ? "" : "s"} on {m.power.days} day{m.power.days === 1 ? "" : "s"}.</>}
+          </>
+        )}
+      </p>
+      {m.byArea.length > 0 && (
+        <div className={s.pair}>
+          <div style={{ flex: 1.6 }}>
+            <table className={`${s.t} ${s.keep}`}>
+              <thead><tr>
+                <th>Where it failed</th><th className={s.num}>Events</th>
+                <th className={s.num}>Minutes</th><th className={s.num}>Share</th><th className={s.num}>Days touched</th>
+              </tr></thead>
+              <tbody>
+                {m.byArea.map((a) => (
+                  <tr key={a.area}>
+                    <td className={s.key}>{a.area}</td>
+                    <td className={s.num}>{a.events}</td>
+                    <td className={s.num}>{num(a.minutes)}</td>
+                    <td className={s.num}>{share(a.minutes, m.minutes)}</td>
+                    <td className={s.num}>{a.days} of {r.daysElapsed}</td>
+                  </tr>
+                ))}
+                <tr className={s.total}>
+                  <td>Total breakdowns</td>
+                  <td className={s.num}>{m.events}</td>
+                  <td className={s.num}>{num(m.minutes)}</td>
+                  <td className={s.num}>100%</td>
+                  <td className={s.num}>{m.daysAffected}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <table className={`${s.t} ${s.keep}`}>
+              <thead><tr><th>Shift</th><th className={s.num}>Events</th><th className={s.num}>Minutes</th></tr></thead>
+              <tbody>
+                {m.byShift.map((x) => (
+                  <tr key={x.shift}>
+                    <td className={s.key}>{x.shift}</td>
+                    <td className={s.num}>{x.events}</td>
+                    <td className={s.num}>{num(x.minutes)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       <Section name="What the line ran" note="Slabs per design, from the same hourly rows the day figures count" />
       <table className={`${s.t} ${s.keep}`}>
         <thead><tr>
@@ -221,15 +282,58 @@ function SheetDepth({ r }: { r: MonthlyReport }) {
           <th className={s.num}>Slabs</th><th className={s.num}>Share</th>
         </tr></thead>
         <tbody>
-          {r.mix.map((m) => (
-            <tr key={m.design}>
-              <td className={s.key}>{m.design}</td>
-              <td className={s.num}>{m.batches || DASH}</td>
-              <td className={s.num}>{m.days}</td>
-              <td className={s.num}>{num(m.made)}</td>
-              <td className={s.num}>{share(m.made, r.made)}</td>
+          {r.mix.map((m2) => (
+            <tr key={m2.design}>
+              <td className={s.key}>{m2.design}</td>
+              <td className={s.num}>{m2.batches || DASH}</td>
+              <td className={s.num}>{m2.days}</td>
+              <td className={s.num}>{num(m2.made)}</td>
+              <td className={s.num}>{share(m2.made, r.made)}</td>
             </tr>
           ))}
+        </tbody>
+      </table>
+
+      <div className={s.foot}>
+        <span>Pacific Surfaces &nbsp;·&nbsp; Monthly Report &nbsp;·&nbsp; {monthLong(r.month)}</span>
+        <span>Page 2 of 3</span>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------- sheet three */
+const REWORK_LABEL: Record<string, string> = {
+  "Direct Ok": "Passed straight through",
+  "RW Required and ongoing": "Rework in progress",
+  "Can't be Reworked": "Cannot be reworked",
+  "RW Done Ok": "Rework completed",
+  "Not recorded": "Not recorded",
+};
+
+function SheetQualityMonth({ r }: { r: MonthlyReport }) {
+  const q = r.quality;
+  const faultTop = q.faultsAll.slice(0, 10);
+  return (
+    <div className={s.sheet}>
+      <Mast r={r} />
+
+      <Section name="Quality grades" note={`all ${num(q.inspected)} slabs inspected during the month`} />
+      <table className={`${s.t} ${s.keep}`}>
+        <thead><tr><th>Grade</th><th className={s.num}>Slabs</th><th className={s.num}>Share</th></tr></thead>
+        <tbody>
+          {q.grades.map(([g, n]) => (
+            <tr key={g}>
+              <td className={s.key}>{g}</td>
+              <td className={s.num}>{num(n)}</td>
+              <td className={s.num}>{share(n, q.inspected)}</td>
+            </tr>
+          ))}
+          <tr className={s.total}>
+            <td>Total inspected</td>
+            <td className={s.num}>{num(q.inspected)}</td>
+            <td className={s.num}>100%</td>
+          </tr>
         </tbody>
       </table>
 
@@ -254,11 +358,70 @@ function SheetDepth({ r }: { r: MonthlyReport }) {
               <tr><td className={s.key}>Worked and came back good</td><td className={s.num}>{num(q.recovered)}</td></tr>
               <tr><td className={s.key}>Marked for dispatch</td><td className={s.num}>{num(q.toDispatch)}</td></tr>
               <tr><td className={s.key}>Slabs carrying a fault note</td><td className={s.num}>{num(q.faultSlabs)}</td></tr>
-              <tr><td className={s.key}>Top faults</td>
-                <td className={`${s.num} ${s.muted}`}>{faultTop.map(([f, n]) => `${f} ${n}`).join(" · ") || DASH}</td></tr>
+              <tr><td className={s.key}>Repolish done / still needed</td>
+                <td className={s.num}>{num(q.polishing.repolishDone)} / {num(q.polishing.needsRepolish)}</td></tr>
             </tbody>
           </table>
         </div>
+      </div>
+
+      <Section name="The faults of the month" note={`${num(q.faultTotal)} faults across ${num(q.faultSlabs)} slabs — one slab can carry several`} />
+      <div className={s.pair}>
+        <div style={{ flex: 1.4 }}>
+          <table className={`${s.t} ${s.keep}`}>
+            <thead><tr><th>Fault</th><th className={s.num}>Recorded</th><th className={s.num}>Share</th></tr></thead>
+            <tbody>
+              {faultTop.map(([f, n]) => (
+                <tr key={f}>
+                  <td className={s.key}>{f}</td>
+                  <td className={s.num}>{num(n)}</td>
+                  <td className={`${s.num} ${s.muted}`}>{share(n, q.faultTotal)}</td>
+                </tr>
+              ))}
+              {q.faultsAll.length > faultTop.length && (
+                <tr>
+                  <td className={s.muted}>{q.faultsAll.length - faultTop.length} more…</td>
+                  <td className={s.num}>{num(q.faultsAll.slice(10).reduce((a, [, n]) => a + n, 0))}</td>
+                  <td className={`${s.num} ${s.muted}`}>{share(q.faultsAll.slice(10).reduce((a, [, n]) => a + n, 0), q.faultTotal)}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <table className={`${s.t} ${s.keep}`}>
+            <thead><tr><th>Did it need rework?</th><th className={s.num}>Slabs</th></tr></thead>
+            <tbody>
+              {q.rework.map(([k, n]) => (
+                <tr key={k}>
+                  <td className={s.key}>{REWORK_LABEL[k] ?? k}</td>
+                  <td className={s.num}>{num(n)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <Section name="Who did the work" note="the six busiest at each station this month" />
+      <div className={s.pair}>
+        {([["Polishing operator", "Operator", q.operators, q.polished], ["Quality inspector", "Inspector", q.inspectors, q.inspected]] as const).map(
+          ([label, head, rows, total]) => (
+            <div key={label}>
+              <table className={`${s.t} ${s.keep}`}>
+                <thead><tr><th>{head}</th><th className={s.num}>Slabs</th><th className={s.num}>Share</th></tr></thead>
+                <tbody>
+                  {rows.slice(0, 6).map(([k, n]) => (
+                    <tr key={k}>
+                      <td className={s.key}>{k}</td>
+                      <td className={s.num}>{num(n)}</td>
+                      <td className={`${s.num} ${s.muted}`}>{share(n, total)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
       </div>
 
       <Section name="Against last month" note={r.monthToDate ? "This month is partial; last month is complete — compare rates, not totals" : "Both months complete"} />
@@ -310,7 +473,7 @@ function SheetDepth({ r }: { r: MonthlyReport }) {
 
       <div className={s.foot}>
         <span>Pacific Surfaces &nbsp;·&nbsp; Monthly Report &nbsp;·&nbsp; {monthLong(r.month)}</span>
-        <span>Page 2 of 2</span>
+        <span>Page 3 of 3</span>
       </div>
     </div>
   );
@@ -321,6 +484,7 @@ export function MonthlySheets({ r }: { r: MonthlyReport }) {
     <>
       <SheetMonth r={r} />
       <SheetDepth r={r} />
+      <SheetQualityMonth r={r} />
     </>
   );
 }

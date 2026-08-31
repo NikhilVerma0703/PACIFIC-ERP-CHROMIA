@@ -15,7 +15,7 @@ import { prisma } from "@/lib/prisma";
 import { normalizeBatch } from "@/lib/normalizeBatch";
 import {
   MIS_SELECT, ENTRY_SELECT, QC_SELECT, IST_OFFSET_MIN,
-  assembleHours, assembleDay, getQuality, reportWindow,
+  assembleHours, assembleDay, getQuality, getMaintenance, reportWindow,
   type HourRow,
 } from "@/lib/dailyReport";
 
@@ -79,6 +79,17 @@ async function monthCore(month: string, capDay: string | null) {
   // designs — so the mix sums to the month's made by construction.
   const mix = new Map<string, { design: string; made: number; batches: Set<string>; days: Set<string> }>();
 
+  // Maintenance, summed from each day's OWN maintenance assembly — the same
+  // getMaintenance the daily's page three runs, so the month's breakdown
+  // figures are the sum of the daily pages by construction (power hours
+  // reclassified out, exactly as there).
+  const maint = {
+    events: 0, minutes: 0, daysAffected: 0, withRca: 0, sparesHours: 0,
+    power: { minutes: 0, hours: 0, days: 0 },
+    byArea: new Map<string, { area: string; events: number; minutes: number; days: Set<string> }>(),
+    byShift: new Map<string, { shift: string; events: number; minutes: number }>(),
+  };
+
   const days: DayRow[] = dates.map((date) => {
     const rows = byDay.get(date) ?? [];
     const hours: HourRow[] = assembleHours(rows);
@@ -113,6 +124,29 @@ async function monthCore(month: string, capDay: string | null) {
       if (x.batch) e.batches.add(normalizeBatch(x.batch));
       e.days.add(date);
     }
+    const m = getMaintenance(hours);
+    if (m.events.length) {
+      maint.daysAffected++;
+      maint.events += m.events.length;
+      maint.minutes += m.minutes;
+      maint.withRca += m.withRca;
+      maint.sparesHours += m.spares.length;
+      for (const a of m.byArea) {
+        const e = maint.byArea.get(a.area) ?? { area: a.area, events: 0, minutes: 0, days: new Set<string>() };
+        e.events += a.events; e.minutes += a.minutes; e.days.add(date);
+        maint.byArea.set(a.area, e);
+      }
+      for (const s of m.byShift) {
+        const e = maint.byShift.get(s.shift) ?? { shift: s.shift, events: 0, minutes: 0 };
+        e.events += s.events; e.minutes += s.minutes;
+        maint.byShift.set(s.shift, e);
+      }
+    }
+    if (m.powerCuts.minutes > 0) {
+      maint.power.days++;
+      maint.power.minutes += m.powerCuts.minutes;
+      maint.power.hours += m.powerCuts.rows.length;
+    }
     return {
       date,
       made: day.made, target: day.target, pct: day.pct, lost: day.lost,
@@ -134,6 +168,14 @@ async function monthCore(month: string, capDay: string | null) {
       .map((m) => ({ design: m.design, made: m.made, batches: m.batches.size, days: m.days.size }))
       .filter((m) => m.made > 0)
       .sort((a, b) => b.made - a.made),
+    maintenance: {
+      events: maint.events, minutes: maint.minutes, daysAffected: maint.daysAffected,
+      withRca: maint.withRca, sparesHours: maint.sparesHours, power: maint.power,
+      byArea: [...maint.byArea.values()]
+        .map((a) => ({ area: a.area, events: a.events, minutes: a.minutes, days: a.days.size }))
+        .sort((a, b) => b.minutes - a.minutes || b.events - a.events),
+      byShift: [...maint.byShift.values()].sort((a, b) => a.shift.localeCompare(b.shift)),
+    },
     window: { from, to },
   };
 }
@@ -223,6 +265,7 @@ export async function getMonthlyReport(month: string) {
     topDay: byMade[0]?.made ? byMade[0] : null,
     causes,
     mix: core.mix,
+    maintenance: core.maintenance,
     quality: getQuality(entries, qc),
     prev: prevCore ? {
       month: prevCore.month, made: prevCore.made, target: prevCore.target,
