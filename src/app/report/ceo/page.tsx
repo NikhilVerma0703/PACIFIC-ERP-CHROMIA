@@ -1,5 +1,8 @@
+import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { getDailyReport, type DailyReport } from "@/lib/dailyReport";
+import { getMonthlyReport, currentReportDay, type MonthlyReport } from "@/lib/monthlyReport";
+import { MonthlySheets, monthLong } from "./MonthlySheets";
 import { InfoDot, Explain, Line, Sum } from "./InfoDot";
 import { PrintButton } from "./PrintButton";
 import { WidthToggle } from "./WidthToggle";
@@ -703,27 +706,54 @@ function SheetMaintenance({ r }: { r: DailyReport }) {
 }
 
 /* --------------------------------------------------------------- the page */
-export default async function CeoReportPage({ searchParams }: { searchParams: Promise<{ d?: string }> }) {
-  const { d } = await searchParams;
+// ONE report page, two grains. ?d=YYYY-MM-DD (or nothing) is the daily report
+// it has always been; ?m=YYYY-MM or ?view=monthly is the month, in the same
+// document design — every day row of which links back to the daily view.
+export default async function CeoReportPage({ searchParams }: { searchParams: Promise<{ d?: string; m?: string; view?: string }> }) {
+  const { d, m, view } = await searchParams;
+  const monthly = view === "monthly" || (!!m && /^\d{4}-\d{2}$/.test(m));
+
+  const thisMonth = currentReportDay().slice(0, 7);
+  const month = m && /^\d{4}-\d{2}$/.test(m) && m <= thisMonth ? m : thisMonth;
   const date = d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : yesterday();
 
   let report: DailyReport | null = null;
+  let monthReport: MonthlyReport | null = null;
   let error: string | null = null;
   try {
-    report = await getDailyReport(date);
+    if (monthly) monthReport = await getMonthlyReport(month);
+    else report = await getDailyReport(date);
   } catch {
     error = "Could not read the database.";
   }
+
+  const seg = "px-3 py-1.5 text-sm";
+  const segOn = `${seg} bg-brand font-medium text-white`;
+  const segOff = `${seg} bg-white text-gray-700 hover:bg-gray-50`;
 
   return (
     <Shell>
       <div className={s.doc}>
         <form method="GET" className={s.bar}>
-          <label className="text-sm font-medium text-gray-700" htmlFor="d">Report for</label>
-          <input
-            type="date" id="d" name="d" defaultValue={date} max={yesterday()}
-            className="rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
-          />
+          {/* The grain toggle — plain links, so Back and bookmarks behave. */}
+          <div className="flex overflow-hidden rounded-md border border-gray-300">
+            <Link href="/report/ceo" className={monthly ? segOff : segOn}>Daily</Link>
+            <Link href="/report/ceo?view=monthly" className={monthly ? segOn : segOff}>Monthly</Link>
+          </div>
+          <label className="text-sm font-medium text-gray-700" htmlFor={monthly ? "m" : "d"}>Report for</label>
+          {/* keeps the monthly grain even if the month box is submitted empty */}
+          {monthly && <input type="hidden" name="view" value="monthly" />}
+          {monthly ? (
+            <input
+              type="month" id="m" name="m" defaultValue={month} max={thisMonth}
+              className="rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+            />
+          ) : (
+            <input
+              type="date" id="d" name="d" defaultValue={date} max={yesterday()}
+              className="rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+            />
+          )}
           <button className="rounded-md bg-brand px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-dark">
             Show
           </button>
@@ -733,16 +763,28 @@ export default async function CeoReportPage({ searchParams }: { searchParams: Pr
         </form>
 
         {error && <p className="mx-auto max-w-xl text-sm text-red-600">{error}</p>}
-        {report && report.hours.length === 0 && (
+
+        {!monthly && report && report.hours.length === 0 && (
           <p className="mx-auto max-w-xl text-sm text-gray-600">
             No shift log was entered for {longDate(date)}, so there is nothing to report for that day.
           </p>
         )}
-        {report && report.hours.length > 0 && (
+        {!monthly && report && report.hours.length > 0 && (
           <div className={s.scroller}>
             <SheetProduction r={report} />
             <SheetQuality r={report} />
             <SheetMaintenance r={report} />
+          </div>
+        )}
+
+        {monthly && monthReport && monthReport.daysLogged === 0 && (
+          <p className="mx-auto max-w-xl text-sm text-gray-600">
+            No shift log was entered in {monthLong(month)}, so there is nothing to report for that month.
+          </p>
+        )}
+        {monthly && monthReport && monthReport.daysLogged > 0 && (
+          <div className={s.scroller}>
+            <MonthlySheets r={monthReport} />
           </div>
         )}
       </div>
