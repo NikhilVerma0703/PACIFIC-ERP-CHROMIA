@@ -17,8 +17,13 @@ const TYPE_META: Record<string, { label: string; color: string; bg: string }> = 
 const ALL_STAGES = ["CUTTING","POLISHING","SINK_CUTTING","FABRICATION","PACKAGING"];
 
 function todayStr() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  // The PRODUCTION day, 06:00→06:00 IST — the key currentReportDay() builds
+  // (+05:30 into IST, then −06:00), so before 06:00 IST the dashboard stays on
+  // the day the running night shift began, and the picker's default agrees
+  // with the window /api/fab/ceo now applies. Inlined rather than imported:
+  // dailyReport pulls in prisma and this is a client component. The arithmetic
+  // is zone-independent, so the tablet's own timezone cannot skew it.
+  return new Date(Date.now() + (330 - 360) * 60_000).toISOString().slice(0, 10);
 }
 /** n days before/after a 'YYYY-MM-DD' key. UTC arithmetic, because the key is a
  *  label and a label has no 23- or 25-hour variant. Mirrors addDays() in

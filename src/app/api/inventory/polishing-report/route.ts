@@ -11,14 +11,12 @@ import { slabLabel } from "@/lib/slabLabel";
 import { displayBatch } from "@/lib/batchDisplay";
 import { canonicalGrade } from "@/lib/inventory/grading";
 import { normalizeBatch } from "@/lib/normalizeBatch";
+import { reportWindow } from "@/lib/dailyReport";
 import * as XLSX from "xlsx";
 
 const db = prisma as any;
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
-/** IST day boundary — the floor's day, not UTC's. */
-const istStart = (ymd: string) => new Date(Date.parse(`${ymd}T00:00:00+05:30`));
-const istEnd = (ymd: string) => new Date(Date.parse(`${ymd}T00:00:00+05:30`) + 86400_000);
 const ist = (d: Date | null | undefined) =>
   d ? new Date(new Date(d).getTime() + 330 * 60000).toISOString().slice(0, 16).replace("T", " ") : "";
 
@@ -45,12 +43,19 @@ export async function GET(request: Request) {
     // `created` is the Airtable-era timestamp and stopped being filled in June
     // 2026 — ERP-created rows only carry importedAt. Without the fallback this
     // report is empty for every recent range.
+    // THE PRODUCTION DAY, 06:00→06:00 IST — the same window the CEO report
+    // puts these rows in. On IST midnight the night shift was cut in half:
+    // slabs polished 00:00–06:00 are the tail of the night that STARTED the
+    // day before, so one night's polishing landed in two different files and
+    // neither reconciled with the daily report.
+    const winFrom = batchKey ? null : reportWindow(from).from;
+    const winTo = batchKey ? null : reportWindow(to).to;
     const inWindow = batchKey
       ? { batchKey }
       : {
           OR: [
-            { created: { gte: istStart(from), lt: istEnd(to) } },
-            { AND: [{ created: null }, { importedAt: { gte: istStart(from), lt: istEnd(to) } }] },
+            { created: { gte: winFrom!, lt: winTo! } },
+            { AND: [{ created: null }, { importedAt: { gte: winFrom!, lt: winTo! } }] },
           ],
         };
 

@@ -11,6 +11,11 @@ import { downtimeLabel } from "@/lib/fab/downtimeReasons";
 import { FAB_PROCESS_LABEL, type FabProcessType } from "@/lib/fab/processSession";
 import { priceRow, parseEdges } from "@/lib/fab/pricing";
 import { perPieceCharge } from "@/lib/fab/periodReport";
+import { reportWindow } from "@/lib/dailyReport";
+
+/** Today's PRODUCTION day (06:00→06:00 IST) — currentReportDay's arithmetic,
+ *  inlined so this route does not pull the monthly report in for one line. */
+const reportDayNow = () => new Date(Date.now() + (330 - 360) * 60_000).toISOString().slice(0, 10);
 
 const IDLE_MS = 30 * 60 * 1000;
 
@@ -24,11 +29,16 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const dateParam = searchParams.get("date");
 
-  // Active sessions = real-time; leaderboard/ops = date-filtered
-  const startOfDay = dateParam ? new Date(dateParam) : new Date();
-  startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(startOfDay);
-  endOfDay.setHours(23, 59, 59, 999);
+  // Active sessions = real-time; leaderboard/ops = date-filtered.
+  //
+  // THE DAY IS 06:00→06:00 IST, like the CEO report's. It was local midnight
+  // to midnight — on the UTC runtime, 05:30 IST to 05:29 IST — which cut the
+  // night shift in half: a packer's 01:00 and 05:45 completions landed on
+  // different dashboard days, and downtime that opened at 04:00 was blamed on
+  // the day it ended in. endOfDay is now EXCLUSIVE (the next 06:00), so every
+  // consumer below reads `lt`, not `lte`.
+  const dayKey = dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : reportDayNow();
+  const { from: startOfDay, to: endOfDay } = reportWindow(dayKey);
   const now = new Date();
 
   // ── Date-wise stage series: the range ─────────────────────────────────────
@@ -40,29 +50,24 @@ export async function GET(req: Request) {
   const stageRange = resolveRange({
     from:   searchParams.get("from"),
     to:     searchParams.get("to"),
-    anchor: dayKeyOf(startOfDay),
+    anchor: dayKey,
   });
-  // Built the same way as startOfDay above, deliberately: same new Date(key),
-  // same setHours, so the window edges of the series and of ?date= cannot
-  // drift apart. (new Date("2026-08-18") is UTC midnight and setHours then
-  // takes the LOCAL day — a pre-existing quirk that is invisible on Vercel,
-  // where the runtime is UTC. Mirroring it beats quietly fixing it here.)
-  const rangeStart = new Date(stageRange.from);
-  rangeStart.setHours(0, 0, 0, 0);
-  const rangeEnd = new Date(stageRange.to);
-  rangeEnd.setHours(23, 59, 59, 999);
+  // The series' window is built from the SAME reportWindow the ?date= filter
+  // uses, so the last row of the table equals the dailyThroughput strip beside
+  // it. rangeEnd is exclusive (the 06:00 that ends the last day).
+  const rangeStart = reportWindow(stageRange.from).from;
+  const rangeEnd = reportWindow(stageRange.to).to;
 
-  // The buckets are cut in SQL, so SQL has to agree with the local-midnight
-  // boundaries above. Prisma stores DateTime as `timestamp` (no zone) holding
-  // UTC, so to_char() alone would bucket by UTC day — identical on Vercel
-  // (runtime TZ = UTC, offset 0, no shift emitted at all) but a day out on a
-  // developer's machine in IST. The offset comes from getTimezoneOffset(), is
-  // an integer by construction, and is re-checked before it is interpolated;
-  // no request input reaches the statement except as a bound parameter.
-  const tzOffsetMin = -rangeStart.getTimezoneOffset();
-  const tzShift = Number.isInteger(tzOffsetMin) && tzOffsetMin !== 0
-    ? ` + interval '${tzOffsetMin} minutes'`
-    : "";
+  // The buckets are cut in SQL, so SQL has to agree with the 06:00 boundaries
+  // above — and it is the agreement that matters, not the shift itself: a
+  // bucket whose key falls outside [from, to] is DROPPED by buildStageSeries,
+  // so a window that moved without its key would silently short the column.
+  // Prisma stores DateTime as `timestamp` (no zone) holding UTC, so shifting
+  // by +05:30 −06:00 = −30 minutes before truncating gives the production day:
+  // 06:00 IST (00:30Z) lands on its own key, 05:59 IST on the previous one.
+  // The SQL twin of dayKeyOf / monthlyReport's own key. No request input is
+  // interpolated any more; the bounds are parameters.
+  const tzShift = " - interval '30 minutes'";
   const onQueryFail = (what: string) => (e: unknown) => {
     // A new panel must not be able to take down the twelve blocks that were
     // working before it. Log loudly, return null, let the page say so.
@@ -97,8 +102,8 @@ export async function GET(req: Request) {
       where: {
         OR: [
           { isActive: true },
-          { logoutTime: { gte: startOfDay, lte: endOfDay } },
-          { loginTime:  { gte: startOfDay, lte: endOfDay } },
+          { logoutTime: { gte: startOfDay, lt: endOfDay } },
+          { loginTime:  { gte: startOfDay, lt: endOfDay } },
         ],
       },
       include: {
@@ -121,7 +126,7 @@ export async function GET(req: Request) {
       orderBy: { createdAt: "desc" },
     }),
     prisma.fabPieceOperation.findMany({
-      where:  { isCompleted: true, completedAt: { gte: startOfDay, lte: endOfDay } },
+      where:  { isCompleted: true, completedAt: { gte: startOfDay, lt: endOfDay } },
       select: { id: true, operationType: true, completedAt: true },
     }),
     prisma.fabSlab.findMany({
@@ -218,7 +223,7 @@ export async function GET(req: Request) {
         LEFT JOIN fab_worker w ON w.id = d.worker_id
         LEFT JOIN fab_machine m ON m.id = d.machine_id
        WHERE d.ended_at IS NULL
-          OR (d.started_at <= ${endOfDay}
+          OR (d.started_at < ${endOfDay}
               AND COALESCE(d.ended_at, ${endOfDay}) >= ${startOfDay})
        ORDER BY (d.ended_at IS NULL) DESC, d.started_at DESC
        LIMIT 80
@@ -539,8 +544,8 @@ export async function GET(req: Request) {
     where: {
       status: "COMPLETED",
       OR: [
-        { endTime: { gte: startOfDay, lte: endOfDay } },
-        { endTime: null, createdAt: { gte: startOfDay, lte: endOfDay } },
+        { endTime: { gte: startOfDay, lt: endOfDay } },
+        { endTime: null, createdAt: { gte: startOfDay, lt: endOfDay } },
       ],
     },
     include: {
@@ -879,7 +884,7 @@ export async function GET(req: Request) {
       where: {
         operationType: "PACKAGING",
         isCompleted: true,
-        completedAt: { gte: rangeStart, lte: rangeEnd },
+        completedAt: { gte: rangeStart, lt: rangeEnd },
       },
       // has_sink is selected because it decides whether this piece EARNS —
       // see the charge loop below. Not reading it there was the bug this fixes.

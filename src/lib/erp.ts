@@ -123,7 +123,10 @@ export async function getOverview(): Promise<OverviewData> {
     prisma.polishEntry.count({ where: { OR: [{ created: { gte: since30 } }, { created: null, importedAt: { gte: since30 } }] } }),
     prisma.press.count({ where: { date: { gte: todayStart } } }),
     // counted in the DB — same buckets as before, ~40 rows instead of ~20k
-    (prisma as any).$queryRaw`SELECT to_char(COALESCE(created, imported_at), 'YYYY-MM-DD') AS k, COUNT(*)::int AS c FROM polish_entry WHERE (created >= ${since30} OR (created IS NULL AND imported_at >= ${since30})) GROUP BY 1` as Promise<{ k: string; c: number }[]>,
+    // Bucketed on the PRODUCTION day (+05:30 into IST, then −06:00), the SQL
+    // twin of the report's own day key — on a UTC key the night shift's
+    // polishing was split across two bars of this chart.
+    (prisma as any).$queryRaw`SELECT to_char(COALESCE(created, imported_at) + interval '330 minutes' - interval '6 hours', 'YYYY-MM-DD') AS k, COUNT(*)::int AS c FROM polish_entry WHERE (created >= ${since30} OR (created IS NULL AND imported_at >= ${since30})) GROUP BY 1` as Promise<{ k: string; c: number }[]>,
     (prisma as any).$queryRaw`SELECT COALESCE(NULLIF(TRIM(polishing_status), ''), '—') AS k, COUNT(*)::int AS c FROM polish_entry WHERE (created >= ${since30} OR (created IS NULL AND imported_at >= ${since30})) GROUP BY 1` as Promise<{ k: string; c: number }[]>,
     // batches pressed in the window — the thickness split itself comes from the
     // shared resolver below, not from any single station's column

@@ -49,15 +49,25 @@ test("daysBetween counts inclusively, so one day is 1 and not 0", () => {
   assert.equal(daysBetween("2026-08-05", "2026-08-18"), 14);
 });
 
-test("dayKeyOf reads the LOCAL calendar day, matching the route's ?date= filter", () => {
-  // The ceo route has always built its day window with setHours(0,0,0,0),
-  // i.e. local midnight. If this used toISOString() instead, the key and the
-  // window would disagree by a day for half of every day in any zone east or
-  // west of UTC, and the new panel would contradict the strip beside it.
-  const d = new Date(2026, 7, 18, 23, 30, 0); // 18 Aug, local, half past eleven
-  assert.equal(dayKeyOf(d), "2026-08-18");
-  const early = new Date(2026, 0, 1, 0, 0, 0);
-  assert.equal(dayKeyOf(early), "2026-01-01");
+test("dayKeyOf reads the PRODUCTION day, 06:00→06:00 IST, matching the route's window", () => {
+  // The ceo route's ?date= window is reportWindow(), 06:00 IST to 06:00 IST.
+  // This key must name the same day, in every zone: a bucket whose key falls
+  // outside the window's enumerated days is DROPPED by buildStageSeries, so a
+  // key that disagreed with the window would silently short a column rather
+  // than fail. Zone-independent by construction — the arithmetic is on the
+  // instant, never on local getters.
+  const at = (iso: string) => dayKeyOf(new Date(iso));
+  // 06:00 IST on 18 Aug is 00:30Z — the first moment of that production day.
+  assert.equal(at("2026-08-18T00:30:00.000Z"), "2026-08-18");
+  // 05:59 IST on 19 Aug (00:29Z) is still the night that began on the 18th.
+  assert.equal(at("2026-08-19T00:29:00.000Z"), "2026-08-18");
+  // one minute later the new production day starts.
+  assert.equal(at("2026-08-19T00:30:00.000Z"), "2026-08-19");
+  // 23:30 IST on 18 Aug (18:00Z) is squarely inside the 18th.
+  assert.equal(at("2026-08-18T18:00:00.000Z"), "2026-08-18");
+  // midnight IST (18:30Z on the 18th) belongs to the 18th, not the 19th —
+  // the whole point: the C shift's tail stays on the night it began.
+  assert.equal(at("2026-08-18T18:30:00.000Z"), "2026-08-18");
 });
 
 /* -- Enumerating the range ------------------------------------------------- */

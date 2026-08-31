@@ -118,11 +118,18 @@ export function isDayKey(value: unknown): value is string {
   return back.getUTCFullYear() === y && back.getUTCMonth() === m - 1 && back.getUTCDate() === d;
 }
 
-/** The local calendar day a Date falls on, as a key. Uses the local getters
- *  (not toISOString) so it agrees with the local-midnight day boundaries the
- *  ceo route has always used for its ?date= filter. */
+/** The PRODUCTION day an instant falls on, 06:00→06:00 IST — the same day the
+ *  CEO report means by a date, and the same arithmetic reportWindow uses
+ *  (+05:30 into IST, then −06:00 so the C shift's tail stays on the night it
+ *  began). Inlined rather than imported because dailyReport pulls in prisma
+ *  and this module is reached from the client; it is zone-independent, so a
+ *  developer's IST laptop and the UTC runtime agree.
+ *
+ *  It moved here from the local calendar day when the ERP went 06:00→06:00:
+ *  the ceo route's window and this key must always name the same day, or the
+ *  buckets this file drops (see buildStageSeries) would be real work. */
 export function dayKeyOf(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return new Date(d.getTime() + (330 - 360) * 60_000).toISOString().slice(0, 10);
 }
 
 /** n days after a key (negative for before). UTC arithmetic: a day key is a

@@ -20,6 +20,10 @@ import { autolinkFinishedSlabFromQc, relinkFinishedSlabAfterNumberChange } from 
 import { REQUIRED_FORM_FIELDS, REQUIRED_FIELD_LABELS } from "@/lib/requiredFields";
 import { MAX_SLABS_PER_HOUR } from "@/lib/shiftScoreMath";
 import { savePhotoFromForm } from "@/lib/entryPhoto";
+import { reportWindow } from "@/lib/dailyReport";
+
+/** Today's PRODUCTION day (06:00→06:00 IST) — currentReportDay's arithmetic. */
+const reportDayNow = () => new Date(Date.now() + (330 - 360) * 60_000).toISOString().slice(0, 10);
 
 // tx-scoped equivalent of delegateOf() for $transaction blocks
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -439,9 +443,16 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
   if (model === "Mis" && data.hour && data.date instanceof Date && !isNaN(data.date.getTime())) {
     const d0 = new Date(Date.UTC(data.date.getUTCFullYear(), data.date.getUTCMonth(), data.date.getUTCDate()));
     const d1 = new Date(d0.getTime() + 864e5);
+    // `date` is the IST day stored AT UTC midnight, so d0/d1 read it exactly.
+    // `dateAndTime` is a real UTC instant, and the legacy branch was comparing
+    // it against those same bounds — searching 05:30 IST to 05:30 IST, which
+    // is neither the calendar day nor the production day. t0/t1 are that IST
+    // day's actual span, so a legacy duplicate is found where it really is.
+    const t0 = new Date(d0.getTime() - 330 * 60000);
+    const t1 = new Date(t0.getTime() + 864e5);
     const dupe = await delegateOf(model).findFirst({ where: { hour: data.hour, OR: [
       { date: { gte: d0, lt: d1 } },
-      { AND: [{ date: null }, { dateAndTime: { gte: d0, lt: d1 } }] }, // legacy rows carry only dateAndTime
+      { AND: [{ date: null }, { dateAndTime: { gte: t0, lt: t1 } }] }, // legacy rows carry only dateAndTime
     ] }, select: { id: true } }).catch(() => null);
     if (dupe) return `\u26a0 Hour ${data.hour} is already logged for this date — open it with the row's edit link instead of saving again.`;
   }
@@ -537,7 +548,11 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
   // Polish QC: MORE THAN 3 C-grade (reject) slabs for a batch today -> one group alert
   if (model === "PolishQc" && String(data.qualityGrade ?? "") === "C (Reject)") {
     try {
-      const dayStartIST = new Date(Math.floor((Date.now() + 330 * 60000) / 86400000) * 86400000 - 330 * 60000);
+      // THE PRODUCTION DAY, 06:00→06:00 IST. On IST midnight the counter
+      // reset in the middle of the night shift: a night that had already made
+      // three rejects went back to zero at 00:00 and the crew never got the
+      // alert, while the same night could fire it twice.
+      const { from: dayStartIST } = reportWindow(reportDayNow());
       const n = await delegateOf(model).count({ where: {
         qualityGrade: "C (Reject)",
         importedAt: { gte: dayStartIST },
@@ -546,7 +561,7 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
       if (n === 4) { // alert once, the moment it crosses "more than 3"
         const { sendTelegram } = await import("@/lib/telegram");
         const { esc } = await import("@/lib/telegram");
-        await sendTelegram(`🚨 <b>Quality alert — ${n} C-grade (reject) slabs today</b>${data.batchKey ? ` · Batch <b>${esc(data.batchKey)}</b>` : ""}
+        await sendTelegram(`🚨 <b>Quality alert — ${n} C-grade (reject) slabs this production day</b>${data.batchKey ? ` · Batch <b>${esc(data.batchKey)}</b>` : ""}
 Latest: slab ${esc(data.slabNumber ?? "—")} at Polish QC. Please check the line.`);
       }
     } catch { /* never blocks the entry */ }

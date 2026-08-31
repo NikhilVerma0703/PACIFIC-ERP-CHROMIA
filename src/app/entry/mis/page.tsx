@@ -42,7 +42,14 @@ async function shiftRows(date: string, shift: "A" | "B" | "C"): Promise<MisRowLi
       { hour: { in: hs } },
       { OR: [
         { date: { gte: new Date(`${d}T00:00:00.000Z`), lt: new Date(`${plusDay(d, 1)}T00:00:00.000Z`) } },
-        { AND: [{ date: null }, { dateAndTime: { gte: new Date(`${d}T00:00:00.000Z`), lt: new Date(`${plusDay(d, 1)}T00:00:00.000Z`) } }] },
+        // `date` is the IST day at UTC midnight, so those bounds read it
+        // exactly; `dateAndTime` is a real instant and needs that IST day's
+        // own span, or a legacy row logged before 05:30 IST goes missing from
+        // the sheet that owns it. The hour filter still splits the shift.
+        { AND: [{ date: null }, { dateAndTime: {
+          gte: new Date(`${d}T00:00:00+05:30`),
+          lt: new Date(`${plusDay(d, 1)}T00:00:00+05:30`),
+        } }] },
       ] },
     ],
   });
@@ -64,10 +71,17 @@ async function shiftRows(date: string, shift: "A" | "B" | "C"): Promise<MisRowLi
 async function dayLoggedHours(date: string): Promise<string[]> {
   const next = plusDay(date, 1);
   const wantDay = (h: string) => (Number(h.slice(0, 2)) < 6 ? next : date);
-  const dayKey = (d: Date | null): string | null => (d ? new Date(d).toISOString().slice(0, 10) : null);
+  // The row's IST calendar day — wantDay maps an hour to the PHYSICAL day it
+  // falls on, so this key must be physical too. toISOString() alone reads the
+  // UTC day, which put every 00:00–05:29 IST hour (the whole C tail) on the
+  // day before and lost its ✓ tick.
+  const dayKey = (d: Date | null): string | null =>
+    d ? new Date(new Date(d).getTime() + 330 * 60000).toISOString().slice(0, 10) : null;
   try {
-    const lo = new Date(`${date}T00:00:00.000Z`);
-    const hi = new Date(`${plusDay(next, 1)}T00:00:00.000Z`);
+    // IST bounds, matching the key: UTC midnights clipped the same C tail out
+    // of the fetch entirely.
+    const lo = new Date(`${date}T00:00:00+05:30`);
+    const hi = new Date(`${plusDay(next, 1)}T00:00:00+05:30`);
     // db facade types mis.findMany as MisRowLite[] (no date fields); this query selects
     // them, so cast to the shape actually returned. Same cast style as the `db` facade above.
     const rows = (await db.mis.findMany({ where: { OR: [

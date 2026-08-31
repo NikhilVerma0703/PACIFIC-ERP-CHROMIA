@@ -778,8 +778,11 @@ export interface StationBoard {
  *  turning up under Press with 3 shifts was the incharge, not a press operator. */
 export async function scoreStations(from: string, to: string, excludeNames: string[] = []): Promise<StationBoard[]> {
   const excluded = new Set(excludeNames.map((n) => canonPerson(n)).filter(Boolean));
-  const lo = new Date(`${from}T00:00:00+05:30`);
-  const hi = new Date(new Date(`${to}T00:00:00+05:30`).getTime() + 86400_000);
+  // The production day, 06:00→06:00 IST — the same span the shift tables beside
+  // these boards use (shiftRange A start → C end), so a night operator's work
+  // sits on one board day instead of being split across two by IST midnight.
+  const lo = shiftRange(from, "A").start;
+  const hi = shiftRange(to, "C").end;
   const out: StationBoard[] = [];
 
   // PERFORMANCE RESHAPE, 2026-08-14 — same rows, same math, same boards.
@@ -867,7 +870,10 @@ export async function scoreStations(from: string, to: string, excludeNames: stri
       // bulk, so a shift instance counted here is not a shift anyone worked:
       // Jot shows one operator in 60 and another in 65 of a month's 93 shifts,
       // which nobody did. Days is the coarser figure the timestamps can carry.
-      if (r.ts) e.days.add(new Date(new Date(r.ts).getTime() + IST_MIN * 60_000).toISOString().slice(0, 10));
+      // The PRODUCTION day key (+05:30 then −06:00), matching the window
+      // above: on an IST-midnight key one night counted as two days present,
+      // inflating the divisor behind every per-shift figure on these boards.
+      if (r.ts) e.days.add(new Date(new Date(r.ts).getTime() + (IST_MIN - 360) * 60_000).toISOString().slice(0, 10));
       m.set(who, e);
     }
 

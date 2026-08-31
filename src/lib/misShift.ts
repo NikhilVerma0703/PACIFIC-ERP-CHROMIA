@@ -90,7 +90,15 @@ export async function getShiftReport(anchor: string, shift: "A" | "B" | "C"): Pr
         { hour: { in: hs } },
         { OR: [
           { date: { gte: new Date(`${d}T00:00:00.000Z`), lt: new Date(`${plusDay(d, 1)}T00:00:00.000Z`) } },
-          { AND: [{ date: null }, { dateAndTime: { gte: new Date(`${d}T00:00:00.000Z`), lt: new Date(`${plusDay(d, 1)}T00:00:00.000Z`) } }] },
+          // `date` is the IST day stored AT UTC midnight, so its bounds are
+          // UTC midnights. `dateAndTime` is a REAL instant, and reusing those
+          // bounds for it searched 05:30 IST to 05:30 IST — neither the
+          // calendar day nor the production day. Shift into that IST day's
+          // actual span; the hour filter above still does the shift split.
+          { AND: [{ date: null }, { dateAndTime: {
+            gte: new Date(Date.parse(`${d}T00:00:00.000Z`) - IST_MIN * 60_000),
+            lt: new Date(Date.parse(`${plusDay(d, 1)}T00:00:00.000Z`) - IST_MIN * 60_000),
+          } }] },
         ] },
       ],
     });

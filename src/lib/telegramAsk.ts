@@ -4,6 +4,7 @@
 // Needs ANTHROPIC_API_KEY in env; soft-fails with a friendly message without it.
 import { prisma } from "@/lib/prisma";
 import { getDowntimeReport } from "@/lib/downtime";
+import { reportWindow } from "@/lib/dailyReport";
 import { getLastShiftReport, getShiftReport, currentShiftAnchor } from "@/lib/misShift";
 import { ymdIST, plusDay, lastCompletedHourIST, hourlyMessage } from "@/lib/telegramReports";
 import { esc } from "@/lib/telegram";
@@ -115,19 +116,22 @@ async function dataPack(question = ""): Promise<string> {
   try {
     /* eslint-disable @typescript-eslint/no-explicit-any */
     const db = prisma as any;
-    const days = [ymdIST(), plusDay(ymdIST(), -1)];
+    // PRODUCTION days, 06:00→06:00 IST: on IST midnight one night's work was
+    // split across "today" and "yesterday", so the pack contradicted the CEO
+    // report the same question could be asked about.
+    const rd = new Date(Date.now() + (330 - 360) * 60_000).toISOString().slice(0, 10);
+    const days = [rd, plusDay(rd, -1)];
     const stations: [string, string][] = [["press", "PRESS"], ["polish_qc", "POLISH QC"], ["jot", "JOT"]];
     for (const [table, label] of stations) {
       for (const day of days) {
-        const d0 = new Date(Date.parse(`${day}T00:00:00+05:30`));
-        const d1 = new Date(d0.getTime() + 86400000);
+        const { from: d0, to: d1 } = reportWindow(day);
         const rows: any[] = await db.$queryRawUnsafe(
           `SELECT to_char(imported_at + interval '330 minutes', 'HH24') h,
                   count(*)::int n, min(slab_number)::int lo, max(slab_number)::int hi
            FROM ${table} WHERE imported_at >= $1 AND imported_at < $2 GROUP BY 1 ORDER BY 1`,
           d0, d1,
         ).catch(() => []);
-        if (rows.length) lines.push(`${label} BY HOUR (${day === days[0] ? "today" : "yesterday"} ${day}, IST): `
+        if (rows.length) lines.push(`${label} BY HOUR (${day === days[0] ? "this production day" : "the production day before"} ${day}, 06:00→06:00 IST): `
           + rows.map((r) => `${r.h}:00→${r.n}${r.lo ? `(#${r.lo}-#${r.hi})` : ""}`).join(" "));
       }
     }
