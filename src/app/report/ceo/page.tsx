@@ -711,10 +711,13 @@ function SheetMaintenance({ r }: { r: DailyReport }) {
 // document design — every day row of which links back to the daily view.
 export default async function CeoReportPage({ searchParams }: { searchParams: Promise<{ d?: string; m?: string; view?: string }> }) {
   const { d, m, view } = await searchParams;
-  const monthly = view === "monthly" || (!!m && /^\d{4}-\d{2}$/.test(m));
+  // A REAL month number — \d{2} alone admits "2025-13", which passes the
+  // string clamp and then reports a database outage for what is a bad URL.
+  const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+  const monthly = view === "monthly" || (!!m && MONTH_RE.test(m));
 
   const thisMonth = currentReportDay().slice(0, 7);
-  const month = m && /^\d{4}-\d{2}$/.test(m) && m <= thisMonth ? m : thisMonth;
+  const month = m && MONTH_RE.test(m) && m <= thisMonth ? m : thisMonth;
   const date = d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : yesterday();
 
   let report: DailyReport | null = null;
@@ -749,8 +752,11 @@ export default async function CeoReportPage({ searchParams }: { searchParams: Pr
               className="rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
             />
           ) : (
+            /* max is TODAY's report day, not yesterday: the monthly view links
+               every day row here, the in-progress one included, and a default
+               past max leaves the input constraint-invalid with Show dead. */
             <input
-              type="date" id="d" name="d" defaultValue={date} max={yesterday()}
+              type="date" id="d" name="d" defaultValue={date} max={currentReportDay()}
               className="rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
             />
           )}

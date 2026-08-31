@@ -12,6 +12,7 @@
 // (hours logged of possible, days with nothing filed), the month's quality
 // figures, and the same month's numbers set beside the previous month.
 import { prisma } from "@/lib/prisma";
+import { normalizeBatch } from "@/lib/normalizeBatch";
 import {
   MIS_SELECT, ENTRY_SELECT, QC_SELECT, IST_OFFSET_MIN,
   assembleHours, assembleDay, getQuality, reportWindow,
@@ -82,18 +83,34 @@ async function monthCore(month: string, capDay: string | null) {
     const rows = byDay.get(date) ?? [];
     const hours: HourRow[] = assembleHours(rows);
     const { day, cause } = assembleDay(hours);
-    const lines = [...new Set(hours
-      .map((x) => (x.batch && x.design ? `${x.batch}, ${x.design}` : x.design ?? x.batch))
-      .filter((v): v is string => !!v))];
+    // Deduped by CANONICAL batch and case-folded design, shown in the first
+    // spelling the day used — operators type "D1399" and "1399" for the same
+    // batch within one shift, and both spellings listed reads as two runs.
+    const lineKeys = new Map<string, string>();
+    for (const x of hours) {
+      const label = x.batch && x.design ? `${x.batch}, ${x.design}` : x.design ?? x.batch;
+      if (!label) continue;
+      const key = `${normalizeBatch(x.batch)}|${(x.design ?? "").trim().toLowerCase()}`;
+      if (!lineKeys.has(key)) lineKeys.set(key, label);
+    }
+    const lines = [...lineKeys.values()];
     const areas = new Map<string, number>();
     for (const x of hours) for (const a of x.area) areas.set(a, (areas.get(a) ?? 0) + x.lost);
     const topArea = [...areas].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
     for (const x of hours) {
-      const k = x.design ?? "(not named)";
-      if (!mix.has(k)) mix.set(k, { design: k, made: 0, batches: new Set(), days: new Set() });
+      // Only rows that reach a shift — the SAME set day.made counts. A row
+      // with no hour label carries made the day figure excludes, and counting
+      // it here broke the mix-sums-to-made invariant on real months (June
+      // 2026: 104 phantom slabs; July: 19).
+      if (x.shift == null) continue;
+      // Case-folded design key, canonical batch: "Tiffiny"/"TIFFINY" are one
+      // design and "D1399"/"1399" one batch — counting spellings told the
+      // owner three Carrara Cloud batches ran in August when two did.
+      const k = (x.design ?? "").trim().toLowerCase() || "(not named)";
+      if (!mix.has(k)) mix.set(k, { design: x.design?.trim() || "(not named)", made: 0, batches: new Set(), days: new Set() });
       const e = mix.get(k)!;
       e.made += x.made ?? 0;
-      if (x.batch) e.batches.add(x.batch);
+      if (x.batch) e.batches.add(normalizeBatch(x.batch));
       e.days.add(date);
     }
     return {
@@ -164,11 +181,14 @@ export async function getMonthlyReport(month: string) {
     if (!weekMap.has(w)) weekMap.set(w, []);
     weekMap.get(w)!.push(d);
   }
-  const weeks = [...weekMap.entries()].map(([start, ds]) => {
+  const weeks = [...weekMap.values()].map((ds) => {
     const made = ds.reduce((a, x) => a + x.made, 0);
     const target = ds.reduce((a, x) => a + x.target, 0);
     return {
-      start, end: ds[ds.length - 1].date,
+      // The CLIPPED first day, not the Monday grouping key — for a month that
+      // starts mid-week the key lies in the previous month, and "27–2 Aug"
+      // would present July 27 as part of a week whose figures cover Aug 1–2.
+      start: ds[0].date, end: ds[ds.length - 1].date,
       made, target, pct: target ? (100 * made) / target : null,
       lost: ds.reduce((a, x) => a + x.lost, 0),
       daysRun: ds.filter((x) => x.made > 0).length, days: ds.length,
@@ -188,7 +208,14 @@ export async function getMonthlyReport(month: string) {
     // Discipline: of the hours the elapsed days could hold, how many were filed
     // at all — and which days hold nothing. A silent day is a fact the month
     // must show; the daily report cannot, because nobody opens it for that day.
-    hoursLogged: core.hoursLogged, hoursPossible: core.dates.length * 24,
+    // The in-progress day contributes only its ELAPSED hours — the same
+    // exemption zeroDays makes, applied to the denominator: charging today all
+    // 24 at breakfast means a perfectly-filed plant can never read 100%.
+    hoursLogged: core.hoursLogged,
+    hoursPossible: (core.dates.length - (monthToDate ? 1 : 0)) * 24
+      + (monthToDate
+        ? Math.min(24, Math.max(0, Math.floor((Date.now() - reportWindow(today).from.getTime()) / 3_600_000) + 1))
+        : 0),
     // The in-progress day is exempt: at 07:00 its sheet legitimately holds one
     // row, and calling today "unfiled" at breakfast is noise, not discipline.
     zeroDays: core.days.filter((d) => d.hoursLogged === 0 && !(monthToDate && d.date === today)).map((d) => d.date),

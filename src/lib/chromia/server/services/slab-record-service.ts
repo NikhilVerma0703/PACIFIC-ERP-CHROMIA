@@ -1,4 +1,5 @@
-import { ChromiaAuditAction as AuditAction, ChromiaSlabEventType as SlabEventType } from '@prisma/client';
+import { ChromiaAuditAction as AuditAction, ChromiaSlabEventType as SlabEventType, ChromiaSlabStatus } from '@prisma/client';
+import { markSlabsChromia, unmarkSlabsChromia } from '@/lib/chromia/inventory-bridge';
 import { prisma } from '@/lib/chromia/db';
 import { ConflictError, NotFoundError, ValidationError } from '@/lib/chromia/errors';
 import { createLogger } from '@/lib/chromia/logger';
@@ -171,6 +172,23 @@ export async function updateSlabRecord(input: SlabRecordEditInput, userId: strin
     });
   });
 
+  // THE MARK FOLLOWS THE RECORD. A corrected slab number means the CHROMIA
+  // status sits on the wrong finished-goods slab: unmark the old number
+  // (guarded — only if it IS CHROMIA), and mark the new one if this record
+  // still has the slab physically at Chromia. After the transaction, never
+  // able to fail the correction.
+  if (input.slabNo !== record.slabNo) {
+    await unmarkSlabsChromia([record.slabNo], null);
+    const cur = await prisma.chromiaSlab.findUnique({ where: { id: record.id }, select: { status: true } });
+    const AT_CHROMIA = new Set<ChromiaSlabStatus>([
+      ChromiaSlabStatus.IN_PROCESS,
+      ChromiaSlabStatus.IN_STOCK,
+      ChromiaSlabStatus.OUT_FOR_RECALIBRATION,
+      ChromiaSlabStatus.RECEIVED_FROM_RECALIBRATION,
+    ]);
+    if (cur && AT_CHROMIA.has(cur.status)) await markSlabsChromia([input.slabNo], null);
+  }
+
   log.info(
     { slabId: record.id, from: record.slabNo, to: input.slabNo, changed: changes.length },
     'Slab record corrected',
@@ -232,6 +250,10 @@ export async function deleteSlabRecord(input: SlabRecordDeleteInput, userId: str
     // own children and nothing else.
     await tx.chromiaSlab.delete({ where: { id: record.id } });
   });
+
+  // A deleted record was a record that should not exist — the CHROMIA mark it
+  // made goes with it (guarded: only a slab actually CHROMIA moves back).
+  await unmarkSlabsChromia([record.slabNo], null);
 
   log.warn({ slabId: record.id, slabNo: record.slabNo }, 'Slab record deleted');
 

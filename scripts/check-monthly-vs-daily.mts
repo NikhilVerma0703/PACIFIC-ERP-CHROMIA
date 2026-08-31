@@ -1,5 +1,5 @@
 // Read-only invariant check: a monthly day row equals that day's own daily
-// report. Run ad hoc with `npx tsx scripts/check-monthly-vs-daily.ts [YYYY-MM]`.
+// report. Run ad hoc with `npx tsx scripts/check-monthly-vs-daily.mts [YYYY-MM]`.
 import { readFileSync } from "node:fs";
 const env = readFileSync(new URL("../.env", import.meta.url), "utf8");
 for (const k of ["DATABASE_URL", "DATABASE_URL_POOLED"]) {

@@ -6,7 +6,7 @@ import { createLogger } from '@/lib/chromia/logger';
 import { daysBetween, toDateColumn } from '@/lib/chromia/utils/dates';
 import { importStatus, importSummaryLine } from '@/lib/chromia/import/outcome';
 import type { ParsedSlabRow, ParseResult } from '@/lib/chromia/import/pro-register';
-import { markSlabsChromia } from '@/lib/chromia/inventory-bridge';
+import { markSlabsChromia, unmarkSlabsChromia } from '@/lib/chromia/inventory-bridge';
 
 const log = createLogger('import');
 
@@ -428,7 +428,7 @@ export async function deleteImportBatch(
 
   const slabs = await prisma.chromiaSlab.findMany({
     where: { importBatchId },
-    select: { id: true, batchId: true },
+    select: { id: true, batchId: true, slabNo: true },
   });
 
   await prisma.$transaction(async (tx) => {
@@ -461,6 +461,13 @@ export async function deleteImportBatch(
     // No slab points at it now, so the batch row goes cleanly.
     await tx.chromiaImportBatch.delete({ where: { id: batch.id } });
   });
+
+  // The marks the import made go with it — "a file imported by mistake can be
+  // corrected and imported again" has to include the finished-goods sheet, or
+  // a mistaken monthly import leaves hundreds of slabs stranded CHROMIA.
+  // Guarded per slab: only a slab actually CHROMIA moves back; the re-import
+  // then re-marks whatever the corrected file still shows at Chromia.
+  await unmarkSlabsChromia(slabs.map((s) => s.slabNo), null);
 
   log.warn({ importBatchId, deleted: slabs.length }, 'Import batch deleted');
   return { deleted: slabs.length, sourceFile: batch.sourceFile };

@@ -74,7 +74,7 @@ export function gradeBlocksDispatch(grade: unknown): boolean {
   return (CUT_GRADES as readonly string[]).includes(upper);
 }
 
-export type StatusAction = "reserve" | "release" | "pack" | "dispatch" | "return" | "cts" | "uncts" | "chromia";
+export type StatusAction = "reserve" | "release" | "pack" | "dispatch" | "return" | "cts" | "uncts" | "chromia" | "unchromia";
 
 /** Slab lifecycle: which statuses each action may move FROM, and where it lands. */
 export const TRANSITIONS: Record<StatusAction, { from: string[]; to: string }> = {
@@ -112,6 +112,14 @@ export const TRANSITIONS: Record<StatusAction, { from: string[]; to: string }> =
   // The way OUT is the slab-intake form's status override — the same people who
   // reconcile chromia stock with the yard can undo a wrong mark.
   chromia:  { from: ["AVAILABLE", "RETURNED"],                    to: "CHROMIA" },
+  // The bridge's own inverse, for the Chromia module's CORRECTION flows: a
+  // slab-number typo fixed, a record deleted, a mistaken import removed. The
+  // mark follows the record it was made for — without this, correcting the
+  // register stranded the wrong slab in CHROMIA (unreachable by any action)
+  // while the right one stayed quietly sellable. Machine-only like chromia
+  // itself: absent from /api/inventory/status's zod enum, so it is not a hand
+  // action; the hand path for a person stays the slab-intake status override.
+  unchromia:{ from: ["CHROMIA"],                                  to: "AVAILABLE" },
 };
 
 export const DEFAULT_RESERVATION_DAYS = 7;

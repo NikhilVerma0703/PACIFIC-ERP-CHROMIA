@@ -249,7 +249,7 @@ async function storeDefectPhotos(
 export async function saveSlab(fd: FormData): Promise<SaveRes> {
   const g = await slabIntakeGate();
   if (!g.ok) return { ok: false, message: NOT_YOURS };
-  let input: { slabNumber?: unknown; expectExisting?: unknown; details?: SlabDetailsInput };
+  let input: { slabNumber?: unknown; expectExisting?: unknown; expectStatus?: unknown; details?: SlabDetailsInput };
   try { input = JSON.parse(String(fd.get("payload") ?? "")); }
   catch { return { ok: false, message: "Could not read the form — reload the page and try again." }; }
   const parsed = parseSlabNumber(input?.slabNumber);
@@ -330,11 +330,24 @@ export async function saveSlab(fd: FormData): Promise<SaveRes> {
     if (!expectExisting)
       return { ok: false, message: `Slab ${slabNumber} was added by someone else while you were typing — look it up again to see its current details.` };
 
+    // THE STATUS THE FORM SAW must still be the status the row HAS before a
+    // status "change" is honoured. Without this, a form loaded while the slab
+    // was AVAILABLE quietly reverts a CHROMIA mark the bridge wrote minutes
+    // later, or clears a PI hold sales placed after the lookup — the save
+    // reads as a correction when it is a stale copy overwriting fresh truth.
+    const expectStatus = typeof input.expectStatus === "string" ? input.expectStatus : null;
+    if (d.status !== String(cur.status) && expectStatus !== null && expectStatus !== String(cur.status))
+      return { ok: false, message: `Slab ${slabNumber}'s status changed to ${cur.status} while you were typing — look it up again before overriding it.` };
+
     // The status box may take a slab OUT of any state, but CHROMIA is not a
     // hand target; and a bay is only checked when it is the thing being
     // written — a legacy spelling nobody touched must not block a correction.
+    // The unchanged-bay comparison NORMALIZES the stored side too: the draft
+    // arrives normalized, and comparing it to a raw legacy spelling would call
+    // an untouched "bay2" a change (a phantom correction in the audit trail).
+    const curBay = normalizeBay(cleanText(cur.bayNumber, 30));
     const refused = statusChangeRefusal(String(cur.status), d.status)
-      ?? (d.bayNumber !== ((cur.bayNumber as string | null) ?? null) ? bayRefusal(d.bayNumber) : null);
+      ?? (d.bayNumber !== curBay ? bayRefusal(d.bayNumber) : null);
     if (refused) return { ok: false, message: refused };
 
     // WHICH PHOTOS THIS SLAB ALREADY HAS from this form: on an EDIT the pair
@@ -360,8 +373,11 @@ export async function saveSlab(fd: FormData): Promise<SaveRes> {
     const data: Record<string, unknown> = {};
     const events: { field: string; oldValue: string | null; newValue: string | null }[] = [];
     for (const [f] of TEXT_FIELDS) {
-      const nv = d[f]; const ov = (cur[f] as string | null) ?? null;
-      if (nv !== ov) { data[f] = nv; events.push({ field: f, oldValue: ov, newValue: nv }); }
+      const nv = d[f];
+      // The bay diffs against its NORMALIZED stored value — an untouched
+      // legacy "bay2" must not become a phantom "corrected bay" event.
+      const ov = f === "bayNumber" ? curBay : ((cur[f] as string | null) ?? null);
+      if (nv !== ov) { data[f] = nv; events.push({ field: f, oldValue: (cur[f] as string | null) ?? null, newValue: nv }); }
     }
     // Grade compares CANONICALLY, the way QC's own writes land ("C (Reject)"
     // on the row and "C" in the box are the same fact, not a correction).

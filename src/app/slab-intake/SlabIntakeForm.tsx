@@ -72,6 +72,11 @@ function Field({ label, hint, children }: { label: string; hint?: string | null;
 export function SlabIntakeForm({ lists }: { lists: Lists }) {
   const [slabInput, setSlabInput] = useState("");
   const [looked, setLooked] = useState<LookupRes | null>(null);
+  // The number the details BELOW belong to — pinned at lookup time. The search
+  // box stays editable while the form is open (typing the next number before
+  // pressing Look up), and a save must write to the slab that was looked up,
+  // never to whatever the box happens to hold at save time.
+  const [lookedFor, setLookedFor] = useState("");
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [issueBox, setIssueBox] = useState("");
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
@@ -113,6 +118,7 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
       const r = await lookupSlab(numStr);
       setLooked(r);
       if (!r.ok) return;
+      setLookedFor(numStr);
       const src = r.exists ? r.slab : r.prefill;
       setDraft({
         design: src.design ?? "", grade: src.grade ?? "",
@@ -146,6 +152,16 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
         return;
       }
     }
+    // A typo'd dimension must be refused HERE: Number("13x7") is NaN, and JSON
+    // serializes NaN as null — so past this point the server cannot tell a
+    // typo from an emptied box, and would clear the stored figure for it.
+    for (const [k, label] of [["lengthIn", "length"], ["widthIn", "width"]] as const) {
+      const v = draft[k].trim();
+      if (v !== "" && !Number.isFinite(Number(v))) {
+        setNote({ text: `"${v}" is not a number of inches — fix the ${label} before saving.`, ok: false });
+        return;
+      }
+    }
     // An issue typed but not yet pressed into a chip still counts — losing it
     // because the thumb went straight to Save is the kind of quiet data loss
     // this form exists to correct, not commit.
@@ -157,8 +173,11 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
       // it — the only shape that carries both across a server-action call.
       const out = new FormData();
       out.set("payload", JSON.stringify({
-        slabNumber: slabInput,
+        slabNumber: lookedFor,
         expectExisting: looked.exists,
+        // the status the form LOADED — the server refuses a status override
+        // built on a copy that has since gone stale
+        expectStatus: looked.exists ? looked.slab.status : null,
         details: {
           design: draft.design || null, grade: draft.grade || null,
           slabThickness: draft.slabThickness || null, qualityIssue: issues,
@@ -181,7 +200,7 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
       // re-read it rather than trusting the copy that was just typed.
       if (r.ok) {
         setPhotos(NO_PHOTOS); setPhotoKey((k) => k + 1);
-        const again = await lookupSlab(slabInput);
+        const again = await lookupSlab(lookedFor);
         setLooked(again);
       }
     });

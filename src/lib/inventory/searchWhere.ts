@@ -64,9 +64,11 @@ export async function buildInventoryWhere(searchParams: URLSearchParams): Promis
     }
   }
   // Where the row CAME FROM — the QC autolink, the bulk upload, or the intake
-  // form's hand entry. Exact enum value; the dropdown offers the real three in
-  // plant words, so free text cannot reach this.
-  if (q("source")) where.source = q("source");
+  // form's hand entry. `source` is a Prisma ENUM column, so an unknown value
+  // does not match nothing the way a free-text filter would — Prisma refuses
+  // it and the route answers 500. The dropdown only offers these three, but
+  // the HTTP surface takes anything; a value off the list means no filter.
+  if (["QC_AUTOLINK", "BULK_UPLOAD", "MANUAL_ENTRY"].includes(q("source"))) where.source = q("source");
   if (q("rw") === "1") where.rwStatus = "RW Required and ongoing";
   if (q("slab")) {
     const n = Number(q("slab"));

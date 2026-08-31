@@ -83,16 +83,23 @@ export async function markQcSlabCts(pacificQcId: string, by?: string | null): Pr
   // the inventory STATUS never followed — the sheet kept saying AVAILABLE for a
   // slab fabrication had already taken.
   //
-  // ONLY FROM AVAILABLE. The dashboard's own CTS action moves RESERVED and
-  // PACKED too, because there a person is looking at the hold and deciding —
-  // but this is a hook, and a hook that quietly consumes somebody's PI hold or
-  // a packed pallet turns a double-booking into a disappearance. A held,
+  // ONLY FROM STOCK NOBODY HOLDS. The dashboard's own CTS action moves
+  // RESERVED and PACKED too, because there a person is looking at the hold and
+  // deciding — but this is a hook, and a hook that quietly consumes somebody's
+  // PI hold or a packed pallet turns a double-booking into a disappearance.
+  // AVAILABLE moves directly; RETURNED — back from a dispatch, in stock, held
+  // by nobody — is released first (its own event) because the cts transition
+  // moves only from the dispatch set, then marked. Both writes are narrowed to
+  // the exact status just read (onlyFrom), so a reserve landing between the
+  // read and the write is skipped and reported, never swallowed. A held,
   // dispatched or Chromia slab is left alone and the disagreement is put on
-  // the record as a "cts_conflict" SlabEvent — fabrication and sales are
-  // pulling the same slab, and that is a fact for a person, not a hook, to
-  // settle. Already-CTS is the idempotent re-pick and is silent, structurally
-  // (the status is read first, not parsed out of a refusal string). Best-effort
-  // like everything else here: a fab assignment must never fail on inventory.
+  // the record as a "cts_conflict" SlabEvent — ONE standing event per
+  // disagreement, not one per click: the callers re-invoke this on every
+  // interaction with an already-imported slab, and duplicates would bury the
+  // audit feed. Already-CTS is the idempotent re-pick and is silent,
+  // structurally (the status is read first, not parsed out of a refusal
+  // string). Best-effort like everything else here: a fab assignment must
+  // never fail on inventory.
   try {
     const qc = await prisma.polishQc.findUnique({ where: { id: pacificQcId }, select: { slabNumber: true } });
     const n = qc?.slabNumber;
@@ -102,17 +109,30 @@ export async function markQcSlabCts(pacificQcId: string, by?: string | null): Pr
       const status = row ? String(row.status) : null;
       if (!row) {
         // "Fabrication has slab N and finished goods does not" — the gap the
-        // slab-intake form exists to close. Logged, not invented.
+        // slab-intake form exists to close. Logged, not invented: SlabEvent
+        // has an FK to FinishedSlab, so an event for a rowless slab cannot be
+        // stored.
         console.warn(`[fab] slab ${n} is not in finished goods — CTS status not recorded`);
-      } else if (status === "AVAILABLE") {
-        const res = await changeSlabStatus([n], "cts", { by: who, source: "fabrication" });
+      } else if (status === "AVAILABLE" || status === "RETURNED") {
+        if (status === "RETURNED") {
+          const rel = await changeSlabStatus([n], "release", { by: who, source: "fabrication", onlyFrom: ["RETURNED"] });
+          for (const s of rel.skipped) console.warn(`[fab] slab ${s.slab} not released from RETURNED — ${s.reason}`);
+        }
+        const res = await changeSlabStatus([n], "cts", { by: who, source: "fabrication", onlyFrom: ["AVAILABLE"] });
         for (const s of res.skipped) console.warn(`[fab] slab ${s.slab} not marked CTS in inventory — ${s.reason}`);
       } else if (status !== "CTS") {
-        await writeSlabEvent(n, "cts_conflict", {
-          field: "status", oldValue: status, newValue: "CTS (refused)",
-          by: who, source: "fabrication",
+        const prev = await prisma.slabEvent.findFirst({
+          where: { slabNumber: n, kind: "cts_conflict" },
+          orderBy: { at: "desc" },
+          select: { oldValue: true },
         });
-        console.warn(`[fab] slab ${n} is ${status} — held or gone, left alone; conflict recorded`);
+        if (prev?.oldValue !== status) {
+          await writeSlabEvent(n, "cts_conflict", {
+            field: "status", oldValue: status, newValue: "CTS (refused)",
+            by: who, source: "fabrication",
+          });
+        }
+        console.warn(`[fab] slab ${n} is ${status} — held or gone, left alone; conflict on record`);
       }
     }
   } catch (err) {

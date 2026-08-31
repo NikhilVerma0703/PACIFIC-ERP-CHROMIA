@@ -191,11 +191,18 @@ export interface StatusChangeResult {
 export async function changeSlabStatus(
   slabNumbers: number[],
   action: StatusAction,
-  opts: { pi?: string | null; customer?: string | null; expiryDays?: number; by?: string | null; source?: string | null } = {}
+  opts: { pi?: string | null; customer?: string | null; expiryDays?: number; by?: string | null; source?: string | null; onlyFrom?: string[] } = {}
 ): Promise<StatusChangeResult> {
   const res: StatusChangeResult = { updated: 0, missing: [], skipped: [] };
   const t = TRANSITIONS[action];
   if (!t) return res;
+  // A caller with its OWN narrower rule than the transition table (the fab CTS
+  // hook acts only from AVAILABLE, though the dashboard's cts moves RESERVED
+  // and PACKED too) narrows the ALLOWED set — both this validation and the
+  // guarded write below — so a status change landing between its read and this
+  // write is skipped and reported, never silently consumed. Narrow-only: a
+  // status outside t.from stays refused whatever onlyFrom says.
+  const from = opts.onlyFrom ? t.from.filter((s) => opts.onlyFrom!.includes(s)) : t.from;
   const src = opts.source ?? "Inventory";
   const days = Number.isFinite(opts.expiryDays) && (opts.expiryDays as number) > 0 ? (opts.expiryDays as number) : DEFAULT_RESERVATION_DAYS;
 
@@ -205,7 +212,7 @@ export async function changeSlabStatus(
       select: { status: true, reservedForPi: true, grade: true },
     });
     if (!slab) { res.missing.push(sn); continue; }
-    if (!t.from.includes(slab.status)) { res.skipped.push({ slab: sn, reason: `${slab.status} → ${t.to} not allowed` }); continue; }
+    if (!from.includes(slab.status)) { res.skipped.push({ slab: sn, reason: `${slab.status} → ${t.to} not allowed` }); continue; }
     // A slab QC graded cut-to-size is not shipping as a full slab, whatever its
     // status says. Checked here rather than in TRANSITIONS because that table is
     // keyed by status alone; this is the second, independent signal.
@@ -254,7 +261,7 @@ export async function changeSlabStatus(
     // was not doing at all while this was Record<string, unknown>.
     const guard: Prisma.FinishedSlabWhereInput = {
       slabNumber: sn,
-      status: { in: t.from as SlabStatus[] },
+      status: { in: from as SlabStatus[] },
     };
     if (action === "dispatch") {
       // BOTH cut states, or the race this guard exists to lose stays open for

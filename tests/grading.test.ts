@@ -61,6 +61,15 @@ test("CTS cannot be reached from a shipped or returned slab", () => {
   assert.deepEqual(TRANSITIONS.cts.from, TRANSITIONS.dispatch.from, "cts mirrors dispatch's entry points");
 });
 
+test("CHROMIA's machine inverse does exactly one thing", () => {
+  // unchromia exists for the Chromia module's own corrections (a slabNo typo,
+  // a deleted record, a removed import) — the mark follows the record. It is
+  // machine-only: absent from /api/inventory/status's zod enum, like chromia.
+  assert.deepEqual(TRANSITIONS.unchromia.from, ["CHROMIA"], "unchromia applies to CHROMIA and nothing else");
+  assert.equal(TRANSITIONS.unchromia.to, "AVAILABLE");
+  assert.ok(!TRANSITIONS.dispatch.from.includes("CHROMIA"), "a slab at Chromia does not ship");
+});
+
 test("every action lands on a real SlabStatus", () => {
   // The enum in prisma/schema.prisma. A typo here writes a value Postgres rejects at
   // runtime with 22P02, which no typecheck would catch -- TRANSITIONS values are strings.

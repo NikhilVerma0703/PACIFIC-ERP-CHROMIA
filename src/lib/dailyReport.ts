@@ -154,6 +154,11 @@ export function assembleDay(hours: HourRow[]) {
   let reclassified = 0;
   const cause = { cleaning: 0, power: 0, process: 0, breakdown: 0 };
   for (const x of hours) {
+    // Only rows that reach a shift. day.lost is summed via the three shifts, so
+    // a row with no hour label contributes nothing there — counting its delay
+    // minutes HERE made the cause table sum past its own "total time lost" row
+    // (June 2026: 8,996 cause minutes against 8,796 lost).
+    if (x.shift == null) continue;
     const isPower = x.reasons.some((r) => /POWER/i.test(r));
     cause.cleaning += x.delay.cleaning;
     cause.process += x.delay.process;

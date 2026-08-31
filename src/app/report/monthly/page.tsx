@@ -4,5 +4,5 @@ import { redirect } from "next/navigation";
 // this route survives only so old links and bookmarks keep working.
 export default async function MonthlyReportRedirect({ searchParams }: { searchParams: Promise<{ m?: string }> }) {
   const { m } = await searchParams;
-  redirect(m && /^\d{4}-\d{2}$/.test(m) ? `/report/ceo?m=${m}` : "/report/ceo?view=monthly");
+  redirect(m && /^\d{4}-(0[1-9]|1[0-2])$/.test(m) ? `/report/ceo?m=${m}` : "/report/ceo?view=monthly");
 }
