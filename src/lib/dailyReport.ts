@@ -67,7 +67,7 @@ export type HourRow = {
 // fetching whole rows shipped all of it from Neon for every report. Each select
 // names exactly the fields the mapping below touches, so the figures cannot
 // change — a field that is not read cannot alter a number.
-const MIS_SELECT = {
+export const MIS_SELECT = {
   hour: true, productionInchargeName: true, submittedBy: true, batch: true, design: true,
   startingSlabNumber: true, endingSlabNumber: true, slabsPerHourStd: true,
   processDelayDurationMinutes: true, cleaningDelayDurationMinutes: true,
@@ -75,35 +75,26 @@ const MIS_SELECT = {
   reasonForDeviation: true, details: true, areaOfProblem: true, anyBreakdownYesNo: true,
   sparesUsed: true, actionTaken: true, rcaNo: true, electricalInchargeName: true, mechanicalInchargeName: true,
 } satisfies Prisma.MisSelect;
-const ENTRY_SELECT = {
+export type MisReportRow = Prisma.MisGetPayload<{ select: typeof MIS_SELECT }>;
+export const ENTRY_SELECT = {
   design: true, polishSide: true, batchNumber: true, slabNumber: true, importedAt: true,
   calliberator: true, slabThickness: true,
 } satisfies Prisma.PolishEntrySelect;
-const QC_SELECT = {
+export const QC_SELECT = {
   qualityGrade: true, qualityIssue: true, slabNumber: true, repolishStatus: true, rwStatus: true,
   goingToDispatch: true, importedAt: true, inspector: true,
 } satisfies Prisma.PolishQcSelect;
-type EntryRow = Prisma.PolishEntryGetPayload<{ select: typeof ENTRY_SELECT }>;
-type QcRow = Prisma.PolishQcGetPayload<{ select: typeof QC_SELECT }>;
+export type EntryRow = Prisma.PolishEntryGetPayload<{ select: typeof ENTRY_SELECT }>;
+export type QcRow = Prisma.PolishQcGetPayload<{ select: typeof QC_SELECT }>;
 
-export async function getDailyReport(date: string) {
-  const { from, to } = reportWindow(date);
+/* ---------------------------------------------------------- day assembly */
+// The hour/shift/day/cause math, extracted PURE so the monthly report can run
+// the identical computation per day off one month-wide fetch. Any change here
+// changes both reports together — which is the point: a monthly day row that
+// disagreed with that day's own report would be trusted by nobody.
 
-  // The three tables are keyed on the same window and read nothing from one
-  // another, so they are fetched together rather than one after the other —
-  // one round of round trips to Neon instead of three.
-  const win = { importedAt: { gte: from, lt: to } };
-  const [mis, entries, qc] = await Promise.all([
-    prisma.mis.findMany({
-      where: { dateAndTime: { gte: from, lt: to } },
-      orderBy: { dateAndTime: "asc" },
-      select: MIS_SELECT,
-    }),
-    prisma.polishEntry.findMany({ where: win, select: ENTRY_SELECT }),
-    prisma.polishQc.findMany({ where: win, select: QC_SELECT }),
-  ]);
-
-  const hours: HourRow[] = mis.map((r) => {
+export function assembleHours(mis: MisReportRow[]): HourRow[] {
+  return mis.map((r) => {
     const h = hourStart(r.hour);
     return {
       hour: r.hour, h, shift: h == null ? null : shiftOf(h),
@@ -125,7 +116,9 @@ export async function getDailyReport(date: string) {
       electrical: r.electricalInchargeName ?? null, mechanical: r.mechanicalInchargeName ?? null,
     };
   });
+}
 
+export function assembleDay(hours: HourRow[]) {
   // A shift's target counts only the hours it declared output for. Charging it
   // for an hour it never claimed would invent a miss.
   const shifts = SHIFTS.map((s) => {
@@ -168,6 +161,29 @@ export async function getDailyReport(date: string) {
     cause.breakdown += isPower ? 0 : x.delay.breakdown;
     if (isPower) reclassified += x.delay.breakdown;
   }
+
+  return { shifts, day, cause, reclassified };
+}
+
+export async function getDailyReport(date: string) {
+  const { from, to } = reportWindow(date);
+
+  // The three tables are keyed on the same window and read nothing from one
+  // another, so they are fetched together rather than one after the other —
+  // one round of round trips to Neon instead of three.
+  const win = { importedAt: { gte: from, lt: to } };
+  const [mis, entries, qc] = await Promise.all([
+    prisma.mis.findMany({
+      where: { dateAndTime: { gte: from, lt: to } },
+      orderBy: { dateAndTime: "asc" },
+      select: MIS_SELECT,
+    }),
+    prisma.polishEntry.findMany({ where: win, select: ENTRY_SELECT }),
+    prisma.polishQc.findMany({ where: win, select: QC_SELECT }),
+  ]);
+
+  const hours = assembleHours(mis);
+  const { shifts, day, cause, reclassified } = assembleDay(hours);
 
   return {
     date, window: { from, to }, hours, shifts, day, cause, reclassified,
@@ -251,7 +267,7 @@ function getMaintenance(hours: HourRow[]) {
 // back B and one C. The page names each column by its question for that reason.
 // Both tables are read by getDailyReport (alongside the Mis rows, in one go)
 // and handed in here; this function only derives.
-function getQuality(entries: EntryRow[], qc: QcRow[]) {
+export function getQuality(entries: EntryRow[], qc: QcRow[]) {
   const tally = <T>(rows: T[], key: (r: T) => string): [string, number][] => {
     const m = new Map<string, number>();
     for (const r of rows) { const k = key(r); m.set(k, (m.get(k) ?? 0) + 1); }

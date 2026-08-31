@@ -59,6 +59,7 @@ const MAINTENANCE_TABS = [
   { href: "/maintenance",        label: "Maintenance Log", icon: I.spanner, exact: true },
   { href: "/maintenance/uptime", label: "Uptime by Trade", icon: I.live     },
   { href: "/report/ceo",         label: "CEO Report",      icon: I.ceo      },
+  { href: "/report/monthly",     label: "Monthly Report",  icon: I.ceo      },
   { href: "/report",             label: "Production Report", icon: I.report, exact: true },
   { href: "/consumables",        label: "Consumables",     icon: I.box      },
 ];
@@ -368,6 +369,7 @@ export function Nav({
   ];
   const reports = [
     { href: "/report/ceo", icon: I.ceo, label: "CEO Report" },
+    { href: "/report/monthly", icon: I.ceo, label: "Monthly Report" },
     // ONE row for the three lookup pages. /batch, /slab and /report each
     // answered "tell me about X" with their own nav row and no link between
     // them; they now share a tab strip (LookupTabs) so one row reaches all
