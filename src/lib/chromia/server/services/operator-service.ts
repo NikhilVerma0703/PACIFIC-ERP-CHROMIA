@@ -7,6 +7,7 @@ import { combineDateAndTime, registerDay } from '@/lib/chromia/operator-register
 import { DUPLICATE_SLAB_NO_MESSAGE } from '@/lib/chromia/slab-record';
 import type { OperatorEntryInput } from '@/lib/chromia/validation/operator';
 import { resolveBaseMaterialId, resolveDesignId } from '@/lib/chromia/server/services/reference-service';
+import { markSlabsChromia } from '@/lib/chromia/inventory-bridge';
 
 const log = createLogger('operator');
 
@@ -141,6 +142,11 @@ export async function recordOperatorEntry(input: OperatorEntryInput, userId: str
 
     return created;
   });
+
+  // Finished goods hears about it only AFTER the register row is safe. The
+  // bridge never throws — a failure here costs the inventory annotation, not
+  // the operator's entry.
+  await markSlabsChromia([slab.slabNo], null);
 
   log.info({ slabId: slab.id, slabNo: slab.slabNo }, 'Operator entry recorded');
 

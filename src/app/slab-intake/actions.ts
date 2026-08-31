@@ -13,8 +13,10 @@ import { slabIntakeGate } from "@/lib/inventory/intakeGate";
 import { writeSlabEvent } from "@/lib/inventory/finishedSlab";
 import { canonicalGrade } from "@/lib/inventory/grading";
 import { normalizeBatch } from "@/lib/normalizeBatch";
+import { photosForRecord, requiredPhotoProblem, saveRequiredPhoto } from "@/lib/entryPhoto";
 import {
-  parseSlabNumber, cleanText, cleanIssues, validateSlabDetails, savedSentence,
+  parseSlabNumber, cleanText, cleanIssues, validateSlabDetails, savedSentence, DEFECT_PHOTOS,
+  statusChangeRefusal, normalizeBay, bayRefusal,
   type SlabDetailsInput,
 } from "@/lib/inventory/intakeRules";
 
@@ -50,9 +52,15 @@ export interface SlabCurrent extends SlabDetailsInput {
   lastQcAt: string | null;
 }
 
+export interface PhotoRef { id: string; filename: string }
+/** The slab's defect photos as this form stored them — far/near told apart by
+ *  the filename prefix saveRequiredPhoto writes. What the form renders as
+ *  thumbnails, and what decides which slots an EDIT still requires. */
+export interface SlabPhotos { far: PhotoRef[]; near: PhotoRef[] }
+
 export type LookupRes =
   | { ok: false; message: string }
-  | { ok: true; exists: true; message: string; slab: SlabCurrent; qc: QcReference | null }
+  | { ok: true; exists: true; message: string; slab: SlabCurrent; qc: QcReference | null; photos: SlabPhotos }
   | { ok: true; exists: false; message: string; prefill: SlabDetailsInput; from: Record<string, string>; qc: QcReference | null };
 
 export interface SaveRes { ok: boolean; message: string }
@@ -98,6 +106,17 @@ export async function lookupSlab(input: string): Promise<LookupRes> {
   ]);
 
   if (row) {
+    // Which defect photos this form already stored, sorted into their slots by
+    // filename prefix. photosForRecord is best-effort ([] on a failed read) —
+    // which errs towards REQUIRING photos, the safe direction for a mandatory
+    // rule.
+    const meta = await photosForRecord("FinishedSlab", row.id);
+    const photos: SlabPhotos = { far: [], near: [] };
+    for (const p of meta) {
+      const name = String(p.filename ?? "");
+      if (name.startsWith("far-")) photos.far.push({ id: p.id, filename: name });
+      else if (name.startsWith("near-")) photos.near.push({ id: p.id, filename: name });
+    }
     return {
       ok: true, exists: true,
       message: `Slab ${slabNumber} is in finished goods — its current details are below. Change what is wrong and save.`,
@@ -124,6 +143,7 @@ export async function lookupSlab(input: string): Promise<LookupRes> {
         lastQcAt: row.lastQcAt?.toISOString() ?? null,
       },
       qc: qc ? qcRefOf(qc) : null,
+      photos,
     };
   }
 
@@ -188,22 +208,54 @@ const TEXT_FIELDS = [
   ["notes", 900],
 ] as const;
 
+/** Store the provided defect photos against the FinishedSlab row, one SlabEvent
+ *  (kind "photo") each so the trail says which slot arrived and when. Validation
+ *  already ran before the row was written; a failure here is the INSERT itself,
+ *  reported by name — never a silent skip. Not exported: a "use server" file's
+ *  exports are all endpoints, and this must only run behind saveSlab's gate. */
+async function storeDefectPhotos(
+  fd: FormData, recordId: string, slabNumber: number, by: string | null,
+  slots: readonly (typeof DEFECT_PHOTOS)[number][],
+): Promise<{ saved: string[]; warning: string }> {
+  const saved: string[] = [];
+  const failures: string[] = [];
+  for (const p of slots) {
+    const err = await saveRequiredPhoto(fd, p.field, {
+      model: "FinishedSlab", recordId, by, prefix: p.prefix, label: p.label,
+    });
+    if (err) { failures.push(err); continue; }
+    const f = fd.get(p.field) as File;
+    await writeSlabEvent(slabNumber, "photo", {
+      field: p.short, newValue: (p.prefix + (f.name || "photo.jpg")).slice(0, 200), by, source: "Slab intake form",
+    });
+    saved.push(p.short);
+  }
+  return { saved, warning: failures.length ? `${failures.join(" ")} Look the slab up and attach it again.` : "" };
+}
+
 /**
  * Save: create the missing row (source MANUAL_ENTRY) or update ONLY the fields
  * that actually changed on the existing one — one SlabEvent per changed field
  * (kind "manual_correction", source "Slab intake form", changedBy the session
  * name), so the audit trail reads like what happened.
+ *
+ * Takes a FormData rather than a plain object because the two defect photos
+ * ride in it: files and fields cross a server-action call together only inside
+ * one FormData, so the details travel as a JSON "payload" field beside them.
+ * THE PHOTO RULE: both photos are mandatory on CREATE; on an EDIT each slot is
+ * required only while the slab does not already have it from this form, and a
+ * photo in an already-filled slot is added alongside, never demanded.
  */
-export async function saveSlab(input: {
-  slabNumber: string;
-  expectExisting: boolean;
-  details: SlabDetailsInput;
-}): Promise<SaveRes> {
+export async function saveSlab(fd: FormData): Promise<SaveRes> {
   const g = await slabIntakeGate();
   if (!g.ok) return { ok: false, message: NOT_YOURS };
+  let input: { slabNumber?: unknown; expectExisting?: unknown; details?: SlabDetailsInput };
+  try { input = JSON.parse(String(fd.get("payload") ?? "")); }
+  catch { return { ok: false, message: "Could not read the form — reload the page and try again." }; }
   const parsed = parseSlabNumber(input?.slabNumber);
   if (!parsed.ok) return { ok: false, message: parsed.message };
   const slabNumber = parsed.slab;
+  const expectExisting = Boolean(input?.expectExisting);
 
   const raw = input?.details ?? ({} as SlabDetailsInput);
   const d: SlabDetailsInput = {
@@ -217,7 +269,7 @@ export async function saveSlab(input: {
     batchNumber: cleanText(raw.batchNumber, 60),
     lengthIn: numOrNull(raw.lengthIn),
     widthIn: numOrNull(raw.widthIn),
-    bayNumber: cleanText(raw.bayNumber, 30),
+    bayNumber: normalizeBay(cleanText(raw.bayNumber, 30)),
     frameNumber: cleanText(raw.frameNumber, 60),
     status: String(raw.status ?? "AVAILABLE").trim().toUpperCase(),
     notes: cleanText(raw.notes, 900),
@@ -228,13 +280,30 @@ export async function saveSlab(input: {
   const by: string | null = (g.user as any)?.name ?? (g.user as any)?.email ?? null;
   const SOURCE = "Slab intake form";
 
+  // Which slots actually arrived — an untouched file input posts nothing.
+  const provided = DEFECT_PHOTOS.filter((p) => {
+    const f = fd.get(p.field);
+    return f instanceof File && f.size > 0;
+  });
+
   try {
     const cur = await db.finishedSlab.findUnique({ where: { slabNumber } });
 
     if (!cur) {
-      if (input.expectExisting)
+      if (expectExisting)
         return { ok: false, message: `Slab ${slabNumber} is no longer in finished goods — look it up again before saving.` };
-      await db.finishedSlab.create({
+      // A slab entering finished goods by hand gets a hand-checkable status and
+      // a real bay — CHROMIA in particular is the Chromia register's to write.
+      const refused = statusChangeRefusal(null, d.status) ?? bayRefusal(d.bayNumber);
+      if (refused) return { ok: false, message: refused };
+      // BOTH PHOTOS, CHECKED BEFORE THE ROW EXISTS: refusing after the create
+      // would leave a slab in finished goods that the mandatory rule says
+      // cannot be there without its photos.
+      for (const p of DEFECT_PHOTOS) {
+        const problem = requiredPhotoProblem(fd, p.field, p.label);
+        if (problem) return { ok: false, message: problem };
+      }
+      const created = await db.finishedSlab.create({
         data: {
           slabNumber,
           source: "MANUAL_ENTRY",
@@ -250,12 +319,42 @@ export async function saveSlab(input: {
         },
       });
       await writeSlabEvent(slabNumber, "created", { by, source: SOURCE, newValue: "manual entry" });
+      // Validated above, so a failure here is storage itself; the warning sends
+      // the person straight back (the re-lookup then shows the slot as still
+      // required, so the rule heals rather than silently lapsing).
+      const ph = await storeDefectPhotos(fd, created.id, slabNumber, by, DEFECT_PHOTOS);
       revalidatePath("/inventory");
-      return { ok: true, message: savedSentence(slabNumber, true, []) };
+      return { ok: true, message: savedSentence(slabNumber, true, []) + (ph.warning ? ` ${ph.warning}` : "") };
     }
 
-    if (!input.expectExisting)
+    if (!expectExisting)
       return { ok: false, message: `Slab ${slabNumber} was added by someone else while you were typing — look it up again to see its current details.` };
+
+    // The status box may take a slab OUT of any state, but CHROMIA is not a
+    // hand target; and a bay is only checked when it is the thing being
+    // written — a legacy spelling nobody touched must not block a correction.
+    const refused = statusChangeRefusal(String(cur.status), d.status)
+      ?? (d.bayNumber !== ((cur.bayNumber as string | null) ?? null) ? bayRefusal(d.bayNumber) : null);
+    if (refused) return { ok: false, message: refused };
+
+    // WHICH PHOTOS THIS SLAB ALREADY HAS from this form: on an EDIT the pair
+    // must exist by the time the save lands, whether stored today or last
+    // month — so only a missing slot is demanded, and anything that WAS
+    // attached is validated (a bad file is refused by name, never skipped).
+    // The MANDATE is the manual-entry rule: a slab this form put into finished
+    // goods carries its two defect photos. A slab that arrived from QC or a
+    // bulk upload was never photographed by this form, and correcting its bay
+    // must not demand a photo shoot — photos on those are welcome, not owed.
+    const mandated = String(cur.source ?? "") === "MANUAL_ENTRY";
+    const have = await photosForRecord("FinishedSlab", cur.id);
+    for (const p of DEFECT_PHOTOS) {
+      const has = have.some((x) => String(x.filename ?? "").startsWith(p.prefix));
+      const wasProvided = provided.some((x) => x.field === p.field);
+      if ((mandated && !has) || wasProvided) {
+        const problem = requiredPhotoProblem(fd, p.field, p.label);
+        if (problem) return { ok: false, message: problem };
+      }
+    }
 
     // Changed fields only, one event each — the admin slab-edit route's shape.
     const data: Record<string, unknown> = {};
@@ -294,13 +393,30 @@ export async function saveSlab(input: {
     }
     if ("batchNumber" in data) data.batchKey = d.batchNumber ? normalizeBatch(d.batchNumber) : null;
 
-    if (!events.length) return { ok: true, message: savedSentence(slabNumber, false, []) };
+    // A photo alone IS a change — adding the missing near photo must not be
+    // answered with "nothing changed".
+    if (!events.length && provided.length === 0) return { ok: true, message: savedSentence(slabNumber, false, []) };
 
-    await db.finishedSlab.update({ where: { slabNumber }, data });
-    for (const e of events)
-      await writeSlabEvent(slabNumber, "manual_correction", { field: e.field, oldValue: e.oldValue, newValue: e.newValue, by, source: SOURCE });
+    if (events.length) {
+      await db.finishedSlab.update({ where: { slabNumber }, data });
+      for (const e of events)
+        await writeSlabEvent(slabNumber, "manual_correction", { field: e.field, oldValue: e.oldValue, newValue: e.newValue, by, source: SOURCE });
+    }
+    const ph = await storeDefectPhotos(fd, cur.id, slabNumber, by, provided);
     revalidatePath("/inventory");
-    return { ok: true, message: savedSentence(slabNumber, false, events.map((e) => e.field)) };
+    // A photo-ONLY save where nothing stored is a failure, plainly: no field
+    // changed, no photo landed, so nothing on the server moved — a green "ok"
+    // here would send the person away believing the photo is on file.
+    if (!events.length && provided.length > 0 && ph.saved.length === 0)
+      return { ok: false, message: ph.warning || `Could not store the photo for slab ${slabNumber} — nothing was saved.` };
+    const parts: string[] = [];
+    if (events.length) parts.push(savedSentence(slabNumber, false, events.map((e) => e.field)));
+    if (ph.saved.length) parts.push(`${events.length ? "Attached" : `Slab ${slabNumber}: attached`} the ${ph.saved.join(" and the ")}.`);
+    // ok when the FIELD write landed even if a photo failed to store: the
+    // re-lookup the form runs on ok shows the slot as still required — same
+    // self-healing shape as the create path.
+    if (ph.warning) parts.push(ph.warning);
+    return { ok: true, message: parts.join(" ") };
   } catch (e) {
     // The reason goes to the server log; the person gets a sentence. A Prisma
     // validation dump means nothing to a line manager and can leak column names.

@@ -10,13 +10,15 @@ import { PolishingReport } from "./PolishingReport";
 interface Kpi {
   total: number; gradeA: number; gradeA2: number; gradeB: number; gradeC: number;
   cts: number; printing: number; available: number; reserved: number; packed: number;
-  dispatched: number; returned: number; ctsStatus: number; pendingPolish: number; pendingRw: number;
+  dispatched: number; returned: number; ctsStatus: number; chromia: number;
+  pendingPolish: number; pendingRw: number;
   thk12cm: number; thk2cm: number; thk3cm: number;
 }
 interface Slab {
   id: string; slabNumber: number; design: string | null; grade: string | null;
   slabThickness: string | null; polishType: string | null; batchNumber: string | null;
-  bayNumber: string | null; frameNumber: string | null; status: string; sqft: number; sqm: number;
+  bayNumber: string | null; frameNumber: string | null; status: string; source: string | null;
+  sqft: number; sqm: number;
   ageDays: number | null; qualityIssue: string[] | null; barcode: string | null;
 }
 interface Alias { id: string; variant: string; canonical: string; createdBy: string | null }
@@ -28,7 +30,27 @@ interface SlabEvent {
 }
 
 // SlabStatus is a Prisma enum — a fixed set, so it stays hardcoded.
-const STATUSES = ["", "AVAILABLE", "RESERVED", "PACKED", "DISPATCHED", "RETURNED", "CTS"];
+// CHROMIA (scripts/0063) is written only by the Chromia intake bridge — it is
+// filterable and visible here, but deliberately absent from ACTIONS below.
+const STATUSES = ["", "AVAILABLE", "RESERVED", "PACKED", "DISPATCHED", "RETURNED", "CTS", "CHROMIA"];
+
+// Where a row came from: the SlabSource enum, in plant words.
+const SOURCES: [string, string][] = [
+  ["QC_AUTOLINK", "From QC"],
+  ["BULK_UPLOAD", "Bulk upload"],
+  ["MANUAL_ENTRY", "Entered by hand"],
+];
+
+// Soft row tints by status, so held / gone / cut / printing stock reads at a
+// glance without opening a single row. Selection's brand tint still wins.
+const STATUS_TINT: Record<string, string> = {
+  RESERVED:   "bg-amber-50/70 hover:bg-amber-50",
+  PACKED:     "bg-orange-50/70 hover:bg-orange-50",
+  DISPATCHED: "bg-gray-100/60 hover:bg-gray-100",
+  RETURNED:   "bg-emerald-50/60 hover:bg-emerald-50",
+  CTS:        "bg-sky-50/70 hover:bg-sky-50",
+  CHROMIA:    "bg-violet-50/70 hover:bg-violet-50",
+};
 
 // Grade, thickness and bay are free-text columns and are NOT hardcoded any more: the old
 // lists had drifted from the data, and because buildInventoryWhere matches thickness
@@ -57,7 +79,7 @@ const ACTIONS = [
   { value: "uncts", label: "Undo CTS (back to Available)" },
   { value: "release", label: "Release to Available" },
 ];
-const EMPTY = { design: "", batch: "", thickness: "", grade: "", slab: "", bay: "", status: "", rw: "", pi: "", customer: "" };
+const EMPTY = { design: "", batch: "", thickness: "", grade: "", slab: "", bay: "", status: "", source: "", rw: "", pi: "", customer: "" };
 
 // displaySlab (NB-label rule for legacy 9,000,000+ slabs) is shared from
 // lib/slabLabel so this table and the register popup cannot disagree.
@@ -461,13 +483,14 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
         <div className="space-y-4">
           <div>
             <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400">Stock</p>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7">
               {card("Total Slabs", kpi.total, "text-gray-900", {})}
               {card("Available", kpi.available, "text-emerald-600", { status: "AVAILABLE" })}
               {card("Reserved", kpi.reserved, "text-amber-600", { status: "RESERVED" })}
               {card("Packed", kpi.packed, "text-amber-600", { status: "PACKED" })}
               {card("Returned", kpi.returned, "text-sky-600", { status: "RETURNED" })}
               {card("Cut to size", kpi.ctsStatus, "text-amber-600", { status: "CTS" })}
+              {card("At Chromia", kpi.chromia ?? 0, "text-violet-600", { status: "CHROMIA" })}
             </div>
           </div>
           <div>
@@ -654,6 +677,10 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
                 <option value={NONE}>— not set —</option>
               </select>
               <select className={inputCls} value={f.status} onChange={(e) => { const n = { ...f, status: e.target.value }; setF(n); run(n); }}>{STATUSES.map((s) => <option key={s} value={s}>{s || "Any status"}</option>)}</select>
+              <select className={inputCls} value={f.source} onChange={(e) => { const n = { ...f, source: e.target.value }; setF(n); run(n); }}>
+                <option value="">Any source</option>
+                {SOURCES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+              </select>
             </div>
             {f.rw === "1" && (
               <p className="mt-2 text-xs text-red-600">Showing: Pending R/W slabs <button type="button" className="ml-1 underline" onClick={() => { const n = { ...f, rw: "" }; setF(n); run(n); }}>clear</button></p>
@@ -808,7 +835,13 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
             </table>
           </div>
           {!loading && rows.length > 0 && (
-            <p className="text-xs text-gray-400">{rows.length.toLocaleString("en-IN")} slab(s){rows.length === 1000 ? " (showing first 1000 — narrow the filters)" : ""}.</p>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-400">
+              <span>{rows.length.toLocaleString("en-IN")} slab(s){rows.length === 1000 ? " (showing first 1000 — narrow the filters)" : ""}.</span>
+              {/* what the row tints mean — AVAILABLE stays untinted on purpose */}
+              {([["bg-amber-100", "Reserved"], ["bg-orange-100", "Packed"], ["bg-gray-200", "Dispatched"], ["bg-emerald-100", "Returned"], ["bg-sky-100", "Cut to size"], ["bg-violet-100", "At Chromia"]] as [string, string][]).map(([dot, label]) => (
+                <span key={label} className="inline-flex items-center gap-1.5"><span className={`inline-block h-2.5 w-2.5 rounded-full ${dot}`} />{label}</span>
+              ))}
+            </div>
           )}
         </>
       )}
@@ -943,7 +976,7 @@ const SlabRows = memo(function SlabRows({ rows, sel, onToggle, onOpen }: {
   return (
     <>
       {rows.map((r) => (
-        <tr key={r.id} className={`border-t border-gray-50 ${sel.has(r.slabNumber) ? "bg-brand/5 hover:bg-brand/10" : "hover:bg-gray-50/50"}`}>
+        <tr key={r.id} className={`border-t border-gray-50 ${sel.has(r.slabNumber) ? "bg-brand/5 hover:bg-brand/10" : STATUS_TINT[r.status] ?? "hover:bg-gray-50/50"}`}>
           <td className="px-3 py-2"><input type="checkbox" checked={sel.has(r.slabNumber)} onChange={() => onToggle(r)} /></td>
           <td className="px-3 py-2 font-medium text-gray-900">
             <button className="hover:text-brand hover:underline" title="View slab details" onClick={() => onOpen(r.slabNumber)}>{displaySlab(r.slabNumber, r.barcode)}</button>

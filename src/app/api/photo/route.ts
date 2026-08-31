@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { currentUser, rankOf, ROLE_RANK } from "@/lib/rbac";
 import { canSeeModel } from "@/lib/branch";
 import { operatorTableModels } from "@/lib/stationAccess";
+import { canUseSlabIntake } from "@/lib/inventory/intakeAccess";
 
 const db = prisma as any;
 
@@ -17,24 +18,36 @@ export async function GET(request: Request) {
     const rows: any[] = await db.$queryRaw`SELECT model, filename, mime, data FROM entry_photo WHERE id = ${id}`;
     if (!rows.length) return Response.json({ error: "Not found" }, { status: 404 });
     const r = rows[0];
-    if (!(await canSeeModel(r.model))) return Response.json({ error: "Not authorized" }, { status: 403 });
-    // "Can SEE the record's table" is decided in two places for the tables
-    // themselves, and this route used to apply only the first. canSeeModel
-    // answers by branch and role; /tables/[model] ALSO narrows an operator to
-    // their own station's models (operatorTableModels) and middleware never
-    // lets the Fabrication or International Sales departments onto a production
-    // page at all. Without the same two rules here, any operator could pull any
-    // station's photos — downtime evidence, QC photos — by id, and a fab or
-    // sales login could pull all of them. Photo links render only on the
-    // /tables record page and on /mis and /maintenance (DowntimeRespond), none
-    // of which these logins can open, so no working flow changes; admins span
-    // every department, as everywhere.
     const role = String((me as { role?: string | null }).role ?? "");
     const branch = String((me as { branch?: string | null }).branch ?? "");
-    if (rankOf(role) < ROLE_RANK.ADMIN) {
-      if (branch === "FABRICATION" || branch === "INTERNATIONAL_SALES") return Response.json({ error: "Not authorized" }, { status: 403 });
-      if (role === "OPERATOR" && !operatorTableModels((me as { station?: string | null }).station).has(r.model)) {
-        return Response.json({ error: "Not authorized" }, { status: 403 });
+    // THE SLAB-INTAKE CARVE-OUT, the same shape as middleware's: the named
+    // intake people view the far/near defect photos on /slab-intake itself, and
+    // one of the three is branch-capped to FABRICATION — which the department
+    // refusal below would turn away from the very photos their own form
+    // requires. Scoped to model "FinishedSlab" (the only model that form
+    // writes) and decided by the SAME pure rule the page gate and middleware
+    // run, on the same env var, so the door and the room cannot drift apart.
+    const intakePhotoViewer =
+      r.model === "FinishedSlab" &&
+      canUseSlabIntake(role, String((me as { email?: string | null }).email ?? ""), process.env.SLAB_INTAKE_EMAILS);
+    if (!intakePhotoViewer) {
+      if (!(await canSeeModel(r.model))) return Response.json({ error: "Not authorized" }, { status: 403 });
+      // "Can SEE the record's table" is decided in two places for the tables
+      // themselves, and this route used to apply only the first. canSeeModel
+      // answers by branch and role; /tables/[model] ALSO narrows an operator to
+      // their own station's models (operatorTableModels) and middleware never
+      // lets the Fabrication or International Sales departments onto a production
+      // page at all. Without the same two rules here, any operator could pull any
+      // station's photos — downtime evidence, QC photos — by id, and a fab or
+      // sales login could pull all of them. Photo links render only on the
+      // /tables record page and on /mis and /maintenance (DowntimeRespond), none
+      // of which these logins can open, so no working flow changes; admins span
+      // every department, as everywhere.
+      if (rankOf(role) < ROLE_RANK.ADMIN) {
+        if (branch === "FABRICATION" || branch === "INTERNATIONAL_SALES") return Response.json({ error: "Not authorized" }, { status: 403 });
+        if (role === "OPERATOR" && !operatorTableModels((me as { station?: string | null }).station).has(r.model)) {
+          return Response.json({ error: "Not authorized" }, { status: 403 });
+        }
       }
     }
     return new Response(new Uint8Array(r.data), {

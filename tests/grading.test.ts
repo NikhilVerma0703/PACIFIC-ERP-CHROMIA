@@ -64,7 +64,8 @@ test("CTS cannot be reached from a shipped or returned slab", () => {
 test("every action lands on a real SlabStatus", () => {
   // The enum in prisma/schema.prisma. A typo here writes a value Postgres rejects at
   // runtime with 22P02, which no typecheck would catch -- TRANSITIONS values are strings.
-  const STATUSES = ["AVAILABLE", "RESERVED", "PACKED", "DISPATCHED", "RETURNED", "CTS"];
+  // CHROMIA: scripts/0063 — written by the Chromia intake hook, never by hand.
+  const STATUSES = ["AVAILABLE", "RESERVED", "PACKED", "DISPATCHED", "RETURNED", "CTS", "CHROMIA"];
   for (const [action, t] of Object.entries(TRANSITIONS)) {
     assert.ok(STATUSES.includes(t.to), `${action} lands on a real status (${t.to})`);
     for (const f of t.from) assert.ok(STATUSES.includes(f), `${action} accepts a real status (${f})`);

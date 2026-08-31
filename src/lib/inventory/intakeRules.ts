@@ -18,7 +18,7 @@ export const GRADE_OPTIONS = ["A", "A2", "B", "C", "CTS", "SAMPLE", "Printing"] 
  *  copy of prisma's enum because this module must stay import-free for the
  *  tests — the drift guard is the test asserting this list equals the set of
  *  statuses TRANSITIONS (grading.ts) moves between. */
-export const SLAB_STATUSES = ["AVAILABLE", "RESERVED", "PACKED", "DISPATCHED", "RETURNED", "CTS"] as const;
+export const SLAB_STATUSES = ["AVAILABLE", "RESERVED", "PACKED", "DISPATCHED", "RETURNED", "CTS", "CHROMIA"] as const;
 
 /** Every status TRANSITIONS knows — what the drift test compares SLAB_STATUSES against. */
 export const statusesFromTransitions = (): string[] =>
@@ -42,6 +42,20 @@ export const FIELD_LABEL: Record<string, string> = {
   status: "status",
   notes: "notes",
 };
+
+/** The two mandatory defect photos (owner, 2026-08-29: "add 2 photo one far
+ *  photo and one near photo of the defect mandatory"). One row each in
+ *  entry_photo against the FinishedSlab id; the filename prefix is what keeps
+ *  the two slots tellable apart when read back. `field` is the FormData name
+ *  on the wire, `label` the plant-language sentence fragment refusals use,
+ *  `short` the fragment confirmations use. Here rather than in actions.ts
+ *  because a "use server" file may export only async functions, and the client
+ *  form needs the field names too. */
+export const DEFECT_PHOTOS = [
+  { slot: "far", field: "__photo_far", prefix: "far-", label: "far photo (the whole slab)", short: "far photo" },
+  { slot: "near", field: "__photo_near", prefix: "near-", label: "near photo (close on the defect)", short: "near photo" },
+] as const;
+export type DefectPhotoSlot = (typeof DEFECT_PHOTOS)[number]["slot"];
 
 /** What a save carries. Strings are trimmed-or-null; qualityIssue is the whole
  *  list (chips), replaced as a set. */
@@ -80,6 +94,43 @@ export function parseSlabNumber(input: unknown): { ok: true; slab: number } | { 
   if (n <= 0) return { ok: false, message: "A slab number is a positive number." };
   if (n > 100_000_000) return { ok: false, message: `Slab ${raw} is too large to be a real slab number — check the figure.` };
   return { ok: true, slab: n };
+}
+
+/**
+ * CHROMIA is written by the Chromia intake bridge, never by hand: the status
+ * means "the Chromia register has this slab", and a hand write would assert
+ * that without the register knowing. The way IN is recording the slab in the
+ * Chromia register; this form's status box is only the way OUT of a wrong
+ * mark. Keeping a slab that is already CHROMIA as CHROMIA is a no-op, not a
+ * hand write, and stays allowed — or an edit to any other field would be
+ * refused for not also changing the status.
+ */
+export function statusChangeRefusal(current: string | null, next: string): string | null {
+  if (next === "CHROMIA" && current !== "CHROMIA")
+    return "CHROMIA is set by the Chromia register, not by hand — record the slab in the Chromia operator register and this sheet will follow.";
+  return null;
+}
+
+/** The bays the plant has. The vocabulary the bay box is checked against. */
+export const BAYS = ["Bay 1", "Bay 2", "Bay 3", "Bay 4", "Bay 5"] as const;
+
+/** "bay2", "BAY 2", "bay-2", plain "2" — all the same bay, stored one way so
+ *  the inventory filter has one value per bay instead of five spellings. A
+ *  value that is not a bay at all is returned untouched for validation to name. */
+export function normalizeBay(v: string | null): string | null {
+  if (v === null) return null;
+  const m = /^(?:bay)?[\s-]*([1-5])$/i.exec(v.trim());
+  return m ? `Bay ${m[1]}` : v;
+}
+
+/** The refusal for a bay being WRITTEN. Deliberately not part of
+ *  validateSlabDetails: an existing row may carry a legacy spelling from a
+ *  bulk upload, and correcting the slab's GRADE must not be refused over a bay
+ *  nobody touched — the rule gates what this form writes, not what it found. */
+export function bayRefusal(bay: string | null): string | null {
+  if (bay !== null && !(BAYS as readonly string[]).includes(bay))
+    return `"${bay}" is not a bay — the bays are ${BAYS[0]} to ${BAYS[BAYS.length - 1]}, or leave it empty.`;
+  return null;
 }
 
 /** Trim to null, capped — the same shape the admin slab-edit route uses. */

@@ -2901,6 +2901,7 @@ enum SlabStatus {
   DISPATCHED
   RETURNED
   CTS // cut to size - committed to cutting, still physically in stock
+  CHROMIA // taken into the Chromia printing module - applied by its intake, not by hand
 }
 
 enum SlabSource {

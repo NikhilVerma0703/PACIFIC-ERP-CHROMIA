@@ -6,6 +6,7 @@ import { createLogger } from '@/lib/chromia/logger';
 import { daysBetween, toDateColumn } from '@/lib/chromia/utils/dates';
 import { importStatus, importSummaryLine } from '@/lib/chromia/import/outcome';
 import type { ParsedSlabRow, ParseResult } from '@/lib/chromia/import/pro-register';
+import { markSlabsChromia } from '@/lib/chromia/inventory-bridge';
 
 const log = createLogger('import');
 
@@ -106,6 +107,19 @@ export async function importProRegister(
   let imported = 0;
   let failed = 0;
   let alreadyPresent = 0;
+
+  // Slabs this import leaves physically AT Chromia — in process, in Chromia
+  // stock, or out at recalibration. Finished goods is told about these, once,
+  // after the loop. A row the register already shows dispatched, wasted or cut
+  // for samples left Chromia in its own month; stamping today's inventory
+  // CHROMIA for it would be fiction.
+  const atChromia: string[] = [];
+  const AT_CHROMIA = new Set<SlabStatus>([
+    SlabStatus.IN_PROCESS,
+    SlabStatus.IN_STOCK,
+    SlabStatus.OUT_FOR_RECALIBRATION,
+    SlabStatus.RECEIVED_FROM_RECALIBRATION,
+  ]);
 
   // Resolve (and create where needed) the master data the sheet references.
   const materialIds = new Map<string, string>();
@@ -346,6 +360,7 @@ export async function importProRegister(
       });
 
       imported += 1;
+      if (AT_CHROMIA.has(status)) atChromia.push(row.slabNo);
     } catch (error) {
       failed += 1;
       notes.push({
@@ -373,6 +388,10 @@ export async function importProRegister(
       errorLog: notes.length > 0 ? notes : undefined,
     },
   });
+
+  // One batched call, after every row is settled — the bridge never throws,
+  // and a failure costs the inventory annotation, not the import.
+  await markSlabsChromia(atChromia, null);
 
   log.info({ sourceFile: meta.sourceFile, status, ...counts }, 'Register import finished');
 

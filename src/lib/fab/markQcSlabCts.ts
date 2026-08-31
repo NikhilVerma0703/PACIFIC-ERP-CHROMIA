@@ -35,8 +35,9 @@
 
 import { prisma } from "@/lib/prisma";
 import { setSlabMark, refreshInventoryMirror } from "@/lib/fab/slabMarkStore";
+import { changeSlabStatus, writeSlabEvent } from "@/lib/inventory/finishedSlab";
 
-export async function markQcSlabCts(pacificQcId: string): Promise<void> {
+export async function markQcSlabCts(pacificQcId: string, by?: string | null): Promise<void> {
   if (!pacificQcId) return;
   // The mark FIRST, because its guard is "only a FULL_SLAB moves" and it reads
   // quality_grade to decide. Writing the grade first would make every call look
@@ -45,7 +46,13 @@ export async function markQcSlabCts(pacificQcId: string): Promise<void> {
   // A refusal here is not an error and does not stop the grade write: it means
   // the slab is already marked SAMPLE, and what fabrication does next with the
   // remainder is fabrication's business. The dispatch block still has to land.
-  await setSlabMark(pacificQcId, "CTS");
+  // And a THROW here (scripts/0057 not applied, a dropped connection) must not
+  // stop it either — the grade write below is the part dispatch reads.
+  try {
+    await setSlabMark(pacificQcId, "CTS");
+  } catch (err) {
+    console.error("[fab] slab mark not set for qc", pacificQcId, err);
+  }
   try {
     await prisma.$executeRaw`
       UPDATE polish_qc
@@ -70,4 +77,45 @@ export async function markQcSlabCts(pacificQcId: string): Promise<void> {
   // and nothing on this side was refreshing it — so the CTS block has not been
   // firing at all. See refreshInventoryMirror. Best-effort by design.
   await refreshInventoryMirror(pacificQcId);
+
+  // AND THE STATUS (owner, 2026-08-29: "whatever is taken into fab/cutting is
+  // marked in inventory as CTS"). The mirror refresh above moves the GRADE, but
+  // the inventory STATUS never followed — the sheet kept saying AVAILABLE for a
+  // slab fabrication had already taken.
+  //
+  // ONLY FROM AVAILABLE. The dashboard's own CTS action moves RESERVED and
+  // PACKED too, because there a person is looking at the hold and deciding —
+  // but this is a hook, and a hook that quietly consumes somebody's PI hold or
+  // a packed pallet turns a double-booking into a disappearance. A held,
+  // dispatched or Chromia slab is left alone and the disagreement is put on
+  // the record as a "cts_conflict" SlabEvent — fabrication and sales are
+  // pulling the same slab, and that is a fact for a person, not a hook, to
+  // settle. Already-CTS is the idempotent re-pick and is silent, structurally
+  // (the status is read first, not parsed out of a refusal string). Best-effort
+  // like everything else here: a fab assignment must never fail on inventory.
+  try {
+    const qc = await prisma.polishQc.findUnique({ where: { id: pacificQcId }, select: { slabNumber: true } });
+    const n = qc?.slabNumber;
+    if (n != null && Number.isInteger(n)) {
+      const who = by ?? "fabrication";
+      const row = await prisma.finishedSlab.findUnique({ where: { slabNumber: n }, select: { status: true } });
+      const status = row ? String(row.status) : null;
+      if (!row) {
+        // "Fabrication has slab N and finished goods does not" — the gap the
+        // slab-intake form exists to close. Logged, not invented.
+        console.warn(`[fab] slab ${n} is not in finished goods — CTS status not recorded`);
+      } else if (status === "AVAILABLE") {
+        const res = await changeSlabStatus([n], "cts", { by: who, source: "fabrication" });
+        for (const s of res.skipped) console.warn(`[fab] slab ${s.slab} not marked CTS in inventory — ${s.reason}`);
+      } else if (status !== "CTS") {
+        await writeSlabEvent(n, "cts_conflict", {
+          field: "status", oldValue: status, newValue: "CTS (refused)",
+          by: who, source: "fabrication",
+        });
+        console.warn(`[fab] slab ${n} is ${status} — held or gone, left alone; conflict recorded`);
+      }
+    }
+  } catch (err) {
+    console.error("[fab] inventory CTS status not applied for qc", pacificQcId, err);
+  }
 }

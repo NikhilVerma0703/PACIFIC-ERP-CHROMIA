@@ -2,7 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
 import { markQcSlabCts } from "@/lib/fab/markQcSlabCts";
 
-async function resolveOrImportSlab(slabId: string, projectId: string | null): Promise<string> {
+async function resolveOrImportSlab(slabId: string, projectId: string | null, by: string | null): Promise<string> {
   if (!slabId.startsWith("qc:")) return slabId;
   const qcId = slabId.replace("qc:", "");
   // Scoped to the project on purpose. An unscoped lookup returned the FabSlab a
@@ -14,7 +14,7 @@ async function resolveOrImportSlab(slabId: string, projectId: string | null): Pr
     where: { pacificQcId: qcId, ...(projectId ? { projectId } : {}) },
   });
   if (existing) {
-    await markQcSlabCts(qcId);
+    await markQcSlabCts(qcId, by);
     return existing.id;
   }
   const qc = await prisma.polishQc.findUnique({ where: { id: qcId } });
@@ -31,7 +31,7 @@ async function resolveOrImportSlab(slabId: string, projectId: string | null): Pr
       length: 3200, width: 1600, totalArea: 3200 * 1600, availableArea: 3200 * 1600,
     },
   });
-  await markQcSlabCts(qc.id);
+  await markQcSlabCts(qc.id, by);
   return slab.id;
 }
 
@@ -55,7 +55,9 @@ export async function POST(req: Request) {
   // 500 with an HTML body, which the board could only report as "error 500".
   let resolvedSlabId: string;
   try {
-    resolvedSlabId = await resolveOrImportSlab(slabId, reqRow?.projectId ?? null);
+    // The supervisor's own name rides into the CTS status write and any
+    // cts_conflict event, not just "fabrication".
+    resolvedSlabId = await resolveOrImportSlab(slabId, reqRow?.projectId ?? null, g.user?.name ?? g.user?.email ?? null);
   } catch (e) {
     return Response.json({ error: e instanceof Error ? e.message : "Could not resolve that slab" }, { status: 422 });
   }

@@ -42,7 +42,9 @@ export async function POST(req: NextRequest) {
       totalArea:   SLAB_L_MM * SLAB_W_MM,
     },
   });
-  await markQcSlabCts(qc.id);
+  // The supervisor's own name rides into the CTS status write and any
+  // cts_conflict event, not just "fabrication".
+  await markQcSlabCts(qc.id, g.user?.name ?? g.user?.email ?? null);
 
   return Response.json({
     success:      true,

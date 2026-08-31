@@ -18,6 +18,50 @@ export async function savePhotoFromForm(fd: FormData, model: string, recordId: s
   } catch { /* photos are best-effort */ }
 }
 
+// ---------------------------------------------------------------------------
+// REQUIRED photo, by NAMED field — the slab-intake form's variant. Same store,
+// opposite contract: savePhotoFromForm above is best-effort by design (a shop
+// -floor entry must never fail on its photo) and its existing callers keep
+// that; the intake form's far/near defect photos are MANDATORY, so this pair
+// validates and REFUSES with a sentence instead of silently skipping. Split in
+// two so the caller can refuse BEFORE creating the row it would attach to.
+// ---------------------------------------------------------------------------
+
+/** One refusal sentence, or null when the named field holds a saveable photo.
+ *  The same limits savePhotoFromForm enforces silently: 8 MB, image/* minus
+ *  SVG (script risk — startsWith, so "image/svg+xml;charset=utf-8" is caught). */
+export function requiredPhotoProblem(fd: FormData, field: string, label: string): string | null {
+  const f = fd.get(field);
+  if (!(f instanceof File) || f.size === 0) return `The ${label} is required — attach it before saving.`;
+  if (f.size > MAX) return `The ${label} is too large (max 8 MB) — retake or pick a smaller one.`;
+  if (!f.type.startsWith("image/") || f.type.startsWith("image/svg")) return `The ${label} must be a photo (image file; SVG is not accepted).`;
+  return null;
+}
+
+/** Store the named field's photo, prefixing the filename (far- / near-) so the
+ *  two slots stay tellable apart when read back. Returns null on success, or
+ *  the refusal/failure sentence — never a silent skip. */
+export async function saveRequiredPhoto(
+  fd: FormData,
+  field: string,
+  opts: { model: string; recordId: string; by: string | null; prefix: string; label: string },
+): Promise<string | null> {
+  const bad = requiredPhotoProblem(fd, field, opts.label);
+  if (bad) return bad;
+  const f = fd.get(field) as File;
+  try {
+    const buf = Buffer.from(await f.arrayBuffer());
+    const id = "eph" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    const name = (opts.prefix + (f.name || "photo.jpg")).slice(0, 200);
+    await db.$executeRaw`INSERT INTO entry_photo (id, model, record_id, filename, mime, data, taken_by)
+      VALUES (${id}, ${opts.model}, ${opts.recordId}, ${name}, ${f.type}, ${buf}, ${opts.by})`;
+    return null;
+  } catch (e) {
+    console.error("[entryPhoto] required photo save failed:", opts.model, opts.recordId, e);
+    return `The ${opts.label} could not be stored — attach it again.`;
+  }
+}
+
 export interface PhotoMeta { id: string; filename: string; at: Date; taken_by: string | null }
 
 /** Photo ids+names for MANY records in one query — the downtime log renders hundreds of

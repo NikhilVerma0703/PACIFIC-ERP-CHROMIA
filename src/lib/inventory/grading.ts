@@ -74,7 +74,7 @@ export function gradeBlocksDispatch(grade: unknown): boolean {
   return (CUT_GRADES as readonly string[]).includes(upper);
 }
 
-export type StatusAction = "reserve" | "release" | "pack" | "dispatch" | "return" | "cts" | "uncts";
+export type StatusAction = "reserve" | "release" | "pack" | "dispatch" | "return" | "cts" | "uncts" | "chromia";
 
 /** Slab lifecycle: which statuses each action may move FROM, and where it lands. */
 export const TRANSITIONS: Record<StatusAction, { from: string[]; to: string }> = {
@@ -98,6 +98,20 @@ export const TRANSITIONS: Record<StatusAction, { from: string[]; to: string }> =
   // both or neither; the summary endpoint's "cts" tile counts the GRADE, not this.
   cts:      { from: ["AVAILABLE", "RESERVED", "PACKED"],          to: "CTS" },
   uncts:    { from: ["CTS"],                                      to: "AVAILABLE" },
+  // Taken into the Chromia printing module (owner, 2026-08-29: "whatever is
+  // taken into the chromia module is marked in inventory as chromia"). Applied
+  // ONLY by the module's own intake — the operator register and the historical
+  // import — never offered as a hand action; it is deliberately absent from
+  // /api/inventory/status's action enum for that reason.
+  //
+  // WHY only AVAILABLE and RETURNED: a RESERVED slab is somebody's PI hold, a
+  // PACKED one is on a pallet and a DISPATCHED one is gone — chromia's intake
+  // does not quietly pull any of those out from under the person holding them.
+  // A refused slab is left alone and a "chromia_conflict" SlabEvent records the
+  // disagreement so the sheet can surface it (see lib/chromia/inventory-bridge).
+  // The way OUT is the slab-intake form's status override — the same people who
+  // reconcile chromia stock with the yard can undo a wrong mark.
+  chromia:  { from: ["AVAILABLE", "RETURNED"],                    to: "CHROMIA" },
 };
 
 export const DEFAULT_RESERVATION_DAYS = 7;

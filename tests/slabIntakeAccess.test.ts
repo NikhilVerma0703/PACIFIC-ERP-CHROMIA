@@ -4,6 +4,7 @@ import { slabIntakeEmails, canUseSlabIntake } from "../src/lib/inventory/intakeA
 import {
   parseSlabNumber, validateSlabDetails, cleanIssues, savedSentence,
   GRADE_OPTIONS, SLAB_STATUSES, statusesFromTransitions,
+  statusChangeRefusal, normalizeBay, bayRefusal, BAYS,
   type SlabDetailsInput,
 } from "../src/lib/inventory/intakeRules.ts";
 
@@ -137,4 +138,50 @@ test("every save result is a sentence", () => {
   assert.equal(savedSentence(144320, true, []), "Slab 144320 added to finished goods.");
   assert.equal(savedSentence(144320, false, []), "Nothing changed on slab 144320 — nothing was saved.");
   assert.equal(savedSentence(144320, false, ["grade", "bayNumber"]), "Slab 144320: corrected grade, bay.");
+});
+
+// ---------------------------------------------------------------------------
+// statusChangeRefusal — CHROMIA has one door in, and it is not this form
+// ---------------------------------------------------------------------------
+
+test("CHROMIA cannot be chosen INTO, from anywhere — including a create", () => {
+  assert.match(statusChangeRefusal(null, "CHROMIA") ?? "", /Chromia register/);
+  assert.match(statusChangeRefusal("AVAILABLE", "CHROMIA") ?? "", /Chromia register/);
+  assert.match(statusChangeRefusal("RESERVED", "CHROMIA") ?? "", /Chromia register/);
+});
+
+test("a slab already CHROMIA may stay CHROMIA — an edit to another field is not a hand write", () => {
+  assert.equal(statusChangeRefusal("CHROMIA", "CHROMIA"), null);
+});
+
+test("the way OUT of CHROMIA stays open, and every other move is untouched", () => {
+  assert.equal(statusChangeRefusal("CHROMIA", "AVAILABLE"), null);
+  assert.equal(statusChangeRefusal("CHROMIA", "CTS"), null);
+  for (const to of SLAB_STATUSES.filter((s) => s !== "CHROMIA")) {
+    assert.equal(statusChangeRefusal("AVAILABLE", to), null, `AVAILABLE → ${to}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// normalizeBay + bayRefusal — one spelling per bay
+// ---------------------------------------------------------------------------
+
+test("every spelling of a bay folds to the canonical one", () => {
+  for (const v of ["Bay 2", "bay 2", "BAY 2", "bay2", "bay-2", " 2 ", "2"]) {
+    assert.equal(normalizeBay(v), "Bay 2", JSON.stringify(v));
+  }
+  assert.equal(normalizeBay(null), null);
+});
+
+test("what is not a bay comes back untouched, for the refusal to name", () => {
+  for (const v of ["Bay 6", "6", "B-2", "mezzanine", "bay 22"]) {
+    assert.equal(normalizeBay(v), v, JSON.stringify(v));
+  }
+});
+
+test("bayRefusal accepts the five bays and nothing else; empty is allowed", () => {
+  for (const b of BAYS) assert.equal(bayRefusal(b), null, b);
+  assert.equal(bayRefusal(null), null);
+  assert.match(bayRefusal("Bay 6") ?? "", /not a bay/);
+  assert.match(bayRefusal("mezzanine") ?? "", /not a bay/);
 });

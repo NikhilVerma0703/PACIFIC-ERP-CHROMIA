@@ -41,6 +41,9 @@ export async function GET(request: Request) {
       // (g_("CTS"), a few lines up). Two different things share the name in the domain;
       // they must not share it in the payload.
       ctsStatus: s_("CTS"),
+      // Slabs the Chromia register has taken for printing (scripts/0063) —
+      // written only by the Chromia intake bridge, never by hand.
+      chromia: s_("CHROMIA"),
       pendingPolish, pendingRw,
     });
   } catch (e) {

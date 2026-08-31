@@ -16,17 +16,27 @@
 // flight (double-submit guard); and the gate is the server's — this file only
 // renders for people the page already admitted, and every action re-checks.
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useRef, useState, useTransition } from "react";
 import { Card, H2 } from "@/components/ui";
-import { GRADE_OPTIONS, SLAB_STATUSES } from "@/lib/inventory/intakeRules";
-import { lookupSlab, saveSlab, type LookupRes, type QcReference } from "./actions";
+import { compressPhoto } from "@/components/PhotoField";
+import { GRADE_OPTIONS, SLAB_STATUSES, DEFECT_PHOTOS, type DefectPhotoSlot } from "@/lib/inventory/intakeRules";
+import { lookupSlab, saveSlab, type LookupRes, type QcReference, type SlabPhotos } from "./actions";
 
 interface Lists { designs: string[]; issues: string[]; polishTypes: string[]; thicknesses: string[]; bays: string[] }
 
 const STATUS_LABEL: Record<string, string> = {
   AVAILABLE: "Available", RESERVED: "Reserved (PI hold)", PACKED: "Packed",
   DISPATCHED: "Dispatched", RETURNED: "Returned", CTS: "Cut to size (CTS)",
+  CHROMIA: "At Chromia (printing)",
 };
+
+// TWO photos share one server-action request, and Vercel rejects bodies over
+// ~4.5 MB — so each is compressed tighter than PhotoField's single-photo
+// limits: aim 1.6 MB, never post over 2 MB, and the pair stays under the cap.
+const PHOTO_TARGET = 1_600_000;
+const PHOTO_HARD_MAX = 2_000_000;
+const NO_PHOTOS: Record<DefectPhotoSlot, { file: File | null; state: "" | "busy" | "ready" | "off" }> =
+  { far: { file: null, state: "" }, near: { file: null, state: "" } };
 const GRADE_LABEL: Record<string, string> = {
   A: "A", A2: "A2", B: "B", C: "C", CTS: "CTS — cut to size",
   SAMPLE: "SAMPLE — cut for samples", Printing: "Printing — Chromia printed slab",
@@ -67,11 +77,39 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
   const [pending, startTransition] = useTransition();
 
+  // The two defect photos, compressed in the browser before the post (the
+  // PhotoField lesson: camera photos are 4–8 MB and the request body caps at
+  // ~4.5 MB). Per-slot generation counter so a re-pick during compression wins.
+  const [photos, setPhotos] = useState(NO_PHOTOS);
+  // Bumped whenever the slots are cleared, so the (uncontrolled) file inputs
+  // remount empty instead of showing a filename the state no longer holds.
+  const [photoKey, setPhotoKey] = useState(0);
+  const photoGen = useRef<Record<DefectPhotoSlot, number>>({ far: 0, near: 0 });
+  const pickPhoto = (slot: DefectPhotoSlot) => async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0] ?? null;
+    // The chosen file lives in React state from here on, not in the input — so
+    // clear the input at once. Otherwise re-picking the SAME file after a
+    // failed compression fires no change event and the retry silently does
+    // nothing. The ✓ ready / compressing chips are the indicator, not the
+    // input's filename.
+    e.target.value = "";
+    const my = ++photoGen.current[slot];
+    if (!f) { setPhotos((p) => ({ ...p, [slot]: { file: null, state: "" } })); return; }
+    if (f.size <= 500_000) { setPhotos((p) => ({ ...p, [slot]: { file: f, state: "ready" } })); return; }
+    setPhotos((p) => ({ ...p, [slot]: { file: null, state: "busy" } }));
+    let use: File | null = null;
+    try { use = await compressPhoto(f, { target: PHOTO_TARGET, hardMax: PHOTO_HARD_MAX }); } catch { use = null; }
+    if (!use && f.size <= PHOTO_HARD_MAX) use = f;
+    if (photoGen.current[slot] !== my) return; // a newer pick took over
+    setPhotos((p) => ({ ...p, [slot]: use ? { file: use, state: "ready" } : { file: null, state: "off" } }));
+  };
+
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
 
   const doLookup = (numStr: string) => {
     startTransition(async () => {
       setNote(null);
+      setPhotos(NO_PHOTOS); setPhotoKey((k) => k + 1); // fresh slab, fresh photo slots
       const r = await lookupSlab(numStr);
       setLooked(r);
       if (!r.ok) return;
@@ -90,8 +128,24 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
     });
   };
 
+  /** Which slots a save still has to carry: both on a create, and on an edit
+   *  of a MANUAL_ENTRY slab whichever it does not already have from this form.
+   *  A slab that arrived from QC or a bulk upload was never photographed by
+   *  this form — photos on it are welcome, never demanded. The server
+   *  re-derives this for itself — the form saying so first is the courtesy. */
+  const photoRequired = (slot: DefectPhotoSlot): boolean =>
+    !looked?.ok ? false
+    : !looked.exists ? true
+    : looked.slab.source === "MANUAL_ENTRY" && looked.photos[slot].length === 0;
+
   const doSave = () => {
     if (!looked?.ok) return;
+    for (const p of DEFECT_PHOTOS) {
+      if (photoRequired(p.slot) && !photos[p.slot].file) {
+        setNote({ text: `The ${p.label} is required — attach it before saving.`, ok: false });
+        return;
+      }
+    }
     // An issue typed but not yet pressed into a chip still counts — losing it
     // because the thumb went straight to Save is the kind of quiet data loss
     // this form exists to correct, not commit.
@@ -99,7 +153,10 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
       ? [...draft.qualityIssue, issueBox.trim()]
       : draft.qualityIssue;
     startTransition(async () => {
-      const r = await saveSlab({
+      // One FormData: the details as a JSON field, the photos as files beside
+      // it — the only shape that carries both across a server-action call.
+      const out = new FormData();
+      out.set("payload", JSON.stringify({
         slabNumber: slabInput,
         expectExisting: looked.exists,
         details: {
@@ -112,12 +169,18 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
           bayNumber: draft.bayNumber || null, frameNumber: draft.frameNumber || null,
           status: draft.status, notes: draft.notes || null,
         },
-      });
+      }));
+      for (const p of DEFECT_PHOTOS) {
+        const f = photos[p.slot].file;
+        if (f) out.set(p.field, f);
+      }
+      const r = await saveSlab(out);
       setNote({ text: r.message, ok: r.ok });
       // After a successful save the row on the server is the new truth (a
       // create in particular must flip the form to correction mode), so
       // re-read it rather than trusting the copy that was just typed.
       if (r.ok) {
+        setPhotos(NO_PHOTOS); setPhotoKey((k) => k + 1);
         const again = await lookupSlab(slabInput);
         setLooked(again);
       }
@@ -134,6 +197,7 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
 
   const qc: QcReference | null = looked?.ok ? looked.qc : null;
   const exists = looked?.ok ? looked.exists : false;
+  const havePhotos: SlabPhotos = looked?.ok && looked.exists ? looked.photos : { far: [], near: [] };
   const from: Record<string, string> = looked?.ok && !looked.exists ? looked.from : {};
   const current: Record<string, unknown> | null =
     looked?.ok && looked.exists ? (looked.slab as unknown as Record<string, unknown>) : null;
@@ -221,6 +285,19 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
                 </select>
               </Field>
 
+              {/* Bay sits HERE, in the second row, on the owner's ask ("add bay
+                  option in the form"): it already existed but was parked at the
+                  bottom under the dimensions, and the bay is the first thing the
+                  intake person knows about a slab — they are standing in it. */}
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Bay" hint={ref("bayNumber", qc?.bay)}>
+                  <input className={inputCls} list="si-bays" value={draft.bayNumber} onChange={(e) => set({ bayNumber: e.target.value })} placeholder="e.g. Bay 2" />
+                </Field>
+                <Field label="Frame" hint={null}>
+                  <input className={inputCls} value={draft.frameNumber} onChange={(e) => set({ frameNumber: e.target.value })} />
+                </Field>
+              </div>
+
               <Field label="Thickness" hint={ref("slabThickness", qc?.slabThickness)}>
                 <input className={inputCls} list="si-thickness" value={draft.slabThickness}
                   onChange={(e) => set({ slabThickness: e.target.value })} placeholder="e.g. 2 cm" />
@@ -279,18 +356,15 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
                 </Field>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Bay" hint={ref("bayNumber", qc?.bay)}>
-                  <input className={inputCls} list="si-bays" value={draft.bayNumber} onChange={(e) => set({ bayNumber: e.target.value })} />
-                </Field>
-                <Field label="Frame" hint={null}>
-                  <input className={inputCls} value={draft.frameNumber} onChange={(e) => set({ frameNumber: e.target.value })} />
-                </Field>
-              </div>
-
-              <Field label="Status" hint={null}>
+              <Field label="Status" hint={exists && current?.status === "CHROMIA" ? "set by the Chromia register — override it here only to correct a wrong mark" : null}>
                 <select className={inputCls} value={draft.status} onChange={(e) => set({ status: e.target.value })}>
-                  {SLAB_STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s] ?? s}</option>)}
+                  {/* CHROMIA is the Chromia register's to write (the intake
+                      bridge), never a hand target — the option only renders
+                      when it IS the current status, so it can be kept or
+                      overridden out of, but not chosen into. */}
+                  {SLAB_STATUSES
+                    .filter((s) => s !== "CHROMIA" || (exists && current?.status === "CHROMIA"))
+                    .map((s) => <option key={s} value={s}>{STATUS_LABEL[s] ?? s}</option>)}
                 </select>
               </Field>
 
@@ -299,15 +373,72 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
               </Field>
             </div>
 
+            {/* THE TWO MANDATORY DEFECT PHOTOS (owner: "add 2 photo one far
+                photo and one near photo of the defect mandatory"). Both are
+                required to ADD a slab; on a correction each slot is required
+                only while the slab does not already have it from this form —
+                and that rule is said here, on the form, not discovered by a
+                refusal. Existing photos render as thumbnails so nobody re-takes
+                what is already on file. */}
+            <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50/60 p-4">
+              <div className="text-sm font-semibold text-gray-900">Defect photos — far and near</div>
+              <p className="mt-1 text-xs text-gray-500">
+                {!exists
+                  ? "Both photos are mandatory to add the slab: one from far (the whole slab) and one from near (close on the defect)."
+                  : looked.exists && looked.slab.source !== "MANUAL_ENTRY"
+                    ? "This slab came in from the production line, not this form — photos are optional here; attach one to put it on file."
+                    : havePhotos.far.length > 0 && havePhotos.near.length > 0
+                      ? "This slab already has both photos from this form — attach a new one only to add it alongside."
+                      : "This slab is missing its defect photos from this form — the missing ones are required to save."}
+              </p>
+              <div key={photoKey} className="mt-3 grid gap-4 sm:grid-cols-2">
+                {DEFECT_PHOTOS.map((p) => {
+                  const st = photos[p.slot];
+                  const required = photoRequired(p.slot);
+                  return (
+                    <div key={p.slot}>
+                      <span className="mb-1 flex items-center gap-1.5 text-xs font-medium text-gray-600">
+                        {p.slot === "far" ? "Far photo — the whole slab" : "Near photo — close on the defect"}
+                        {required
+                          ? <span className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700">required</span>
+                          : havePhotos[p.slot].length > 0
+                            ? <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-700">on file</span>
+                            : <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">optional</span>}
+                        {st.state === "busy" && <span className="text-[10px] text-amber-600">compressing…</span>}
+                        {st.state === "ready" && <span className="text-[10px] text-emerald-600">✓ ready</span>}
+                      </span>
+                      <input
+                        type="file" accept="image/*" capture="environment" onChange={pickPhoto(p.slot)}
+                        className="block w-full text-xs text-gray-600 file:mr-2 file:rounded-lg file:border-0 file:bg-brand/10 file:px-3 file:py-2 file:text-xs file:font-medium file:text-brand"
+                      />
+                      {st.state === "off" && (
+                        <p className="mt-1 text-xs text-red-600">Couldn&apos;t shrink this photo enough to upload — retake or pick a smaller one.</p>
+                      )}
+                      {havePhotos[p.slot].length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {havePhotos[p.slot].map((ph) => (
+                            <a key={ph.id} href={`/api/photo?id=${ph.id}`} target="_blank" rel="noreferrer" title={ph.filename}>
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={`/api/photo?id=${ph.id}`} alt={ph.filename} className="h-16 w-16 rounded-lg border border-gray-200 object-cover" />
+                            </a>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
             {/* the QC-refresh caveat, in one sentence, ON the form */}
             <p className="mt-4 text-xs text-gray-400">
               Design, grade, thickness, quality issues, polish, R/W, repolish, batch and bay belong to QC — they are refreshed automatically if this slab passes QC again, and a re-QC also clears the frame.
             </p>
 
             <div className="mt-4 flex flex-wrap items-center gap-3">
-              <button type="button" onClick={doSave} disabled={pending}
+              <button type="button" onClick={doSave} disabled={pending || photos.far.state === "busy" || photos.near.state === "busy"}
                 className="rounded-lg bg-brand px-5 py-2 text-sm font-medium text-white disabled:opacity-50">
-                {pending ? "Saving…" : exists ? "Save corrections" : "Add slab to finished goods"}
+                {pending ? "Saving…" : photos.far.state === "busy" || photos.near.state === "busy" ? "Compressing photo…" : exists ? "Save corrections" : "Add slab to finished goods"}
               </button>
               {note && <p className={`text-sm ${note.ok ? "text-green-700" : "text-red-600"}`}>{note.text}</p>}
             </div>

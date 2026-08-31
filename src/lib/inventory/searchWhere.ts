@@ -63,6 +63,10 @@ export async function buildInventoryWhere(searchParams: URLSearchParams): Promis
       where.customer = spellings.length ? { in: spellings } : term;
     }
   }
+  // Where the row CAME FROM — the QC autolink, the bulk upload, or the intake
+  // form's hand entry. Exact enum value; the dropdown offers the real three in
+  // plant words, so free text cannot reach this.
+  if (q("source")) where.source = q("source");
   if (q("rw") === "1") where.rwStatus = "RW Required and ongoing";
   if (q("slab")) {
     const n = Number(q("slab"));

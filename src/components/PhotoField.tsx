@@ -23,11 +23,21 @@ async function toBitmap(f: File): Promise<ImageBitmap | HTMLImageElement> {
   });
 }
 
-async function compress(f: File): Promise<File | null> {
+/** Exported for forms that carry MORE than one photo per request (slab intake's
+ *  far/near pair): two photos share the same ~4.5 MB body budget, so that form
+ *  passes tighter target/hardMax figures. Defaults are this file's own limits —
+ *  PhotoField's behaviour is unchanged. */
+export async function compressPhoto(
+  f: File,
+  opts: { maxDim?: number; target?: number; hardMax?: number } = {},
+): Promise<File | null> {
+  const maxDim = opts.maxDim ?? MAX_DIM;
+  const target = opts.target ?? TARGET;
+  const hardMax = opts.hardMax ?? HARD_MAX;
   const src = await toBitmap(f);
   const w = "naturalWidth" in src ? src.naturalWidth : src.width;
   const h = "naturalHeight" in src ? src.naturalHeight : src.height;
-  const scale = Math.min(1, MAX_DIM / Math.max(w, h));
+  const scale = Math.min(1, maxDim / Math.max(w, h));
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(w * scale));
   canvas.height = Math.max(1, Math.round(h * scale));
@@ -39,9 +49,9 @@ async function compress(f: File): Promise<File | null> {
   for (const q of [0.8, 0.65, 0.5, 0.35]) {
     const blob: Blob | null = await new Promise((r) => canvas.toBlob(r, "image/jpeg", q));
     if (blob && (!best || blob.size < best.size)) best = blob;
-    if (blob && blob.size <= TARGET) break;
+    if (blob && blob.size <= target) break;
   }
-  if (!best || best.size > HARD_MAX) return null;
+  if (!best || best.size > hardMax) return null;
   return new File([best], f.name.replace(/\.\w+$/, "") + ".jpg", { type: "image/jpeg" });
 }
 
@@ -60,7 +70,7 @@ export function PhotoField() {
     try { input.files = new DataTransfer().files; } catch { input.value = ""; }
     setState("busy");
     let use: File | null = null;
-    try { use = await compress(f); } catch { use = null; }
+    try { use = await compressPhoto(f); } catch { use = null; }
     if (!use && f.size <= HARD_MAX) use = f;
     if (gen.current !== my) return; // a newer selection took over
     if (!use) {
