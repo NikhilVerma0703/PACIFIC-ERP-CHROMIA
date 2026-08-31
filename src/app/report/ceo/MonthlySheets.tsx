@@ -311,7 +311,65 @@ const REWORK_LABEL: Record<string, string> = {
   "Not recorded": "Not recorded",
 };
 
-function SheetQualityMonth({ r }: { r: MonthlyReport }) {
+/* ------------------------------------------------- the unfilled-hours list */
+// WHICH SHIFT DID NOT FILE, and the way to fix it from here. Screen only
+// (report.module.css hides .gaps in print): this is a worklist for the
+// office, not part of the document — the printed page keeps the discipline
+// sentence and nothing else. Closed by default, because a sheet that opens
+// with its own to-do list unrolled is no longer a sheet; one click opens the
+// day-by-day list, one more opens that shift's entry sheet at its first
+// missing hour. The Fill column renders only for people who may actually
+// fill it — everyone else reads the same facts without a dead button.
+const SHIFT_WINDOW: Record<string, string> = { A: "06:00–14:00", B: "14:00–22:00", C: "22:00–06:00" };
+
+function MisGaps({ r, canFill }: { r: MonthlyReport; canFill: boolean }) {
+  if (r.gapDays.length === 0) return null;
+  const shiftsMissing = r.gapDays.reduce((a, d) => a + d.gaps.length, 0);
+  return (
+    <details className={s.gaps}>
+      <summary className={s.gapsHead}>
+        <strong>{num(r.hoursMissing)} hour{r.hoursMissing === 1 ? "" : "s"} never filed</strong>
+        <span className={s.gapsCount}>
+          · {shiftsMissing} shift{shiftsMissing === 1 ? "" : "s"} across {r.gapDays.length} day{r.gapDays.length === 1 ? "" : "s"}
+          {canFill ? " · click to see them, then Fill to enter" : " · click to see them"}
+        </span>
+      </summary>
+      <div className={s.gapsBody}>
+        <table className={s.t}>
+          <thead><tr>
+            <th>Day</th><th>Shift</th><th className={s.num}>Filed</th>
+            <th>Hours never filed</th>{canFill && <th />}
+          </tr></thead>
+          <tbody>
+            {r.gapDays.map((d) =>
+              d.gaps.map((g, i) => (
+                <tr key={`${d.date}-${g.shift}`}>
+                  <td className={s.key}>{i === 0 ? dayLabel(d.date) : ""}</td>
+                  <td>
+                    <span className={s.gapShift}>{g.shift}</span>
+                    <span className={s.muted}>{SHIFT_WINDOW[g.shift]}</span>
+                  </td>
+                  <td className={s.num}>{g.filed} of {g.possible}</td>
+                  <td className={s.muted}>{g.hours.join(", ")}</td>
+                  {canFill && (
+                    <td className={s.num}>
+                      {/* straight to the MIS sheet for that shift, parked on
+                          the first hour it is missing */}
+                      <Link className={s.fillBtn} href={`/entry/mis?date=${d.date}&shift=${g.shift}&hour=${encodeURIComponent(g.hours[0])}`}>
+                        Fill
+                      </Link>
+                    </td>
+                  )}
+                </tr>
+              )))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
+}
+
+function SheetQualityMonth({ r, canFill }: { r: MonthlyReport; canFill: boolean }) {
   const q = r.quality;
   const faultTop = q.faultsAll.slice(0, 10);
   return (
@@ -470,6 +528,7 @@ function SheetQualityMonth({ r }: { r: MonthlyReport }) {
           ? "Every elapsed day holds at least one entry."
           : <>Nothing at all was filed on <strong>{r.zeroDays.length} day{r.zeroDays.length === 1 ? "" : "s"}</strong>: {r.zeroDays.map(dayLabel).join(", ")} — those days show dashes above, not zeros, because an unfiled day is a gap in the record, not a silent line.</>}
       </p>
+      <MisGaps r={r} canFill={canFill} />
 
       <div className={s.foot}>
         <span>Pacific Surfaces &nbsp;·&nbsp; Monthly Report &nbsp;·&nbsp; {monthLong(r.month)}</span>
@@ -479,12 +538,12 @@ function SheetQualityMonth({ r }: { r: MonthlyReport }) {
   );
 }
 
-export function MonthlySheets({ r }: { r: MonthlyReport }) {
+export function MonthlySheets({ r, canFill = false }: { r: MonthlyReport; canFill?: boolean }) {
   return (
     <>
       <SheetMonth r={r} />
       <SheetDepth r={r} />
-      <SheetQualityMonth r={r} />
+      <SheetQualityMonth r={r} canFill={canFill} />
     </>
   );
 }

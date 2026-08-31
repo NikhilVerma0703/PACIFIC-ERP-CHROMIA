@@ -13,11 +13,31 @@
 // figures, and the same month's numbers set beside the previous month.
 import { prisma } from "@/lib/prisma";
 import { normalizeBatch } from "@/lib/normalizeBatch";
+import { SHIFT_HOURS } from "@/lib/misShiftHours";
 import {
   MIS_SELECT, ENTRY_SELECT, QC_SELECT, IST_OFFSET_MIN,
   assembleHours, assembleDay, getQuality, getMaintenance, reportWindow,
   type HourRow,
 } from "@/lib/dailyReport";
+
+export type ShiftKey = "A" | "B" | "C";
+
+/** The twenty-four hour slots of a report day, in the order the plant runs
+ *  them: 06:00 through 05:00, A then B then C. The same labels the MIS sheet
+ *  uses (lib/misShiftHours), so a gap here names a slot the entry form has. */
+const DAY_SLOTS: { h: number; label: string; shift: ShiftKey }[] =
+  (["A", "B", "C"] as const).flatMap((shift) =>
+    SHIFT_HOURS[shift].map((label) => ({ h: Number(label.slice(0, 2)), label, shift })));
+
+/** The slots of `date` that have fully ELAPSED by `now` — the only ones a
+ *  shift could already have filed. A finished day has all twenty-four; the
+ *  in-progress day has as many as have ENDED, because the hour running right
+ *  now is not late, it is now. Both the discipline denominator and the
+ *  missing-hours list read this one function, so they can never disagree. */
+function elapsedSlots(date: string, now: number): typeof DAY_SLOTS {
+  const ended = Math.floor((now - reportWindow(date).from.getTime()) / 3_600_000);
+  return DAY_SLOTS.slice(0, Math.max(0, Math.min(24, ended)));
+}
 
 /** The current report day: 06:00→06:00 IST, so before 06:00 IST the plant is
  *  still on yesterday's sheet — identical to the daily report's clock. */
@@ -49,11 +69,16 @@ export type DayRow = {
   lines: string[];
   /** Area with the most lost minutes that day, for the narrative. */
   topArea: string | null;
+  /** Hour slots that had elapsed and were never filed, per shift — what the
+   *  MIS-discipline section expands into, and what its Fill buttons open. */
+  gaps: { shift: ShiftKey; hours: string[]; filed: number; possible: number }[];
+  /** Slots that had elapsed by the time this report ran: 24 on a finished day. */
+  slotsPossible: number;
 };
 
 /** The per-day and total figures for one month — mis only, shared by the
  *  headline month and the previous-month comparison column. */
-async function monthCore(month: string, capDay: string | null) {
+async function monthCore(month: string, capDay: string | null, now: number = Date.now()) {
   const all = daysInMonth(month);
   const dates = capDay ? all.filter((d) => d <= capDay) : all;
   if (!dates.length) return null;
@@ -147,10 +172,25 @@ async function monthCore(month: string, capDay: string | null) {
       maint.power.minutes += m.powerCuts.minutes;
       maint.power.hours += m.powerCuts.rows.length;
     }
+    // WHICH SHIFT DID NOT FILE. Matched on the slot's START HOUR, not on the
+    // label's spelling, so a row typed "6 - 7" still counts as filed.
+    const filed = new Set(hours.map((x) => x.h).filter((h): h is number => h != null));
+    const slots = elapsedSlots(date, now);
+    const gaps = (["A", "B", "C"] as const).map((shift) => {
+      const mine = slots.filter((s) => s.shift === shift);
+      return {
+        shift,
+        hours: mine.filter((s) => !filed.has(s.h)).map((s) => s.label),
+        filed: mine.filter((s) => filed.has(s.h)).length,
+        possible: mine.length,
+      };
+    }).filter((g) => g.hours.length > 0);
+
     return {
       date,
       made: day.made, target: day.target, pct: day.pct, lost: day.lost,
       hoursRun: day.hoursRun, hoursLogged: day.hoursTotal, onTarget: day.onTarget,
+      gaps, slotsPossible: slots.length,
       cause, lines, topArea,
     };
   });
@@ -164,6 +204,12 @@ async function monthCore(month: string, capDay: string | null) {
     daysRun: days.filter((d) => d.made > 0).length,
     daysLogged: days.filter((d) => d.hoursLogged > 0).length,
     hoursLogged: days.reduce((a, d) => a + d.hoursLogged, 0),
+    // The elapsed-hours denominator, summed from the same per-day slot lists
+    // the gap rows are built from — one source, so the headline share and the
+    // expanded list can never tell different stories.
+    hoursPossible: days.reduce((a, d) => a + d.slotsPossible, 0),
+    gapDays: days.filter((d) => d.gaps.length > 0).map((d) => ({ date: d.date, gaps: d.gaps })),
+    hoursMissing: days.reduce((a, d) => a + d.gaps.reduce((b, g) => b + g.hours.length, 0), 0),
     mix: [...mix.values()]
       .map((m) => ({ design: m.design, made: m.made, batches: m.batches.size, days: m.days.size }))
       .filter((m) => m.made > 0)
@@ -248,19 +294,28 @@ export async function getMonthlyReport(month: string) {
     made: core.made, target: core.target, pct: core.pct, lost: core.lost,
     daysRun: core.daysRun, daysLogged: core.daysLogged,
     // Discipline: of the hours the elapsed days could hold, how many were filed
-    // at all — and which days hold nothing. A silent day is a fact the month
+    // at all — and WHICH SHIFT left each gap. A silent hour is a fact the month
     // must show; the daily report cannot, because nobody opens it for that day.
     // The in-progress day contributes only its ELAPSED hours — the same
     // exemption zeroDays makes, applied to the denominator: charging today all
     // 24 at breakfast means a perfectly-filed plant can never read 100%.
-    hoursLogged: core.hoursLogged,
-    hoursPossible: (core.dates.length - (monthToDate ? 1 : 0)) * 24
-      + (monthToDate
-        ? Math.min(24, Math.max(0, Math.floor((Date.now() - reportWindow(today).from.getTime()) / 3_600_000) + 1))
-        : 0),
-    // The in-progress day is exempt: at 07:00 its sheet legitimately holds one
-    // row, and calling today "unfiled" at breakfast is noise, not discipline.
-    zeroDays: core.days.filter((d) => d.hoursLogged === 0 && !(monthToDate && d.date === today)).map((d) => d.date),
+    // The numerator is DISTINCT elapsed slots filled, not rows: an hour filed
+    // twice is one hour, and a row with no hour label fills no slot. Derived
+    // from the same slot arithmetic as the gaps, so "724 of 738" and the
+    // fourteen rows the list expands to are always the same fourteen.
+    hoursLogged: core.hoursPossible - core.hoursMissing,
+    hoursPossible: core.hoursPossible,
+    hoursMissing: core.hoursMissing,
+    /** Day by day, the shifts that left hours unfiled — what the discipline
+     *  section expands into, and what an admin's Fill button opens. */
+    gapDays: core.gapDays,
+    // A day is only silent once it has had hours to be silent IN: the
+    // in-progress day is exempt (at 07:00 its sheet legitimately holds one
+    // row, and calling today "unfiled" at breakfast is noise), and a day whose
+    // 06:00 has not arrived at all has nothing to file yet.
+    zeroDays: core.days
+      .filter((d) => d.hoursLogged === 0 && d.slotsPossible > 0 && !(monthToDate && d.date === today))
+      .map((d) => d.date),
     bestDay: ranked[0] ?? null, worstDay: ranked.length > 1 ? ranked[ranked.length - 1] : null,
     topDay: byMade[0]?.made ? byMade[0] : null,
     causes,

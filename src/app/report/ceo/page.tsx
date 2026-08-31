@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { getDailyReport, type DailyReport } from "@/lib/dailyReport";
 import { getMonthlyReport, currentReportDay, type MonthlyReport } from "@/lib/monthlyReport";
+import { isAdmin } from "@/lib/rbac";
 import { MonthlySheets, monthLong } from "./MonthlySheets";
 import { InfoDot, Explain, Line, Sum } from "./InfoDot";
 import { PrintButton } from "./PrintButton";
@@ -730,6 +731,11 @@ export default async function CeoReportPage({ searchParams }: { searchParams: Pr
     error = "Could not read the database.";
   }
 
+  // Only an admin gets the Fill buttons on the unfilled-hours list — the rest
+  // of that panel (which shift, which hours) is a fact everyone reading this
+  // report should see; entering a shift's sheet for it is not.
+  const canFill = monthly && (await isAdmin());
+
   const seg = "px-3 py-1.5 text-sm";
   const segOn = `${seg} bg-brand font-medium text-white`;
   const segOff = `${seg} bg-white text-gray-700 hover:bg-gray-50`;
@@ -790,7 +796,7 @@ export default async function CeoReportPage({ searchParams }: { searchParams: Pr
         )}
         {monthly && monthReport && monthReport.daysLogged > 0 && (
           <div className={s.scroller}>
-            <MonthlySheets r={monthReport} />
+            <MonthlySheets r={monthReport} canFill={canFill} />
           </div>
         )}
       </div>

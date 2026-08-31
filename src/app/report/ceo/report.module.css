@@ -171,6 +171,36 @@
 .dayLink:hover { border-bottom-color: var(--ink); color: var(--ink); }
 @media print { .dayLink { border-bottom: 0; } }
 
+/* THE UNFILED-HOURS PANEL, under MIS discipline. Screen only, like every
+ * other control on the sheet: it is a worklist for the office, not part of
+ * the document — the printed page keeps the discipline sentence above it and
+ * nothing else. Closed by default so the sheet reads as a sheet; one click
+ * opens the day-by-day list, one more opens the entry sheet for that shift. */
+.gaps { margin-top: 8px; border: 0.35px solid var(--rule); border-radius: 3px; }
+.gapsHead {
+  cursor: pointer; list-style: none; padding: 6px 9px;
+  font-size: 7.2pt; color: var(--ink); background: #FAFBFC;
+  display: flex; align-items: center; gap: 6px;
+}
+.gapsHead::-webkit-details-marker { display: none; }
+.gapsHead::before { content: "▸"; color: var(--grey); font-size: 6.5pt; }
+.gaps[open] > .gapsHead::before { content: "▾"; }
+.gapsHead:hover { background: #F2F5F8; }
+.gapsCount { color: var(--grey); font-weight: 400; }
+.gapsBody { padding: 2px 9px 8px; }
+.gapsBody .t { margin-top: 0; }
+.gapShift {
+  display: inline-block; min-width: 15px; text-align: center;
+  border: 0.35px solid var(--rule); border-radius: 2px; padding: 0 3px; margin-right: 5px;
+  font-weight: 700;
+}
+.fillBtn {
+  display: inline-block; padding: 1px 7px; border-radius: 3px;
+  border: 0.35px solid var(--rule); background: #fff; color: var(--ink);
+  font-size: 6.8pt; text-decoration: none; white-space: nowrap;
+}
+.fillBtn:hover { background: var(--ink); color: #fff; border-color: var(--ink); }
+
 /* the hint at the foot of a sheet. Screen only: a printed page cannot be
  * hovered, so telling the reader to hover would be a dead instruction. */
 .hint {
@@ -192,7 +222,7 @@
 }
 
 @media print {
-  .bar, .info, .hint { display: none !important; }
+  .bar, .info, .hint, .gaps { display: none !important; }
   .hoverWrap { border-bottom: 0; cursor: auto; }
   .hoverTip { display: none !important; }
   .sheet { box-shadow: none; margin: 0; width: auto; min-height: 0; padding: 0; background: #fff; }
