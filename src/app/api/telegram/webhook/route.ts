@@ -39,13 +39,19 @@ async function answer(cmd: string): Promise<string | null> {
     const anchor = s === "C" && Number(bucket.slice(0, 2)) < 12 ? plusDay(date, -1) : date;
     return shiftMessage(anchor, s);
   }
-  if (cmd === "/day") return dailyMessage(ymdIST());
-  if (cmd === "/yesterday") return dailyMessage(plusDay(ymdIST(), -1));
+  // The PRODUCTION day, 06:00→06:00 IST — the day getDowntimeReport windows on.
+  // On the IST calendar day, /day asked at 02:00 named a day that had not begun
+  // and answered "Slabs made: 0 · target 0" for a night shift that was running.
+  if (cmd === "/day") return dailyMessage(productionDay());
+  if (cmd === "/yesterday") return dailyMessage(plusDay(productionDay(), -1));
   if (cmd === "/help" || cmd === "/start") return HELP;
   return null; // silence for normal chatter
 }
 
 const HELP_ASK = "/ask &lt;question&gt; — e.g. /ask how many slabs did we lose to downtime this week?";
+
+/** Today's production day (06:00→06:00 IST). */
+const productionDay = () => new Date(Date.now() + (330 - 360) * 60_000).toISOString().slice(0, 10);
 
 export async function POST(req: Request) {
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET;

@@ -127,10 +127,14 @@ export function incidentInstant(date: string | null, hour: string | null): strin
   return new Date(wall - IST_OFFSET_MS).toISOString();
 }
 
-/** IST calendar day, "YYYY-MM-DD", for an instant. The window below and /mis
- *  both anchor on the IST day because that is the day the floor works to. */
+/** The PRODUCTION day, "YYYY-MM-DD", for an instant — 06:00→06:00 IST, the day
+ *  the floor works to and the day getDowntimeReport windows on. It was the IST
+ *  CALENDAR day, which between midnight and 06:00 named a day that had not
+ *  begun: the queue then asked for a range starting after it ended and rendered
+ *  an empty incident list for the exact six hours a night shift is logging its
+ *  stoppages. */
 export function istDay(nowMs: number): string {
-  return new Date(nowMs + IST_OFFSET_MS).toISOString().slice(0, 10);
+  return new Date(nowMs + IST_OFFSET_MS - 6 * 3600_000).toISOString().slice(0, 10);
 }
 
 /**

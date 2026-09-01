@@ -175,7 +175,14 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
           <div>
             <H2>Output</H2>
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-              <Kpi label="Slabs made (actual)" value={fmt(r.actualSlabs)} sub={r.misFallbackSlabs > 0 ? `incl. ${fmt(r.misFallbackSlabs)} from MIS hourly log — press entry pending` : "distinct slabs pressed"} />
+              {/* NAMED BY WHAT IT COUNTS. This is the PRESS count — distinct
+                  slab numbers the press recorded — which is deliberately not
+                  the same number as the CEO report's "slabs produced", the sum
+                  of what the hourly log DECLARED. The two differ by whatever
+                  the shift's declared ranges differ from the press rows, and
+                  reading one as a correction of the other is the mistake the
+                  caption exists to prevent. */}
+              <Kpi label="Slabs pressed (actual)" value={fmt(r.actualSlabs)} sub={r.misFallbackSlabs > 0 ? `incl. ${fmt(r.misFallbackSlabs)} from the MIS hourly log — press entry pending` : "distinct slabs pressed · the CEO report counts what the hourly log declared"} />
               <Kpi label="Achievable" value={fmt(r.achievable)} sub="target − downtime" />
               <Kpi label="Target" value={fmt(r.target)} sub={r.stdRate != null ? `${r.productiveHours}h productive · Std on ${fmt(r.stdHours)}/${fmt(r.ratedHours)} h` : `24/12 per hr × ${r.productiveHours}h productive`} />
               <Kpi label="Lost to downtime" value={fmt(r.lost)} sub="achievable - actual" className={r.lost > 0 ? "ring-1 ring-amber-300" : ""} />

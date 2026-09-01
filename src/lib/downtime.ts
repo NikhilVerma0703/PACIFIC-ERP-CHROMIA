@@ -93,6 +93,13 @@ export const classifyReason = (r: string): string => {
   if (u.includes("ELECTRICAL") || u.includes("MECHANICAL") || u.includes("FAULT ALARM") || u.includes("HMI") || u.includes("BELT DAMAGE")) return "breakdown";
   return "process";
 };
+/** The production day a PRESS instant falls on. press.date holds IST wall
+ *  clock, so shifting back six hours and taking the date part puts 00:00-05:59
+ *  on the night that began the day before — the same day reportDayOf gives the
+ *  MIS row for those hours. Both sides of this report must answer "which day"
+ *  the same way or the fallback below compares two different calendars. */
+const pressDayOf = (d: any) => new Date(new Date(d).getTime() - 6 * 3600e3).toISOString().slice(0, 10);
+
 const isRobo = (t: unknown) => String(t ?? "").trim().toLowerCase() === "robo";
 
 export async function getDowntimeReport(opts: { from?: string; to?: string; batch?: string; type?: string; allIncidents?: boolean }): Promise<DowntimeReport> {
@@ -105,10 +112,16 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   // day the plant means. Before 06:00 the running night still belongs to
   // yesterday's sheet, so "today" is yesterday's date until the shift ends.
   const todayKey = new Date(Date.now() + (330 - 360) * 60000).toISOString().slice(0, 10);
-  const fromStr = (opts.from && opts.from.trim()) || todayKey;
+  const fromStrRaw = (opts.from && opts.from.trim()) || todayKey;
   const toStrRaw = (opts.to && opts.to.trim()) || todayKey;
   // A production day that has not begun cannot be reported on.
   const toStr = toStrRaw > todayKey ? todayKey : toStrRaw;
+  // Clamped at BOTH ends. Clamping only the upper bound let a caller still on
+  // the IST calendar day (every caller, between 00:00 and 06:00) pass a `from`
+  // one day past the clamped `to` — and an inverted range does not error, it
+  // silently returns an all-zero report: the day loop never runs, the row
+  // filter matches nothing, target and actual are 0.
+  const fromStr = fromStrRaw > toStr ? toStr : fromStrRaw;
   const from = new Date(`${fromStr}T00:00:00.000Z`);
   // The FETCH runs one day past the range: an hour of the last night carries
   // the next date in its `date` column (the 00–05 slots), and dropping it
@@ -123,10 +136,17 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   const misWhere: any = batch ? { batchKey: batch } : { date: { gte: from, lte: fetchTo } };
   const sel: any = { id: true, date: true, hour: true, batch: true, batchKey: true, productionType: true, slabsPerHourActual: true, slabsPerHourStd: true, design: true, reasonForDeviation: true, details: true, rcaNo: true, actionTaken: true, sparesUsed: true, anyBreakdownYesNo: true, electricalInchargeName: true, mechanicalInchargeName: true };
   for (const d of DELAY_FIELDS) sel[d.col] = true;
-  // Press keeps its own date column as its day: a press row carries no hour
-  // label, so there is nothing to re-attribute — its date IS the day it was
-  // recorded against, and inventing an hour for it would be a guess.
-  const pressWhere: any = batch ? { batchKey: batch } : { date: { gte: from, lte: new Date(`${toStr}T23:59:59.999Z`) } };
+  // PRESS IS WINDOWED ON THE PRODUCTION DAY TOO. press.date is not a day label
+  // — it is a real instant (only 22 of 32,307 rows sit at midnight; mis.date by
+  // contrast is a label, 6,525 of 7,064 at midnight), stored as IST wall clock.
+  // Leaving it on calendar days while the MIS rows moved to 06:00→06:00 split
+  // the report down the middle: the target and downtime covered one window and
+  // the output another, and the entry-lag fallback below — which is armed by
+  // comparing press days against row days — fired on days that already had
+  // press rows and added them a second time. August read 6,991 slabs where the
+  // line pressed 6,082.
+  const pressWhere: any = batch ? { batchKey: batch }
+    : { date: { gte: new Date(`${fromStr}T06:00:00.000Z`), lt: new Date(`${addDays(toStr, 1)}T06:00:00.000Z`) } };
 
   const [rowsRaw, press]: [any[], any[]] = await Promise.all([
     db.mis.findMany({ where: misWhere, select: sel }).catch(() => [] as any[]),
@@ -213,7 +233,7 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   const pressDaySet = new Set<string>();
   for (const p of press) {
     if (p.batchKey) pressBatchSet.add(String(p.batchKey));
-    if (p.date) pressDaySet.add(dayKey(p.date));
+    if (p.date) pressDaySet.add(pressDayOf(p.date));
     const n = p.slabNumber;
     if (typeof n !== "number" || !Number.isFinite(n)) continue;
     slabSet.add(n);

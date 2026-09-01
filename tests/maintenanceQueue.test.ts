@@ -299,7 +299,7 @@ test("an MIS hour is naive IST and is converted to a real UTC instant", () => {
   assert.equal(incidentInstant("12/08/2026", "06 - 07"), null);
 });
 
-test("the default window is a week of IST days, not one", () => {
+test("the default window is a week of PRODUCTION days, not one", () => {
   // /mis defaults to today, which is right for a report and wrong for a queue:
   // an unanswered stoppage from Tuesday is more overdue than one from today.
   assert.equal(INBOX_DEFAULT_DAYS, 7);
@@ -307,7 +307,14 @@ test("the default window is a week of IST days, not one", () => {
   assert.equal(istDay(noon), "2026-08-14");
   assert.deepEqual(inboxWindow(noon), { from: "2026-08-08", to: "2026-08-14" });
   assert.deepEqual(inboxWindow(noon, 1), { from: "2026-08-14", to: "2026-08-14" });
-  // Just before IST midnight the day must not have rolled over yet.
-  assert.equal(istDay(Date.parse("2026-08-14T18:29:00.000Z")), "2026-08-14");
-  assert.equal(istDay(Date.parse("2026-08-14T18:30:00.000Z")), "2026-08-15");
+
+  // THE DAY TURNS AT 06:00 IST, NOT MIDNIGHT — the production day, the one
+  // getDowntimeReport windows on and the one the floor works to. On the old
+  // calendar day this queue asked for a range beginning after it ended for the
+  // six hours either side of midnight, and rendered an empty incident list
+  // precisely while the night shift was logging its stoppages.
+  assert.equal(istDay(Date.parse("2026-08-14T18:29:00.000Z")), "2026-08-14"); // 23:59 IST
+  assert.equal(istDay(Date.parse("2026-08-14T18:30:00.000Z")), "2026-08-14"); // 00:00 IST — same night
+  assert.equal(istDay(Date.parse("2026-08-15T00:29:00.000Z")), "2026-08-14"); // 05:59 IST — still that night
+  assert.equal(istDay(Date.parse("2026-08-15T00:30:00.000Z")), "2026-08-15"); // 06:00 IST — the day turns
 });
