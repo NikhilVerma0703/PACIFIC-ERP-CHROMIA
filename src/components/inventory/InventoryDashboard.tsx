@@ -908,6 +908,22 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
                     ))}
                   </div>
                 )}
+                {Array.isArray(detail.photos) && detail.photos.length > 0 && (
+                  <div>
+                    <h3 className="mb-2 text-sm font-semibold text-gray-900">Photos</h3>
+                    <div className="flex flex-wrap gap-3">
+                      {detail.photos.map((p: { id: string; filename: string; slot: string }) => (
+                        <a key={p.id} href={`/api/photo?id=${p.id}`} target="_blank" rel="noreferrer" className="block" title={p.filename}>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={`/api/photo?id=${p.id}`} alt={p.filename} className="h-28 w-28 rounded-lg border border-gray-200 object-cover" />
+                          <span className="mt-1 block text-center text-[11px] text-gray-500">
+                            {p.slot === "far" ? "Far — whole slab" : p.slot === "near" ? "Near — the defect" : "Photo"}
+                          </span>
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {detail.qc && (
                   <div>
                     <h3 className="mb-2 text-sm font-semibold text-gray-900">Latest QC record</h3>
@@ -950,9 +966,15 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
                     {detail.invoice.pi ? ` · PI ${detail.invoice.pi}` : ""}{detail.invoice.customer ? ` · ${detail.invoice.customer}` : ""} · {fmtAt(detail.invoice.at)}
                   </p>
                 )}
-                <div className="flex justify-end">
-                  <a href={`/slab?s=${detail.slabNumber}`} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark">Full production timeline →</a>
-                </div>
+                {/* A hand-entered slab has no production timeline to open: it
+                    exists BECAUSE the line never recorded it, so /slab would
+                    answer with an empty page. The button is for slabs the
+                    plant actually made rows for. */}
+                {detail.slab?.source !== "MANUAL_ENTRY" && (
+                  <div className="flex justify-end">
+                    <a href={`/slab?s=${detail.slabNumber}`} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark">Full production timeline →</a>
+                  </div>
+                )}
               </div>
             )}
           </div>

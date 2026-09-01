@@ -6,6 +6,7 @@ import { currentUser, rankOf, ROLE_RANK } from "@/lib/rbac";
 import { canSeeModel } from "@/lib/branch";
 import { operatorTableModels } from "@/lib/stationAccess";
 import { canUseSlabIntake } from "@/lib/inventory/intakeAccess";
+import { hasInventoryAccess } from "@/lib/inventory/access";
 
 const db = prisma as any;
 
@@ -30,7 +31,18 @@ export async function GET(request: Request) {
     const intakePhotoViewer =
       r.model === "FinishedSlab" &&
       canUseSlabIntake(role, String((me as { email?: string | null }).email ?? ""), process.env.SLAB_INTAKE_EMAILS);
-    if (!intakePhotoViewer) {
+    // AND THE INVENTORY AUDIENCE, for the same photos. The slab detail panel
+    // in Finished Goods now shows a slab's far/near shots, and the people that
+    // panel is FOR are refused by canSeeModel: it answers "no table access at
+    // all" for Commercial and Sales, so the thumbnails would have 403'd for
+    // exactly the role that reads the sheet most. Scoped the same way as the
+    // carve-out above — model "FinishedSlab" only, and decided by the module's
+    // own gate (hasInventoryAccess), so the panel and the picture agree on who
+    // may look. No other model is reachable through it.
+    const inventoryPhotoViewer =
+      r.model === "FinishedSlab" &&
+      hasInventoryAccess(role, String((me as { branch?: string | null }).branch ?? ""));
+    if (!intakePhotoViewer && !inventoryPhotoViewer) {
       if (!(await canSeeModel(r.model))) return Response.json({ error: "Not authorized" }, { status: 403 });
       // "Can SEE the record's table" is decided in two places for the tables
       // themselves, and this route used to apply only the first. canSeeModel

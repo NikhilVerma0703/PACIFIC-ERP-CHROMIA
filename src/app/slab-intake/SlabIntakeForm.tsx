@@ -77,6 +77,8 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
   // pressing Look up), and a save must write to the slab that was looked up,
   // never to whatever the box happens to hold at save time.
   const [lookedFor, setLookedFor] = useState("");
+  // The search box, so a cleared form puts the cursor where the next slab number goes.
+  const slabBox = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [issueBox, setIssueBox] = useState("");
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
@@ -195,13 +197,17 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
       }
       const r = await saveSlab(out);
       setNote({ text: r.message, ok: r.ok });
-      // After a successful save the row on the server is the new truth (a
-      // create in particular must flip the form to correction mode), so
-      // re-read it rather than trusting the copy that was just typed.
+      // SAVED MEANS DONE: the form clears itself and the cursor goes back to
+      // the slab-number box, because the next thing this person does is the
+      // next slab — leaving the saved one on screen invited a second save of
+      // a row already written, and left its photos looking un-attached. The
+      // confirmation sentence stays; everything else resets.
       if (r.ok) {
         setPhotos(NO_PHOTOS); setPhotoKey((k) => k + 1);
-        const again = await lookupSlab(lookedFor);
-        setLooked(again);
+        setLooked(null); setLookedFor("");
+        setDraft(emptyDraft); setIssueBox("");
+        setSlabInput("");
+        slabBox.current?.focus();
       }
     });
   };
@@ -261,6 +267,7 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
           <div className="min-w-[180px] flex-1 sm:max-w-xs">
             <label className="mb-1 block text-xs font-medium text-gray-600">Slab number</label>
             <input
+              ref={slabBox}
               className={inputCls} inputMode="numeric" placeholder="e.g. 144320"
               value={slabInput} onChange={(e) => setSlabInput(e.target.value)}
             />
