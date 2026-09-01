@@ -369,7 +369,12 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   // click must not navigate — a searchParams change re-keys the page segment, the root
   // loading skeleton swaps in and the collapse throws the scroll to the top). The Excel
   // export applies typeFilter itself, server-side, to match whatever view requested it.
-  const shown = incidents.sort((a, b) => (a.date ?? "").localeCompare(b.date ?? "") || hourNum(a.hour ?? "") - hourNum(b.hour ?? ""));
+  // ROTATED SO 06:00 LEADS THE DAY. `date` is the production day now, which
+  // runs 06:00 to 06:00 — so within one day the hours run 06,07…23,00…05, and
+  // the raw hour number puts that last stretch (the small hours of the night
+  // shift) at the FRONT of the day it belongs to the end of.
+  const dayRank = (h: string) => (hourNum(h) + 18) % 24;
+  const shown = incidents.sort((a, b) => (a.date ?? "").localeCompare(b.date ?? "") || dayRank(a.hour ?? "") - dayRank(b.hour ?? ""));
 
   return {
     from: fromStr, to: toStr, batch, typeFilter,
