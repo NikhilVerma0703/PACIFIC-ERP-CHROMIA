@@ -13,6 +13,7 @@ import { secondsToHHMM } from "@/lib/time";
 import type { SlabMode } from "@/lib/smartEntry";
 import { isRequiredField } from "@/lib/requiredFields";
 import { PhotoField } from "./PhotoField";
+import { PHOTO_SLOTS, hasPhotoPair, PAIR_TARGET, PAIR_HARD_MAX } from "@/lib/photoSlots";
 
 const guardedCreateRow = guardAction(createRow, SERVER_UNREACHABLE);
 
@@ -27,6 +28,22 @@ function nowLocalDatetime(): string {
 
 const inputCls = "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm transition focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
 
+/** The photo inputs for a slab entry. Polish QC gets the far/near pair the slab
+ *  -intake form uses — the same two views of the same defect, so a grade can be
+ *  looked at again later — but OPTIONAL here (owner, 2026-09-01): QC entry runs
+ *  slab after slab and must never be stopped by a camera. Every other station
+ *  keeps the single generic photo it has always had. Both post through
+ *  createRow → savePhotoFromForm, which stores whichever slots arrive. */
+function PhotoFields({ model }: { model: string }) {
+  if (!hasPhotoPair(model)) return <PhotoField />;
+  return (
+    <>
+      {PHOTO_SLOTS.map((p) => (
+        <PhotoField key={p.slot} field={p.field} label={p.title} hint={p.hint} target={PAIR_TARGET} hardMax={PAIR_HARD_MAX} />
+      ))}
+    </>
+  );
+}
 
 // Module-scope field component: keeps a stable component identity across renders
 // so uncontrolled inputs are NOT remounted (typed values survive state updates).
@@ -239,7 +256,7 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
         )}
         <div className="rounded-2xl border border-gray-200 bg-white p-4">
           <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">Slab details</div>
-          <div className={grid}>{slabF.map((f) => <SlabField key={f.prismaField} f={f} locked={false} def={f.prismaField === "qualityGrade" ? "Not graded yet" : ""} opts={options[f.prismaField]} operatorName={operatorName} unlocked={unlocked} onUnlock={(fld) => setUnlocked((s) => new Set(s).add(fld))} required={isRequiredField(model, f.prismaField)} />)}<PhotoField /></div>
+          <div className={grid}>{slabF.map((f) => <SlabField key={f.prismaField} f={f} locked={false} def={f.prismaField === "qualityGrade" ? "Not graded yet" : ""} opts={options[f.prismaField]} operatorName={operatorName} unlocked={unlocked} onUnlock={(fld) => setUnlocked((s) => new Set(s).add(fld))} required={isRequiredField(model, f.prismaField)} />)}<PhotoFields model={model} /></div>
         </div>
       </div>
 

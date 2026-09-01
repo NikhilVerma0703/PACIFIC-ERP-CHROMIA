@@ -12,6 +12,7 @@ import { THICKNESS_FIELDS, THICKNESS_OPTS, canonThickness } from "@/lib/thicknes
 import { OPERATOR_FIELDS } from "@/lib/operatorFields";
 import { isRequiredField } from "@/lib/requiredFields";
 import { PhotoField } from "./PhotoField";
+import { PHOTO_SLOTS, hasPhotoPair, PAIR_TARGET, PAIR_HARD_MAX } from "@/lib/photoSlots";
 import { isCurated } from "@/lib/categoricalFields";
 import { classifyMixer, mixerFullLabel } from "@/lib/mixerLabels";
 import type { SiloFormInfo } from "@/lib/silo";
@@ -321,7 +322,19 @@ export function RecordEditor({ model, id, fields, values, mode, options = {}, hi
         </div>
       )}
 
-      <div className="mb-4 max-w-sm"><PhotoField /></div>
+      {/* The same slots the record's own entry form offers, so a photo missed
+          at the machine — or a second, better one — can be added from tables
+          (owner, 2026-09-01). Added, not replaced: the strip above this form
+          keeps every photo, because a defect photo is evidence. */}
+      {hasPhotoPair(model) ? (
+        <div className="mb-4 grid max-w-2xl grid-cols-1 gap-4 sm:grid-cols-2">
+          {PHOTO_SLOTS.map((p) => (
+            <PhotoField key={p.slot} field={p.field} label={p.title} hint={p.hint} target={PAIR_TARGET} hardMax={PAIR_HARD_MAX} />
+          ))}
+        </div>
+      ) : (
+        <div className="mb-4 max-w-sm"><PhotoField /></div>
+      )}
       <div className="sticky bottom-0 -mx-5 mt-6 flex items-center justify-between gap-3 border-t border-gray-200 bg-white/85 px-5 py-3 backdrop-blur safe-bottom">
         <div className="text-sm">{delMsg ? <span className="text-red-600">{delMsg}</span> : msg === "ok" ? <span className="text-green-600">Saved &#10003;</span> : msg?.startsWith("✓") ? <span className="text-green-600">{msg}</span> : msg ? <span className="text-red-600">{msg}</span> : <span className="text-gray-400">{editable.length} editable fields</span>}</div>
         <div className="flex items-center gap-2">

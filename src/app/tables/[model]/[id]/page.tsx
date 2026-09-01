@@ -8,6 +8,7 @@ import { RecordEditor } from "@/components/RecordEditor";
 import { canSeeModel } from "@/lib/branch";
 import { operatorTableModels } from "@/lib/stationAccess";
 import { photosForRecord } from "@/lib/entryPhoto";
+import { slotOfFilename } from "@/lib/photoSlots";
 import { getSiloFormStatus, type SiloFormInfo } from "@/lib/silo";
 import { RECORD_SMART } from "@/lib/recordSmart";
 import { isManager } from "@/lib/rbac";
@@ -42,6 +43,11 @@ export default async function EditRecord({ params }: { params: Promise<{ model: 
                 path of the editor's hydration; the classes still size the box. */}
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={`/api/photo?id=${ph.id}`} alt={ph.filename} width={96} height={96} loading="lazy" decoding="async" className="h-24 w-24 object-cover" />
+            {/* far / near, read back from the filename prefix — without it the
+                two views of one defect are a pair of unlabelled thumbnails. */}
+            {slotOfFilename(ph.filename) && (
+              <span className="block bg-gray-50 px-1 py-0.5 text-center text-[10px] font-medium uppercase tracking-wide text-gray-500">{slotOfFilename(ph.filename)}</span>
+            )}
           </a>
         ))}
       </div>

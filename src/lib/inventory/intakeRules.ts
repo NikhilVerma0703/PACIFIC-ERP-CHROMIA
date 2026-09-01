@@ -1,7 +1,7 @@
 // Pure rules for the slab intake form (/slab-intake) — parsing, vocabulary and
 // validation, with every refusal a sentence that names its reason. No imports
-// beyond grading.ts (itself import-free), so node --test reaches all of it
-// directly (tests/slabIntakeAccess.test.ts).
+// beyond grading.ts and photoSlots.ts (both import-free), so node --test
+// reaches all of it directly (tests/slabIntakeAccess.test.ts).
 // Explicit .ts extension, as sampling/actions.ts does: node's strict ESM
 // resolution (node --test) needs it, and the bundler is indifferent.
 import { TRANSITIONS } from "./grading.ts";
@@ -43,19 +43,20 @@ export const FIELD_LABEL: Record<string, string> = {
   notes: "notes",
 };
 
-/** The two mandatory defect photos (owner, 2026-08-29: "add 2 photo one far
- *  photo and one near photo of the defect mandatory"). One row each in
- *  entry_photo against the FinishedSlab id; the filename prefix is what keeps
- *  the two slots tellable apart when read back. `field` is the FormData name
- *  on the wire, `label` the plant-language sentence fragment refusals use,
- *  `short` the fragment confirmations use. Here rather than in actions.ts
- *  because a "use server" file may export only async functions, and the client
- *  form needs the field names too. */
-export const DEFECT_PHOTOS = [
-  { slot: "far", field: "__photo_far", prefix: "far-", label: "far photo (the whole slab)", short: "far photo" },
-  { slot: "near", field: "__photo_near", prefix: "near-", label: "near photo (close on the defect)", short: "near photo" },
-] as const;
-export type DefectPhotoSlot = (typeof DEFECT_PHOTOS)[number]["slot"];
+/** The two defect photos (owner, 2026-08-29: "add 2 photo one far photo and
+ *  one near photo of the defect mandatory"). One row each in entry_photo
+ *  against the FinishedSlab id; the filename prefix is what keeps the two
+ *  slots tellable apart when read back.
+ *
+ *  The PAIR ITSELF now lives in lib/photoSlots, because the Polish QC form and
+ *  the tables editor carry the same two photographs of the same slab (owner,
+ *  2026-09-01) and a second copy of the field names would drift. What stays
+ *  this form's own is the RULE about them — here they are mandatory — which is
+ *  written in actions.ts and SlabIntakeForm.tsx, not in the list. Re-exported
+ *  under the old name so this module remains the intake form's one vocabulary,
+ *  and with the .ts extension so node --test still resolves the chain. */
+export { PHOTO_SLOTS as DEFECT_PHOTOS } from "../photoSlots.ts";
+export type { PhotoSlotName as DefectPhotoSlot } from "../photoSlots.ts";
 
 /** What a save carries. Strings are trimmed-or-null; qualityIssue is the whole
  *  list (chips), replaced as a set. */

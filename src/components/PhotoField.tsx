@@ -7,6 +7,7 @@
 // EXIF rotation is applied by the browser decode on Android Chrome >=81 /
 // iOS Safari >=13.4 (our fleet), so the re-encoded JPEG is upright.
 import { useRef, useState } from "react";
+import { SINGLE_PHOTO_FIELD } from "@/lib/photoSlots";
 
 const MAX_DIM = 1920;          // longest edge after downscale
 const TARGET = 2 * 1024 * 1024; // aim under 2 MB on the wire
@@ -55,7 +56,23 @@ export async function compressPhoto(
   return new File([best], f.name.replace(/\.\w+$/, "") + ".jpg", { type: "image/jpeg" });
 }
 
-export function PhotoField() {
+/** One optional photo input. Defaults are the single generic photo every entry
+ *  form has always carried (field __photo, this file's own size limits); a form
+ *  carrying the far/near PAIR passes the slot's field name and the tighter pair
+ *  budget from lib/photoSlots, since two photos share one request body. */
+export function PhotoField({
+  field = SINGLE_PHOTO_FIELD,
+  label = "Photo",
+  hint,
+  target = TARGET,
+  hardMax = HARD_MAX,
+}: {
+  field?: string;
+  label?: string;
+  hint?: string;
+  target?: number;
+  hardMax?: number;
+} = {}) {
   const [state, setState] = useState<"" | "busy" | "ready" | "off">("");
   const gen = useRef(0);
 
@@ -70,8 +87,8 @@ export function PhotoField() {
     try { input.files = new DataTransfer().files; } catch { input.value = ""; }
     setState("busy");
     let use: File | null = null;
-    try { use = await compressPhoto(f); } catch { use = null; }
-    if (!use && f.size <= HARD_MAX) use = f;
+    try { use = await compressPhoto(f, { target, hardMax }); } catch { use = null; }
+    if (!use && f.size <= hardMax) use = f;
     if (gen.current !== my) return; // a newer selection took over
     if (!use) {
       setState("off");
@@ -92,13 +109,14 @@ export function PhotoField() {
   return (
     <label className="block">
       <span className="mb-1 flex items-center gap-1.5 text-xs font-medium text-gray-600">
-        Photo <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">optional</span>
+        {label} <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">optional</span>
         {state === "busy" && <span className="text-[10px] text-amber-600">compressing…</span>}
         {state === "ready" && <span className="text-[10px] text-emerald-600">✓ ready</span>}
       </span>
+      {hint && <span className="mb-1 block text-[11px] text-gray-400">{hint}</span>}
       <input
         type="file"
-        name="__photo"
+        name={field}
         accept="image/*"
         capture="environment"
         onChange={onChange}

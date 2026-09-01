@@ -20,6 +20,7 @@ import { useMemo, useRef, useState, useTransition } from "react";
 import { Card, H2 } from "@/components/ui";
 import { compressPhoto } from "@/components/PhotoField";
 import { GRADE_OPTIONS, SLAB_STATUSES, DEFECT_PHOTOS, type DefectPhotoSlot } from "@/lib/inventory/intakeRules";
+import { PAIR_TARGET, PAIR_HARD_MAX } from "@/lib/photoSlots";
 import { Lightbox, type LightboxPhoto } from "@/components/Lightbox";
 import { lookupSlab, saveSlab, type LookupRes, type QcReference, type SlabPhotos } from "./actions";
 
@@ -31,11 +32,9 @@ const STATUS_LABEL: Record<string, string> = {
   CHROMIA: "At Chromia (printing)",
 };
 
-// TWO photos share one server-action request, and Vercel rejects bodies over
-// ~4.5 MB — so each is compressed tighter than PhotoField's single-photo
-// limits: aim 1.6 MB, never post over 2 MB, and the pair stays under the cap.
-const PHOTO_TARGET = 1_600_000;
-const PHOTO_HARD_MAX = 2_000_000;
+// TWO photos share one request and the body caps at ~4.5 MB — the figures live
+// in photoSlots with the pair, because the QC form carries the same two photos
+// under the same budget and the two must not drift apart.
 const NO_PHOTOS: Record<DefectPhotoSlot, { file: File | null; state: "" | "busy" | "ready" | "off" }> =
   { far: { file: null, state: "" }, near: { file: null, state: "" } };
 const GRADE_LABEL: Record<string, string> = {
@@ -108,8 +107,8 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
     if (f.size <= 500_000) { setPhotos((p) => ({ ...p, [slot]: { file: f, state: "ready" } })); return; }
     setPhotos((p) => ({ ...p, [slot]: { file: null, state: "busy" } }));
     let use: File | null = null;
-    try { use = await compressPhoto(f, { target: PHOTO_TARGET, hardMax: PHOTO_HARD_MAX }); } catch { use = null; }
-    if (!use && f.size <= PHOTO_HARD_MAX) use = f;
+    try { use = await compressPhoto(f, { target: PAIR_TARGET, hardMax: PAIR_HARD_MAX }); } catch { use = null; }
+    if (!use && f.size <= PAIR_HARD_MAX) use = f;
     if (photoGen.current[slot] !== my) return; // a newer pick took over
     setPhotos((p) => ({ ...p, [slot]: use ? { file: use, state: "ready" } : { file: null, state: "off" } }));
   };
