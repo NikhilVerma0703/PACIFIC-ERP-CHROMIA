@@ -467,9 +467,21 @@ export async function saveSlab(fd: FormData): Promise<SaveRes> {
     }
     if ("batchNumber" in data) data.batchKey = d.batchNumber ? normalizeBatch(d.batchNumber) : null;
 
+    // A slab that goes through this form is approved, even when nothing else
+    // changed. Opening a hidden slab and pressing Save IS the statement that
+    // the stock is real — and it is the obvious way somebody clears a slab
+    // they cannot find in inventory. Approving after the "nothing changed"
+    // return below would have skipped exactly that case.
+    const appr = await approveDesignBatch(d.design, d.batchNumber, by);
+    if (appr.approved) await writeSlabEvent(slabNumber, "sales_approved", { field: "design/batch", newValue: `${d.design ?? "(no design)"} / ${d.batchNumber ?? "-"}`, by, source: SOURCE });
+
     // A photo alone IS a change — adding the missing near photo must not be
     // answered with "nothing changed".
-    if (!events.length && provided.length === 0) return { ok: true, message: savedSentence(slabNumber, false, []) };
+    if (!events.length && provided.length === 0) {
+      revalidatePath("/inventory");
+      const only = approvalNote(appr, d.design, d.batchNumber);
+      return { ok: true, message: [savedSentence(slabNumber, false, []), only].filter(Boolean).join(" ") };
+    }
 
     if (events.length) {
       await db.finishedSlab.update({ where: { slabNumber }, data });
@@ -477,10 +489,6 @@ export async function saveSlab(fd: FormData): Promise<SaveRes> {
         await writeSlabEvent(slabNumber, "manual_correction", { field: e.field, oldValue: e.oldValue, newValue: e.newValue, by, source: SOURCE });
     }
     const ph = await storeDefectPhotos(fd, cur.id, slabNumber, by, provided);
-    // On a correction too: the design or batch may be exactly what was fixed,
-    // and the corrected pair is the one that has to be on the list.
-    const appr = await approveDesignBatch(d.design, d.batchNumber, by);
-    if (appr.approved) await writeSlabEvent(slabNumber, "sales_approved", { field: "design/batch", newValue: `${d.design ?? "(no design)"} / ${d.batchNumber ?? "-"}`, by, source: SOURCE });
     revalidatePath("/inventory");
     // A photo-ONLY save where nothing stored is a failure, plainly: no field
     // changed, no photo landed, so nothing on the server moved — a green "ok"
