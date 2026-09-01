@@ -2,6 +2,7 @@
 // cards always describe exactly what the table shows.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
+import { approvalKey, approvalKeyString, NO_DESIGN } from "@/lib/inventory/approvalKey";
 import { normalizeBatch } from "@/lib/normalizeBatch";
 import { NONE, customerKey } from "@/lib/inventory/filterValues";
 
@@ -92,15 +93,16 @@ export async function getUnapprovedSlabNumbers(strict = false): Promise<number[]
       db.$queryRaw`SELECT design FROM fg_sales_hidden_design WHERE batch = ''`,
     ]);
     const amap = new Map<string, string>((aliases as any[]).map((x) => [x.variant, x.canonical]));
-    const SEP = "\u0000"; // can never appear in names
-    const ok = new Set<string>((approved as any[]).map((a) => `${a.design}${SEP}${a.batch}`));
+    // The key is built in ONE place (lib/inventory/approvalKey), because the
+    // slab intake form writes approvals against it: two derivations meant the
+    // form could store a row this lookup never checks.
+    const ok = new Set<string>((approved as any[]).map((a) => approvalKeyString({ design: a.design, batch: a.batch })));
     const hidden = new Set<string>((hiddenRows as any[]).map((h) => h.design));
-    const { displayBatch } = await import("@/lib/batchDisplay");
     const pendingPairs: { design: string | null; batch: string | null }[] = [];
     for (const c of combos as any[]) {
-      const canon = amap.get(c.design ?? "(no design)") ?? (c.design ?? "(no design)");
-      const disp = c.batch == null ? "-" : displayBatch(c.batch);
-      if (hidden.has(canon) || !ok.has(`${canon}${SEP}${disp}`)) pendingPairs.push({ design: c.design ?? null, batch: c.batch ?? null });
+      const canon = amap.get(c.design ?? NO_DESIGN) ?? (c.design ?? NO_DESIGN);
+      const key = approvalKey(canon, c.batch);
+      if (hidden.has(key.design) || !ok.has(approvalKeyString(key))) pendingPairs.push({ design: c.design ?? null, batch: c.batch ?? null });
     }
     if (!pendingPairs.length) return [];
     const rows: any[] = await db.finishedSlab.findMany({

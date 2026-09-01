@@ -11,7 +11,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { slabIntakeGate } from "@/lib/inventory/intakeGate";
 import { writeSlabEvent, canonicalDesign } from "@/lib/inventory/finishedSlab";
-import { displayBatch } from "@/lib/batchDisplay";
+import { approvalKey, type ApprovalKey } from "@/lib/inventory/approvalKey";
 import { canonicalGrade } from "@/lib/inventory/grading";
 import { normalizeBatch } from "@/lib/normalizeBatch";
 import { photosForRecord, requiredPhotoProblem, saveRequiredPhoto } from "@/lib/entryPhoto";
@@ -118,21 +118,20 @@ const qcRefOf = (qc: any): QcReference => ({
  */
 async function approveDesignBatch(
   design: string | null, batchNumber: string | null, by: string | null,
-): Promise<{ approved: boolean; designHidden: boolean; failed: boolean }> {
+): Promise<{ approved: boolean; designHidden: boolean; failed: boolean; key?: ApprovalKey }> {
   try {
-    const canon = (await canonicalDesign(design)) ?? "(no design)";
-    // MIRROR THE GATE EXACTLY, including its treatment of the empty string:
-    // getUnapprovedSlabNumbers writes "-" only for a NULL batch and otherwise
-    // calls displayBatch, which turns "" into an em dash. Reading "" as "-"
-    // here would write a key the gate never looks up — the approval would be
-    // stored and the slab would stay hidden.
-    const disp = batchNumber == null ? "-" : displayBatch(batchNumber);
+    // THE SAME FUNCTION THE GATE USES — not a copy of its rules. The copy is
+    // what broke: an earlier version read an empty batch as "-" while the gate
+    // reads it through displayBatch, so the approval was stored under a key
+    // nothing looks up, and the slab stayed hidden while the screen said it
+    // had been approved.
+    const { design: canon, batch: disp } = approvalKey(await canonicalDesign(design), batchNumber);
     const hidden: any[] = await db.$queryRaw`SELECT 1 FROM fg_sales_hidden_design WHERE design = ${canon} AND batch = '' LIMIT 1`;
     const inserted = await db.$executeRaw`
       INSERT INTO fg_sales_approved_batch (design, batch, approved_by)
       VALUES (${canon}, ${disp}, ${`${by ?? "slab intake"} (slab intake form)`})
       ON CONFLICT (design, batch) DO NOTHING`;
-    return { approved: inserted > 0, designHidden: hidden.length > 0, failed: false };
+    return { approved: inserted > 0, designHidden: hidden.length > 0, failed: false, key: { design: canon, batch: disp } };
   } catch (e) {
     console.error("[slab-intake] could not approve design/batch for the sales register", e);
     return { approved: false, designHidden: false, failed: true };
@@ -379,7 +378,7 @@ export async function saveSlab(fd: FormData): Promise<SaveRes> {
       // required, so the rule heals rather than silently lapsing).
       const ph = await storeDefectPhotos(fd, created.id, slabNumber, by, DEFECT_PHOTOS);
       const appr = await approveDesignBatch(d.design, d.batchNumber, by);
-      if (appr.approved) await writeSlabEvent(slabNumber, "sales_approved", { field: "design/batch", newValue: `${d.design ?? "(no design)"} / ${d.batchNumber ?? "-"}`, by, source: SOURCE });
+      if (appr.approved && appr.key) await writeSlabEvent(slabNumber, "sales_approved", { field: "design/batch", newValue: `${appr.key.design} / ${appr.key.batch}`, by, source: SOURCE });
       revalidatePath("/inventory");
       const note = approvalNote(appr, d.design, d.batchNumber);
       return { ok: true, message: [savedSentence(slabNumber, true, []), ph.warning, note].filter(Boolean).join(" ") };
@@ -473,7 +472,7 @@ export async function saveSlab(fd: FormData): Promise<SaveRes> {
     // they cannot find in inventory. Approving after the "nothing changed"
     // return below would have skipped exactly that case.
     const appr = await approveDesignBatch(d.design, d.batchNumber, by);
-    if (appr.approved) await writeSlabEvent(slabNumber, "sales_approved", { field: "design/batch", newValue: `${d.design ?? "(no design)"} / ${d.batchNumber ?? "-"}`, by, source: SOURCE });
+    if (appr.approved && appr.key) await writeSlabEvent(slabNumber, "sales_approved", { field: "design/batch", newValue: `${appr.key.design} / ${appr.key.batch}`, by, source: SOURCE });
 
     // A photo alone IS a change — adding the missing near photo must not be
     // answered with "nothing changed".
