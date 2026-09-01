@@ -537,6 +537,15 @@ function SheetQualityMonth({ r, canFill }: { r: MonthlyReport; canFill: boolean 
           ? "Every elapsed day holds at least one entry."
           : <>Nothing at all was filed on <strong>{r.zeroDays.length} day{r.zeroDays.length === 1 ? "" : "s"}</strong>: {r.zeroDays.map(dayLabel).join(", ")} — those days show dashes above, not zeros, because an unfiled day is a gap in the record, not a silent line.</>}
       </p>
+      {r.wideHours > 0 && (
+        <p className={s.note}>
+          <strong>{num(r.wideHours)} hour{r.wideHours === 1 ? "" : "s"} set aside</strong> for an impossible slab
+          range — a range wider than 60 slabs in one hour, which the line cannot make, on{" "}
+          {r.wideDays.map(dayLabel).join(", ")}. {r.wideHours === 1 ? "It makes" : "They make"} no claim in any
+          figure above, the same way the entry form refuses such a range today and the scoreboard already ignores
+          one. Correct the range on the MIS row and the {r.wideHours === 1 ? "hour returns" : "hours return"}.
+        </p>
+      )}
       <MisGaps r={r} canFill={canFill} />
 
       <div className={s.foot}>

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { getDailyReport, type DailyReport } from "@/lib/dailyReport";
+import { MAX_SLABS_PER_HOUR } from "@/lib/shiftScoreMath";
 import { getMonthlyReport, currentReportDay, type MonthlyReport } from "@/lib/monthlyReport";
 import { isAdmin } from "@/lib/rbac";
 import { MonthlySheets, monthLong } from "./MonthlySheets";
@@ -188,6 +189,7 @@ function SheetProduction({ r }: { r: DailyReport }) {
         cent of standard rate, and lost <strong>{day.lost} minutes</strong> {DASH} {hmWords(day.lost)} of the
         twenty-four {DASH} to stoppages. The line ran <strong>{designs.join(" and ")}</strong>.{" "}
         {blank > 0 && `${blank === 1 ? "One hour" : `${opens(blank)} hours`} carried no output at all and ${blank === 1 ? "is" : "are"} shown as such; ${blank === 1 ? "it is" : "they are"} left out of the target rather than counted as misses. `}
+        {day.wideHours > 0 && <><strong>{day.wideHours === 1 ? "One hour was" : `${opens(day.wideHours)} hours were`} set aside</strong>: the slab range typed on {day.wideHours === 1 ? "it" : "them"} is wider than {MAX_SLABS_PER_HOUR} slabs, which the line cannot make in an hour, so {day.wideHours === 1 ? "it makes" : "they make"} no claim here — the same rule the entry form and the scoreboard already apply. Correct the range on the MIS row and the {day.wideHours === 1 ? "hour" : "hours"} returns. </>}
         {best && worst && <>{best.letter} shift ran best at {best.pct?.toFixed(1)} per cent; {worst.letter} shift ran worst at {worst.pct?.toFixed(1)} per cent.</>}
         {best && !worst && <>Only {best.letter} shift declared output, at {best.pct?.toFixed(1)} per cent.</>}
       </p>

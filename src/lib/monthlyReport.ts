@@ -68,6 +68,8 @@ export type DayRow = {
   date: string;
   made: number; target: number; pct: number | null; lost: number;
   hoursRun: number; hoursLogged: number; onTarget: number;
+  /** Hours set aside for an impossible slab range — see slabsOf. */
+  wideHours: number;
   cause: { cleaning: number; power: number; process: number; breakdown: number };
   /** "D1430, Carrara Cloud" strings, in the order the line ran them. */
   lines: string[];
@@ -228,6 +230,7 @@ async function monthCore(month: string, capDay: string | null, now: number = Dat
       date,
       made: day.made, target: day.target, pct: day.pct, lost: day.lost,
       hoursRun: day.hoursRun, hoursLogged: day.hoursTotal, onTarget: day.onTarget,
+      wideHours: day.wideHours,
       gaps, slotsPossible: slots.length,
       cause, lines, topArea,
     };
@@ -344,6 +347,9 @@ export async function getMonthlyReport(month: string) {
     hoursLogged: core.hoursPossible - core.hoursMissing,
     hoursPossible: core.hoursPossible,
     hoursMissing: core.hoursMissing,
+    /** Hours the month set aside for an impossible slab range, and which days. */
+    wideHours: core.days.reduce((a, d) => a + d.wideHours, 0),
+    wideDays: core.days.filter((d) => d.wideHours > 0).map((d) => d.date),
     /** Day by day, the shifts that left hours unfiled — what the discipline
      *  section expands into, and what an admin's Fill button opens. */
     gapDays: core.gapDays,

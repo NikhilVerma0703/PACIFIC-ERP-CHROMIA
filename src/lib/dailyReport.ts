@@ -18,6 +18,7 @@
 // again, prefer it — but check coverage first, do not assume.
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
+import { MAX_SLABS_PER_HOUR } from "@/lib/shiftScoreMath";
 
 export const IST_OFFSET_MIN = 330;
 export type ShiftLetter = "A" | "B" | "C";
@@ -49,13 +50,31 @@ const FACE: Record<string, string> = { BS: "Bottom side", TS: "Top side" };
 function slabsOf(s: number | null, e: number | null): number | null {
   if (s == null || e == null) return null;
   const n = e - s + 1;
-  return n > 0 ? n : null;
+  if (n <= 0) return null;
+  // AN IMPOSSIBLE RANGE IS A TYPO, NOT A CLAIM — the same rule the entry form
+  // refuses new rows with and the scoreboard already ignores hours by
+  // (MAX_SLABS_PER_HOUR, 3x the widest hour this plant has ever worked). Rows
+  // typed before that guard existed are still in the table, and this report
+  // was the last place counting them: one hour on 26 July reads 15078→150590
+  // and put 135,513 slabs into July's month, and two June nights typed
+  // 144248→174257 and 143454→173462 for 30,000 each. Left as null, the hour
+  // makes no claim at all — exactly like an hour with no range — and the
+  // report says how many it set aside rather than quietly dropping them.
+  if (n >= MAX_SLABS_PER_HOUR) return null;
+  return n;
 }
+
+/** Whether an hour's slab range is one the plant could physically have made. */
+const rangePlausible = (s: number | null, e: number | null): boolean => {
+  if (s == null || e == null) return true;   // no range is not a bad range
+  const n = e - s + 1;
+  return n > 0 && n < MAX_SLABS_PER_HOUR;
+};
 
 export type HourRow = {
   hour: string | null; h: number | null; shift: ShiftLetter | null;
   incharge: string | null; batch: string | null; design: string | null;
-  made: number | null; std: number | null; lost: number;
+  made: number | null; wideRange: boolean; std: number | null; lost: number;
   delay: { process: number; cleaning: number; breakdown: number; power: number };
   reasons: string[]; details: string | null; area: string[];
   breakdown: boolean; spares: string | null; actionTaken: string | null; rca: string | null;
@@ -101,6 +120,9 @@ export function assembleHours(mis: MisReportRow[]): HourRow[] {
       incharge: r.productionInchargeName ?? r.submittedBy ?? null,
       batch: r.batch, design: r.design,
       made: slabsOf(r.startingSlabNumber, r.endingSlabNumber),
+      /** The range was typed impossibly wide — the hour is set aside, and the
+       *  report says how many it set aside rather than dropping them silently. */
+      wideRange: !rangePlausible(r.startingSlabNumber, r.endingSlabNumber),
       std: r.slabsPerHourStd ?? null,
       lost: (r.processDelayDurationMinutes ?? 0) + (r.cleaningDelayDurationMinutes ?? 0)
           + (r.breakdownDelayDurationMechanicalOrElectricalMinutes ?? 0) + (r.poweroutDelayDurationMinutes ?? 0),
@@ -139,6 +161,8 @@ export function assembleDay(hours: HourRow[]) {
     lost: shifts.reduce((a, s) => a + s.lost, 0),
     hoursRun: hours.filter((x) => x.made != null).length,
     hoursTotal: hours.length,
+    /** Hours whose slab range is an impossible width and were set aside. */
+    wideHours: hours.filter((x) => x.wideRange).length,
     onTarget: hours.filter((x) => x.made != null && x.std != null && x.made >= x.std && x.lost === 0).length,
     pct: 0 as number | null,
   };

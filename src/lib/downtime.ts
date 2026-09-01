@@ -60,7 +60,29 @@ export interface DowntimeReport {
 }
 
 const r0 = (n: number) => Math.round(n);
+/** The `date` column's own label. It is the IST day stored at UTC midnight, so
+ *  reading it back with toISOString is exact — this is a LABEL, not an instant. */
 const dayKey = (d: any) => new Date(d).toISOString().slice(0, 10);
+/** n days from a day label. UTC arithmetic: a label has no 23- or 25-hour variant. */
+const addDays = (key: string, n: number) =>
+  new Date(Date.parse(`${key}T00:00:00.000Z`) + n * 864e5).toISOString().slice(0, 10);
+/**
+ * THE PRODUCTION DAY A LOGGED HOUR BELONGS TO, 06:00→06:00 IST.
+ *
+ * The MIS sheet files an hour under its `date` column plus its hour label, and
+ * stores the 00–05 slots against the NEXT date — so a night that began on the
+ * 18th carries date = 19th for its last six hours. Keying on the date column
+ * alone therefore split every night in half and charged the small hours to a
+ * day whose shift never worked them. This is the same rule the entry sheet
+ * itself uses (wantDay in app/entry/mis/page.tsx) and the same day the CEO
+ * report means.
+ */
+const reportDayOf = (dateCol: any, hour: unknown): string | null => {
+  if (!dateCol) return null;
+  const key = dayKey(dateCol);
+  const h = hour ? Number(String(hour).slice(0, 2)) : NaN;
+  return Number.isFinite(h) && h < 6 ? addDays(key, -1) : key;
+};
 // Reasons are one multiselect, not tagged to a delay type — classify by keyword so a
 // type-filtered row can show only ITS reasons (e.g. breakdown: the machine failures,
 // not MATERIAL DELAY). Unmatched reasons fall to "process".
@@ -79,23 +101,46 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   // calendar day, and never future-logged hours).
   const IST_MS = 330 * 60000;
   const istNow = new Date(Date.now() + IST_MS);
-  const fromStr = (opts.from && opts.from.trim()) || istNow.toISOString().slice(0, 10);
-  const toStr = (opts.to && opts.to.trim()) || istNow.toISOString().slice(0, 10);
+  // The PRODUCTION day, 06:00→06:00 IST — the day the CEO report means, and the
+  // day the plant means. Before 06:00 the running night still belongs to
+  // yesterday's sheet, so "today" is yesterday's date until the shift ends.
+  const todayKey = new Date(Date.now() + (330 - 360) * 60000).toISOString().slice(0, 10);
+  const fromStr = (opts.from && opts.from.trim()) || todayKey;
+  const toStrRaw = (opts.to && opts.to.trim()) || todayKey;
+  // A production day that has not begun cannot be reported on.
+  const toStr = toStrRaw > todayKey ? todayKey : toStrRaw;
   const from = new Date(`${fromStr}T00:00:00.000Z`);
-  let toEnd = new Date(`${toStr}T23:59:59.999Z`);
-  if (toEnd > istNow) toEnd = istNow;
+  // The FETCH runs one day past the range: an hour of the last night carries
+  // the next date in its `date` column (the 00–05 slots), and dropping it
+  // would silently shorten the very night the range asked for. Rows are then
+  // placed by reportDayOf and anything outside [fromStr, toStr] is discarded —
+  // including the small hours of the night BEFORE the range, which carry
+  // fromStr in their date column but belong to the day before it.
+  const fetchTo = new Date(`${addDays(toStr, 1)}T23:59:59.999Z`);
   const batch = opts.batch && opts.batch.trim() ? normalizeBatch(opts.batch) : null;
   const typeFilter = DELAY_FIELDS.some((d) => d.key === opts.type) ? opts.type! : null;
 
-  const misWhere: any = batch ? { batchKey: batch } : { date: { gte: from, lte: toEnd } };
+  const misWhere: any = batch ? { batchKey: batch } : { date: { gte: from, lte: fetchTo } };
   const sel: any = { id: true, date: true, hour: true, batch: true, batchKey: true, productionType: true, slabsPerHourActual: true, slabsPerHourStd: true, design: true, reasonForDeviation: true, details: true, rcaNo: true, actionTaken: true, sparesUsed: true, anyBreakdownYesNo: true, electricalInchargeName: true, mechanicalInchargeName: true };
   for (const d of DELAY_FIELDS) sel[d.col] = true;
-  const pressWhere: any = batch ? { batchKey: batch } : { date: { gte: from, lte: toEnd } };
+  // Press keeps its own date column as its day: a press row carries no hour
+  // label, so there is nothing to re-attribute — its date IS the day it was
+  // recorded against, and inventing an hour for it would be a guess.
+  const pressWhere: any = batch ? { batchKey: batch } : { date: { gte: from, lte: new Date(`${toStr}T23:59:59.999Z`) } };
 
-  const [rows, press]: [any[], any[]] = await Promise.all([
+  const [rowsRaw, press]: [any[], any[]] = await Promise.all([
     db.mis.findMany({ where: misWhere, select: sel }).catch(() => [] as any[]),
     db.press.findMany({ where: pressWhere, select: { slabNumber: true, designName: true, batchKey: true, date: true } }).catch(() => [] as any[]),
   ]);
+
+  // Each row placed on the production day it was worked, then clipped to the
+  // range asked for. `reportDay` rides on the row so nothing downstream has to
+  // re-derive it (and cannot re-derive it differently). Batch mode is not
+  // clipped — a batch runs across whatever days it runs across, which is the
+  // same reason its query ignores the date range.
+  const rows: any[] = rowsRaw
+    .map((r) => ({ ...r, reportDay: reportDayOf(r.date, r.hour) }))
+    .filter((r) => batch || (r.reportDay != null && r.reportDay >= fromStr && r.reportDay <= toStr));
 
   const byType: DelayType[] = DELAY_FIELDS.map((d) => ({ key: d.key, label: d.label, minutes: 0, incidents: 0 }));
   const reasonMap = new Map<string, ReasonRow>();
@@ -114,7 +159,7 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   let totalMinutes = 0, hoursLogged = 0, overCap = 0, cleanTotal = 0, otherTotal = 0;
 
   for (const r of rows) {
-    const day = r.date ? dayKey(r.date) : null;
+    const day: string | null = r.reportDay ?? null;
     if (day) { const e = dayRobo.get(day) ?? { robo: 0, other: 0 }; if (isRobo(r.productionType)) e.robo++; else e.other++; dayRobo.set(day, e); }
     const std = Number(r.slabsPerHourStd ?? 0);
     if (Number.isFinite(std) && std > 0) {
@@ -188,8 +233,8 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   const misDesign = new Map<string, number>();
   if (!batch) {
     for (const r of rows) {
-      if (!r.date) continue;
-      const day = dayKey(r.date);
+      if (!r.reportDay) continue;
+      const day = r.reportDay;
       if (pressDaySet.has(day)) continue;
       const n = Number(r.slabsPerHourActual ?? 0) || 0;
       if (n <= 0) continue;
@@ -250,9 +295,12 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   // the hour currently in progress charged up to a full hour of target against
   // production that cannot have been reported yet, so the same shift read worse at
   // :55 than at :05 and the number moved with the clock rather than the line.
-  const todayKey = istNow.toISOString().slice(0, 10);
+  // Elapsed since the production day BEGAN — 06:00 IST, not midnight. On the
+  // midnight clock the night shift's first eight hours counted as yesterday's
+  // tail and today read as barely started at 06:00, so a full night's output
+  // was measured against a couple of hours of target.
   const elapsedHours = Math.floor(
-    (istNow.getTime() - new Date(`${todayKey}T00:00:00.000Z`).getTime()) / 3600e3);
+    (istNow.getTime() - IST_MS - (Date.parse(`${todayKey}T00:00:00.000Z`) - IST_MS + 6 * 3600e3)) / 3600e3);
   const elapsedFrac = Math.min(1, Math.max(0, elapsedHours / 24));
   if (batch) {
     const roboR = rows.filter((r) => isRobo(r.productionType)).length;
@@ -265,8 +313,9 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
     downtimeCost = rate * (lostMin / 60);
     roboHours = roboR; normalHours = normR; productiveHours = HOURS_PER_DAY * daysCounted;
   } else {
-    for (let d = new Date(from); d <= toEnd; d = new Date(d.getTime() + 864e5)) {
-      const day = dayKey(d);
+    // One iteration per PRODUCTION day in the range, by label — the same days
+    // the rows above were placed on.
+    for (let day = fromStr; day <= toStr; day = addDays(day, 1)) {
       const e = dayRobo.get(day);
       const robo = e?.robo ?? 0, other = e?.other ?? 0;
       const rate = rateFor(day, robo, other);

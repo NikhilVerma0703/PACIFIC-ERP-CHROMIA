@@ -19,8 +19,12 @@ const ymd = (d: Date) => d.toISOString().slice(0, 10);
 
 export default async function MisPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string; b?: string; type?: string }> }) {
   const sp = await searchParams;
-  const istToday = ymd(new Date(Date.now() + 330 * 60000)); // IST calendar day
-  const from = sp.from?.trim() || istToday; // default: today (IST)
+  // The PRODUCTION day, 06:00→06:00 IST — the day getDowntimeReport now
+  // windows on, and the day the plant means. Before 06:00 the running night
+  // still belongs to yesterday's sheet, so "Today" stays on it rather than
+  // opening an empty page while the C shift is still working.
+  const istToday = ymd(new Date(Date.now() + (330 - 360) * 60000));
+  const from = sp.from?.trim() || istToday; // default: this production day
   const to = sp.to?.trim() || istToday;
   const batch = sp.b?.trim() || "";
 
@@ -94,7 +98,9 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
 
   // quick-range presets (preserve the batch filter)
   const today = istToday;
-  const dayAgo = (n: number) => ymd(new Date(Date.now() + 330 * 60000 - n * 864e5));
+  // n production days back — the same clock "Today" is on, or "Yesterday"
+  // would land a day off for the whole night shift.
+  const dayAgo = (n: number) => ymd(new Date(Date.now() + (330 - 360) * 60000 - n * 864e5));
   const mStart = istToday.slice(0, 8) + "01";
   const presets = [
     { label: "Today", f: today, t: today },

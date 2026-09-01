@@ -11,7 +11,10 @@ import { esc } from "@/lib/telegram";
 import { thicknessBySlab, thicknessMixByBatch, mergeMix, mixLabel } from "@/lib/slabThickness";
 
 async function dataPack(question = ""): Promise<string> {
-  const today = ymdIST();
+  // The PRODUCTION day, 06:00→06:00 IST — now that getDowntimeReport windows
+  // on production days, the key handed to it must name one, or a question
+  // asked at 02:00 would be answered about the day that ended twenty hours ago.
+  const today = new Date(Date.now() + (330 - 360) * 60_000).toISOString().slice(0, 10);
   const wk = plusDay(today, -6);
   const { bucket, date } = lastCompletedHourIST();
   const [d7, dToday, shift, hourMsg] = await Promise.all([
@@ -20,10 +23,10 @@ async function dataPack(question = ""): Promise<string> {
     getLastShiftReport().catch(() => null),
     hourlyMessage(bucket, date).catch(() => ""),
   ]);
-  const lines: string[] = [`TODAY=${today} · last completed hour ${bucket}`];
+  const lines: string[] = [`PRODUCTION DAY=${today} (06:00→06:00 IST) · last completed hour ${bucket}`];
   if (hourMsg) lines.push(`CURRENT HOUR: ${hourMsg.replace(/<[^>]+>/g, "")}`);
   if (shift) lines.push(`LAST SHIFT ${shift.shift} (${shift.date} ${shift.window}): slabs=${shift.slabs}, hoursLogged=${shift.hoursLogged}/${shift.hoursTotal}, downtimeMin=${shift.delayMin}, incharge=${shift.prodIncharge ?? shift.submitters.join("/")}, batches=${shift.batches.join("/")}`);
-  for (const [label, r] of [["TODAY", dToday], ["LAST 7 DAYS", d7]] as const) {
+  for (const [label, r] of [["THIS PRODUCTION DAY", dToday], ["LAST 7 PRODUCTION DAYS", d7]] as const) {
     if (!r) continue;
     lines.push(`${label}: slabsMade=${r.actualSlabs}, achievable=${r.achievable}, target=${r.target}, lostToDowntime=${r.lost}, downtimeMin=${r.totalMinutes}, byType=${r.byType.map((t) => `${t.label}:${t.minutes}m`).join(",")}, topReasons=${r.byReason.slice(0, 5).map((x) => `${x.reason}:${x.minutes}m`).join(",")}, designs=${r.designs.slice(0, 6).map((d) => `${d.design}:${d.slabs}`).join(",")}, unloggedBatches=${r.unloggedBatches}`);
   }
