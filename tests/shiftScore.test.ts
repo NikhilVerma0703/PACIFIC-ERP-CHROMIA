@@ -5,6 +5,7 @@ import {
   scaleQuality, scaleUptime, scalePolish,
   QUALITY_FLOOR, QUALITY_TARGET, UPTIME_FLOOR, POLISH_FLOOR, MIN_RUNNING_SHIFT,
   oeeOf, oeeTotal, misDiscipline, TARGET_SLABS_PER_SHIFT,
+  stdMultiplier, SLOW_STD_MAX, SLOW_STD_MULTIPLIER,
 } from "../src/lib/shiftScoreMath.ts";
 
 // These decide money. Every one of them is a bug that was live.
@@ -181,4 +182,60 @@ test("shiftRange: 8 hours in IST, and C anchors on the day it started", () => {
     const r = shiftRange("2026-07-15", l);
     assert.equal(r.end.getTime() - r.start.getTime(), 8 * 3600_000);
   }
+});
+
+/* ------------------------------------------- slow products count double */
+
+// A shift on a 15-an-hour design and a shift on a 7-an-hour one were paid the
+// same per slab, so the hard design paid barely half as much for the same hour
+// of work — and nobody wanted to run it. A product whose STANDARD is 10 an hour
+// or less now counts each good slab twice.
+//
+// The threshold is on the STANDARD, never on what the shift achieved: it is a
+// property of the product the plant chose to run, so a shift cannot earn the
+// multiplier by working slowly.
+
+test("a standard of 10 an hour or less doubles the slab; 11 and above does not", () => {
+  for (const std of [3, 5, 7, 8, 9, 10]) {
+    assert.equal(stdMultiplier(std), 2, `std ${std} should double`);
+  }
+  for (const std of [11, 12, 13, 14, 15, 16, 60]) {
+    assert.equal(stdMultiplier(std), 1, `std ${std} should not double`);
+  }
+});
+
+test("THE BOUNDARY IS 10 INCLUSIVE — the rule as it was written", () => {
+  assert.equal(stdMultiplier(10), 2);
+  assert.equal(stdMultiplier(10.0001), 1);
+  assert.equal(stdMultiplier(11), 1);
+});
+
+test("a missing standard is not a slow one", () => {
+  // 100 of August's 736 MIS rows carry no standard at all. Absent is unknown,
+  // and unknown must never pay double.
+  for (const v of [null, undefined, "", NaN, 0, -5]) {
+    assert.equal(stdMultiplier(v as number | null), 1, `${String(v)} must not double`);
+  }
+});
+
+test("a standard arriving as a string still reads as a number", () => {
+  // MIS columns have arrived as text before; a numeric string must not silently
+  // fall through to 1 and quietly halve a shift's pay.
+  assert.equal(stdMultiplier("8" as unknown as number), 2);
+  assert.equal(stdMultiplier("15" as unknown as number), 1);
+});
+
+test("the multiplier multiplies the GRADE credit, so a B on a slow line is one slab", () => {
+  // The two rules compose: B is half a slab, a slow product doubles it, so a B
+  // grade on a 7-an-hour design is worth exactly one ordinary A.
+  assert.equal(gradeCredit("B") * stdMultiplier(7), 1);
+  assert.equal(gradeCredit("A") * stdMultiplier(7), 2);
+  // And a reject is worth nothing however slow the product was — doubling zero
+  // is still zero, which is what keeps hiding a bad slab pointless.
+  assert.equal(gradeCredit("C (Reject)") * stdMultiplier(7), 0);
+});
+
+test("the two constants are the rule as stated, so a doc can quote them", () => {
+  assert.equal(SLOW_STD_MAX, 10);
+  assert.equal(SLOW_STD_MULTIPLIER, 2);
 });

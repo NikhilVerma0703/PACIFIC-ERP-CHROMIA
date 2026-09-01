@@ -135,6 +135,41 @@ export function scalePolish(raw: number | null): number | null {
   return Math.max(0, Math.min(1, (raw - POLISH_FLOOR) / (1 - POLISH_FLOOR)));
 }
 
+// --------------------------------------------------------------------------
+// SLOW PRODUCTS COUNT DOUBLE
+// --------------------------------------------------------------------------
+// Not every slab costs the same to make. The MIS hour carries the STANDARD
+// output for what was running that hour - slabs_per_hour_std - and it ranges
+// from 3 to 16 across August. A shift on a 15-an-hour design and a shift on a
+// 7-an-hour one were paid per slab at the same rate, so the hard work paid
+// barely half as much per hour of the same effort. Nobody wants the difficult
+// design.
+//
+// So a product whose STANDARD is 10 an hour or less counts each good slab as
+// TWO. Set by decision; the threshold is on the STANDARD, not on what the shift
+// actually achieved, which matters: it is a property of the product the plant
+// chose to run, not of how the shift performed. A shift cannot earn the
+// multiplier by running slowly.
+//
+// In August this covers 242 of the 636 hours that carry a standard - 1,663 of
+// the 6,327 slabs claimed, about a quarter of the month.
+//
+// A BLANK STANDARD IS NOT A SLOW ONE. 100 August rows have no standard at all,
+// and every one of them also declares no slab range, so they claim nothing
+// either way - but the rule is written to be explicit rather than to rely on
+// that: no standard means no multiplier. Zero is treated the same, being a
+// missing value wearing a number.
+export const SLOW_STD_MAX = 10;
+export const SLOW_STD_MULTIPLIER = 2;
+
+/** What one good slab is worth, given the standard output of the hour that
+ *  claimed it. 2 for a slow product, 1 for everything else. */
+export function stdMultiplier(std: number | null | undefined): number {
+  const n = Number(std);
+  if (!Number.isFinite(n) || n <= 0) return 1;   // blank, or a missing value written as 0
+  return n <= SLOW_STD_MAX ? SLOW_STD_MULTIPLIER : 1;
+}
+
 export function gradeCredit(grade: string | null | undefined): number | null {
   const g = String(grade ?? "").trim().toUpperCase();
   if (!g || g.startsWith("NOT GRADED")) return null;

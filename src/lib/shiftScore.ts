@@ -66,6 +66,7 @@ import {
   IST_MIN, NOT_OPERATORS, MIN_ROWS_TO_RANK_STATION, MIN_SHIFTS_TO_RANK,
   POOL_VOLUME, POOL_QUALITY, credibility, shiftWeight,
   shiftRange, shiftKeyOf, canonPerson, gradeCredit, polishCredit,
+  stdMultiplier,
   scaleQuality, scalePolish, scaleUptime, plusDay, type ShiftLetter,
   oeeTotal, misDiscipline, type Oee,
 } from "@/lib/shiftScoreMath";
@@ -115,6 +116,14 @@ export interface ShiftScore {
    *  Only GRADED slabs count. A slab QC has not reached yet earns nothing yet
    *  and is not held against anyone; the figure rises as QC works through. */
   points: number;
+  /** The plain good-slab count, BEFORE the slow-product multiplier: A = 1,
+   *  B = 0.5, C = 0. This is the physical output of the shift and the figure
+   *  OEE and the reports use; `points` above is what the pool pays on. */
+  goodSlabs: number;
+  /** How many of the graded good slabs came from an hour whose standard was
+   *  10/hour or less, and so counted twice. Shown so a shift can see where the
+   *  difference between goodSlabs and points came from. */
+  slowSlabs: number;
   /** Mean measured thickness at Jot for this shift's slabs. Reported only;
    *  it does not enter the score. */
   avgMm: number | null;
@@ -184,7 +193,8 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
   const { start, end } = shiftRange(anchor, shift);
   const empty: ShiftScore = {
     anchor, shift, quantity: 0, quality: null, rawQuality: null, graded: 0, ungraded: 0,
-    gradeA: 0, gradeB: 0, gradeC: 0, points: 0, avgMm: null, breakdownMin: 0, poweroutMin: 0,
+    gradeA: 0, gradeB: 0, gradeC: 0, points: 0, goodSlabs: 0, slowSlabs: 0,
+    avgMm: null, breakdownMin: 0, poweroutMin: 0,
     hoursLogged: 0, weight: 0, contested: 0, wideRows: 0, flagged: [],
     people: [], crew: { production: [], electrical: [], mechanical: [] },
   };
@@ -206,7 +216,7 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
       },
       select: {
         id: true, date: true, hour: true, productionInchargeName: true,
-        startingSlabNumber: true, endingSlabNumber: true,
+        startingSlabNumber: true, endingSlabNumber: true, slabsPerHourStd: true,
         breakdownDelayDurationMechanicalOrElectricalMinutes: true,
         poweroutDelayDurationMinutes: true,
         electricalInchargeName: true, mechanicalInchargeName: true,
@@ -238,15 +248,28 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
     // covers it: two overlapping hours of the same shift used to report the
     // overlap twice and inflated the red banner.
     const contestedSlabs = new Set<number>();
+    // What each slab is worth: 2 when the hour that claimed it was running a
+    // product with a standard of 10 an hour or less. Kept per slab rather than
+    // per row because a shift mixes designs across its eight hours.
+    //
+    // WHERE TWO ROWS OF ONE SHIFT CLAIM THE SAME SLAB the LOWER multiplier
+    // wins. An overlap is a data-entry fault, and a fault must not be a way to
+    // earn the double: the multiplier has to be unambiguously the product's.
+    const multBySlab = new Map<number, number>();
     for (const r of mis) {
       const a = Number(r.startingSlabNumber), b = Number(r.endingSlabNumber);
       if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b < a) continue;
       // A typo'd range must not swallow the month; see MAX_SLABS_PER_HOUR.
       if (b - a >= MAX_SLABS_PER_HOUR) { wideRows += 1; flagged.push(rowOf(r, "wide", 0)); continue; }
+      const mult = stdMultiplier(r.slabsPerHourStd);
       let mine = 0;
       for (let n = a; n <= b; n++) {
         if (exclude?.has(n)) { contestedSlabs.add(n); mine += 1; }
-        else declared.add(n);
+        else {
+          declared.add(n);
+          const seen = multBySlab.get(n);
+          multBySlab.set(n, seen == null ? mult : Math.min(seen, mult));
+        }
       }
       if (mine) flagged.push(rowOf(r, "disputed", mine));
     }
@@ -280,12 +303,19 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
     const latest = new Map<number, any>();
     for (const q of qc) if (q.slabNumber != null && !latest.has(Number(q.slabNumber))) latest.set(Number(q.slabNumber), q);
 
-    let credit = 0, graded = 0, a = 0, b = 0, c = 0;
+    // TWO ACCUMULATORS, AND THEY MUST NOT BE CONFLATED.
+    // `credit` is the plain good-slab count (A=1, B=0.5, C=0) and is what the
+    // GRADE SHARE is built from — weighting it would push the share above 1 and
+    // break every quality scale that reads it. `weighted` applies the slow-
+    // product multiplier and is what the VOLUME pool pays on.
+    let credit = 0, weighted = 0, graded = 0, a = 0, b = 0, c = 0, doubled = 0;
     for (const sn of slabs) {
       const g = latest.get(sn)?.qualityGrade;
       const cr = gradeCredit(g);
       if (cr == null) continue;      // ungraded / CTS / Printing — not a verdict
-      graded += 1; credit += cr;
+      const mult = multBySlab.get(sn) ?? 1;
+      graded += 1; credit += cr; weighted += cr * mult;
+      if (mult > 1 && cr > 0) doubled += 1;
       const u = String(g).trim().toUpperCase();
       if (u.startsWith("A")) a += 1; else if (u.startsWith("B")) b += 1; else c += 1;
     }
@@ -304,8 +334,12 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
       ungraded: slabs.length - graded,
       gradeA: a, gradeB: b, gradeC: c,
       avgMm,
-      // credit IS the good-slab count: A adds 1, B adds 0.5, C adds 0.
-      points: Math.round(credit),
+      // credit IS the plain good-slab count: A adds 1, B adds 0.5, C adds 0.
+      goodSlabs: Math.round(credit),
+      slowSlabs: doubled,
+      // points is what the volume pool pays on: the same count with each slow-
+      // product slab counted twice.
+      points: Math.round(weighted),
       breakdownMin, poweroutMin, hoursLogged,
       weight: shiftWeight(hoursLogged, breakdownMin + poweroutMin, slabs.length),
       contested, wideRows, flagged,
@@ -713,7 +747,11 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
       unattributedMechanical: shifts.filter((s) => s.crew.mechanical.length === 0).length,
       // Built from the RAW grade share, not the stretched one: an OEE measured
       // against QUALITY_FLOOR would not be comparable with any other plant's.
-      oee: oeeTotal(shifts, graded ? rawNum / graded : null),
+      // OEE ON PHYSICAL OUTPUT, not on the paid figure. Performance is
+      // actual-against-theoretical output; feeding it the doubled points would
+      // report a pace the line never ran and make the number incomparable with
+      // anybody else's OEE. The multiplier is a pay rule, not a measurement.
+      oee: oeeTotal(shifts.map((s) => ({ ...s, points: s.goodSlabs })), graded ? rawNum / graded : null),
       misDiscipline: misDiscipline(
         shifts.reduce((a, s) => a + s.hoursLogged, 0),
         shifts.reduce((a, s) => a + s.wideRows, 0),
