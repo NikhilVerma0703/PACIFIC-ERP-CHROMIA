@@ -20,6 +20,7 @@ import { useMemo, useRef, useState, useTransition } from "react";
 import { Card, H2 } from "@/components/ui";
 import { compressPhoto } from "@/components/PhotoField";
 import { GRADE_OPTIONS, SLAB_STATUSES, DEFECT_PHOTOS, type DefectPhotoSlot } from "@/lib/inventory/intakeRules";
+import { Lightbox, type LightboxPhoto } from "@/components/Lightbox";
 import { lookupSlab, saveSlab, type LookupRes, type QcReference, type SlabPhotos } from "./actions";
 
 interface Lists { designs: string[]; issues: string[]; polishTypes: string[]; thicknesses: string[]; bays: string[] }
@@ -82,6 +83,8 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [issueBox, setIssueBox] = useState("");
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
+  // which already-on-file photo is showing full screen (null = none)
+  const [lightbox, setLightbox] = useState<number | null>(null);
   const [pending, startTransition] = useTransition();
 
   // The two defect photos, compressed in the browser before the post (the
@@ -115,7 +118,7 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
 
   const doLookup = (numStr: string) => {
     startTransition(async () => {
-      setNote(null);
+      setNote(null); setLightbox(null);
       setPhotos(NO_PHOTOS); setPhotoKey((k) => k + 1); // fresh slab, fresh photo slots
       const r = await lookupSlab(numStr);
       setLooked(r);
@@ -205,7 +208,7 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
       if (r.ok) {
         setPhotos(NO_PHOTOS); setPhotoKey((k) => k + 1);
         setLooked(null); setLookedFor("");
-        setDraft(emptyDraft); setIssueBox("");
+        setDraft(emptyDraft); setIssueBox(""); setLightbox(null);
         setSlabInput("");
         slabBox.current?.focus();
       }
@@ -223,6 +226,12 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
   const qc: QcReference | null = looked?.ok ? looked.qc : null;
   const exists = looked?.ok ? looked.exists : false;
   const havePhotos: SlabPhotos = looked?.ok && looked.exists ? looked.photos : { far: [], near: [] };
+  // Every photo already on file, far first — one flat list so the full-screen
+  // viewer can step between them the way it does in inventory.
+  const onFile: LightboxPhoto[] = [
+    ...havePhotos.far.map((p) => ({ ...p, slot: "far" })),
+    ...havePhotos.near.map((p) => ({ ...p, slot: "near" })),
+  ];
   const from: Record<string, string> = looked?.ok && !looked.exists ? looked.from : {};
   const current: Record<string, unknown> | null =
     looked?.ok && looked.exists ? (looked.slab as unknown as Record<string, unknown>) : null;
@@ -244,6 +253,11 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
 
   return (
     <div className="space-y-5">
+      <Lightbox
+        photos={onFile} index={lightbox}
+        onIndex={setLightbox} onClose={() => setLightbox(null)}
+        title={lookedFor ? `Slab ${lookedFor}` : undefined}
+      />
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Slab Intake</h1>
         <p className="mt-1 text-sm text-gray-500">
@@ -443,10 +457,13 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
                       {havePhotos[p.slot].length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-2">
                           {havePhotos[p.slot].map((ph) => (
-                            <a key={ph.id} href={`/api/photo?id=${ph.id}`} target="_blank" rel="noreferrer" title={ph.filename}>
+                            <button
+                              key={ph.id} type="button" title={`${ph.filename} — click to enlarge`}
+                              onClick={() => setLightbox(onFile.findIndex((x) => x.id === ph.id))}
+                            >
                               {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img src={`/api/photo?id=${ph.id}`} alt={ph.filename} className="h-16 w-16 rounded-lg border border-gray-200 object-cover" />
-                            </a>
+                              <img src={`/api/photo?id=${ph.id}`} alt={ph.filename} className="h-16 w-16 rounded-lg border border-gray-200 object-cover transition hover:border-brand" />
+                            </button>
                           ))}
                         </div>
                       )}

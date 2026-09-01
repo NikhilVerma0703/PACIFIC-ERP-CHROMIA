@@ -6,6 +6,7 @@ import { displayBatch } from "@/lib/batchDisplay";
 import { NONE } from "@/lib/inventory/filterValues";
 import { StockByDesign } from "./StockByDesign";
 import { PolishingReport } from "./PolishingReport";
+import { Lightbox, type LightboxPhoto } from "@/components/Lightbox";
 
 interface Kpi {
   total: number; gradeA: number; gradeA2: number; gradeB: number; gradeC: number;
@@ -122,6 +123,8 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
   // slab detail modal
   const [detail, setDetail] = useState<any | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
+  // which of the open slab's photos is showing full screen (null = none)
+  const [lightbox, setLightbox] = useState<number | null>(null);
 
   // activity feed
   const [view, setView] = useState<"slabs" | "activity" | "designs" | "summary">("slabs");
@@ -234,6 +237,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
   // fetch, and a stable identity is what lets SlabRows below skip re-rendering.
   const openDetail = useCallback((n: number) => {
     setEditing(false);
+    setLightbox(null);   // a photo from the last slab must not survive the next
     setDetailBusy(true); setDetail({ slabNumber: n });
     fetch(`/api/inventory/slab?number=${n}`)
       .then((r) => (r.ok ? r.json() : null))
@@ -845,8 +849,19 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
           )}
         </>
       )}
+      {/* Above the slab panel, and closed with it — a photo left open over a
+          dismissed panel would belong to a slab no longer on screen. */}
+      {detail && Array.isArray(detail.photos) && (
+        <Lightbox
+          photos={detail.photos as LightboxPhoto[]}
+          index={lightbox}
+          onIndex={setLightbox}
+          onClose={() => setLightbox(null)}
+          title={`Slab ${displaySlab(detail.slabNumber, detail.slab?.barcode)}`}
+        />
+      )}
       {detail && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 sm:p-8" onClick={() => setDetail(null)}>
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 sm:p-8" onClick={() => { setLightbox(null); setDetail(null); }}>
           <div className="w-full max-w-3xl rounded-2xl bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -857,7 +872,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
                 {admin && detail.slab && !editing && (
                   <button onClick={startEdit} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50">Edit</button>
                 )}
-                <button onClick={() => setDetail(null)} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50">Close ✕</button>
+                <button onClick={() => { setLightbox(null); setDetail(null); }} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50">Close ✕</button>
               </div>
             </div>
             {detailBusy ? (
@@ -911,15 +926,16 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
                 {Array.isArray(detail.photos) && detail.photos.length > 0 && (
                   <div>
                     <h3 className="mb-2 text-sm font-semibold text-gray-900">Photos</h3>
+                    <p className="mb-2 text-xs text-gray-400">Click a photo to see it full screen.</p>
                     <div className="flex flex-wrap gap-3">
-                      {detail.photos.map((p: { id: string; filename: string; slot: string }) => (
-                        <a key={p.id} href={`/api/photo?id=${p.id}`} target="_blank" rel="noreferrer" className="block" title={p.filename}>
+                      {detail.photos.map((p: LightboxPhoto, i: number) => (
+                        <button key={p.id} type="button" onClick={() => setLightbox(i)} className="block text-left" title={`${p.filename} — click to enlarge`}>
                           {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={`/api/photo?id=${p.id}`} alt={p.filename} className="h-28 w-28 rounded-lg border border-gray-200 object-cover" />
+                          <img src={`/api/photo?id=${p.id}`} alt={p.filename} className="h-28 w-28 rounded-lg border border-gray-200 object-cover transition hover:border-brand hover:shadow-sm" />
                           <span className="mt-1 block text-center text-[11px] text-gray-500">
                             {p.slot === "far" ? "Far — whole slab" : p.slot === "near" ? "Near — the defect" : "Photo"}
                           </span>
-                        </a>
+                        </button>
                       ))}
                     </div>
                   </div>
