@@ -116,6 +116,12 @@ export async function GET(req: Request) {
       (res.skipped ? ` reason="${res.skipped}"` : ""),
     );
 
+    // A MISCONFIGURATION MUST NOT ANSWER 200. Vercel's cron log records the
+    // status code and nothing else, so "SMTP is not configured" returned as a
+    // 200 shows up as a green run, every morning, while nobody receives a
+    // report. A day the plant did not run is different: that is a real,
+    // correct answer and stays 200. Only a fault the owner has to go and fix
+    // turns the log red.
     return NextResponse.json({
       ok: res.ok,
       sent: res.ok,
@@ -126,7 +132,7 @@ export async function GET(req: Request) {
       slabs: `${built.summary.made}/${built.summary.target}`,
       fontTier: FONT_TIER,
       ...(res.skipped ? { reason: res.skipped } : {}),
-    });
+    }, { status: res.ok ? 200 : 500 });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[report/daily-email]", err);

@@ -94,3 +94,36 @@ test("with no list configured, no override is permitted either", () => {
   assert.deepEqual(allowed, []);
   assert.equal(allowed.some((a) => a === "anyone@example.com"), false);
 });
+
+// The recipient list is typed into a hosting dashboard by a person. The split
+// used to be commas and semicolons only, so three addresses on three LINES —
+// the obvious thing to do in a multi-line box — came back as one entry that
+// contained "@", passed the filter, and went to the mail server as a single
+// malformed recipient. Nobody would have received the report and the log would
+// have said one recipient.
+
+test("ADDRESSES ON SEPARATE LINES ARE THREE ADDRESSES, NOT ONE BLOB", () => {
+  assert.deepEqual(
+    reportRecipients("ramana@pacific-surfaces.com\nvarun@pacific-surfaces.com\ngibin@thepacific.group"),
+    ["ramana@pacific-surfaces.com", "varun@pacific-surfaces.com", "gibin@thepacific.group"],
+  );
+});
+
+test("spaces, tabs, trailing newlines and mixed separators all work", () => {
+  assert.deepEqual(reportRecipients("a@x.com b@x.com"), ["a@x.com", "b@x.com"]);
+  assert.deepEqual(reportRecipients("a@x.com,\n  b@x.com ;\tc@x.com\r\n"), ["a@x.com", "b@x.com", "c@x.com"]);
+  assert.deepEqual(reportRecipients("\n\n a@x.com \n\n"), ["a@x.com"]);
+});
+
+test("something that is not an address is dropped rather than posted to the mail server", () => {
+  // Each of these used to pass the old "contains @" filter.
+  assert.deepEqual(reportRecipients("a@x.com, @x.com, b@, c@x, <d@x.com>, e@x.com"),
+    ["a@x.com", "e@x.com"]);
+});
+
+test("a real-world list is unchanged by the stricter shape check", () => {
+  assert.deepEqual(
+    reportRecipients("ramana@pacific-surfaces.com, varun@pacific-surfaces.com, gibin@thepacific.group, a.b-c_d@sub.example.co.in"),
+    ["ramana@pacific-surfaces.com", "varun@pacific-surfaces.com", "gibin@thepacific.group", "a.b-c_d@sub.example.co.in"],
+  );
+});

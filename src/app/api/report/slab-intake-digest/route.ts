@@ -81,9 +81,17 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: true, sent: false, reason: "nothing was entered in this window", window: win });
   }
 
+  // A MISCONFIGURATION ANSWERS 500, NOT 200. Vercel's cron log records the
+  // status code and nothing else; a fault returned as 200 is a green run twice
+  // a day with nobody receiving anything. A silent shift, above, is a real
+  // answer and keeps its 200 — the distinction is whether there is something
+  // for the owner to go and fix.
   const to = only.length ? only : reportRecipients(process.env.SLAB_INTAKE_DIGEST_EMAILS || DEFAULT_TO);
   if (!to.length) {
-    return NextResponse.json({ ok: false, sent: false, reason: "no recipient — set SLAB_INTAKE_DIGEST_EMAILS", window: win });
+    return NextResponse.json(
+      { ok: false, sent: false, reason: "no recipient — set SLAB_INTAKE_DIGEST_EMAILS", window: win },
+      { status: 500 },
+    );
   }
 
   const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env;
@@ -92,7 +100,7 @@ export async function GET(req: Request) {
       ok: false, sent: false,
       reason: "SMTP is not configured — set SMTP_HOST, SMTP_USER and SMTP_PASS",
       window: win, to,
-    });
+    }, { status: 500 });
   }
 
   const port = Number(SMTP_PORT || 587);
@@ -121,7 +129,9 @@ export async function GET(req: Request) {
       slabs: digest.slabs.length, added: digest.addedCount,
       corrected: digest.correctedCount, photos: digest.photoCount,
       ...(rejected.length ? { rejected } : {}),
-    });
+      // Every address refused is a person who did not get the digest, so it
+      // is a failed run even though the send itself returned.
+    }, { status: rejected.length ? 500 : 200 });
   } catch (e) {
     console.error("[report/slab-intake-digest] send failed", e);
     return NextResponse.json({ error: "Send failed", detail: (e as Error).message }, { status: 500 });

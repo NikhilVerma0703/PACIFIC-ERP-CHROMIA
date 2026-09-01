@@ -11,9 +11,20 @@
  *  WEIGHTS_VERIFIER_EMAILS. */
 export function reportRecipients(raw: string | undefined | null): string[] {
   return String(raw ?? "")
-    .split(/[,;]/)
+    // WHITESPACE IS A SEPARATOR TOO. This split was /[,;]/, and the value is
+    // typed into a Vercel environment-variable box by a person — where the
+    // natural thing to do with three addresses is put one on each line, or to
+    // paste them separated by spaces. The old split returned the whole blob as
+    // a SINGLE entry, it contained "@" so it passed the filter, and nodemailer
+    // was handed one malformed address instead of three good ones. An address
+    // cannot contain unquoted whitespace, so splitting on it loses nothing.
+    .split(/[,;\s]+/)
     .map((s) => s.trim())
-    .filter((s) => s.includes("@"));
+    // And the shape is checked rather than just looking for an "@", so a blob
+    // that survives some future edit is DROPPED and shows up as a short
+    // recipient count in the log, instead of being posted to the mail server
+    // as a recipient and bouncing where nobody reads it.
+    .filter((s) => /^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(s));
 }
 
 export interface SendResult {
