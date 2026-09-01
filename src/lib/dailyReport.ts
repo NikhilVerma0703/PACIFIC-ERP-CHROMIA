@@ -60,16 +60,21 @@ function slabsOf(s: number | null, e: number | null): number | null {
   // 144248→174257 and 143454→173462 for 30,000 each. Left as null, the hour
   // makes no claim at all — exactly like an hour with no range — and the
   // report says how many it set aside rather than quietly dropping them.
-  if (n >= MAX_SLABS_PER_HOUR) return null;
+  // `e - s`, NOT the slab count, so the threshold is the entry form's and the
+  // scoreboard's to the slab: both refuse on `b - a >= MAX_SLABS_PER_HOUR` and
+  // therefore still ACCEPT an hour of exactly 60. Comparing the count instead
+  // set aside a 60-slab hour those two had allowed, which is the one thing a
+  // shared rule must never do — disagree at its own boundary.
+  if (e - s >= MAX_SLABS_PER_HOUR) return null;
   return n;
 }
 
-/** Whether an hour's slab range is one the plant could physically have made. */
-const rangePlausible = (s: number | null, e: number | null): boolean => {
-  if (s == null || e == null) return true;   // no range is not a bad range
-  const n = e - s + 1;
-  return n > 0 && n < MAX_SLABS_PER_HOUR;
-};
+/** Whether an hour's range is impossibly WIDE — the fault the report names.
+ *  A backwards range (end before start) is a different fault and is NOT this
+ *  one: slabsOf already refuses it, and reporting it as "wider than 60 slabs"
+ *  would print a sentence that is simply untrue about the row. */
+const rangeTooWide = (s: number | null, e: number | null): boolean =>
+  s != null && e != null && e - s >= MAX_SLABS_PER_HOUR;
 
 export type HourRow = {
   hour: string | null; h: number | null; shift: ShiftLetter | null;
@@ -122,7 +127,7 @@ export function assembleHours(mis: MisReportRow[]): HourRow[] {
       made: slabsOf(r.startingSlabNumber, r.endingSlabNumber),
       /** The range was typed impossibly wide — the hour is set aside, and the
        *  report says how many it set aside rather than dropping them silently. */
-      wideRange: !rangePlausible(r.startingSlabNumber, r.endingSlabNumber),
+      wideRange: rangeTooWide(r.startingSlabNumber, r.endingSlabNumber),
       std: r.slabsPerHourStd ?? null,
       lost: (r.processDelayDurationMinutes ?? 0) + (r.cleaningDelayDurationMinutes ?? 0)
           + (r.breakdownDelayDurationMechanicalOrElectricalMinutes ?? 0) + (r.poweroutDelayDurationMinutes ?? 0),

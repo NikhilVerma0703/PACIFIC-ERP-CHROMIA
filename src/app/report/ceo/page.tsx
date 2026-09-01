@@ -145,7 +145,11 @@ function SheetProduction({ r }: { r: DailyReport }) {
       ? `; ${declaredNoStd} declared hour${declaredNoStd === 1 ? "" : "s"} carr${declaredNoStd === 1 ? "ies" : "y"} no standard and count${declaredNoStd === 1 ? "s" : ""} zero`
       : "");
   const designs = [...new Set(hours.map((x) => (x.batch && x.design ? `${x.batch}, ${x.design}` : null)).filter(Boolean))] as string[];
-  const blank = hours.filter((x) => x.made == null).length;
+  // "Carried no output at all" must not also count the hours the sentence
+  // below reports as SET ASIDE — a wide-range hour has made == null for a
+  // different reason, and counting it in both had the page report one hour
+  // twice, under two different explanations.
+  const blank = hours.filter((x) => x.made == null && !x.wideRange).length;
   const ranked = [...shifts].filter((x) => x.pct != null).sort((a, b) => b.pct! - a.pct!);
   const best = ranked[0] ?? null, worst = ranked.length > 1 ? ranked[ranked.length - 1] : null;
   const causes = ([

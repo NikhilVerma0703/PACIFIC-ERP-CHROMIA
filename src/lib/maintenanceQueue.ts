@@ -124,7 +124,14 @@ export function incidentInstant(date: string | null, hour: string | null): strin
   const hh = /^\d{2}/.test(hour ?? "") ? (hour as string).slice(0, 2) : "00";
   const wall = Date.parse(`${date}T${hh}:00:00.000Z`);
   if (!Number.isFinite(wall)) return null;
-  return new Date(wall - IST_OFFSET_MS).toISOString();
+  // `date` is the PRODUCTION day the downtime report puts the incident on, and
+  // a production day runs 06:00 to 06:00 — so its 00:00-05:59 hours fall on the
+  // NEXT calendar day. Without this the small hours were dated a day early and
+  // every night-shift stoppage in the queue read a full 24 h more overdue than
+  // it was, which is exactly backwards for the hours nobody is awake to answer.
+  const h = Number(hh);
+  const rollover = Number.isFinite(h) && h < 6 ? 86_400_000 : 0;
+  return new Date(wall + rollover - IST_OFFSET_MS).toISOString();
 }
 
 /** The PRODUCTION day, "YYYY-MM-DD", for an instant — 06:00→06:00 IST, the day

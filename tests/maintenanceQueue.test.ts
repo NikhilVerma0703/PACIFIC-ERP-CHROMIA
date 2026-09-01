@@ -292,9 +292,16 @@ test("an MIS hour is naive IST and is converted to a real UTC instant", () => {
   // understates every incident's age by 5h30 — and makes a fresh one negative.
   assert.equal(IST_OFFSET_MIN, 330);
   assert.equal(incidentInstant("2026-08-12", "06 - 07"), "2026-08-12T00:30:00.000Z");
-  assert.equal(incidentInstant("2026-08-12", "00 - 01"), "2026-08-11T18:30:00.000Z");
+  // THE DATE IS A PRODUCTION DAY, so its 00:00-05:59 hours are the NEXT
+  // calendar morning: production day 12 Aug, hour 00-01, is 00:00 IST on the
+  // 13th. Read as a calendar date it came out a full day early, and every
+  // night-shift stoppage in the queue looked 24 h more overdue than it was.
+  assert.equal(incidentInstant("2026-08-12", "00 - 01"), "2026-08-12T18:30:00.000Z");
+  assert.equal(incidentInstant("2026-08-12", "05 - 06"), "2026-08-12T23:30:00.000Z");
+  // 06:00 is the turn of the day and belongs to the date itself.
+  assert.equal(incidentInstant("2026-08-12", "06 - 07"), "2026-08-12T00:30:00.000Z");
   // A malformed hour keeps the row on its own day rather than dropping it out.
-  assert.equal(incidentInstant("2026-08-12", null), "2026-08-11T18:30:00.000Z");
+  assert.equal(incidentInstant("2026-08-12", null), "2026-08-12T18:30:00.000Z");
   assert.equal(incidentInstant(null, "06 - 07"), null);
   assert.equal(incidentInstant("12/08/2026", "06 - 07"), null);
 });
