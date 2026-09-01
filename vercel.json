@@ -6,6 +6,18 @@
     {
       "path": "/api/telegram/report",
       "schedule": "40 * * * *"
+    },
+    {
+      "path": "/api/report/daily-email",
+      "schedule": "30 3 * * *"
+    },
+    {
+      "path": "/api/report/slab-intake-digest",
+      "schedule": "31 12 * * *"
+    },
+    {
+      "path": "/api/report/slab-intake-digest",
+      "schedule": "31 0 * * *"
     }
   ]
 }

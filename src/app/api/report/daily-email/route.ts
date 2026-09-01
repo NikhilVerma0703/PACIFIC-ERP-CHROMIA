@@ -112,7 +112,7 @@ export async function GET(req: Request) {
     // only place anybody can find out what happened.
     console.log(
       `[report/daily-email] ${day} ${res.ok ? "sent" : "skipped"} ` +
-      `to=${res.to.length} bytes=${res.bytes} font="${FONT_TIER}"` +
+      `to=${res.to.length} cc=${res.cc.length} bytes=${res.bytes} font="${FONT_TIER}"` +
       (res.skipped ? ` reason="${res.skipped}"` : ""),
     );
 
@@ -121,6 +121,7 @@ export async function GET(req: Request) {
       sent: res.ok,
       date: day,
       to: res.to.length,
+      cc: res.cc.length,
       bytes: res.bytes,
       slabs: `${built.summary.made}/${built.summary.target}`,
       fontTier: FONT_TIER,

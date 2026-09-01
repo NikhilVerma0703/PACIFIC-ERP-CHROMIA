@@ -22,6 +22,8 @@ export interface SendResult {
   /** Why nothing was sent, in words. Null when it was. */
   skipped: string | null;
   to: string[];
+  /** Copied, not addressed — DAILY_REPORT_CC. */
+  cc: string[];
   date: string;
   bytes: number;
   messageId?: string;
@@ -47,7 +49,11 @@ export async function sendDailyReport(opts: {
   to?: string[];
 }): Promise<SendResult> {
   const to = opts.to?.length ? opts.to : reportRecipients(process.env.DAILY_REPORT_EMAILS);
-  const base = { to, date: opts.date, bytes: opts.pdf.length };
+  // COPIED, NOT ADDRESSED. A ?to= override is a test send to one person, so it
+  // drops the CC with it — testing must never copy the standing list by
+  // surprise, which is the whole point of being able to test at all.
+  const cc = opts.to?.length ? [] : reportRecipients(process.env.DAILY_REPORT_CC);
+  const base = { to, cc, date: opts.date, bytes: opts.pdf.length };
 
   if (!to.length) {
     return { ok: false, skipped: "DAILY_REPORT_EMAILS is not set, so there is nobody to send to.", ...base };
@@ -76,6 +82,7 @@ export async function sendDailyReport(opts: {
   const info = await transport.sendMail({
     from: SMTP_FROM || `"${sender.name}" <${SMTP_USER}>`,
     to,
+    ...(cc.length ? { cc } : {}),
     subject: "Yesterday's Daily ERP Report",
     text,
     html,
