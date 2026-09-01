@@ -69,12 +69,15 @@ function slabsOf(s: number | null, e: number | null): number | null {
   return n;
 }
 
-/** Whether an hour's range is impossibly WIDE — the fault the report names.
- *  A backwards range (end before start) is a different fault and is NOT this
- *  one: slabsOf already refuses it, and reporting it as "wider than 60 slabs"
- *  would print a sentence that is simply untrue about the row. */
-const rangeTooWide = (s: number | null, e: number | null): boolean =>
-  s != null && e != null && e - s >= MAX_SLABS_PER_HOUR;
+/** Whether an hour's range is IMPOSSIBLE — the fault the report sets aside and
+ *  then names. Two shapes, and the report must count both or it calls the hour
+ *  blank: too wide (more slabs than the line can make in an hour) and
+ *  BACKWARDS (the ending number below the starting one — a transposition or a
+ *  dropped digit). Naming only the first left three of the five impossible
+ *  ranges in the table reported as "carried no output at all", which is untrue
+ *  of an hour whose in-charge did type a range. */
+const rangeImpossible = (s: number | null, e: number | null): boolean =>
+  s != null && e != null && (e - s >= MAX_SLABS_PER_HOUR || e < s);
 
 export type HourRow = {
   hour: string | null; h: number | null; shift: ShiftLetter | null;
@@ -127,7 +130,7 @@ export function assembleHours(mis: MisReportRow[]): HourRow[] {
       made: slabsOf(r.startingSlabNumber, r.endingSlabNumber),
       /** The range was typed impossibly wide — the hour is set aside, and the
        *  report says how many it set aside rather than dropping them silently. */
-      wideRange: rangeTooWide(r.startingSlabNumber, r.endingSlabNumber),
+      wideRange: rangeImpossible(r.startingSlabNumber, r.endingSlabNumber),
       std: r.slabsPerHourStd ?? null,
       lost: (r.processDelayDurationMinutes ?? 0) + (r.cleaningDelayDurationMinutes ?? 0)
           + (r.breakdownDelayDurationMechanicalOrElectricalMinutes ?? 0) + (r.poweroutDelayDurationMinutes ?? 0),

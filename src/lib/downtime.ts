@@ -116,12 +116,13 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   const toStrRaw = (opts.to && opts.to.trim()) || todayKey;
   // A production day that has not begun cannot be reported on.
   const toStr = toStrRaw > todayKey ? todayKey : toStrRaw;
-  // Clamped at BOTH ends. Clamping only the upper bound let a caller still on
-  // the IST calendar day (every caller, between 00:00 and 06:00) pass a `from`
-  // one day past the clamped `to` — and an inverted range does not error, it
-  // silently returns an all-zero report: the day loop never runs, the row
-  // filter matches nothing, target and actual are 0.
-  const fromStr = fromStrRaw > toStr ? toStr : fromStrRaw;
+  // `from` is NOT clamped. It was briefly, to stop a caller on the IST calendar
+  // day passing a `from` past the clamped `to`; all three callers compute
+  // production days now, so the only thing that clamp could still do was
+  // silently rewrite a range somebody typed — a mistyped 2026-10-01 came back
+  // as today's incidents, targets and downtime printed under October's dates,
+  // which is worse than the visibly-empty report an impossible range gives.
+  const fromStr = fromStrRaw;
   const from = new Date(`${fromStr}T00:00:00.000Z`);
   // The FETCH runs one day past the range: an hour of the last night carries
   // the next date in its `date` column (the 00–05 slots), and dropping it
@@ -231,12 +232,22 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   const designMap = new Map<string, Set<number>>();
   const pressBatchSet = new Set<string>();
   const pressDaySet = new Set<string>();
+  // The CALENDAR dates press rows carry, kept beside the production days above.
+  // Two questions here were always asked of the calendar and still must be:
+  // "has this day's press been entered at all yet" (the entry-lag fallback) and
+  // "how many days did this batch run" (the batch target's multiplier). A
+  // production day is not interchangeable with a calendar date for either —
+  // see the two comments below.
+  const pressCalendarDays = new Set<string>();
+  /** Which production day each pressed slab was recorded on. */
+  const pressDayBySlab = new Map<number, string>();
   for (const p of press) {
     if (p.batchKey) pressBatchSet.add(String(p.batchKey));
-    if (p.date) pressDaySet.add(pressDayOf(p.date));
+    if (p.date) { pressDaySet.add(pressDayOf(p.date)); pressCalendarDays.add(dayKey(p.date)); }
     const n = p.slabNumber;
     if (typeof n !== "number" || !Number.isFinite(n)) continue;
     slabSet.add(n);
+    if (p.date) pressDayBySlab.set(n, pressDayOf(p.date));
     const dn = (p.designName ?? "").toString().trim() || "—";
     if (!designMap.has(dn)) designMap.set(dn, new Set());
     designMap.get(dn)!.add(n);
@@ -248,24 +259,47 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   // operator-typed MIS hourly actuals as a provisional figure — the card says so —
   // and the day switches to the press count automatically once entries land.
   // Skipped in batch-filter mode, where MIS spans days press legitimately lacks.
+  //
+  // ENTRY LAG IS A CALENDAR FACT, AND THE FALLBACK REPLACES RATHER THAN ADDS.
+  // Two things went wrong when the day key moved. First the question: "has this
+  // day's press been entered yet" is answered by whether press carries rows
+  // DATED that day, which is a calendar question — on the production key, the
+  // handful of rows a late bulk entry stamps between 00:00 and 06:00 count as
+  // that day's press and disarm the net. 18 August is the case: nothing was
+  // dated the 18th, 47 rows were typed after midnight on the 19th, and the day
+  // scored 47 against the 241 its own report shows. Second the arithmetic: the
+  // fallback was ADDED to the press count, so a day that had both leaked rows
+  // and a fallback counted them twice — that was the 887 slabs August gained.
+  // A day is now scored EITHER by its press rows OR, when press has not landed,
+  // by the shift's own hourly actuals; never by both.
   let misFallbackSlabs = 0;
   const misFallbackDaySet = new Set<string>();
   const misDesign = new Map<string, number>();
+  const laggingDays = new Set<string>();
   if (!batch) {
     for (const r of rows) {
       if (!r.reportDay) continue;
-      const day = r.reportDay;
-      if (pressDaySet.has(day)) continue;
+      // The day's press is "not in yet" only when NOTHING carries its date.
+      if (pressCalendarDays.has(r.reportDay)) continue;
+      laggingDays.add(r.reportDay);
+    }
+    for (const r of rows) {
+      if (!r.reportDay || !laggingDays.has(r.reportDay)) continue;
       const n = Number(r.slabsPerHourActual ?? 0) || 0;
       if (n <= 0) continue;
       misFallbackSlabs += n;
-      misFallbackDaySet.add(day);
+      misFallbackDaySet.add(r.reportDay);
       const dn = (r.design ?? "").toString().trim() || "—";
       misDesign.set(dn, (misDesign.get(dn) ?? 0) + n);
     }
   }
   misFallbackSlabs = r0(misFallbackSlabs);
-  const actualSlabs = slabSet.size + misFallbackSlabs;
+  // Press slabs from the lagging days are dropped, not added to: those days are
+  // reported from the MIS figure instead, so nothing is counted twice.
+  const pressSlabsCounted = laggingDays.size
+    ? [...slabSet].filter((n) => { const d = pressDayBySlab.get(n); return !d || !laggingDays.has(d); }).length
+    : slabSet.size;
+  const actualSlabs = pressSlabsCounted + misFallbackSlabs;
   const designs = [...designMap.entries()].map(([design, set]) => ({ design, slabs: set.size }));
   for (const [design, slabs] of misDesign) {
     const e = designs.find((d) => d.design === design);
@@ -327,7 +361,14 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
     const normR = rows.length - roboR;
     // Batch mode has no per-day loop: use the Std entered on this batch's own hours.
     const rate = rangeStd ?? fallbackRate(roboR, normR);
-    daysCounted = pressDaySet.size || 1;
+    // CALENDAR dates, not production days. This is the multiplier on a target
+    // of "rate x 21 productive hours x days", and a batch that runs one date
+    // start to finish touches ONE date but TWO production days, because it
+    // straddles 06:00 — so the production key doubled the target for the
+    // plant's commonest pattern. Batch 1429 ran 00:02 to 23:57 on 28 August and
+    // was charged 42 productive hours and a 177-slab shortfall it had actually
+    // beaten. 79 of 227 batches since January gained a day this way.
+    daysCounted = pressCalendarDays.size || 1;
     target = rate * HOURS_PER_DAY * daysCounted;
     const lostMin = otherTotal + Math.max(0, cleanTotal - CLEAN_BASELINE_MIN * daysCounted);
     downtimeCost = rate * (lostMin / 60);
@@ -364,7 +405,14 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   const byReason = [...reasonMap.values()].map((x) => ({ ...x, minutes: r0(x.minutes) })).sort((a, b) => b.minutes - a.minutes || b.incidents - a.incidents);
   const trend = [...trendMap.entries()].map(([day, m]) => ({ day, minutes: r0(m) })).sort((a, b) => a.day.localeCompare(b.day));
   const hourNum = (h: string) => { const m = h.match(/\d+/); return m ? parseInt(m[0], 10) : 99; };
-  const byHour = [...hourMap.entries()].map(([hour, v]) => ({ hour, minutes: r0(v.minutes), incidents: v.incidents })).sort((a, b) => hourNum(a.hour) - hourNum(b.hour));
+  // Same clock as the incident log above: the hour chart runs 06 -> 05, the
+  // order the production day is worked, not 00 -> 23.
+  // hourNum returns 99 for a label with no digits, precisely so an unlabelled
+  // row sorts last. Rotating it would fold 99 onto rank 21 — the same rank as
+  // "03 - 04" — and bury the row in the middle of the night shift. It is ranked
+  // past the end of the day instead, which is where it was before the rotation.
+  const dayRank = (h: string) => { const n = hourNum(h); return n > 23 ? 24 : (n + 18) % 24; };
+  const byHour = [...hourMap.entries()].map(([hour, v]) => ({ hour, minutes: r0(v.minutes), incidents: v.incidents })).sort((a, b) => dayRank(a.hour) - dayRank(b.hour));
   // Incidents are returned UNFILTERED by type: the log card filters client-side (a chip
   // click must not navigate — a searchParams change re-keys the page segment, the root
   // loading skeleton swaps in and the collapse throws the scroll to the top). The Excel
@@ -373,7 +421,6 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   // runs 06:00 to 06:00 — so within one day the hours run 06,07…23,00…05, and
   // the raw hour number puts that last stretch (the small hours of the night
   // shift) at the FRONT of the day it belongs to the end of.
-  const dayRank = (h: string) => (hourNum(h) + 18) % 24;
   const shown = incidents.sort((a, b) => (a.date ?? "").localeCompare(b.date ?? "") || dayRank(a.hour ?? "") - dayRank(b.hour ?? ""));
 
   return {

@@ -73,6 +73,10 @@ export default async function MaintenancePage({
   const def = inboxWindow(Date.now());
   const from = sp.from?.trim() || def.from;
   const to = sp.to?.trim() || def.to;
+  // The same window, expressed on the calendar for the register below. A day
+  // the user typed is theirs and is left alone; only the default is extended.
+  const istCalendarToday = new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
+  const pmTo = sp.to?.trim() ? to : (istCalendarToday > to ? istCalendarToday : to);
 
   const [canRaise, canAnswer, tickets, pmEntries] = await Promise.all([
     canRaiseMaintenance(),
@@ -81,7 +85,16 @@ export default async function MaintenancePage({
     // The register reads over the same window as the queue. A failed read is
     // NULL, never an empty register — this page's own rule: a lookup that
     // failed must not be reported as work done or as nothing done.
-    listPmEntries(from, to).catch(() => null),
+    // THE PM REGISTER IS ON THE CALENDAR, and must not be handed the
+    // production-day window beside it. preventive_maintenance.date is "the
+    // calendar day the work was done" and the entry form defaults it to the IST
+    // calendar day — so between midnight and 06:00, when the production `to` is
+    // still yesterday, an entry saved for today fell outside every window this
+    // page can show. The manager was told "Logged: 30 min at Press" and saw no
+    // row, which invites him to enter it again. The register's own end of the
+    // range is therefore carried forward to the calendar day when the two
+    // differ, which is exactly the six hours of a night shift.
+    listPmEntries(from, pmTo).catch(() => null),
   ]);
 
   // The downtime side, assembled exactly the way /mis assembles it — same
