@@ -225,10 +225,14 @@ function SheetDepth({ r }: { r: MonthlyReport }) {
             <strong>{hm(m.minutes)}</strong>
             {worstArea && <> — most of it in the <strong>{worstArea.area}</strong> ({num(worstArea.minutes)} minutes over {worstArea.days} day{worstArea.days === 1 ? "" : "s"})</>}.{" "}
             {m.withRca === 0 ? "No RCA number was raised against any of them." : `${m.withRca} carried an RCA number.`}{" "}
-            {m.sparesHours > 0 && `Spares were used in ${m.sparesHours} hour${m.sparesHours === 1 ? "" : "s"}.`}{" "}
-            {m.power.minutes > 0 && <>The grid went down for <strong>{hm(m.power.minutes)}</strong> across {m.power.hours} hour{m.power.hours === 1 ? "" : "s"} on {m.power.days} day{m.power.days === 1 ? "" : "s"}.</>}
+            {m.sparesHours > 0 && `Spares were used in ${m.sparesHours} hour${m.sparesHours === 1 ? "" : "s"}.`}
           </>
-        )}
+        )}{" "}
+        {/* The grid is its own fact: power hours are deliberately NOT
+            maintenance events, so a month can lose hours to cuts without a
+            single machine fault — nested under the breakdown branch, that
+            sentence could never print on exactly those months. */}
+        {m.power.hours > 0 && <>The grid went down for <strong>{hm(m.power.minutes)}</strong> across {m.power.hours} hour{m.power.hours === 1 ? "" : "s"} on {m.power.days} day{m.power.days === 1 ? "" : "s"}.</>}
       </p>
       {m.byArea.length > 0 && (
         <div className={s.pair}>
@@ -376,9 +380,13 @@ function SheetQualityMonth({ r, canFill }: { r: MonthlyReport; canFill: boolean 
     <div className={s.sheet}>
       <Mast r={r} />
 
-      <Section name="Quality grades" note={`all ${num(q.inspected)} slabs inspected during the month`} />
+      {/* ENTRIES, not slabs — and the label says so. A slab inspected twice
+          is two QC entries and one slab, so this table's total and the
+          distinct-slab figure below it are different numbers on purpose;
+          labelling both "inspected slabs" made the sheet contradict itself. */}
+      <Section name="Quality grades" note={`all ${num(q.inspected)} QC entries this month, covering ${num(q.inspectedSlabs)} distinct slabs`} />
       <table className={`${s.t} ${s.keep}`}>
-        <thead><tr><th>Grade</th><th className={s.num}>Slabs</th><th className={s.num}>Share</th></tr></thead>
+        <thead><tr><th>Grade</th><th className={s.num}>QC entries</th><th className={s.num}>Share</th></tr></thead>
         <tbody>
           {q.grades.map(([g, n]) => (
             <tr key={g}>
@@ -388,7 +396,7 @@ function SheetQualityMonth({ r, canFill }: { r: MonthlyReport; canFill: boolean 
             </tr>
           ))}
           <tr className={s.total}>
-            <td>Total inspected</td>
+            <td>Total QC entries</td>
             <td className={s.num}>{num(q.inspected)}</td>
             <td className={s.num}>100%</td>
           </tr>
@@ -401,8 +409,8 @@ function SheetQualityMonth({ r, canFill }: { r: MonthlyReport; canFill: boolean 
         <div>
           <table className={`${s.t} ${s.keep}`}>
             <tbody>
-              <tr><td className={s.key}>Slabs polished</td><td className={s.num}>{num(q.polishedSlabs)}</td></tr>
-              <tr><td className={s.key}>Slabs inspected</td><td className={s.num}>{num(q.inspectedSlabs)}</td></tr>
+              <tr><td className={s.key}>Distinct slabs polished</td><td className={s.num}>{num(q.polishedSlabs)}</td></tr>
+              <tr><td className={s.key}>Distinct slabs inspected</td><td className={s.num}>{num(q.inspectedSlabs)}</td></tr>
               <tr><td className={s.key}>Pass rate (A or A2, of graded)</td><td className={s.num}>{pct1(q.passRate)}</td></tr>
               <tr><td className={s.key}>Graded A / A2</td><td className={s.num}>{num(q.gradeA)} / {num(q.gradeA2)}</td></tr>
               <tr><td className={s.key}>Held below A2</td><td className={s.num}>{num(q.held)}</td></tr>
@@ -461,13 +469,14 @@ function SheetQualityMonth({ r, canFill }: { r: MonthlyReport; canFill: boolean 
         </div>
       </div>
 
-      <Section name="Who did the work" note="the six busiest at each station this month" />
+      {/* Entries again, matching the denominator the shares divide by. */}
+      <Section name="Who did the work" note="the six busiest at each station this month, by entries filed" />
       <div className={s.pair}>
         {([["Polishing operator", "Operator", q.operators, q.polished], ["Quality inspector", "Inspector", q.inspectors, q.inspected]] as const).map(
           ([label, head, rows, total]) => (
             <div key={label}>
               <table className={`${s.t} ${s.keep}`}>
-                <thead><tr><th>{head}</th><th className={s.num}>Slabs</th><th className={s.num}>Share</th></tr></thead>
+                <thead><tr><th>{head}</th><th className={s.num}>Entries</th><th className={s.num}>Share</th></tr></thead>
                 <tbody>
                   {rows.slice(0, 6).map(([k, n]) => (
                     <tr key={k}>

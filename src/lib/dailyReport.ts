@@ -215,9 +215,17 @@ export function getMaintenance(hours: HourRow[]) {
   // for minutes. An hour can appear in both tables only when it genuinely lost
   // time both ways (a fault booked to breakdown and a cut booked to power);
   // the minutes come from different columns, so nothing is counted twice.
+  // ROWS THAT REACH NO SHIFT ARE NOT ON THIS PAGE EITHER. An hour with no
+  // hour label cannot be placed in a shift or an hour, and page one's target,
+  // output, time-lost and cause figures all skip it (assembleDay). Counting it
+  // HERE made this page disagree with page one, and with its own by-shift
+  // table beside it: June 2026 printed 135 breakdown events / 3,551 minutes
+  // against a causes row of 3,401 and a by-shift table summing to 126 / 3,401.
+  // One rule, both pages.
   const isPower = (x: HourRow) => x.reasons.some((r) => /POWER/i.test(r));
-  const events = hours.filter((x) => (x.breakdown || x.delay.breakdown > 0) && !isPower(x));
-  const powerRows = hours
+  const placed = hours.filter((x) => x.shift != null);
+  const events = placed.filter((x) => (x.breakdown || x.delay.breakdown > 0) && !isPower(x));
+  const powerRows = placed
     .filter((x) => x.delay.power > 0 || (isPower(x) && (x.delay.breakdown > 0 || x.breakdown)))
     .map((x) => ({
       hour: x.hour, shift: x.shift,
@@ -237,7 +245,11 @@ export function getMaintenance(hours: HourRow[]) {
     }));
   const byArea = new Map<string, { area: string; events: number; minutes: number; hours: string[] }>();
   for (const x of events) {
-    const area = x.area.length ? x.area.join(" / ") : "Not recorded";
+    // SORTED, so one pair of areas is one row. areaOfProblem is a multi-select
+    // stored in the order the in-charge tapped it, so "Distributor / Press"
+    // and "Press / Distributor" are the same failure typed two ways — over a
+    // month that split one area pair into two rows, each with its own share.
+    const area = x.area.length ? [...x.area].sort().join(" / ") : "Not recorded";
     const e = byArea.get(area) ?? { area, events: 0, minutes: 0, hours: [] };
     e.events++; e.minutes += x.delay.breakdown; e.hours.push(x.hour ?? "");
     byArea.set(area, e);
@@ -249,8 +261,8 @@ export function getMaintenance(hours: HourRow[]) {
     minutes: events.reduce((a, x) => a + x.delay.breakdown, 0),
     spares: events.filter((x) => x.spares),
     withRca: events.filter((x) => x.rca).length,
-    electrical: [...new Set(hours.map((x) => x.electrical).filter(Boolean))] as string[],
-    mechanical: [...new Set(hours.map((x) => x.mechanical).filter(Boolean))] as string[],
+    electrical: [...new Set(placed.map((x) => x.electrical).filter(Boolean))] as string[],
+    mechanical: [...new Set(placed.map((x) => x.mechanical).filter(Boolean))] as string[],
     // Every breakdown-flagged hour, by shift — the shift that carries the
     // machine problem is not always the one with the worst output.
     byShift: (["A", "B", "C"] as ShiftLetter[]).map((s) => ({

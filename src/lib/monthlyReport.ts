@@ -55,6 +55,10 @@ const daysInMonth = (month: string): string[] => {
   return Array.from({ length: n }, (_, i) => `${month}-${String(i + 1).padStart(2, "0")}`);
 };
 
+/** n days from a 'YYYY-MM-DD' key. UTC arithmetic: a key is a label. */
+const addDaysTo = (key: string, n: number): string =>
+  new Date(Date.parse(`${key}T00:00:00.000Z`) + n * 86_400_000).toISOString().slice(0, 10);
+
 export const prevMonthOf = (month: string): string => {
   const [y, m] = month.split("-").map(Number);
   return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
@@ -88,7 +92,7 @@ async function monthCore(month: string, capDay: string | null, now: number = Dat
   const mis = await prisma.mis.findMany({
     where: { dateAndTime: { gte: from, lt: to } },
     orderBy: { dateAndTime: "asc" },
-    select: { ...MIS_SELECT, dateAndTime: true },
+    select: { ...MIS_SELECT, dateAndTime: true, date: true },
   });
 
   const byDay = new Map<string, typeof mis>();
@@ -97,6 +101,34 @@ async function monthCore(month: string, capDay: string | null, now: number = Dat
     const k = dayKeyOf(r.dateAndTime);
     if (!byDay.has(k)) byDay.set(k, []);
     byDay.get(k)!.push(r);
+  }
+
+  // WHICH DAY'S SHEET AN HOUR WAS FILED ON — a different question from which
+  // day its minutes belong to, and it must be answered the entry sheet's way.
+  //
+  // The figures above bucket a row by its TIMESTAMP (dayKeyOf), exactly as the
+  // daily report windows MIS, which is what keeps the two reports equal. But
+  // the MIS sheet files an hour under its `date` column plus its hour LABEL,
+  // with 00–05 stored against the next date. A C shift that types its
+  // after-midnight hours late — after 06:00 — stamps them into the next report
+  // day, and the timestamp rule then reports the night that filed them as
+  // silent. That is a false accusation against a shift, and the Fill button
+  // beside it would open a sheet where the hour is already logged and invite a
+  // duplicate row. So the filed-set is keyed the sheet's way.
+  const filedByDay = new Map<string, Set<number>>();
+  for (const r of mis) {
+    const h = r.hour ? Number(String(r.hour).slice(0, 2)) : null;
+    if (h == null || !Number.isFinite(h)) continue;
+    // The `date` column is the IST day stored at UTC midnight; fall back to
+    // the timestamp's own report day when a legacy row carries no date.
+    const base = r.date
+      ? r.date.toISOString().slice(0, 10)
+      : r.dateAndTime ? dayKeyOf(r.dateAndTime) : null;
+    if (!base) continue;
+    // hours 00–05 are the tail of the night that began the day before
+    const key = h < 6 ? addDaysTo(base, -1) : base;
+    if (!filedByDay.has(key)) filedByDay.set(key, new Set());
+    filedByDay.get(key)!.add(h);
   }
 
   // The production mix accumulates off the SAME hour rows the day figures
@@ -167,14 +199,20 @@ async function monthCore(month: string, capDay: string | null, now: number = Dat
         maint.byShift.set(s.shift, e);
       }
     }
-    if (m.powerCuts.minutes > 0) {
+    // Gated on ROWS, not minutes — the daily page prints its power section on
+    // rows too. A power hour with no minutes typed (the reasons name the grid
+    // and the breakdown flag is set) is still an hour the grid went down: on
+    // the minutes gate such a day vanished from the month's hour and day
+    // counts while appearing on its own daily page.
+    if (m.powerCuts.rows.length > 0) {
       maint.power.days++;
       maint.power.minutes += m.powerCuts.minutes;
       maint.power.hours += m.powerCuts.rows.length;
     }
-    // WHICH SHIFT DID NOT FILE. Matched on the slot's START HOUR, not on the
-    // label's spelling, so a row typed "6 - 7" still counts as filed.
-    const filed = new Set(hours.map((x) => x.h).filter((h): h is number => h != null));
+    // WHICH SHIFT DID NOT FILE. Read from filedByDay — the entry sheet's own
+    // (date column + hour label) rule, not the timestamp bucket — and matched
+    // on the slot's START HOUR, so a row typed "6 - 7" still counts as filed.
+    const filed = filedByDay.get(date) ?? new Set<number>();
     const slots = elapsedSlots(date, now);
     const gaps = (["A", "B", "C"] as const).map((shift) => {
       const mine = slots.filter((s) => s.shift === shift);
