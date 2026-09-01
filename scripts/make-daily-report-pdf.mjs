@@ -19,15 +19,37 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import PdfPrinter from "pdfmake/src/printer.js";
 import { collect } from "./dailyReportData.mjs";
+import { vendoredFontDirs } from "./vendoredFontDirs.mjs";
 
 /* ------------------------------------------------------------------ fonts */
-// Where the bundled fallback lives, resolved from THIS FILE rather than from
-// process.cwd(). A serverless function does not run with the repo root as its
-// working directory, so a relative "node_modules/..." would resolve to nothing
-// there and the render would throw at import time - on a schedule, at 09:00,
-// with nobody watching.
+// WHERE THE BUNDLED FALLBACK LIVES - and the one line of this file that has to
+// survive being put through a bundler.
+//
+// It used to be a single path built from import.meta.url, on the reasoning
+// (correct as far as it went) that a serverless function does not run with the
+// repo root as its working directory. Next bundles this .mjs into the route's
+// lambda, and webpack REPLACES import.meta.url with a build-time string
+// literal. The shipped bundle contained, verbatim:
+//
+//     fileURLToPath("file:///C:/Users/user/Desktop/ERP/scripts/make-daily-report-pdf.mjs")
+//
+// On Vercel that literal freezes to the BUILD container's path, /vercel/path0/
+// scripts/..., so the fonts directory resolved to /vercel/path0/node_modules/...
+// while the lambda runs from /var/task. Every candidate missed, the module
+// threw "No usable fonts found" at import time, and the 09:00 report answered
+// 500 before it ever reached the database or the mail server. The .ttf files
+// were IN the lambda the whole time; nothing ever looked where they were.
+//
+// So the fallback is a LIST now, and it asks the runtime rather than the
+// build. Each root is tried in turn and the first that actually holds the
+// files wins, which also means a wrong guess costs nothing.
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const VENDORED_FONTS = path.join(HERE, "..", "node_modules", "pdfjs-dist", "standard_fonts");
+
+// The candidates live in their own import-free module so a test can reach
+// them; see the note there for what webpack does to import.meta.url. HERE is
+// passed in and is allowed to be a path on a machine that no longer exists.
+export const VENDORED_FONT_DIRS = vendoredFontDirs(HERE);
+
 
 const FONT_DIRS = [
   "C:/Windows/Fonts",                            // the original pairing
@@ -42,7 +64,7 @@ const FONT_DIRS = [
   // on a machine that has Calibri. The emailed copy is a faithful REPORT, not
   // a pixel-faithful reproduction of the original document. Run it on Windows
   // when the document itself is what matters.
-  VENDORED_FONTS,
+  ...VENDORED_FONT_DIRS,
 ];
 const find = (...names) => {
   for (const d of FONT_DIRS) for (const n of names) {

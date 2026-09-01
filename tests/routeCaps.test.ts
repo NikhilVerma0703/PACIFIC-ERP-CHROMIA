@@ -106,3 +106,33 @@ test("an ordinary page is not a cron route", () => {
     assert.equal(isCronRoute(p), false, p);
   }
 });
+
+// The cron allowlist was correct and still every scheduled job died, because
+// it sat BELOW the canonical-host redirect. Vercel invokes a cron against the
+// project's *.vercel.app URL; middleware saw the host, answered 308, and the
+// invocation ended at the edge without running anything. Measured in production
+// runtime logs: /api/telegram/report 308 at 08:40, 15:40, 16:40, 17:40, 18:40
+// and 19:41 UTC, with no serverless line behind any of them.
+//
+// It is invisible to every hand test, because a curl goes to the custom domain,
+// which does not match .vercel.app and never enters that branch. So ORDER is
+// the thing to pin, and only the source can say what the order is.
+
+test("THE CRON CHECK RUNS BEFORE THE CANONICAL-HOST REDIRECT", () => {
+  const src = readFileSync(new URL("../src/middleware.ts", import.meta.url), "utf8");
+  const body = src.slice(src.indexOf("export default auth("));
+  const cron = body.indexOf("isCronRoute(");
+  const redirect = body.indexOf('.vercel.app"');
+  assert.notEqual(cron, -1, "middleware must consult isCronRoute");
+  assert.notEqual(redirect, -1, "the canonical-host redirect should still be there for browsers");
+  assert.ok(cron < redirect,
+    "isCronRoute must be checked BEFORE the .vercel.app redirect, or every Vercel cron "
+    + "is answered 308 at the edge and no scheduled job ever runs");
+});
+
+test("the cron check short-circuits — it is a return, not a flag read later", () => {
+  const src = readFileSync(new URL("../src/middleware.ts", import.meta.url), "utf8");
+  const body = src.slice(src.indexOf("export default auth("));
+  assert.match(body.slice(0, body.indexOf('.vercel.app"')), /if \(isCronRoute\(p\)\) return;/,
+    "the cron path must leave middleware immediately, ahead of every later rule");
+});

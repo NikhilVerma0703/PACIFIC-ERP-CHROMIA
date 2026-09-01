@@ -67,6 +67,31 @@ function denied(p: string, nextUrl: URL, role: string, branch: string): Response
 
 export default auth((req) => {
   const { nextUrl } = req;
+  const p = nextUrl.pathname;
+
+  // 0) THE SCHEDULER'S OWN ROUTES, ahead of EVERYTHING below - including the
+  //    canonical-host redirect, which is why this block is here and not in the
+  //    public-paths list where it started.
+  //
+  //    Vercel triggers a cron against the project's *.vercel.app production
+  //    URL, not against the custom domain. Step 1 saw that host and answered
+  //    308 Permanent Redirect; a cron invocation does not follow redirects, so
+  //    the job ended there, at the edge, having executed nothing. Measured on
+  //    production: "GET /api/telegram/report 308 [edge-middleware]" at 08:40,
+  //    15:40, 16:40, 17:40, 18:40 and 19:41 UTC, hour after hour, with no
+  //    serverless line behind any of them. The hourly Telegram report had been
+  //    dead since the schedule moved here from GitHub Actions.
+  //
+  //    IT CANNOT BE CAUGHT BY HAND, which is why it lasted. Every manual test
+  //    goes to erp.pacific-surfaces.com, which does not end in .vercel.app and
+  //    so never enters the branch below: curl says 401, the route is reached,
+  //    everything looks correct, and the scheduler is taking a different path
+  //    through this function than the tester is. Verify a cron by reading the
+  //    runtime log at the scheduled minute, never by curling the domain.
+  //
+  //    Nothing is opened. Each of these refuses a request that does not carry
+  //    its own secret; skipping the redirect only lets it be asked.
+  if (isCronRoute(p)) return;
 
   // 1) canonical domain: every *.vercel.app URL -> the ERP subdomain
   const host = req.headers.get("host") ?? "";
@@ -78,20 +103,14 @@ export default auth((req) => {
     return Response.redirect(url, 308);
   }
 
-  // 2) public paths: login, auth endpoints, cron endpoints (each has its own secret), static assets
-  const p = nextUrl.pathname;
+  // 2) public paths: login, auth endpoints, static assets. The cron routes are
+  //    NOT here - they are handled at 0, above the redirect.
   const isPublic =
     p === "/login" ||
     // The refusal page itself. It sits here, above every cap: a cap that
     // redirected to a page its own rule then refused would loop the browser.
     p === "/no-access" ||
     p.startsWith("/api/auth") ||
-    // Scheduler-only, each gated by its own secret inside. The list is in
-    // lib/routeCaps beside isPublicAsset, for the same reason: a route named
-    // here and not there is opened by one gate and closed by the other, and a
-    // cron route closed by either is a job that 302s to /login twice a day
-    // while the cron log calls every run a success.
-    isCronRoute(p) ||
     isPublicAsset(p);
   if (isPublic) return;
 
