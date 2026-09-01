@@ -101,6 +101,9 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
   const [kpi, setKpi] = useState<Kpi | null>(null);
   const [rows, setRows] = useState<Slab[]>([]);
   const [showPending, setShowPending] = useState(false); // ADMIN: include unapproved stock everywhere
+  // How many slabs matched the filters but were withheld because Sales has not
+  // approved their design+batch (the route counts them and says so in a header).
+  const [withheld, setWithheld] = useState(0);
   const [sSorts, setSSorts] = useState<{ k: keyof Slab; d: 1 | -1 }[]>([]);
   const [loading, setLoading] = useState(true);
   const [f, setF] = useState({ ...EMPTY });
@@ -171,7 +174,11 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
     Object.entries(filters).forEach(([k, v]) => { if (v) p.set(k, v); });
     if (showPendingRef.current) p.set("pending", "1");
     fetch(`/api/inventory?${p.toString()}`)
-      .then((r) => (r.ok ? r.json() : []))
+      .then((r) => {
+        const n = Number(r.headers.get("X-Withheld-Unapproved") ?? 0);
+        setWithheld(Number.isFinite(n) ? n : 0);
+        return r.ok ? r.json() : [];
+      })
       .then((d) => {
         const list: Slab[] = Array.isArray(d) ? d : [];
         setRows(list);
@@ -831,13 +838,30 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
                 {loading ? (
                   <tr><td colSpan={13} className="px-3 py-10 text-center text-gray-400">Loading…</td></tr>
                 ) : rows.length === 0 ? (
-                  <tr><td colSpan={13} className="px-3 py-10 text-center text-gray-400">No slabs match the current filters.</td></tr>
+                  <tr><td colSpan={13} className="px-3 py-10 text-center text-gray-400">
+                    No slabs match the current filters.
+                    {withheld > 0 && <span className="mt-1 block text-amber-700">{withheld === 1 ? "One slab matches" : `${withheld.toLocaleString("en-IN")} slabs match`} but {withheld === 1 ? "is" : "are"} held back — see below.</span>}
+                  </td></tr>
                 ) : (
                   <SlabRows rows={displayRows} sel={sel} onToggle={toggle} onOpen={openDetail} />
                 )}
               </tbody>
             </table>
           </div>
+          {/* NOT SHOWN, AND WHY. Sales approves stock by design+batch; anything
+              outside that list is withheld from this view whatever its source —
+              a hand-entered slab with a batch nobody has approved yet, a typo'd
+              design, an autolinked slab of a new batch. Saying nothing made the
+              source filter look broken. */}
+          {!loading && withheld > 0 && (
+            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              {withheld.toLocaleString("en-IN")} more slab{withheld === 1 ? "" : "s"} match{withheld === 1 ? "es" : ""} these filters but {withheld === 1 ? "is" : "are"} not listed:
+              {" "}{withheld === 1 ? "its" : "their"} design and batch are not on the Sales-approved list yet.
+              {admin
+                ? " Tick “Show unapproved stock” above to include them."
+                : " An administrator can show them with “Show unapproved stock”."}
+            </p>
+          )}
           {!loading && rows.length > 0 && (
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-400">
               <span>{rows.length.toLocaleString("en-IN")} slab(s){rows.length === 1000 ? " (showing first 1000 — narrow the filters)" : ""}.</span>

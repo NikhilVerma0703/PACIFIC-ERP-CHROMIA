@@ -4,7 +4,7 @@
 import { prisma } from "@/lib/prisma";
 import { inventoryGate } from "@/lib/inventory/access";
 import { sweepExpiredReservations } from "@/lib/inventory/finishedSlab";
-import { buildInventoryWhere, approvedOnlyWhere } from "@/lib/inventory/searchWhere";
+import { buildInventoryWhere, approvedOnlyWhere, getUnapprovedSlabNumbers } from "@/lib/inventory/searchWhere";
 import { isAdmin } from "@/lib/rbac";
 
 const db = prisma as any;
@@ -25,7 +25,21 @@ export async function GET(request: Request) {
     let where: any = await buildInventoryWhere(searchParams);
     // Unapproved stock is ADMIN-only, and only when explicitly requested.
     const showPending = searchParams.get("pending") === "1" && (await isAdmin());
-    if (!showPending) where = await approvedOnlyWhere(where);
+    // AND THE SCREEN IS TOLD WHAT IT IS NOT BEING SHOWN. The gate hides any slab
+    // whose design+batch Sales has not approved — every source, not just this
+    // one — and it used to do it in silence: a filter could match 21 slabs and
+    // list 16 with nothing to say the other 5 existed. That silence is what
+    // made "Entered by hand does not show all the slabs I entered by hand" look
+    // like a broken filter. The count rides back in a header so the response
+    // body stays the bare array every caller already parses.
+    let withheld = 0;
+    if (!showPending) {
+      const pending = await getUnapprovedSlabNumbers(false);
+      if (pending.length) {
+        withheld = await db.finishedSlab.count({ where: { ...where, slabNumber: { in: pending } } });
+        where = await approvedOnlyWhere(where, { pending });
+      }
+    }
 
     // Real slab numbers first (newest on top); NB-series legacy slabs
     // (9,000,000+, no original number) always sort to the BOTTOM.
@@ -51,7 +65,9 @@ export async function GET(request: Request) {
     const aliasRows: any[] = await db.designAlias.findMany({ select: { variant: true, canonical: true } }).catch(() => []);
     const amap = new Map<string, string>(aliasRows.map((x) => [x.variant, x.canonical]));
     rows = rows.map((r: any) => (r.design && amap.has(r.design) ? { ...r, design: amap.get(r.design) } : r));
-    return Response.json(rows.map(withDerived));
+    return Response.json(rows.map(withDerived), {
+      headers: { "X-Withheld-Unapproved": String(withheld) },
+    });
   } catch (e) {
     console.error("Inventory search error:", e);
     return Response.json([], { status: 500 });
