@@ -1,6 +1,6 @@
 import NextAuth from "next-auth";
 import { authConfig } from "./auth.config";
-import { storeMayVisit, operatorMayVisit, maintenanceMayVisit, samplingMayVisit, homeFor, isPublicAsset } from "./lib/routeCaps.ts";
+import { storeMayVisit, operatorMayVisit, maintenanceMayVisit, samplingMayVisit, homeFor, isPublicAsset, isCronRoute } from "./lib/routeCaps.ts";
 // The sampling module's audience, imported rather than restated here. It is a
 // pure module (its only import is lib/roles.ts, which imports nothing), so it
 // is edge-safe — and it has to be imported rather than copied because the same
@@ -86,10 +86,12 @@ export default auth((req) => {
     // redirected to a page its own rule then refused would loop the browser.
     p === "/no-access" ||
     p.startsWith("/api/auth") ||
-    p.startsWith("/api/telegram/report") ||   // cron-only: gated by CRON_SECRET inside
-    p.startsWith("/api/telegram/webhook") ||  // Telegram-only: gated by webhook secret inside
-    p.startsWith("/api/sales/cron") ||        // cron-only: gated by CRON_SECRET inside
-    p.startsWith("/api/report/daily-email") || // cron-only: gated by CRON_SECRET inside
+    // Scheduler-only, each gated by its own secret inside. The list is in
+    // lib/routeCaps beside isPublicAsset, for the same reason: a route named
+    // here and not there is opened by one gate and closed by the other, and a
+    // cron route closed by either is a job that 302s to /login twice a day
+    // while the cron log calls every run a success.
+    isCronRoute(p) ||
     isPublicAsset(p);
   if (isPublic) return;
 

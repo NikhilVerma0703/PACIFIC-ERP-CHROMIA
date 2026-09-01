@@ -1,5 +1,5 @@
 import type { NextAuthConfig } from "next-auth";
-import { storeMayVisit, operatorMayVisit, isPublicAsset, STORE_HOME, OPERATOR_HOME } from "./lib/routeCaps.ts";
+import { storeMayVisit, operatorMayVisit, isPublicAsset, isCronRoute, STORE_HOME, OPERATOR_HOME } from "./lib/routeCaps.ts";
 // The active role context. Pure and import-free, exactly like routeCaps above —
 // it must be, because this file is edge-safe and Prisma-free.
 import { ROLE_CONTEXT_COOKIE, activeContextOf, type GrantedContexts } from "./lib/roleContext.ts";
@@ -43,13 +43,12 @@ export const authConfig = {
         // role refused there would be bounced off the refusal page here.
         nextUrl.pathname === "/no-access" ||
         nextUrl.pathname.startsWith("/api/auth") ||
-        // The scheduled report. Public HERE as well as in middleware, because
-        // this callback runs first and a Response it returns replaces every
-        // rule over there — a cron route listed only in middleware would be
-        // bounced to /login before its own CRON_SECRET check ever ran. The
-        // route is not open: it refuses anything without the secret, and
-        // refuses everything when the secret is unset.
-        nextUrl.pathname.startsWith("/api/report/daily-email") ||
+        // The scheduled reports, from the SAME list middleware reads
+        // (lib/routeCaps). Named here as well as there because this callback
+        // runs first and a Response it returns replaces every rule over there.
+        // None of them is open: each refuses anything without its own secret,
+        // and refuses everything when that secret is unset.
+        isCronRoute(nextUrl.pathname) ||
         // The SAME allowlist middleware uses — not a copy. The old rule here
         // was "anything ending in .png/.svg/…", which marked /tables/Press.png
         // and /api/mis/export.xml "public" in the gate that runs FIRST; it was

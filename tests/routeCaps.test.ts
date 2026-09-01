@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { storeMayVisit, operatorMayVisit, STORE_HOME, OPERATOR_HOME } from "../src/lib/routeCaps.ts";
+import { storeMayVisit, operatorMayVisit, isCronRoute, CRON_ROUTES, STORE_HOME, OPERATOR_HOME } from "../src/lib/routeCaps.ts";
 
 // The bug this file exists to prevent: the Store Incharge cap was written out
 // twice, in auth.config.ts and in middleware.ts, and the two drifted.
@@ -67,5 +67,42 @@ test("neither gate keeps a private copy of the caps", () => {
       /role === "STORE"\)\s*\{[\s\S]{0,400}?startsWith\("\/store"\)/,
       `${f} re-lists the store cap inline instead of importing it`,
     );
+  }
+});
+
+/* --------------------------------------------------------- the cron routes */
+
+// A scheduled route the login gate does not know about is bounced to /login,
+// and a 302 is what Vercel's cron log calls a successful run: the job fires on
+// time forever and does nothing, with no error anywhere. The slab intake digest
+// shipped that way. So the schedule itself is the test — every path in
+// vercel.json has to be a path the gate lets through.
+
+test("EVERY SCHEDULED PATH IN vercel.json PASSES THE LOGIN GATE", () => {
+  const vercel = JSON.parse(readFileSync(new URL("../vercel.json", import.meta.url), "utf8")) as {
+    crons?: Array<{ path: string; schedule: string }>;
+  };
+  const crons = vercel.crons ?? [];
+  assert.ok(crons.length > 0, "vercel.json should still declare crons");
+  for (const c of crons) {
+    assert.equal(isCronRoute(c.path), true,
+      `${c.path} is scheduled "${c.schedule}" but the login gate would redirect it to /login`);
+  }
+});
+
+test("a cron route is open with its sub-paths and its query string, and nothing next to it is", () => {
+  for (const base of CRON_ROUTES) {
+    assert.equal(isCronRoute(base), true, base);
+    assert.equal(isCronRoute(base + "/anything"), true, base + "/anything");
+    assert.equal(isCronRoute(base + "?dry=1"), true, base + "?dry=1");
+    // The near-miss every cap in this file is anchored against: a longer name
+    // that merely starts the same way is a DIFFERENT route and stays closed.
+    assert.equal(isCronRoute(base + "-admin"), false, base + "-admin");
+  }
+});
+
+test("an ordinary page is not a cron route", () => {
+  for (const p of ["/", "/live", "/api/report", "/api/reports/daily-email", "/login"]) {
+    assert.equal(isCronRoute(p), false, p);
   }
 });

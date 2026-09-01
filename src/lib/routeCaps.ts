@@ -127,6 +127,38 @@ export function samplingMayVisit(p: string): boolean {
   return path === REFUSAL_PAGE || under("/sampling") || under("/api/sampling") || isPublicAsset(path);
 }
 
+/**
+ * THE MACHINE ROUTES: hit by a scheduler, never by a browser, so they carry no
+ * session and must pass the login gate to reach their own secret check.
+ *
+ * This list exists because leaving one out fails SILENTLY AND INVISIBLY. A cron
+ * route not named here is redirected to /login, and a redirect is a 302 - which
+ * Vercel's cron log records as a successful run. The job appears to fire on
+ * schedule, forever, and does nothing. That is exactly what happened to the slab
+ * intake digest: it shipped, it was scheduled, and every run was bounced to the
+ * login page. Both gates now read this one list, so a new cron route is opened
+ * in both places or in neither.
+ *
+ * NOT PUBLIC. Each of these refuses a request without its own secret, and
+ * refuses everything when that secret is unset. Passing the login gate only
+ * means the route gets to answer for itself.
+ *
+ * Prefix match, not exact, because these have sub-paths (/api/sales/cron/...).
+ */
+export const CRON_ROUTES = [
+  "/api/telegram/report",           // CRON_SECRET
+  "/api/telegram/webhook",          // Telegram's own webhook secret
+  "/api/sales/cron",                // CRON_SECRET
+  "/api/report/daily-email",        // CRON_SECRET - the 09:00 CEO report
+  "/api/report/slab-intake-digest", // CRON_SECRET - the 06:01 / 18:01 intake digest
+] as const;
+
+export function isCronRoute(p: string): boolean {
+  const q = p.indexOf("?");
+  const path = q === -1 ? p : p.slice(0, q);
+  return CRON_ROUTES.some((base) => path === base || path.startsWith(base + "/"));
+}
+
 /** Where each capped role is sent when it asks for something outside its cap. */
 export const STORE_HOME = "/live";
 export const OPERATOR_HOME = "/entry";
