@@ -10,7 +10,8 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { slabIntakeGate } from "@/lib/inventory/intakeGate";
-import { writeSlabEvent } from "@/lib/inventory/finishedSlab";
+import { writeSlabEvent, canonicalDesign } from "@/lib/inventory/finishedSlab";
+import { displayBatch } from "@/lib/batchDisplay";
 import { canonicalGrade } from "@/lib/inventory/grading";
 import { normalizeBatch } from "@/lib/normalizeBatch";
 import { photosForRecord, requiredPhotoProblem, saveRequiredPhoto } from "@/lib/entryPhoto";
@@ -93,6 +94,60 @@ const qcRefOf = (qc: any): QcReference => ({
  * richest — then Jot, then Press), each value labelled with where it came
  * from, so the person checks a claim rather than retypes one.
  */
+/**
+ * Put this slab's design and batch on the Sales-approved list, if they are not
+ * already there.
+ *
+ * WHY THE FORM APPROVES. The approval gate hides any slab whose design+batch
+ * Sales has not approved, so a slab entered here — by the very people trusted
+ * to say what is in the yard — could be saved and then not appear in the
+ * inventory it was entered into. Entering a slab IS the statement that this
+ * stock exists, so it carries its own approval.
+ *
+ * THE KEY MUST MATCH THE GATE'S, or the row is written and nothing changes:
+ * getUnapprovedSlabNumbers compares the CANONICAL design (through DesignAlias)
+ * against displayBatch(batch), with a missing batch reading as "-".
+ *
+ * A design-level hide is NOT undone here. Hiding a whole design from Sales is
+ * a deliberate act by an administrator; a slab form silently reversing it
+ * would be this feature deciding something that is not its to decide. The
+ * caller says so on screen instead.
+ *
+ * Best-effort: a slab that is saved must stay saved even if the register write
+ * fails — the person is told, and the approval can be ticked by hand.
+ */
+async function approveDesignBatch(
+  design: string | null, batchNumber: string | null, by: string | null,
+): Promise<{ approved: boolean; designHidden: boolean; failed: boolean }> {
+  try {
+    const canon = (await canonicalDesign(design)) ?? "(no design)";
+    // MIRROR THE GATE EXACTLY, including its treatment of the empty string:
+    // getUnapprovedSlabNumbers writes "-" only for a NULL batch and otherwise
+    // calls displayBatch, which turns "" into an em dash. Reading "" as "-"
+    // here would write a key the gate never looks up — the approval would be
+    // stored and the slab would stay hidden.
+    const disp = batchNumber == null ? "-" : displayBatch(batchNumber);
+    const hidden: any[] = await db.$queryRaw`SELECT 1 FROM fg_sales_hidden_design WHERE design = ${canon} AND batch = '' LIMIT 1`;
+    const inserted = await db.$executeRaw`
+      INSERT INTO fg_sales_approved_batch (design, batch, approved_by)
+      VALUES (${canon}, ${disp}, ${`${by ?? "slab intake"} (slab intake form)`})
+      ON CONFLICT (design, batch) DO NOTHING`;
+    return { approved: inserted > 0, designHidden: hidden.length > 0, failed: false };
+  } catch (e) {
+    console.error("[slab-intake] could not approve design/batch for the sales register", e);
+    return { approved: false, designHidden: false, failed: true };
+  }
+}
+
+/** The sentence the save adds when it had to approve, or could not. */
+function approvalNote(r: { approved: boolean; designHidden: boolean; failed: boolean }, design: string | null, batchNumber: string | null): string {
+  const pair = `${design || "no design"} / ${batchNumber || "no batch"}`;
+  if (r.failed) return `The slab is saved, but ${pair} could not be added to the Sales-approved list — an administrator may need to tick it before the slab appears in inventory.`;
+  if (r.designHidden) return `Note: ${design || "this design"} is hidden from Sales, so the slab stays out of the Sales view until an administrator un-hides it.`;
+  if (r.approved) return `${pair} was not on the Sales-approved list and has been added, so the slab shows in inventory.`;
+  return "";
+}
+
 export async function lookupSlab(input: string): Promise<LookupRes> {
   const g = await slabIntakeGate();
   if (!g.ok) return { ok: false, message: NOT_YOURS };
@@ -323,8 +378,11 @@ export async function saveSlab(fd: FormData): Promise<SaveRes> {
       // the person straight back (the re-lookup then shows the slot as still
       // required, so the rule heals rather than silently lapsing).
       const ph = await storeDefectPhotos(fd, created.id, slabNumber, by, DEFECT_PHOTOS);
+      const appr = await approveDesignBatch(d.design, d.batchNumber, by);
+      if (appr.approved) await writeSlabEvent(slabNumber, "sales_approved", { field: "design/batch", newValue: `${d.design ?? "(no design)"} / ${d.batchNumber ?? "-"}`, by, source: SOURCE });
       revalidatePath("/inventory");
-      return { ok: true, message: savedSentence(slabNumber, true, []) + (ph.warning ? ` ${ph.warning}` : "") };
+      const note = approvalNote(appr, d.design, d.batchNumber);
+      return { ok: true, message: [savedSentence(slabNumber, true, []), ph.warning, note].filter(Boolean).join(" ") };
     }
 
     if (!expectExisting)
@@ -419,6 +477,10 @@ export async function saveSlab(fd: FormData): Promise<SaveRes> {
         await writeSlabEvent(slabNumber, "manual_correction", { field: e.field, oldValue: e.oldValue, newValue: e.newValue, by, source: SOURCE });
     }
     const ph = await storeDefectPhotos(fd, cur.id, slabNumber, by, provided);
+    // On a correction too: the design or batch may be exactly what was fixed,
+    // and the corrected pair is the one that has to be on the list.
+    const appr = await approveDesignBatch(d.design, d.batchNumber, by);
+    if (appr.approved) await writeSlabEvent(slabNumber, "sales_approved", { field: "design/batch", newValue: `${d.design ?? "(no design)"} / ${d.batchNumber ?? "-"}`, by, source: SOURCE });
     revalidatePath("/inventory");
     // A photo-ONLY save where nothing stored is a failure, plainly: no field
     // changed, no photo landed, so nothing on the server moved — a green "ok"
@@ -432,6 +494,8 @@ export async function saveSlab(fd: FormData): Promise<SaveRes> {
     // re-lookup the form runs on ok shows the slot as still required — same
     // self-healing shape as the create path.
     if (ph.warning) parts.push(ph.warning);
+    const note = approvalNote(appr, d.design, d.batchNumber);
+    if (note) parts.push(note);
     return { ok: true, message: parts.join(" ") };
   } catch (e) {
     // The reason goes to the server log; the person gets a sentence. A Prisma
