@@ -125,18 +125,27 @@ async function dataPack(question = ""): Promise<string> {
     const rd = new Date(Date.now() + (330 - 360) * 60_000).toISOString().slice(0, 10);
     const days = [rd, plusDay(rd, -1)];
     const stations: [string, string][] = [["press", "PRESS"], ["polish_qc", "POLISH QC"], ["jot", "JOT"]];
-    for (const [table, label] of stations) {
-      for (const day of days) {
+    // SIX QUERIES, ONE ROUND TRIP. Three stations × two days, and not one of
+    // them reads anything another produced — awaited inside the nested loops
+    // they were six sequential trips to Neon, stacked in front of a handler that
+    // already owes the group a model call, on the timeout budget that killed
+    // /ask before (see maxDuration in the webhook route). The pushes below stay
+    // in the original station-then-day order, so the pack the model reads is
+    // unchanged; only the waiting is.
+    const jobs: Promise<{ label: string; day: string; rows: any[] }>[] = stations.flatMap(([table, label]) =>
+      days.map((day) => {
         const { from: d0, to: d1 } = reportWindow(day);
-        const rows: any[] = await db.$queryRawUnsafe(
+        return db.$queryRawUnsafe(
           `SELECT to_char(imported_at + interval '330 minutes', 'HH24') h,
                   count(*)::int n, min(slab_number)::int lo, max(slab_number)::int hi
            FROM ${table} WHERE imported_at >= $1 AND imported_at < $2 GROUP BY 1 ORDER BY 1`,
           d0, d1,
-        ).catch(() => []);
-        if (rows.length) lines.push(`${label} BY HOUR (${day === days[0] ? "this production day" : "the production day before"} ${day}, 06:00→06:00 IST): `
-          + rows.map((r) => `${r.h}:00→${r.n}${r.lo ? `(#${r.lo}-#${r.hi})` : ""}`).join(" "));
-      }
+        ).catch(() => []).then((rows: any[]) => ({ label, day, rows }));
+      }),
+    );
+    for (const { label, day, rows } of await Promise.all(jobs)) {
+      if (rows.length) lines.push(`${label} BY HOUR (${day === days[0] ? "this production day" : "the production day before"} ${day}, 06:00→06:00 IST): `
+        + rows.map((r) => `${r.h}:00→${r.n}${r.lo ? `(#${r.lo}-#${r.hi})` : ""}`).join(" "));
     }
   } catch { /* best-effort */ }
   // LATEST ENTRY per station (all-time) + silo stock + FG by status — the

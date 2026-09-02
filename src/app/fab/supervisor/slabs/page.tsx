@@ -209,7 +209,7 @@ function WastePill({ pct }: { pct: number | null }) {
 /** Reuses useQcSlabs / qcSlabsUrl — the picker plumbing that already knows
  *  PolishQc.slabThickness is free text ("3 cm", "2cm to 8mm") and that the list
  *  has to be searched server-side because the whole QC history is 8.4 MB. */
-function AddSlabPicker({ busy, onPick }: { busy: boolean; onPick: (qcId: string) => Promise<void> }) {
+function AddSlabPicker({ busy, onPick }: { busy: boolean; onPick: (qcId: string) => Promise<PostResult> }) {
   const [open, setOpen] = useState(false);
   const [thickness, setThickness] = useState<number | null>(null);
   const [rect, setRect] = useState<DOMRect | null>(null);
@@ -355,6 +355,88 @@ function SinkSummary({ rows }: { rows: SinkBoardRow[] }) {
   );
 }
 
+/* -- The "on this slab" quantity box --------------------------------------- */
+
+/** One row's allocated quantity, as a box that CANNOT disagree with the database.
+ *
+ *  WHY IT IS ITS OWN COMPONENT AND WHY IT SNAPS BACK. It used to be an uncontrolled
+ *  `defaultValue` input in the row map. When the server REFUSED the new figure — the
+ *  over-allocation check, which exists precisely because another tablet may have taken
+ *  the rest of the row a second earlier — the board was re-read, the refusal was
+ *  printed at the top of the page (out of sight on a phone, and out of sight on a
+ *  tablet once there are three slabs on the screen), and React left this box showing
+ *  the number the database had just rejected: `defaultValue` only seeds a mounted
+ *  input, so nothing put it back. The supervisor then filled the rest of the slab
+ *  against a quantity that does not exist, and the next blur re-sent the same rejected
+ *  figure. So the box follows the server's figure, and a refusal snaps it back to what
+ *  is stored and says why HERE, under the number that was refused.
+ *
+ *  A ref holds the server's figure because the reset happens after the write resolved,
+ *  and by then the board has been re-read — snapping back to the value captured when
+ *  the blur fired would undo a change another tablet legitimately made in between. */
+function AllocationQuantityBox({ row, slabCode, busy, onChangeRow }: {
+  row: BoardSlabRow;
+  slabCode: string;
+  busy: boolean;
+  onChangeRow: (allocationId: string, quantity: number) => Promise<PostResult>;
+}) {
+  const [text, setText] = useState(String(row.allocatedQuantity));
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const stored = useRef(row.allocatedQuantity);
+  useEffect(() => {
+    // The stored figure moved — this write landing, or another tablet's. Either way
+    // the box shows what is on the server, and any refusal it was carrying is spent.
+    if (stored.current !== row.allocatedQuantity) {
+      stored.current = row.allocatedQuantity;
+      setText(String(row.allocatedQuantity));
+      setRefusal(null);
+    }
+  }, [row.allocatedQuantity]);
+
+  // One write at a time. `busy` disables this box the moment the write starts, and a
+  // browser blurs an element it has just disabled — a second blur, with the new number
+  // still typed and the stored one not yet re-read, is how the same change gets PATCHed
+  // twice from one keystroke.
+  const sending = useRef(false);
+  const commit = async () => {
+    const next = Number(text);
+    if (sending.current || next === stored.current) return;
+    sending.current = true;
+    setRefusal(null);
+    try {
+      const res = await onChangeRow(row.allocationId, next);
+      if (!res.ok) {
+        setText(String(stored.current));
+        setRefusal(res.error ?? "The change was refused — the slab still holds the figure shown.");
+      }
+    } finally {
+      sending.current = false;
+    }
+  };
+
+  return (
+    <>
+      <input
+        type="number"
+        min={1}
+        max={row.orderedQuantity}
+        value={text}
+        disabled={busy}
+        aria-label={`Pieces of ${nameOf(row)} on slab ${slabCode}`}
+        onChange={e => setText(e.target.value)}
+        // Committed on blur / Enter rather than per keystroke:
+        // every change is a round trip that has to pass the
+        // over-allocation check, and firing one per digit means
+        // "1" is checked before "12" is finished being typed.
+        onBlur={commit}
+        onKeyDown={e => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+        className={`w-20 border rounded-lg px-2 py-1 text-xs ${refusal ? "border-red-300 bg-red-50" : "border-gray-200"}`}
+      />
+      {refusal && <p className="mt-1 max-w-[16rem] text-[11px] text-red-700">{refusal}</p>}
+    </>
+  );
+}
+
 /* -- One slab -------------------------------------------------------------- */
 
 function SlabCard({
@@ -367,11 +449,13 @@ function SlabCard({
   outstanding: BoardRequirement[];
   projectId: string;
   busy: boolean;
-  onAddRow: (slabId: string, requirementId: string, quantity: number) => Promise<void>;
-  onChangeRow: (allocationId: string, quantity: number) => Promise<void>;
-  onRemoveRow: (allocationId: string) => Promise<void>;
-  onSend: (slab: BoardSlab) => Promise<void>;
-  onRemoveSlab: (slab: BoardSlab) => Promise<void>;
+  onAddRow: (slabId: string, requirementId: string, quantity: number) => Promise<PostResult>;
+  /** Returns the server's own reply, because a REFUSED quantity has to be undone on
+   *  screen and explained beside the box — see AllocationQuantityBox. */
+  onChangeRow: (allocationId: string, quantity: number) => Promise<PostResult>;
+  onRemoveRow: (allocationId: string) => Promise<PostResult>;
+  onSend: (slab: BoardSlab) => Promise<PostResult>;
+  onRemoveSlab: (slab: BoardSlab) => Promise<PostResult>;
   // onSinkQuantityChange: retired with the sink board — the PO owns the sink
   // decision now, and this screen only displays it. See the import note.
   /** The edge decision is the ROW'S, not the slab's, so it must land on every
@@ -475,6 +559,17 @@ function SlabCard({
         label: nameOf(picked),
       })
     : null;
+
+  // THE PICKED ROW CAN VANISH UNDER HIM. The board is re-read after every write and
+  // whenever the project changes, and the row he had chosen may have been filled,
+  // removed or rejected from another tablet in between. Nothing cleared pickedId, so
+  // the dropdown went on naming a row that is no longer offered while the Add button
+  // sat greyed out with no reason given — and the quantity beside it still showed how
+  // many of that dead row to add. Dropping the pick the moment it leaves `outstanding`
+  // puts the select back to "Choose a piece row…", which is the truth.
+  useEffect(() => {
+    if (pickedId && !outstanding.some(r => r.id === pickedId)) { setPickedId(""); setQty(""); }
+  }, [outstanding, pickedId]);
 
   function pick(id: string) {
     setPickedId(id);
@@ -597,23 +692,11 @@ function SlabCard({
                     {slab.sent ? (
                       <span className="font-bold text-gray-800">{row.allocatedQuantity}</span>
                     ) : (
-                      <input
-                        type="number"
-                        min={1}
-                        max={row.orderedQuantity}
-                        defaultValue={row.allocatedQuantity}
-                        disabled={busy}
-                        aria-label={`Pieces of ${nameOf(row)} on slab ${slab.slabCode}`}
-                        // Committed on blur / Enter rather than per keystroke:
-                        // every change is a round trip that has to pass the
-                        // over-allocation check, and firing one per digit means
-                        // "1" is checked before "12" is finished being typed.
-                        onBlur={e => {
-                          const next = Number(e.target.value);
-                          if (next !== row.allocatedQuantity) onChangeRow(row.allocationId, next);
-                        }}
-                        onKeyDown={e => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                        className="w-20 border border-gray-200 rounded-lg px-2 py-1 text-xs"
+                      <AllocationQuantityBox
+                        row={row}
+                        slabCode={slab.slabCode}
+                        busy={busy}
+                        onChangeRow={onChangeRow}
                       />
                     )}
                   </td>
@@ -876,14 +959,21 @@ export default function FabSlabAssignmentPage() {
    *  something to report that only the server knows: how many pieces it created,
    *  and any row it could only release short. A fixed string there would have
    *  read the same for a slab that produced sixty pieces and one that produced
-   *  none. */
-  async function run(fn: () => Promise<PostResult>, success?: string | ((res: PostResult) => string)) {
+   *  none.
+   *
+   *  The reply is RETURNED as well as reported: the page-level banner is the wrong
+   *  and only place for a refusal that belongs to one box on one row three slabs
+   *  down, so a caller that owns such a box gets the server's words to put beside
+   *  it. Returned AFTER the reload, so a caller acting on a refusal is acting on a
+   *  board that has already been re-read. */
+  async function run(fn: () => Promise<PostResult>, success?: string | ((res: PostResult) => string)): Promise<PostResult> {
     setBusy(true); setActionError(null); setNotice(null);
     const res = await fn();
     if (!res.ok) setActionError(res.error);
     else if (success) setNotice(typeof success === "function" ? success(res) : success);
     setBusy(false);
     await load();
+    return res;
   }
 
   /*

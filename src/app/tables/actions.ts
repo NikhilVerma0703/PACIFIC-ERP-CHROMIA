@@ -17,7 +17,10 @@ import { parseSlabInput } from "@/lib/slabLabel";
 import { RECORD_SMART, nextIncrementValue } from "@/lib/recordSmart";
 import { prisma } from "@/lib/prisma";
 import { autolinkFinishedSlabFromQc, relinkFinishedSlabAfterNumberChange } from "@/lib/inventory/finishedSlab";
-import { REQUIRED_FORM_FIELDS, REQUIRED_FIELD_LABELS } from "@/lib/requiredFields";
+import {
+  REQUIRED_FORM_FIELDS, REQUIRED_FIELD_LABELS,
+  MIS_DELAY_COLUMNS, MAX_DELAY_MINUTES_PER_HOUR, misDelayFieldError, misStdRequiredError,
+} from "@/lib/requiredFields";
 import { MAX_SLABS_PER_HOUR } from "@/lib/shiftScoreMath";
 import { savePhotoFromForm } from "@/lib/entryPhoto";
 import { reportWindow } from "@/lib/dailyReport";
@@ -171,6 +174,55 @@ async function misSlabRangeError(model: string, data: Record<string, unknown>, s
   return `⚠ Slabs ${a}-${b} overlap ${clash.startingSlabNumber}-${clash.endingSlabNumber}, already logged on ${when} hour ${clash.hour ?? "?"}${who}. Two hours cannot both make the same slab, and the scoreboard gives a disputed slab to neither shift — check the range before saving.`;
 }
 
+/**
+ * MIS hour rule: one row per hour per day — a double-tap or a second tablet must
+ * not create a duplicate (it would double-count that hour's slabs and downtime
+ * everywhere downstream).
+ *
+ * Enforced on CREATE and on EDIT, because `hour` and `date` are both editable in
+ * /tables/Mis/[id] (neither is in HIDDEN_FORM_FIELDS): with the check on create
+ * only, saving a clean row and then retyping its hour onto an hour already
+ * logged produced exactly the duplicate the create path refuses. `selfId` is the
+ * row being edited, so an edit never collides with itself.
+ *
+ * A FAILED QUERY BLOCKS THE SAVE. This guard used to end in `.catch(() => null)`
+ * — a database hiccup read as "no duplicate found" and let the double row
+ * through, which is the one outcome the guard exists to prevent. Refusing costs
+ * the operator a retry; allowing costs a shift its slab count.
+ */
+async function misDuplicateHourError(row: { hour: unknown; date: unknown }, selfId: string | null): Promise<string | null> {
+  const hour = typeof row.hour === "string" ? row.hour.trim() : "";
+  const date = row.date instanceof Date && !isNaN(row.date.getTime()) ? row.date : null;
+  if (!hour || !date) return null;
+  const d0 = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const d1 = new Date(d0.getTime() + 864e5);
+  // `date` is the IST day stored AT UTC midnight, so d0/d1 read it exactly.
+  // `dateAndTime` is a real UTC instant, and the legacy branch was comparing
+  // it against those same bounds — searching 05:30 IST to 05:30 IST, which
+  // is neither the calendar day nor the production day. t0/t1 are that IST
+  // day's actual span, so a legacy duplicate is found where it really is.
+  const t0 = new Date(d0.getTime() - 330 * 60000);
+  const t1 = new Date(t0.getTime() + 864e5);
+  let dupe: { id: string } | null;
+  try {
+    dupe = await delegateOf("Mis").findFirst({
+      where: {
+        hour,
+        ...(selfId ? { NOT: { id: selfId } } : {}),
+        OR: [
+          { date: { gte: d0, lt: d1 } },
+          { AND: [{ date: null }, { dateAndTime: { gte: t0, lt: t1 } }] }, // legacy rows carry only dateAndTime
+        ],
+      },
+      select: { id: true },
+    });
+  } catch {
+    return `⚠ Couldn't check whether hour ${hour} is already logged for this date — nothing was saved, so no duplicate can slip through while the database is unreachable. Try again in a moment.`;
+  }
+  if (dupe) return `⚠ Hour ${hour} is already logged for this date — open it with the row's edit link instead of saving again.`;
+  return null;
+}
+
 async function dateSanity(model: string, data: Record<string, unknown>, batchKeyFallback?: string | null, currentDate?: Date | null): Promise<string | null> {
   if (!DATED_STATIONS.has(model)) return null;
   const d = data.date;
@@ -318,16 +370,59 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
     if (sErr) return sErr;
   }
   if (model === "Mis") {
-    const DELAY_FIELDS = ["processDelayDurationMinutes", "cleaningDelayDurationMinutes",
-      "breakdownDelayDurationMechanicalOrElectricalMinutes", "poweroutDelayDurationMinutes"] as const;
-    if (DELAY_FIELDS.some((k) => fd.has(k))) {
+    if (MIS_DELAY_COLUMNS.some((k) => fd.has(k))) {
+      // EACH BUCKET FIRST, then the total. The total is a sum, and a sum is
+      // blind to a negative: -45 breakdown minutes in one hour cancel a real
+      // 45-minute breakdown in another and the shift scores uptime it never
+      // had, while the sum stays comfortably under 60. Only the values the form
+      // actually carried are bounded — an edit to the remarks must not be
+      // blocked by a stored figure this save is not touching (scripts/0066
+      // reports those separately).
+      for (const k of MIS_DELAY_COLUMNS) {
+        if (!fd.has(k)) continue;
+        const fErr = misDelayFieldError(k, data[k]);
+        if (fErr) return fErr;
+      }
       const cur = await delegateOf(model).findUnique({
         where: { id },
-        select: Object.fromEntries(DELAY_FIELDS.map((k) => [k, true])),
+        select: Object.fromEntries(MIS_DELAY_COLUMNS.map((k) => [k, true])),
       }).catch(() => null);
-      const dt = DELAY_FIELDS.reduce((a, k) =>
+      const dt = MIS_DELAY_COLUMNS.reduce((a, k) =>
         a + Number((fd.has(k) ? data[k] : (cur as Record<string, unknown> | null)?.[k]) ?? 0), 0);
-      if (dt > 60) return `⚠ Total delay for this hour is ${Math.round(dt)} min — an hour can have at most 60 minutes of downtime. Reduce the delay entries before saving.`;
+      if (dt > MAX_DELAY_MINUTES_PER_HOUR) return `⚠ Total delay for this hour is ${Math.round(dt)} min — an hour can have at most ${MAX_DELAY_MINUTES_PER_HOUR} minutes of downtime. Reduce the delay entries before saving.`;
+    }
+    // Std slabs/hr, merged with the stored row exactly like the delay cap above:
+    // on an edit the damage is done by BLANKING the Std of an hour that already
+    // has an Actual, which is the same missing target as never entering one.
+    if (fd.has("slabsPerHourStd") || fd.has("slabsPerHourActual")) {
+      const cur = await delegateOf(model).findUnique({ where: { id }, select: { slabsPerHourStd: true, slabsPerHourActual: true } }).catch(() => null);
+      const sErr = misStdRequiredError(
+        fd.has("slabsPerHourStd") ? data.slabsPerHourStd : (cur as Record<string, unknown> | null)?.slabsPerHourStd,
+        fd.has("slabsPerHourActual") ? data.slabsPerHourActual : (cur as Record<string, unknown> | null)?.slabsPerHourActual,
+      );
+      if (sErr) return sErr;
+    }
+    // The hour rule, against the MERGED row: retyping an hour (or a date) onto a
+    // slot another row already holds creates precisely the duplicate the create
+    // path refuses. Read failure blocks, for the reason in misDuplicateHourError.
+    //
+    // Only when the slot actually MOVES, not merely because the edit form posted
+    // the field (it posts every editable field on every save). The 501 rows that
+    // already sit in 247 duplicate pairs — all of them older than the create-path
+    // guard, see scripts/0067 — must stay editable, and an edit that leaves the
+    // hour where it is cannot create a clash that was not already there. Same
+    // shape as the date-sanity rule below: an untouched value is not re-judged.
+    if (fd.has("hour") || fd.has("date")) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let cur: any;
+      try { cur = await delegateOf(model).findUnique({ where: { id }, select: { hour: true, date: true } }); }
+      catch { return "⚠ Couldn't read this row to check its hour against the rest of the day — nothing was saved. Try again in a moment."; }
+      const hour = fd.has("hour") ? data.hour : cur?.hour ?? null;
+      const date = fd.has("date") ? data.date : (cur?.date ? new Date(cur.date) : null);
+      const moved =
+        String(hour ?? "").trim() !== String(cur?.hour ?? "").trim() ||
+        (date instanceof Date ? date.getTime() : null) !== (cur?.date ? new Date(cur.date).getTime() : null);
+      if (moved) { const hErr = await misDuplicateHourError({ hour, date }, id); if (hErr) return hErr; }
     }
   }
   // Date sanity on EDIT — only when the date is actually being changed. An old row whose
@@ -340,10 +435,25 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
     if (changed) { const dErr = await dateSanity(model, data, cur?.batchKey ?? null, cur?.date ? new Date(cur.date) : null); if (dErr) return dErr; }
   }
   // If this QC edit changes the slab number, the old number's inventory row must
-  // be re-projected (or removed) — capture it before the update.
+  // be re-projected (or removed) — capture it before the update. The bay and the
+  // grade are read in the same query because they decide whether the autolink
+  // below may touch the slab's LOCATION: a spelling fix in the inspector field
+  // used to clear the frame of a slab already packed for a proforma invoice and
+  // silently put back the QC row's months-old bay, and the loading crew then
+  // could not find it. Only a real change to bay or grade says anything new
+  // about where the slab is.
   let qcPrevSlabNumber: number | null = null;
-  if (model === "PolishQc" && data.slabNumber !== undefined) {
-    try { qcPrevSlabNumber = Number((await delegateOf(model).findUnique({ where: { id }, select: { slabNumber: true } }))?.slabNumber ?? NaN) || null; } catch { /* best-effort */ }
+  let qcRelocates = false;
+  if (model === "PolishQc") {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const prev: any = await delegateOf(model).findUnique({ where: { id }, select: { slabNumber: true, bay: true, qualityGrade: true } }).catch(() => null);
+    qcPrevSlabNumber = Number(prev?.slabNumber ?? NaN) || null;
+    // No `prev` (the read failed) means nothing is known to have changed, and the
+    // safe answer to "may I move this slab" is no.
+    qcRelocates = !!prev && (
+      (fd.has("bay") && String(data.bay ?? "") !== String(prev?.bay ?? "")) ||
+      (fd.has("qualityGrade") && String(data.qualityGrade ?? "") !== String(prev?.qualityGrade ?? ""))
+    );
   }
   try {
     await delegateOf(model).update({ where: { id }, data });
@@ -366,7 +476,7 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
     try {
       const by = me?.name ?? null;
       const sn = typeof data.slabNumber === "number" ? data.slabNumber : Number((await delegateOf(model).findUnique({ where: { id }, select: { slabNumber: true } }))?.slabNumber);
-      await autolinkFinishedSlabFromQc(sn, { by });
+      await autolinkFinishedSlabFromQc(sn, { by, relocate: qcRelocates });
       if (qcPrevSlabNumber != null && qcPrevSlabNumber !== sn) await relinkFinishedSlabAfterNumberChange(qcPrevSlabNumber, by);
     } catch { /* inventory autolink is best-effort */ }
   }
@@ -428,9 +538,18 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
 
   // MIS: a single hour can log at most 60 minutes of downtime — block impossible totals.
   if (model === "Mis") {
-    const dt = Number(data.processDelayDurationMinutes ?? 0) + Number(data.cleaningDelayDurationMinutes ?? 0)
-      + Number(data.breakdownDelayDurationMechanicalOrElectricalMinutes ?? 0) + Number(data.poweroutDelayDurationMinutes ?? 0);
-    if (dt > 60) return `\u26a0 Total delay for this hour is ${Math.round(dt)} min \u2014 an hour can have at most 60 minutes of downtime. Reduce the delay entries before saving.`;
+    // EACH BUCKET FIRST, then the total: the total is a sum, and a sum cannot
+    // see a negative hiding inside it \u2014 see misDelayFieldError for what a
+    // minus figure buys the shift that types it.
+    for (const k of MIS_DELAY_COLUMNS) {
+      const fErr = misDelayFieldError(k, data[k]);
+      if (fErr) return fErr;
+    }
+    const dt = MIS_DELAY_COLUMNS.reduce((a, k) => a + Number(data[k] ?? 0), 0);
+    if (dt > MAX_DELAY_MINUTES_PER_HOUR) return `\u26a0 Total delay for this hour is ${Math.round(dt)} min \u2014 an hour can have at most ${MAX_DELAY_MINUTES_PER_HOUR} minutes of downtime. Reduce the delay entries before saving.`;
+    // The standard this hour is measured against \u2014 required as soon as Actual
+    // claims output, here as well as on the MIS sheet's own check.
+    { const stdErr = misStdRequiredError(data.slabsPerHourStd, data.slabsPerHourActual); if (stdErr) return stdErr; }
   }
   // MIS: the row's DATE must be the IST day of its DATE AND TIME — the old
   // form let them disagree, landing back-filled hours on the wrong day's sheet.
@@ -440,22 +559,9 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
   }
   // MIS: one row per hour per day — a double-tap or a second tablet must not
   // create a duplicate (it would double-count slabs and downtime downstream).
-  if (model === "Mis" && data.hour && data.date instanceof Date && !isNaN(data.date.getTime())) {
-    const d0 = new Date(Date.UTC(data.date.getUTCFullYear(), data.date.getUTCMonth(), data.date.getUTCDate()));
-    const d1 = new Date(d0.getTime() + 864e5);
-    // `date` is the IST day stored AT UTC midnight, so d0/d1 read it exactly.
-    // `dateAndTime` is a real UTC instant, and the legacy branch was comparing
-    // it against those same bounds — searching 05:30 IST to 05:30 IST, which
-    // is neither the calendar day nor the production day. t0/t1 are that IST
-    // day's actual span, so a legacy duplicate is found where it really is.
-    const t0 = new Date(d0.getTime() - 330 * 60000);
-    const t1 = new Date(t0.getTime() + 864e5);
-    const dupe = await delegateOf(model).findFirst({ where: { hour: data.hour, OR: [
-      { date: { gte: d0, lt: d1 } },
-      { AND: [{ date: null }, { dateAndTime: { gte: t0, lt: t1 } }] }, // legacy rows carry only dateAndTime
-    ] }, select: { id: true } }).catch(() => null);
-    if (dupe) return `\u26a0 Hour ${data.hour} is already logged for this date — open it with the row's edit link instead of saving again.`;
-  }
+  // The rule itself, and why a failed lookup now refuses instead of allowing,
+  // live in the helper — saveRow enforces the same one against the MERGED row.
+  if (model === "Mis") { const hErr = await misDuplicateHourError({ hour: data.hour, date: data.date }, null); if (hErr) return hErr; }
   { const sErr = await misSlabRangeError(model, data, null); if (sErr) return sErr; }
 
   // Require a slab number on slab stations (manual or smart entry) — no blank rows.
@@ -569,7 +675,10 @@ Latest: slab ${esc(data.slabNumber ?? "—")} at Polish QC. Please check the lin
   revalidatePath(`/tables/${model}`);
   if (model === "PolishQc") {
     // Autolink this QC slab into finished-goods inventory (best-effort).
-    try { await autolinkFinishedSlabFromQc(data.slabNumber as number, { by: opName }); } catch { /* inventory autolink is best-effort */ }
+    // relocate: this IS a new QC pass — the slab was just inspected, so the bay
+    // it came out at and the cleared frame are current facts, not a months-old
+    // copy (which is what an ordinary QC EDIT would be writing).
+    try { await autolinkFinishedSlabFromQc(data.slabNumber as number, { by: opName, relocate: true }); } catch { /* inventory autolink is best-effort */ }
   }
   if (model === "MixerCycle") {
     try { const r = await allocateMixerCycle(createdId); return r.message || "ok"; } catch { return "ok"; }

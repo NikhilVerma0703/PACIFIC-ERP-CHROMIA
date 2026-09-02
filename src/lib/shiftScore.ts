@@ -68,7 +68,7 @@ import {
   shiftRange, shiftKeyOf, canonPerson, gradeCredit, polishCredit,
   stdMultiplier,
   scaleQuality, scalePolish, scaleUptime, plusDay, type ShiftLetter,
-  oeeTotal, misDiscipline, type Oee,
+  oeeTotal, misDiscipline, SHIFT_HOURS, type Oee,
 } from "@/lib/shiftScoreMath";
 
 
@@ -650,13 +650,41 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
   // volume x quality.
   const splitPool = (rows: Omit<PersonScore, "share">[]): PersonScore[] => {
     const vol = (r: Omit<PersonScore, "share">) => (r.qualified ? r.pointsPerShift * credibility(r.shifts) : 0);
-    const qua = (r: Omit<PersonScore, "share">) => (r.qualified ? (r.quality ?? 0) * credibility(r.shifts) : 0);
+    // A SHIFT QC HAS NOT REACHED YET IS NOT A SHIFT THAT SCORED ZERO ON QUALITY.
+    //
+    // `r.quality` is null when not one of a person's slabs carries a verdict —
+    // the ordinary state of a crew whose slabs are all still unpolished at the
+    // end of the range, and the normal state of the last few days of any range.
+    // `(r.quality ?? 0)` read that absence as a flat zero, which is the one
+    // thing the notice on the wall promises never happens: a slab QC has not
+    // reached is never held against the shift that pressed it. They are
+    // EXCLUDED from the quality split instead — no share of that pool, and no
+    // place in its divisor, so nobody else's share is diluted by a figure that
+    // was never measured either.
+    const inQuality = (r: Omit<PersonScore, "share">) => r.qualified && r.quality != null;
+    const qua = (r: Omit<PersonScore, "share">) => (inQuality(r) ? (r.quality as number) * credibility(r.shifts) : 0);
     const vTot = rows.reduce((a, r) => a + vol(r), 0);
     const qTot = rows.reduce((a, r) => a + qua(r), 0);
+    // AND THE FIELD'S SHARES MUST STILL SUM TO 1. Excluding people is safe
+    // while somebody is left; it is not when NOBODY has a grade yet — a range
+    // scored before QC has worked through it, which is exactly when an admin
+    // opens this page. Then the quality pool has no takers at all and paying
+    // only POOL_VOLUME handed out 70% of the month and quietly dropped the
+    // other 30%. With no second axis to weigh against, the axis that exists
+    // carries the whole pool; the same the other way round if the field claimed
+    // no slabs but was graded.
+    //
+    // NOT REACHABLE FROM tests/shiftScore.test.ts: splitPool is closed over
+    // inside scoreRange and needs a database. The case to write if it is ever
+    // lifted into shiftScoreMath.ts — two people on equal volume rates, one
+    // graded 0.8 and one still null — must come out 0.65 and 0.35, not 0.65 and
+    // 0.35-of-nothing, and must still sum to 1 when BOTH are null (0.5 each).
+    const vWeight = qTot > 0 ? POOL_VOLUME : 1;
+    const qWeight = vTot > 0 ? POOL_QUALITY : 1;
     return rows
       .map((r) => ({
         ...r,
-        share: (vTot ? POOL_VOLUME * vol(r) / vTot : 0) + (qTot ? POOL_QUALITY * qua(r) / qTot : 0),
+        share: (vTot ? vWeight * vol(r) / vTot : 0) + (qTot ? qWeight * qua(r) / qTot : 0),
       }))
       // qualified first, then by what they are actually paid
       .sort((a, b) => Number(b.qualified) - Number(a.qualified) || b.share - a.share);
@@ -792,11 +820,28 @@ export async function scoreRange(from: string, to: string, maxDays = 31): Promis
       // report a pace the line never ran and make the number incomparable with
       // anybody else's OEE. The multiplier is a pay rule, not a measurement.
       oee: oeeTotal(shifts.map((s) => ({ ...s, points: s.goodSlabs })), graded ? rawNum / graded : null),
-      misDiscipline: misDiscipline(
-        shifts.reduce((a, s) => a + s.hoursLogged, 0),
-        shifts.reduce((a, s) => a + s.wideRows, 0),
-        unruled,
-        shifts.reduce((a, s) => a + s.quantity, 0),
+      // MEASURED PER SHIFT INSTANCE, NOT OVER THE WHOLE RANGE.
+      //
+      // misDiscipline asks how completely ONE shift filed ITS eight hours —
+      // `filed` is min(1, hoursLogged / SHIFT_HOURS). Handing it the range's
+      // total logged hours pinned that term at 1 for any range longer than a
+      // single shift (a week is ~150 hours against 8), so the figure the board
+      // prints as "hours filed out of eight" could not fall below 100% however
+      // many hours went unentered — the one failure of the three it exists to
+      // show, and the only one the shift can still fix that evening.
+      //
+      // So the range is averaged down to one shift's worth first. Hours are
+      // capped at eight PER SHIFT before averaging: MIS occasionally files nine
+      // rows for one shift (a corrected hour re-entered), and uncapped that
+      // surplus would pay for an unfiled hour on a different night. The other
+      // three arguments are divided by the same shift count, which leaves both
+      // ratio terms — wideRows/hours and contested/quantity — exactly as they
+      // were, so only the `filed` term changes meaning.
+      misDiscipline: shifts.length === 0 ? null : misDiscipline(
+        shifts.reduce((a, s) => a + Math.min(s.hoursLogged, SHIFT_HOURS), 0) / shifts.length,
+        shifts.reduce((a, s) => a + s.wideRows, 0) / shifts.length,
+        unruled / shifts.length,
+        shifts.reduce((a, s) => a + s.quantity, 0) / shifts.length,
       ),
     },
   };

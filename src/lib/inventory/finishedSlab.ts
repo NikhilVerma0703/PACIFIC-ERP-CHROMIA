@@ -47,13 +47,30 @@ const barcodeStr = (v: unknown): string | null =>
  * Upsert the finished-goods record for a slab from its latest QC (PolishQc) row.
  * Call after a PolishQc row is created or edited. QC-owned fields are refreshed;
  * inventory-owned fields (status, PI, customer, notes, reservations) are never
- * touched. Frame clears on each QC pass (dispatch re-assigns it). Non-integer
- * slab numbers (insert slabs like 144338.1) are flagged, not auto-added — pending
- * the decimal-slab decision.
+ * touched. Non-integer slab numbers (insert slabs like 144338.1) are flagged,
+ * not auto-added — pending the decimal-slab decision.
+ *
+ * LOCATION (bay + frame) IS NOT AN ORDINARY QC FIELD, and `relocate` is what
+ * says so. "Frame clears on each QC pass, dispatch re-assigns it" was written
+ * for a real QC pass and is still right for one — but every PolishQc EDIT ran
+ * this same function, so fixing a typo in the inspector's name on a months-old
+ * QC row cleared the frame of a slab sitting PACKED in F-12 against a proforma
+ * invoice and silently wrote the QC row's stale bay back over the bay dispatch
+ * had moved it to. The frame clear was at least logged; the bay overwrite was
+ * not, so nobody could see why the loading crew could no longer find the slab.
+ *
+ * So the caller must ASK for the relocation, and only says yes when the QC pass
+ * is new or when bay/grade were actually edited (src/app/tables/actions.ts).
+ * Callers that pass nothing — the undo restore in actionLog.ts and the fab
+ * mirror refresh in fab/slabMarkStore.ts, both of which only want the QC data
+ * re-projected — now leave location alone, which is what they always meant.
+ * And a RESERVED or PACKED slab is never relocated by QC at all: it has been
+ * committed to a customer or physically loaded, and inventory's location is the
+ * one the shop floor is working from.
  */
 export async function autolinkFinishedSlabFromQc(
   slabNumber: number | null | undefined,
-  opts: { by?: string | null; bay?: string | null; polishType?: string | null } = {}
+  opts: { by?: string | null; bay?: string | null; polishType?: string | null; relocate?: boolean } = {}
 ): Promise<void> {
   if (slabNumber == null || !Number.isFinite(slabNumber)) return;
   if (!Number.isInteger(slabNumber)) {
@@ -87,7 +104,16 @@ export async function autolinkFinishedSlabFromQc(
   if (opts.bay !== undefined) qcFields.bayNumber = opts.bay ?? null;         // explicit override wins
   if (opts.polishType !== undefined) qcFields.polishType = opts.polishType ?? null;
 
-  const existing = await db.finishedSlab.findUnique({ where: { slabNumber }, select: { id: true, frameNumber: true } });
+  const existing = await db.finishedSlab.findUnique({ where: { slabNumber }, select: { id: true, frameNumber: true, bayNumber: true, status: true } });
+  // A slab held for a customer or already loaded is never relocated by a QC
+  // write, whatever the caller asked for — that is the case the frame clear
+  // actually costs money in, so it is refused here rather than trusted upstream.
+  const held = !!existing && (existing.status === "RESERVED" || existing.status === "PACKED");
+  const relocating = !existing || (opts.relocate === true && !held);
+  if (existing && !relocating) {
+    delete qcFields.frameNumber;                       // whoever put it in a frame knows where it is
+    if (opts.bay === undefined) delete qcFields.bayNumber; // an EXPLICIT bay from the caller still wins
+  }
   await db.finishedSlab.upsert({
     where: { slabNumber },
     update: qcFields, // inventory-owned fields untouched
@@ -97,6 +123,14 @@ export async function autolinkFinishedSlabFromQc(
     await writeSlabEvent(slabNumber, "qc_update", { by: opts.by });
     if (existing.frameNumber != null && qcFields.frameNumber === null)
       await writeSlabEvent(slabNumber, "location", { field: "frame", oldValue: existing.frameNumber, newValue: null, by: opts.by, source: "QC form (frame clears on re-QC)" });
+    // The bay move is LOGGED now. It always happened silently, so a slab that
+    // had been moved and then re-QC'd showed inventory one bay and the audit
+    // trail nothing at all — the loading crew's search started from a bay no
+    // event ever mentioned.
+    if ("bayNumber" in qcFields && (qcFields.bayNumber ?? null) !== (existing.bayNumber ?? null))
+      await writeSlabEvent(slabNumber, "location", { field: "bay", oldValue: existing.bayNumber ?? null, newValue: (qcFields.bayNumber as string | null) ?? null, by: opts.by, source: "QC form (bay from this QC pass)" });
+    if (held && opts.relocate === true)
+      await writeSlabEvent(slabNumber, "qc_location_kept", { field: "location", oldValue: `bay ${existing.bayNumber ?? "—"} / frame ${existing.frameNumber ?? "—"}`, newValue: `unchanged — slab is ${existing.status}`, by: opts.by, source: "QC form" });
   } else {
     await writeSlabEvent(slabNumber, "created", { by: opts.by });
   }

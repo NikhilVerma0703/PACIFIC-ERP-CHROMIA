@@ -6,6 +6,20 @@ import { NextResponse } from "next/server";
 
 const db = prisma as any;
 
+// The credit-note lifecycle, and the only moves allowed along it. A credit note
+// is money the company gives back, so the two states that cost something —
+// INSPECTED (somebody physically checked the damaged slabs) and ISSUED (the
+// credit is now real and appears in the client's picker on the next order) —
+// have to be reached in order and cannot be walked back. This route used to
+// write whatever `status` arrived: an ISSUED note could be flipped back to
+// PENDING_INSPECTION, and a note could be ISSUED without ever being inspected.
+const CN_TRANSITIONS: Record<string, readonly string[]> = {
+  PENDING_INSPECTION: ["INSPECTED", "REJECTED"],
+  INSPECTED:          ["ISSUED", "REJECTED"],
+  ISSUED:             [], // terminal — a wrong issued credit is reversed by a new note
+  REJECTED:           [], // terminal
+};
+
 export async function PATCH(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -34,10 +48,51 @@ export async function PATCH(
   //     too (either page legitimately shows the remove control).
   // The same-client rule the picker enforces (loadAvailableCNs by clientId)
   // still holds.
-  const cn = await db.salesCreditNote.findUnique({ where: { id }, select: { orderId: true } });
+  const cn = await db.salesCreditNote.findUnique({
+    where: { id },
+    select: { orderId: true, status: true },
+  });
   if (!cn) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const touchingApplication = "appliedToOrderId" in body;
   const editingNote = body.status !== undefined || body.amount !== undefined || body.notes !== undefined;
+
+  // Role, on the same split as the ownership rule below. Editing the note —
+  // inspecting it, issuing it, rejecting it, changing what it is worth — is a
+  // COMMERCIAL (who inspects the goods) or ACCOUNTS (who releases the credit)
+  // duty, with module admins as always. Until this check existed, ownership was
+  // the only gate: any salesperson who could open the order could issue their own
+  // credit note against it, and the buttons on the order page are drawn for
+  // everyone. APPLYING an issued credit to the next order stays open to every
+  // sales duty — that is the salesperson's own quoting flow, it moves an existing
+  // credit rather than creating value, and the picker already scopes by client.
+  if (editingNote) {
+    const salesRole = (session.user as any).salesRole as string | null;
+    const mayEdit =
+      salesRole === "SALES_ADMIN" || salesRole === "COMMERCIAL" || salesRole === "ACCOUNTS";
+    if (!mayEdit) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  if (body.status !== undefined) {
+    const next = CN_TRANSITIONS[String(cn.status)];
+    if (!next) {
+      // Should be unreachable (the column is a CreditNoteStatus enum), but a note
+      // in a state this route does not know about must not be re-statused blind.
+      return NextResponse.json(
+        { error: `Credit note is in an unknown state (${cn.status}).`, code: "CN_STATE_UNKNOWN" },
+        { status: 422 }
+      );
+    }
+    // Re-sending the state it already has is refused too: it is never a real
+    // move, and letting it through would re-stamp inspected_at / issued_at and
+    // lose the date the inspection actually happened.
+    if (!next.includes(body.status)) {
+      return NextResponse.json(
+        { error: `Cannot move a credit note from ${cn.status} to ${body.status}.`, code: "CN_TRANSITION_NOT_ALLOWED" },
+        { status: 422 }
+      );
+    }
+  }
+
   if (editingNote || !touchingApplication) {
     const refusedSource = await assertOrderVisible(session.user, cn.orderId);
     if (refusedSource) return refusedSource;

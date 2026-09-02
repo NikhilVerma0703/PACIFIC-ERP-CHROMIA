@@ -1,7 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * Shared shipping docs email sender.
- * Called from the API route (manual) and from shipping PATCH (auto-trigger).
+ * Called from the API route (the "Send Shipping Docs" button) and from
+ * /doc-upload once the last of the three PDFs lands (auto-trigger, which passes
+ * onlyIfUnsent so it can never re-mail an order a human already mailed).
+ * Every caller goes through the claim below — see the comment there.
  */
 import { prisma } from "@/lib/prisma";
 import { getCCList } from "@/lib/sales/mailHelpers";
@@ -18,7 +21,11 @@ function base64ToBuffer(dataUri: string | null | undefined): Buffer | null {
   return Buffer.from(base64Part, "base64");
 }
 
-export async function sendShippingDocsEmail(orderId: string, triggeredByUserId?: string): Promise<{ sentTo: string }> {
+export async function sendShippingDocsEmail(
+  orderId: string,
+  triggeredByUserId?: string,
+  opts?: { onlyIfUnsent?: boolean },
+): Promise<{ sentTo: string }> {
   const order = await db.salesOrder.findUnique({
     where: { id: orderId },
     include: {
@@ -38,6 +45,19 @@ export async function sendShippingDocsEmail(orderId: string, triggeredByUserId?:
   const ship = order.shipmentDocs;
 
   if (!ship?.blNo) throw new Error("BL No. must be set before sending shipping docs email");
+
+  // Decode the base64 PDFs BEFORE composing the body: the "Documents Attached"
+  // list below is built from these buffers, not from what the screen believed
+  // was uploaded. An export customer once received this mail listing a Bill of
+  // Lading that was never attached — the PDFs were still sitting in browser
+  // state and the body listed the BL unconditionally. Whatever is not decoded
+  // here is not listed, and a missing BL stops the mail outright: this is the
+  // BL-release mail, the buyer's bank needs the document, and a BL No. typed
+  // into a form is not the document.
+  const blDocBuf       = base64ToBuffer(ship?.blDocUrl);
+  const fumigationBuf  = base64ToBuffer(ship?.fumigationCertUrl);
+  const bankDetailsBuf = base64ToBuffer(ship?.bankDetailsUrl);
+  if (!blDocBuf) throw new Error("The BL PDF must be uploaded before sending the shipping docs email — save the shipping docs first");
 
   // Build combined PDF
   const pdfBuf    = await generateCombinedShipmentPdf(orderId);
@@ -74,15 +94,14 @@ export async function sendShippingDocsEmail(orderId: string, triggeredByUserId?:
       <td style="padding:6px 12px;border:1px solid #e2e8f0;color:#111827">${val}</td>
     </tr>`).join("");
 
-  const hasFumigation = !!(ship?.fumigationCertUrl && (ship.fumigationCertUrl as string).startsWith("data:"));
-  const hasBankDetails = !!(ship?.bankDetailsUrl && (ship.bankDetailsUrl as string).startsWith("data:"));
-
+  // Numbered from what is actually attached, so the list can never run ahead of
+  // the attachments (see the decode block above).
   const docList = [
-    "1. Commercial Invoice + Packing List + Measurement List (Combined PDF)",
-    "2. Bill of Lading",
-    hasFumigation  ? "3. Fumigation Certificate" : null,
-    hasBankDetails ? `${hasFumigation ? "4" : "3"}. Bank / Account Details` : null,
-  ].filter(Boolean).join("<br>");
+    "Commercial Invoice + Packing List + Measurement List (Combined PDF)",
+    blDocBuf       ? "Bill of Lading"          : null,
+    fumigationBuf  ? "Fumigation Certificate"  : null,
+    bankDetailsBuf ? "Bank / Account Details"  : null,
+  ].filter(Boolean).map((label, i) => `${i + 1}. ${label}`).join("<br>");
 
   const html = `
 <!DOCTYPE html><html><body style="font-family:Arial,sans-serif;color:#1a1a1a;max-width:700px;margin:0 auto">
@@ -108,11 +127,6 @@ export async function sendShippingDocsEmail(orderId: string, triggeredByUserId?:
 </p>
 </body></html>`;
 
-  // Decode base64 PDFs
-  const blDocBuf       = base64ToBuffer(ship?.blDocUrl);
-  const fumigationBuf  = base64ToBuffer(ship?.fumigationCertUrl);
-  const bankDetailsBuf = base64ToBuffer(ship?.bankDetailsUrl);
-
   const attachments: any[] = [
     { filename: `${invoiceNo}_Shipment_Documents.pdf`, content: pdfBuf, contentType: "application/pdf" },
   ];
@@ -122,20 +136,50 @@ export async function sendShippingDocsEmail(orderId: string, triggeredByUserId?:
 
   const toEmail = order.client.email;
   const cc      = await getCCList(order.spId, order.clientId).catch(() => [] as string[]);
-  await sendMail({
-    spId:    order.spId,
-    to:      toEmail,
-    cc,
-    subject: await resolveSubject("shipping_docs_subject", { invoiceNo }),
-    html,
-    attachments,
-  });
 
-  // Mark sent
-  await db.salesShipmentDocs.update({
-    where: { orderId },
-    data:  { shippingDocsMailSentAt: new Date(), t15MailSentAt: new Date() },
+  // CLAIM THE SEND BEFORE MAILING, never after. Three call sites used to reach
+  // this function for the same order — the shipping PATCH auto-trigger, the
+  // doc-upload auto-trigger and the "Send Shipping Docs" button — and because
+  // the sent stamp was only written at the very end, a button click landing
+  // while a background trigger was still building the combined PDF mailed the
+  // customer twice. The compare-and-swap below is the interlock: only the
+  // caller that flips the stamp from the value it read mails anything.
+  // Swapping on the PREVIOUS value rather than on null is what keeps a
+  // deliberate re-send possible — a corrected set of documents after the first
+  // mail went out with the wrong BL still has to be sendable from the button.
+  const prevSentAt = ship.shippingDocsMailSentAt ?? null;
+  const prevT15    = ship.t15MailSentAt ?? null;
+  if (opts?.onlyIfUnsent && prevSentAt) {
+    throw new Error("Shipping docs email already sent for this order");
+  }
+  const claimedAt = new Date();
+  const claim = await db.salesShipmentDocs.updateMany({
+    where: { orderId, shippingDocsMailSentAt: prevSentAt },
+    data:  { shippingDocsMailSentAt: claimedAt, t15MailSentAt: claimedAt },
   });
+  if (claim.count === 0) {
+    throw new Error("Shipping docs email is already being sent for this order");
+  }
+
+  try {
+    await sendMail({
+      spId:    order.spId,
+      to:      toEmail,
+      cc,
+      subject: await resolveSubject("shipping_docs_subject", { invoiceNo }),
+      html,
+      attachments,
+    });
+  } catch (e) {
+    // A claim that outlives a FAILED send would mark the order as mailed and
+    // hide a customer who never got their documents. Give the row back exactly
+    // as it was found, and only while our own claim still stands.
+    await db.salesShipmentDocs.updateMany({
+      where: { orderId, shippingDocsMailSentAt: claimedAt },
+      data:  { shippingDocsMailSentAt: prevSentAt, t15MailSentAt: prevT15 },
+    }).catch(() => {});
+    throw e;
+  }
 
   await db.salesOrderLog.create({
     data: {

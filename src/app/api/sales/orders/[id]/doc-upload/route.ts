@@ -194,7 +194,12 @@ export async function PATCH(
           d?.bank_details_url?.startsWith("data:") &&
           !d?.shipping_docs_mail_sent_at
         ) {
-          sendShippingDocsEmail(id).catch(() => {});
+          // onlyIfUnsent: the check above is a read, so two uploads finishing
+          // together both see "not sent yet"; the flag is claimed atomically
+          // inside the sender and this says an auto-trigger must never mail an
+          // order that already has a stamp — only a human at the button may
+          // deliberately re-send a corrected set.
+          sendShippingDocsEmail(id, undefined, { onlyIfUnsent: true }).catch(() => {});
         }
       } catch { /* non-blocking */ }
     }

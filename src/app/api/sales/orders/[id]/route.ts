@@ -90,13 +90,23 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const body = await req.json();
   const { deliveryTerms, notes, status } = body;
 
-  // Status writes obey the same duty gate as the dedicated /status route (which
-  // every UI action uses); this generic PATCH used to accept a status from any
-  // sales session, silently bypassing that gate. deliveryTerms/notes stay open.
+  // THIS ROUTE DOES NOT MOVE AN ORDER'S STATUS. It used to, straight through,
+  // and that made every rule in /status/route.ts optional: the ladder check,
+  // the enum validation and above all the advance-payment gate — "no goods
+  // move before the money arrives" — could all be stepped over by PATCHing
+  // this endpoint instead, which a SALESPERSON may reach for their own orders.
+  // Adding a duty check here would not have closed it; the hole was never the
+  // ROLE, it was that the transition was never validated at all.
+  //
+  // So there is one door now. Both callers already use it — StatusFlowClient
+  // and ProductionClient both POST to /status — and this refuses rather than
+  // ignoring the field, because a silent drop would leave a caller believing
+  // it had advanced an order that never moved.
   if (status !== undefined) {
-    const salesRole = (session.user as any).salesRole as string | null;
-    const allowed = salesRole === "SALESPERSON" || salesRole === "SALES_ADMIN" || salesRole === "COMMERCIAL";
-    if (!allowed) return Response.json({ error: "Forbidden" }, { status: 403 });
+    return Response.json(
+      { error: "Use PATCH /api/sales/orders/[id]/status to change an order's status — it enforces the payment gate and the allowed transitions." },
+      { status: 400 },
+    );
   }
 
   const order = await db.salesOrder.update({
@@ -104,18 +114,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     data: {
       ...(deliveryTerms !== undefined ? { deliveryTerms } : {}),
       ...(notes         !== undefined ? { notes }         : {}),
-      ...(status        !== undefined ? { status }        : {}),
     },
   });
-
-  // Audit log (non-fatal)
-  if (status) {
-    try {
-      await db.salesOrderLog.create({
-        data: { orderId: id, userId: uid, action: "STATUS_CHANGED", note: `→ ${status}` },
-      });
-    } catch { /* ignore until column type fixed */ }
-  }
 
   return Response.json(order);
 }

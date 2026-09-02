@@ -9,6 +9,10 @@ import { useRouter } from "next/navigation";
 import { createRow } from "@/app/tables/actions";
 import { lastMisEntryForBatch } from "@/app/entry/mis/actions";
 import { SHIFT_HOURS, shiftOfHour } from "@/lib/misShiftHours";
+// The delay bounds and the Std rule are the SAME sentences the server enforces
+// (createRow / saveRow read them from this module too) — the browser copy just
+// says them before the round trip, while the operator is still in the box.
+import { misDelayFieldError, misStdRequiredError } from "@/lib/requiredFields";
 
 export interface MisRowLite {
   id: string; hour: string | null; batch: string | null; design: string | null;
@@ -82,15 +86,23 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
   // input, so save() restores it to the prefill explicitly.
   const [startSlab, setStartSlab] = useState(prefill?.startSlab ?? "");
   // What the last carry actually filled — each hint is shown only for the field
-  // that was really set, so "(last entry + 1)" never sits over an untouched box.
-  const [carried, setCarried] = useState<{ batch: string; design: boolean; slab: boolean } | null>(null);
+  // that was really set, so "(filled: last entry + 1)" never sits over an untouched box.
+  // `kept` names what the carry had to offer but did NOT write because the box
+  // already held something: a carry that changes nothing on screen otherwise
+  // looks like a carry that failed.
+  const [carried, setCarried] = useState<{ batch: string; design: boolean; slab: boolean; kept: string[] } | null>(null);
   const lookedUp = useRef<string>("");
   // Rising id: only the newest lookup may write. Two quick blurs otherwise let a
   // slow first response land last and overwrite the batch actually on screen.
   const carrySeq = useRef(0);
 
   /** Entering a batch carries its design forward and starts the slab count where
-   * the previous hour of that batch ended. Both stay editable. */
+   * the previous hour of that batch ended. Both stay editable.
+   *
+   * FILLS EMPTY BOXES ONLY. It used to overwrite whatever was on screen, so a
+   * design and a starting slab typed for this hour vanished the moment the batch
+   * field lost focus — no warning, no undo, and the operator usually noticed
+   * after saving. A carry is a convenience; what the person typed outranks it. */
   const carryFromBatch = async () => {
     const b = batch.trim();
     if (!b || b === lookedUp.current) return;
@@ -102,9 +114,14 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
       const c = await lastMisEntryForBatch(b, `${hourDate}T${hour.slice(0, 2)}:00:00+05:30`);
       if (seq !== carrySeq.current) return; // a newer batch was entered meanwhile
       if (!c || (!c.design && c.nextStartSlab == null)) { setCarried(null); return; }
-      if (c.design) setDesign(c.design);
-      if (c.nextStartSlab != null) setStartSlab(String(c.nextStartSlab));
-      setCarried({ batch: b, design: !!c.design, slab: c.nextStartSlab != null });
+      const filledDesign = !!c.design && !design.trim();
+      const filledSlab = c.nextStartSlab != null && !startSlab.trim();
+      if (filledDesign && c.design) setDesign(c.design);
+      if (filledSlab && c.nextStartSlab != null) setStartSlab(String(c.nextStartSlab));
+      const kept: string[] = [];
+      if (c.design && !filledDesign && c.design.trim() !== design.trim()) kept.push(`design ${c.design}`);
+      if (c.nextStartSlab != null && !filledSlab && String(c.nextStartSlab) !== startSlab.trim()) kept.push(`starting slab ${c.nextStartSlab}`);
+      setCarried({ batch: b, design: filledDesign, slab: filledSlab, kept });
     } catch {
       // a failed lookup leaves what was typed — and must stay retryable, so the
       // batch is released rather than remembered as "already looked up"
@@ -130,7 +147,49 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
   // calendar date OF THE CHOSEN HOUR (C-shift hours past midnight = anchor+1)
   const hourDate = hShift === "C" && Number(hour.slice(0, 2)) < 12 ? plusDay(date, 1) : date;
 
+  /** How many boxes of THIS hour's entry hold something the operator put there.
+   *  The three fields the server prefills from press/line data don't count while
+   *  they still equal that prefill — a reload brings them straight back, so
+   *  warning about them would train the crew to click through the warning. */
+  const dirtyEntryCount = (): number => {
+    const form = formRef.current;
+    let n = areas.length + reasons.length;
+    // The header lives in component state rather than in the form, and the
+    // reload re-prefills it from the server as well — a batch and a design typed
+    // for this hour are just as gone as the figures below them.
+    for (const [now, was] of [
+      [batch, prefill?.batch ?? ""], [design, prefill?.design ?? ""],
+      [productionType, prefill?.productionType ?? ""], [thkPress, prefill?.thkPress ?? ""],
+    ]) if (now.trim() && now.trim() !== was.trim()) n++;
+    if (!form) return n;
+    const prefilled: Record<string, string> = {
+      slabsPerHourActual: prefill?.actual ?? "",
+      endingSlabNumber: prefill?.endSlab ?? "",
+      startingSlabNumber: prefill?.startSlab ?? "",
+    };
+    for (const [k, v] of new FormData(form).entries()) {
+      if (typeof v !== "string") continue;
+      const val = v.trim();
+      if (!val || val === (prefilled[k] ?? "").trim()) continue;
+      n++;
+    }
+    return n;
+  };
+
+  /** Changing the hour or the date RELOADS the sheet — the server recomputes the
+   *  prefill for the new slot and the form remounts empty. That used to happen
+   *  without a word: an operator half-way through an hour who reached for the
+   *  Hour dropdown lost every figure typed, and the only way to notice was that
+   *  the boxes were suddenly blank. Both selects are controlled by state, so
+   *  declining here leaves them showing the slot still on screen. */
+  const confirmDiscard = (change: string): boolean => {
+    const n = dirtyEntryCount();
+    if (n === 0) return true;
+    return window.confirm(`${change} reloads this sheet, and the ${n} entr${n === 1 ? "y" : "ies"} filled in for hour ${hour} will be cleared.\n\nContinue and lose them?`);
+  };
+
   const onHour = (h: string) => {
+    if (!confirmDiscard(`Changing the hour to ${h}`)) return;
     setHour(h);
     const s = shiftOfHour(h);
     // ALWAYS reload: the server recomputes the press/line prefill for the newly
@@ -145,6 +204,14 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
     if (!form) return;
     if (hShift !== shift) { setErr("Loading that shift\u2026 tap Save again in a moment"); return; }
     const fd = new FormData(form);
+    // Each bucket before the sum: the sum below is blind to a negative, which is
+    // exactly how a minus figure used to reach the server (min="0" on the input
+    // is browser decoration a tablet keyboard can walk past) and cancel a real
+    // stoppage logged in another hour. Same rule, same wording, as the server.
+    for (const [k] of DELAYS) {
+      const fErr = misDelayFieldError(k, fd.get(k));
+      if (fErr) { setErr(fErr); return; }
+    }
     const delay = DELAYS.reduce((a, [k]) => a + (Number(fd.get(k) || 0) || 0), 0);
     if (delay > 60) { setErr(`${Math.round(delay)} min delay — max 60 in one hour`); return; }
     if (!batch.trim()) { setErr("Batch is required"); return; }
@@ -152,10 +219,10 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
     if (!productionType.trim()) { setErr("Production type is required — pick it before saving"); return; }
     if (!thkPress.trim()) { setErr("Thk at Press (mm) is required"); return; }
     // Std slab/hr is mandatory only when Actual is filled (non-zero): you can't log real
-    // output without the standard it's measured against. When Actual is blank/0, Std stays optional.
-    const actualSph = Number(fd.get("slabsPerHourActual") ?? 0) || 0;
-    const stdSph = Number(fd.get("slabsPerHourStd") ?? 0) || 0;
-    if (actualSph !== 0 && stdSph <= 0) { setErr("Std slab/hr is required once Actual is entered — add it before saving"); return; }
+    // output without the standard it's measured against. When Actual is blank/0, Std stays
+    // optional. The rule now lives in lib/requiredFields.ts, because for a year it lived
+    // ONLY here — and /tables/Mis create and every /tables/Mis/[id] edit walked past it.
+    { const sErr = misStdRequiredError(fd.get("slabsPerHourStd"), fd.get("slabsPerHourActual")); if (sErr) { setErr(sErr); return; } }
     // The start can be carried from the batch's last hour while the end still
     // holds an older press prefill, which reads as a backwards range. Caught
     // here rather than saved, because the pair drives the slab count downstream.
@@ -210,7 +277,11 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
       <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
         <div className="mb-3 flex flex-wrap items-end gap-3">
           <label className="block"><span className={lbl}>Date</span>
-            <input type="date" value={date} onChange={(e) => e.target.value && router.push(`/entry/mis?date=${e.target.value}&shift=${shift}&hour=${encodeURIComponent(hour)}`)} className={inp + " w-auto"} /></label>
+            <input type="date" value={date} onChange={(e) => {
+              const d = e.target.value;
+              if (!d || !confirmDiscard(`Changing the date to ${d}`)) return;
+              router.push(`/entry/mis?date=${d}&shift=${shift}&hour=${encodeURIComponent(hour)}`);
+            }} className={inp + " w-auto"} /></label>
           <label className="block"><span className={lbl}>Hour</span>
             <select value={hour} onChange={(e) => onHour(e.target.value)} className={inp + " w-auto font-medium"}>
               {ALL_HOURS.map((h) => <option key={h} value={h}>{h}{loggedDaySet.has(h) || (logged.has(h) && shiftOfHour(h) === shift) ? " ✓ logged" : ""}</option>)}
@@ -222,8 +293,11 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
           <label className="block"><span className={lbl}>Batch *{prefill?.fromPress && batch === prefill?.batch && batch ? <span className="ml-1 font-normal text-gray-400">(from press data)</span> : null}</span>
             <input value={batch} onChange={(e) => setBatch(e.target.value)} onBlur={carryFromBatch}
               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); carryFromBatch(); } }}
-              placeholder="e.g. 1375" className={inp} /></label>
-          <label className="block"><span className={lbl}>Design / product *{carried?.design && carried.batch === batch.trim() ? <span className="ml-1 font-normal text-gray-400">(from batch {carried.batch})</span> : prefill?.fromPress && design === prefill?.design && design ? <span className="ml-1 font-normal text-gray-400">(from press data)</span> : null}</span>
+              placeholder="e.g. 1375" className={inp} />
+            {carried && carried.kept.length > 0 && carried.batch === batch.trim()
+              ? <span className="mt-1 block text-xs text-amber-600">Batch {carried.batch} carries {carried.kept.join(" and ")} — kept what you typed instead. Clear the box to take the carried value.</span>
+              : null}</label>
+          <label className="block"><span className={lbl}>Design / product *{carried?.design && carried.batch === batch.trim() ? <span className="ml-1 font-normal text-gray-400">(filled from batch {carried.batch})</span> : prefill?.fromPress && design === prefill?.design && design ? <span className="ml-1 font-normal text-gray-400">(from press data)</span> : null}</span>
             <input value={design} onChange={(e) => setDesign(e.target.value)} list="mis-designs" className={inp} />
             <datalist id="mis-designs">{(options.design ?? []).map((o) => <option key={o} value={o} />)}</datalist></label>
           <label className="block"><span className={lbl}>Production type *{prefill?.productionType && productionType === prefill?.productionType ? <span className="ml-1 font-normal text-gray-400">(from line data)</span> : null}</span>

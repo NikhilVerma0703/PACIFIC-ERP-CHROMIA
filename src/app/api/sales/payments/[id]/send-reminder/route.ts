@@ -12,6 +12,7 @@ import { NextResponse } from "next/server";
 import { sendMail } from "@/lib/sales/mailer";
 import { getCCList } from "@/lib/sales/mailHelpers";
 import { paymentReminderHtml } from "@/lib/sales/emailTemplates";
+import { resolveDueDate } from "@/lib/sales/paymentReminderJob";
 
 const db = prisma as any;
 
@@ -35,6 +36,11 @@ export async function POST(
       order: {
         include: {
           client: true,
+          // shipmentDocs / portArrival are what resolveDueDate() reads for the
+          // CAD, BL_TO_PAY and RECEIVE_TO_PAY divisions — same include as
+          // sendSingleDivisionReminder() in lib/sales/paymentReminderJob.ts.
+          shipmentDocs: true,
+          portArrival: true,
           proformaInvoices: {
             where: { status: "ACCEPTED" },
             take: 1,
@@ -47,12 +53,43 @@ export async function POST(
 
   if (!division) return NextResponse.json({ error: "Division not found" }, { status: 404 });
   if (division.paidAt) return NextResponse.json({ error: "Payment already marked as paid" }, { status: 400 });
+  // A waived division is settled too — chasing the customer for money an RM has
+  // already written off is the same mistake as chasing a paid one.
+  if (division.overriddenAt) {
+    return NextResponse.json({ error: "Payment has been overridden — nothing to chase" }, { status: 400 });
+  }
 
   const order = division.order;
   if (!order?.client?.email) return NextResponse.json({ error: "Client has no email address" }, { status: 400 });
 
-  // Determine due date
-  const dueDate = division.dueDate ? new Date(division.dueDate) : new Date();
+  // Due date. This used to be `division.dueDate ?? new Date()`, and NOTHING in
+  // the app ever writes due_date — so every manual reminder ever sent told the
+  // customer their payment was due TODAY, whatever the terms said. The real date
+  // is derived from the division type and the order's milestones (PI acceptance,
+  // BL date, port arrival) by resolveDueDate(), the same function the daily cron
+  // uses, so the manual mail and the automatic one can no longer disagree.
+  // extended_due_date is raw-SQL-only (0019), hence its own read — exactly how
+  // the cron does it.
+  const extras: any[] = await db.$queryRawUnsafe(
+    `SELECT extended_due_date FROM sales_payment_divisions WHERE id = $1`, id
+  ).catch(() => []);
+  // The one case where the stored due_date is worth something: 45 of the 135
+  // divisions carry one, every last one written by the books import
+  // (scripts/import-international-sales.js) for balances that predate the ERP.
+  // Those orders have no shipment docs or port arrival to compute from, so
+  // resolveDueDate() returns null for them and refusing outright would take the
+  // chase-up mail away from precisely the oldest outstanding money. A date from
+  // the books is a real commitment; today's date is a fiction.
+  const dueDate =
+    resolveDueDate(division, extras[0] ?? {}, order) ??
+    (division.dueDate ? new Date(division.dueDate) : null);
+  if (!dueDate) {
+    return NextResponse.json(
+      { error: "Cannot determine the due date yet for this payment — it depends on a milestone (PI acceptance, BL date or port arrival) that has not been recorded." },
+      { status: 400 }
+    );
+  }
+
   const today   = new Date();
   today.setHours(0, 0, 0, 0);
   dueDate.setHours(0, 0, 0, 0);

@@ -81,15 +81,20 @@ export default function AddConsumptionModal({ isOpen, onClose, onSuccess }: Prop
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
       });
-      if (!res.ok) throw new Error("Failed to save");
-      const savedName = form.itemName;
+      const saved = await jsonOrThrow(res);
+      const savedName = saved?.itemName ?? form.itemName;
       setForm({ departmentId: "", inventoryStockId: "", itemName: "", quantity: "", unit: "", remarks: "" });
       onSuccess?.();
       onClose();
       showToast(`Consumption entry for "${savedName}" saved!`, "success");
-    } catch {
-      setError("Something went wrong. Please try again.");
-      showToast("Failed to save consumption entry.", "error");
+    } catch (e) {
+      // "Something went wrong" was hiding the only thing worth reading. The
+      // server refuses an overdraw with a 409 that names the item and the
+      // shortfall ("short by 80 KG — recount the shelf"); swallowing that left
+      // the clerk retrying the same impossible number.
+      const msg = e instanceof Error ? e.message : "Something went wrong. Please try again.";
+      setError(msg);
+      showToast(msg, "error");
     } finally {
       setSaving(false);
     }
@@ -154,9 +159,16 @@ export default function AddConsumptionModal({ isOpen, onClose, onSuccess }: Prop
           {/* Item Name */}
           <div>
             <label className={labelCls}>Item Name <span className="text-red-400 normal-case tracking-normal">*</span></label>
+            {/* Read-only once an inventory item is linked: the server takes the
+                name and unit from the linked stock row regardless, so leaving
+                the boxes editable only invited a mismatch between what the
+                clerk typed and what got written. Unlinked entries stay free
+                text — that is how one-off items nobody stocks are logged. */}
             <input
               name="itemName" type="text" placeholder="e.g. Gloves"
-              value={form.itemName} onChange={handleChange} className={inputCls}
+              value={form.itemName} onChange={handleChange}
+              readOnly={!!form.inventoryStockId}
+              className={inputCls + (form.inventoryStockId ? " bg-gray-50 text-gray-500" : "")}
             />
           </div>
 
@@ -174,8 +186,15 @@ export default function AddConsumptionModal({ isOpen, onClose, onSuccess }: Prop
             <label className={labelCls}>Unit <span className="text-red-400 normal-case tracking-normal">*</span></label>
             <input
               name="unit" type="text" placeholder="e.g. KG, PCS, Set"
-              value={form.unit} onChange={handleChange} className={inputCls}
+              value={form.unit} onChange={handleChange}
+              readOnly={!!form.inventoryStockId}
+              className={inputCls + (form.inventoryStockId ? " bg-gray-50 text-gray-500" : "")}
             />
+            {form.inventoryStockId && (
+              <p className="text-xs text-gray-400 mt-1.5">
+                Fixed by the linked inventory item — quantity is counted in this unit.
+              </p>
+            )}
           </div>
 
           {/* Remarks */}

@@ -207,7 +207,21 @@ export function RecordEditor({ model, id, fields, values, mode, options = {}, hi
   };
   // notify the wrapper (smart mixer form) after a successful save
   useEffect(() => {
-    if (!pending && (msg === "ok" || (typeof msg === "string" && msg.startsWith("\u2713")))) { setDelMsg(null); onSaved?.(); }
+    if (!pending && (msg === "ok" || (typeof msg === "string" && msg.startsWith("\u2713")))) {
+      setDelMsg(null);
+      onSaved?.();
+      // A CREATE left every box exactly as typed with the Save button still
+      // live under the thumb, so one more tap wrote the record a second time.
+      // Only the stations with a natural key (slab+batch, mixer cycle) are
+      // caught by the duplicate guards in tables/actions.ts createRow \u2014 a
+      // generic table has none, so the second tap simply made a twin row that
+      // someone had to find and delete later. A wrapper that supplies onSaved
+      // (SmartMixerForm) resets the form itself by remounting it for the next
+      // cycle; a standalone /tables/<model>/new has nothing to reset TO, so it
+      // leaves for the table listing, where the row it just wrote is visible \u2014
+      // that listing IS the confirmation.
+      if (mode === "new" && !onSaved) { router.push(`/tables/${model}`); router.refresh(); }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending, msg]);
 

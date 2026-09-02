@@ -18,6 +18,15 @@ import { isJsonBody } from "@/lib/httpJson";
 
 const API = "/api/office/finance";
 
+/** Gap between batch polls. 1.5s is what API.md documents the client as doing,
+ *  and the route's two-bills-per-call worker is sized around it. */
+const POLL_MS = 1500;
+/** Consecutive failed polls before the page stops trying and says so. Five
+ *  attempts, the gap doubling 1.5s → 3 → 6 → 12, cover ~24s: long enough to
+ *  ride out a function cold start or a lift ride, short enough that a real
+ *  outage is named while the clerk is still at the desk. */
+const POLL_MAX_TRIES = 5;
+
 const inp = "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm transition focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20 disabled:bg-gray-50 disabled:text-gray-400";
 const label = "mb-1 block text-xs font-medium text-gray-600";
 const btnPrimary = "rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-white transition hover:bg-brand/90 disabled:opacity-60";
@@ -71,6 +80,10 @@ interface BatchState {
 interface Suggestion { ledger: string; score: number; band: string; reasons?: string[] }
 interface BillDetail {
   person: string; status: string; image_url: string;
+  /** The batch this page was uploaded in. GET /bills/{id} has always sent it;
+   *  it is read here because the LIST rows carry no batch id, and resuming a
+   *  stranded bill means re-attaching the poll to its batch. */
+  batch_id?: string | null;
   /**
    * The stored page's mime, straight from `fin_bill_image.mime`.
    *
@@ -162,6 +175,15 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
   const [uploadError, setUploadError] = useState("");
   const [batch, setBatch] = useState<BatchState | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  /** Why the batch poll gave up, empty while it is running. Set only after
+   *  POLL_MAX_TRIES consecutive failures — see the poll effect. */
+  const [pollStalled, setPollStalled] = useState("");
+  /** Bills still `queued` or `processing` with no batch on screen: the ones a
+   *  dead poll or a closed tab left behind. Nothing else on this page lists
+   *  them, which is why they used to be lost rather than merely late. */
+  const [stalled, setStalled] = useState<BillRow[]>([]);
+  const [resuming, setResuming] = useState(false);
+  const [resumeError, setResumeError] = useState("");
 
   // browser OCR (OCR_PROVIDER=tesseract)
   const [browserOcr, setBrowserOcr] = useState({ done: 0, total: 0, current: 0, note: "" });
@@ -209,12 +231,19 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
 
   const refreshLists = useCallback(async () => {
     try {
-      const [q, a, ex] = await Promise.all([
+      const [q, a, ex, st] = await Promise.all([
         j<{ bills: BillRow[] }>(`${API}/bills?status=review,manual_entry,duplicate,needs_reupload,error&limit=100`),
         j<{ bills: BillRow[] }>(`${API}/bills?status=approved&exported=false&limit=100`),
         j<{ exports: ExportRow[] }>(`${API}/exports?limit=8`).catch(() => ({ exports: [] as ExportRow[] })),
+        // Bills nobody can see otherwise: `queued`/`processing` appear in no
+        // list on this page, so a stack whose poll died left money owed with
+        // nothing on screen to say so. Tolerated failing on its own — an older
+        // deployment that rejects these statuses must not blank the queue.
+        j<{ bills: BillRow[] }>(`${API}/bills?status=queued,processing&limit=100`)
+          .catch(() => ({ bills: [] as BillRow[] })),
       ]);
       setQueue(q.bills); setApproved(a.bills); setExports(ex.exports ?? []);
+      setStalled(st.bills ?? []);
       setEngineDown("");
     } catch (e) {
       setEngineDown((e as Error).message);
@@ -232,18 +261,85 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
     refreshLists();
   }, [refreshLists]);
 
-  // poll the active batch while OCR runs
+  // Poll the active batch while OCR runs.
+  //
+  // THE POLL IS THE WORKER (route.ts): GET /batches/{id} advances the queue
+  // before reporting on it, so a poll that stops is not just a stale progress
+  // bar — nothing else moves those bills. It used to clear the interval inside
+  // `catch`, which meant ONE dropped request, one 502 from a cold function, one
+  // second of office wifi, and the stack sat at "3 of 11 read" for ever with no
+  // message and no way back short of reloading the page (and after a reload
+  // there was no batch id to resume, which is what stranded bills for days).
+  //
+  // So: retry, widening the gap so a server that is actually down is not hit
+  // every 1.5s, and only give up after POLL_MAX_TRIES — at which point the
+  // banner below says so and offers Retry, rather than the poll dying silently.
   useEffect(() => {
-    if (!batch || batch.finished) return;
-    const t = window.setInterval(async () => {
+    if (!batch || batch.finished || pollStalled) return;
+    let cancelled = false;
+    let timer = 0;
+    let fails = 0;
+    const tick = async () => {
       try {
         const d = await j<Omit<BatchState, "id">>(`${API}/batches/${batch.id}`);
+        if (cancelled) return;
+        fails = 0;
         setBatch({ ...d, id: batch.id });
-        if (d.finished) { window.clearInterval(t); refreshLists(); }
-      } catch { window.clearInterval(t); }
-    }, 1500);
-    return () => window.clearInterval(t);
-  }, [batch, refreshLists]);
+        if (d.finished) { refreshLists(); return; }
+      } catch (e) {
+        if (cancelled) return;
+        fails += 1;
+        if (fails >= POLL_MAX_TRIES) {
+          setPollStalled((e as Error).message || "the server stopped answering");
+          return;
+        }
+      }
+      // Steady 1.5s while it is working; doubling once it is not.
+      timer = window.setTimeout(tick, fails === 0 ? POLL_MS : POLL_MS * 2 ** (fails - 1));
+    };
+    timer = window.setTimeout(tick, POLL_MS);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [batch, refreshLists, pollStalled]);
+
+  /**
+   * Pick the stranded bills back up.
+   *
+   * The queue only ever listed bills that need a human, so a bill left `queued`
+   * or `processing` — by a poll that died, a tab closed mid-stack, a browser-OCR
+   * run that never finished — was invisible on this screen while still being
+   * quietly owed to somebody. `stalled` puts them back on screen and this
+   * re-attaches the poll to their batch, which restarts both the server-side
+   * worker and (under OCR_PROVIDER=tesseract) the in-browser reading.
+   *
+   * The batch id comes from the bill's own detail because the list rows do not
+   * carry one. One batch at a time, oldest bill first: when it finishes,
+   * refreshLists() re-reads what is still stalled and the banner offers the next.
+   */
+  const resumeStalled = async () => {
+    // Oldest first: the list comes back newest-id-first, and the batch that has
+    // been waiting longest is the one somebody is chasing.
+    const first = stalled[stalled.length - 1];
+    if (!first) return;
+    setResumeError(""); setResuming(true);
+    try {
+      const d = await j<BillDetail>(`${API}/bills/${first.id}`);
+      if (!d.batch_id) throw new Error(`bill #${first.id} is not attached to a batch any more`);
+      // A resume is a fresh attempt at reading, so the blocks a previous attempt
+      // left behind have to go with it — otherwise the page reports "resumed"
+      // and then skips every bill it already failed on.
+      ocrFailed.current = new Set();
+      setOcrStopped(""); setPollStalled("");
+      setBrowserOcr({ done: 0, total: 0, current: 0, note: "" });
+      setBatch({
+        id: d.batch_id, person: first.person || "", total: stalled.length,
+        done: 0, finished: false, sum: 0, bills: [],
+      });
+    } catch (e) {
+      setResumeError((e as Error).message);
+    } finally {
+      setResuming(false);
+    }
+  };
 
   // ---- browser OCR (OCR_PROVIDER=tesseract) --------------------------------
   //
@@ -410,6 +506,10 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
       // would silently skip a bill that shares an id with nothing.
       ocrFailed.current = new Set();
       setBrowserOcr({ done: 0, total: 0, current: 0, note: "" });
+      // Same reasoning for the two stop-flags: they describe the stack that was
+      // on screen a moment ago. Left set, they would silently refuse to poll or
+      // to read the stack just uploaded.
+      setPollStalled(""); setOcrStopped("");
       setBatch({ id: d.batch_id, person: reimbursing ? person : "", total: d.count, done: 0, finished: d.count === 0, sum: 0, bills: [] });
       if (d.rejected?.length) setUploadError(`${d.rejected.length} file(s) unreadable: ${d.rejected.map(r => r.filename).join(", ")}`);
       setFiles(null);
@@ -555,9 +655,27 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
     } catch (e) { setExportError((e as Error).message); } finally { setExporting(false); }
   };
 
-  const markImported = async (ref: string) => {
+  /**
+   * Record that Tally accepted this file.
+   *
+   * CONFIRMED, because it is one-way and it sits between "void" and "XML" in a
+   * three-link row. Once an export is marked imported the void route refuses it
+   * — "reverse the vouchers in Tally instead" — so a mis-tap on the line above
+   * the one you meant locks those bills as posted and there is nothing on this
+   * screen that takes it back. The prompt names the ref and the money for the
+   * same reason deleteBill names the bill: a wrong row is caught by reading it.
+   */
+  const markImported = async (row: ExportRow) => {
+    if (!window.confirm(
+      `Mark export ${row.ref} as imported into Tally?\n\n`
+      + `${row.bill_count} bill(s) · ${fmtAmt(row.total)}.\n\n`
+      + "Only confirm this once Tally has accepted the XML. It cannot be undone here: "
+      + "an imported export can no longer be voided, and its vouchers would have to be "
+      + "reversed inside Tally.",
+    )) return;
     try {
-      await j(`${API}/exports/${encodeURIComponent(ref)}/mark-imported`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      await j(`${API}/exports/${encodeURIComponent(row.ref)}/mark-imported`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      setExportError("");
       refreshLists();
     } catch (e) { setExportError((e as Error).message); }
   };
@@ -690,6 +808,16 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
                 Keep this tab open. The first bill downloads the language data (~15 MB).
               </p>
             )}
+            {/* The poll gave up. Said out loud, with the way back on the same
+                line: the reading has genuinely stopped (the poll IS the worker)
+                and the bills stay queued until somebody presses this. */}
+            {pollStalled && (
+              <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                <span>Reading stalled — the server stopped answering ({pollStalled}). These bills are still queued; nothing has been lost.</span>
+                <button type="button" onClick={() => setPollStalled("")}
+                  className="ml-2 font-medium text-brand hover:underline">Retry</button>
+              </div>
+            )}
             {ocrStopped && (
               <p className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{ocrStopped}</p>
             )}
@@ -702,6 +830,32 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
                 Dismiss — bills are in the queue below
               </button>
             )}
+          </div>
+        )}
+
+        {/* Bills left mid-read by an earlier visit. Only with no batch on
+            screen: while one is running these ARE that batch's pages, and two
+            progress readings of the same stack is how a clerk ends up starting
+            a second in-browser run over the top of the first. */}
+        {!batch && stalled.length > 0 && (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            <p className="font-medium">
+              {stalled.length} bill{stalled.length === 1 ? " is" : "s are"} still waiting to be read.
+            </p>
+            <p className="mt-1 text-xs text-amber-700">
+              Reading stopped before {stalled.length === 1 ? "it was" : "they were"} finished — a closed tab, or the
+              server stopped answering. {stalled.length === 1 ? "It is" : "They are"} not lost and nothing was posted:
+              picking the batch back up carries on where it left off.
+            </p>
+            <p className="mt-1 text-xs text-amber-700">
+              {stalled.slice(0, 6).map((b) => `#${b.id}${b.person ? ` (${b.person})` : ""}`).join(" · ")}
+              {stalled.length > 6 ? ` · +${stalled.length - 6} more` : ""}
+            </p>
+            {resumeError && <p className="mt-1 text-xs text-red-700">{resumeError}</p>}
+            <button type="button" onClick={resumeStalled} disabled={resuming}
+              className="mt-2 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-900 transition hover:bg-amber-100 disabled:opacity-60">
+              {resuming ? "Resuming…" : "Resume reading"}
+            </button>
           </div>
         )}
       </Card>
@@ -1064,7 +1218,7 @@ export function FinanceBills({ isAdmin = false }: { isAdmin?: boolean }) {
                     ? <Badge tone="green">imported</Badge>
                     : (
                       <>
-                        <button type="button" onClick={() => markImported(e.ref)} className="text-xs text-brand hover:underline">mark imported</button>
+                        <button type="button" onClick={() => markImported(e)} className="text-xs text-brand hover:underline">mark imported</button>
                         <button type="button" onClick={() => voidExport(e.ref)} className="text-xs text-gray-400 hover:text-red-600 hover:underline">Tally rejected it — void</button>
                       </>
                     )}

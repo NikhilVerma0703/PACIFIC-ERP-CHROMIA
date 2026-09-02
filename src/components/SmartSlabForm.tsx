@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useActionState } from "react";
+import { useRouter } from "next/navigation";
 import { Toast } from "./Toast";
 import { createRow } from "@/app/tables/actions";
 import { guardAction, SERVER_UNREACHABLE } from "@/lib/guardAction";
@@ -144,12 +145,36 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
   const [loading, setLoading] = useState(false);
   const [batchLocked, setBatchLocked] = useState(false);
   const [savedCount, setSavedCount] = useState(0);
+  const router = useRouter();
+  // The slab box, so a save can empty it and put the cursor back in it. Only
+  // the increment mode's box is remounted by the version bump below (its key
+  // carries the version, so it re-renders holding last+1); the polish stations
+  // keep a stable key so the number the operator typed survives a re-render —
+  // which is exactly how the box came to still hold the slab just saved, one
+  // thumb-width from the Save button. Nothing was lost when that second tap
+  // landed (the PolishEntry/PolishQc duplicate guard in tables/actions.ts
+  // refuses it), but the operator lost the queue's time reading "already
+  // entered" and wondering which of the two saves counted.
+  const slabBox = useRef<HTMLInputElement | null>(null);
   // After every successful save: toast, then RELOAD the batch defaults so the
   // slab number auto-advances (+1) and parameters re-fill for the next slab.
   useEffect(() => {
     if (pending || msg !== "ok") return;
     setSavedCount((c) => c + 1);
     if (batch.trim()) void loadDefaults();
+    if (slabMode !== "increment") {
+      // SAVED MEANS DONE, the slab-intake rule: empty the box and take the
+      // cursor back, because the next thing this person does is the next slab.
+      // The green confirmation in the bottom bar is deliberately NOT cleared —
+      // it is the only record on screen of what just happened.
+      if (slabBox.current) { slabBox.current.value = ""; slabBox.current.focus(); }
+      // "awaiting QC" is a server query taken at page load, so the slab just
+      // graded stayed in the list — and in the datalist that offers it — until
+      // someone reloaded by hand. The page is force-dynamic, so a refresh
+      // re-runs polishEntrySlabOptions and drops it; a refresh re-renders the
+      // server tree without remounting this form, so the confirmation stays.
+      if (slabMode === "dropdown") router.refresh();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending, msg]);
 
@@ -227,13 +252,13 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
               </span>
               {slabMode === "dropdown" ? (
                 <>
-                  <input name="slabNumber" type="text" required list="slab-options" defaultValue="" placeholder="type to search…" onBlur={slabFirst ? (e) => resolveFromSlab(e.target.value) : undefined} className={`${inputCls} font-medium`} />
+                  <input ref={slabBox} name="slabNumber" type="text" required list="slab-options" defaultValue="" placeholder="type to search…" onBlur={slabFirst ? (e) => resolveFromSlab(e.target.value) : undefined} className={`${inputCls} font-medium`} />
                   <datalist id="slab-options">{slabOptions.map((n) => <option key={n} value={n} />)}</datalist>
                   <span className="mt-1 block text-[11px] text-gray-400">{slabOptions.length.toLocaleString("en-IN")} polish-entry slab(s) awaiting QC · type to search &amp; pick</span>
                 </>
               ) : slabMode === "manual" ? (
                 <>
-                  <input name="slabNumber" type="text" required defaultValue="" onBlur={slabFirst ? (e) => resolveFromSlab(e.target.value) : undefined} className={`${inputCls} font-medium`} />
+                  <input ref={slabBox} name="slabNumber" type="text" required defaultValue="" onBlur={slabFirst ? (e) => resolveFromSlab(e.target.value) : undefined} className={`${inputCls} font-medium`} />
                   <span className="mt-1 block text-[11px] text-gray-400">manual — enter the slab number (e.g. 84, or 84a for an in-between slab)</span>
                 </>
               ) : (

@@ -1,4 +1,4 @@
-import NextAuth from "next-auth";
+import NextAuth, { CredentialsSignin } from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
@@ -18,11 +18,20 @@ function throttleKey(email: string, req: Request | undefined): string {
   const ip = req?.headers?.get?.("x-forwarded-for")?.split(",")[0]?.trim() ?? "?";
   return `${email.toLowerCase()}|${ip}`;
 }
-function isLockedMem(key: string): boolean {
+// MINUTES REMAINING, NOT A BOOLEAN. A throttled login used to be answered with
+// "Invalid email or password", so somebody typing the RIGHT password during a
+// 15-minute lock was told their password was wrong — they phoned for a reset,
+// and the reset (resetPasswordRecord bumps sessionVersion) signed their phone
+// and tablet out too. The window is what the person needs to hear, so the check
+// has to be able to say it; see LoginThrottled below. 0 means not locked.
+function lockedMinutesMem(key: string): number {
   const f = failedLogins.get(key);
-  if (!f) return false;
-  if (Date.now() - f.first > FAIL_WINDOW_MS) { failedLogins.delete(key); return false; }
-  return f.n >= FAILS_MAX;
+  if (!f) return 0;
+  if (Date.now() - f.first > FAIL_WINDOW_MS) { failedLogins.delete(key); return 0; }
+  if (f.n < FAILS_MAX) return 0;
+  // Round UP, and never say "0 minutes": the last 59 seconds of a lock still
+  // rejects the login, and "try again in 0 minutes" is how a support call starts.
+  return Math.max(1, Math.ceil((FAIL_WINDOW_MS - (Date.now() - f.first)) / 60_000));
 }
 function recordFailureMem(key: string) {
   const f = failedLogins.get(key);
@@ -33,13 +42,18 @@ function recordFailureMem(key: string) {
 // DB-backed versions: survive across serverless instances (the in-memory map is
 // per-lambda, so alone it under-counts a distributed attack). If the
 // login_attempt table is missing, fall back to the in-memory throttle.
-async function isLocked(key: string): Promise<boolean> {
+async function lockedMinutes(key: string): Promise<number> {
   try {
-    const rows = await prisma.$queryRaw<{ locked: boolean }[]>`
-      SELECT true AS locked FROM login_attempt
+    // The countdown is computed by Postgres, from the same now() that wrote
+    // first_at: a lambda whose clock has drifted from the database would
+    // otherwise quote a window that does not match the one the WHERE clause
+    // above is actually enforcing.
+    const rows = await prisma.$queryRaw<{ mins: number }[]>`
+      SELECT GREATEST(1, CEIL(EXTRACT(EPOCH FROM (first_at + interval '15 minutes' - now())) / 60))::int AS mins
+      FROM login_attempt
       WHERE key = ${key} AND n >= ${FAILS_MAX} AND first_at > now() - interval '15 minutes'`;
-    return rows.length > 0;
-  } catch { return isLockedMem(key); }
+    return Number(rows[0]?.mins ?? 0);
+  } catch { return lockedMinutesMem(key); }
 }
 async function recordFailure(key: string): Promise<void> {
   try {
@@ -56,6 +70,45 @@ async function clearFailures(key: string): Promise<void> {
   try { await prisma.$executeRaw`DELETE FROM login_attempt WHERE key = ${key}`; } catch { /* table absent */ }
   failedLogins.delete(key);
 }
+
+/**
+ * "Too many attempts" instead of "wrong password" — WITHOUT saying whether the
+ * address exists.
+ *
+ * Safe to show, because the throttle key is email+IP and a failure is recorded
+ * for an UNKNOWN address exactly as it is for a real one (see authorize below):
+ * ten wrong guesses at nobody@example.com from one IP lock that pair just the
+ * same, so being told "locked" reveals only what the person at the keyboard
+ * already did. What it does not do is call a correct password wrong.
+ *
+ * It is a CredentialsSignin subclass so Auth.js keeps treating it as an
+ * ordinary failed sign-in: `type` stays "CredentialsSignin" (inherited via the
+ * static), the API route still redirects to the login page, and only `code`
+ * differs. The server action that calls signIn() catches AuthError and decides
+ * what the person reads — `userMessage` is that string, kept separate from
+ * `message` because AuthError's constructor appends "Read more at
+ * errors.authjs.dev#..." to whatever message it is given.
+ */
+export class LoginThrottled extends CredentialsSignin {
+  code = "throttled";
+  readonly minutes: number;
+  readonly userMessage: string;
+  constructor(minutes: number) {
+    super(`Login throttled for ${minutes} more minute(s)`);
+    this.minutes = minutes;
+    this.userMessage = `Too many failed attempts — try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`;
+  }
+}
+
+// A real bcrypt hash, at the SAME cost factor (10) createUserRecord hashes
+// passwords with, of a passphrase nobody can type. It exists so that an unknown
+// email costs the same as a known one: bcrypt at cost 10 is ~60-100 ms on the
+// Vercel runtime and skipping it made a miss answer measurably sooner, which is
+// all an attacker needs to sort a list of guessed addresses into "works here"
+// and "does not". Never compare a real password against this for any other
+// purpose, and do not lower the cost below the one used to hash real passwords
+// or the two paths stop matching again.
+const TIMING_DUMMY_HASH = "$2a$10$s/D6gZhZHTdRDwI2SetPTO6JL2X1vw/hIRGCRStByArHm7Qs8cRGO";
 
 const credentialsSchema = z.object({
   email: z.string().email(),
@@ -77,9 +130,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!parsed.success) return null;
         const { email, password, branch } = parsed.data;
         const tkey = throttleKey(email, request as Request | undefined);
-        if (await isLocked(tkey)) return null;
+        const locked = await lockedMinutes(tkey);
+        if (locked > 0) throw new LoginThrottled(locked);
         const user = await prisma.user.findUnique({ where: { email } });
-        if (!user || !user.active) { await recordFailure(tkey); return null; }
+        if (!user || !user.active) {
+          // Burn the same bcrypt round the found-user path burns below, so an
+          // unknown (or deactivated) address takes as long to reject as a known
+          // one. Discarded on purpose — the result is never used.
+          await bcrypt.compare(password, TIMING_DUMMY_HASH);
+          await recordFailure(tkey);
+          return null;
+        }
         const ok = await bcrypt.compare(password, user.passwordHash);
         if (!ok) { await recordFailure(tkey); return null; }
         const userBranch = ((user as { branch?: string | null }).branch as string | null) ?? "SHOP_FLOOR";

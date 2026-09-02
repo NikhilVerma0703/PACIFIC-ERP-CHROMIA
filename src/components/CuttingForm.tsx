@@ -6,6 +6,16 @@ import { guardAction, SERVER_UNREACHABLE } from "@/lib/guardAction";
 
 const PURPOSES = ["Sample", "Display", "QC", "Waste", "Other"];
 
+// Today in IST, the plant's only calendar. The cut date used to prefill from
+// new Date().toISOString(), which is UTC: every cut logged between midnight and
+// 05:30 IST — the whole tail of the night shift — arrived stamped with
+// YESTERDAY's date unless the cutter noticed and retyped it, so the day's cut
+// sheet lost its last hours to the day before. Written from the epoch plus a
+// fixed offset (the ymdIST form used in lib/telegramReports and the polishing
+// report) so the server render and the browser's hydration agree — reading the
+// browser's own timezone would differ on a tablet left on a foreign zone.
+const ymdIST = (ms = Date.now()) => new Date(ms + 330 * 60000).toISOString().slice(0, 10);
+
 const initialState = { ok: false, message: "", stamp: 0 };
 // A dropped connection answers like any other failure instead of unmounting the
 // form (lib/guardAction). stamp 0 = the form is not reset.
@@ -89,7 +99,7 @@ export function CuttingForm() {
           name="cutDate"
           type="date"
           required
-          defaultValue={new Date().toISOString().slice(0, 10)}
+          defaultValue={ymdIST()}
           className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-pacific-dark focus:ring-1 focus:ring-pacific-dark"
         />
       </div>

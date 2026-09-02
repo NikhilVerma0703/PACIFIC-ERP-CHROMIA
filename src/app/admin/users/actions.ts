@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { revalidatePath } from "next/cache";
-import { currentUser, currentRole, canManageUsers, creatableRoles, assignableBranches, rankOf, STATIONS, roleLabelFor } from "@/lib/rbac";
+import { currentUser, currentRole, canManageUsers, creatableRoles, assignableBranches, rankOf, ROLE_RANK, STATIONS, roleLabelFor } from "@/lib/rbac";
 import { createUserRecord, setActiveRecord, resetPasswordRecord, setStationRecord, getUserRoles, getUserPrimary, setAltContextRecord, bumpSessionVersion, bumpAllSessionVersions } from "@/lib/users";
 import { contextKey } from "@/lib/roleContext";
 import { isAdmin } from "@/lib/rbac";
@@ -47,9 +47,47 @@ async function canManageTarget(id: string): Promise<{ ok: boolean; message: stri
   if (!(await canManageUsers())) return { ok: false, message: "You don't have permission to manage users." };
   const me = await currentUser();
   if (me?.id === id) return { ok: false, message: "You cannot manage your own account here." };
-  const myRank = rankOf(await currentRole());
+  const myRole = await currentRole();
+  const myRank = rankOf(myRole);
   const targetRank = Math.max(0, ...(await getUserRoles(id)).map(rankOf));
   if (targetRank >= myRank) return { ok: false, message: "You can only manage users below your own role." };
+
+  // AND RANK ALONE IS NOT AUTHORITY — THE DEPARTMENT HAS TO MATCH TOO.
+  //
+  // This compared ranks and nothing else, and never loaded the target's branch.
+  // Every id is a cuid posted to a server action, so the only thing keeping a
+  // Shop Floor INCHARGE (rank 2) away from an International Sales salesperson
+  // or an Office Commercial login (both rank 1) was that no page hands out
+  // those ids — an IDOR behind id secrecy, and one password reset away from
+  // signing in as them. It ran the other way too: a sales REPORTING_MANAGER /
+  // SALES_ADMIN carries LINE_MANAGER rank 3, passes canManageUsers, and so
+  // outranked every Office FINANCE/ACCOUNTS login and every shop-floor incharge
+  // in the plant.
+  //
+  // So the department rule createUser applies a few lines down is applied here
+  // too, on the ONE gate every mutating path already goes through (reset
+  // password, deactivate, station, second role). The allowed set is exactly
+  // what Users & Roles LISTS — assignableBranches, plus the caller's own
+  // branch, plus retired CHROMIA for a non-office admin (the `visible` list in
+  // admin/users/page.tsx) — because a row you can see and cannot act on is a
+  // support call, and a row you cannot see and CAN act on is this defect.
+  //
+  // The caller's own branch is in the set for a reason worth keeping: below
+  // ADMIN, assignableBranches already returns exactly [their branch], so it
+  // changes nothing for them — but it answers an ADMIN signed in on the sales
+  // card with ["SHOP_FLOOR","FABRICATION"], and without this a platform admin
+  // doing Sales Admin work would be locked out of the International Sales
+  // logins that are the only rows their own page shows them.
+  const myBranch = (((me as any)?.branch as string | undefined) ?? "SHOP_FLOOR");
+  const target = await getUserPrimary(id);
+  if (!target) return { ok: false, message: "That login no longer exists." };
+  const manageable = new Set([...assignableBranches(myRole, myBranch), myBranch]);
+  // Retired department: nothing new may be created on CHROMIA, but the logins
+  // the old integration left there are listed for an admin precisely so they
+  // can still be deactivated or reset. Goes when scripts/0046 has emptied it.
+  if (myRank >= ROLE_RANK.ADMIN && myBranch !== "OFFICE") manageable.add("CHROMIA");
+  if (!manageable.has(target.branch)) return { ok: false, message: "You can only manage users in your own department." };
+
   return { ok: true, message: "" };
 }
 

@@ -31,6 +31,11 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     "etaDate", "etdDate", "blDate",
     "blNo", "sbNo",
     "linerOtlNo", "eSealNo", "vehicleNo",
+    // trackingLink was missing from this list while the form, buildPayload and
+    // the ETA reminder template all carried it: the link the user typed was
+    // dropped here and the response then repainted the field empty, under a
+    // green "Saved". Customers got ETA reminders with no tracking link at all.
+    "trackingLink",
     "packageDescription",
     "grossWeight", "netWeight",
     "packingItems",
@@ -38,6 +43,14 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     // blDocUrl, fumigationCertUrl, bankDetailsUrl, stuffingPhotos are handled
     // via /doc-upload to avoid the 10MB body size limit — do NOT add them here
   ];
+
+  // The tracking link is interpolated straight into an href by the ETA reminder
+  // template (lib/sales/emailTemplates.ts), so it has to be a real http(s) URL
+  // before it is stored — a "javascript:" or bare "track.cma-cgm.com/..." value
+  // reaches the customer's inbox as a live link nobody here can vet.
+  if (body.trackingLink != null && body.trackingLink !== "" && !/^https?:\/\/\S+$/i.test(String(body.trackingLink).trim())) {
+    return NextResponse.json({ error: "Tracking link must be a full http:// or https:// URL" }, { status: 400 });
+  }
 
   const data: Record<string, unknown> = {};
   for (const key of allowed) {
@@ -68,20 +81,14 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     }).catch(() => {});
   }
 
-  // Auto-send shipping docs email if all PDFs uploaded + BL set + not yet sent
-  const allDocsReady =
-    docs.blNo &&
-    docs.blDocUrl          && (docs.blDocUrl as string).startsWith("data:") &&
-    docs.fumigationCertUrl && (docs.fumigationCertUrl as string).startsWith("data:") &&
-    docs.bankDetailsUrl    && (docs.bankDetailsUrl as string).startsWith("data:") &&
-    !docs.shippingDocsMailSentAt;
-
-  if (allDocsReady) {
-    // Fire-and-forget: send in background so PATCH response returns quickly
-    import("@/lib/sales/sendShippingDocsEmail")
-      .then(({ sendShippingDocsEmail }) => sendShippingDocsEmail(id))
-      .catch(() => { /* non-blocking -- user can retry manually */ });
-  }
+  // NO auto-send here. This route used to fire sendShippingDocsEmail in the
+  // background the moment BL No. + the three PDFs were present, while the
+  // "Send Shipping Docs" button saves through this same route and then mails
+  // explicitly — one customer-facing mail, two triggers racing each other.
+  // /doc-upload still auto-sends when the last PDF lands (that is the path that
+  // actually completes the document set), and the button covers the rest; both
+  // go through the claim in sendShippingDocsEmail. Re-adding a trigger here
+  // brings the double-send back.
 
   return NextResponse.json(docs);
 }

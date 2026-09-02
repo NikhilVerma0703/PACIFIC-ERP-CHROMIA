@@ -125,14 +125,41 @@ export default function PaymentsPage() {
 
   useEffect(() => { setPage(1); load(1, false); }, [dateFrom, dateTo]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /**
+   * Chase one installment by email.
+   *
+   * CONFIRMED, because this leaves the building. The button sits in a row of
+   * five in a dense table and one tap mailed the customer a demand for money —
+   * no dialog, nothing to undo, and the customer's own record of it is the mail
+   * in their inbox. The dialog names the client and the amount so the row above
+   * the one you meant is caught by reading it.
+   *
+   * The try/finally matters as much: `await r.json()` on a dropped connection
+   * (or on the empty body a timed-out function returns) threw straight past
+   * setBusy(null), and because every action button on this page was disabled on
+   * `!!busy`, one failed reminder froze the whole table until a reload.
+   */
   async function sendReminder(id: string) {
+    const d = divisions.find(x => x.id === id);
+    const who = d?.order.client.name ?? "the client";
+    const amount = d ? `${d.order.currency ?? "USD"} ${balanceOf(d).toFixed(2)}` : "";
+    if (!confirm(
+      `Email a payment reminder to ${who}?\n\n`
+      + (d ? `${d.order.orderNumber} · ${TYPE_LABELS[d.type] ?? d.type} · ${amount} outstanding.\n\n` : "")
+      + "The mail goes to the customer immediately and cannot be recalled.",
+    )) return;
     setBusy(`remind-${id}`);
-    const r = await fetch(`/api/sales/payments/${id}/send-reminder`, { method: "POST" });
-    const d = await r.json();
-    setBusy(null);
-    if (!r.ok) { setMsg(`Error: ${d.error}`); return; }
-    setMsg(`Reminder sent to client.`);
-    setTimeout(() => setMsg(""), 4000);
+    try {
+      const r = await fetch(`/api/sales/payments/${id}/send-reminder`, { method: "POST" });
+      const res = await readJson<unknown>(r);
+      if (!res.ok) { setMsg(`Error: ${res.error}`); return; }
+      setMsg(`Reminder sent to ${who}.`);
+      setTimeout(() => setMsg(""), 4000);
+    } catch (e) {
+      setMsg(e instanceof Error && e.message ? `Could not reach the server: ${e.message}` : "Could not reach the server.");
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function setOverride(id: string, note: string) {
@@ -404,6 +431,12 @@ export default function PaymentsPage() {
                 const isPaid = !!d.paidAt;
                 const isOverdue = d.isOverdue && !isPaid;
                 const pi = d.order.proformaInvoices[0];
+                // Busy is scoped to THIS row. Every action button used to be
+                // disabled on `!!busy`, so a reminder to one customer greyed out
+                // Mark Paid for all 500 rows while it ran — and left them that
+                // way for good if the request never came back.
+                const rowBusy = busy === d.id || busy === `remind-${d.id}`
+                  || busy === `override-${d.id}` || busy === `part-${d.id}`;
                 return (
                   <tr key={d.id}
                     className={`border-b border-slate-50 ${isOverdue ? "bg-red-50/40" : ""}`}>
@@ -473,14 +506,14 @@ export default function PaymentsPage() {
                         {!isPaid ? (
                           <button
                             onClick={() => markPaid(d.id, new Date().toISOString())}
-                            disabled={!!busy}
+                            disabled={rowBusy}
                             className="px-2.5 py-1 bg-green-600 text-white text-xs font-semibold rounded-lg hover:bg-green-700 disabled:opacity-50 transition">
                             {busy === d.id ? "…" : "Mark Paid"}
                           </button>
                         ) : (
                           <button
                             onClick={() => markPaid(d.id, null)}
-                            disabled={!!busy}
+                            disabled={rowBusy}
                             className="px-2.5 py-1 border border-slate-200 text-slate-500 text-xs font-medium rounded-lg hover:bg-slate-50 disabled:opacity-50 transition">
                             {busy === d.id ? "…" : "Undo"}
                           </button>
@@ -488,7 +521,7 @@ export default function PaymentsPage() {
                         {!isPaid && (
                           <button
                             onClick={() => { setPartModal(d); setPartAmt(""); setPartErr(""); }}
-                            disabled={!!busy}
+                            disabled={rowBusy}
                             title="Record a partial amount received against this installment"
                             className="px-2.5 py-1 bg-sky-50 text-sky-700 border border-sky-200 text-xs font-semibold rounded-lg hover:bg-sky-100 disabled:opacity-50 transition">
                             Part Pay
@@ -497,7 +530,7 @@ export default function PaymentsPage() {
                         {!isPaid && d.type !== "ADVANCE" && (
                           <button
                             onClick={() => sendReminder(d.id)}
-                            disabled={!!busy}
+                            disabled={rowBusy}
                             title="Send payment reminder email to client"
                             className="px-2.5 py-1 bg-brand text-white text-xs font-semibold rounded-lg hover:bg-brand-dark disabled:opacity-50 transition">
                             {busy === `remind-${d.id}` ? "…" : "Send Reminder"}
@@ -507,7 +540,7 @@ export default function PaymentsPage() {
                           d.overriddenAt ? (
                             <button
                               onClick={() => clearOverride(d.id)}
-                              disabled={!!busy}
+                              disabled={rowBusy}
                               title={`Reminders paused: ${d.overrideNote || "no note"}. Click to resume.`}
                               className="px-2.5 py-1 bg-amber-100 text-amber-700 border border-amber-300 text-xs font-semibold rounded-lg hover:bg-amber-200 disabled:opacity-50 transition">
                               {busy === `override-${d.id}` ? "…" : "Paused ✕"}
@@ -515,7 +548,7 @@ export default function PaymentsPage() {
                           ) : (
                             <button
                               onClick={() => setOverrideModal({ id: d.id, orderNum: d.order.orderNumber })}
-                              disabled={!!busy}
+                              disabled={rowBusy}
                               title="Pause auto-reminders for this division"
                               className="px-2.5 py-1 border border-slate-300 text-slate-500 text-xs font-medium rounded-lg hover:bg-slate-100 disabled:opacity-50 transition">
                               Pause

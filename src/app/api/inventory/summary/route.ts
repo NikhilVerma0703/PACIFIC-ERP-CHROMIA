@@ -32,7 +32,12 @@ export async function GET(request: Request) {
                count(*) FILTER (WHERE status <> 'DISPATCHED' AND grade = 'C')::int        AS c,
                count(*) FILTER (WHERE status <> 'DISPATCHED' AND grade = 'CTS')::int      AS cts,
                count(*) FILTER (WHERE status <> 'DISPATCHED' AND grade = 'Printing')::int AS printing,
-               count(*) FILTER (WHERE grade = 'Trial')::int                               AS trial,
+               -- 'status <> DISPATCHED' like every other grade column. Without it the
+               -- Trial count included slabs that had already left the yard, so a design
+               -- whose trials were all dispatched showed Trial = 6 against Slabs = 0 and
+               -- the grade columns did not add up to the Slabs total — the one arithmetic
+               -- check the register exists to let you do by eye.
+               count(*) FILTER (WHERE status <> 'DISPATCHED' AND grade = 'Trial')::int   AS trial,
                count(*) FILTER (WHERE status <> 'DISPATCHED' AND grade IS NULL)::int      AS ungraded,
                count(*) FILTER (WHERE status <> 'DISPATCHED' AND repolish_status = 'Repolish Required')::int AS pending_polish,
                count(*) FILTER (WHERE status <> 'DISPATCHED' AND rw_status = 'RW Required and ongoing')::int AS pending_rw

@@ -250,6 +250,33 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
     } catch { /* non-fatal — local state already updated */ }
   }
 
+  async function clearAllPhotos() {
+    // "Clear all" only emptied local state: the photos stayed in the row and
+    // the dispatch email kept attaching every one of them, so the operator who
+    // pressed this to drop a wrong container's photos still mailed them to the
+    // customer. Delete on the server like the per-photo x does — and ask first,
+    // because unlike the x this throws away the whole strip in one click and
+    // the originals are only on someone's phone.
+    if (!window.confirm(`Delete all ${photos.length} stuffing photo(s)? They are removed from the order and will not be attached to the dispatch email. This cannot be undone here.`)) return;
+    const prev = photos;
+    setPhotos([]);
+    try {
+      const r = await fetch(`/api/sales/orders/${orderId}/doc-upload`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "photoReorder", data: [] }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      setPhotos(Array.isArray(d.photos) ? d.photos : []);
+    } catch {
+      // Put the strip back rather than leave the screen claiming a deletion the
+      // server never made — that lie is exactly what this fix is about.
+      setPhotos(prev);
+      setError("The photos could not be deleted — nothing was removed.");
+    }
+  }
+
   function buildPayload() {
     // Explicitly whitelist small metadata fields only.
     // Large base64 PDFs (blDocUrl, fumigationCertUrl, bankDetailsUrl) go via /doc-upload.
@@ -369,15 +396,22 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
 
   async function sendShippingDocsEmail() {
     setShippingSending(true); setShippingSent(false); setShippingError(null);
-    // Save first (includes newly-uploaded PDFs)
     try {
-      await fetch(`/api/sales/orders/${orderId}/shipping`, {
+      // The three PDFs live only in browser state until uploadShippingDocs()
+      // puts them in the row, and buildPayload() deliberately excludes them
+      // (they go via /doc-upload, not through the 10MB-capped PATCH body). This
+      // step used to be missing here, so the panel said "All docs ready" from
+      // local state while the mailer attached whatever the row happened to hold
+      // — an export customer got a "Documents Attached: Bill of Lading" mail
+      // with no BL in it. Upload first, and stop on a failed save rather than
+      // mailing on top of it.
+      await uploadShippingDocs();
+      const s = await fetch(`/api/sales/orders/${orderId}/shipping`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(buildPayload()),
       });
-    } catch { /* non-blocking */ }
-    try {
+      if (!s.ok) throw new Error((await s.json().catch(() => null))?.error ?? "Could not save the shipping details — nothing was sent.");
       const r = await fetch(`/api/sales/orders/${orderId}/shipping-docs-email`, { method: "POST" });
       if (!r.ok) throw new Error((await r.json()).error ?? "Failed to send");
       setShippingSent(true);
@@ -680,7 +714,7 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
             {uploading ? "Processing..." : "+ Add Photos"}
           </label>
           {photos.length > 0 && (
-            <button onClick={() => setPhotos([])} className="text-xs text-red-500 hover:underline">
+            <button onClick={clearAllPhotos} className="text-xs text-red-500 hover:underline">
               Clear all
             </button>
           )}

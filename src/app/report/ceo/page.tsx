@@ -182,14 +182,14 @@ function SheetProduction({ r }: { r: DailyReport }) {
           <InfoDot key="a" label="achievement">
             <Line of="Slabs produced" is={String(day.made)} />
             <Line of="Target for those hours" is={String(r2(day.target))} />
-            <Sum of={`${day.made} ÷ ${day.target}`} is={pct1(day.pct)} />
+            <Sum of={`${day.made} ÷ ${r2(day.target)}`} is={pct1(day.pct)} />
           </InfoDot>],
         [hm(day.lost), "Time lost"],
         [`${day.hoursRun} of ${day.hoursTotal}`, "Hours the line ran"],
       ]} />
 
       <p className={s.prose}>
-        The plant produced <strong>{day.made} slabs against a target of {day.target}</strong>, {day.pct?.toFixed(1)} per
+        The plant produced <strong>{day.made} slabs against a target of {r2(day.target)}</strong>, {day.pct?.toFixed(1)} per
         cent of standard rate, and lost <strong>{day.lost} minutes</strong> {DASH} {hmWords(day.lost)} of the
         twenty-four {DASH} to stoppages. The line ran <strong>{designs.join(" and ")}</strong>.{" "}
         {blank > 0 && `${blank === 1 ? "One hour" : `${opens(blank)} hours`} carried no output at all and ${blank === 1 ? "is" : "are"} shown as such; ${blank === 1 ? "it is" : "they are"} left out of the target rather than counted as misses. `}
@@ -209,14 +209,14 @@ function SheetProduction({ r }: { r: DailyReport }) {
           {shifts.map((x) => (
             <tr key={x.letter}>
               <td className={s.key}>{x.letter}</td><td>{x.label}</td><td>{x.incharge ?? DASH}</td>
-              <td className={s.num}>{x.made}</td><td className={s.num}>{x.target}</td>
+              <td className={s.num}>{x.made}</td><td className={s.num}>{r2(x.target)}</td>
               <td className={s.num}>{pct1(x.pct)}</td><td className={s.num}>{x.lost} m</td>
               <td className={s.muted}>{shiftNarrative(x)}</td>
             </tr>
           ))}
           <tr className={s.total}>
             <td>Day</td><td>24 hours</td><td>All three</td>
-            <td className={s.num}>{day.made}</td><td className={s.num}>{day.target}</td>
+            <td className={s.num}>{day.made}</td><td className={s.num}>{r2(day.target)}</td>
             <td className={s.num}>{pct1(day.pct)}</td><td className={s.num}>{day.lost} m</td>
             <td>Time lost equals {((100 * day.lost) / 1440).toFixed(1)}% of the day</td>
           </tr>
@@ -242,7 +242,7 @@ function SheetProduction({ r }: { r: DailyReport }) {
           ))}
           <tr className={s.total}>
             <td>Day</td><td>{designs.map((d) => d.split(",")[0]).join(" / ")}</td>
-            <td className={s.num}>{day.made}</td><td className={s.num}>{day.target}</td>
+            <td className={s.num}>{day.made}</td><td className={s.num}>{r2(day.target)}</td>
             <td className={s.num}>{day.lost} m</td>
             <td>{day.onTarget} hours ran to target with no time lost</td>
           </tr>
@@ -296,12 +296,38 @@ function gradeMeaning(g: string, n: number, dispatched: number) {
   if (g === "Not graded yet") return "Still in process, grade pending";
   if (g === "A2") return `Passed at the second tier; ${dispatched} of the ${n} cleared for dispatch`;
   if (g === "B") return `Downgraded and held back; ${dispatched === 0 ? "none" : dispatched} cleared for dispatch`;
+  // CTS is where the slab WENT, not how it was judged — it was routed to
+  // cut-to-size before inspection reached a verdict. Captioning it "No grade on
+  // the record" put it beside the genuinely unrecorded rows and made a routing
+  // decision read as a filing failure; it is also why the pass rate above
+  // leaves it out of both sides. Same rule as gradeCredit() in shiftScoreMath.
+  if (g === "CTS") return `Routed to cut-to-size, not a quality verdict; ${dispatched === 0 ? "none" : dispatched} cleared for dispatch`;
   return "No grade on the record";
 }
 
 function SheetQuality({ r }: { r: DailyReport }) {
   const q = r.quality;
   const p = q.polishing;
+  // WHAT THE DISPATCH-FLAGGED SLABS ACTUALLY ARE, READ OFF THE ROWS.
+  // The closing sentence of this page used to end "...all of them grade A or
+  // A2" as fixed prose. That was true of the day it was written and of nothing
+  // else: "going to dispatch" is a separate flag from the grade, and the live
+  // table carries dispatch-flagged slabs at B and CTS as well. A report that
+  // asserts something the grade table two inches below it contradicts is a
+  // report the CEO stops trusting on everything else too, so the sentence is
+  // now built from dispatchByGrade and says whatever the day actually holds.
+  const dispatchByGrade = q.dispatchByGrade as Record<string, number>;
+  const dispatchGrades = Object.entries(dispatchByGrade)
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  // "grade Not recorded" is not English; the two no-verdict buckets are named
+  // for what they are instead.
+  const gradePhrase = (g: string) =>
+    g === "Not recorded" || g === "Not graded yet" ? "not yet graded" : `grade ${g}`;
+  const dispatchMix = dispatchGrades.length === 0 ? null
+    : dispatchGrades.length === 1 ? `all of them ${gradePhrase(dispatchGrades[0][0])}`
+    : dispatchGrades.map(([g, n]) => `${n} ${gradePhrase(g)}`)
+        .join(", ").replace(/, ([^,]*)$/, " and $1");
   // NAMED BY THE QUESTION EACH COLUMN ANSWERS.
   // These rows used to read "passed", which invited them to be compared with
   // the 133 that passed inspection. They are not the same slabs and not the
@@ -367,6 +393,9 @@ function SheetQuality({ r }: { r: DailyReport }) {
             <span style={{ display: "block", marginTop: 6, opacity: 0.8 }}>
               The {q.ungraded} slabs still being graded are excluded from both sides, so a slab
               that has not been judged yet cannot count as a pass or a failure.
+              {q.cts > 0 && ` The ${q.cts} routed to cut-to-size are excluded for the same reason:
+                a slab diverted to another product was never given a verdict, so counting it as a
+                failure would understate the rate by exactly those slabs.`}
             </span>
           </InfoDot>],
         [String(q.openForRework), "Open for rework",
@@ -399,8 +428,10 @@ function SheetQuality({ r }: { r: DailyReport }) {
         <strong>{q.graded} slabs that carry a final grade, {q.passed} passed</strong> {DASH} a pass rate
         of {q.passRate?.toFixed(1)} per cent. {opens(q.held)} {q.held === 1 ? "was" : "were"} downgraded or rejected.
         A further <strong>{q.ungraded} are still being graded</strong> and are not counted either way.{" "}
+        {q.cts > 0 && <>{opens(q.cts)} {q.cts === 1 ? "was" : "were"} routed to cut-to-size {DASH} where the
+        slab went, not how it was judged {DASH} and {q.cts === 1 ? "is" : "are"} left out of the rate as well.{" "}</>}
         {opens(q.openForRework)} slabs remain open for repolishing or rework, and {q.toDispatch} of the {q.inspected} are
-        already flagged to go to dispatch, all of them grade A or A2.
+        already flagged to go to dispatch{dispatchMix ? `, ${dispatchMix}` : ""}.
       </p>
 
       <Section name="Quality grades" note={`all ${q.inspected} slabs inspected during the day`} />
@@ -413,7 +444,8 @@ function SheetQuality({ r }: { r: DailyReport }) {
               <td className={s.muted}>{gradeMeaning(g, n, (q.dispatchByGrade as Record<string, number>)[g] ?? 0)}</td></tr>
           ))}
           <tr className={s.total}><td>Total inspected</td><td className={s.num}>{q.inspected}</td><td className={s.num}>100%</td>
-            <td>{q.passed} passed, {q.held} held or rejected, {q.ungraded} still to be graded</td></tr>
+            <td>{q.passed} passed, {q.held} held or rejected, {q.ungraded} still to be graded
+              {q.cts > 0 && `, ${q.cts} routed to cut-to-size`}</td></tr>
         </tbody>
       </table>
 

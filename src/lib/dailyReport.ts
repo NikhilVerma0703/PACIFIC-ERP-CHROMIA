@@ -315,7 +315,18 @@ export function getQuality(entries: EntryRow[], qc: QcRow[]) {
   const count = (rows: typeof qc, f: (r: (typeof qc)[number]) => boolean) => rows.filter(f).length;
 
   const grades = tally(qc, (r) => r.qualityGrade ?? "Not recorded");
-  const graded = qc.filter((r) => r.qualityGrade && r.qualityGrade !== "Not graded yet");
+  // CTS IS A ROUTING, NOT A VERDICT ON THE SLAB. A slab sent to cut-to-size was
+  // not inspected and found wanting — it was diverted to a different product
+  // before that question was ever asked. It used to sit inside `graded` and
+  // could never reach `passed`, so every one of the 62 CTS rows in the live
+  // polish_qc table counted as a failure and pulled the CEO's pass rate down by
+  // an amount nobody could account for from the grade table beside it.
+  // gradeCredit() in shiftScoreMath.ts has excluded CTS from the payout for
+  // exactly this reason since it was written; this report was the last surface
+  // still scoring it as a reject. Own bucket, out of BOTH sides of the rate.
+  const cts = qc.filter((r) => r.qualityGrade === "CTS");
+  const graded = qc.filter((r) =>
+    r.qualityGrade && r.qualityGrade !== "Not graded yet" && r.qualityGrade !== "CTS");
   const passed = graded.filter((r) => r.qualityGrade === "A" || r.qualityGrade === "A2");
 
   // Faults are a multi-select: one slab can carry several, so the fault count
@@ -388,7 +399,15 @@ export function getQuality(entries: EntryRow[], qc: QcRow[]) {
     passRate: graded.length ? (100 * passed.length) / graded.length : null,
     gradeA: count(qc, (r) => r.qualityGrade === "A"),
     gradeA2: count(qc, (r) => r.qualityGrade === "A2"),
-    ungraded: qc.length - graded.length,
+    // Slabs still WAITING on a verdict. CTS is subtracted separately rather
+    // than left to fall in here: it is neither graded nor waiting to be, and
+    // rolling it into this figure would only move the same slabs from "counted
+    // as failures" to "counted as still in QC" — wrong in a quieter way, and
+    // the page prints this number as "still being graded".
+    ungraded: qc.length - graded.length - cts.length,
+    /** Routed to cut-to-size. Reported so the grade table's four buckets still
+     *  add up to everything inspected; not a pass and not a failure. */
+    cts: cts.length,
     held: graded.length - passed.length,
     openForRework: count(qc, (r) => r.repolishStatus === "Repolish Required" || r.rwStatus === "RW Required and ongoing"),
     // The mirror of openForRework: slabs that needed work and CAME BACK GOOD.

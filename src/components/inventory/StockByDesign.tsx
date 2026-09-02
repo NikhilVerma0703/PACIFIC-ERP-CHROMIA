@@ -70,6 +70,7 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
   const [sorts, setSorts] = useState<{ k: "name" | (typeof NUMS)[number]; d: 1 | -1 }[]>([{ k: "name", d: 1 }]);
   const [open, setOpen] = useState<Set<string>>(new Set());   // open designs (closed by default)
   const [ov, setOv] = useState<Map<string, boolean>>(new Map()); // optimistic Approved overrides
+  const [approveError, setApproveError] = useState<string | null>(null); // last approval write that did not land
   const [openT, setOpenT] = useState<Set<string>>(new Set()); // open thickness groups
 
   // Per-slab quality popup — the Sales drill-down. Where the Admin register
@@ -206,10 +207,28 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
 
   const toggle = (k: string) => setOpen((s) => { const c = new Set(s); if (c.has(k)) c.delete(k); else c.add(k); return c; });
   const toggleT = (k: string) => setOpenT((s) => { const c = new Set(s); if (c.has(k)) c.delete(k); else c.add(k); return c; });
+  // THE TICK IS OPTIMISTIC, SO IT MUST ALSO BE REVERSIBLE. The write used to be
+  // fired with `.catch(() => {})`: a 403, a 500 or a dropped connection left the
+  // box ticked and the override in `ov` outlived every reload, so an admin saw
+  // "approved" on a colour Sales could not see and nobody could explain why. On
+  // a failure we DELETE the override rather than set the old value — that hands
+  // the checkbox back to the server's own answer, which is the only value that
+  // is true.
   const setApproved = (groupName: string, batch: string, approved: boolean) => {
-    setOv((m) => new Map(m).set(`${groupName}|${batch}`, approved));
+    const key = `${groupName}|${batch}`;
+    setOv((m) => new Map(m).set(key, approved));
+    setApproveError(null);
     const design = groupName;
-    fetch("/api/inventory/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ design, batch, approved }) }).catch(() => {});
+    fetch("/api/inventory/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ design, batch, approved }) })
+      .then(async (r) => {
+        if (r.ok) return;
+        const body = await r.json().catch(() => null);
+        throw new Error(`${body?.error ?? "the server refused it"} (HTTP ${r.status})`);
+      })
+      .catch((e: unknown) => {
+        setOv((m) => { const c = new Map(m); c.delete(key); return c; });
+        setApproveError(`Not saved — ${design}${batch ? ` · batch ${batch}` : ""} is unchanged: ${e instanceof Error ? e.message : "the network request failed"}.`);
+      });
   };
   // batch = "" -> the whole colour's master checkbox
   const ApproveBox = ({ name, batch = "", current }: { name: string; batch?: string; current: boolean }) => (
@@ -223,6 +242,12 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
 
   return (
     <div className="space-y-3">
+      {/* One line, above both the pending strip and the register, because the
+          box that flipped back is in one of them and the user needs to know
+          which way round the truth is before they tick it again. */}
+      {approveError && (
+        <p className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">{approveError}</p>
+      )}
       {canApprove && showPending && pendingRows.length > 0 && (
         <div className="rounded-xl border border-amber-300 bg-amber-50 p-4">
           <h3 className="text-sm font-bold uppercase tracking-wide text-amber-800">New stock awaiting approval ({pendingRows.length})</h3>

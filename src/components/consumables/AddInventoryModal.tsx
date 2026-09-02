@@ -203,13 +203,22 @@
 
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { jsonOrThrow } from "@/lib/jsonOrThrow";
 import { useToast } from "@/components/consumables/toast-context";
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
   onSuccess?: () => void;
+}
+
+/** Only the three fields this modal needs off /api/consumables/inventory. */
+interface StockRow {
+  id: string;
+  itemName: string;
+  unit: string;
+  currentStock: number;
 }
 
 const CATEGORY_OPTIONS = [
@@ -360,6 +369,18 @@ export default function AddInventoryModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  // What is on the shelf right now, per item. The item name is a fixed
+  // ~33-entry dropdown, so the item the clerk picks almost always exists
+  // already and this form is a RECEIPT against it, not a creation. Without
+  // the existing count on screen, "there are 100 gloves" got typed into a box
+  // and added to the 140 already recorded.
+  const [stock, setStock] = useState<StockRow[]>([]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    fetch("/api/consumables/inventory").then(jsonOrThrow).then(setStock).catch(console.error);
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   const handleChange = (
@@ -421,10 +442,7 @@ export default function AddInventoryModal({
         body: JSON.stringify(form),
       });
 
-      if (!res.ok)
-        throw new Error("Failed to save");
-
-      const savedName = form.itemName;
+      const saved = await jsonOrThrow(res);
 
       setForm({
         itemName: "",
@@ -438,15 +456,24 @@ export default function AddInventoryModal({
 
       onClose();
 
+      // Report the TOTAL the server came back with, not the number that was
+      // typed. On an existing item the server tops up, so "added" next to the
+      // received quantity read as "the shelf holds 100" when it now holds 240
+      // — and an inflated shelf keeps the low-stock alert and the depletion
+      // forecast green while the store room is empty.
       showToast(
-        `"${savedName}" added to inventory!`,
+        saved?.toppedUp
+          ? `+${saved.received} ${saved.unit} received — ${saved.itemName} now at ${saved.currentStock} ${saved.unit}`
+          : `"${saved.itemName}" created with ${saved.currentStock} ${saved.unit}`,
         "success"
       );
-    } catch {
-      setError("Something went wrong. Please try again.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Something went wrong. Please try again.";
+
+      setError(msg);
 
       showToast(
-        "Failed to add inventory.",
+        msg,
         "error"
       );
     } finally {
@@ -460,6 +487,26 @@ export default function AddInventoryModal({
           form.category as keyof typeof INVENTORY_ITEMS
         ]
       : [];
+
+  // Case-insensitive, because that is how the API decides whether this is a
+  // top-up (findFirst with mode: "insensitive"). Matching more strictly here
+  // would show "new item" for a row the server is about to add to.
+  const existing = form.itemName
+    ? stock.find(
+        (s) =>
+          s.itemName.toLowerCase() === form.itemName.toLowerCase()
+      )
+    : undefined;
+
+  const received = Number(form.currentStock);
+
+  // Blank is not zero here: with no quantity typed there is no "after" figure
+  // to preview, and showing the unchanged count as a result reads like the
+  // form has already done something.
+  const newTotal =
+    existing && form.currentStock !== "" && Number.isFinite(received)
+      ? Math.round((existing.currentStock + received) * 100) / 100
+      : null;
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -485,7 +532,7 @@ export default function AddInventoryModal({
             </h2>
 
             <p className="text-sm text-gray-400 mt-1">
-              Create a new item in the inventory stock register
+              Record stock received — an item already in the register is topped up
             </p>
 
           </div>
@@ -599,6 +646,22 @@ export default function AddInventoryModal({
 
             </div>
 
+            {form.itemName && (
+              existing ? (
+                <p className="text-xs text-gray-500 mt-1.5">
+                  Already in the register —{" "}
+                  <span className="font-semibold text-gray-700">
+                    {existing.currentStock} {existing.unit}
+                  </span>{" "}
+                  in stock. What you enter below is ADDED to that.
+                </p>
+              ) : (
+                <p className="text-xs text-gray-500 mt-1.5">
+                  Not in the register yet — this will create it.
+                </p>
+              )
+            )}
+
           </div>
 
           {/* Unit */}
@@ -621,11 +684,15 @@ export default function AddInventoryModal({
 
           </div>
 
-                    {/* Current Stock */}
+                    {/* Quantity Received */}
 
           <div>
+            {/* Labelled "Current Stock" until 2026-09, which is exactly the
+                wrong word: the server ADDS this to whatever the item already
+                holds. A clerk reading the label as "state the shelf count"
+                typed 100 for an item at 140 and left it at 240. */}
             <label className={labelCls}>
-              Current Stock
+              Quantity Received
               <span className="text-red-400 normal-case tracking-normal">
                 *
               </span>
@@ -641,6 +708,12 @@ export default function AddInventoryModal({
               onChange={handleChange}
               className={inputCls}
             />
+
+            <p className="text-xs text-gray-400 mt-1.5">
+              {newTotal !== null
+                ? `Added to the existing count — the item will read ${newTotal} ${existing?.unit}.`
+                : "How much arrived, not the shelf total."}
+            </p>
           </div>
 
           {/* Minimum Stock */}
@@ -665,9 +738,9 @@ export default function AddInventoryModal({
             />
 
             <p className="text-xs text-gray-400 mt-1.5">
-               Alert threshold — shown as &quot;Low&quot; when stock falls below this value.
-            
-              value.
+              Alert threshold — shown as &quot;Low&quot; when stock falls below this
+              value. Leave blank on an existing item to keep the threshold it
+              already has.
             </p>
           </div>
 
@@ -717,6 +790,26 @@ export default function AddInventoryModal({
                 </div>
 
               </div>
+
+              {/* The before/after line. This modal writes a top-up, so the only
+                  number worth checking before saving is the one the shelf will
+                  read afterwards. */}
+              {existing && (
+                <p className="text-xs text-blue-700 mt-3">
+                  In stock now{" "}
+                  <span className="font-semibold">
+                    {existing.currentStock} {existing.unit}
+                  </span>
+                  {newTotal !== null && (
+                    <>
+                      {" "}→ after this receipt{" "}
+                      <span className="font-semibold">
+                        {newTotal} {existing.unit}
+                      </span>
+                    </>
+                  )}
+                </p>
+              )}
 
             </div>
           )}

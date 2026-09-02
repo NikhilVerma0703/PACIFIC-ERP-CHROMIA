@@ -326,7 +326,15 @@ export function SmartRecordForm({ model, tableName, fields, options = {}, operat
 
       <div className="mb-4 max-w-sm"><PhotoField /></div>
       <div className="sticky bottom-0 -mx-5 mt-6 flex items-center justify-between gap-3 border-t border-gray-200 bg-white/85 px-5 py-3 backdrop-blur safe-bottom">
-        <div className="text-sm">{msg === "ok" ? <span className="text-green-600">Saved &#10003; — enter the next record</span> : msg ? <span className="text-red-600">{msg}</span> : isFilling && !bag ? <span className="text-amber-600">Pick an RM bag to enable saving</span> : <span className="text-gray-400">{tableName} · smart entry</span>}</div>
+        {/* A save that did MORE than save answers with a sentence instead of
+            "ok" — the silo fill that absorbed a deficit, the emptying that
+            wrote one off — and those sentences are marked with a leading ✓ by
+            createRow. Everything that was not "ok" used to be painted red, so
+            the operator read "✓ Saved — 900 kg covered the silo's unbacked
+            draws" as a failure and filled the silo again. The tick is the
+            marker: green if it is there, red if it is not (RecordEditor's
+            status bar reads it the same way). */}
+        <div className="text-sm">{msg === "ok" ? <span className="text-green-600">Saved &#10003; — enter the next record</span> : msg?.startsWith("✓") ? <span className="text-green-600">{msg}</span> : msg ? <span className="text-red-600">{msg}</span> : isFilling && !bag ? <span className="text-amber-600">Pick an RM bag to enable saving</span> : <span className="text-gray-400">{tableName} · smart entry</span>}</div>
         <button disabled={pending || (isFilling && !bag)} onClick={(e) => { if (model === "Mis") { const f = (e.currentTarget as HTMLButtonElement).form; if (f) { const fd = new FormData(f); const sum = ["processDelayDurationMinutes","cleaningDelayDurationMinutes","breakdownDelayDurationMechanicalOrElectricalMinutes","poweroutDelayDurationMinutes"].reduce((a, k) => a + (Number(fd.get(k) || 0) || 0), 0); if (sum > 60) { e.preventDefault(); window.alert(`Total delay for this hour is ${Math.round(sum)} min \u2014 an hour can have at most 60 minutes of downtime. Reduce the delay entries before saving.`); } } return; } if (model !== "SiloEmptyingLog" || !siloInfo) return; const form = (e.currentTarget as HTMLButtonElement).form; const w = form ? Number(new FormData(form).get("bagWeight") || 0) : 0; const demand = siloInfo.deficitKg ?? 0; if (w > 0 && w >= siloInfo.remaining - 1e-6 && demand > 0) { if (!window.confirm(`Silo ${key} will be EMPTIED (${Math.round(siloInfo.remaining)} kg) and its ${demand} kg of unbacked demand WRITTEN OFF so it starts fresh.\n\nThis cannot be undone. Continue?`)) e.preventDefault(); } }} className="min-h-[44px] rounded-lg bg-brand px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-60">{pending ? "Saving…" : "Save record"}</button>
       </div>
     </form>

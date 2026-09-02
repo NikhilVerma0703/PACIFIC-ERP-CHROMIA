@@ -36,7 +36,12 @@ export async function POST(request: Request) {
       return Response.json({ error: "unit is required." }, { status: 400 });
 
     const cur = Number(currentStock);
-    const min = minStock === undefined ? 0 : Number(minStock);
+    // "" is what an untouched optional number input posts, and it must NOT mean
+    // "set the threshold to 0": the top-up path below now writes minStock, and
+    // treating a blank box as a 0 would silently clear the alert threshold of
+    // an item every time somebody received a delivery for it.
+    const minProvided = minStock !== undefined && minStock !== null && minStock !== "";
+    const min = minProvided ? Number(minStock) : 0;
     if (!Number.isFinite(cur) || cur < 0)
       return Response.json({ error: "currentStock must be a non-negative number." }, { status: 400 });
     if (!Number.isFinite(min) || min < 0)
@@ -50,13 +55,27 @@ export async function POST(request: Request) {
       const updated = await prisma.$transaction(async (tx) => {
         const u = await tx.inventoryStock.update({
           where: { id: existing.id },
-          data: { currentStock: existing.currentStock + cur },
+          data: {
+            // increment, not existing.currentStock + cur: the read above happened
+            // outside this transaction, so adding to the value we read would lose
+            // a delivery entered by a second clerk in between.
+            currentStock: { increment: cur },
+            // minStock used to be dropped on this path entirely. Since the name
+            // comes from a fixed ~33-item dropdown the item almost always exists,
+            // so "almost always" meant the threshold the clerk typed was thrown
+            // away without a word and the item never went Low.
+            ...(minProvided ? { minStock: min } : {}),
+          },
         });
         // Log the receipt in the item's own (existing) unit to avoid unit drift.
         await tx.inventoryEntry.create({ data: { quantity: cur, unit: existing.unit, inventoryStockId: u.id } });
         return u;
       });
-      return Response.json({ ...updated, status: statusOf(updated.currentStock, updated.minStock) });
+      // toppedUp tells the modal this was a receipt against an existing shelf and
+      // not a new item, so its toast can report the resulting total instead of
+      // saying "added" and leaving the clerk to assume the figure they typed IS
+      // the stock. currentStock in this body is the authoritative new total.
+      return Response.json({ ...updated, status: statusOf(updated.currentStock, updated.minStock), toppedUp: true, received: cur });
     }
 
     if (!category || !CATEGORIES.includes(category))
@@ -70,7 +89,7 @@ export async function POST(request: Request) {
       return created;
     });
 
-    return Response.json({ ...item, status: statusOf(item.currentStock, item.minStock) }, { status: 201 });
+    return Response.json({ ...item, status: statusOf(item.currentStock, item.minStock), toppedUp: false, received: cur }, { status: 201 });
   } catch (error) {
     console.error("Inventory POST error:", error);
     return Response.json({ error: "Failed to save inventory item." }, { status: 500 });

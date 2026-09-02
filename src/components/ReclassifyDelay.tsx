@@ -24,9 +24,12 @@
 // electrical and mechanical incharges on uptime computed from the breakdown and
 // power-out minutes, so moving minutes OUT of breakdown raises the maintenance team's
 // own payout. Every corrected figure therefore carries the violet mark, the ⇄ glyph and
-// a hover line naming who moved what, when and why — the mark is never colour alone,
+// a line naming who moved what, when and why — the mark is never colour alone,
 // because a colour-only signal is invisible to a colour-blind reader and gone entirely
 // in a printout, and this is the one signal an argument about a payout turns on.
+// That line is reachable by TAPPING the badge, not by hovering it: the log is read on
+// shop-floor tablets, which have no hover and no cursor, so a title-only attribution
+// was unreadable on the only device the plant actually uses.
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { reclassifyDelay } from "@/app/mis/actions";
@@ -46,17 +49,39 @@ import {
 // The mark
 // ---------------------------------------------------------------------------
 
-/** The badge itself: glyph + word + colour, in that order of importance. `title`
- *  carries every move on the hour, so the "why is this violet?" question is answered
- *  by hovering the thing that is violet rather than by hunting for a legend. */
-export function ReclassBadge({ mark, className = "" }: { mark: ReclassMark; className?: string }) {
+/** The badge itself: glyph + word + colour, in that order of importance — and it OPENS.
+ *
+ *  WHY IT TAPS OPEN AND NOT ONLY HOVERS. Every move on the hour used to live in `title`
+ *  alone, so the "why is this violet?" question was answered by hovering the thing that
+ *  is violet. The breakdown log and the maintenance board are read on the floor on
+ *  tablets: no cursor, no hover, no tooltip ever. That made who moved the minutes, when
+ *  and why — the one fact an argument over an incentive payout turns on — invisible on
+ *  the device the plant actually uses, while staying perfectly visible on the desk PC
+ *  nobody argues in front of. Tapping the badge shows the same lines the title carries;
+ *  the title stays, because a mouse user should not have to click for it.
+ *
+ *  `expandable={false}` is for a host that already prints those lines underneath the
+ *  badge itself (ReclassifyDelay's showLines), so the same moves are not listed twice. */
+export function ReclassBadge(
+  { mark, className = "", expandable = true }: { mark: ReclassMark; className?: string; expandable?: boolean },
+) {
+  const [open, setOpen] = useState(false);
   if (mark.count === 0) return null;
+  const chip = `inline-flex items-center gap-0.5 whitespace-nowrap rounded px-1 py-0.5 text-[10px] font-medium ${RECLASS_TONE.badge} ${className}`;
+  if (!expandable) return <span title={mark.tooltip} className={chip}>⇄ {mark.label}</span>;
   return (
-    <span
-      title={mark.tooltip}
-      className={`inline-flex items-center gap-0.5 whitespace-nowrap rounded px-1 py-0.5 text-[10px] font-medium ${RECLASS_TONE.badge} ${className}`}
-    >
-      ⇄ {mark.label}
+    // A column, so the moves open UNDER the badge: the badge is an inline chip in a
+    // wrapping row of chips on both hosts, and a sibling block there would land beside
+    // the next chip instead of beneath this one.
+    <span className="inline-flex flex-col items-start gap-0.5 align-top">
+      <button type="button" title={mark.tooltip} aria-expanded={open} onClick={() => setOpen((v) => !v)} className={chip}>
+        ⇄ {mark.label} <span aria-hidden="true">{open ? "▴" : "▾"}</span>
+      </button>
+      {open && (
+        <ul className={`max-w-xs space-y-0.5 text-left text-[10px] font-normal leading-snug ${RECLASS_TONE.text}`}>
+          {mark.lines.map((l, idx) => <li key={idx}>{l}</li>)}
+        </ul>
+      )}
     </span>
   );
 }
@@ -104,10 +129,11 @@ export interface ReclassifyDelayProps {
   minutesByType: Record<string, number>;
   /** Every correction applied to this hour, oldest first. */
   records: readonly ReclassRecord[];
-  /** Render the moves as text under the badge, for a host with the width for it;
-   *  otherwise they live in the badge's tooltip only. (The merged downtime log keeps
-   *  its response column narrow, so no current caller sets this — kept because the
-   *  rendering is tested behaviour and the next wide host will want it back.) */
+  /** Render the moves as text under the badge, ALWAYS open, for a host with the width
+   *  for it. (The merged downtime log keeps its response column narrow, so no current
+   *  caller sets this — kept because the rendering is tested behaviour and the next
+   *  wide host will want it back.) Leaving it false no longer hides the moves behind a
+   *  hover: the badge itself taps open, which is what makes them readable on a tablet. */
   showLines?: boolean;
 }
 
@@ -160,7 +186,7 @@ export function ReclassifyDelay({ misId, canReclass, minutesByType, records, sho
     <div className="space-y-1">
       {mark.count > 0 && (
         <div className="space-y-0.5">
-          <ReclassBadge mark={mark} />
+          <ReclassBadge mark={mark} expandable={!showLines} />
           {showLines && (
             <ul className={`space-y-0.5 text-[10px] leading-snug ${RECLASS_TONE.text}`}>
               {mark.lines.map((l, idx) => <li key={idx}>{l}</li>)}

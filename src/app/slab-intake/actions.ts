@@ -64,7 +64,17 @@ export type LookupRes =
   | { ok: true; exists: true; message: string; slab: SlabCurrent; qc: QcReference | null; photos: SlabPhotos }
   | { ok: true; exists: false; message: string; prefill: SlabDetailsInput; from: Record<string, string>; qc: QcReference | null };
 
-export interface SaveRes { ok: boolean; message: string }
+export interface SaveRes {
+  ok: boolean;
+  message: string;
+  /** SAVED, BUT NOT DONE. The row landed and a defect photo did not, so the
+   *  sentence carries a warning the form must not paint green: a green line and
+   *  a form that clears itself is how an operator walked away from a slab whose
+   *  photo was never stored, believing it was on file. `ok` still holds — the
+   *  field write is real and must not be retried — but the form keeps the slab
+   *  on screen with the missing slot marked required again. */
+  warn?: boolean;
+}
 
 const NOT_YOURS = "This form is for the named slab-intake people and admins only.";
 
@@ -381,7 +391,10 @@ export async function saveSlab(fd: FormData): Promise<SaveRes> {
       if (appr.approved && appr.key) await writeSlabEvent(slabNumber, "sales_approved", { field: "design/batch", newValue: `${appr.key.design} / ${appr.key.batch}`, by, source: SOURCE });
       revalidatePath("/inventory");
       const note = approvalNote(appr, d.design, d.batchNumber);
-      return { ok: true, message: [savedSentence(slabNumber, true, []), ph.warning, note].filter(Boolean).join(" ") };
+      // warn, not a bare ok: the slab IS in finished goods and must not be created
+      // twice, but a photo the mandatory rule demands is missing — so the sentence
+      // is amber and the form stays on this slab instead of clearing itself.
+      return { ok: true, warn: !!ph.warning, message: [savedSentence(slabNumber, true, []), ph.warning, note].filter(Boolean).join(" ") };
     }
 
     if (!expectExisting)
@@ -497,13 +510,16 @@ export async function saveSlab(fd: FormData): Promise<SaveRes> {
     const parts: string[] = [];
     if (events.length) parts.push(savedSentence(slabNumber, false, events.map((e) => e.field)));
     if (ph.saved.length) parts.push(`${events.length ? "Attached" : `Slab ${slabNumber}: attached`} the ${ph.saved.join(" and the ")}.`);
-    // ok when the FIELD write landed even if a photo failed to store: the
-    // re-lookup the form runs on ok shows the slot as still required — same
-    // self-healing shape as the create path.
+    // ok when the FIELD write landed even if a photo failed to store — the field
+    // write is real and re-sending it would only re-audit it. But `warn` with it,
+    // so the form paints the sentence amber and re-reads THIS slab instead of
+    // clearing itself: the re-lookup shows the slot as still required, which is
+    // the self-healing the create path relies on too. Without the flag the
+    // operator got a green line and an empty form, and the photo was never taken.
     if (ph.warning) parts.push(ph.warning);
     const note = approvalNote(appr, d.design, d.batchNumber);
     if (note) parts.push(note);
-    return { ok: true, message: parts.join(" ") };
+    return { ok: true, warn: !!ph.warning, message: parts.join(" ") };
   } catch (e) {
     // The reason goes to the server log; the person gets a sentence. A Prisma
     // validation dump means nothing to a line manager and can leak column names.

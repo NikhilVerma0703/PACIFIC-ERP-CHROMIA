@@ -85,6 +85,14 @@ const EMPTY = { design: "", batch: "", thickness: "", grade: "", slab: "", bay: 
 // displaySlab (NB-label rule for legacy 9,000,000+ slabs) is shared from
 // lib/slabLabel so this table and the register popup cannot disagree.
 
+// A SEARCH THAT FAILED IS NOT AN EMPTY SHELF. A non-OK answer used to become
+// `[]` and a dropped connection used to become setRows([]), and both then
+// rendered "No slabs match the current filters" — so a Sales user on a plant
+// tablet through a wifi blip was told the stock does not exist and quoted
+// "none available" on it. This carries the HTTP status up to the catch so the
+// banner can say which of the two happened; the rows on screen are left alone.
+class LoadFailed extends Error {}
+
 const fmtAt = (iso: string) => {
   const d = new Date(iso);
   return d.toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
@@ -106,6 +114,10 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
   const [withheld, setWithheld] = useState(0);
   const [sSorts, setSSorts] = useState<{ k: keyof Slab; d: 1 | -1 }[]>([]);
   const [loading, setLoading] = useState(true);
+  // Why the last search did not land, or null. Never cleared by a NEW search
+  // starting — only by one succeeding — so the warning stays up while a retry
+  // is in flight and the stale rows are still on screen.
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [f, setF] = useState({ ...EMPTY });
   const [opts, setOpts] = useState<FilterOpts>(NO_OPTS);
   const [optsFailed, setOptsFailed] = useState(false);
@@ -164,10 +176,15 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The filters of the last search, so the Retry button re-runs THAT search and
+  // not whatever is in the boxes now — the two differ the moment someone starts
+  // typing a new search while the failed one is still on screen.
+  const lastRun = useRef({ ...EMPTY });
   const run = (filters: typeof EMPTY) => {
     setLoading(true);
     // NOTE: the selection is deliberately NOT cleared here — it is cleared only after an
     // action succeeds (applyMove / applyStatus) or when the user clears it themselves.
+    lastRun.current = { ...filters };
     kpiFilters.current = { ...filters };
     loadKpi();
     const p = new URLSearchParams();
@@ -175,12 +192,17 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
     if (showPendingRef.current) p.set("pending", "1");
     fetch(`/api/inventory?${p.toString()}`)
       .then((r) => {
+        if (!r.ok) throw new LoadFailed(`the server answered ${r.status}`);
+        // Read only from an answer that arrived: an error response carries no
+        // X-Withheld-Unapproved header, and taking it as 0 would quietly retire
+        // the "held back" note that belongs to the rows still on screen.
         const n = Number(r.headers.get("X-Withheld-Unapproved") ?? 0);
         setWithheld(Number.isFinite(n) ? n : 0);
-        return r.ok ? r.json() : [];
+        return r.json();
       })
       .then((d) => {
         const list: Slab[] = Array.isArray(d) ? d : [];
+        setLoadError(null);
         setRows(list);
         // keep the basket honest: refresh the data of any selected slab that this search
         // returned (its bay/status may have moved on). Selected slabs NOT in these results
@@ -192,7 +214,12 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
           return c;
         });
       })
-      .catch(() => setRows([]))
+      // KEEP THE ROWS. Blanking the table on a failure is what made a wifi blip
+      // look like "we have none of that colour"; the last good list, clearly
+      // flagged as possibly stale, is the honest thing to leave on screen.
+      .catch((e: unknown) => {
+        setLoadError(e instanceof LoadFailed ? e.message : "the request did not complete, so the tablet may have lost the network");
+      })
       .finally(() => setLoading(false));
   };
   useEffect(() => { run(EMPTY); }, []);
@@ -711,6 +738,25 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
             </div>
           </form>
 
+          {/* THE SEARCH FAILED — SAY SO, LOUDLY, AND DO NOT LET THE LIST BELOW BE
+              READ AS STOCK. Same rule as the cutting queue's banner: an empty or
+              stale list after a failed load is not evidence of anything, and a
+              Sales user quoting "none available" off it is the incident this
+              exists to prevent. Red, not amber: on this screen the wrong reading
+              leaves the plant in a quotation. */}
+          {loadError && (
+            <div className="flex items-start justify-between gap-4 rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">
+              <span>
+                <b>Stock list not refreshed</b> — {loadError}. What is shown below is the last
+                list that loaded and may be out of date; do not read it as &ldquo;no stock&rdquo;.
+              </span>
+              <button onClick={() => run(lastRun.current)} disabled={loading}
+                className="shrink-0 rounded-lg border border-red-300 bg-white px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-100 disabled:opacity-50">
+                {loading ? "Retrying…" : "Retry"}
+              </button>
+            </div>
+          )}
+
           {/* The basket: every slab picked so far, in its OWN table outside the results table.
               It survives a new search, so you can gather slabs across several searches before
               acting. Nothing here changes the results table below — until an action is applied. */}
@@ -837,6 +883,12 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
               <tbody>
                 {loading ? (
                   <tr><td colSpan={13} className="px-3 py-10 text-center text-gray-400">Loading…</td></tr>
+                ) : rows.length === 0 && loadError ? (
+                  // "Nothing matched" and "the request never landed" are opposite
+                  // facts and must never print the same sentence.
+                  <tr><td colSpan={13} className="px-3 py-10 text-center text-red-700">
+                    The stock list could not be loaded — this is <b>not</b> a result. Use Retry above.
+                  </td></tr>
                 ) : rows.length === 0 ? (
                   <tr><td colSpan={13} className="px-3 py-10 text-center text-gray-400">
                     No slabs match the current filters.

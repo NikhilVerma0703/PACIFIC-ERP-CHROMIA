@@ -10,6 +10,7 @@ import { AutoRefresh } from "./AutoRefresh";
 import {
   scoreRange, scoreStations, QUALITY_FLOOR, QUALITY_TARGET, MIN_ROWS_TO_RANK_STATION,
   POOL_VOLUME, POOL_QUALITY, CREDIBLE_SHIFTS, OEE_TARGET, TARGET_SLABS_PER_SHIFT,
+  MAX_SLABS_PER_HOUR, UPTIME_FLOOR, scaleUptime,
   type ShiftScore, type PersonScore, type StationBoard, type FlaggedRow,
 } from "@/lib/shiftScore";
 import { isAdmin } from "@/lib/rbac";
@@ -28,6 +29,25 @@ export const maxDuration = 60;
 
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
 const pct = (n: number | null) => (n == null ? "—" : `${Math.round(n * 100)}%`);
+
+/** Colour for an uptime figure, TAKEN FROM THE RULE THAT PAYS rather than from
+ *  two numbers typed in by hand.
+ *
+ *  The old pair was a literal 0.95 / 0.90 and it predated UPTIME_FLOOR. Two
+ *  things were wrong with it. It painted the entire real field — July 2026 runs
+ *  84.4% to 93.9% for everyone with more than one shift — amber or red, while
+ *  every one of those people was in fact taking a share of the pool, so the
+ *  colour said "failing" beside a row that was being paid. And it could drift:
+ *  moving the floor moved the money and left the colours where they were.
+ *
+ *  scaleUptime IS the paid measure (0 at UPTIME_FLOOR, 1 at a line that never
+ *  stopped), so red now means exactly "at or below the floor, taking nothing
+ *  from the pool" and green means the upper half of the band that is actually
+ *  being shared out. Change UPTIME_FLOOR and these move with it. */
+const uptimeTone = (u: number | null) => {
+  const scaled = scaleUptime(u) ?? 0;
+  return scaled >= 0.5 ? "text-green-700" : scaled > 0 ? "text-amber-700" : "text-red-600";
+};
 
 export default async function ScoreboardPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string }> }) {
   // Admin only — this ranks named people and drives money. Middleware gates the
@@ -158,7 +178,7 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
               <td className="py-2 pr-4 text-gray-600">{fmt(p.shifts)}</td>
               <td className="py-2 pr-4 text-gray-600">{fmtDur(p.downtimeMin)}</td>
               <td className="py-2 pr-4 text-gray-600">{fmtDur(Math.round(p.downtimePerShift))}</td>
-              <td className={`py-2 pr-4 font-semibold ${(p.uptime ?? 0) >= 0.95 ? "text-green-700" : (p.uptime ?? 0) >= 0.9 ? "text-amber-700" : "text-red-600"}`}>{pct(p.uptime)}</td>
+              <td className={`py-2 pr-4 font-semibold ${uptimeTone(p.uptime)}`}>{pct(p.uptime)}</td>
               <td className="py-2 text-gray-900">{p.share ? `${(p.share * 100).toFixed(1)}%` : "—"}</td>
             </tr>
           ))}
@@ -446,7 +466,7 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
             <Card className="mb-6 border-red-300 bg-red-50">
               <p className="text-sm text-red-900">
                 <b>{fmt(data.totals.wideRows)} hour(s) declared an impossible slab range</b> and were ignored — a
-                real hour is 2 to 20 slabs. The shift that typed them is scored as if those hours produced nothing,
+                real hour declares fewer than {MAX_SLABS_PER_HOUR} slabs. The shift that typed them is scored as if those hours produced nothing,
                 so its points are understated until the starting/ending numbers are corrected.
               </p>
               {rowLinks(data.flagged.filter((f) => f.reason === "wide"))}
@@ -515,7 +535,7 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
                       records breakdown as one “mechanical or electrical” figure, so both trades are measured on the
                       same stoppage; powerout counts against electrical only. Uptime is stoppage against the
                       <b> hours MIS actually recorded</b>, so an hour never entered earns nothing rather than
-                      counting as a running line. <b>Share</b> is uptime measured from {Math.round(0.9 * 100)}% and
+                      counting as a running line. <b>Share</b> is uptime measured from {Math.round(UPTIME_FLOOR * 100)}% and
                       then weighted by shifts worked — one quiet night does not out-earn a month of cover.
                     </>
                   )}

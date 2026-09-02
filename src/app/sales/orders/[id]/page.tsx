@@ -2,6 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useState, use } from "react";
 import Link from "next/link";
+import { readJson } from "@/lib/readJson";
 import ShippingDocsClient from "./ShippingDocsClient";
 import { TransferOwnerClient } from "../../TransferOwnerClient";
 import StatusFlowClient from "./StatusFlowClient";
@@ -72,6 +73,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const { id } = use(params);
   const [order, setOrder]     = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
 
   const [creditNotes, setCreditNotes]     = useState<CreditNote[]>([]);
   const [availableCNs, setAvailableCNs]   = useState<CreditNote[]>([]);
@@ -81,6 +83,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const [cnForm, setCNForm]   = useState({ reason: "", description: "", amount: "", notes: "" });
   const [cnBusy, setCNBusy]   = useState(false);
   const [cnMsg, setCNMsg]     = useState("");
+  /** Which credit note is mid-PATCH, so only that row's buttons grey out and a
+   *  double tap on Reject cannot fire the PATCH twice. */
+  const [cnStatusBusy, setCNStatusBusy] = useState<string | null>(null);
   const [applyBusy, setApplyBusy] = useState<string | null>(null);
 
   const [userSalesRole, setUserSalesRole] = useState<string | null>(null);
@@ -88,11 +93,33 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const [extendDate, setExtendDate] = useState("");
   const [divBusy, setDivBusy] = useState<string | null>(null);
   const [divMsg, setDivMsg] = useState("");
+  const [etaMsg, setEtaMsg] = useState("");
+  /** The last note typed into the waive prompt, per division, kept until the
+   *  PATCH actually succeeds. A failed waive used to throw the note away with
+   *  the request, so the retry opened an empty box and the reason that reached
+   *  the audit trail was whatever the manager could be bothered to retype. */
+  const [overrideDrafts, setOverrideDrafts] = useState<Record<string, string>>({});
 
+  // A dropped request used to leave this page on "Loading..." for ever: fetch
+  // rejects, the rejection is unhandled, and setLoading(false) never runs — on a
+  // site connection that is most of a bad morning. The catch/finally is the
+  // pattern sales/clients/page.tsx already uses, and readJson names the
+  // sign-in-redirect HTML for what it is instead of "Unexpected token '<'".
   async function loadOrder() {
-    const r = await fetch(`/api/sales/orders/${id}`);
-    if (r.ok) setOrder(await r.json());
-    setLoading(false);
+    setLoadError("");
+    try {
+      const r = await fetch(`/api/sales/orders/${id}`);
+      const res = await readJson<Order>(r);
+      if (!res.ok || !res.data) {
+        setLoadError(res.error ?? `Could not load this order (HTTP ${res.status}).`);
+        return;
+      }
+      setOrder(res.data);
+    } catch (e) {
+      setLoadError(e instanceof Error && e.message ? `Could not reach the server: ${e.message}` : "Could not reach the server.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function loadCNs() {
@@ -124,82 +151,161 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     if (order?.client?.id) loadAvailableCNs(order.client.id);
   }, [order?.client?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Every mutation below reads r.ok through readJson and clears its busy flag in
+  // a finally. Before that, a dropped connection threw out of the await: the
+  // fetch rejected, setDivBusy(null) was never reached, and every button in the
+  // Payment Schedule stayed greyed out until the page was reloaded — with no
+  // message saying why.
   async function extendDivision(divisionId: string) {
     if (!extendDate) { setDivMsg("Please select a new due date"); return; }
     setDivBusy(divisionId); setDivMsg("");
-    const r = await fetch(`/api/sales/orders/${id}/payment-division`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ divisionId, action: "extend", newDueDate: extendDate }),
-    });
-    setDivBusy(null);
-    if (!r.ok) { const d = await r.json(); setDivMsg(d.error ?? "Failed"); return; }
-    setExtendDivId(null); setExtendDate("");
-    await loadOrder();
+    try {
+      const r = await fetch(`/api/sales/orders/${id}/payment-division`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ divisionId, action: "extend", newDueDate: extendDate }),
+      });
+      const res = await readJson<unknown>(r);
+      if (!res.ok) { setDivMsg(res.error ?? "Failed"); return; }
+      setExtendDivId(null); setExtendDate("");
+      await loadOrder();
+    } catch (e) {
+      setDivMsg(e instanceof Error && e.message ? `Could not reach the server: ${e.message}` : "Could not reach the server.");
+    } finally {
+      setDivBusy(null);
+    }
   }
 
   async function overrideDivision(divisionId: string) {
-    const note = prompt("Enter a note for this override/waive:");
+    const note = prompt("Enter a note for this override/waive:", overrideDrafts[divisionId] ?? "");
     if (note === null) return;
+    // Waiving an installment writes off money that is owed and there is no undo
+    // on this screen, so it is confirmed with the amount named — the same reason
+    // "Remove this credit from the order?" is confirmed below.
+    const div = order?.paymentDivisions.find(d => d.id === divisionId);
+    const what = div
+      ? `${div.type.replace(/_/g, " ")} — ${order?.currency ?? "USD"} ${div.amount.toFixed(2)}`
+      : "this installment";
+    if (!confirm(`Waive / override ${what}?\n\nIt stops counting as due and reminders stop. This cannot be undone here.`)) {
+      setOverrideDrafts(d => ({ ...d, [divisionId]: note }));
+      return;
+    }
+    setOverrideDrafts(d => ({ ...d, [divisionId]: note }));
     setDivBusy(divisionId); setDivMsg("");
-    const r = await fetch(`/api/sales/orders/${id}/payment-division`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ divisionId, action: "override", note }),
-    });
-    setDivBusy(null);
-    if (!r.ok) { const d = await r.json(); setDivMsg(d.error ?? "Failed"); return; }
-    await loadOrder();
+    try {
+      const r = await fetch(`/api/sales/orders/${id}/payment-division`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ divisionId, action: "override", note }),
+      });
+      const res = await readJson<unknown>(r);
+      if (!res.ok) { setDivMsg(res.error ?? "Failed"); return; }
+      setOverrideDrafts(d => { const n = { ...d }; delete n[divisionId]; return n; });
+      await loadOrder();
+    } catch (e) {
+      setDivMsg(e instanceof Error && e.message ? `Could not reach the server — your note is kept, press Waive again to retry: ${e.message}` : "Could not reach the server — your note is kept, press Waive again to retry.");
+    } finally {
+      setDivBusy(null);
+    }
   }
 
   async function sendReminder(divisionId: string, force: boolean, milestone?: string) {
     setDivBusy(divisionId); setDivMsg("");
-    const r = await fetch(`/api/sales/orders/${id}/payment-division/remind`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ divisionId, force, milestone }),
-    });
-    const data = await r.json();
-    setDivBusy(null);
-    if (!r.ok) { setDivMsg(data.error ?? "Failed to send reminder"); return; }
-    if (!data.ok) { setDivMsg(data.message ?? "Nothing to send"); return; }
-    setDivMsg(`✓ Sent: ${data.milestones?.join(", ")}`);
+    try {
+      const r = await fetch(`/api/sales/orders/${id}/payment-division/remind`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ divisionId, force, milestone }),
+      });
+      const res = await readJson<{ ok?: boolean; message?: string; milestones?: string[] }>(r);
+      if (!res.ok) { setDivMsg(res.error ?? "Failed to send reminder"); return; }
+      if (!res.data?.ok) { setDivMsg(res.data?.message ?? "Nothing to send"); return; }
+      setDivMsg(`✓ Sent: ${res.data.milestones?.join(", ")}`);
+    } catch (e) {
+      setDivMsg(e instanceof Error && e.message ? `Could not reach the server: ${e.message}` : "Could not reach the server.");
+    } finally {
+      setDivBusy(null);
+    }
   }
 
   async function sendEtaReminder() {
-    setDivMsg(""); setDivBusy("eta");
-    const r = await fetch(`/api/sales/orders/${id}/send-eta-reminder`, { method: "POST" });
-    const data = await r.json();
-    setDivBusy(null);
-    if (!r.ok) { setDivMsg(data.error ?? "Failed to send ETA reminder"); return; }
-    setDivMsg(`✓ ETA reminder sent to ${data.sentTo}`);
+    // Confirmed: this mails the customer. One tap next to the section heading
+    // with no dialog is how a stray click becomes a real ETA notice.
+    if (!confirm(`Send an ETA reminder email to ${order?.client?.name ?? "the customer"} now?`)) return;
+    // Its own message, not divMsg: divMsg is rendered inside the Payment
+    // Schedule card, which is a screen away from this button and is not
+    // rendered at all on an order with no divisions — so the outcome of the
+    // send was reported where nobody was looking.
+    setEtaMsg(""); setDivBusy("eta");
+    try {
+      const r = await fetch(`/api/sales/orders/${id}/send-eta-reminder`, { method: "POST" });
+      const res = await readJson<{ sentTo?: string }>(r);
+      if (!res.ok) { setEtaMsg(res.error ?? "Failed to send ETA reminder"); return; }
+      setEtaMsg(`✓ ETA reminder sent to ${res.data?.sentTo ?? "the customer"}`);
+    } catch (e) {
+      setEtaMsg(e instanceof Error && e.message ? `Could not reach the server: ${e.message}` : "Could not reach the server.");
+    } finally {
+      setDivBusy(null);
+    }
   }
 
   async function createCN() {
     if (!cnForm.reason || !cnForm.amount) { setCNMsg("Reason and amount are required"); return; }
     setCNBusy(true); setCNMsg("");
-    const r = await fetch("/api/sales/credit-notes", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ orderId: id, ...cnForm, amount: Number(cnForm.amount) }),
-    });
-    const d = await r.json();
-    setCNBusy(false);
-    if (!r.ok) { setCNMsg(d.error ?? "Failed"); return; }
-    setCNMsg("Credit note created.");
-    setShowCNForm(false);
-    setCNForm({ reason: "", description: "", amount: "", notes: "" });
-    await loadCNs();
+    try {
+      const r = await fetch("/api/sales/credit-notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderId: id, ...cnForm, amount: Number(cnForm.amount) }),
+      });
+      // r.json() first meant a crashed route (empty body) surfaced as
+      // "Unexpected end of JSON input" and a dropped connection left the Create
+      // button disabled for good. Either way the typed form is left alone, so
+      // the retry is one more tap and not a re-type.
+      const res = await readJson<unknown>(r);
+      if (!res.ok) { setCNMsg(res.error ?? "Failed"); return; }
+      setCNMsg("Credit note created.");
+      setShowCNForm(false);
+      setCNForm({ reason: "", description: "", amount: "", notes: "" });
+      await loadCNs();
+    } catch (e) {
+      setCNMsg(e instanceof Error && e.message ? `Could not reach the server: ${e.message}` : "Could not reach the server.");
+    } finally {
+      setCNBusy(false);
+    }
   }
 
+  /**
+   * Move a credit note along its lifecycle: Mark Inspected, Issue, Reject.
+   *
+   * This used to fire and forget — no busy flag, no r.ok, no message. Reject is
+   * a one-way decision about the customer's money (there is no un-reject on this
+   * screen), so a mis-tap refused by the server looked exactly like a success:
+   * the list reloaded unchanged and the clerk moved on believing the note was
+   * rejected. Hence the confirm on the destructive transitions, the r.ok read,
+   * and the per-row busy id.
+   */
   async function updateCN(cnId: string, status: string) {
-    await fetch(`/api/sales/credit-notes/${cnId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status }),
-    });
-    await loadCNs();
-    if (order?.client?.id) loadAvailableCNs(order.client.id);
+    const cn = creditNotes.find(c => c.id === cnId);
+    const what = cn ? `${cn.creditNumber} (${cn.currency} ${cn.amount.toFixed(2)})` : "this credit note";
+    if (status === "REJECTED" && !confirm(`Reject credit note ${what}?\n\nThe customer gets no credit for it and this cannot be undone here.`)) return;
+    if (status === "ISSUED" && !confirm(`Issue credit note ${what}?\n\nOnce issued the credit can be applied to the customer's next order.`)) return;
+    setCNStatusBusy(cnId); setCNMsg("");
+    try {
+      const r = await fetch(`/api/sales/credit-notes/${cnId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      const res = await readJson<unknown>(r);
+      if (!res.ok) { setCNMsg(res.error ?? `Could not update ${what} (HTTP ${res.status}).`); return; }
+      await loadCNs();
+      if (order?.client?.id) await loadAvailableCNs(order.client.id);
+    } catch (e) {
+      setCNMsg(e instanceof Error && e.message ? `Could not reach the server: ${e.message}` : "Could not reach the server.");
+    } finally {
+      setCNStatusBusy(null);
+    }
   }
 
   // A refused apply/unapply used to vanish: the PATCH 403'd, nobody read r.ok,
@@ -240,7 +346,19 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   }
 
   if (loading) return <div className="text-sm text-slate-400 py-12 text-center">Loading...</div>;
-  if (!order)  return <div className="text-sm text-red-500 py-12 text-center">Order not found.</div>;
+  if (!order)  return (
+    <div className="py-12 text-center">
+      {/* "Order not found." was shown for a timeout and a dead connection too,
+          which sent people hunting for a deleted order that was there all along. */}
+      <p className="text-sm text-red-500">{loadError || "Order not found."}</p>
+      {loadError && (
+        <button onClick={() => { setLoading(true); loadOrder(); }}
+          className="mt-3 text-xs px-3 py-1 border border-slate-200 text-slate-600 rounded hover:bg-slate-50 transition">
+          Retry
+        </button>
+      )}
+    </div>
+  );
 
   const pis      = order.proformaInvoices;
   const mainPI   = pis[0];
@@ -574,6 +692,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             {divBusy === "eta" ? "Sending..." : "Send ETA Reminder"}
           </button>
         </div>
+        {etaMsg && (
+          <p className={`text-xs mb-3 ${etaMsg.startsWith("✓") ? "text-green-600" : "text-red-600"}`}>{etaMsg}</p>
+        )}
         <PortArrivalClient orderId={order.id} />
       </div>
 
@@ -585,6 +706,12 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             + Issue Credit Note
           </button>
         </div>
+
+        {/* cnMsg was only rendered inside the "new credit note" form, so a
+            failed apply, remove or Reject set a message that nobody could see
+            unless that form happened to be open — the failure looked like a
+            success that changed nothing. */}
+        {cnMsg && !showCNForm && <p className="mb-3 text-xs text-red-600">{cnMsg}</p>}
 
         {showCNForm && (
           <div className="border border-amber-200 bg-amber-50 rounded-xl p-4 mb-5 space-y-3">
@@ -733,20 +860,23 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                     <div className="flex gap-1 mt-1 justify-end">
                       {cn.status === "PENDING_INSPECTION" && (
                         <button onClick={() => updateCN(cn.id, "INSPECTED")}
-                          className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded font-semibold hover:bg-blue-200 transition">
-                          Mark Inspected
+                          disabled={cnStatusBusy === cn.id}
+                          className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded font-semibold hover:bg-blue-200 disabled:opacity-50 transition">
+                          {cnStatusBusy === cn.id ? "Saving..." : "Mark Inspected"}
                         </button>
                       )}
                       {cn.status === "INSPECTED" && (
                         <button onClick={() => updateCN(cn.id, "ISSUED")}
-                          className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded font-semibold hover:bg-green-200 transition">
-                          Issue
+                          disabled={cnStatusBusy === cn.id}
+                          className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded font-semibold hover:bg-green-200 disabled:opacity-50 transition">
+                          {cnStatusBusy === cn.id ? "Saving..." : "Issue"}
                         </button>
                       )}
                       {(cn.status === "PENDING_INSPECTION" || cn.status === "INSPECTED") && (
                         <button onClick={() => updateCN(cn.id, "REJECTED")}
-                          className="text-xs px-2 py-0.5 bg-red-100 text-red-600 rounded font-semibold hover:bg-red-200 transition">
-                          Reject
+                          disabled={cnStatusBusy === cn.id}
+                          className="text-xs px-2 py-0.5 bg-red-100 text-red-600 rounded font-semibold hover:bg-red-200 disabled:opacity-50 transition">
+                          {cnStatusBusy === cn.id ? "..." : "Reject"}
                         </button>
                       )}
                     </div>

@@ -113,10 +113,15 @@ export async function PATCH(
       where: { orderId: updated.orderId },
     });
     const advanceDivs = allDivisions.filter((d: any) => d.type === "ADVANCE");
-    // Check: every advance div is paid (use updated value for the current one)
+    // Check: every advance div is settled (use updated value for the current one).
+    // Settled = received (paid_at) OR waived by an RM/Admin override
+    // (overridden_at, /api/sales/orders/[id]/payment-division). Keying this on
+    // paid_at alone meant an order with two advances — one paid, one waived —
+    // never left PENDING_PAYMENT, and Accounts "fixed" it by marking the waived
+    // one paid, which booked money that never arrived into paidAmount.
     const allAdvancePaid =
       advanceDivs.length > 0 &&
-      advanceDivs.every((d: any) => d.paidAt !== null || d.id === id);
+      advanceDivs.every((d: any) => d.paidAt !== null || !!d.overriddenAt || d.id === id);
 
     if (allAdvancePaid) {
       const order = await db.salesOrder.findUnique({ where: { id: updated.orderId } });

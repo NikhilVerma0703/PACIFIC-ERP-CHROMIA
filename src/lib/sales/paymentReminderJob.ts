@@ -120,14 +120,34 @@ export async function runPaymentDeadlineReminders(): Promise<{ processed: number
       remindersSent = Array.isArray(raw) ? raw : (typeof raw === "string" ? JSON.parse(raw) : []);
     } catch { remindersSent = []; }
 
-    const toSend: string[] = [];
-    if (pctElapsed >= 50 && !remindersSent.includes("50")) toSend.push("50");
-    if (pctElapsed >= 80 && !remindersSent.includes("80")) toSend.push("80");
-    if (pctElapsed >= 95 && !remindersSent.includes("95")) toSend.push("95");
-    if (daysLeft === 1   && !remindersSent.includes("day_before")) toSend.push("day_before");
-    if (daysLeft <= 0    && !remindersSent.includes("due_day"))    toSend.push("due_day");
+    // Built in ASCENDING urgency — the order matters, see below. day_before and
+    // due_day are mutually exclusive (daysLeft === 1 vs daysLeft <= 0), so the
+    // last entry is always the most urgent thing that is true today.
+    const due: string[] = [];
+    if (pctElapsed >= 50 && !remindersSent.includes("50")) due.push("50");
+    if (pctElapsed >= 80 && !remindersSent.includes("80")) due.push("80");
+    if (pctElapsed >= 95 && !remindersSent.includes("95")) due.push("95");
+    if (daysLeft === 1   && !remindersSent.includes("day_before")) due.push("day_before");
+    if (daysLeft <= 0    && !remindersSent.includes("due_day"))    due.push("due_day");
 
-    for (const milestone of toSend) {
+    // ONE EMAIL PER SWEEP, AND IT IS THE MOST URGENT ONE.
+    //
+    // This was a loop over every unsent milestone. A division whose deadline had
+    // already passed when it was entered — a back-dated BL, an order keyed in a
+    // week late, a CAD whose ETA finally arrived — crossed 50%, 80%, 95% and its
+    // due date all at once, so the customer got FOUR emails minutes apart, three
+    // of them saying something softer than the truth ("Payment Reminder",
+    // "Approaching Deadline") about an invoice that was already overdue. That
+    // reads as a broken system, and the one email that mattered was buried under
+    // three that contradicted it.
+    //
+    // So: send the last one, and record the ones it supersedes as sent. They are
+    // not owed to the customer — 50% elapsed is not news once you are past the
+    // due date — and leaving them unrecorded would only walk the ladder back
+    // down on tomorrow's sweep, sending "Payment Reminder" the day AFTER
+    // "OVERDUE".
+    if (due.length) {
+      const milestone = due[due.length - 1];
       try {
         if (order.client?.email) {
           const cc = await getCCList(order.spId, order.clientId);
@@ -142,27 +162,47 @@ export async function runPaymentDeadlineReminders(): Promise<{ processed: number
           } as any);
         }
 
-        const notifTitle = `Payment ${milestone === "due_day" ? "Due Today" : milestone === "day_before" ? "Due Tomorrow" : `${milestone}% Elapsed`} — ${order.orderNumber}`;
-        const notifBody  = `${div.type.replace(/_/g, " ")} payment${daysLeft <= 0 ? " is overdue" : ` due in ${daysLeft} day(s)`}. Amount: ${order.currency || "USD"} ${Number(div.amount).toFixed(2)}`;
-        const actionUrl  = `/sales/orders/${order.id}`;
-        const actions    = [{ label: "View Order", url: actionUrl }];
-
-        if (order.spId) await createNotification({ userId: order.spId, orderId: order.id, type: "PAYMENT_REMINDER", title: notifTitle, body: notifBody, actionUrl, actions });
-
-        const rmRows: any[] = await db.$queryRawUnsafe(
-          `SELECT manager_id FROM sales_manager_assignments WHERE sp_id = $1 AND is_active = true LIMIT 1`, order.spId
-        ).catch(() => []);
-        if (rmRows.length) await createNotification({ userId: rmRows[0].manager_id, orderId: order.id, type: "PAYMENT_REMINDER", title: notifTitle, body: notifBody, actionUrl, actions });
-
-        for (const admin of adminUsers) {
-          await createNotification({ userId: admin.id, orderId: order.id, type: "PAYMENT_REMINDER", title: notifTitle, body: notifBody, actionUrl, actions });
-        }
-
+        // THE MARKER GOES DOWN THE INSTANT THE MAIL IS AWAY.
+        //
+        // It used to be written AFTER the internal notifications — an insert for
+        // the SP, one for their manager, one per sales admin. Any one of those
+        // failing threw past this UPDATE, so the customer had the email and the
+        // database had no record of it, and tomorrow's sweep mailed them the
+        // same reminder again. Nothing about a chase email is idempotent from
+        // the customer's side: they only see that we cannot count.
+        //
+        // A duplicate reminder to a paying customer is worse than a missing
+        // in-app notification, so the ordering is now: mail, mark, then
+        // best-effort notify. Nothing below can undo the mark.
         await db.$queryRawUnsafe(
           `UPDATE sales_payment_divisions SET reminders_sent = reminders_sent || $1::jsonb WHERE id = $2`,
-          JSON.stringify([milestone]), div.id
+          JSON.stringify(due), div.id
         );
-        results.push({ divId: div.id, orderId: order.id, milestone, sent: true });
+        results.push({ divId: div.id, orderId: order.id, milestone, superseded: due.slice(0, -1), sent: true });
+
+        // BEST-EFFORT, IN ITS OWN TRY. These are our own staff's notification
+        // bells; the customer is already served. A failure here is worth
+        // reporting in the cron result and worth nothing else — it must never
+        // re-arm the email.
+        try {
+          const notifTitle = `Payment ${milestone === "due_day" ? "Due Today" : milestone === "day_before" ? "Due Tomorrow" : `${milestone}% Elapsed`} — ${order.orderNumber}`;
+          const notifBody  = `${div.type.replace(/_/g, " ")} payment${daysLeft <= 0 ? " is overdue" : ` due in ${daysLeft} day(s)`}. Amount: ${order.currency || "USD"} ${Number(div.amount).toFixed(2)}`;
+          const actionUrl  = `/sales/orders/${order.id}`;
+          const actions    = [{ label: "View Order", url: actionUrl }];
+
+          if (order.spId) await createNotification({ userId: order.spId, orderId: order.id, type: "PAYMENT_REMINDER", title: notifTitle, body: notifBody, actionUrl, actions });
+
+          const rmRows: any[] = await db.$queryRawUnsafe(
+            `SELECT manager_id FROM sales_manager_assignments WHERE sp_id = $1 AND is_active = true LIMIT 1`, order.spId
+          ).catch(() => []);
+          if (rmRows.length) await createNotification({ userId: rmRows[0].manager_id, orderId: order.id, type: "PAYMENT_REMINDER", title: notifTitle, body: notifBody, actionUrl, actions });
+
+          for (const admin of adminUsers) {
+            await createNotification({ userId: admin.id, orderId: order.id, type: "PAYMENT_REMINDER", title: notifTitle, body: notifBody, actionUrl, actions });
+          }
+        } catch (e: any) {
+          results.push({ divId: div.id, orderId: order.id, milestone, notifyError: e.message });
+        }
       } catch (e: any) {
         results.push({ divId: div.id, orderId: order.id, milestone, error: e.message });
       }

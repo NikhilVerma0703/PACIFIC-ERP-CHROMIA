@@ -15,6 +15,16 @@ export const metadata: Metadata = { title: "Uptime by trade | Pacific ERP" };
 
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
 const pct = (n: number | null) => (n == null ? "—" : `${Math.round(n * 100)}%`);
+/** The uptime the row actually PRINTS, back as a fraction, so the colour and
+ *  the number can never disagree.
+ *
+ *  The tone below used to be taken from the raw value while the cell printed
+ *  `pct` of it: 0.9496 prints "95%" and was coloured amber, 0.8951 prints "90%"
+ *  and was coloured red. A maintenance manager looking at "95%" in the amber of
+ *  a miss has no way to tell which of the two is the mistake, and this page is
+ *  the only place his team's figures are shown to him. Round once, judge what
+ *  the reader sees. */
+const shownPct = (n: number | null) => (n == null ? null : Math.round(n * 100) / 100);
 
 /** Who may open this. The full scoreboard stays ADMIN-only. */
 const ALLOWED = new Set(["ADMIN", "MAINTENANCE", "LINE_MANAGER"]);
@@ -112,8 +122,8 @@ export default async function MaintenanceUptimePage({
                 <td className="py-2 pr-4 text-gray-600">{fmtDur(p.downtimeMin)}</td>
                 <td className="py-2 pr-4 text-gray-600">{fmtDur(Math.round(p.downtimePerShift))}</td>
                 <td className={`py-2 font-semibold ${
-                  (p.uptime ?? 0) >= 0.95 ? "text-green-700"
-                    : (p.uptime ?? 0) >= 0.9 ? "text-amber-700" : "text-red-600"
+                  (shownPct(p.uptime) ?? 0) >= 0.95 ? "text-green-700"
+                    : (shownPct(p.uptime) ?? 0) >= 0.9 ? "text-amber-700" : "text-red-600"
                 }`}>
                   {pct(p.uptime)}
                 </td>

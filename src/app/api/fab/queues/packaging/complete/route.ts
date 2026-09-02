@@ -20,6 +20,7 @@ import { fabGate } from "@/lib/fab/access";
 import { requireProcessSession } from "@/lib/fab/processSessionServer";
 import { stampOperationWorker } from "@/lib/fab/stampWorker";
 import { isSampleProject, planSampleCredit } from "@/lib/fab/sampleOrder";
+import { isReadyForPackaging } from "@/lib/fab/routing";
 
 // Declared before use. They were below the handler, which works only because
 // the handler runs after module evaluation — a detail nobody should have to
@@ -27,6 +28,11 @@ import { isSampleProject, planSampleCredit } from "@/lib/fab/sampleOrder";
 class AlreadyPackaged { constructor(readonly n: number) {} }
 class MissingPieces { constructor(readonly n: number) {} }
 class DuplicateCode {}
+/** A piece the queue would not have offered: rejected, never cut, or still owing
+ *  polish / sink / fabrication. The tablet holds its `selected` set across a queue
+ *  refresh, so the packer can still be holding a piece a supervisor rejected two
+ *  minutes ago. Same 409 as the other two — the answer is always "refresh". */
+class NotPackable { constructor(readonly n: number) {} }
 
 interface SampleCredit {
   /** Pieces that reached a shelf. */
@@ -160,8 +166,17 @@ export async function POST(req: Request) {
     // a package, and the same piece ended up in two of them. Filtering the write
     // on "not already PACKAGED" makes the database pick the winner: whoever
     // updates 0 rows never had the pieces.
+    //
+    // REJECTED and PENDING are excluded here for the same reason PACKAGED is:
+    // the queue GET refuses to offer them (isDroppedFromQueues), but the tablet
+    // never prunes its `selected` set when the queue reloads, so a piece a
+    // supervisor rejected mid-shift was still submitted — and became PACKAGED,
+    // got a package row, completed its PACKAGING operation, counted towards CEO
+    // packaging throughput, and if it was a sample piece put rejected stone on
+    // the sampling shelf. PENDING (never cut) walked in the same door on a
+    // hand-made request.
     const claimed = await tx.fabPiece.updateMany({
-      where: { id: { in: pieceIds }, status: { not: "PACKAGED" } },
+      where: { id: { in: pieceIds }, status: { notIn: ["PACKAGED", "REJECTED", "PENDING"] } },
       data:  { status: "PACKAGED" },
     });
     if (claimed.count !== pieceIds.length) {
@@ -171,8 +186,35 @@ export async function POST(req: Request) {
       // refresh when the real problem is a bad id sends them round a loop.
       const exists = await tx.fabPiece.count({ where: { id: { in: pieceIds } } });
       if (exists < pieceIds.length) throw new MissingPieces(pieceIds.length - exists);
+      // The claim has ALREADY flipped the rows it won, so this count is "packaged
+      // before us" plus "packaged by us" — everything not in it is a piece the
+      // notIn refused: rejected or never cut. That reads differently to a packer
+      // than "someone beat you to it", so it gets its own line.
+      const packagedNow = await tx.fabPiece.count({ where: { id: { in: pieceIds }, status: "PACKAGED" } });
+      const dropped = pieceIds.length - packagedNow;
+      if (dropped > 0) throw new NotPackable(dropped);
       throw new AlreadyPackaged(pieceIds.length - claimed.count);
     }
+
+    // AND THE ROUTING RULE, RE-CHECKED ON THE ROWS WE JUST TOOK. Status alone
+    // does not say a piece is finished: a piece that still owes polishing, a
+    // sink cut or fabrication sits at CUT/POLISHED, which the claim above
+    // happily accepts. isReadyForPackaging is the SAME predicate the queue GET
+    // filters on, so what this rejects is exactly what the queue would no
+    // longer be offering — the flags moved under the packer, or the request
+    // never came from the queue at all. Inside the transaction, so the throw
+    // takes the claim, the package and the operations back with it.
+    const claimedRows = await tx.fabPiece.findMany({
+      where: { id: { in: pieceIds } },
+      select: {
+        id: true,
+        polishRequired: true, polishingCompleted: true,
+        hasSink: true, sinkCompleted: true,
+        fabricationRequired: true, fabricationCompleted: true,
+      },
+    });
+    const notReady = claimedRows.filter((p) => !isReadyForPackaging(p)).length;
+    if (notReady > 0) throw new NotPackable(notReady);
 
     const p = await tx.fabPackage.create({
       data: {
@@ -212,7 +254,7 @@ export async function POST(req: Request) {
 
     return { pkg: p, sampleCredit };
   }).catch((e: unknown) => {
-    if (e instanceof AlreadyPackaged || e instanceof MissingPieces) return e;
+    if (e instanceof AlreadyPackaged || e instanceof MissingPieces || e instanceof NotPackable) return e;
     if (typeof e === "object" && e && (e as { code?: string }).code === "P2002") return new DuplicateCode();
     throw e;
   });
@@ -221,6 +263,8 @@ export async function POST(req: Request) {
     return Response.json({ error: `${result.n} piece(s) already packaged — refresh and try again` }, { status: 409 });
   if (result instanceof MissingPieces)
     return Response.json({ error: `${result.n} piece(s) no longer exist — refresh the queue` }, { status: 409 });
+  if (result instanceof NotPackable)
+    return Response.json({ error: `${result.n} piece(s) are not ready to pack — rejected, not cut, or still in polish/sink/fabrication. Refresh and try again` }, { status: 409 });
   if (result instanceof DuplicateCode)
     return Response.json({ error: `Package code "${code}" is already used — choose another` }, { status: 409 });
 

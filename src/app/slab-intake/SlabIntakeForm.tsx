@@ -80,8 +80,15 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
   // The search box, so a cleared form puts the cursor where the next slab number goes.
   const slabBox = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
+  // The draft EXACTLY AS THE LOOKUP LOADED IT. "Has this person typed anything
+  // yet?" has to be a comparison against what was loaded, not a guess: almost
+  // every box arrives prefilled from QC or the inventory, so "not empty" says
+  // nothing at all about whether a correction is being typed into it.
+  const loadedDraft = useRef<Draft>(emptyDraft);
   const [issueBox, setIssueBox] = useState("");
-  const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
+  // ok=false is red, ok=true is green — and ok=true WITH warn is amber: saved,
+  // but a defect photo did not store. Three tones because two of them lied.
+  const [note, setNote] = useState<{ text: string; ok: boolean; warn?: boolean } | null>(null);
   // which already-on-file photo is showing full screen (null = none)
   const [lightbox, setLightbox] = useState<number | null>(null);
   const [pending, startTransition] = useTransition();
@@ -115,16 +122,20 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
 
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
 
-  const doLookup = (numStr: string) => {
+  /** `keepNote` survives the lookup. Normally a lookup starts clean, but the
+   *  photo-failed path re-reads the slab it just saved precisely so the missing
+   *  slot comes back marked required — and clearing the amber sentence that says
+   *  why would leave the person staring at a "required" chip with no explanation. */
+  const doLookup = (numStr: string, keepNote?: { text: string; ok: boolean; warn?: boolean }) => {
     startTransition(async () => {
-      setNote(null); setLightbox(null);
+      setNote(keepNote ?? null); setLightbox(null);
       setPhotos(NO_PHOTOS); setPhotoKey((k) => k + 1); // fresh slab, fresh photo slots
       const r = await lookupSlab(numStr);
       setLooked(r);
       if (!r.ok) return;
       setLookedFor(numStr);
       const src = r.exists ? r.slab : r.prefill;
-      setDraft({
+      const fresh: Draft = {
         design: src.design ?? "", grade: src.grade ?? "",
         slabThickness: src.slabThickness ?? "", qualityIssue: src.qualityIssue ?? [],
         polishType: src.polishType ?? "", rwStatus: src.rwStatus ?? "",
@@ -133,9 +144,39 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
         widthIn: src.widthIn != null ? String(src.widthIn) : (r.exists ? "" : "79"),
         bayNumber: src.bayNumber ?? "", frameNumber: src.frameNumber ?? "",
         status: src.status || "AVAILABLE", notes: src.notes ?? "",
-      });
+      };
+      setDraft(fresh);
+      loadedDraft.current = fresh;
       setIssueBox("");
     });
+  };
+
+  /** Has anything been typed or attached that a fresh lookup would throw away?
+   *  The photo slots count: a picked (or still-compressing) photo is a minute of
+   *  someone's time at the slab, and re-taking it is the expensive half. */
+  const dirty = (): boolean => {
+    if (!looked?.ok) return false;
+    if (issueBox.trim() !== "") return true;
+    if (photos.far.file || photos.near.file) return true;
+    if (photos.far.state === "busy" || photos.near.state === "busy") return true;
+    return JSON.stringify(draft) !== JSON.stringify(loadedDraft.current);
+  };
+
+  /** THE ENTER KEY USED TO BE A DATA-LOSS BUTTON. The slab-number box stays live
+   *  while the details below are open (the point is typing the next number before
+   *  pressing Look up), and this form is a wrapping <form>, so Enter anywhere in
+   *  that box submitted it — a lookup that silently replaced a half-typed set of
+   *  corrections and any photo already attached, with no warning and nothing to
+   *  undo it with. The intake person's own hands are the only place that work
+   *  existed. So: ask first, and only when there is actually something to lose. */
+  const askLookup = (numStr: string) => {
+    // The Look up button already refuses an empty box; Enter has to refuse it too,
+    // or the emptiest possible keystroke is the one that clears the form.
+    if (!numStr.trim()) return;
+    if (dirty() && !window.confirm(
+      `Look up slab ${numStr.trim()}? The unsaved changes on slab ${lookedFor} below — including any photo attached — will be discarded.`,
+    )) return;
+    doLookup(numStr);
   };
 
   /** Which slots a save still has to carry: both on a create, and on an edit
@@ -198,6 +239,16 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
         if (f) out.set(p.field, f);
       }
       const r = await saveSlab(out);
+      // SAVED BUT NOT DONE (r.warn): the row landed and a defect photo did not.
+      // This used to render green and clear the form like any other success, so
+      // the one outcome that needs the operator to walk back to the slab looked
+      // exactly like the outcome that needs nothing — and the photo the mandatory
+      // rule demands was simply never taken. Stay on the slab, re-read it so the
+      // missing slot is marked required again, and say so in amber.
+      if (r.ok && r.warn) {
+        doLookup(lookedFor, { text: r.message, ok: true, warn: true });
+        return;
+      }
       setNote({ text: r.message, ok: r.ok });
       // SAVED MEANS DONE: the form clears itself and the cursor goes back to
       // the slab-number box, because the next thing this person does is the
@@ -207,7 +258,8 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
       if (r.ok) {
         setPhotos(NO_PHOTOS); setPhotoKey((k) => k + 1);
         setLooked(null); setLookedFor("");
-        setDraft(emptyDraft); setIssueBox(""); setLightbox(null);
+        setDraft(emptyDraft); loadedDraft.current = emptyDraft;
+        setIssueBox(""); setLightbox(null);
         setSlabInput("");
         slabBox.current?.focus();
       }
@@ -274,7 +326,7 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
       <Card>
         <H2>Find the slab</H2>
         <form
-          onSubmit={(e) => { e.preventDefault(); doLookup(slabInput); }}
+          onSubmit={(e) => { e.preventDefault(); askLookup(slabInput); }}
           className="flex flex-wrap items-end gap-3"
         >
           <div className="min-w-[180px] flex-1 sm:max-w-xs">
@@ -482,7 +534,7 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
                 className="rounded-lg bg-brand px-5 py-2 text-sm font-medium text-white disabled:opacity-50">
                 {pending ? "Saving…" : photos.far.state === "busy" || photos.near.state === "busy" ? "Compressing photo…" : exists ? "Save corrections" : "Add slab to finished goods"}
               </button>
-              {note && <p className={`text-sm ${note.ok ? "text-green-700" : "text-red-600"}`}>{note.text}</p>}
+              {note && <p className={`text-sm ${!note.ok ? "text-red-600" : note.warn ? "text-amber-700" : "text-green-700"}`}>{note.text}</p>}
             </div>
           </Card>
         </>
