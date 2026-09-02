@@ -25,7 +25,7 @@ export const CLEAN_BASELINE_MIN = (24 - HOURS_PER_DAY) * 60; // 180 min/day "fre
 // Constants/formatters live in downtimeShared (client-importable); re-exported here
 // so the existing server-side importers keep their import path.
 export { DELAY_FIELDS, DELAY_LABEL, fmtDur } from "@/lib/downtimeShared";
-import { DELAY_FIELDS } from "@/lib/downtimeShared";
+import { DELAY_FIELDS, capacityFigures } from "@/lib/downtimeShared";
 
 export interface DelayType { key: string; label: string; minutes: number; incidents: number; }
 export interface ReasonRow { reason: string; incidents: number; minutes: number; }
@@ -55,6 +55,9 @@ export interface DowntimeReport {
   ratedHours: number; // hours in the range at all (stdHours/ratedHours = coverage)
   byType: DelayType[]; byReason: ReasonRow[]; trend: TrendPoint[]; byHour: HourRow[]; incidents: IncidentRow[];
   actualSlabs: number; target: number; achievable: number; lost: number; designs: DesignRow[];
+  /** Slabs charged to downtime (bounded by the shortfall), what the minutes
+   *  claimed before the bound, and whether the bound applied. */
+  downtimeCost: number; downtimeCostRaw: number; costCapped: boolean;
   /** Hours whose typed range was impossible (backwards, or 60+ slabs wide) and
    *  were set aside from the count — the same hours the CEO report sets aside. */
   impossibleRows: number; // days with MIS hours but no press rows yet (entry lag)
@@ -209,7 +212,13 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
       if (v > 0) { byType[i].minutes += v; byType[i].incidents++; rowMin += v; typeKeys.push(d.key); types.push(d.label); minutesByType[d.key] = r0(v); }
     });
     const cleanMin = Number(r.cleaningDelayDurationMinutes ?? 0) || 0;
-    const otherMin = Math.max(0, rowMin - cleanMin);
+    // Charged to capacity as logged, but an hour cannot lose more than the
+    // sixty minutes it holds: the four delay columns are typed independently
+    // and a row carrying 60 of process and 60 of breakdown is one stopped
+    // hour, not two. overCap already counts such rows; this stops them
+    // claiming a second hour of target. (No August 2026 row does — the cap
+    // is the rail, the bound in capacityFigures is the fix.)
+    const otherMin = Math.max(0, Math.min(60, rowMin) - Math.min(60, cleanMin));
     if (rowMin > 0) { totalMinutes += rowMin; hoursLogged++; cleanTotal += cleanMin; otherTotal += otherMin; }
     if (rowMin > 60) overCap++;
     if (day) {
@@ -375,8 +384,12 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   }
   target = r0(target);
   productiveHours = Math.round(productiveHours * 10) / 10;
-  const achievable = Math.max(0, target - r0(downtimeCost));
-  const lost = Math.max(0, achievable - actualSlabs);
+  // Achievable is never below actual, and the downtime claim is bounded by
+  // the shortfall it is supposed to explain — see capacityFigures for the
+  // August 2026 case that made this necessary.
+  const cap = capacityFigures(target, r0(downtimeCost), actualSlabs);
+  const achievable = cap.achievable;
+  const lost = cap.lost;
 
   // ---- MIS logging completeness: batches pressed but never logged in MIS ----
   const misBatchSet = new Set<string>();
@@ -417,6 +430,7 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
     stdRate: rangeStd != null ? Math.round(rangeStd * 10) / 10 : null,
     stdHours: stdN, ratedHours: rows.length,
     actualSlabs, target, achievable, lost, designs, daysCounted, productiveHours, roboHours, normalHours,
+    downtimeCost: r0(cap.downtimeCost), downtimeCostRaw: r0(cap.downtimeCostRaw), costCapped: cap.costCapped,
     impossibleRows,
     pressBatches: pressBatchSet.size, misBatches: misBatchSet.size, unloggedBatches: unloggedBatchList.length, unloggedBatchList: unloggedBatchList.slice(0, 60),
   };

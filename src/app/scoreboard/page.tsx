@@ -267,6 +267,10 @@ export default async function ScoreboardPage({ searchParams }: { searchParams: P
           const active = from === p.f && to === p.t;
           return <Link key={p.label} href={href(p.f, p.t)} className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium transition ${active ? "bg-brand text-white" : "border border-gray-300 text-gray-600 hover:bg-gray-50"}`}>{p.label}</Link>;
         })}
+        {/* The month settlement: counted slabs against the 7,000 floor and what
+            is still waiting at QC. Its own page, because it answers a different
+            question from the ranking here — "is the month payable yet". */}
+        <Link href="/scoreboard/incentive" className="inline-flex items-center rounded-full border border-brand/40 bg-brand/5 px-3 py-1 text-xs font-medium text-brand transition hover:bg-brand/10">Month incentive tracker →</Link>
       </div>
       <form method="GET" className="mb-6 flex flex-wrap items-end gap-3">
         <label className="block"><span className="mb-1 block text-xs font-medium text-gray-600">From</span><input type="date" name="from" defaultValue={from} className="rounded-md border border-gray-300 px-3 py-2 text-sm" /></label>

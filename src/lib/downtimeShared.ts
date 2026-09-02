@@ -114,3 +114,51 @@ export function classifyBreakdownTrade(reasons: readonly string[]): BreakdownTra
   if (mech) return "mechanical";
   return "unknown";
 }
+
+/* ------------------------------------------------ capacity: the invariant */
+// ACHIEVABLE CAN NEVER BE BELOW ACTUAL. Achievable is what the line could have
+// made given the downtime it had; it made `actual`, so achievable is at least
+// that. The downtime page broke this for August 2026: target 7,969, delay
+// minutes charged at the standard rate came to 1,778 slabs, but the month's
+// whole shortfall against target was 1,707 - the minutes claimed MORE capacity
+// than was ever missing, achievable printed 6,191 under an actual of 6,262, and
+// "lost" clamped to zero without saying why.
+//
+// The claim is bounded by the shortfall. If downtime minutes account for the
+// whole gap (and 71 slabs over, as in August), the cost IS the gap, achievable
+// equals actual, and the unexplained loss is zero - which is the honest reading
+// of that model, and the page now says the cap applied and by how much. If the
+// line beat its standard outright, nothing was lost to downtime in capacity
+// terms, however many minutes were logged.
+//
+// WHY THE MINUTES OVERCLAIM. A process or cleaning delay does not stop the line
+// dead - the hour that logged 40 minutes of process delay still pressed slabs -
+// but the model charges every logged minute at the full rate. The bound is the
+// correction that keeps the three bars consistent without pretending to know
+// how much of each delay minute the line kept running through.
+export interface CapacityFigures {
+  /** target - downtimeCost, never below actual (and never below 0). */
+  achievable: number;
+  /** achievable - actual: the shortfall the logged downtime does NOT explain. */
+  lost: number;
+  /** The slabs charged to downtime after the bound. */
+  downtimeCost: number;
+  /** What the delay minutes claimed before the bound. */
+  downtimeCostRaw: number;
+  /** True when the raw claim exceeded the shortfall and was cut back to it. */
+  costCapped: boolean;
+}
+
+export function capacityFigures(target: number, downtimeCostRaw: number, actual: number): CapacityFigures {
+  const t = Math.max(0, target), raw = Math.max(0, downtimeCostRaw), a = Math.max(0, actual);
+  const shortfall = Math.max(0, t - a);
+  const downtimeCost = Math.min(raw, shortfall);
+  const achievable = Math.max(a, t - downtimeCost);
+  return {
+    achievable,
+    lost: Math.max(0, achievable - a),
+    downtimeCost,
+    downtimeCostRaw: raw,
+    costCapped: raw > shortfall,
+  };
+}

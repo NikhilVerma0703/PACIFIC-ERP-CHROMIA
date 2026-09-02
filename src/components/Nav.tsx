@@ -415,6 +415,10 @@ export function Nav({
     // Scoreboard ranks named people and feeds an incentive payout, so it is
     // ADMIN-only — not showAdmin, which also admits shop-floor incharges.
     ...(isAdmin ? [{ href: "/scoreboard", icon: I.report, label: "Shift Scoreboard" }] : []),
+    // The month's settlement — counted slabs against the 7,000 floor, what is
+    // still at QC, and what the pool pays. Same gate as the scoreboard: it
+    // shows money by shift and is only ever read by the people who settle it.
+    ...(isAdmin ? [{ href: "/scoreboard/incentive", icon: I.report, label: "Month Incentive" }] : []),
     // Costing prices the plant's whole cost base — same strictness.
     ...(isAdmin ? [{ href: "/office/costing", icon: I.ceo, label: "Batch Costing" }] : []),
   ];

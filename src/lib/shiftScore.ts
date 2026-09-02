@@ -90,6 +90,26 @@ export interface FlaggedRow {
   slabs: number;
 }
 
+/** One claimed slab the score could not count yet, and why. Exposed so the
+ *  month tracker (/scoreboard/incentive) lists EXACTLY the slabs scoreShift
+ *  treats as ungraded rather than deriving its own — the two must not drift.
+ *
+ *  `verdict` separates two very different "not counted" cases: 'none' /
+ *  'not-graded' is a slab genuinely waiting for QC and can still earn; 'cts' /
+ *  'printing' has BEEN through QC and was routed, so it will never grade and
+ *  must not be projected as future points. */
+export interface OutstandingSlab {
+  slab: number;
+  /** 2 when the hour that claimed it ran a slow product, else 1. */
+  mult: number;
+  design: string | null;
+  batch: string | null;
+  hour: string | null;
+  /** The MIS row that claimed it — /tables/Mis/{rowId} is where a typo'd range is corrected. */
+  rowId: string | null;
+  verdict: "none" | "not-graded" | "cts" | "printing";
+}
+
 export interface ShiftScore {
   anchor: string;
   shift: ShiftLetter;
@@ -151,6 +171,8 @@ export interface ShiftScore {
    *  link straight to the hour that needs correcting instead of leaving an
    *  admin to hunt for it. `/tables/Mis/{id}` is the edit page. */
   flagged: FlaggedRow[];
+  /** Claimed slabs with no countable verdict — see OutstandingSlab. */
+  outstanding: OutstandingSlab[];
   /** People named on this shift's MIS rows — they share the score. Kept per
    *  ROLE: a production incharge runs the shift, whereas electrical and
    *  mechanical cover the plant and are often named on several shifts at once,
@@ -195,7 +217,7 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
     anchor, shift, quantity: 0, quality: null, rawQuality: null, graded: 0, ungraded: 0,
     gradeA: 0, gradeB: 0, gradeC: 0, points: 0, goodSlabs: 0, slowSlabs: 0,
     avgMm: null, breakdownMin: 0, poweroutMin: 0,
-    hoursLogged: 0, weight: 0, contested: 0, wideRows: 0, flagged: [],
+    hoursLogged: 0, weight: 0, contested: 0, wideRows: 0, flagged: [], outstanding: [],
     people: [], crew: { production: [], electrical: [], mechanical: [] },
   };
   {
@@ -217,6 +239,7 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
       select: {
         id: true, date: true, hour: true, productionInchargeName: true,
         startingSlabNumber: true, endingSlabNumber: true, slabsPerHourStd: true,
+        design: true, batch: true,
         breakdownDelayDurationMechanicalOrElectricalMinutes: true,
         poweroutDelayDurationMinutes: true,
         electricalInchargeName: true, mechanicalInchargeName: true,
@@ -256,6 +279,9 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
     // wins. An overlap is a data-entry fault, and a fault must not be a way to
     // earn the double: the multiplier has to be unambiguously the product's.
     const multBySlab = new Map<number, number>();
+    // The row whose multiplier was kept for the slab — so an outstanding slab
+    // can name its design and batch. Follows the same lower-multiplier rule.
+    const rowBySlab = new Map<number, any>();
     for (const r of mis) {
       const a = Number(r.startingSlabNumber), b = Number(r.endingSlabNumber);
       if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b < a) continue;
@@ -268,6 +294,7 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
         else {
           declared.add(n);
           const seen = multBySlab.get(n);
+          if (seen == null || mult < seen) rowBySlab.set(n, r);
           multBySlab.set(n, seen == null ? mult : Math.min(seen, mult));
         }
       }
@@ -309,10 +336,21 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
     // break every quality scale that reads it. `weighted` applies the slow-
     // product multiplier and is what the VOLUME pool pays on.
     let credit = 0, weighted = 0, graded = 0, a = 0, b = 0, c = 0, doubled = 0;
+    const outstanding: OutstandingSlab[] = [];
     for (const sn of slabs) {
       const g = latest.get(sn)?.qualityGrade;
       const cr = gradeCredit(g);
-      if (cr == null) continue;      // ungraded / CTS / Printing — not a verdict
+      if (cr == null) {              // ungraded / CTS / Printing — not a verdict
+        const row = rowBySlab.get(sn);
+        const u = String(g ?? "").trim().toUpperCase();
+        outstanding.push({
+          slab: sn, mult: multBySlab.get(sn) ?? 1,
+          design: row?.design ?? null, batch: row?.batch ?? null, hour: row?.hour ?? null,
+          rowId: row?.id != null ? String(row.id) : null,
+          verdict: !latest.has(sn) ? "none" : u === "CTS" ? "cts" : u.startsWith("PRINT") ? "printing" : "not-graded",
+        });
+        continue;
+      }
       const mult = multBySlab.get(sn) ?? 1;
       graded += 1; credit += cr; weighted += cr * mult;
       if (mult > 1 && cr > 0) doubled += 1;
@@ -343,6 +381,7 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
       breakdownMin, poweroutMin, hoursLogged,
       weight: shiftWeight(hoursLogged, breakdownMin + poweroutMin, slabs.length),
       contested, wideRows, flagged,
+      outstanding: outstanding.sort((x, y) => x.slab - y.slab),
       people, crew,
     };
   }

@@ -1,0 +1,879 @@
+{
+  "month": "2026-08",
+  "from": "2026-08-01",
+  "to": "2026-08-31",
+  "scoredTo": "2026-08-31",
+  "asOf": "2026-09-02T10:18:02.043Z",
+  "monthEnded": true,
+  "letters": [
+    {
+      "shift": "A",
+      "instances": 30,
+      "effectiveShifts": 26.587500000000002,
+      "hoursLogged": 240,
+      "stoppedMin": 1638,
+      "claimed": 2081,
+      "graded": 1691,
+      "ungraded": 390,
+      "gradeA": 1594,
+      "gradeB": 57,
+      "gradeC": 40,
+      "credit": 1622.5,
+      "slowSlabs": 343,
+      "points": 1960,
+      "pointsPerShift": 73.71885284438176,
+      "rawShare": 0.959491425192194,
+      "qualityWeighted": 0.7891780011827321,
+      "qualityAggregate": 0.8949142519219402,
+      "credibility": 1
+    },
+    {
+      "shift": "B",
+      "instances": 31,
+      "effectiveShifts": 26.6375,
+      "hoursLogged": 248,
+      "stoppedMin": 2094,
+      "claimed": 1960,
+      "graded": 1554,
+      "ungraded": 406,
+      "gradeA": 1466,
+      "gradeB": 50,
+      "gradeC": 38,
+      "credit": 1491,
+      "slowSlabs": 415,
+      "points": 1907,
+      "pointsPerShift": 71.59080244016894,
+      "rawShare": 0.9594594594594594,
+      "qualityWeighted": 0.8167310167310168,
+      "qualityAggregate": 0.8945945945945946,
+      "credibility": 1
+    },
+    {
+      "shift": "C",
+      "instances": 31,
+      "effectiveShifts": 29.264583333333334,
+      "hoursLogged": 248,
+      "stoppedMin": 833,
+      "claimed": 2220,
+      "graded": 1892,
+      "ungraded": 328,
+      "gradeA": 1809,
+      "gradeB": 41,
+      "gradeC": 42,
+      "credit": 1829.5,
+      "slowSlabs": 508,
+      "points": 2340,
+      "pointsPerShift": 79.96013383640634,
+      "rawShare": 0.9669661733615222,
+      "qualityWeighted": 0.8588266384778012,
+      "qualityAggregate": 0.9696617336152227,
+      "credibility": 1
+    }
+  ],
+  "shares": {
+    "weighted": [
+      {
+        "shift": "A",
+        "quality": 0.7891780011827321,
+        "volumeShare": 0.2290728694354983,
+        "qualityShare": 0.09605630516232884,
+        "share": 0.32512917459782714
+      },
+      {
+        "shift": "B",
+        "quality": 0.8167310167310168,
+        "volumeShare": 0.22246019718698332,
+        "qualityShare": 0.09940997298591482,
+        "share": 0.32187017017289815
+      },
+      {
+        "shift": "C",
+        "quality": 0.8588266384778012,
+        "volumeShare": 0.24846693337751832,
+        "qualityShare": 0.10453372185175631,
+        "share": 0.35300065522927465
+      }
+    ],
+    "aggregate": [
+      {
+        "shift": "A",
+        "quality": 0.8949142519219402,
+        "volumeShare": 0.2290728694354983,
+        "qualityShare": 0.09730252906790623,
+        "share": 0.3263753985034045
+      },
+      {
+        "shift": "B",
+        "quality": 0.8945945945945946,
+        "volumeShare": 0.22246019718698332,
+        "qualityShare": 0.0972677732616164,
+        "share": 0.3197279704485997
+      },
+      {
+        "shift": "C",
+        "quality": 0.9696617336152227,
+        "volumeShare": 0.24846693337751832,
+        "qualityShare": 0.10542969767047736,
+        "share": 0.3538966310479957
+      }
+    ]
+  },
+  "plant": {
+    "instances": 92,
+    "claimed": 6261,
+    "graded": 5137,
+    "ungraded": 1124,
+    "gradeA": 4869,
+    "gradeB": 148,
+    "gradeC": 120,
+    "credit": 4943,
+    "slowSlabs": 1266,
+    "points": 6207,
+    "rawShare": 0.9622347673739536
+  },
+  "pool": {
+    "counted": 6207,
+    "poolNow": 0,
+    "floor": 7000,
+    "next": {
+      "slabs": 7000,
+      "pool": 300000
+    },
+    "ladder": [
+      {
+        "slabs": 7000,
+        "pool": 300000
+      },
+      {
+        "slabs": 8000,
+        "pool": 600000
+      },
+      {
+        "slabs": 9000,
+        "pool": 800000
+      },
+      {
+        "slabs": 10000,
+        "pool": 1300000
+      },
+      {
+        "slabs": 11000,
+        "pool": 1700000
+      },
+      {
+        "slabs": 12000,
+        "pool": 2500000
+      }
+    ]
+  },
+  "outstanding": {
+    "total": 1124,
+    "byStage": {
+      "at-qc": 533,
+      "at-polish": 104,
+      "pressed": 463,
+      "nowhere": 0,
+      "routed": 24
+    },
+    "real": 1100,
+    "byLetter": {
+      "A": {
+        "at-qc": 195,
+        "at-polish": 53,
+        "pressed": 137,
+        "nowhere": 0,
+        "routed": 5
+      },
+      "B": {
+        "at-qc": 160,
+        "at-polish": 22,
+        "pressed": 219,
+        "nowhere": 0,
+        "routed": 5
+      },
+      "C": {
+        "at-qc": 178,
+        "at-polish": 29,
+        "pressed": 107,
+        "nowhere": 0,
+        "routed": 14
+      }
+    },
+    "groups": [
+      {
+        "design": "DESERT SILK",
+        "batch": "D1422",
+        "count": 147,
+        "slow": 0,
+        "stages": {
+          "at-qc": 51,
+          "at-polish": 1,
+          "pressed": 95,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.8879310344827587,
+        "designGraded": 58
+      },
+      {
+        "design": "TIFFINY",
+        "batch": "D1432",
+        "count": 116,
+        "slow": 10,
+        "stages": {
+          "at-qc": 3,
+          "at-polish": 0,
+          "pressed": 113,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": null,
+        "designGraded": 10
+      },
+      {
+        "design": "Carrara Cloud",
+        "batch": "D1430",
+        "count": 99,
+        "slow": 0,
+        "stages": {
+          "at-qc": 33,
+          "at-polish": 9,
+          "pressed": 57,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.9563679245283019,
+        "designGraded": 848
+      },
+      {
+        "design": "Calacatta Gold",
+        "batch": "D1425",
+        "count": 92,
+        "slow": 92,
+        "stages": {
+          "at-qc": 57,
+          "at-polish": 1,
+          "pressed": 34,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.9370629370629371,
+        "designGraded": 143
+      },
+      {
+        "design": "Calacatta Grey",
+        "batch": "D1427",
+        "count": 63,
+        "slow": 63,
+        "stages": {
+          "at-qc": 2,
+          "at-polish": 0,
+          "pressed": 61,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": null,
+        "designGraded": 3
+      },
+      {
+        "design": "Arva White",
+        "batch": "D1413",
+        "count": 60,
+        "slow": 0,
+        "stages": {
+          "at-qc": 33,
+          "at-polish": 5,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 22
+        },
+        "designShare": 0.9856020942408377,
+        "designGraded": 382
+      },
+      {
+        "design": "Carrara Beige",
+        "batch": "D1431",
+        "count": 54,
+        "slow": 0,
+        "stages": {
+          "at-qc": 0,
+          "at-polish": 0,
+          "pressed": 54,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": null,
+        "designGraded": 0
+      },
+      {
+        "design": "Brilliant White",
+        "batch": "D1405",
+        "count": 50,
+        "slow": 0,
+        "stages": {
+          "at-qc": 50,
+          "at-polish": 0,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.76875,
+        "designGraded": 80
+      },
+      {
+        "design": "Aureate",
+        "batch": "D1423",
+        "count": 45,
+        "slow": 32,
+        "stages": {
+          "at-qc": 45,
+          "at-polish": 0,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.968503937007874,
+        "designGraded": 254
+      },
+      {
+        "design": "ARTEMIS",
+        "batch": "D1428",
+        "count": 44,
+        "slow": 44,
+        "stages": {
+          "at-qc": 2,
+          "at-polish": 0,
+          "pressed": 42,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": null,
+        "designGraded": 28
+      },
+      {
+        "design": "Bellagio Green",
+        "batch": "D1404",
+        "count": 44,
+        "slow": 44,
+        "stages": {
+          "at-qc": 23,
+          "at-polish": 20,
+          "pressed": 1,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.9166666666666666,
+        "designGraded": 234
+      },
+      {
+        "design": "Pebble ice",
+        "batch": "D1414",
+        "count": 37,
+        "slow": 0,
+        "stages": {
+          "at-qc": 30,
+          "at-polish": 7,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.9973190348525469,
+        "designGraded": 373
+      },
+      {
+        "design": "Simply White",
+        "batch": "D1403",
+        "count": 30,
+        "slow": 0,
+        "stages": {
+          "at-qc": 15,
+          "at-polish": 15,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.9741980474198048,
+        "designGraded": 717
+      },
+      {
+        "design": "Carrara Cloud",
+        "batch": "D1399",
+        "count": 28,
+        "slow": 0,
+        "stages": {
+          "at-qc": 26,
+          "at-polish": 2,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.9563679245283019,
+        "designGraded": 848
+      },
+      {
+        "design": "Costa",
+        "batch": "D1409",
+        "count": 27,
+        "slow": 27,
+        "stages": {
+          "at-qc": 21,
+          "at-polish": 4,
+          "pressed": 2,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.993103448275862,
+        "designGraded": 145
+      },
+      {
+        "design": "Carrara Royale",
+        "batch": "D1429",
+        "count": 22,
+        "slow": 0,
+        "stages": {
+          "at-qc": 16,
+          "at-polish": 6,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.9925986842105263,
+        "designGraded": 608
+      },
+      {
+        "design": "Super White",
+        "batch": "D1406",
+        "count": 22,
+        "slow": 0,
+        "stages": {
+          "at-qc": 18,
+          "at-polish": 4,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.948943661971831,
+        "designGraded": 284
+      },
+      {
+        "design": "Hazel Gold",
+        "batch": "D1410",
+        "count": 20,
+        "slow": 20,
+        "stages": {
+          "at-qc": 18,
+          "at-polish": 1,
+          "pressed": 1,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.9710982658959537,
+        "designGraded": 173
+      },
+      {
+        "design": "Sparkle White",
+        "batch": "D1415",
+        "count": 18,
+        "slow": 0,
+        "stages": {
+          "at-qc": 14,
+          "at-polish": 3,
+          "pressed": 1,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.9978260869565218,
+        "designGraded": 230
+      },
+      {
+        "design": "Venatino (Marmi)",
+        "batch": "D1400",
+        "count": 18,
+        "slow": 0,
+        "stages": {
+          "at-qc": 17,
+          "at-polish": 1,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.848314606741573,
+        "designGraded": 89
+      },
+      {
+        "design": "Carrara Royale",
+        "batch": "D1402",
+        "count": 14,
+        "slow": 0,
+        "stages": {
+          "at-qc": 10,
+          "at-polish": 4,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.9925986842105263,
+        "designGraded": 608
+      },
+      {
+        "design": "Honey dew",
+        "batch": "D1426",
+        "count": 12,
+        "slow": 12,
+        "stages": {
+          "at-qc": 4,
+          "at-polish": 8,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.9606481481481481,
+        "designGraded": 216
+      },
+      {
+        "design": "Oasis",
+        "batch": "D1424",
+        "count": 12,
+        "slow": 0,
+        "stages": {
+          "at-qc": 10,
+          "at-polish": 2,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.9677835051546392,
+        "designGraded": 388
+      },
+      {
+        "design": "Stella",
+        "batch": "D1401",
+        "count": 11,
+        "slow": 0,
+        "stages": {
+          "at-qc": 7,
+          "at-polish": 4,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.9840425531914894,
+        "designGraded": 94
+      },
+      {
+        "design": "Eminence",
+        "batch": "D1408",
+        "count": 9,
+        "slow": 0,
+        "stages": {
+          "at-qc": 6,
+          "at-polish": 3,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.7346938775510204,
+        "designGraded": 49
+      },
+      {
+        "design": "GLENCO - 2",
+        "batch": "D1412",
+        "count": 9,
+        "slow": 9,
+        "stages": {
+          "at-qc": 5,
+          "at-polish": 2,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 2
+        },
+        "designShare": null,
+        "designGraded": 0
+      },
+      {
+        "design": "Carrara Cloud",
+        "batch": "1399",
+        "count": 6,
+        "slow": 0,
+        "stages": {
+          "at-qc": 6,
+          "at-polish": 0,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.9563679245283019,
+        "designGraded": 848
+      },
+      {
+        "design": "Toffee lite trial",
+        "batch": "D1433",
+        "count": 5,
+        "slow": 5,
+        "stages": {
+          "at-qc": 5,
+          "at-polish": 0,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": null,
+        "designGraded": 0
+      },
+      {
+        "design": "GLENCO",
+        "batch": "D1411",
+        "count": 4,
+        "slow": 4,
+        "stages": {
+          "at-qc": 4,
+          "at-polish": 0,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.9583333333333334,
+        "designGraded": 204
+      },
+      {
+        "design": "Ashen bloom",
+        "batch": "D1419",
+        "count": 3,
+        "slow": 3,
+        "stages": {
+          "at-qc": 2,
+          "at-polish": 0,
+          "pressed": 1,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": null,
+        "designGraded": 3
+      },
+      {
+        "design": "08",
+        "batch": "D1409",
+        "count": 1,
+        "slow": 1,
+        "stages": {
+          "at-qc": 0,
+          "at-polish": 1,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": null,
+        "designGraded": 0
+      },
+      {
+        "design": "Alabester White",
+        "batch": "D1407",
+        "count": 1,
+        "slow": 0,
+        "stages": {
+          "at-qc": 0,
+          "at-polish": 1,
+          "pressed": 0,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.9807692307692307,
+        "designGraded": 52
+      },
+      {
+        "design": "Glenco",
+        "batch": "D1411",
+        "count": 1,
+        "slow": 1,
+        "stages": {
+          "at-qc": 0,
+          "at-polish": 0,
+          "pressed": 1,
+          "nowhere": 0,
+          "routed": 0
+        },
+        "designShare": 0.9583333333333334,
+        "designGraded": 204
+      }
+    ],
+    "phantomRuns": [],
+    "slabCount": 1124
+  },
+  "projection": {
+    "share": 0.9622347673739536,
+    "addReal": 1409.6739342028466,
+    "projectedReal": 7616.673934202847,
+    "poolReal": 300000,
+    "addAll": 1409.6739342028466,
+    "projectedAll": 7616.673934202847,
+    "poolAll": 300000
+  },
+  "money": {
+    "pool": 300000,
+    "weighted": [
+      {
+        "shift": "A",
+        "share": 0.32512917459782714,
+        "pctSalary": 0.07136981881415717,
+        "bands": {
+          "operator": 1427,
+          "supervisor": 3747,
+          "catB": 5353,
+          "manager": 12490
+        }
+      },
+      {
+        "shift": "B",
+        "share": 0.32187017017289815,
+        "pctSalary": 0.07065442759892886,
+        "bands": {
+          "operator": 1413,
+          "supervisor": 3709,
+          "catB": 5299,
+          "manager": 12365
+        }
+      },
+      {
+        "shift": "C",
+        "share": 0.35300065522927465,
+        "pctSalary": 0.07748794870886516,
+        "bands": {
+          "operator": 1550,
+          "supervisor": 4068,
+          "catB": 5812,
+          "manager": 13560
+        }
+      }
+    ],
+    "aggregate": [
+      {
+        "shift": "A",
+        "share": 0.3263753985034045,
+        "pctSalary": 0.07164338015928391,
+        "bands": {
+          "operator": 1433,
+          "supervisor": 3761,
+          "catB": 5373,
+          "manager": 12538
+        }
+      },
+      {
+        "shift": "B",
+        "share": 0.3197279704485997,
+        "pctSalary": 0.07018418863505846,
+        "bands": {
+          "operator": 1404,
+          "supervisor": 3685,
+          "catB": 5264,
+          "manager": 12282
+        }
+      },
+      {
+        "shift": "C",
+        "share": 0.3538966310479957,
+        "pctSalary": 0.0776846263276088,
+        "bands": {
+          "operator": 1554,
+          "supervisor": 4078,
+          "catB": 5826,
+          "manager": 13595
+        }
+      }
+    ],
+    "roles": [
+      {
+        "key": "operator",
+        "label": "Operator",
+        "heads": 75,
+        "pay": 20000
+      },
+      {
+        "key": "supervisor",
+        "label": "Supervisor / Incharge",
+        "heads": 30,
+        "pay": 52500
+      },
+      {
+        "key": "catB",
+        "label": "Category B (R&D)",
+        "heads": 2,
+        "pay": 75000
+      },
+      {
+        "key": "manager",
+        "label": "Manager",
+        "heads": 5,
+        "pay": 175000
+      }
+    ]
+  },
+  "qc": {
+    "perDay": [
+      {
+        "day": "2026-08-19",
+        "graded": 41
+      },
+      {
+        "day": "2026-08-20",
+        "graded": 201
+      },
+      {
+        "day": "2026-08-21",
+        "graded": 193
+      },
+      {
+        "day": "2026-08-22",
+        "graded": 165
+      },
+      {
+        "day": "2026-08-23",
+        "graded": 227
+      },
+      {
+        "day": "2026-08-24",
+        "graded": 155
+      },
+      {
+        "day": "2026-08-25",
+        "graded": 182
+      },
+      {
+        "day": "2026-08-26",
+        "graded": 101
+      },
+      {
+        "day": "2026-08-27",
+        "graded": 191
+      },
+      {
+        "day": "2026-08-28",
+        "graded": 202
+      },
+      {
+        "day": "2026-08-29",
+        "graded": 92
+      },
+      {
+        "day": "2026-08-30",
+        "graded": 229
+      },
+      {
+        "day": "2026-08-31",
+        "graded": 112
+      },
+      {
+        "day": "2026-09-01",
+        "graded": 122
+      },
+      {
+        "day": "2026-09-02",
+        "graded": 154
+      }
+    ],
+    "avgPerDay7": 149.85714285714286,
+    "daysToClear": 8
+  },
+  "flaggedRows": 0,
+  "openDisputes": 0,
+  "unattributed": 0
+}

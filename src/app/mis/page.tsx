@@ -199,7 +199,13 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
                   </div>
                 ))}
               </div>
-              {r.lost > 0 && <p className="mt-2 text-xs text-amber-700">~{fmt(r.lost)} slab(s) lost to downtime (achievable - actual). Total downtime {fmtDur(r.totalMinutes)}.</p>}
+              {r.lost > 0 && <p className="mt-2 text-xs text-amber-700">~{fmt(r.lost)} slab(s) short of achievable — the gap the logged downtime does not explain. Downtime charged {fmt(r.downtimeCost)} slab(s) over {fmtDur(r.totalMinutes)}.</p>}
+              {r.costCapped && (
+                <p className="mt-2 text-xs text-amber-700">
+                  The logged delay minutes claim {fmt(r.downtimeCostRaw)} slab(s) of capacity, but the whole shortfall against target is {fmt(Math.max(0, r.target - r.actualSlabs))} — so downtime is charged {fmt(r.downtimeCost)} and achievable is held at the actual.
+                  {r.actualSlabs >= r.target ? " The line beat the standard entered for these hours." : " A process or cleaning delay does not stop the line dead, so the minutes overstate what was lost."}
+                </p>
+              )}
               <p className="mt-2 text-[11px] text-gray-400">Target = capacity: 21 productive h/day (3 h cleaning) over {fmt(r.daysCounted)} day(s) = {r.productiveHours} productive h (the in-progress day is prorated to hours elapsed), at the Slabs/hr Std entered on the MIS form{r.stdRate != null ? <> — each day rated on the Std entered THAT day, so no single rate multiplies out to the total. {fmt(r.stdHours)} of {fmt(r.ratedHours)} logged rows carry a Std (mean <b>{r.stdRate}/hr</b>); a day with none — Std entry began 9 Jul 2026 — falls back to 24/hr normal · 12/hr robo, as does a day with no MIS rows at all</> : <> — no row in this range carries a Std, so the 24/hr normal · 12/hr robo blend was used throughout</>}. Achievable subtracts unplanned downtime + cleaning beyond 3 h/day. Lost = Achievable - Actual. {fmt(r.pressBatches - r.unloggedBatches)} of {fmt(r.pressBatches)} pressed batches have MIS entries.</p>
             </Card>
           </div>
@@ -272,7 +278,11 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
             <H2>Designs made · {r.designs.length}</H2>
             {r.designs.length === 0 ? <p className="text-sm text-gray-400">No hour in this range declared a slab range.</p> : (
               <div className="space-y-1.5">
-                {r.designs.slice(0, 25).map((x) => (
+                {/* EVERY design, not the first 25. The heading counted 36 and the
+                    list stopped at 25 with no "more" line, so ARTEMIS - 44 slabs
+                    in August, ranked 30th - was simply absent from a page whose
+                    slab total was right. A design that was made is on the list. */}
+                {r.designs.map((x) => (
                   <Link key={x.design} href={x.design === "—" ? link({}) : `/batch?d=${encodeURIComponent(x.design)}`} className="flex items-center gap-3 rounded text-sm hover:bg-gray-50">
                     <div className="w-28 shrink-0 truncate text-brand hover:underline sm:w-56" title={x.design}>{x.design}</div>
                     <div className="h-4 flex-1 rounded bg-gray-100"><div className="h-4 rounded bg-green-500" style={{ width: `${Math.max(2, Math.round((100 * x.slabs) / maxDesign))}%` }} /></div>
