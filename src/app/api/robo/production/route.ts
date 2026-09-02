@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { resolveBatchRecipeIds } from "@/lib/robo/batchFilter";
 import { latestSerialNumber, nextSerialNumber } from "@/lib/robo/nextNumbers";
 import { REGISTER_ORDER } from "@/lib/robo/registerOrderDb";
 import { slabSearchWhere } from "@/lib/robo/slabSearch";
@@ -13,20 +14,22 @@ import { SLAB_COMPLETED, SLAB_IN_PROCESSING } from "@/lib/robo/utils";
  *   batchNo (the batch number on the setup the slab was logged against)
  * With no filters the latest 25 records are returned.
  *
- * The where clause is built in lib/robo/slabSearch.ts rather than here, because
- * designName and batchNo both narrow the same related setup and an inline
- * second assignment would silently drop the first — see that file.
+ * `batchNo` matches loosely: "D-1372", "d1372" and a bare "1372" all find the
+ * batch stored as "D1372", while "A-1248" stays distinct from "D-1248". The
+ * typed number is resolved to the matching setup ids here (batchFilter.ts) and
+ * the where itself is built in lib/robo/slabSearch.ts — see those files.
  */
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const limitParam = Number(sp.get("limit"));
 
+  const batchRecipeIds = await resolveBatchRecipeIds(sp.get("batchNo"));
   const { where, hasFilters } = slabSearchWhere({
     shiftId: sp.get("shiftId"),
     date: sp.get("date"),
     slabNumber: sp.get("slabNumber"),
     designName: sp.get("designName"),
-    batchNo: sp.get("batchNo"),
+    batchRecipeIds,
   });
 
   const take = limitParam > 0 ? Math.min(limitParam, 500) : hasFilters ? 200 : 25;
@@ -119,6 +122,11 @@ export async function POST(req: Request) {
         slabNumber,
         shiftId:          body.shiftId,
         batchRecipeId:    body.batchRecipeId || null,
+        // The slab's own production date, when the operator set one for it — a
+        // batch running past midnight has later slabs on a later day. Stored as
+        // a real yyyy-mm-dd or NULL, never "" (the where-builders' invariant):
+        // an untouched field falls back to the setup/shift exactly as before.
+        productionDate:   (typeof body.productionDate === "string" && body.productionDate.trim()) || null,
         inTime:           body.inTime || null,
         outTime:          body.outTime || null,
         roymixCycleTime:  body.roymixCycleTime ? Number(body.roymixCycleTime) : null,

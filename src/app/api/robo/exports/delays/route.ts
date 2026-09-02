@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import * as XLSX from "xlsx";
+import * as XLSX from "xlsx-js-style";
 import { prisma } from "@/lib/prisma";
+import { resolveBatchRecipeIds } from "@/lib/robo/batchFilter";
 import { fmtDurationLong, machineLabel } from "@/lib/robo/utils";
 import { delayGrandTotal, delayTotalsByDate } from "@/lib/robo/delayTotals";
-import { delayProductionDateOf, delayProductionDateWhere } from "@/lib/robo/productionDate";
+import { delayProductionDateOf, delayProductionDateSelectWhere } from "@/lib/robo/productionDate";
+import { exportScopeTag } from "@/lib/robo/exportScope";
+import { styleRoboSheet } from "@/lib/robo/exportStyle";
+import { byDateRowRole, delayRowRole } from "@/lib/robo/exportRowRoles";
 
 // Shift is gone — an internal grouping the register does not show. Design Name,
 // Thickness and Batch No. come off the slab the delay held up, so a delay reads
@@ -28,16 +32,32 @@ const delayTotalRows = (mins: number, events: number): DelayRow[] => [
   { "Description": "Delay Events", "Duration": events },
 ];
 
-/** GET /api/robo/exports/delays?date=YYYY-MM-DD — omit date for every delay to date. */
+/**
+ * GET /api/robo/exports/delays?date=&from=&to=&batch=
+ * Omit everything for every delay to date. `date` is one day, `from`/`to` an
+ * inclusive window (a range beats a single date), `batch` a loosely-matched
+ * Batch Number — the same filters the Downloads screen shows.
+ */
 export async function GET(req: NextRequest) {
-  const date = req.nextUrl.searchParams.get("date")?.trim() || "";
-  // "All" (no date) groups the list date-wise; a single date is one block.
+  const sp = req.nextUrl.searchParams;
+  const date = sp.get("date")?.trim() || "";
+  const from = sp.get("from")?.trim() || "";
+  const to = sp.get("to")?.trim() || "";
+  const batchIds = await resolveBatchRecipeIds(sp.get("batch"));
+
+  // "All dates" groups the list date-wise; a single day is one block. A range
+  // keeps the grouping (bounded All); a batch is a filter, not a date scope.
   const grouped = date === "";
 
   const fetched = await prisma.roboDelayLog.findMany({
     // Dated by the slab the delay held up, so a delay and its slab never land
-    // on two different days in the same workbook — see productionDate.ts.
-    where: delayProductionDateWhere(date) ?? {},
+    // on two different days in the same workbook — see productionDate.ts — and
+    // filtered to that slab's batch when one is typed (through the slab, since a
+    // delay carries no batch of its own; a batch filter drops slab-less delays).
+    where: {
+      ...(delayProductionDateSelectWhere({ date, from, to }) ?? {}),
+      ...(batchIds !== null ? { productionRecord: { batchRecipeId: { in: batchIds } } } : {}),
+    },
     include: {
       shift: true,
       delayCode: true,
@@ -121,6 +141,8 @@ export async function GET(req: NextRequest) {
     { wch: 12 }, { wch: 38 }, { wch: 15 }, { wch: 13 }, { wch: 11 }, { wch: 11 },
     { wch: 12 }, { wch: 28 },
   ];
+  // Highlight the header and every "TOTAL DELAY DURATION" / "Delay Events" line.
+  styleRoboSheet(ws, { columnCount: COLUMNS.length, rowRoles: rows.map(delayRowRole) });
 
   /* Second sheet: the same delays totalled per production date. Downloading
      "All" used to give one figure for the whole period, which is the least
@@ -142,13 +164,15 @@ export async function GET(req: NextRequest) {
 
   const wsByDate = XLSX.utils.json_to_sheet(byDateRows, { header: BY_DATE_COLUMNS });
   wsByDate["!cols"] = [{ wch: 18 }, { wch: 14 }, { wch: 18 }, { wch: 18 }];
+  // Header plus the closing TOTAL line.
+  styleRoboSheet(wsByDate, { columnCount: BY_DATE_COLUMNS.length, rowRoles: byDateRows.map(byDateRowRole) });
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, `Delay List`.slice(0, 31));
   XLSX.utils.book_append_sheet(wb, wsByDate, "Date-wise Totals");
 
   const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
-  const filename = `Delay_List_${date || "All"}.xlsx`;
+  const filename = `Delay_List_${exportScopeTag({ date, from, to, hasBatch: batchIds !== null })}.xlsx`;
 
   return new NextResponse(buf, {
     status: 200,

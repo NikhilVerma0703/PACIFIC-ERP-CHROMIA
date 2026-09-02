@@ -10,6 +10,9 @@ interface SlabRecord {
   id: string;
   serialNumber: number | null;
   slabNumber: string;
+  /** The slab's own production date, when it has one (a batch past midnight).
+   *  Highest precedence in productionDateOf — see productionDate.ts. */
+  productionDate: string | null;
   inTime: string | null;
   outTime: string | null;
   status: string;

@@ -2,8 +2,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { Card } from "@/components/ui";
 import { fmtDurationLong, formatDate, todayStr } from "@/lib/robo/utils";
-
-type Mode = "ALL" | "DATE";
+import { reportQuery, type ReportMode } from "@/lib/robo/reportQuery";
+import { RoboReportFilters, useRoboBatchOptions } from "@/components/robo/RoboReportFilters";
 
 interface Preview {
   totalSlabs: number;
@@ -19,44 +19,58 @@ function download(url: string) {
 }
 
 export function DownloadsClient() {
-  const [mode, setMode] = useState<Mode>("ALL");
+  const [mode, setMode] = useState<ReportMode>("ALL");
   const [date, setDate] = useState<string>(todayStr());
+  const [from, setFrom] = useState<string>("");
+  const [to, setTo] = useState<string>("");
+  const [batch, setBatch] = useState<string>("");
+  // Batch dropdown options; also defaults `batch` to the latest batch on open.
+  const batchOptions = useRoboBatchOptions(setBatch);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const loadPreview = useCallback(async (m: Mode, d: string) => {
+  const loadPreview = useCallback(async (qs: string) => {
     setLoading(true);
-    const qs = m === "DATE" && d ? `?date=${encodeURIComponent(d)}` : "";
     const res = await fetch(`/api/robo/reports/summary${qs}`);
     const data: Preview | null = res.ok ? await res.json() : null;
     setPreview(data);
     setLoading(false);
   }, []);
 
-  useEffect(() => { loadPreview(mode, date); }, [mode, date, loadPreview]);
+  // The one query string for BOTH the preview and the two downloads, built in
+  // the shared module the Reports screen uses, so the counts shown and the file
+  // saved can never be a different filter. See lib/robo/reportQuery.ts.
+  const query = reportQuery({ mode, date, from, to, batch });
+  // Debounced, because the Batch box fires per keystroke — one request for a
+  // burst of typing rather than one per character.
+  useEffect(() => {
+    const t = setTimeout(() => loadPreview(query), 250);
+    return () => clearTimeout(t);
+  }, [query, loadPreview]);
 
-  const query = mode === "DATE" && date ? `?date=${encodeURIComponent(date)}` : "";
-  const scopeLabel = mode === "ALL" ? "All production records to date" : `Records for ${formatDate(date)}`;
-  const select = "rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
+  const dateScope =
+    mode === "ALL" ? "All production records to date"
+    : mode === "DATE" ? `Records for ${formatDate(date)}`
+    : `Records from ${from ? formatDate(from) : "the start"} to ${to ? formatDate(to) : "now"}`;
+  const scopeLabel = batch.trim() ? `${dateScope} · Batch ${batch.trim()}` : dateScope;
 
   const hasProduction = (preview?.totalSlabs ?? 0) > 0;
   const hasDelays = (preview?.delayEvents ?? 0) > 0;
 
   return (
     <div className="max-w-3xl space-y-6">
-      {/* ── Date filter ── */}
+      {/* ── Filters: Batch Number, then Production Date ── */}
       <Card>
-        <h2 className="mb-4 font-semibold text-gray-800">Date Filter</h2>
-        <div className="flex flex-wrap items-center gap-3">
-          <select value={mode} onChange={e => setMode(e.target.value as Mode)} className={select}>
-            <option value="ALL">All</option>
-            <option value="DATE">Random Date</option>
-          </select>
-          {mode === "DATE" && (
-            <input type="date" value={date} onChange={e => setDate(e.target.value)} className={select} />
-          )}
-          <span className="text-xs text-gray-500">{scopeLabel}</span>
-        </div>
+        <h2 className="mb-4 font-semibold text-gray-800">Filters</h2>
+        <RoboReportFilters
+          mode={mode} setMode={setMode}
+          date={date} setDate={setDate}
+          from={from} setFrom={setFrom}
+          to={to} setTo={setTo}
+          batch={batch} setBatch={setBatch}
+          batchOptions={batchOptions}
+        />
+        <p className="mt-2 text-xs text-gray-500">{scopeLabel}</p>
 
         {/* What the current filter covers */}
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">

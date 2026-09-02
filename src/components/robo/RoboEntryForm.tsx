@@ -47,6 +47,8 @@ interface BatchEntry {
 interface BatchRecipe { id: string; productionDate: string | null; batchNo: string | null; designName: string; thickness: number | null; targetSlabs: number | null; notes: string | null; entries: BatchEntry[] }
 interface ProdRecord {
   id: string; serialNumber: number | null; slabNumber: string;
+  /** The slab's own production date, when it has one (a batch past midnight). */
+  productionDate?: string | null;
   inTime: string | null; outTime: string | null; roymixCycleTime: number | null;
   roymixBodyWeight: number | null; status: string; remarks: string | null; createdAt: string;
   /** The delays logged against this slab. Present so the Recent slabs table
@@ -156,7 +158,7 @@ const btnGhost = "rounded-lg border border-gray-300 px-4 py-2 text-sm font-mediu
 type MachineEntry = { programName: string; toolName: string; liquidName: string; powderName: string; rollerHeight: string; targetCycleTime: string };
 const emptyEntry = (): MachineEntry => ({ programName: "", toolName: "", liquidName: "", powderName: "", rollerHeight: "", targetCycleTime: "" });
 
-const emptySlab = () => ({ serialNumber: "", slabNumber: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" });
+const emptySlab = () => ({ serialNumber: "", slabNumber: "", productionDate: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" });
 const emptyDelayForm = () => ({ selectedCodeId: "", machineId: "", machineName: "", startTime: "", endTime: "", remarks: "" });
 
 /** What the Recent slabs table prints under Remarks: the slab's own note AND
@@ -330,6 +332,10 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
       setSlab({
         serialNumber: rec.serialNumber != null ? String(rec.serialNumber) : "",
         slabNumber: rec.slabNumber ?? "",
+        // The slab's effective production date, editable — its own if it has
+        // one, else the setup's, else the shift's. Correcting it here changes
+        // only this slab, never the batch or its other slabs.
+        productionDate: productionDateOf(rec),
         inTime: rec.inTime ?? "",
         outTime: rec.outTime ?? "",
         roymixCycleTime: rec.roymixCycleTime != null ? String(rec.roymixCycleTime) : "",
@@ -530,6 +536,32 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
    * `suggested` remembers what this effect last put there; anything else in the
    * box was typed by a person and is left alone.
    */
+  /**
+   * The production date NEW slabs default to for the running batch.
+   *
+   * A batch can run past midnight: slabs 1-80 on the 1st, slab 81 at 00:03 on
+   * the 2nd. The operator changes the Production Date field ONCE for slab 81 and
+   * every slab after it carries the new day — that persistence lives here, in a
+   * ref, so it survives a save (which clears the rest of the row) and even an
+   * edit interlude (correcting an earlier slab does not move it). It re-seeds to
+   * the batch's own setup date only when the RUNNING BATCH itself changes,
+   * tracked by seededBatchId so an ordinary re-render never resets the day the
+   * operator has moved on to.
+   */
+  const workingDate = useRef<string>("");
+  const seededBatchId = useRef<string | null>(null);
+  useEffect(() => {
+    if (loading || isPageEdit || isSetupEdit) return;
+    const bid = latestBatch?.id ?? null;
+    if (bid === seededBatchId.current) return; // same batch — keep the working day
+    seededBatchId.current = bid;
+    const seed = latestBatch?.productionDate?.trim() || localDate();
+    workingDate.current = seed;
+    // Don't stomp a slab loaded for editing — its own date is on screen.
+    if (!editingId) setSlab((p) => ({ ...p, productionDate: seed }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [latestBatch?.id, loading, editingId]);
+
   const suggested = useRef<string>("");
   useEffect(() => {
     if (loading || editingId || isSetupEdit) return;
@@ -906,7 +938,9 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     setDelays([]);
     resetDelayEntry();
     setSlabTaken(false);
-    setSlab(emptySlab());
+    // Back to a blank NEW slab, on the day the operator is logging under — not
+    // the edited slab's own date, and not empty.
+    setSlab({ ...emptySlab(), productionDate: workingDate.current });
   };
 
   /**
@@ -956,6 +990,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
           body: JSON.stringify({
             serialNumber: slab.serialNumber ? Number(slab.serialNumber) : null,
             slabNumber: slab.slabNumber.trim(),
+            productionDate: slab.productionDate.trim() || null,
             inTime: slab.inTime || null,
             outTime: slab.outTime || null,
             roymixCycleTime: slab.roymixCycleTime ? Number(slab.roymixCycleTime) : null,
@@ -971,6 +1006,9 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
             slabNumber: slab.slabNumber.trim(),
             shiftId: shift!.id,
             batchRecipeId: latestBatch?.id || null,
+            // The slab's own day. Falls back to the setup/shift when blank, so an
+            // untouched field behaves exactly as before this existed.
+            productionDate: slab.productionDate.trim() || null,
             inTime: slab.inTime || null,
             outTime: slab.outTime || null,
             roymixCycleTime: slab.roymixCycleTime ? Number(slab.roymixCycleTime) : null,
@@ -1038,11 +1076,14 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
          Both fields are emptied and the effect below fetches the real end of
          the register. */
       suggested.current = "";
-      setSlab((p) => ({ ...p, serialNumber: "", slabNumber: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" }));
+      setSlab((p) => ({ ...p, serialNumber: "", slabNumber: "", productionDate: workingDate.current, inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" }));
       setRegisterVersion((v) => v + 1);
     } else {
       suggested.current = nextSerial;
-      setSlab((p) => ({ ...p, serialNumber: nextSerial, slabNumber: nextSlab, inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" }));
+      // Production date carries forward on the working day — the whole point of
+      // the per-slab date: once the operator moves to the next day, every slab
+      // after it stays there until they move again.
+      setSlab((p) => ({ ...p, serialNumber: nextSerial, slabNumber: nextSlab, productionDate: workingDate.current, inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" }));
       // Only when this could not work it out. Asking every time would let the
       // server's answer overwrite a pair we know is right.
       if (!nextSerial || !nextSlab) setRegisterVersion((v) => v + 1);
@@ -1400,6 +1441,23 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                   onBlur={(e) => checkSlabNumber(e.target.value)}
                   placeholder="e.g. 140748" className={inp} required {...advanceProps("slab")} />
                 {slabTaken && <p className="mt-1 text-xs font-medium text-red-600">Duplicate Slab No. — this slab number already exists.</p>}
+              </div>
+              <div>
+                {/* The slab's own production date. Defaults to the batch's day
+                    and carries forward slab after slab; the operator changes it
+                    only when a run crosses midnight, and from then on every new
+                    slab in the batch takes the new day. Changing it here never
+                    touches slabs already saved. */}
+                <span className={label}>Production Date</span>
+                <input type="date" value={slab.productionDate}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setSlab((p) => ({ ...p, productionDate: v }));
+                    // A new slab moves the working day for the ones after it; an
+                    // edit changes only the slab being corrected.
+                    if (!editingId) workingDate.current = v;
+                  }}
+                  className={inp} />
               </div>
               <div>
                 {/* Plain "In time" / "Out time". The machine names used to be

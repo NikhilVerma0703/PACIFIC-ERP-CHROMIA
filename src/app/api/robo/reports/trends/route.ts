@@ -23,8 +23,9 @@ function shiftMinutes(startTime: string, endTime: string | null, status: string,
  * GET /api/robo/reports/trends?days=7|15|30
  * One row per calendar day (including days with no production) so gaps stay visible.
  *
- * Bucketed by PRODUCTION DATE — the date on the batch setup, falling back to
- * the shift's own — the same rule every other Robo screen uses. See
+ * Bucketed by PRODUCTION DATE — the slab's own per-slab date if it has one (a
+ * batch past midnight), else the date on the batch setup, else the shift's own
+ * — the same precedence every other Robo screen uses. See
  * lib/robo/productionDate.ts. It used to group by the shift's date, which put a
  * run entered three days late on the day it was typed, so this chart and the
  * KPI cards above it on the same page could show one slab under two days.
@@ -50,34 +51,38 @@ export async function GET(req: NextRequest) {
 
   const window = { in: dates };
   /* Every slab and delay whose production date falls in the window, by the
-     same fallback the rest of the module uses. The `in` form of each branch is
-     the multi-date version of productionDateWhere — kept here rather than in
-     that module because only this route asks about a range. */
+     same precedence the rest of the module uses. The `in` form of each branch
+     is the multi-date version of productionDateWhere — kept here rather than in
+     that module because only this route asks about a set of days — and it leads
+     with the slab's OWN per-slab date so a batch past midnight lands on the
+     right day, with the fallback branches pinned to `productionDate: null`. */
   const [records, delays] = await Promise.all([
     prisma.roboProductionRecord.findMany({
       where: {
         OR: [
-          { batchRecipe: { productionDate: window } },
-          { batchRecipe: { productionDate: null }, shift: { date: window } },
-          { batchRecipe: { productionDate: "" }, shift: { date: window } },
-          { batchRecipe: null, shift: { date: window } },
+          { productionDate: window },
+          { productionDate: null, batchRecipe: { productionDate: window } },
+          { productionDate: null, batchRecipe: { productionDate: null }, shift: { date: window } },
+          { productionDate: null, batchRecipe: { productionDate: "" }, shift: { date: window } },
+          { productionDate: null, batchRecipe: null, shift: { date: window } },
         ],
       },
-      select: { shiftId: true, batchRecipe: { select: { productionDate: true } }, shift: { select: { date: true } } },
+      select: { shiftId: true, productionDate: true, batchRecipe: { select: { productionDate: true } }, shift: { select: { date: true } } },
     }),
     prisma.roboDelayLog.findMany({
       where: {
         OR: [
-          { productionRecord: { batchRecipe: { productionDate: window } } },
-          { productionRecord: { batchRecipe: { productionDate: null } }, shift: { date: window } },
-          { productionRecord: { batchRecipe: { productionDate: "" } }, shift: { date: window } },
-          { productionRecord: { batchRecipe: null }, shift: { date: window } },
+          { productionRecord: { productionDate: window } },
+          { productionRecord: { productionDate: null, batchRecipe: { productionDate: window } } },
+          { productionRecord: { productionDate: null, batchRecipe: { productionDate: null } }, shift: { date: window } },
+          { productionRecord: { productionDate: null, batchRecipe: { productionDate: "" } }, shift: { date: window } },
+          { productionRecord: { productionDate: null, batchRecipe: null }, shift: { date: window } },
           { productionRecord: null, shift: { date: window } },
         ],
       },
       select: {
         durationMinutes: true,
-        productionRecord: { select: { batchRecipe: { select: { productionDate: true } }, shift: { select: { date: true } } } },
+        productionRecord: { select: { productionDate: true, batchRecipe: { select: { productionDate: true } }, shift: { select: { date: true } } } },
         shift: { select: { date: true } },
       },
     }),

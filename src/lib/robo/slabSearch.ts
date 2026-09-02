@@ -3,12 +3,17 @@
  * Records.
  *
  * Pure and alias-free so `node --test` can reach it, the same split
- * setupMasters.ts uses. It exists as a module rather than a few lines in the
- * route for one reason: two of the filters live on the SAME relation. Written
- * inline, the second `where.batchRecipe = {...}` silently replaces the first,
- * so searching a batch number AND a design would quietly ignore one of them and
- * return rows that match only the other. Building the relation filter once, and
- * pinning it in tests/roboSlabSearch.test.ts, is what stops that coming back.
+ * setupMasters.ts uses.
+ *
+ * Batch Number is matched by the ROUTE, not here. "D-1372", "d1372" and a bare
+ * "1372" are the same batch and "A-1248" is not "D-1248" — a rule no Prisma
+ * `contains` can express (see batchNo.ts). So the route folds the typed number
+ * to the set of setup ids it names (batchFilter.ts) and hands them in as
+ * `batchRecipeIds`; this narrows on the scalar `batchRecipeId` FK. That also
+ * retires the old hazard this module was written around — batch and design both
+ * writing `where.batchRecipe`, the second silently clobbering the first — since
+ * only Design Name lives on that relation now. It stays a module, and stays
+ * pinned in tests/roboSlabSearch.test.ts, so the composition can't quietly rot.
  */
 
 // The .ts is deliberate: this module is reached by `node --test`, whose ESM
@@ -28,8 +33,15 @@ export interface SlabSearchInput {
   date?: string | null;
   slabNumber?: string | null;
   designName?: string | null;
-  /** The batch number written on the setup this slab was logged against. */
-  batchNo?: string | null;
+  /**
+   * The setups whose batch number matches what the operator typed, already
+   * resolved to ids by the route (matchingBatchRecipeIds over batchNo.ts).
+   *
+   * `null` means no batch filter. An empty array means a batch WAS searched and
+   * nothing matched — a real filter that returns no rows, which is different
+   * from no filter and must narrow to zero, not be ignored.
+   */
+  batchRecipeIds?: string[] | null;
 }
 
 /** What the route hands Prisma, and whether the caller filtered at all. */
@@ -37,14 +49,16 @@ export interface SlabSearchWhere {
   where: {
     shiftId?: string;
     slabNumber?: { contains: string };
-    batchRecipe?: { designName?: { contains: string }; batchNo?: { contains: string } };
+    /** The setup this slab was logged against, matched by resolved id. */
+    batchRecipeId?: { in: string[] };
+    /** Design Name is the only filter left on the related setup. */
+    batchRecipe?: { designName: { contains: string } };
     /**
      * The production-date match, which spans two relations — see
-     * productionDateWhere. It sits alongside `batchRecipe` rather than inside
-     * it: Prisma ANDs the top-level keys, so a date and a design narrow each
-     * other instead of one replacing the other.
+     * productionDateWhere. It sits alongside the other keys rather than inside
+     * `batchRecipe`: Prisma ANDs the top-level keys, so a date and a design
+     * narrow each other instead of one replacing the other.
      */
-    /** The production-date branches, as productionDateWhere builds them. */
     OR?: NonNullable<ReturnType<typeof productionDateWhere>>["OR"];
   };
   hasFilters: boolean;
@@ -57,25 +71,25 @@ export function slabSearchWhere(input: SlabSearchInput): SlabSearchWhere {
   const date = clean(input.date);
   const slabNumber = clean(input.slabNumber);
   const designName = clean(input.designName);
-  const batchNo = clean(input.batchNo);
+  const batchRecipeIds = input.batchRecipeIds ?? null;
 
   const where: SlabSearchWhere["where"] = {};
   if (shiftId) where.shiftId = shiftId;
-  // Assigned field by field, NOT Object.assign: that helper's signature is
-  // `(target: T, source: U) => T & U`, so it never checks the source against
-  // the target and a productionDateWhere that changed shape would slip through
-  // unnoticed — in the one module written to stop two things drifting apart.
   const dateWhere = productionDateWhere(date);
   if (dateWhere) where.OR = dateWhere.OR;
   if (slabNumber) where.slabNumber = { contains: slabNumber };
 
-  // Both of these narrow the SAME related setup, so they are collected into one
-  // object and applied together — that is the AND the operator expects when
-  // they type a batch number and a design.
-  const recipe: NonNullable<SlabSearchWhere["where"]["batchRecipe"]> = {};
-  if (designName) recipe.designName = { contains: designName };
-  if (batchNo) recipe.batchNo = { contains: batchNo };
-  if (Object.keys(recipe).length > 0) where.batchRecipe = recipe;
+  // A null is "no batch filter"; an array — even an empty one — is a filter.
+  // `{ in: [] }` matches nothing, which is exactly right for a batch number the
+  // operator typed that names no setup: an empty table, not the whole register.
+  if (batchRecipeIds !== null) where.batchRecipeId = { in: batchRecipeIds };
 
-  return { where, hasFilters: Boolean(shiftId || date || slabNumber || designName || batchNo) };
+  // Design Name is the lone remaining filter on the related setup, so it is set
+  // directly — no second writer to clobber it now that batch matches by id.
+  if (designName) where.batchRecipe = { designName: { contains: designName } };
+
+  return {
+    where,
+    hasFilters: Boolean(shiftId || date || slabNumber || designName || batchRecipeIds !== null),
+  };
 }
