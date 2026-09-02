@@ -59,6 +59,9 @@ export default async function EditRoboSlabPage({
     where: { id },
     select: {
       slabNumber: true,
+      // The slab's own production date (a batch past midnight) — highest
+      // precedence in productionDateOf, so the header shows the slab's real day.
+      productionDate: true,
       batchRecipeId: true,
       shift: { select: { date: true, status: true } },
       batchRecipe: {

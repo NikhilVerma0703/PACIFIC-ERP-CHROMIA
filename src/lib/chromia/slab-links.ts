@@ -31,10 +31,11 @@ export function needsIntakeQc(status: SlabStatusType): boolean {
  * nothing to open: its work is done or belongs to the Recalibration section.
  * Returning null rather than a dead link keeps the table honest about that.
  *
- * `back` is an optional query string — the filters the row was found under —
- * carried along so that completing QC can return to that same filtered view
- * rather than a bare list. It is the query part only (no leading `?`), and it
- * is url-encoded here so its own `&`/`=` survive being one parameter's value.
+ * `back` is an optional full in-app URL — the page the row was found on, with
+ * its filters — carried along so that completing QC can return to that same
+ * view rather than a bare list. It is url-encoded here so its own `?`/`&`/`=`
+ * survive being one parameter's value; the QC panel reads it back and navigates
+ * there (see qc-panel.tsx), after checking it is an in-app /chromia path.
  */
 export function slabHref(id: string, status: SlabStatusType, back?: string): string | null {
   if (!needsIntakeQc(status)) return null;

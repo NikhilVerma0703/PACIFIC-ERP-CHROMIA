@@ -1,16 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { delayProductionDateWhere, productionDateWhere } from "@/lib/robo/productionDate";
+import { resolveBatchRecipeIds } from "@/lib/robo/batchFilter";
+import { delayProductionDateSelectWhere, productionDateSelectWhere } from "@/lib/robo/productionDate";
 import { roboGate } from "@/lib/rbac";
-
-/** The four robots on the line, in physical order. */
-const ROBOTS = [
-  { db: "Roycut-1", label: "Robo1", short: "R1" },
-  { db: "Roymix",   label: "Robo2", short: "R2" },
-  { db: "Roycut-2", label: "Robo3", short: "R3" },
-  { db: "Roycut-3", label: "Robo4", short: "R4" },
-];
 
 function toMins(t: string): number {
   const [h, m] = (t || "").split(":").map(Number);
@@ -29,13 +22,16 @@ function shiftMinutes(startTime: string, endTime: string | null, status: string,
 }
 
 /**
- * GET /api/robo/reports/summary?date=YYYY-MM-DD
- * No date  → every production record to date.
- * With date → only what was PRODUCED on that date.
+ * GET /api/robo/reports/summary?date=&from=&to=&batch=
+ * All optional and combinable:
+ *   date         → one production day ("Date Wise")
+ *   from, to     → an inclusive production-date window ("Date Range")
+ *   batch        → a Batch Number, matched loosely (see batchFilter.ts)
+ * A range beats a single date; with none of the three, every record to date.
  *
- * "That date" is the production date the operator entered on the batch setup,
- * falling back to the shift's own date — the same rule Slabs Records, Complete
- * Details and both Excel downloads use. See lib/robo/productionDate.ts.
+ * "Production date" is the date the operator entered on the batch setup, falling
+ * back to the shift's own date — the same rule Slabs Records, Complete Details
+ * and both Excel downloads use. See lib/robo/productionDate.ts.
  *
  * It used to be `where: { shift: { date } }`, and that is not a small
  * difference: a shift row is created silently with the day the tablet was
@@ -46,14 +42,33 @@ function shiftMinutes(startTime: string, endTime: string | null, status: string,
  * off and picking the typing date offered an empty workbook.
  */
 export async function GET(req: NextRequest) {
+  // THE GATE STAYS — see the note in the delays export.
   const refused = await roboGate();
   if (refused) return refused;
-  const date = req.nextUrl.searchParams.get("date")?.trim() || "";
+
+  const sp = req.nextUrl.searchParams;
+  const date = sp.get("date")?.trim() || "";
+  const from = sp.get("from")?.trim() || "";
+  const to = sp.get("to")?.trim() || "";
   const now = new Date();
   const nowMins = now.getHours() * 60 + now.getMinutes();
 
-  const recordWhere: Prisma.RoboProductionRecordWhereInput = productionDateWhere(date) ?? {};
-  const delayWhere: Prisma.RoboDelayLogWhereInput = delayProductionDateWhere(date) ?? {};
+  const batchIds = await resolveBatchRecipeIds(sp.get("batch"));
+  // A null is "no batch filter"; an array (even empty) narrows — the delay
+  // form nests through the slab the delay held up.
+  const batchRecord: Prisma.RoboProductionRecordWhereInput =
+    batchIds !== null ? { batchRecipeId: { in: batchIds } } : {};
+  const batchDelay: Prisma.RoboDelayLogWhereInput =
+    batchIds !== null ? { productionRecord: { batchRecipeId: { in: batchIds } } } : {};
+
+  const recordWhere: Prisma.RoboProductionRecordWhereInput = {
+    ...(productionDateSelectWhere({ date, from, to }) ?? {}),
+    ...batchRecord,
+  };
+  const delayWhere: Prisma.RoboDelayLogWhereInput = {
+    ...(delayProductionDateSelectWhere({ date, from, to }) ?? {}),
+    ...batchDelay,
+  };
 
   const totalSlabs = await prisma.roboProductionRecord.count({ where: recordWhere });
 
@@ -64,8 +79,11 @@ export async function GET(req: NextRequest) {
      would divide this date's slab count by another date's minutes.
 
      A shift is counted once however many of its slabs matched; a distinct
-     select over the matched records gives exactly that set. */
-  const shiftIds = date
+     select over the matched records gives exactly that set. Restricted whenever
+     ANY filter is applied — a date, a range, or a batch — so the minutes always
+     match the slabs they are divided into. */
+  const anyFilter = Boolean(date || from || to || batchIds !== null);
+  const shiftIds = anyFilter
     ? (await prisma.roboProductionRecord.findMany({
         where: recordWhere,
         select: { shiftId: true },
@@ -85,28 +103,15 @@ export async function GET(req: NextRequest) {
     where: delayWhere,
     select: {
       durationMinutes: true,
-      machineName: true,
-      machine: { select: { name: true } },
       delayCode: { select: { code: true, description: true, category: true } },
     },
   });
 
   const totalDelayMins = delays.reduce((s, d) => s + d.durationMinutes, 0);
 
-  // Downtime attributed to each robot
-  const byMachine: Record<string, number> = {};
-  for (const d of delays) {
-    const name = d.machineName || d.machine?.name;
-    if (!name) continue;
-    byMachine[name] = (byMachine[name] || 0) + d.durationMinutes;
-  }
-  const machinePerformance = ROBOTS.map(r => ({
-    name: r.label,
-    short: r.short,
-    minutes: byMachine[r.db] || 0,
-  }));
-
-  // Top 5 delay types by total duration
+  // EVERY delay type by total duration, highest first — the Delay Analysis bar
+  // chart and its table show the whole list, not a Top 5. Percentages are the
+  // client's job (against totalDelayMins), so the shape carries only the totals.
   const byCode: Record<string, { code: string; description: string; category: string; minutes: number; events: number }> = {};
   for (const d of delays) {
     const key = d.delayCode.code;
@@ -116,7 +121,7 @@ export async function GET(req: NextRequest) {
     byCode[key].minutes += d.durationMinutes;
     byCode[key].events += 1;
   }
-  const topDelayTypes = Object.values(byCode).sort((a, b) => b.minutes - a.minutes).slice(0, 5);
+  const delayTypes = Object.values(byCode).sort((a, b) => b.minutes - a.minutes);
 
   return NextResponse.json({
     date: date || null,
@@ -125,7 +130,6 @@ export async function GET(req: NextRequest) {
     slabsPerHour: productionMinutes > 0 ? Math.round((totalSlabs / (productionMinutes / 60)) * 10) / 10 : null,
     totalDelayMins,
     delayEvents: delays.length,
-    machinePerformance,
-    topDelayTypes,
+    delayTypes,
   });
 }

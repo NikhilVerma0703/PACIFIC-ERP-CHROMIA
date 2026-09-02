@@ -3967,6 +3967,17 @@ model RoboProductionRecord {
   shift            RoboShift        @relation(fields: [shiftId], references: [id])
   batchRecipeId    String?
   batchRecipe      RoboBatchRecipe? @relation(fields: [batchRecipeId], references: [id])
+  // The slab's OWN production date, when it differs from the batch's. A batch
+  // can run past midnight — slabs 1-80 on 1 Sep, slab 81 at 00:03 on 2 Sep —
+  // and the operator sets this per slab so slab 81 reads 2 Sep while 1-80 stay
+  // 1 Sep, all on the same batch, same shift, same running S.No. Highest
+  // precedence in productionDate.ts: this, else the setup's date, else the
+  // shift's. INVARIANT: a real yyyy-mm-dd string or NULL, never "" — every
+  // writer stores `trim() || null`, so "no per-slab date" is exactly NULL and
+  // the where-builders can gate the fallback branches on `productionDate: null`
+  // alone. Nullable and added late, so existing and imported slabs are NULL and
+  // keep falling back to the setup exactly as before.
+  productionDate   String?
   inTime           String?
   outTime          String?
   roymixCycleTime  Int? // RoyMix cycle time in seconds (varies per slab)

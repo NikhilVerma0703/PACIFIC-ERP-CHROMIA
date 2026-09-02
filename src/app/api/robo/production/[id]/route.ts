@@ -126,6 +126,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (body.outTime !== undefined)          data.outTime = body.outTime || null;
   if (body.roymixCycleTime !== undefined)  data.roymixCycleTime = body.roymixCycleTime ? Number(body.roymixCycleTime) : null;
   if (body.roymixBodyWeight !== undefined) data.roymixBodyWeight = body.roymixBodyWeight ? Number(body.roymixBodyWeight) : null;
+  // The slab's own production date, editable when correcting a cross-midnight
+  // slab. Real yyyy-mm-dd or NULL, never "" — the where-builders' invariant.
+  if (body.productionDate !== undefined)   data.productionDate = (typeof body.productionDate === "string" && body.productionDate.trim()) || null;
 
   if (body.status !== undefined) {
     data.status = body.status;

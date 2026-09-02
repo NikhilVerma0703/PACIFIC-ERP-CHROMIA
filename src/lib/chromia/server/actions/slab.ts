@@ -1,7 +1,6 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { redirect } from 'next/navigation';
 
 import { APP_ROUTES } from '@/lib/chromia/constants/app';
 import { ChromiaDisposition as Disposition } from '@prisma/client';
@@ -24,6 +23,10 @@ import { completeSlabIntake } from '@/lib/chromia/server/services/slab-intake-se
 export interface SlabIntakeFormState {
   error?: string;
   fieldErrors?: Record<string, string[] | undefined>;
+  /** Set once the save succeeds, so the panel knows to return the user to the
+   *  page they came from. A number (not a boolean) so two saves in a row are
+   *  two distinct successes and the panel navigates for each. */
+  savedAt?: number;
 }
 
 /** Run the outcome-specific record for everything except recalibration. */
@@ -187,30 +190,35 @@ async function saveQc(
     throw error;
   }
 
+  // Every page a QC outcome can change is marked stale, so whichever one the
+  // panel returns to shows the just-graded slab correctly — the record in Slab
+  // Records, the counts on the Dashboard, and the queues on Recalibration,
+  // Stockyard and Dispatch. The operator screen too: it is where the grading
+  // happens, so it is stale the instant this returns.
   revalidatePath(APP_ROUTES.slabs);
   revalidatePath(APP_ROUTES.dashboard);
   revalidatePath(APP_ROUTES.recalibrations);
-  // QC is graded from the operator screen now, so that screen is stale the
-  // moment this returns — without this, going Back to it re-offers the QC
-  // section for a slab that has just been graded.
+  revalidatePath(APP_ROUTES.stockyard);
+  revalidatePath(APP_ROUTES.dispatch);
   revalidatePath(APP_ROUTES.operator);
 
-  // Straight to the Recalibration page, where the slab is now waiting to be
-  // sent. No query string: the record is simply in the table.
-  if (qc.disposition === Disposition.RECALIBRATION) {
-    redirect(APP_ROUTES.recalibrations);
-  }
-
-  // Back to the history table — and to the SAME filtered view the slab was
-  // opened from, when it carried one. Processing a month of old records used to
-  // dump the in-charge back at the unfiltered list after every slab, so the
-  // February filter had to be retyped before each one. `back` is the filter
-  // query the row was found under; re-parsed through URLSearchParams so only a
-  // well-formed query string can ever become the destination.
-  const back = formData.get('back');
-  if (typeof back === 'string' && back.trim() !== '') {
-    const clean = new URLSearchParams(back).toString();
-    if (clean) redirect(`${APP_ROUTES.slabs}?${clean}`);
-  }
-  redirect(APP_ROUTES.slabs);
+  /*
+   * No redirect() from here — deliberately, and this is the fix.
+   *
+   * A server redirect() inside a useActionState action ties the form's pending
+   * state to a server-driven navigation. The destinations here are
+   * force-dynamic pages (the whole filtered Slab Records list, the Recalibration
+   * table), and while one of those rendered the button sat on "Saving…" — on a
+   * slow render it never came back, so the save looked stuck even though it had
+   * already committed. Worse, it forced the destination: Recalibration jumped to
+   * the Recalibration page, and every other outcome to Slab Records, no matter
+   * which screen the grader had actually come from.
+   *
+   * So the action just reports success. The panel (qc-panel.tsx) resolves its
+   * own pending the moment this returns, then navigates the user back to exactly
+   * where the slab was opened from — the same filtered Slab Records view, or
+   * Operator Entry — client-side. Recalibration is no exception: the record is
+   * updated here, and the user stays where they were.
+   */
+  return { savedAt: Date.now() };
 }
