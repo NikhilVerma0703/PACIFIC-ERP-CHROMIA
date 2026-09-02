@@ -63,15 +63,15 @@ export default async function SlabsPage({
   const to = filtered ? total : Math.min(filters.page * filters.pageSize, total);
 
   /*
-   * The current filter query, carried on each slab link so QC can return to it.
-   * A slab number opens the QC screen, and completing QC used to redirect to a
-   * bare /chromia/slabs — dropping the very filter the in-charge was working
-   * through and making them retype it before every single slab. The link hands
-   * the filters along; the QC save sends them back (see completeSlabAction).
-   * Only when something is actually filtered — unfiltered browsing returns to
-   * the plain list exactly as before.
+   * The full page URL to return to after QC — this path AND its current
+   * filters — carried on every slab link and every Edit link. QC opens on the
+   * operator screen; when it saves, the panel comes back to exactly this view,
+   * filters intact, so the in-charge working through a filtered month can grade
+   * slab after slab without retyping the filter each time. Unfiltered browsing
+   * carries the plain /chromia/slabs path, so it returns to the list all the
+   * same. See qc-panel.tsx for the return itself.
    */
-  const backQuery = filtered ? buildQuery(filters) : undefined;
+  const backTo = `${APP_ROUTES.slabs}${filtered ? `?${buildQuery(filters)}` : ''}`;
 
   return (
     <>
@@ -132,7 +132,7 @@ export default async function SlabsPage({
                       </td>
                       <td className={`${tdMuted} font-mono`}>{slab.batch.batchNo}</td>
                       <td className={td}>
-                        <SlabNo id={slab.id} status={slab.status} slabNo={slab.slabNo} back={backQuery} />
+                        <SlabNo id={slab.id} status={slab.status} slabNo={slab.slabNo} back={backTo} />
                       </td>
                       <td className={td}>{slab.baseMaterial.name}</td>
                       <td className={tdMuted}>
@@ -160,7 +160,7 @@ export default async function SlabsPage({
                         {slab.remarks ?? '—'}
                       </td>
                       <td className={`${td} text-right`}>
-                        <RowActions slabId={slab.id} slabNo={slab.slabNo} />
+                        <RowActions slabId={slab.id} slabNo={slab.slabNo} back={backTo} />
                       </td>
                     </tr>
                   ))}

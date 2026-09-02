@@ -19,7 +19,17 @@ const INITIAL_STATE: SlabRecordFormState = {};
  *
  * Delete asks first, and the question names the slab.
  */
-export function RowActions({ slabId, slabNo }: { slabId: string; slabNo: string }) {
+export function RowActions({
+  slabId,
+  slabNo,
+  back,
+}: {
+  slabId: string;
+  slabNo: string;
+  /** The full Slab Records URL (with filters) to return to after an Edit save,
+   *  so correcting a slab keeps the in-charge on the same filtered view. */
+  back?: string;
+}) {
   const [state, formAction, isPending] = useActionState(deleteSlabRecordAction, INITIAL_STATE);
   const [asking, setAsking] = useState(false);
 
@@ -32,7 +42,7 @@ export function RowActions({ slabId, slabNo }: { slabId: string; slabNo: string 
   return (
     <span className="flex items-center justify-end gap-1.5 whitespace-nowrap">
       <Link
-        href={`${APP_ROUTES.operator}?slab=${slabId}&edit=1`}
+        href={`${APP_ROUTES.operator}?slab=${slabId}&edit=1${back ? `&back=${encodeURIComponent(back)}` : ''}`}
         aria-label={`Edit slab ${slabNo}`}
         className="border-line surface hover:border-line-strong inline-flex h-9 items-center justify-center rounded-lg border px-3 text-xs font-medium transition-colors hover:bg-[var(--surface-muted)]"
       >
