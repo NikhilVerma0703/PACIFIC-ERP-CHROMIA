@@ -114,8 +114,9 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
             )}
 
             {/* ---- The six numbers ------------------------------------------- */}
-            <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-              <Kpi label="Counted good slabs" value={half(pool.counted)} sub={`floor ${fmt(pool.floor)} · ${fmt(plant.slowSlabs)} on slow designs counted twice`} />
+            <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
+              <Kpi label="Counted good slabs" value={half(pool.counted)} sub={`floor ${fmt(pool.floor)} · ${half(plant.credit)} good slabs + ${fmt(plant.slowSlabs)} counted a second time`} />
+              <Kpi label="Counted twice" value={fmt(plant.slowSlabs)} sub={`good slabs from hours with a standard of ${SLOW_STD_MAX}/hr or less — each added once more, so +${fmt(plant.slowSlabs)} to the count`} />
               <Kpi label="Pool today" value={pool.poolNow ? lakh(pool.poolNow) : "—"} sub={pool.poolNow ? "unlocked" : `${fmt(pool.floor - Math.floor(pool.counted))} short of the floor`} />
               <Kpi label="Still to grade" value={fmt(outstanding.real)} sub={`${fmt(outstanding.total)} claimed and uncounted · ${fmt(outstanding.byStage.nowhere)} never seen · ${fmt(outstanding.byStage.routed)} routed`} />
               <Kpi label="Projected" value={fmt(Math.round(projection.projectedReal))} sub={`if the real ones grade at ${pct(projection.share)} → ${projection.poolReal ? lakh(projection.poolReal) : "no pool"}`} />
@@ -166,7 +167,7 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                     <tr className="text-left text-[11px] uppercase tracking-wider text-gray-500">
                       <th className="py-2 pr-3">Shift</th><th className="py-2 pr-3">Shifts</th><th className="py-2 pr-3">Running</th>
                       <th className="py-2 pr-3">Pressed</th><th className="py-2 pr-3">Graded</th><th className="py-2 pr-3">To grade</th>
-                      <th className="py-2 pr-3">A / B / C</th><th className="py-2 pr-3">Good</th><th className="py-2 pr-3">Counted</th>
+                      <th className="py-2 pr-3">A / B / C</th><th className="py-2 pr-3">Good</th><th className="py-2 pr-3">Counted twice</th><th className="py-2 pr-3">Counted</th>
                       <th className="py-2 pr-3">Per shift</th><th className="py-2 pr-3">Grade share</th>
                       <th className="py-2 pr-3">Quality<br /><span className="normal-case text-gray-400">per-shift avg</span></th>
                       <th className="py-2 pr-3">Quality<br /><span className="normal-case text-gray-400">month share</span></th>
@@ -188,6 +189,7 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                           <td className="py-2 pr-3">{fmt(l.ungraded)}</td>
                           <td className="py-2 pr-3 text-gray-600">{fmt(l.gradeA)} / {fmt(l.gradeB)} / {fmt(l.gradeC)}</td>
                           <td className="py-2 pr-3">{half(l.credit)}</td>
+                          <td className="py-2 pr-3 text-gray-600">{fmt(l.slowSlabs)}</td>
                           <td className="py-2 pr-3 font-semibold text-gray-900">{fmt(l.points)}</td>
                           <td className="py-2 pr-3">{l.pointsPerShift.toFixed(1)}</td>
                           <td className="py-2 pr-3">{pct(l.rawShare)}</td>
@@ -203,7 +205,7 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                       <td className="py-2 pr-3">{fmt(plant.instances)}</td><td className="py-2 pr-3 text-gray-600">{m.letters.reduce((x, l) => x + l.effectiveShifts, 0).toFixed(1)}</td>
                       <td className="py-2 pr-3">{fmt(plant.claimed)}</td><td className="py-2 pr-3">{fmt(plant.graded)}</td><td className="py-2 pr-3">{fmt(plant.ungraded)}</td>
                       <td className="py-2 pr-3 text-gray-600">{fmt(plant.gradeA)} / {fmt(plant.gradeB)} / {fmt(plant.gradeC)}</td>
-                      <td className="py-2 pr-3">{half(plant.credit)}</td><td className="py-2 pr-3 font-semibold">{fmt(plant.points)}</td>
+                      <td className="py-2 pr-3">{half(plant.credit)}</td><td className="py-2 pr-3 text-gray-600">{fmt(plant.slowSlabs)}</td><td className="py-2 pr-3 font-semibold">{fmt(plant.points)}</td>
                       <td className="py-2 pr-3">—</td><td className="py-2 pr-3">{pct(plant.rawShare)}</td><td className="py-2 pr-3">—</td><td className="py-2 pr-3">—</td><td className="py-2 pr-3">100%</td><td className="py-2">100%</td>
                     </tr>
                   </tbody>

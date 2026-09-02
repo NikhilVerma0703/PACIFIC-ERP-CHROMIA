@@ -91,7 +91,8 @@ export interface FlaggedRow {
 }
 
 /** One claimed slab the score could not count yet, and why. Exposed so the
- *  month tracker (/scoreboard/incentive) lists EXACTLY the slabs scoreShift
+ *  month tracker (/scoreboard/incentive, and its local copy from
+ *  scripts/incentive-tracker.mts) lists EXACTLY the slabs scoreShift
  *  treats as ungraded rather than deriving its own — the two must not drift.
  *
  *  `verdict` separates two very different "not counted" cases: 'none' /
