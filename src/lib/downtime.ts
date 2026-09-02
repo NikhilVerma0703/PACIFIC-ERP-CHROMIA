@@ -12,6 +12,7 @@
 //   - Flags batches PRESSED but with NO MIS entry (logging gap).
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
+import { canonPerson, slabsDeclared, rangeImpossible } from "@/lib/shiftScoreMath";
 import { normalizeBatch } from "@/lib/normalizeBatch";
 
 const db = prisma as any;
@@ -54,7 +55,9 @@ export interface DowntimeReport {
   ratedHours: number; // hours in the range at all (stdHours/ratedHours = coverage)
   byType: DelayType[]; byReason: ReasonRow[]; trend: TrendPoint[]; byHour: HourRow[]; incidents: IncidentRow[];
   actualSlabs: number; target: number; achievable: number; lost: number; designs: DesignRow[];
-  misFallbackSlabs: number; misFallbackDays: number; // days with MIS hours but no press rows yet (entry lag)
+  /** Hours whose typed range was impossible (backwards, or 60+ slabs wide) and
+   *  were set aside from the count — the same hours the CEO report sets aside. */
+  impossibleRows: number; // days with MIS hours but no press rows yet (entry lag)
   daysCounted: number; productiveHours: number; roboHours: number; normalHours: number;
   pressBatches: number; misBatches: number; unloggedBatches: number; unloggedBatchList: string[];
 }
@@ -98,9 +101,17 @@ export const classifyReason = (r: string): string => {
  *  on the night that began the day before — the same day reportDayOf gives the
  *  MIS row for those hours. Both sides of this report must answer "which day"
  *  the same way or the fallback below compares two different calendars. */
-const pressDayOf = (d: any) => new Date(new Date(d).getTime() - 6 * 3600e3).toISOString().slice(0, 10);
 
 const isRobo = (t: unknown) => String(t ?? "").trim().toLowerCase() === "robo";
+
+/** A comma-joined in-charge column, each name canonicalised and the
+ *  duplicates that canonicalising creates ("Narayanan, Arun" is one man)
+ *  removed. Null when nothing is named. */
+const canonNames = (v: unknown): string | null => {
+  const set = new Set<string>();
+  for (const part of String(v ?? "").split(",")) { const n = canonPerson(part); if (n) set.add(n); }
+  return set.size ? [...set].join(", ") : null;
+};
 
 export async function getDowntimeReport(opts: { from?: string; to?: string; batch?: string; type?: string; allIncidents?: boolean }): Promise<DowntimeReport> {
   // DB dates are naive IST (IST wall-clock stored as UTC). Build the window in IST
@@ -135,7 +146,7 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
   const typeFilter = DELAY_FIELDS.some((d) => d.key === opts.type) ? opts.type! : null;
 
   const misWhere: any = batch ? { batchKey: batch } : { date: { gte: from, lte: fetchTo } };
-  const sel: any = { id: true, date: true, hour: true, batch: true, batchKey: true, productionType: true, slabsPerHourActual: true, slabsPerHourStd: true, design: true, reasonForDeviation: true, details: true, rcaNo: true, actionTaken: true, sparesUsed: true, anyBreakdownYesNo: true, electricalInchargeName: true, mechanicalInchargeName: true };
+  const sel: any = { id: true, date: true, hour: true, batch: true, batchKey: true, productionType: true, slabsPerHourActual: true, slabsPerHourStd: true, design: true, startingSlabNumber: true, endingSlabNumber: true, reasonForDeviation: true, details: true, rcaNo: true, actionTaken: true, sparesUsed: true, anyBreakdownYesNo: true, electricalInchargeName: true, mechanicalInchargeName: true };
   for (const d of DELAY_FIELDS) sel[d.col] = true;
   // PRESS IS WINDOWED ON THE PRODUCTION DAY TOO. press.date is not a day label
   // — it is a real instant (only 22 of 32,307 rows sit at midnight; mis.date by
@@ -151,7 +162,10 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
 
   const [rowsRaw, press]: [any[], any[]] = await Promise.all([
     db.mis.findMany({ where: misWhere, select: sel }).catch(() => [] as any[]),
-    db.press.findMany({ where: pressWhere, select: { slabNumber: true, designName: true, batchKey: true, date: true } }).catch(() => [] as any[]),
+    // batchKey and date only: press no longer supplies the slab count or the
+    // designs (see "output" below), only which batches were pressed and on
+    // which calendar dates.
+    db.press.findMany({ where: pressWhere, select: { batchKey: true, date: true } }).catch(() => [] as any[]),
   ]);
 
   // Each row placed on the production day it was worked, then clipped to the
@@ -221,91 +235,60 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
         id: r.id, date: day, hour: r.hour ?? null, batch: r.batch ?? r.batchKey ?? null,
         minutes: r0(rowMin), over: rowMin > 60, typeKeys, types, reasons,
         details: r.details ?? null, rca: r.rcaNo ?? null, action: r.actionTaken ?? null, spares: r.sparesUsed ?? null,
-        elecIncharge: r.electricalInchargeName ?? null, mechIncharge: r.mechanicalInchargeName ?? null,
+        // Through the alias map, so the log does not list one mechanic as
+        // "Joseph" on one hour and "Manikya" on the next.
+        elecIncharge: canonNames(r.electricalInchargeName), mechIncharge: canonNames(r.mechanicalInchargeName),
         minutesByType, reasonsByType,
       });
     }
   }
 
-  // ---- output (actual) + designs from press ----
-  const slabSet = new Set<number>();
-  const designMap = new Map<string, Set<number>>();
+  // ---- output (actual) + designs: FROM THE HOURLY LOG, the CEO report's rule ----
+  //
+  // This used to count DISTINCT PRESS ROWS, with the shift's typed hourly
+  // "actual" as a stand-in on days press had not been entered yet. Two sources,
+  // two calendars, and a net between them that had already misfired once
+  // (the 887 August slabs). And press is entered in bulk, late, by calendar
+  // date: measured across the fortnight to 2 September it disagreed with the
+  // hourly log by up to 232 slabs on a single production day — 30 August read
+  // 97 here against the 329 the CEO report shows, 29 August 392 against 264,
+  // and the design table split the same way (Carrara Cloud 43 against 275).
+  // The owner's verdict was that the CEO report is right, and it is: an
+  // in-charge's own starting and ending slab numbers, typed at the hour, are
+  // the plant's record of what was made.
+  //
+  // So the count is now exactly the CEO report's — slabsDeclared() over each
+  // hour's range, the impossible ranges set aside and COUNTED so the page can
+  // say so, keyed on the production day like everything else here. One rule,
+  // three surfaces, one number.
   const pressBatchSet = new Set<string>();
-  const pressDaySet = new Set<string>();
-  // The CALENDAR dates press rows carry, kept beside the production days above.
-  // Two questions here were always asked of the calendar and still must be:
-  // "has this day's press been entered at all yet" (the entry-lag fallback) and
-  // "how many days did this batch run" (the batch target's multiplier). A
-  // production day is not interchangeable with a calendar date for either —
-  // see the two comments below.
+  // The CALENDAR dates press rows carry. Still needed for one thing: "how many
+  // days did this batch run", the multiplier on the batch-mode target — a
+  // production day is not interchangeable with a calendar date for that (see
+  // the note in batch mode below).
   const pressCalendarDays = new Set<string>();
-  /** Which production day each pressed slab was recorded on. */
-  const pressDayBySlab = new Map<number, string>();
   for (const p of press) {
     if (p.batchKey) pressBatchSet.add(String(p.batchKey));
-    if (p.date) { pressDaySet.add(pressDayOf(p.date)); pressCalendarDays.add(dayKey(p.date)); }
-    const n = p.slabNumber;
-    if (typeof n !== "number" || !Number.isFinite(n)) continue;
-    slabSet.add(n);
-    if (p.date) pressDayBySlab.set(n, pressDayOf(p.date));
-    const dn = (p.designName ?? "").toString().trim() || "—";
-    if (!designMap.has(dn)) designMap.set(dn, new Set());
-    designMap.get(dn)!.add(n);
+    if (p.date) pressCalendarDays.add(dayKey(p.date));
   }
-  // ---- MIS fallback for days press hasn't been entered yet ----
-  // Press entry lags production by ~a day (measured avg ~8h, max ~4 days), so an
-  // in-progress "Today" has NO press rows dated in-range: actual reads 0 and "lost"
-  // claims the whole day. For days that have MIS hours but no press rows, use the
-  // operator-typed MIS hourly actuals as a provisional figure — the card says so —
-  // and the day switches to the press count automatically once entries land.
-  // Skipped in batch-filter mode, where MIS spans days press legitimately lacks.
-  //
-  // ENTRY LAG IS A CALENDAR FACT, AND THE FALLBACK REPLACES RATHER THAN ADDS.
-  // Two things went wrong when the day key moved. First the question: "has this
-  // day's press been entered yet" is answered by whether press carries rows
-  // DATED that day, which is a calendar question — on the production key, the
-  // handful of rows a late bulk entry stamps between 00:00 and 06:00 count as
-  // that day's press and disarm the net. 18 August is the case: nothing was
-  // dated the 18th, 47 rows were typed after midnight on the 19th, and the day
-  // scored 47 against the 241 its own report shows. Second the arithmetic: the
-  // fallback was ADDED to the press count, so a day that had both leaked rows
-  // and a fallback counted them twice — that was the 887 slabs August gained.
-  // A day is now scored EITHER by its press rows OR, when press has not landed,
-  // by the shift's own hourly actuals; never by both.
-  let misFallbackSlabs = 0;
-  const misFallbackDaySet = new Set<string>();
-  const misDesign = new Map<string, number>();
-  const laggingDays = new Set<string>();
-  if (!batch) {
-    for (const r of rows) {
-      if (!r.reportDay) continue;
-      // The day's press is "not in yet" only when NOTHING carries its date.
-      if (pressCalendarDays.has(r.reportDay)) continue;
-      laggingDays.add(r.reportDay);
+  let actualSlabs = 0, impossibleRows = 0;
+  // Keyed on the trimmed, lower-cased design so "Carrara Cloud" and
+  // "carrara cloud" are one row; the first spelling seen is the one shown.
+  const designMap = new Map<string, { design: string; slabs: number }>();
+  for (const r of rows) {
+    const made = slabsDeclared(r.startingSlabNumber, r.endingSlabNumber);
+    if (made == null) {
+      if (rangeImpossible(r.startingSlabNumber, r.endingSlabNumber)) impossibleRows++;
+      continue;
     }
-    for (const r of rows) {
-      if (!r.reportDay || !laggingDays.has(r.reportDay)) continue;
-      const n = Number(r.slabsPerHourActual ?? 0) || 0;
-      if (n <= 0) continue;
-      misFallbackSlabs += n;
-      misFallbackDaySet.add(r.reportDay);
-      const dn = (r.design ?? "").toString().trim() || "—";
-      misDesign.set(dn, (misDesign.get(dn) ?? 0) + n);
-    }
+    actualSlabs += made;
+    const shown = (r.design ?? "").toString().trim() || "—";
+    const k = shown.toLowerCase();
+    const e = designMap.get(k) ?? { design: shown, slabs: 0 };
+    e.slabs += made;
+    designMap.set(k, e);
   }
-  misFallbackSlabs = r0(misFallbackSlabs);
-  // Press slabs from the lagging days are dropped, not added to: those days are
-  // reported from the MIS figure instead, so nothing is counted twice.
-  const pressSlabsCounted = laggingDays.size
-    ? [...slabSet].filter((n) => { const d = pressDayBySlab.get(n); return !d || !laggingDays.has(d); }).length
-    : slabSet.size;
-  const actualSlabs = pressSlabsCounted + misFallbackSlabs;
-  const designs = [...designMap.entries()].map(([design, set]) => ({ design, slabs: set.size }));
-  for (const [design, slabs] of misDesign) {
-    const e = designs.find((d) => d.design === design);
-    if (e) e.slabs += r0(slabs); else designs.push({ design, slabs: r0(slabs) });
-  }
-  designs.sort((a, b) => b.slabs - a.slabs);
+  const designs = [...designMap.values()].sort((a, b) => b.slabs - a.slabs);
 
   // ---- capacity target + achievable ----
   // The rate is the "Slabs/hr Std" operators enter on the MIS form. It used to be
@@ -434,7 +417,7 @@ export async function getDowntimeReport(opts: { from?: string; to?: string; batc
     stdRate: rangeStd != null ? Math.round(rangeStd * 10) / 10 : null,
     stdHours: stdN, ratedHours: rows.length,
     actualSlabs, target, achievable, lost, designs, daysCounted, productiveHours, roboHours, normalHours,
-    misFallbackSlabs, misFallbackDays: misFallbackDaySet.size,
+    impossibleRows,
     pressBatches: pressBatchSet.size, misBatches: misBatchSet.size, unloggedBatches: unloggedBatchList.length, unloggedBatchList: unloggedBatchList.slice(0, 60),
   };
 }

@@ -6,6 +6,7 @@ import {
   QUALITY_FLOOR, QUALITY_TARGET, UPTIME_FLOOR, POLISH_FLOOR, MIN_RUNNING_SHIFT,
   oeeOf, oeeTotal, misDiscipline, TARGET_SLABS_PER_SHIFT,
   stdMultiplier, SLOW_STD_MAX, SLOW_STD_MULTIPLIER,
+  slabsDeclared, rangeImpossible, MAX_SLABS_PER_HOUR,
 } from "../src/lib/shiftScoreMath.ts";
 
 // These decide money. Every one of them is a bug that was live.
@@ -72,6 +73,26 @@ test("canonPerson folds case and the known one-person-two-spellings pairs", () =
   assert.equal(canonPerson("Balmukund Saw"), canonPerson("balmukund"));
   assert.equal(canonPerson("Elayaraja Mani"), canonPerson("illayaraja"));
   assert.equal(canonPerson("Mathan"), canonPerson("Madhan Kumar"));
+
+  // THE MAINTENANCE IN-CHARGES, confirmed by the owner 2026-09-02: one person,
+  // several spellings, and the leading name is the one that shows. The
+  // mechanical board was ranking "Joseph" (380 rows) and "Manikya" (40) as two
+  // men, and "Narayanan" (132) beside "Arun" (172) with 124 more rows naming
+  // both for the same shift.
+  for (const v of ["Joseph", "joseph", "JOSEPH", "Josep", "Jose", "Manikya", " manikya "]) {
+    assert.equal(canonPerson(v), "Manikya", `${v} is Manikya`);
+  }
+  for (const v of ["Arun", "arun", "Narayanan", "narayana", "NARAYANAN"]) {
+    assert.equal(canonPerson(v), "Narayanan", `${v} is Narayanan`);
+  }
+  for (const v of ["Kumar", "kumar", "Ram", "Ramarasan", "ramarasan"]) {
+    assert.equal(canonPerson(v), "Kumar", `${v} is Kumar`);
+  }
+  // And the long production names that CONTAIN "Kumar" are untouched by it:
+  // they are keyed whole and never reach the stand-alone entry.
+  assert.equal(canonPerson("Satish Kumar"), "Satish");
+  assert.equal(canonPerson("Madhan Kumar"), "Madhan");
+  assert.equal(canonPerson("Sukantha Kumar"), "Sukanta");
   assert.equal(canonPerson(""), "");
   assert.equal(canonPerson(null), "");
 });
@@ -238,4 +259,41 @@ test("the multiplier multiplies the GRADE credit, so a B on a slow line is one s
 test("the two constants are the rule as stated, so a doc can quote them", () => {
   assert.equal(SLOW_STD_MAX, 10);
   assert.equal(SLOW_STD_MULTIPLIER, 2);
+});
+
+/* ------------------------------------------------- the one slab-range rule */
+
+// Three surfaces counted "slabs made" three ways and printed 329, 329 and 97
+// for 30 August. This is now the one rule all three call.
+
+test("slabsDeclared: both ends inclusive, null for no claim, null for an impossible range", () => {
+  assert.equal(slabsDeclared(154962, 154973), 12);
+  assert.equal(slabsDeclared(10, 10), 1);
+  assert.equal(slabsDeclared(null, 5), null);
+  assert.equal(slabsDeclared(5, null), null);
+  assert.equal(slabsDeclared(undefined, undefined), null);
+  assert.equal(slabsDeclared(150335, 15035), null, "a dropped digit is backwards, not a claim");
+  assert.equal(slabsDeclared(15078, 150590), null, "the 135,513-slab hour of 26 July");
+});
+
+test("slabsDeclared: THE BOUNDARY IS THE ENTRY FORM'S — an hour of exactly 60 is accepted", () => {
+  // The form and the scoreboard refuse on b - a >= MAX_SLABS_PER_HOUR, so an
+  // hour of MAX slabs (b - a = MAX - 1) is allowed, and MAX + 1 is not.
+  assert.equal(slabsDeclared(100, 100 + MAX_SLABS_PER_HOUR - 1), MAX_SLABS_PER_HOUR);
+  assert.equal(slabsDeclared(100, 100 + MAX_SLABS_PER_HOUR), null);
+});
+
+test("slabsDeclared: numbers that arrive as strings or floats still count", () => {
+  assert.equal(slabsDeclared("100", "111"), 12);
+  assert.equal(slabsDeclared(100.0, 111.0), 12);
+  assert.equal(slabsDeclared("abc", 5), null);
+});
+
+test("rangeImpossible: names BOTH shapes, and never a blank hour", () => {
+  assert.equal(rangeImpossible(150335, 15035), true, "backwards");
+  assert.equal(rangeImpossible(15078, 150590), true, "too wide");
+  assert.equal(rangeImpossible(100, 100 + MAX_SLABS_PER_HOUR), true, "exactly at the refusal threshold");
+  assert.equal(rangeImpossible(100, 100 + MAX_SLABS_PER_HOUR - 1), false, "an hour of 60 is fine");
+  assert.equal(rangeImpossible(null, 5), false, "no claim is not an impossible claim");
+  assert.equal(rangeImpossible(null, null), false);
 });

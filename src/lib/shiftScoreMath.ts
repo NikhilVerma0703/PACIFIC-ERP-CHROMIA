@@ -49,6 +49,35 @@ export const MAX_PLAUSIBLE_MM = 60;
  *  widest hour this plant has ever really worked and still rejects that row. */
 export const MAX_SLABS_PER_HOUR = 60;
 
+/** Slabs an MIS hour declares: end - start + 1, both ends inclusive (an hour
+ *  running 154962-154973 made twelve, not eleven). Null, NOT zero, when the
+ *  hour declares nothing — a null hour is excluded from a target, a zero would
+ *  be counted as a miss. Null too when the range is impossible: backwards, or
+ *  MAX_SLABS_PER_HOUR wide and above, the entry form's own refusal threshold.
+ *
+ *  THIS IS THE CEO REPORT'S RULE, and it is here so it can be the downtime
+ *  page's and the emailed PDF's rule as well. Three surfaces counted "slabs
+ *  made" three ways — the web report from these ranges with this guard, the
+ *  PDF from the ranges without it, the downtime page from the press table —
+ *  and on 30 August they printed 329, 329 and 97 for the same day. */
+export function slabsDeclared(start: unknown, end: unknown): number | null {
+  const s = Number(start), e = Number(end);
+  if (start == null || end == null || !Number.isFinite(s) || !Number.isFinite(e)) return null;
+  const n = e - s + 1;
+  if (n <= 0) return null;
+  if (e - s >= MAX_SLABS_PER_HOUR) return null;
+  return n;
+}
+
+/** True when both ends are typed and the range cannot be real — the case a
+ *  report should COUNT and say it set aside, rather than drop in silence. */
+export function rangeImpossible(start: unknown, end: unknown): boolean {
+  if (start == null || end == null) return false;
+  const s = Number(start), e = Number(end);
+  if (!Number.isFinite(s) || !Number.isFinite(e)) return false;
+  return e < s || e - s >= MAX_SLABS_PER_HOUR;
+}
+
 export const IST_MIN = 330;
 const SHIFT_START: Record<ShiftLetter, number> = { A: 6, B: 14, C: 22 };
 export type ShiftLetter = "A" | "B" | "C";
@@ -232,7 +261,21 @@ export function slabQuality(measuredMm: number, ideal: number, tol = TOLERANCE_M
 const PERSON_ALIAS: Record<string, string> = {
   // lower-cased variant -> canonical spelling
   sundhar: "Sundar",
-  josep: "Joseph",
+
+  // ---- Maintenance in-charges: one person, several names ------------------
+  // Confirmed by the owner on 2026-09-02, with the LEADING name the one that
+  // shows. Counts are MIS rows in the 120 days to that date, so the scale of
+  // the split is on record: the mechanical board was ranking "Joseph" (380
+  // rows) and "Manikya" (40) as two men, and "Narayanan" (132) beside "Arun"
+  // (172) — with 124 more rows naming BOTH, as "Narayanan, Arun", for one
+  // person. Every one of those rows diluted the man's own uptime share.
+  //
+  // "Ram" and "Kumar" are stand-alone spellings here only: the longer
+  // production names ("Satish Kumar", "Madhan Kumar") are keyed whole, below,
+  // and never reach these entries.
+  joseph: "Manikya", josep: "Manikya", jose: "Manikya",   // mechanical
+  arun: "Narayanan", narayana: "Narayanan",              // mechanical — "Narayanan" is the sheet's own spelling
+  ramarasan: "Kumar", ram: "Kumar",                      // electrical
 
   // ---- Station operators: the Airtable spelling vs the ERP one --------------
   // Every station carries the same person twice, and the split is a clean

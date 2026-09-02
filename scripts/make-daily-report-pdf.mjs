@@ -218,7 +218,7 @@ export function buildDoc(d) {
     margin: [36, 14, 36, 0],
     columns: [
       { text: `Pacific Surfaces  \u00b7  Daily Report  \u00b7  ${dateLong}`, font: "Body", fontSize: pt(6.9), color: GREY },
-      { text: `Page ${page} of 2`, font: "Body", fontSize: pt(6.9), color: GREY, alignment: "right" },
+      { text: `Page ${page} of 3`, font: "Body", fontSize: pt(6.9), color: GREY, alignment: "right" },
     ],
   });
 
@@ -231,6 +231,8 @@ export function buildDoc(d) {
       ...pageOne(d, dateLong),
       { text: "", pageBreak: "before" },
       ...pageTwo(d, q, dateLong),
+      { text: "", pageBreak: "before" },
+      ...pageThree(d, d.maintenance, dateLong),
     ],
     defaultStyle: { font: "Body", fontSize: pt(7.6), color: SLATE },
   };
@@ -556,6 +558,116 @@ function pageTwo(d, q, dateLong) {
     note(`"Not graded" covers slabs still awaiting a grade and slabs with no QC record yet, so these counts differ from the Quality Grades table \u2014 ` +
          `that counts the ${q.inspected} inspected, a different set from the ${q.polished} polished. Polishing runs behind the press, so this page is not the same slabs as page one.`),
   ];
+}
+
+/* ------------------------------------------------------------------ page 3 */
+// The web report's third sheet, on paper. Same figures, same rules, same
+// order — src/app/report/ceo/page.tsx SheetMaintenance is the reference and
+// this must not drift from it. The 09:00 email was the one place the owner
+// could not see the maintenance page.
+const cap = (t) => (t ? t.charAt(0).toUpperCase() + t.slice(1) : t);
+const plural = (n, one, many) => (n === 1 ? one : many);
+
+function pageThree(d, m, dateLong) {
+  const worst = m.byArea[0];
+  const longest = [...m.events].sort((a, b) => b.delay.breakdown - a.delay.breakdown)[0];
+  const sub = (t) => ({ text: t, font: "Body", fontSize: pt(6.4), bold: true, color: GREY, characterSpacing: 0.7, margin: [0, 0, 0, 3] });
+
+  const out = [
+    bandHeader("Maintenance", dateLong), headRule(),
+    kpis([
+      [String(m.events.length), "BREAKDOWN EVENTS"],
+      [`${m.minutes} m`, "TIME LOST TO BREAKDOWNS"],
+      [String(m.byArea.length), "AREAS AFFECTED"],
+      [String(m.withRca), "RCA NUMBERS RAISED"],
+      [String(m.spares.length), "HOURS THAT USED SPARES"],
+    ]),
+    prose(m.events.length === 0
+      ? ["No machine or electrical breakdown was recorded on this day."]
+      : [
+        `${m.events.length} ${plural(m.events.length, "hour was", "hours were")} flagged as a machine or electrical breakdown, costing `,
+        strong(`${m.minutes} minutes`),
+        ...(worst ? [` ${DASH} most of it in the `, strong(worst.area), ` (${worst.minutes} minutes across ${worst.events} ${plural(worst.events, "hour", "hours")})`] : []),
+        ".",
+        ...(longest && longest.delay.breakdown > 0 ? [` The single longest stop was the ${longest.hour} hour at ${longest.delay.breakdown} minutes.`] : []),
+        ...(m.withRca === 0 ? [" No RCA number was raised against any of them."] : []),
+      ]),
+  ];
+
+  if (m.events.length > 0) {
+    out.push(
+      heading("EVERY BREAKDOWN, HOUR BY HOUR"),
+      { table: { headerRows: 1, widths: [34, 24, 74, 28, "*", 64, 30],
+          body: [
+            [th("HOUR"), th("SHIFT"), th("AREA"), th("LOST", "right"), th("WHAT HAPPENED"), th("SPARES USED"), th("RCA", "right")],
+            ...m.events.map((x) => [
+              tdKey(x.hour ?? DASH), td(x.shift ?? DASH),
+              td(x.area.length ? x.area.join(" / ") : DASH),
+              td(x.delay.breakdown ? `${x.delay.breakdown} m` : NDASH, "right"),
+              tdMuted(x.details ? cap(tidy(x.details)) : DASH),
+              tdMuted(x.spares ?? DASH), tdMuted(x.rca ?? DASH, "right"),
+            ]),
+            [tdTotal("Total"), tdTotal(""), tdTotal(`${m.byArea.length} ${plural(m.byArea.length, "area", "areas")}`),
+             tdTotal(`${m.minutes} m`, "right"),
+             tdTotal(m.spares.length ? `Spares used in ${m.spares.length} of ${m.events.length} hours` : "No spares recorded"),
+             tdTotal(""), tdTotal(String(m.withRca), "right")],
+          ] }, layout: LAYOUT },
+
+      heading("WHERE IT FAILED"),
+      pair(
+        { stack: [ sub("BY AREA"),
+          miniTable([th("AREA"), th("EVENTS", "right"), th("MINUTES", "right"), th("HOURS")],
+            [...m.byArea.map((a) => [tdKey(a.area), td(String(a.events), "right"), td(String(a.minutes), "right"), tdMuted(a.hours.join(", "))]),
+             [tdTotal("Total"), tdTotal(String(m.byArea.reduce((a, x) => a + x.events, 0)), "right"), tdTotal(String(m.minutes), "right"), tdTotal("")]],
+            ["*", 36, 40, 70]),
+        ]},
+        { stack: [ sub("BY SHIFT"),
+          miniTable([th("SHIFT"), th("EVENTS", "right"), th("MINUTES", "right"), th("PRODUCTION IN-CHARGE")],
+            [...m.byShift.map((x) => [tdKey(x.shift), td(String(x.events), "right"), td(String(x.minutes), "right"),
+                                       tdMuted(d.shifts.find((sh) => sh.letter === x.shift)?.incharge ?? DASH)]),
+             [tdTotal("Total"), tdTotal(String(m.events.length), "right"), tdTotal(String(m.minutes), "right"), tdTotal("")]],
+            [34, 36, 40, "*"]),
+        ]},
+      ),
+
+      heading("WHO WAS ON"),
+      { table: { headerRows: 1, widths: [64, "*", 150],
+          body: [
+            [th("TRADE"), th("NAMED ON THE LOG"), th("COVERING")],
+            [tdKey("Electrical"), td(m.electrical.join(", ") || DASH), tdMuted("Named on every hour of the day")],
+            [tdKey("Mechanical"), td(m.mechanical.join(", ") || DASH), tdMuted("Named on every hour of the day")],
+          ] }, layout: LAYOUT },
+    );
+  }
+
+  if (m.powerCuts.rows.length > 0) {
+    const n = m.powerCuts.rows.length;
+    out.push(
+      heading("POWER CUTS FROM THE GRID"),
+      prose([
+        `The grid went down in ${n} ${plural(n, "hour", "hours")}, costing `, strong(`${m.powerCuts.minutes} minutes`),
+        `. These are not maintenance events ${DASH} nothing failed in the plant ${DASH} so they sit apart from the breakdown tables above and match the power-cut row on page one.`,
+      ]),
+      { table: { headerRows: 1, widths: [34, 24, 28, "*"],
+          body: [
+            [th("HOUR"), th("SHIFT"), th("LOST", "right"), th("WHAT THE LOG SAYS")],
+            ...m.powerCuts.rows.map((x) => [
+              tdKey(x.hour ?? DASH), td(x.shift ?? DASH),
+              td(x.minutes ? `${x.minutes} m` : NDASH, "right"),
+              tdMuted(x.reasonsSayPower
+                ? (x.note ? cap(tidy(x.note)) : x.reasons.filter((rr) => /POWER/i.test(rr)).join(", ") || DASH)
+                : `Minutes entered in the hour's power-out column${x.alsoMachineFault ? ` ${DASH} the same hour's machine stop is listed above` : ""}`),
+            ]),
+            [tdTotal("Total"), tdTotal(""), tdTotal(`${m.powerCuts.minutes} m`, "right"), tdTotal("Booked to power on page one, not to maintenance")],
+          ] }, layout: LAYOUT },
+    );
+  }
+
+  out.push(note(
+    `This page is built from the maintenance fields on the hourly shift log ${DASH} the area of the problem, the breakdown flag, spares used and the RCA number. ` +
+    `The maintenance ticket system holds no entries at all, for this day or any other, so nothing here comes from it. ` +
+    `Until tickets are raised, an RCA column of dashes means the analysis was never recorded, not that the cause was obvious.`));
+  return out;
 }
 
 /* ---------------------------------------------------------------- exports */

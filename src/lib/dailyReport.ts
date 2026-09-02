@@ -18,7 +18,7 @@
 // again, prefer it — but check coverage first, do not assume.
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
-import { MAX_SLABS_PER_HOUR } from "@/lib/shiftScoreMath";
+import { canonPerson, slabsDeclared, rangeImpossible as rangeImpossibleShared } from "@/lib/shiftScoreMath";
 
 export const IST_OFFSET_MIN = 330;
 export type ShiftLetter = "A" | "B" | "C";
@@ -43,41 +43,20 @@ const shiftOf = (h: number): ShiftLetter => (h >= 6 && h < 14 ? "A" : h >= 14 &&
 const istHour = (d: Date) => new Date(d.getTime() + IST_OFFSET_MIN * 60000).getUTCHours();
 const FACE: Record<string, string> = { BS: "Bottom side", TS: "Top side" };
 
-/** Slabs an hour declares. e - s + 1, because both ends are inclusive: an hour
- *  running 154962-154973 made twelve slabs, not eleven. An hour that declares
- *  no range made no claim and is null, NOT zero — that difference is why such
- *  hours are left out of the target rather than counted as misses. */
-function slabsOf(s: number | null, e: number | null): number | null {
-  if (s == null || e == null) return null;
-  const n = e - s + 1;
-  if (n <= 0) return null;
-  // AN IMPOSSIBLE RANGE IS A TYPO, NOT A CLAIM — the same rule the entry form
-  // refuses new rows with and the scoreboard already ignores hours by
-  // (MAX_SLABS_PER_HOUR, 3x the widest hour this plant has ever worked). Rows
-  // typed before that guard existed are still in the table, and this report
-  // was the last place counting them: one hour on 26 July reads 15078→150590
-  // and put 135,513 slabs into July's month, and two June nights typed
-  // 144248→174257 and 143454→173462 for 30,000 each. Left as null, the hour
-  // makes no claim at all — exactly like an hour with no range — and the
-  // report says how many it set aside rather than quietly dropping them.
-  // `e - s`, NOT the slab count, so the threshold is the entry form's and the
-  // scoreboard's to the slab: both refuse on `b - a >= MAX_SLABS_PER_HOUR` and
-  // therefore still ACCEPT an hour of exactly 60. Comparing the count instead
-  // set aside a 60-slab hour those two had allowed, which is the one thing a
-  // shared rule must never do — disagree at its own boundary.
-  if (e - s >= MAX_SLABS_PER_HOUR) return null;
-  return n;
-}
-
-/** Whether an hour's range is IMPOSSIBLE — the fault the report sets aside and
- *  then names. Two shapes, and the report must count both or it calls the hour
- *  blank: too wide (more slabs than the line can make in an hour) and
- *  BACKWARDS (the ending number below the starting one — a transposition or a
- *  dropped digit). Naming only the first left three of the five impossible
- *  ranges in the table reported as "carried no output at all", which is untrue
- *  of an hour whose in-charge did type a range. */
-const rangeImpossible = (s: number | null, e: number | null): boolean =>
-  s != null && e != null && (e - s >= MAX_SLABS_PER_HOUR || e < s);
+/** Slabs an hour declares, and whether its range is impossible.
+ *
+ *  BOTH ARE THE SHARED RULE NOW — slabsDeclared / rangeImpossible in
+ *  lib/shiftScoreMath, the file that owns MAX_SLABS_PER_HOUR. This report
+ *  was the reference implementation (the guard against the 135,513-slab hour
+ *  of 26 July and the two 30,000-slab June nights was first written here) and
+ *  the downtime page and the emailed PDF now call the same function rather
+ *  than carrying their own copies: on 30 August the three surfaces printed
+ *  329, 329 and 97 slabs for one day. The local names are kept so nothing
+ *  below has to change; the behaviour is identical to the slab, including
+ *  the boundary — an hour of exactly 60 is still accepted, as the entry form
+ *  and the scoreboard accept it. */
+const slabsOf = (s: number | null, e: number | null): number | null => slabsDeclared(s, e);
+const rangeImpossible = (s: number | null, e: number | null): boolean => rangeImpossibleShared(s, e);
 
 export type HourRow = {
   hour: string | null; h: number | null; shift: ShiftLetter | null;
@@ -233,6 +212,12 @@ export async function getDailyReport(date: string) {
 // Built from the MIS rows, not from maintenance_ticket: that table has never
 // been written to (0 rows, all time), so reading it would print an empty page
 // and imply a quiet day. The page says where its figures come from.
+const namesOn = (cols: (string | null)[]): string[] => {
+  const set = new Set<string>();
+  for (const v of cols) for (const part of String(v ?? "").split(",")) { const n = canonPerson(part); if (n) set.add(n); }
+  return [...set].sort();
+};
+
 export function getMaintenance(hours: HourRow[]) {
   // THE SAME RECLASSIFICATION THE DOWNTIME TABLE APPLIES, FOR THE SAME REASON.
   // An hour whose reasons say POWER had its minutes booked to the breakdown
@@ -293,8 +278,13 @@ export function getMaintenance(hours: HourRow[]) {
     minutes: events.reduce((a, x) => a + x.delay.breakdown, 0),
     spares: events.filter((x) => x.spares),
     withRca: events.filter((x) => x.rca).length,
-    electrical: [...new Set(placed.map((x) => x.electrical).filter(Boolean))] as string[],
-    mechanical: [...new Set(placed.map((x) => x.mechanical).filter(Boolean))] as string[],
+    // ONE NAME PER PERSON. The in-charge columns are comma-joined multi-selects
+    // ("Narayanan, Arun") and the same man arrives under several spellings —
+    // Joseph / Manikya / Josep / Jose is one mechanic. Split, canonicalise
+    // through the same alias map the scoreboard pays on, and de-duplicate, or
+    // this table lists a shift's one mechanic as two or three people.
+    electrical: namesOn(placed.map((x) => x.electrical)),
+    mechanical: namesOn(placed.map((x) => x.mechanical)),
     // Every breakdown-flagged hour, by shift — the shift that carries the
     // machine problem is not always the one with the worst output.
     byShift: (["A", "B", "C"] as ShiftLetter[]).map((s) => ({

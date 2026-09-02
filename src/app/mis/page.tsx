@@ -182,7 +182,7 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
                   the shift's declared ranges differ from the press rows, and
                   reading one as a correction of the other is the mistake the
                   caption exists to prevent. */}
-              <Kpi label="Slabs pressed (actual)" value={fmt(r.actualSlabs)} sub={r.misFallbackSlabs > 0 ? `incl. ${fmt(r.misFallbackSlabs)} from the MIS hourly log — press entry pending` : "distinct slabs pressed · the CEO report counts what the hourly log declared"} />
+              <Kpi label="Slabs made (actual)" value={fmt(r.actualSlabs)} sub={r.impossibleRows > 0 ? `what the hourly log declared — the CEO report's rule · ${fmt(r.impossibleRows)} hour(s) with an impossible range set aside` : "what the hourly log declared, start to end slab number — the same rule as the CEO report"} />
               <Kpi label="Achievable" value={fmt(r.achievable)} sub="target − downtime" />
               <Kpi label="Target" value={fmt(r.target)} sub={r.stdRate != null ? `${r.productiveHours}h productive · Std on ${fmt(r.stdHours)}/${fmt(r.ratedHours)} h` : `24/12 per hr × ${r.productiveHours}h productive`} />
               <Kpi label="Lost to downtime" value={fmt(r.lost)} sub="achievable - actual" className={r.lost > 0 ? "ring-1 ring-amber-300" : ""} />
@@ -270,7 +270,7 @@ export default async function MisPage({ searchParams }: { searchParams: Promise<
 
           <Card>
             <H2>Designs made · {r.designs.length}</H2>
-            {r.designs.length === 0 ? <p className="text-sm text-gray-400">No press records in this range.</p> : (
+            {r.designs.length === 0 ? <p className="text-sm text-gray-400">No hour in this range declared a slab range.</p> : (
               <div className="space-y-1.5">
                 {r.designs.slice(0, 25).map((x) => (
                   <Link key={x.design} href={x.design === "—" ? link({}) : `/batch?d=${encodeURIComponent(x.design)}`} className="flex items-center gap-3 rounded text-sm hover:bg-gray-50">

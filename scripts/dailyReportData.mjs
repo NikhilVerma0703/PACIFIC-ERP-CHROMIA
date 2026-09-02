@@ -18,6 +18,10 @@
 // which is the only timestamp that still moves. If `created` ever starts
 // populating again, prefer it — but check coverage first, do not assume.
 import { PrismaClient } from "@prisma/client";
+// The slab-range rule and the person alias map, from the one file that owns
+// them. shiftScoreMath.ts imports nothing, so this .mjs can load it under a
+// plain `node` (Node 24 strips the types) and the bundled route can too.
+import { canonPerson, slabsDeclared, rangeImpossible } from "../src/lib/shiftScoreMath.ts";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,15 +65,12 @@ const mins = (r) =>
   (r.processDelayDurationMinutes ?? 0) + (r.cleaningDelayDurationMinutes ?? 0) +
   (r.breakdownDelayDurationMechanicalOrElectricalMinutes ?? 0) + (r.poweroutDelayDurationMinutes ?? 0);
 
-/** Slabs an hour declares. e - s + 1, because both ends are inclusive: an hour
- *  running 154962-154973 made twelve slabs, not eleven. An hour that declares
- *  no range made no claim and is null, NOT zero — the difference is the whole
- *  reason two hours are excluded from the target rather than counted as misses. */
-function slabsOf(r) {
-  if (r.startingSlabNumber == null || r.endingSlabNumber == null) return null;
-  const n = r.endingSlabNumber - r.startingSlabNumber + 1;
-  return n > 0 ? n : null;
-}
+/** Slabs an hour declares — the CEO report's rule, from lib/shiftScoreMath.
+ *  Null when the hour declares nothing (excluded from the target, never a
+ *  miss) and null when the typed range is impossible. This file used to carry
+ *  its own copy WITHOUT the impossible-range guard, so the emailed PDF could
+ *  print a month the web page had already corrected. */
+const slabsOf = (r) => slabsDeclared(r.startingSlabNumber, r.endingSlabNumber);
 
 export async function collect(date, prisma = new PrismaClient()) {
   const { from, to } = reportWindow(date);
@@ -100,6 +101,11 @@ export async function collect(date, prisma = new PrismaClient()) {
       reasons: r.reasonForDeviation ?? [],
       details: r.details ?? null,
       area: r.areaOfProblem ?? [],
+      wideRange: rangeImpossible(r.startingSlabNumber, r.endingSlabNumber),
+      // the maintenance fields, exactly as src/lib/dailyReport.ts assembles them
+      breakdown: /^yes$/i.test(r.anyBreakdownYesNo ?? ""),
+      spares: r.sparesUsed ?? null, actionTaken: r.actionTaken ?? null, rca: r.rcaNo ?? null,
+      electrical: r.electricalInchargeName ?? null, mechanical: r.mechanicalInchargeName ?? null,
     };
   });
 
@@ -125,6 +131,7 @@ export async function collect(date, prisma = new PrismaClient()) {
     hoursRun: hours.filter((x) => x.made != null).length,
     hoursTotal: hours.length,
     onTarget: hours.filter((x) => x.made != null && x.std != null && x.made >= x.std && x.lost === 0).length,
+    wideRows: hours.filter((x) => x.wideRange).length,
   };
   day.pct = day.target ? (100 * day.made) / day.target : null;
 
@@ -147,7 +154,63 @@ export async function collect(date, prisma = new PrismaClient()) {
   }
 
   return { date, window: { from, to }, hours, shifts, day, cause, reclassified: moved,
-           quality: await collectQuality(prisma, from, to), prisma };
+           quality: await collectQuality(prisma, from, to),
+           maintenance: collectMaintenance(hours), prisma };
+}
+
+/* ------------------------------------------------------------- maintenance */
+// A PORT OF getMaintenance IN src/lib/dailyReport.ts, figure for figure, so
+// page three of the PDF is the web page's page three. Built from the MIS rows,
+// not from maintenance_ticket, which has never been written to.
+//
+// The rules, in brief (the web file carries the full reasoning):
+//   - only hours that reach a shift are on this page (page one skips the rest);
+//   - an hour whose reasons say POWER is a grid cut, not a breakdown, and moves
+//     to its own table — breakdown minutes booked on it count as power;
+//   - the by-area key is SORTED so "Press / Distributor" and "Distributor /
+//     Press" are one row.
+const namesOn = (cols) => {
+  const set = new Set();
+  for (const v of cols) for (const part of String(v ?? "").split(",")) { const n = canonPerson(part); if (n) set.add(n); }
+  return [...set].sort();
+};
+
+export function collectMaintenance(hours) {
+  const isPower = (x) => x.reasons.some((r) => /POWER/i.test(r));
+  const placed = hours.filter((x) => x.shift != null);
+  const events = placed.filter((x) => (x.breakdown || x.delay.breakdown > 0) && !isPower(x));
+  const powerRows = placed
+    .filter((x) => x.delay.power > 0 || (isPower(x) && (x.delay.breakdown > 0 || x.breakdown)))
+    .map((x) => ({
+      hour: x.hour, shift: x.shift,
+      minutes: x.delay.power + (isPower(x) ? x.delay.breakdown : 0),
+      note: x.details ?? null,
+      reasons: x.reasons,
+      reasonsSayPower: isPower(x),
+      alsoMachineFault: (x.breakdown || x.delay.breakdown > 0) && !isPower(x),
+    }));
+  const byArea = new Map();
+  for (const x of events) {
+    const area = x.area.length ? [...x.area].sort().join(" / ") : "Not recorded";
+    const e = byArea.get(area) ?? { area, events: 0, minutes: 0, hours: [] };
+    e.events++; e.minutes += x.delay.breakdown; e.hours.push(x.hour ?? "");
+    byArea.set(area, e);
+  }
+  return {
+    events,
+    powerCuts: { rows: powerRows, minutes: powerRows.reduce((a, x) => a + x.minutes, 0) },
+    byArea: [...byArea.values()].sort((a, b) => b.minutes - a.minutes || b.events - a.events),
+    minutes: events.reduce((a, x) => a + x.delay.breakdown, 0),
+    spares: events.filter((x) => x.spares),
+    withRca: events.filter((x) => x.rca).length,
+    electrical: namesOn(placed.map((x) => x.electrical)),
+    mechanical: namesOn(placed.map((x) => x.mechanical)),
+    byShift: ["A", "B", "C"].map((s) => ({
+      shift: s,
+      events: events.filter((x) => x.shift === s).length,
+      minutes: events.filter((x) => x.shift === s).reduce((a, x) => a + x.delay.breakdown, 0),
+    })).filter((s) => s.events > 0),
+  };
 }
 
 async function collectQuality(prisma, from, to) {
