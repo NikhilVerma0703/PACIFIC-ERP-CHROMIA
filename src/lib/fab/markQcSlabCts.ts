@@ -66,11 +66,21 @@
 // does — but it could not simply be deleted, and the reason is the single worst
 // failure available in this change:
 //
-//   lib/inventory/grading.ts refuses dispatch on a slab that reads cut, and on
-//   2026-09-03 the 62 slabs it refuses are refused on the GRADE. Dropping the
-//   grade write before the dispatch side could read the mark would SILENTLY
-//   UN-BLOCK DISPATCH for every slab fabrication cuts. Nothing would error;
-//   already-cut slabs would simply start leaving on lorries as full slabs.
+//   lib/inventory/grading.ts refuses dispatch on a slab that reads cut, and
+//   when this was written the 62 slabs it refused were refused on the GRADE.
+//   Dropping the grade write before the dispatch side could read the mark would
+//   SILENTLY UN-BLOCK DISPATCH for every slab fabrication cuts. Nothing would
+//   error; already-cut slabs would simply start leaving on lorries as full
+//   slabs.
+//
+//   THAT ORDER HAS SINCE COMPLETED, AND THE BELT IS THE OTHER ONE NOW.
+//   scripts/0070 is applied and so are 0071 and 0072, which regraded all 63 cut
+//   slabs to 'B'. Measured on live Neon 2026-09-03: ZERO rows in polish_qc and
+//   ZERO in fg_finished_slab carry grade CTS or SAMPLE, so gradeBlocksDispatch
+//   refuses nothing at all. The 60 AVAILABLE cut slabs in stock are held by
+//   their MARK alone. The branch below is kept for the deploy orders it was
+//   written for, but it is no longer a safety net — it is now the thing most
+//   likely to do damage, which is why it is narrowed the way it is.
 //
 // The dispatch side now reads both (slabBlocksDispatch ORs the mark and the
 // grade), but it reads the mark out of fg_finished_slab.slab_mark, and THAT
@@ -84,14 +94,33 @@
 // slab is the grade left alone.
 //
 //   no scripts/0070, no finished-goods row, a non-integer slab number, a bad
-//   minute on the database   ->  markInMirror:false  ->  grade = 'CTS', exactly
-//                                as today, and the verdict is preserved first
+//   minute on the database   ->  markInMirror:false  ->  grade = 'CTS', and the
+//                                verdict is preserved first
 //   the mark is really there  ->  markInMirror:true   ->  the grade is LEFT
 //                                ALONE. A stays A. The mark carries the fact.
+//   the slab was ALREADY marked cut, whatever the mirror answered
+//                             ->  the grade is LEFT ALONE. See below.
 //
 // Additive in both directions and self-healing: before 0070 every slab refused
 // today is refused on the same signal; the hour 0070 is applied, fabrication
 // stops destroying verdicts, with no second deploy.
+//
+// ════════════════ AND THE LEGACY BRANCH NO LONGER FIRES ON A RE-PICK ════════
+// The third row above is new, and it is the fix for a regression this change
+// created together with its own migrations. scripts/0071 and 0072 moved all 63
+// cut slabs from grade 'CTS' to grade 'B' on the owner's decision and are
+// applied. This function is re-invoked on EVERY interaction with an
+// already-imported slab, and markInMirror is false for every reason it could
+// fail — a transient database blip included. So one bad minute during a re-pick
+// silently rewrote the owner's decided 'B' back to 'CTS', and
+// quality_grade_before_cts already holds 'CTS' from 0071, so COALESCE preserved
+// nothing and the B was gone a second time. It also recreated a grade = 'CTS'
+// row, which 0072's closing note names as the standing signal that something is
+// STILL writing the routing state into the verdict.
+//
+// So the legacy grade write is now narrowed to slabs that were not already
+// marked cut — twice over, in JavaScript from setSlabMark's own answer and
+// again in the statement's WHERE.
 
 import { prisma } from "@/lib/prisma";
 import { setSlabMark, refreshInventoryMirror } from "@/lib/fab/slabMarkStore";
@@ -110,8 +139,22 @@ export async function markQcSlabCts(pacificQcId: string, by?: string | null): Pr
   // stop it either — with no mark written, refreshInventoryMirror below has
   // nothing to carry across, reports markInMirror:false, and the legacy grade
   // write takes over. Failing to mark must never mean failing to block.
+  //
+  // ITS ANSWER IS ALSO THE "IS THIS A NEW PICK?" TEST — see the legacy branch.
+  //   changed:true                  the mark just moved FULL_SLAB -> CTS. A
+  //                                 genuinely new pick.
+  //   changed:false && applied:true the row was ALREADY marked cut: the
+  //                                 idempotent re-pick.
+  //   ok:false                      refused, so it is already marked the other
+  //                                 way (SAMPLE), or the QC row is gone.
+  //   applied:false                 no scripts/0057 — there is no mark column
+  //                                 at all, so there is nothing to be already
+  //                                 marked and the legacy grade write is the
+  //                                 only signal there has ever been.
+  let markSaysAlreadyCut = false;
   try {
-    await setSlabMark(pacificQcId, "CTS");
+    const marked = await setSlabMark(pacificQcId, "CTS");
+    markSaysAlreadyCut = !marked.ok || (marked.applied && !marked.changed);
   } catch (err) {
     console.error("[fab] slab mark not set for qc", pacificQcId, err);
   }
@@ -125,10 +168,31 @@ export async function markQcSlabCts(pacificQcId: string, by?: string | null): Pr
   // fg_finished_slab.slab_mark and reads the row back to say whether it landed.
   const mirror = await refreshInventoryMirror(pacificQcId);
 
-  if (!mirror.markInMirror) {
+  if (!mirror.markInMirror && !markSaysAlreadyCut) {
     // THE LEGACY BRANCH — scripts/0070 is not applied (or this slab has no
     // finished-goods row to mark). The mark cannot block dispatch, so the grade
-    // still must, exactly as it does today. The verdict is copied aside first.
+    // still must. The verdict is copied aside first.
+    //
+    // ───────────────── AND ONLY FOR A SLAB THAT WAS NOT ALREADY CUT ─────────
+    // markInMirror is false for EVERY reason it could fail, including a
+    // transient database blip, a caught autolink throw and a missing fg row —
+    // and this function is re-invoked on every interaction with an
+    // already-imported slab. That made one bad minute on the database enough to
+    // rewrite quality_grade = 'CTS' over a slab that already read 'B'.
+    //
+    // WHICH IS NOW THE OWNER'S DECIDED VERDICT, NOT A STALE VALUE. scripts/0071
+    // and 0072 moved all 63 cut slabs from 'CTS' to 'B' by his decision, and
+    // quality_grade_before_cts already holds 'CTS' for them — so COALESCE
+    // preserves nothing and the B would be unrecoverable a second time. It
+    // would also recreate a grade = 'CTS' row, which 0072's closing note defines
+    // as the standing signal that something is STILL writing the routing state
+    // into the verdict.
+    //
+    // TWO GUARDS, because the answer above can be unknown. The JS one skips the
+    // branch entirely when setSlabMark PROVED the slab was already cut; the
+    // WHERE below repeats it in SQL, so even the unknown case (setSlabMark threw)
+    // cannot regrade an already-marked row. An idempotent re-pick can no longer
+    // touch the grade whatever the mirror answered.
     try {
       await prisma.$executeRaw`
         UPDATE polish_qc
@@ -152,6 +216,12 @@ export async function markQcSlabCts(pacificQcId: string, by?: string | null): Pr
           -- left as they are, and both still refuse dispatch (CUT_GRADES holds
           -- CTS and SAMPLE), so this narrowing can only ever refuse more.
           AND  upper(btrim(coalesce(quality_grade, ''))) NOT IN ('CTS', 'SAMPLE')
+          -- AND THE MARK SAYS THIS SLAB IS STILL WHOLE. After 0071/0072 the
+          -- grade test above no longer catches a re-pick: all 63 cut slabs read
+          -- 'B'. The mark is what remembers, and it is checked in the statement
+          -- rather than in JavaScript so a concurrent pick cannot slip between
+          -- the read and the write.
+          AND  upper(btrim(coalesce(slab_mark, 'FULL_SLAB'))) = 'FULL_SLAB'
       `;
     } catch (err) {
       // scripts/0056 not applied — still mark it CTS, which is the part that
@@ -163,12 +233,31 @@ export async function markQcSlabCts(pacificQcId: string, by?: string | null): Pr
       // measured. A fallback that destroys the polishing line's verdict has to
       // announce itself.
       console.error("[fab] verdict NOT preserved for qc", pacificQcId, "— falling back to a grade-only write", err);
-      await prisma.$executeRaw`
-        UPDATE polish_qc
-        SET    quality_grade = 'CTS'
-        WHERE  id = ${pacificQcId}
-          AND  upper(btrim(coalesce(quality_grade, ''))) NOT IN ('CTS', 'SAMPLE')
-      `;
+      try {
+        // STILL NARROWED BY THE MARK. Losing the preservation column is no
+        // reason to also lose the re-pick guard — that is the one that stops
+        // 'CTS' landing on top of the owner's decided 'B'.
+        await prisma.$executeRaw`
+          UPDATE polish_qc
+          SET    quality_grade = 'CTS'
+          WHERE  id = ${pacificQcId}
+            AND  upper(btrim(coalesce(quality_grade, ''))) NOT IN ('CTS', 'SAMPLE')
+            AND  upper(btrim(coalesce(slab_mark, 'FULL_SLAB'))) = 'FULL_SLAB'
+        `;
+      } catch (err2) {
+        // No slab_mark column either, i.e. scripts/0057 is not applied. On such
+        // a database no row can be "already marked cut", so the narrowing was a
+        // no-op there and dropping it changes nothing about which rows move —
+        // it only lets the statement parse. This is the pre-0057 world, and in
+        // it the grade is the only thing that ever blocked dispatch.
+        console.error("[fab] mark-narrowed grade write failed for qc", pacificQcId, "— no slab_mark column; writing the grade unnarrowed", err2);
+        await prisma.$executeRaw`
+          UPDATE polish_qc
+          SET    quality_grade = 'CTS'
+          WHERE  id = ${pacificQcId}
+            AND  upper(btrim(coalesce(quality_grade, ''))) NOT IN ('CTS', 'SAMPLE')
+        `;
+      }
     }
 
     // AND MIRROR IT AGAIN. The refresh above ran BEFORE the grade changed, so

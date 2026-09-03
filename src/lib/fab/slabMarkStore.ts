@@ -143,7 +143,16 @@ export type MirrorRefresh = {
    *  reading the row back. False for every reason it could fail: no scripts
    *  /0070 column, no finished-goods row, a non-integer slab number, a database
    *  having a bad minute. Callers must treat false as "the mark cannot block
-   *  dispatch, so the legacy grade still has to". */
+   *  dispatch, so the legacy grade still has to".
+   *
+   *  BUT NOT ON A SLAB THAT IS ALREADY MARKED CUT. False here means "could not
+   *  confirm", not "the slab is whole", and the callers re-invoke this on every
+   *  interaction with an already-imported slab — so a bad minute on the database
+   *  used to be enough to write 'CTS' over the grade of a slab that had been
+   *  marked weeks ago. After scripts/0071 and 0072 that grade is the owner's
+   *  decided 'B'. markQcSlabCts and markQcSlabSample therefore AND this answer
+   *  with setSlabMark's own "was this a new pick", and repeat the test in the
+   *  UPDATE's WHERE. */
   markInMirror: boolean;
 };
 
@@ -264,10 +273,22 @@ export async function refreshInventoryMirror(pacificQcId: string): Promise<Mirro
     const rows = await prisma.$queryRaw<Array<{ slab_mark: string | null }>>`
       SELECT slab_mark FROM fg_finished_slab WHERE slab_number = ${slabNumber}
     `;
-    // THE QUERY CAME BACK, SO THE COLUMN IS THERE. Tell the one detector, or
-    // the dispatch side never learns it from a fabrication-only invocation and
-    // the grade write below never stops. See noteSlabMarkProven.
-    noteSlabMarkProven();
+    // AND NOW PROVE IT THE WAY THE DISPATCH SIDE HAS TO READ IT.
+    //
+    // This raw SELECT coming back proves the DATABASE has the column. That is
+    // NOT the fact slabMarkReadable() grants: it gates whether the GENERATED
+    // PRISMA CLIENT can select slabMark. A client generated before the column
+    // existed (searchWhere.ts:61-63 documents that as the real state of a
+    // working copy) makes this raw probe succeed while the client-path select
+    // still throws — so granting "readable" from here would tell markQcSlabCts
+    // it may stop writing quality_grade = 'CTS' while the dispatch read is
+    // about to latch "missing". The slab would be grade A, marked CTS, and
+    // before the fail-closed change nothing refused it.
+    //
+    // noteSlabMarkProven() therefore does its own client-path findFirst and
+    // grants "readable" only if THAT succeeds. Awaited, because the answer
+    // below depends on it. See its own comment in lib/inventory/finishedSlab.
+    await noteSlabMarkProven();
     const stored = parseSlabMark(rows?.[0]?.slab_mark);
     // AND THE DISPATCH SIDE MUST AGREE IT CAN READ IT.
     //
@@ -282,10 +303,19 @@ export async function refreshInventoryMirror(pacificQcId: string): Promise<Mirro
     //
     // So the permission slip is the AND of both: the mark is in the mirror, and
     // the code that enforces the dispatch block has PROVEN it can read it.
-    // slabMarkReadable() answers false until a read has actually succeeded, so
-    // the pair can never disagree in the unsafe direction — the worst they can
-    // do is keep writing the grade for another minute, which is today's
-    // behaviour and refuses exactly the slabs it refuses today.
+    // slabMarkReadable() answers false until a client-path read has actually
+    // succeeded, so the pair can never disagree in the unsafe direction — the
+    // worst they can do is keep writing the grade for another minute.
+    //
+    // WHAT THAT COSTS HAS CHANGED, and it is worth writing down: the fallback
+    // used to be free because gradeBlocksDispatch still refused every slab the
+    // mark refuses. It does not any more. scripts/0071 and 0072 regraded all 63
+    // cut slabs to 'B', so on live Neon (2026-09-03) NO row in either table
+    // carries a cut grade. A false answer here now means markQcSlabCts writes
+    // 'CTS' back over the owner's decided verdict — the regression scripts/0072
+    // says to watch for — and dispatch is protected by the mark alone, which is
+    // why changeSlabStatus refuses outright any dispatch it cannot confirm the
+    // mark for.
     return { markInMirror: (stored === "CTS" || stored === "SAMPLE") && slabMarkReadable() };
   } catch (err) {
     if (!isMissingColumn(err)) {

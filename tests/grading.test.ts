@@ -295,7 +295,7 @@ test("gradeBlocksDispatch is untouched — other callers still depend on it", ()
 
 test("THE FAB PATH CAN PROVE THE MARK COLUMN, NOT ONLY THE DISPATCH PATH", () => {
   const fs = readFileSync(new URL("../src/lib/inventory/finishedSlab.ts", import.meta.url), "utf8");
-  assert.match(fs, /export function noteSlabMarkProven\(\)/,
+  assert.match(fs, /export async function noteSlabMarkProven\(\)/,
     "finishedSlab must export a way for another path to report the column exists");
   assert.match(fs, /export function slabMarkReadable\(\)/);
 
@@ -326,4 +326,141 @@ test("there is ONE state, so the two paths cannot disagree", () => {
   const store = readFileSync(new URL("../src/lib/fab/slabMarkStore.ts", import.meta.url), "utf8");
   assert.ok(!/let\s+\w*[Ss]labMarkColumn/.test(store),
     "the fab side must not keep its own idea of whether the column exists");
+});
+
+/* ═══════════════════════ THE GRADE BELT IS GONE (0071 + 0072) ══════════════
+ *
+ * scripts/0071 and 0072 moved all 63 cut slabs from grade 'CTS' to grade 'B' on
+ * the owner's decision, and both are applied. Measured on live Neon 2026-09-03:
+ * ZERO rows in polish_qc and ZERO in fg_finished_slab carry grade CTS or SAMPLE;
+ * 63 fg rows carry slab_mark 'CTS' (60 AVAILABLE, 2 DISPATCHED, 1 at status
+ * CTS), and the 60 in stock are 42 QC_AUTOLINK + 18 BULK_UPLOAD, every one of
+ * them grade 'B'.
+ *
+ * So slabBlocksDispatch is a ONE-LEGGED OR against real data. These tests hold
+ * the consequence: a row shaped like one of the 60 is refused ONLY by its mark,
+ * and the same row with no mark is refused by nothing at all — which is why the
+ * caller must fail closed rather than trust the rule with a missing mark.
+ */
+
+test("THE 60 IN-STOCK CUT SLABS ARE HELD BY THE MARK AND BY NOTHING ELSE", () => {
+  // The live row, exactly: grade B (0071/0072's decision), mark CTS, AVAILABLE.
+  assert.equal(slabBlocksDispatch({ grade: "B", mark: "CTS" }), true,
+    "an already-cut slab regraded B must still be refused");
+  assert.equal(dispatchCut({ grade: "B", mark: "CTS" }), "CTS",
+    "and the refusal message must still say which way it was cut");
+
+  // The grade half now carries NONE of them. If this ever starts passing as
+  // `true`, a routing state has found its way back into quality_grade — which
+  // scripts/0072's closing note defines as the regression signal for this
+  // incident, not as protection returning.
+  assert.equal(gradeBlocksDispatch("B"), false,
+    "grade B is a verdict, not a routing state — the grade rule refuses nothing on live data");
+
+  // AND THE SAME ROW WITHOUT ITS MARK IS DISPATCHABLE. This is the whole reason
+  // a read that cannot confirm the mark must refuse instead of degrading: there
+  // is no second signal left to degrade TO.
+  for (const mark of [undefined, null, "", "FULL_SLAB"]) {
+    assert.equal(slabBlocksDispatch({ grade: "B", mark }), false,
+      `grade B with mark ${JSON.stringify(mark) ?? "undefined"} is refused by nothing`);
+  }
+});
+
+test("EVERY LIVE CUT SLAB'S GRADE IS NOW ONE THE GRADE RULE LETS THROUGH", () => {
+  // polish_qc holds 63 rows marked CTS and 0 rows graded CTS/SAMPLE. Their
+  // grades are the ordinary verdicts, so the combined rule and the mark rule
+  // must agree slab for slab: the OR contributes nothing on this data.
+  for (const grade of ["A", "A2", "B", "C", "C (Reject)", null, "Not graded yet"]) {
+    for (const mark of ["FULL_SLAB", "CTS", "SAMPLE", undefined]) {
+      assert.equal(slabBlocksDispatch({ grade, mark }), markBlocksDispatch(mark),
+        `${JSON.stringify(grade)} / ${JSON.stringify(mark)} — the grade leg must be adding nothing`);
+    }
+  }
+});
+
+/* ───────────────────── the two blockers, structurally ──────────────────────
+ *
+ * Both end with an already-cut slab reading AVAILABLE that nothing refuses, and
+ * both live in modules that import the Prisma client and cannot be loaded under
+ * `node --test`. What is asserted is the wiring — that the mark is WRITTEN on
+ * every path that mints a finished-goods row, and that it is REQUIRED on the
+ * path that dispatches one.
+ */
+
+test("THE AUTOLINK CARRIES THE MARK, ONE WAY", () => {
+  const fs = readFileSync(new URL("../src/lib/inventory/finishedSlab.ts", import.meta.url), "utf8");
+  const autolink = fs.slice(
+    fs.indexOf("export async function autolinkFinishedSlabFromQc"),
+    fs.indexOf("export async function relinkFinishedSlabAfterNumberChange"));
+  assert.ok(autolink.length > 0, "autolinkFinishedSlabFromQc must still be there");
+
+  // It projects the QC row's mark. Without this the create: branch mints a
+  // FULL_SLAB row for a slab polish_qc says is cut — and editing a PolishQc slab
+  // number does exactly that, then deletes the old row.
+  assert.match(autolink, /dispatchCut\(\{\s*mark:\s*qc\.slabMark\s*\}\)/,
+    "autolink must read the QC row's slab_mark, normalised the way dispatch reads it");
+  assert.match(autolink, /createFields\.slabMark = qcMark/,
+    "the mark must go into create: itself — a row that reads FULL_SLAB for even an instant is dispatchable");
+
+  // ONE WAY. FULL_SLAB is never written over a stored cut mark: the only write
+  // to an existing row is guarded on the mirror still reading FULL_SLAB.
+  assert.match(autolink, /slabMark:\s*"FULL_SLAB"/,
+    "the update path must be guarded on the row still reading FULL_SLAB");
+  assert.ok(!/data:\s*\{[^}]*slabMark:\s*"FULL_SLAB"/.test(autolink),
+    "FULL_SLAB must never be WRITTEN — only required in a where clause");
+  assert.ok(!/qcFields\.slabMark/.test(autolink),
+    "the mark is not an ordinary qcField: it is one-way, so it must not ride the plain update payload");
+});
+
+test("A DISPATCH THAT CANNOT CONFIRM THE MARK IS REFUSED, NOT ALLOWED", () => {
+  const fs = readFileSync(new URL("../src/lib/inventory/finishedSlab.ts", import.meta.url), "utf8");
+
+  // Fail closed, per slab, on direct evidence: slab_mark is NOT NULL DEFAULT
+  // 'FULL_SLAB' (scripts/0070), so a string means the mark was really read and
+  // anything else means readSlabForStatusChange fell back to the mark-less
+  // select. A global flag would not do — another caller can flip it.
+  assert.match(fs, /action === "dispatch" && typeof \(slab as \{ slabMark\?: unknown \}\)\.slabMark !== "string"/,
+    "changeSlabStatus must refuse a dispatch whose mark it could not read");
+  assert.match(fs, /cannot verify slab mark/,
+    "and say so, in the skipped reason the caller shows the user");
+
+  // The updateMany guard must carry the mark clause unconditionally for a
+  // dispatch. It used to be gated on the process-wide slabMarkReadable(), which
+  // another caller's failed read could switch off between the read and the
+  // write — and with the grade leg gone, a guard without it guards nothing.
+  assert.ok(!/if \(slabMarkReadable\(\)\) \{/.test(fs),
+    "the mark clause must not be gated on a process-wide flag");
+  assert.match(fs, /guard\.AND = CUT_MARKS\.map/,
+    "the dispatch guard must always filter on the mark");
+
+  // And the silent fallback must not be silent.
+  const catchAt = fs.indexOf("slabMarkColumn = \"missing\"");
+  assert.ok(catchAt !== -1, "the missing-column latch must still be there");
+  assert.ok(fs.slice(0, catchAt).lastIndexOf("console.error") > fs.slice(0, catchAt).lastIndexOf("catch ("),
+    "the catch that drops to mark-less reads must log — a silent fallback is how this stayed invisible");
+});
+
+test("AN ALREADY-MARKED SLAB CAN NEVER BE REGRADED BY A RE-PICK", () => {
+  // markInMirror is false for every reason it could fail, a transient database
+  // blip included, and these run on every interaction with an already-imported
+  // slab. After 0071/0072 the grade they would overwrite is the owner's decided
+  // 'B', and quality_grade_before_cts already holds 'CTS', so COALESCE preserves
+  // nothing. Two guards: JS from setSlabMark's answer, SQL in every WHERE.
+  for (const f of ["markQcSlabCts", "markQcSlabSample"]) {
+    const src = readFileSync(new URL(`../src/lib/fab/${f}.ts`, import.meta.url), "utf8");
+    // The SQL only, never the prose around it — the comments in these files
+    // quote the very statements they are explaining.
+    const statements = src.split("$executeRaw`").slice(1).map((s) => s.slice(0, s.indexOf("`")));
+    const gradeWrites = statements.filter((s) => /quality_grade\s*=\s*'(CTS|SAMPLE)'/.test(s));
+    assert.ok(gradeWrites.length >= 2, `${f} should still have its grade writes`);
+    // Every grade write but ONE is narrowed by the mark. The exception is the
+    // last-resort statement reached only when polish_qc has no slab_mark column
+    // at all (pre-0057) — where no row can be already marked, so the narrowing
+    // would change nothing except whether the statement parses.
+    const narrowed = gradeWrites.filter((s) => /coalesce\(slab_mark, 'FULL_SLAB'\)\)\) = 'FULL_SLAB'/.test(s));
+    assert.equal(narrowed.length, gradeWrites.length - 1,
+      `${f}: every grade write except the pre-0057 fallback must be narrowed by the mark`);
+    assert.match(src, /marked\.applied && !marked\.changed|marked\.applied \&\& !marked\.changed/,
+      `${f} must skip the legacy branch when setSlabMark says the slab was already marked cut`);
+  }
 });

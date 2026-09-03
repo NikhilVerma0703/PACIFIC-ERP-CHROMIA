@@ -11,9 +11,29 @@ import { AutoRefresh } from "../AutoRefresh";
 // what is still waiting at QC, and what the pool becomes when it lands. Admin
 // only — middleware gates /scoreboard/* and this is the in-page check every
 // admin screen carries as well.
-/** The per-shift share of the pool and the rupee amounts per pay band. OFF at
- *  the owner's request until the scheme's three open decisions are settled; the
- *  figures are still computed and tested, this only draws them. */
+/** EVERY ANSWER TO "WHAT DOES MY SHIFT GET, AND HOW MUCH MONEY IS IT" — the
+ *  per-shift share of the pool, the rupee amounts per pay band, and the pool's
+ *  own rupee total wherever it appears. OFF at the owner's request (2026-09-03:
+ *  "Don't show these numbers as of now. We'll show the numbers in this screen
+ *  later.") until the scheme's three open decisions are settled: the step
+ *  ladder, the equal-thirds salary split, and which quality method settles the
+ *  month. The figures are still computed and tested; this only draws them.
+ *
+ *  THE FIRST ATTEMPT HID ONE CARD AND MISSED THE SCREEN. Its comment claimed
+ *  "nothing else on the page reads it", and that was false twice over:
+ *    - the visible "three shifts" table drew the IDENTICAL share-of-pool
+ *      percentages in its last two columns, because incentiveMonth.ts's
+ *      moneyFor() copies `share: r.share` straight through — money.weighted[i]
+ *      .share IS shares.weighted[i].share, by construction; and
+ *    - the pool's rupee total stayed on screen in the "Pool today" KPI, the
+ *      green unlocked banner, the ladder labels and the projection, so a
+ *      shift's rupee slice was share x pool, two figures on one page.
+ *  A percentage of a pool whose size is printed beside it is a rupee figure.
+ *  So anything answering either question goes behind THIS flag, not a new one.
+ *
+ *  WHAT DELIBERATELY STAYS: slab counts, the floor, grade shares, quality
+ *  scores, the ladder's slab rungs, QC pace. They are the month's work and the
+ *  reason the page exists; none of them is a promise of money. */
 const SHOW_PAYOUT_AMOUNTS = false;
 
 export const dynamic = "force-dynamic";
@@ -106,15 +126,18 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                   {fmt(outstanding.real)} real slabs are still to grade. At the month&apos;s grade share of {pct(projection.share)} they add about {fmt(Math.round(projection.addReal))},
                   taking the month to <b>{fmt(Math.round(projection.projectedReal))}</b>
                   {projection.projectedReal >= pool.floor
-                    ? <> — over the line, into the <b>{lakh(projection.poolReal)}</b> pool.</>
+                    ? <> — over the line{SHOW_PAYOUT_AMOUNTS ? <>, into the <b>{lakh(projection.poolReal)}</b> pool</> : <>, into the pool</>}.</>
                     : <> — still short of the floor. The pool is unlocked only by grading, not by projecting.</>}
                   {outstanding.byStage.nowhere > 0 && <> Counting the {fmt(outstanding.byStage.nowhere)} never-seen numbers as well would say {fmt(Math.round(projection.projectedAll))}; they are left out here because a number no station has seen will not grade.</>}
                 </p>
               </Card>
             ) : (
               <Card className="mb-4 border-green-300 bg-green-50">
-                <div className="text-sm font-semibold text-green-800">Pool unlocked — {lakh(pool.poolNow)} on {half(pool.counted)} counted slabs</div>
-                {pool.next && <p className="mt-1 text-sm text-gray-700">{fmt(pool.next.slabs - Math.floor(pool.counted))} more counted slabs reach the {lakh(pool.next.pool)} row.</p>}
+                {/* The unlocking is the news and stays; its rupee size is the
+                    figure SHOW_PAYOUT_AMOUNTS is holding back. Same for the
+                    next rung — named by its slab count instead. */}
+                <div className="text-sm font-semibold text-green-800">Pool unlocked{SHOW_PAYOUT_AMOUNTS ? ` — ${lakh(pool.poolNow)}` : ""} on {half(pool.counted)} counted slabs</div>
+                {pool.next && <p className="mt-1 text-sm text-gray-700">{fmt(pool.next.slabs - Math.floor(pool.counted))} more counted slabs reach the {SHOW_PAYOUT_AMOUNTS ? lakh(pool.next.pool) : `${fmt(pool.next.slabs / 1000)}k`} row.</p>}
               </Card>
             )}
 
@@ -122,9 +145,13 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
             <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
               <Kpi label="Counted good slabs" value={half(pool.counted)} sub={`floor ${fmt(pool.floor)} · ${half(plant.credit)} good slabs + ${fmt(plant.slowSlabs)} counted a second time`} />
               <Kpi label="Counted twice" value={fmt(plant.slowSlabs)} sub={`good slabs from hours with a standard of ${SLOW_STD_MAX}/hr or less — each added once more, so +${fmt(plant.slowSlabs)} to the count`} />
-              <Kpi label="Pool today" value={pool.poolNow ? lakh(pool.poolNow) : "—"} sub={pool.poolNow ? "unlocked" : `${fmt(pool.floor - Math.floor(pool.counted))} short of the floor`} />
+              {/* Whether the pool is open is a fact about the month's count and
+                  stays on screen; what it is worth does not, while the flag is
+                  off — it was the largest rupee figure on the page. */}
+              <Kpi label="Pool today" value={!pool.poolNow ? "—" : SHOW_PAYOUT_AMOUNTS ? lakh(pool.poolNow) : "Unlocked"}
+                sub={pool.poolNow ? (SHOW_PAYOUT_AMOUNTS ? "unlocked" : `the count is over the ${fmt(pool.floor)} floor`) : `${fmt(pool.floor - Math.floor(pool.counted))} short of the floor`} />
               <Kpi label="Still to grade" value={fmt(outstanding.real)} sub={`${fmt(outstanding.total)} claimed and uncounted · ${fmt(outstanding.byStage.nowhere)} never seen · ${fmt(outstanding.byStage.routed)} routed`} />
-              <Kpi label="Projected" value={fmt(Math.round(projection.projectedReal))} sub={`if the real ones grade at ${pct(projection.share)} → ${projection.poolReal ? lakh(projection.poolReal) : "no pool"}`} />
+              <Kpi label="Projected" value={fmt(Math.round(projection.projectedReal))} sub={`if the real ones grade at ${pct(projection.share)} → ${projection.poolReal ? (SHOW_PAYOUT_AMOUNTS ? lakh(projection.poolReal) : "over the floor") : "no pool"}`} />
               <Kpi label="Grade share" value={pct(plant.rawShare)}
                 sub={`${fmt(plant.gradeA)} A · ${fmt(plant.gradeB)} B · ${fmt(plant.gradeC)} rejects of ${fmt(plant.graded)} graded`}
                 working={<>
@@ -161,8 +188,11 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
               <div className="relative mt-1 h-9 w-full text-[11px] text-gray-500">
                 {pool.ladder.map((t) => (
                   <div key={t.slabs} className="absolute -translate-x-1/2 text-center leading-tight" style={{ left: at(t.slabs) }}>
+                    {/* The rungs stay — where the month sits is the point of
+                        the bar. What each rung PAYS is a pool figure, so it
+                        goes with the rest of them while the flag is off. */}
                     <div className="font-semibold text-gray-700">{fmt(t.slabs / 1000)}k</div>
-                    <div>{lakh(t.pool)}</div>
+                    {SHOW_PAYOUT_AMOUNTS && <div>{lakh(t.pool)}</div>}
                   </div>
                 ))}
               </div>
@@ -191,8 +221,14 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                       <th className="py-2 pr-3">Per shift</th><th className="py-2 pr-3">Grade share</th>
                       <th className="py-2 pr-3">Quality<br /><span className="normal-case text-gray-400">per-shift avg</span></th>
                       <th className="py-2 pr-3">Quality<br /><span className="normal-case text-gray-400">month share</span></th>
-                      <th className="py-2 pr-3">Share<br /><span className="normal-case text-gray-400">per-shift avg</span></th>
-                      <th className="py-2">Share<br /><span className="normal-case text-gray-400">month share</span></th>
+                      {/* SHARE OF THE POOL — the same numbers the hidden payout
+                          card draws, not merely similar ones (see the flag).
+                          Quality and grade share above are scores out of 100%
+                          and stay; these two are slices of a pot. */}
+                      {SHOW_PAYOUT_AMOUNTS && <>
+                        <th className="py-2 pr-3">Share<br /><span className="normal-case text-gray-400">per-shift avg</span></th>
+                        <th className="py-2">Share<br /><span className="normal-case text-gray-400">month share</span></th>
+                      </>}
                     </tr>
                   </thead>
                   <tbody>
@@ -215,8 +251,10 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                           <td className="py-2 pr-3">{pct(l.rawShare)}</td>
                           <td className="py-2 pr-3">{pct(l.qualityWeighted, 0)}</td>
                           <td className="py-2 pr-3">{pct(l.qualityAggregate, 0)}</td>
-                          <td className="py-2 pr-3">{pct(w.share)}</td>
-                          <td className="py-2">{pct(a.share)}</td>
+                          {SHOW_PAYOUT_AMOUNTS && <>
+                            <td className="py-2 pr-3">{pct(w.share)}</td>
+                            <td className="py-2">{pct(a.share)}</td>
+                          </>}
                         </tr>
                       );
                     })}
@@ -226,7 +264,12 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                       <td className="py-2 pr-3">{fmt(plant.claimed)}</td><td className="py-2 pr-3">{fmt(plant.graded)}</td><td className="py-2 pr-3">{fmt(plant.ungraded)}</td>
                       <td className="py-2 pr-3 text-gray-600">{fmt(plant.gradeA)} / {fmt(plant.gradeB)} / {fmt(plant.gradeC)}</td>
                       <td className="py-2 pr-3">{half(plant.credit)}</td><td className="py-2 pr-3 text-gray-600">{fmt(plant.slowSlabs)}</td><td className="py-2 pr-3 font-semibold">{fmt(plant.points)}</td>
-                      <td className="py-2 pr-3">—</td><td className="py-2 pr-3">{pct(plant.rawShare)}</td><td className="py-2 pr-3">—</td><td className="py-2 pr-3">—</td><td className="py-2 pr-3">100%</td><td className="py-2">100%</td>
+                      <td className="py-2 pr-3">—</td><td className="py-2 pr-3">{pct(plant.rawShare)}</td><td className="py-2 pr-3">—</td><td className="py-2 pr-3">—</td>
+                      {/* The two 100% cells are the giveaway that the columns
+                          above them are shares of a whole, so they go with
+                          those columns — and they must, or the plant row runs
+                          two cells wider than the header. */}
+                      {SHOW_PAYOUT_AMOUNTS && <><td className="py-2 pr-3">100%</td><td className="py-2">100%</td></>}
                     </tr>
                   </tbody>
                 </table>
@@ -234,17 +277,14 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
             </Card>
 
             {/* ---- What each person would take --------------------------------- */}
-            {/* HIDDEN ON THE OWNER'S INSTRUCTION (2026-09-03): "Don't show these
-                numbers as of now. We'll show the numbers in this screen later."
-                The share-of-pool percentages and the per-band rupee amounts are
-                the ones he means — they rest on three scheme decisions that are
-                still his to confirm (the step ladder, the equal-thirds salary
-                split, and which quality method settles the month), so putting a
-                rupee figure in front of anyone now would read as a promise.
+            {/* HIDDEN ON THE OWNER'S INSTRUCTION — see SHOW_PAYOUT_AMOUNTS at
+                the top of this file for the instruction, the three unsettled
+                decisions behind it, and the rest of the page it also governs.
+                This card is the densest of the money, not the only of it.
 
-                The whole card is behind one flag rather than deleted: every
+                The whole card is behind the flag rather than deleted: every
                 figure it draws is still computed, still tested, and comes back
-                by setting this to true. Nothing else on the page reads it. */}
+                by setting the flag to true. */}
             {SHOW_PAYOUT_AMOUNTS && (
             <Card className="mb-4">
               <H2>What it pays{m.money.pool ? ` on the ${lakh(m.money.pool)} pool` : ""}</H2>
@@ -383,9 +423,15 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
               </Card>
             )}
 
+            {/* The salary-bill assumption describes how the payout card turns a
+                share into a percentage of pay — it is a rupee figure and only
+                means anything when that card is drawn, so it travels with it.
+                The lost-time-accident warning is about the scheme itself and is
+                shown either way. */}
             <p className="text-xs text-gray-400">
-              As of {asOfIST}. Scored {m.from} to {m.scoredTo}. Assumes the ₹41 lakh production salary bill (112 people, still marked provisional in the notice) is split equally across the three shifts;
-              any lost-time accident in a shift removes that shift&apos;s incentive for the month, and nothing on this page checks for one.
+              As of {asOfIST}. Scored {m.from} to {m.scoredTo}.{" "}
+              {SHOW_PAYOUT_AMOUNTS && <>Assumes the ₹41 lakh production salary bill (112 people, still marked provisional in the notice) is split equally across the three shifts. </>}
+              Any lost-time accident in a shift removes that shift&apos;s incentive for the month, and nothing on this page checks for one.
             </p>
           </>
         );

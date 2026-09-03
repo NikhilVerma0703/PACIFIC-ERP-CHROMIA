@@ -133,27 +133,33 @@ export function markBlocksDispatch(mark: unknown): boolean {
 /**
  * THE DISPATCH RULE. Either signal saying cut is enough to refuse.
  *
- * The OR is the whole safety property of this change, and the reason it can be
- * deployed in either order relative to its migration:
+ * ══════════ THE OR HAS ONE LEG NOW. READ THIS BEFORE TRUSTING IT ══════════
  *
- *   * A database WITHOUT fg_finished_slab.slab_mark has no mark to read, so
- *     every slab is refused on exactly the grade it is refused on today — the
- *     62 rows measured on live Neon on 2026-09-03 (60 in stock, 2 already
- *     DISPATCHED), which are every slab the block refuses at all.
- *   * A database WITH it refuses those SAME 62 — all 62 have a polish_qc row
- *     whose mark already says CTS, and the backfill copies it across — PLUS any
- *     slab whose mark says cut while its grade has been left alone, which is
- *     precisely what this change exists to allow fabrication to start doing.
+ * This was written during a changeover in which BOTH signals were live, and it
+ * used to say the OR "can only ever refuse MORE", with the grade half going on
+ * covering the 62 legacy rows. THAT IS NO LONGER TRUE, and the sentence is kept
+ * deleted rather than softened, because a stale justification is how the next
+ * person re-opens the hole.
  *
- * So it can only ever refuse MORE. Nothing that is refused today becomes
- * dispatchable, in either deploy order, at any point in between. That is the
- * one failure that matters here: removing the grade write before the rule moved
- * would have silently un-blocked dispatch for every slab fabrication cuts.
+ * What ended the changeover: scripts/0071 and 0072 moved all 63 of those slabs
+ * from grade 'CTS' to grade 'B' on the owner's decision, their real verdicts
+ * being unrecoverable. Re-measured on live Neon 2026-09-03, after they ran:
  *
- * The grade half stays for as long as the grade write does. When lib/fab stops
- * writing quality_grade = 'CTS', this keeps working unchanged — the mark half
- * carries it, and the grade half goes on covering the 62 legacy rows whose
- * grade the owner is still collecting by hand.
+ *   * ZERO rows in polish_qc and ZERO in fg_finished_slab carry grade 'CTS' or
+ *     'SAMPLE'. gradeBlocksDispatch matches NOTHING against real data.
+ *   * 63 rows carry slab_mark = 'CTS' (60 AVAILABLE, 1 status CTS, 2 already
+ *     DISPATCHED). All 61 on the floor read grade 'B'.
+ *
+ * SO THE MARK IS THE ONLY THING BETWEEN 60 ALREADY-CUT SLABS AND A LORRY.
+ * Anything that cannot confirm the mark must FAIL CLOSED — refuse, and say why
+ * — not fall through to the grade and call that a degraded answer. It is not
+ * degraded, it is a confident wrong one. See finishedSlab.ts, which does refuse.
+ *
+ * The grade half stays anyway, and deliberately. It costs nothing, and it is
+ * the one thing that would still refuse a row if a routing state ever found its
+ * way back into quality_grade — which scripts/0072's closing note names as the
+ * standing regression signal for this whole incident. Keep it; just do not
+ * lean on it.
  */
 export function slabBlocksDispatch(slab: { grade?: unknown; mark?: unknown }): boolean {
   return markBlocksDispatch(slab.mark) || gradeBlocksDispatch(slab.grade);

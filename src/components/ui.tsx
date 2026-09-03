@@ -32,8 +32,20 @@ export function Kpi({ label, value, sub, working, className = "" }: {
         <div className="text-xs font-medium uppercase tracking-wide text-gray-400">{label}</div>
         {working && (
           <details className="group relative shrink-0">
+            {/* min-h-0 py-0 ARE LOAD-BEARING ON THE FLOOR TABLETS, which are the
+                devices this <details> was chosen for. globals.css sizes every
+                tap target under `@media screen and (pointer: coarse)`:
+                `button, a.rounded-md, …, summary { min-height: 44px }` and
+                `summary { padding-block: 12px }`. Both are element rules
+                (0,0,1); a 20x20 badge that names no min-height or padding of
+                its own loses to them, so on the tablets this circle became a
+                20x44 pill, and because Card is `flex h-full flex-col` inside a
+                grid it dragged every KPI card in the row 28px taller. Those two
+                classes are (0,1,0) and win, which is exactly the escape the
+                globals comment promises ("a class outranks this element rule").
+                Desktop never showed it — pointer: fine skips the whole block. */}
             <summary
-              className="flex h-5 w-5 cursor-pointer list-none items-center justify-center rounded-full border border-gray-300 text-[10px] font-semibold text-gray-400 transition hover:border-brand hover:text-brand"
+              className="flex h-5 w-5 min-h-0 cursor-pointer list-none items-center justify-center rounded-full border border-gray-300 py-0 text-[10px] font-semibold text-gray-400 transition hover:border-brand hover:text-brand"
               aria-label={`How ${label} is worked out`} title={`How ${label} is worked out`}
             >i</summary>
             <div className="absolute right-0 top-6 z-20 w-64 rounded-lg border border-gray-200 bg-white p-3 text-left text-xs leading-relaxed text-gray-600 shadow-lg">

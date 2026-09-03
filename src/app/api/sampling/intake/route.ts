@@ -342,14 +342,41 @@ export async function POST(req: NextRequest) {
   if (sourceQcId) {
     try {
       await markQcSlabSample(sourceQcId);
-      const after = await prisma.polishQc.findUnique({
-        where: { id: sourceQcId },
-        select: { qualityGrade: true },
-      });
       // Read back rather than assume: the write is refused for a slab
       // fabrication already cut, and the screen should say CTS in that case
       // rather than claim a sample took a slab it did not.
-      const g = String(after?.qualityGrade ?? "").trim().toUpperCase();
+      //
+      // READ THE MARK, NOT THE GRADE. This read-back used to select
+      // quality_grade, because marking a slab cut also overwrote the verdict
+      // with 'CTS' and the grade was therefore a reliable stand-in for the
+      // mark. It is not one any more, in two ways, and both of them silence
+      // this warning exactly when it is true:
+      //   * since scripts/0070 a cut slab KEEPS its verdict — markQcSlabCts
+      //     leaves an A reading A and writes the mark instead;
+      //   * scripts/0071 and 0072 regraded all 63 already-cut slabs from 'CTS'
+      //     to 'B', so on live Neon (measured 2026-09-03) not one row in
+      //     polish_qc still reads 'CTS' or 'SAMPLE' in quality_grade.
+      // An incharge adding offcuts off one of those 63 was told nothing, when
+      // the one thing worth telling them is that fabrication had already cut
+      // that slab. slab_mark is the column that still says so.
+      let g = "";
+      try {
+        const after = await prisma.polishQc.findUnique({
+          where: { id: sourceQcId },
+          select: { slabMark: true },
+        });
+        g = String(after?.slabMark ?? "").trim().toUpperCase();
+      } catch (err) {
+        // No slab_mark column — a database without scripts/0057. The legacy
+        // grade write is the only signal such a database has, and on it the
+        // grade IS still the mark, so reading it back is right there.
+        console.error("[sampling/intake] slab_mark unreadable, falling back to grade", sourceQcId, err);
+        const after = await prisma.polishQc.findUnique({
+          where: { id: sourceQcId },
+          select: { qualityGrade: true },
+        });
+        g = String(after?.qualityGrade ?? "").trim().toUpperCase();
+      }
       slabMark = g === "SAMPLE" || g === "CTS" ? g : null;
     } catch (err) {
       console.error("[sampling/intake] could not mark slab SAMPLE", sourceQcId, err);
@@ -361,9 +388,11 @@ export async function POST(req: NextRequest) {
     intakeId: result.intakeId,
     sizeId,
     sizeLabel,
-    /** What the source slab now reads as — SAMPLE when this intake took it,
-     *  CTS when fabrication had already cut it and these are offcuts, null when
-     *  no slab was linked or scripts/0057 is not applied yet. */
+    /** What polish_qc.slab_mark now reads for the source slab — SAMPLE when
+     *  this intake took it, CTS when fabrication had already cut it and these
+     *  are offcuts, null when no slab was linked, when the slab is still
+     *  FULL_SLAB, or when scripts/0057 is not applied and the legacy grade
+     *  fallback found nothing either. */
     slabMark,
     /** True when this typing is the first use of this size — the screens say so,
      *  because "it is now an option for everyone" is the consequence the person

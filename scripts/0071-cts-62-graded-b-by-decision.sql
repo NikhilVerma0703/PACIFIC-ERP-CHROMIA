@@ -32,6 +32,19 @@
 -- 0 that would become dispatchable. THE PRE-CHECK BELOW RE-ASSERTS IT AND ABORTS
 -- IF IT IS EVER UNTRUE — do not remove it.
 --
+-- AND WHAT THIS SCRIPT COST, SAID PLAINLY (added 2026-09-03, after it ran):
+-- slabBlocksDispatch is `markBlocksDispatch(mark) || gradeBlocksDispatch(grade)`
+-- and that OR was written with both legs live, so the rule could only ever
+-- refuse MORE during the changeover. This script ended the changeover. Measured
+-- on live Neon today: ZERO rows in polish_qc and ZERO in fg_finished_slab carry
+-- grade 'CTS' or 'SAMPLE', so the grade leg now refuses nothing at all and the
+-- OR has one leg. 60 already-cut slabs sit in fg_finished_slab reading status
+-- AVAILABLE, grade B, slab_mark CTS: THE MARK IS THE ONLY THING BETWEEN THEM AND
+-- A LORRY. Any comment anywhere claiming that losing the mark "degrades to the
+-- grade rule, which still refuses every slab it refuses today" is false as of
+-- this script — it degrades to nothing. Anything that cannot confirm the mark
+-- must fail closed.
+--
 -- ─────────────────────────── SCOPE: EXACTLY THE 62 ON THE OWNER'S LIST ──────
 -- A 63rd slab (154757, Arva White 1413) was marked CTS while this work was in
 -- progress, AFTER the list went to the owner. It is NOT in here. It has the same
@@ -41,17 +54,58 @@
 -- ─────────────────────────── IT CHANGES THE INCENTIVE ───────────────────────
 -- gradeCredit() (shiftScoreMath.ts) EXCLUDES CTS — it is a routing state, not a
 -- verdict, so these slabs scored nothing for anybody. As B they are worth half a
--- good slab each. 51 of the 62 are claimed by a scored shift: 25 in Aug 2026,
+-- good slab each. 50 of the 62 are claimed by a scored shift: 24 in Aug 2026,
 -- 11 in Jun, 10 in Apr, 2 in May, 2 in Oct 2025, 1 in Nov 2025. August is the
--- month being settled, so its counted total rises by about 12.5 slabs. That is a
+-- month being settled, so its counted total rises by about 12 slabs. That is a
 -- consequence of the decision, not a side effect to be hidden.
+--
+-- CORRECTED 2026-09-03, AFTER THIS SCRIPT HAD ALREADY RUN — the statements are
+-- untouched, only this disclosure. It first read "51 ... 25 in Aug 2026 ...
+-- about 12.5 slabs". That was one slab too many: only 24 of the 62 fall in
+-- August by COALESCE(created_time, imported_at), the key the incentive month
+-- uses. The 25th August slab is 154757, which this script deliberately EXCLUDES
+-- (see the scope note above) and scripts/0072 settles — and 0072's header then
+-- adds its half-slab again. Read together the two headers told the owner August
+-- rises by 13.0 slabs while the two scripts between them move 25 August slabs,
+-- i.e. 12.5. A half-slab of double counting in a disclosure a human reads while
+-- settling the month is worth correcting even though no row is affected.
 --
 -- BOTH TABLES. polish_qc.quality_grade is the verdict; fg_finished_slab.grade is
 -- its projection and is what inventory and dispatch read. Writing one and not the
 -- other is how the two drift (see scripts/0065).
 --
--- IDEMPOTENT: every UPDATE is narrowed to quality_grade = 'CTS' / grade = 'CTS',
--- so a re-run is a no-op and cannot turn a real A into a B.
+-- THE UPDATES ARE IDEMPOTENT. THE SCRIPT IS NOT. DO NOT RE-RUN IT.
+-- Corrected 2026-09-03, after it ran; the header first claimed "a re-run is a
+-- no-op" of the whole script, and that is only true of steps 1 and 2. Both are
+-- narrowed to quality_grade = 'CTS' / grade = 'CTS', so a second run changes no
+-- grade and cannot turn a real A into a B — that part stands, and it is the
+-- part that protects the stone.
+--
+-- Steps 3 and 4 are UNCONDITIONAL. Step 3 is driven by `FROM cts62 JOIN
+-- fg_finished_slab`, not by what step 1 or 2 actually changed, so a re-run
+-- today would write 62 MORE 'grade_decision' events asserting old_value 'CTS'
+-- -> new_value 'B' for slabs that already read B — a transition that did not
+-- happen — and step 4 would log a second line claiming 62 slabs were regraded
+-- when none were. Those events render raw in the slab's history
+-- (components/inventory/InventoryDashboard.tsx), so the audit trail would state
+-- a fiction, and an audit trail is the only reason this decision is defensible
+-- at all. The live trail is correct as it stands: 63 grade_decision events over
+-- 63 distinct slabs, no duplicates, two action_log rows (checked 2026-09-03).
+-- A future script of this shape must gate its event and log inserts on rows
+-- actually updated — RETURNING into a temp table, or NOT EXISTS against
+-- fg_slab_event — rather than on the input list.
+--
+-- AND THE ABORT AT STEP 0 IS NARROWER THAN IT LOOKS. It counts only rows in
+-- fg_finished_slab, but step 1 regrades polish_qc for every listed slab_number
+-- whether or not a finished-goods row exists. A listed slab with a CTS-graded QC
+-- row and no fg row would have passed the abort, lost its CTS grade, and got no
+-- event either — step 3's inner JOIN drops it silently — leaving polish_qc
+-- .slab_mark as the only surviving cut signal, and dispatch does not read that
+-- one. NO SLAB WAS IN THAT POSITION: 63 QC rows marked CTS, 63 matching fg rows,
+-- no orphans in either direction (checked 2026-09-03, before and after). It is a
+-- hole in the guard, not damage done — but a future regrade must widen the abort
+-- to count listed slabs whose polish_qc says CTS with no fg row, and drive its
+-- event insert from the list with a LEFT JOIN so nothing is regraded unaudited.
 --
 --   npx prisma db execute --schema prisma/schema.prisma \
 --     --file scripts/0071-cts-62-graded-b-by-decision.sql

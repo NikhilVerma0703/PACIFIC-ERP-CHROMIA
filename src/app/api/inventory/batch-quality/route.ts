@@ -5,10 +5,28 @@
 // shows a Quality Issue column to Admin, Finance and Commercial) is gated away
 // from them. The owner's decision (2026-08) is that Sales SHOULD see what is
 // wrong with a slab before quoting it — so this route serves exactly that, as
-// a CLOSED shape: slab number, grade, issues, R/W status, repolish status,
-// stock status, barcode (the NB display label for legacy no-number slabs).
+// a CLOSED shape: slab number, grade, MARK, issues, R/W status, repolish
+// status, stock status, barcode (the NB display label for legacy no-number
+// slabs).
 // No inspector, no notes, no bay/frame, no PI/customer — widen it
 // deliberately, never by spreading a row (the same rule as lib/batchQcList.ts).
+//
+// AND IT CARRIES THE MARK. Sales has no other per-slab list, so this popup is
+// the one place a cut slab declares itself before somebody quotes it as a full
+// slab. The register's Mark column shipped reading `s.mark` while this route's
+// `select` did not fetch slab_mark and its mapping emitted no `mark` key, so
+// the column rendered a dash on every slab in the plant — and the fallback that
+// was supposed to cover that (MarkChip's `legacyGrade`, reading grade='CTS')
+// died the same day: scripts/0071 and 0072 regraded all 63 cut slabs to 'B'.
+// Measured on live Neon 2026-09-03, the register line Arva White · 2 cm · 1413
+// prints Slabs 205 / Cut 11, and this popup listed 205 rows every one of which
+// read Grade B, Mark "—". A column that exists and is empty asserts "all whole"
+// more loudly than no column at all.
+//
+// So slab_mark is SELECTED here, and when it cannot be read the payload says so
+// (`markAvailable: false`) rather than sending rows with no mark on them. The
+// popup then prints "?" instead of a dash: this route never tells Sales a slab
+// is whole on the strength of a column it could not read.
 //
 // SCOPE IS THE REGISTER'S OWN GROUPING, not the slab-search filters. The first
 // review of this route caught both sins of the easy path: feeding the raw
@@ -24,7 +42,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
 import { summaryGate, SLABS_ONLY_ROLES } from "@/lib/inventory/access";
-import { approvedOnlyWhere } from "@/lib/inventory/searchWhere";
+import { approvedOnlyWhere, slabMarkAvailable, isMissingSlabMarkError } from "@/lib/inventory/searchWhere";
 import { displayBatch } from "@/lib/batchDisplay";
 
 const db = prisma as any;
@@ -84,15 +102,32 @@ export async function GET(request: Request) {
       { ...designWhere, ...thicknessWhere, ...batchWhere, status: { not: "DISPATCHED" } },
       { strict: true },
     );
-    const rows = await db.finishedSlab.findMany({
+    // The mark is asked for whenever the probe says the column is there, and
+    // the query is still guarded: the probe answers once per process and a
+    // stale client can meet a database the migration has not reached, in which
+    // window an unguarded read is a P2022 and a 500 on the Sales drill-down.
+    // The re-run drops ONLY slabMark from the select — the quality columns are
+    // the reason Sales opens this popup and they must survive a missing mark —
+    // and `markAvailable` then travels with the payload so the screen shows the
+    // mark as UNKNOWN rather than as a dash that reads "whole".
+    const base = {
+      slabNumber: true, grade: true, qualityIssue: true, status: true, barcode: true,
+      rwStatus: true, repolishStatus: true,
+    } as const;
+    let markAvailable = await slabMarkAvailable();
+    const find = (withMark: boolean) => db.finishedSlab.findMany({
       where,
-      select: {
-        slabNumber: true, grade: true, qualityIssue: true, status: true, barcode: true,
-        rwStatus: true, repolishStatus: true,
-      },
+      select: withMark ? { ...base, slabMark: true } : base,
       orderBy: { slabNumber: "asc" },
       take: CAP + 1,
     });
+    const rows = markAvailable
+      ? await find(true).catch((e: any) => {
+          if (!isMissingSlabMarkError(e)) throw e;
+          markAvailable = false;
+          return find(false);
+        })
+      : await find(false);
     const truncated = rows.length > CAP;
     const page = truncated ? rows.slice(0, CAP) : rows;
 
@@ -123,6 +158,9 @@ export async function GET(request: Request) {
 
     return Response.json({
       truncated,
+      // FALSE means "we could not read the mark", not "nothing is marked". The
+      // popup must not draw a Mark column it cannot fill — see the header.
+      markAvailable,
       slabs: page.map((r: any) => {
         const qc = qcBySlab.get(r.slabNumber);
         const fgIssues = Array.isArray(r.qualityIssue) ? r.qualityIssue.filter(Boolean) : [];
@@ -130,6 +168,13 @@ export async function GET(request: Request) {
         return {
           slab: r.slabNumber,
           grade: r.grade?.trim() || null,
+          // WHAT BECAME OF THE SLAB, beside how good the stone is. Sent raw
+          // (FULL_SLAB / CTS / SAMPLE) and read through slabMarkOf on the
+          // screen, the same as every other surface that shows a mark. Absent
+          // from the row only when markAvailable is false, and the popup keys
+          // off that flag rather than off `mark == null` — a null here would
+          // otherwise be indistinguishable from "whole".
+          mark: r.slabMark ?? null,
           issues: qcIssues.length ? qcIssues : fgIssues,
           rw: qc?.rwStatus?.trim() || r.rwStatus?.trim() || null,
           repolish: qc?.repolishStatus?.trim() || r.repolishStatus?.trim() || null,

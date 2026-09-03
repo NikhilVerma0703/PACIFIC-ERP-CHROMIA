@@ -27,7 +27,10 @@ const db = prisma as any;
 // way left on the screen to find a slab that has been cut. That is worse than
 // the bug being fixed.
 //
-// MEASURED ON LIVE NEON, 2026-09-03 (re-check before trusting):
+// MEASURED ON LIVE NEON, 2026-09-03, BEFORE 0070/0071/0072 RAN — EVERY BULLET
+// BELOW IS NOW SUPERSEDED. Read it as history and see the re-measurement after
+// it; acting on these four numbers today is acting on a yard that no longer
+// exists:
 //   * 62 slabs read grade='CTS' — 60 on the floor, 2 already DISPATCHED. All 62
 //     also carry slab_mark='CTS' on their polish_qc row.
 //   * No slab anywhere reads SAMPLE, in either column. Every other polish_qc
@@ -47,10 +50,41 @@ const db = prisma as any;
 // until he does. Never the grade alone — that is the hole above. Both signals
 // are live through the whole changeover, so both are asked.
 //
-// EITHER DEPLOY ORDER IS SAFE. Every clause below takes `hasMark`, and every
-// caller gets it from slabMarkAvailable(), which asks the database once. On a
-// database without the column, each clause collapses to exactly the grade-only
-// filter that runs today — the same 62 slabs, no 500, no empty screen.
+// ══════════ AND THEN THE GRADE BELT WAS CUT AWAY, LATER THE SAME DAY ════════
+//
+// Everything above describes a changeover in which BOTH signals were live.
+// That is no longer the world, and the paragraph that used to sit here — "on a
+// database without the column each clause collapses to exactly the grade-only
+// filter that runs today, the same 62 slabs, no 500, no empty screen" — IS NOW
+// FALSE. It is kept deleted deliberately: a stale justification is how the next
+// person re-introduces the bug.
+//
+// What happened: scripts/0070 landed, so fg_finished_slab.slab_mark EXISTS; and
+// then scripts/0071 and 0072 moved all 63 of those slabs from grade 'CTS' to
+// grade 'B', on the owner's decision, because their real A/B/C verdicts are
+// unrecoverable.
+//
+// RE-MEASURED ON LIVE NEON, 2026-09-03, AFTER 0070/0071/0072:
+//   * ZERO rows in fg_finished_slab and ZERO in polish_qc carry grade 'CTS' or
+//     'SAMPLE'. The grade arm of every OR below now matches NOTHING AT ALL.
+//   * 63 rows carry slab_mark = 'CTS' (60 AVAILABLE, 1 status CTS, 2 already
+//     DISPATCHED) — 61 of them on the floor, and every one of those 61 reads
+//     grade 'B'. No row anywhere reads SAMPLE, in either column.
+//   * On-floor total 16,628 = A 8,304 + B 3,424 + C 2,346 + A2 859 + Trial 384
+//     + ungraded 1,311. The MARK is the only signal left that says "cut".
+//
+// SO THE `hasMark = false` BRANCH NO LONGER DEGRADES TO YESTERDAY'S ANSWER — IT
+// DEGRADES TO ZERO. A grade-only clause does not under-report the cut slabs any
+// more, it reports that there are none, over a floor holding 61 that have been
+// cut; and `?mark=FULL_SLAB`, its complement, lists all 61 as whole sellable
+// stock. That is not a degraded answer, it is a confident wrong one.
+//
+// THE RULE FOR THIS FILE FROM HERE ON: ANYTHING THAT CANNOT CONFIRM THE MARK
+// MUST FAIL CLOSED. Every clause below still TAKES `hasMark` — the grade arm
+// stays, so the day a routing state reappears in the grade column it is caught
+// again — but a `false` no longer produces a clause. It throws, the route
+// answers an error, and somebody makes a phone call. The alternative is a
+// screen that says "no cut slabs here" and a lorry.
 
 /** Prisma could not read fg_finished_slab.slab_mark — and it is THAT, not a
  *  database in trouble.
@@ -81,26 +115,61 @@ export function isMissingSlabMarkError(e: any): boolean {
  *  then runs the narrower query. This asks once and then builds the narrower
  *  clause.
  *
- *  A latched `false` after a genuine missing column is harmless: the process
- *  keeps filtering on the grade, which is precisely what it does today, and a
- *  restart (or the next deploy — the migration ships with one) picks the column
- *  up. A transient failure is NOT latched: the cache is cleared and rethrown,
- *  so the route reports the outage instead of quietly serving half the cut
- *  slabs as if that were the whole answer. */
+ *  A NEGATIVE VERDICT IS NO LONGER LATCHED FOR THE LIFE OF THE PROCESS, and
+ *  that change is the whole point of this hunk. The old comment here said a
+ *  latched `false` was harmless because "the process keeps filtering on the
+ *  grade, which is precisely what it does today". After scripts/0071 and 0072
+ *  the grade filter matches nothing (see the block at the top of this file), so
+ *  one misclassified error at boot used to leave that instance reporting a yard
+ *  with no cut slabs in it until somebody restarted it. Now the clause builders
+ *  refuse to answer on a `false` — and this expires it as well, the same way
+ *  finishedSlab.ts's RECHECK_MS does, so a process that probed during the
+ *  window before scripts/0070 landed picks the column up within a minute
+ *  instead of needing a restart. It is also LOGGED: "missing" is a real
+ *  operational event now, not a quiet fallback.
+ *
+ *  A POSITIVE verdict IS still latched for the process: the column cannot go
+ *  away underneath us, and re-probing every minute for a fact that cannot
+ *  change would be a query per minute per instance for nothing.
+ *
+ *  A transient failure is NOT cached either way: the cache is cleared and the
+ *  error rethrown, so the route reports the outage instead of quietly serving
+ *  half the cut slabs as if that were the whole answer. */
 let slabMarkProbe: Promise<boolean> | null = null;
+/** When a `false` verdict stops being trusted and is re-probed. 0 while the
+ *  cached verdict is `true` (which never expires) or unset. */
+let slabMarkRecheckAt = 0;
+/** Same minute finishedSlab.ts gives its own missing-column memo, on purpose:
+ *  the two halves of this rule must not disagree about how stale is stale. */
+const MARK_RECHECK_MS = 60_000;
 
 export function slabMarkAvailable(): Promise<boolean> {
+  if (slabMarkRecheckAt && Date.now() >= slabMarkRecheckAt) {
+    slabMarkProbe = null; // a "missing" verdict has gone stale — ask again
+    slabMarkRecheckAt = 0;
+  }
   if (!slabMarkProbe) {
     slabMarkProbe = (async () => {
       try {
         await db.finishedSlab.findFirst({ select: { slabMark: true } }); // SELECT slab_mark ... LIMIT 1
+        slabMarkRecheckAt = 0; // proven present; nothing to re-probe
         return true;
       } catch (e: any) {
         if (!isMissingSlabMarkError(e)) throw e;
+        slabMarkRecheckAt = Date.now() + MARK_RECHECK_MS;
+        // LOUD, because every cut-slab count and filter is about to refuse to
+        // answer until this clears, and "the inventory screen is erroring" with
+        // nothing in the log is a much longer evening than this line.
+        console.error(
+          "[searchWhere] fg_finished_slab.slab_mark is unreadable — every cut/whole filter will refuse to answer until this clears. Re-probing in %dms. %s",
+          MARK_RECHECK_MS,
+          String(e?.message ?? e),
+        );
         return false;
       }
     })().catch((e) => {
       slabMarkProbe = null; // transient — let the next request ask again
+      slabMarkRecheckAt = 0;
       throw e;
     });
   }
@@ -121,41 +190,81 @@ export function andWhere(where: any, ...clauses: any[]): any {
 /** Is this filter value one of the two cut states (CTS / SAMPLE)? Compared
  *  case-insensitively because it arrives off a query string; the value used in
  *  the clause is the canonical upper-case one, since both columns store exactly
- *  that (all 62 live rows read 'CTS', and 0070's CHECK constraint allows the
- *  mark nothing else). */
+ *  that (all 63 live marks read 'CTS', and 0070's CHECK constraint allows the
+ *  mark nothing else; no row in either column reads 'SAMPLE' yet). */
 function cutValueOf(v: string): string | null {
   const up = v.trim().toUpperCase();
   return (CUT_GRADES as readonly string[]).includes(up) ? up : null;
+}
+
+/** NO MARK, NO ANSWER — the fail-closed end of every clause below.
+ *
+ *  Until scripts/0071 and 0072 ran, a clause built without the mark collapsed
+ *  to the grade rule and returned exactly what these screens printed yesterday:
+ *  fewer cut slabs than the truth, but never zero, and never a whole-stock list
+ *  with a cut slab in it. Those two scripts regraded all 63 cut slabs from
+ *  'CTS' to 'B', so the grade arm now matches NOTHING — measured on live Neon
+ *  2026-09-03: zero rows with grade 'CTS' or 'SAMPLE' in either table, 61 cut
+ *  slabs on the floor, every one of them grade 'B', mark 'CTS'.
+ *
+ *  So the grade-only clause stopped being a smaller answer and became a WRONG
+ *  one: `anyCutWhere` counts 0 of 61, and `wholeSlabWhere` — its complement —
+ *  hands back all 61 already-cut slabs as whole sellable stock. A Sales user
+ *  filtering "Full slab" would be looking at a list that is 61 slabs too long,
+ *  with nothing on the screen saying so.
+ *
+ *  Refusing costs somebody a phone call about an inventory screen that is
+ *  erroring. Answering costs an already-cut slab on a customer's lorry, and the
+ *  customer finds out. So this throws, the route answers an error, and the
+ *  screen says it could not tell. */
+function noMarkNoAnswer(fn: string): never {
+  throw new Error(
+    `${fn}: fg_finished_slab.slab_mark could not be read, and the grade column no ` +
+      `longer carries the cut signal (scripts/0071 and 0072 regraded all 63 cut slabs ` +
+      `to 'B'). Refusing to answer rather than reporting a floor with no cut slabs on it.`,
+  );
 }
 
 /** Slabs cut in ONE named way — what `?grade=CTS` and `?mark=CTS` both mean.
  *  Grade OR mark; see the rule above. Matching is exact on both sides, exactly
  *  as the grade filter has always been: the dropdown offers values read back
  *  out of the columns, so an exact compare is what makes an offered option
- *  return its rows. */
+ *  return its rows.
+ *
+ *  The grade arm STAYS even though nothing matches it today: it costs one OR
+ *  arm, and it is what catches a routing state the day one reappears in the
+ *  grade column. Without the mark, though, it is the whole clause and it finds
+ *  nobody — so that branch refuses. */
 export function cutSignalWhere(value: string, hasMark: boolean): any {
   const byGrade = { grade: value };
-  return hasMark ? { OR: [byGrade, { slabMark: value }] } : byGrade;
+  return hasMark ? { OR: [byGrade, { slabMark: value }] } : noMarkNoAnswer("cutSignalWhere");
 }
 
 /** Slabs cut in ANY way — the KPI card's and the register's "how much of this
- *  stock has been cut". CTS and SAMPLE together, from either signal. */
+ *  stock has been cut". CTS and SAMPLE together, from either signal. Without
+ *  the mark this would count 0 of the 61 cut slabs on the floor, so it refuses
+ *  instead — the KPI card shows "?" rather than a confident zero. */
 export function anyCutWhere(hasMark: boolean): any {
   const byGrade = { grade: { in: [...CUT_GRADES] } };
-  return hasMark ? { OR: [byGrade, { slabMark: { in: [...CUT_MARKS] } }] } : byGrade;
+  return hasMark ? { OR: [byGrade, { slabMark: { in: [...CUT_MARKS] } }] } : noMarkNoAnswer("anyCutWhere");
 }
 
 /** Slabs still whole — the exact complement of anyCutWhere, which is the same
  *  set dispatch will still let out as a full slab (grading.ts slabBlocksDispatch
- *  ORs the two signals the same way). A slab whose mark still reads FULL_SLAB
- *  because the backfill has not run, but whose grade reads CTS, is NOT whole and
- *  must not be listed here — it is one of the 62.
+ *  ORs the two signals the same way).
  *
- *  The `grade: null` arm is load-bearing: 1,615 slabs have no grade and would
- *  vanish from this filter under a bare notIn (see the measurement above). */
+ *  THIS IS THE CLAUSE THAT LOADS A LORRY. `?mark=FULL_SLAB` is a list of stock
+ *  somebody may sell whole; a cut slab appearing on it is the failure the whole
+ *  mark column exists to prevent. Without the mark the notCutGrade arm alone
+ *  calls all 61 already-cut slabs whole (they read grade 'B' since scripts/0072),
+ *  so that branch refuses rather than answering.
+ *
+ *  The `grade: null` arm is load-bearing: 1,311 slabs on the floor have no grade
+ *  and would vanish from this filter under a bare notIn — in SQL, NULL NOT IN
+ *  ('CTS','SAMPLE') is NULL, so an ungraded slab would be neither cut nor whole. */
 export function wholeSlabWhere(hasMark: boolean): any {
   const notCutGrade = { OR: [{ grade: null }, { grade: { notIn: [...CUT_GRADES] } }] };
-  return hasMark ? { AND: [notCutGrade, { slabMark: { notIn: [...CUT_MARKS] } }] } : notCutGrade;
+  return hasMark ? { AND: [notCutGrade, { slabMark: { notIn: [...CUT_MARKS] } }] } : noMarkNoAnswer("wholeSlabWhere");
 }
 
 export async function buildInventoryWhere(searchParams: URLSearchParams): Promise<any> {
@@ -194,12 +303,13 @@ export async function buildInventoryWhere(searchParams: URLSearchParams): Promis
   // GRADE — and, for the two CUT values only, the mark as well.
   //
   // `?grade=CTS` has to keep meaning what the person clicking it means: "show
-  // me the slabs that have been cut." Once fabrication stops overwriting the
-  // grade, that fact lives in the mark for every new slab while the 62 legacy
-  // rows still carry it in the grade — so asking the grade alone would return
-  // HALF the cut slabs with no sign the other half exists. A filter that
-  // silently under-returns is the failure this whole change is guarding
-  // against, so the cut values fan out to `grade = X OR mark = X`.
+  // me the slabs that have been cut." That fact now lives in the MARK and only
+  // in the mark — scripts/0071 and 0072 regraded all 63 legacy rows to 'B', so
+  // asking the grade alone returns NOTHING, not half. A filter that silently
+  // under-returns is the failure this whole change is guarding against, and one
+  // that returns nothing at all is the same failure at full size, so the cut
+  // values fan out to `grade = X OR mark = X` and refuse when the mark is
+  // unreadable (cutSignalWhere).
   //
   // Every other grade (A, A2, B, C, Trial, Printing) is untouched and stays an
   // exact match on the grade column: those are quality verdicts, the mark
@@ -224,6 +334,12 @@ export async function buildInventoryWhere(searchParams: URLSearchParams): Promis
   // FULL_SLAB is the exact complement — not merely `mark = FULL_SLAB`, because
   // an un-backfilled row can read FULL_SLAB while its grade says CTS, and
   // listing that slab as whole is how an already-cut slab gets onto a lorry.
+  //
+  // Both branches now THROW when the mark cannot be read, so this filter can
+  // 500 where it used to answer. That is deliberate: the grade arm alone would
+  // call all 61 cut slabs whole (see noMarkNoAnswer). An unparseable value is
+  // still not a filter at all rather than an error — that is a typo, not a
+  // failure to read the column.
   if (q("mark")) {
     const mark = parseSlabMark(q("mark"));
     if (mark) {

@@ -28,10 +28,31 @@
 -- Any one of those refuses it. The abort below re-asserts the mark and stops the
 -- script rather than risk handing already-cut stone to a lorry.
 --
--- INCENTIVE: this slab is claimed by an August 2026 shift, so August's counted
--- total rises by half a slab (CTS scores nothing; B is worth 0.5).
+-- INCENTIVE: this slab is claimed by an August 2026 shift (the hour that claimed
+-- 154746-154757), so August's counted total rises by half a slab (CTS scores
+-- nothing; B is worth 0.5).
 --
--- IDEMPOTENT: narrowed to quality_grade / grade = 'CTS', so a re-run is a no-op.
+-- AUGUST, ONCE, IN ONE PLACE — added 2026-09-03, after both scripts had run.
+-- 0071's header originally counted this slab in ITS August figure too ("25 in
+-- Aug 2026 ... about 12.5 slabs"), and then this line added the same half slab
+-- again: 13.0 slabs disclosed where the truth is 12.5. Only 24 of 0071's 62 fall
+-- in August by COALESCE(created_time, imported_at); 154757 is the 25th and it is
+-- this script's. 0071's header now reads 24 slabs / 12 slabs of credit, so:
+--
+--     AUGUST 2026 RISES BY 12.5 SLABS ACROSS THE TWO SCRIPTS — 12 from 0071's
+--     24 August slabs and 0.5 from this one. That is the whole figure; do not
+--     add the two headers together again.
+--
+-- THE UPDATES ARE IDEMPOTENT. THE SCRIPT IS NOT — same correction as 0071's
+-- header carries, and for the same reason. Steps 1 and 2 are narrowed to
+-- quality_grade / grade = 'CTS', so a re-run changes no grade. Step 3's event
+-- insert is gated on the finished-goods row EXISTING, not on the update having
+-- changed anything, and step 4 is an unconditional VALUES — so a re-run today
+-- would add a second 'grade_decision' event claiming a CTS -> B transition that
+-- did not happen, plus another action_log line, and the slab's history would
+-- assert a fiction. The live trail is correct as it stands (one event for
+-- 154757, checked 2026-09-03). DO NOT RE-RUN. A future script of this shape
+-- must gate its inserts on rows actually updated.
 --
 --   npx prisma db execute --schema prisma/schema.prisma \
 --     --file scripts/0072-cts-154757-graded-b-by-decision.sql

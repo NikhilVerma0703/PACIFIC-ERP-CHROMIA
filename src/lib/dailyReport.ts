@@ -89,6 +89,16 @@ export const ENTRY_SELECT = {
 export const QC_SELECT = {
   qualityGrade: true, qualityIssue: true, slabNumber: true, repolishStatus: true, rwStatus: true,
   goingToDispatch: true, importedAt: true, inspector: true,
+  // ONE MORE COLUMN, AND THE PASS RATE IS WRONG WITHOUT IT.
+  // quality_grade used to answer "was this slab cut?" as well as "how did it
+  // grade?", because marking a slab CTS overwrote the verdict with 'CTS'.
+  // scripts/0071 and 0072 then regraded all 63 of those rows to 'B' by the
+  // owner's decision, so quality_grade no longer says CUT for anybody:
+  // measured on live Neon 2026-09-03, 0 rows in polish_qc read 'CTS' or
+  // 'SAMPLE'. quality_grade_before_cts (scripts/0056) is what those two
+  // scripts stamped 'CTS' on, and it is how getQuality still recognises a B
+  // that was decided rather than measured — see `noVerdict` there.
+  qualityGradeBeforeCts: true,
 } satisfies Prisma.PolishQcSelect;
 export type EntryRow = Prisma.PolishEntryGetPayload<{ select: typeof ENTRY_SELECT }>;
 export type QcRow = Prisma.PolishQcGetPayload<{ select: typeof QC_SELECT }>;
@@ -314,7 +324,6 @@ export function getQuality(entries: EntryRow[], qc: QcRow[]) {
   };
   const count = (rows: typeof qc, f: (r: (typeof qc)[number]) => boolean) => rows.filter(f).length;
 
-  const grades = tally(qc, (r) => r.qualityGrade ?? "Not recorded");
   // CTS IS A ROUTING, NOT A VERDICT ON THE SLAB. A slab sent to cut-to-size was
   // not inspected and found wanting — it was diverted to a different product
   // before that question was ever asked. It used to sit inside `graded` and
@@ -324,9 +333,53 @@ export function getQuality(entries: EntryRow[], qc: QcRow[]) {
   // gradeCredit() in shiftScoreMath.ts has excluded CTS from the payout for
   // exactly this reason since it was written; this report was the last surface
   // still scoring it as a reject. Own bucket, out of BOTH sides of the rate.
-  const cts = qc.filter((r) => r.qualityGrade === "CTS");
+  //
+  // ─────────── AND THE GRADE NO LONGER SAYS SO. THIS BUCKET NEARLY DIED ─────
+  // This bucket was keyed on `qualityGrade === "CTS"` and nothing else.
+  // scripts/0071 and 0072 regraded all 63 cut slabs from 'CTS' to 'B' on the
+  // owner's decision, so that key now matches NOTHING — measured on live Neon
+  // 2026-09-03, 0 rows in polish_qc carry grade 'CTS' or 'SAMPLE'. Left as it
+  // was, this bucket would be permanently 0 and the 63 would fall straight back
+  // into `graded` as failures — the exact defect the paragraph above says was
+  // fixed, re-created by a data change rather than a code change. Measured over
+  // August 2026, the month being settled: graded 5,865 -> 5,840, passed
+  // unchanged at 5,475, so the rate goes 5,475/5,865 = 93.35% to 5,475/5,840 =
+  // 93.75% (the page prints 93.4 and 93.8). The grade table's B row goes
+  // 230 -> 205 with a CTS row of 25 beside it, and `ungraded` is 525 either way.
+  //
+  // ─────────── WHY THE KEY IS THE VERDICT AND DELIBERATELY NOT THE MARK ─────
+  // The obvious re-key is slab_mark IN ('CTS','SAMPLE'). IT IS WRONG HERE, and
+  // the next person to reach for it should read this first. Since scripts/0070
+  // a cut slab KEEPS its real verdict: markQcSlabCts and markQcSlabSample write
+  // the mark and leave quality_grade alone ("A · Sample" — the stone was good
+  // AND it has been cut). An A that was genuinely inspected and then sent to
+  // fabrication belongs in this rate on both sides. Keying on the mark would
+  // quietly delete those real verdicts from the CEO's numbers from now on.
+  //
+  // What must stay out is a row carrying NO VERDICT — never judged, or judged
+  // and then overwritten:
+  //   qualityGrade 'CTS'/'SAMPLE'  the legacy write, still taken by any database
+  //                                without scripts/0070 or when the mirror push
+  //                                fails. The routing state IS the grade there.
+  //   qualityGradeBeforeCts 'CTS'  what 0071/0072 stamped on the 63 they
+  //                                regraded, precisely so a later reader could
+  //                                tell their 'B' was a decision and not a
+  //                                measurement. This is that reader.
+  const NO_VERDICT = new Set(["CTS", "SAMPLE"]);
+  const up = (v: unknown) => String(v ?? "").trim().toUpperCase();
+  const noVerdict = (r: (typeof qc)[number]) =>
+    NO_VERDICT.has(up(r.qualityGrade)) || up(r.qualityGradeBeforeCts) === "CTS";
+  // What this row REPORTS as. One definition, used by every grade-keyed figure
+  // below, because a grade table whose B row still counted the 25 cut slabs
+  // while the total row beside it named them separately would show them to the
+  // CEO twice — 231 B against 206 real ones.
+  const gradeOf = (r: (typeof qc)[number]) =>
+    (noVerdict(r) ? "CTS" : r.qualityGrade ?? "Not recorded");
+
+  const grades = tally(qc, gradeOf);
+  const cts = qc.filter(noVerdict);
   const graded = qc.filter((r) =>
-    r.qualityGrade && r.qualityGrade !== "Not graded yet" && r.qualityGrade !== "CTS");
+    r.qualityGrade && r.qualityGrade !== "Not graded yet" && !noVerdict(r));
   const passed = graded.filter((r) => r.qualityGrade === "A" || r.qualityGrade === "A2");
 
   // Faults are a multi-select: one slab can carry several, so the fault count
@@ -336,7 +389,10 @@ export function getQuality(entries: EntryRow[], qc: QcRow[]) {
     for (const r of rows) for (const f of r.qualityIssue ?? []) m.set(f, (m.get(f) ?? 0) + 1);
     return [...m].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   };
-  const bc = qc.filter((r) => r.qualityGrade === "B" || r.qualityGrade === "C (Reject)");
+  // gradeOf, not qualityGrade: the 63 regraded slabs read 'B' and carry no
+  // faults, because nobody ever inspected them. Counting them here would say
+  // 25 more slabs were downgraded in August than were, on zero recorded faults.
+  const bc = qc.filter((r) => gradeOf(r) === "B" || gradeOf(r) === "C (Reject)");
 
   // Which shift a person worked, from when their rows landed — neither
   // polishing table carries a shift column. A second shift is named only when
@@ -370,7 +426,8 @@ export function getQuality(entries: EntryRow[], qc: QcRow[]) {
     });
     const d = byDesign.get(k)!;
     d.slabs++; if (e.batchNumber) d.batches.add(e.batchNumber);
-    const g = e.slabNumber != null ? qcBySlab.get(e.slabNumber)?.qualityGrade : null;
+    const qr = e.slabNumber != null ? qcBySlab.get(e.slabNumber) : undefined;
+    const g = qr ? gradeOf(qr) : null;
     if (g === "A") d.A++; else if (g === "A2") d.A2++;
     else if (g === "B") d.B++; else if (g === "C (Reject)") d.C++;
     else d.ungraded++;
@@ -405,8 +462,12 @@ export function getQuality(entries: EntryRow[], qc: QcRow[]) {
     // as failures" to "counted as still in QC" — wrong in a quieter way, and
     // the page prints this number as "still being graded".
     ungraded: qc.length - graded.length - cts.length,
-    /** Routed to cut-to-size. Reported so the grade table's four buckets still
-     *  add up to everything inspected; not a pass and not a failure. */
+    /** Routed to cut-to-size or to sampling WITHOUT a verdict surviving — the
+     *  legacy 'CTS'/'SAMPLE' grade write, or a 'B' that scripts/0071 and 0072
+     *  decided rather than measured. A slab that was genuinely graded and then
+     *  cut keeps its grade and is NOT in here. Reported so the grade table's
+     *  four buckets still add up to everything inspected; not a pass and not a
+     *  failure. */
     cts: cts.length,
     held: graded.length - passed.length,
     openForRework: count(qc, (r) => r.repolishStatus === "Repolish Required" || r.rwStatus === "RW Required and ongoing"),
@@ -424,8 +485,12 @@ export function getQuality(entries: EntryRow[], qc: QcRow[]) {
     recoveredRework: count(qc, (r) => r.rwStatus === "RW Done Ok"),
     toDispatch: count(qc, (r) => r.goingToDispatch === "Yes"),
     grades,
-    dispatchByGrade: Object.fromEntries([...new Set(qc.map((r) => r.qualityGrade))]
-      .map((g) => [g ?? "Not recorded", count(qc, (r) => r.qualityGrade === g && r.goingToDispatch === "Yes")])),
+    // Keyed by gradeOf so it lines up with `grades` — the grade table looks
+    // this map up by the row label it just printed, and a CTS row that found no
+    // key would read as "0 going to dispatch" by accident rather than on
+    // purpose.
+    dispatchByGrade: Object.fromEntries([...new Set(qc.map(gradeOf))]
+      .map((g) => [g, count(qc, (r) => gradeOf(r) === g && r.goingToDispatch === "Yes")])),
     // Named by the question the column answers, not by "passed" — see the note
     // at the top of this function.
     polishing: {
@@ -439,7 +504,7 @@ export function getQuality(entries: EntryRow[], qc: QcRow[]) {
     // What the slabs that never needed rework were actually graded. This is the
     // whole reason 137 and 133 differ, so the page has to be able to say it
     // rather than assert the gap and leave the reader to trust it.
-    reworkClearByGrade: tally(qc.filter((r) => r.rwStatus === "Direct Ok"), (r) => r.qualityGrade ?? "Not recorded"),
+    reworkClearByGrade: tally(qc.filter((r) => r.rwStatus === "Direct Ok"), gradeOf),
     faultsAll: faultsOf(qc), faultsBC: faultsOf(bc),
     faultSlabs: count(qc, (r) => (r.qualityIssue ?? []).length > 0),
     faultTotal: qc.reduce((a, r) => a + (r.qualityIssue ?? []).length, 0),

@@ -23,21 +23,37 @@ export async function GET(request: Request) {
     // "Stock on hand", the same shape the grade and thickness cards already use.
     const onFloor: any = { ...w, status: w.status ?? { not: "DISPATCHED" } };
     // HOW MANY OF THESE SLABS HAVE BEEN CUT — grade OR mark (searchWhere
-    // anyCutWhere). It cannot be `byGrade` + `byMark` added together: all 62
-    // live CTS slabs carry BOTH signals (measured on Neon 2026-09-03), so a sum
-    // would report 120 cut slabs where there are 60 on the floor. One counted
-    // query with an OR is the only shape that does not double-count during the
-    // changeover, when every cut slab has a foot in each column.
+    // anyCutWhere). It cannot be `byGrade` + `byMark` added together: a slab
+    // can carry both signals, so a sum would double-count it. One counted query
+    // with an OR is the only shape that cannot.
+    //
+    // AND THE FALLBACK IS GONE. This used to catch a missing slab_mark and
+    // re-count on the grade alone, with a comment saying that "keeps the card
+    // reading today's 60 rather than 500ing the whole KPI strip". THAT COMMENT
+    // WAS TRUE FOR ONE DAY. scripts/0071 and 0072 then regraded all 63 cut
+    // slabs from 'CTS' to 'B', and the grade count now reads 0 — measured on
+    // live Neon 2026-09-03: zero rows with grade 'CTS'/'SAMPLE' anywhere, 61
+    // cut slabs on the floor, all grade 'B' and mark 'CTS'. So the fallback
+    // stopped being a smaller true number and became a false one, printed in
+    // the same confident type as the real thing.
+    //
+    // `null` INSTEAD, and the card renders "?". A KPI strip that cannot say how
+    // much stock has been cut must say that, not say "none": nobody quotes
+    // against a question mark, and everybody quotes against a zero. The rest of
+    // the strip (statuses, grades, thicknesses) does not depend on the mark and
+    // still answers, so one unreadable column does not take the whole header
+    // down either.
     const hasMark = await slabMarkAvailable();
-    const cutCount = db.finishedSlab
-      .count({ where: andWhere(onFloor, anyCutWhere(hasMark)) })
-      // The column can land — or a stale client be regenerated — between the
-      // probe and this query. Falling back to the grade count keeps the card
-      // reading today's 60 rather than 500ing the whole KPI strip.
-      .catch((e: any) => {
-        if (!isMissingSlabMarkError(e)) throw e;
-        return db.finishedSlab.count({ where: andWhere(onFloor, anyCutWhere(false)) });
-      });
+    const cutCount: Promise<number | null> = hasMark
+      ? db.finishedSlab
+          .count({ where: andWhere(onFloor, anyCutWhere(true)) })
+          // The column can be dropped from under a stale client between the
+          // probe and this query. Same answer as above: unknown, not zero.
+          .catch((e: any) => {
+            if (!isMissingSlabMarkError(e)) throw e;
+            return null;
+          })
+      : Promise.resolve(null);
     const [total, byGrade, byStatus, byThickness, pendingPolish, pendingRw, cut] = await Promise.all([
       db.finishedSlab.count({ where: w }),
       db.finishedSlab.groupBy({ by: ["grade"], _count: { _all: true }, where: { ...w, status: w.status ?? { not: "DISPATCHED" } } }), // grades = stock on hand
@@ -58,14 +74,25 @@ export async function GET(request: Request) {
       //
       //   cut        slabs that HAVE BEEN CUT — grade says CTS/SAMPLE, or the
       //              mark does. The honest name for the concept, and the one to
-      //              read from here on.
-      //   cts        the SAME NUMBER, under the older key the dashboard's CTS
-      //              card already reads. Kept so nothing on the screen goes
-      //              blank on deploy, and widened from `g_("CTS")` for the
-      //              reason this whole change exists: once fabrication records
-      //              the cut in the MARK instead of overwriting the grade, a
-      //              grade-only count reads zero while the yard is full of cut
-      //              slabs. 60 on the floor today, by either route.
+      //              read from here on. 61 on the floor today, ALL of them found
+      //              by the mark: since scripts/0071 and 0072 no slab anywhere
+      //              carries a cut GRADE, so the grade arm of the OR contributes
+      //              nothing and the mark is carrying this number alone.
+      //              `null` when the mark could not be read — see above; it is
+      //              "we cannot tell", and the dashboard prints "?" for it. It
+      //              is NEVER 0 to mean unknown, because 0 is also a real and
+      //              very different answer.
+      //   cts        the SAME NUMBER (or the same null), under the older key the
+      //              dashboard's CTS card already reads. Kept so nothing on the
+      //              screen goes blank on deploy, and widened from `g_("CTS")`
+      //              for the reason this whole change exists: a grade-only count
+      //              now reads zero while the yard holds 61 cut slabs.
+      //
+      //              NOTE FOR WHOEVER READS THIS CARD ON THE DASHBOARD: it
+      //              OVERLAPS gradeA/A2/B/C. All 61 are grade 'B' and are
+      //              counted there too, so this number must never be added into
+      //              the grade cards — see InventoryDashboard, which for that
+      //              reason no longer renders it inside the "Grades" block.
       //   ctsStatus  the inventory STATUS somebody applied by hand (below). A
       //              different fact about a different column: a slab can carry
       //              the status without having been cut, and — far more often —

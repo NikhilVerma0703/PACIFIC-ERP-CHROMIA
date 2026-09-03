@@ -8,11 +8,18 @@ import { displaySlab } from "@/lib/slabLabel";
 // fact, so the three screens cannot disagree about what a cut slab looks like.
 import { MarkChip } from "@/components/fab/SlabChips";
 
-// `mark` is OPTIONAL: /api/inventory/batch-quality returns a deliberately CLOSED
-// shape (its own header says so) and does not carry the mark yet. It is declared
-// here so the popup starts showing it the moment the route does — and until then
-// MarkChip's `legacyGrade` reads the old grade='CTS' write, which is how all 62
-// cut slabs measured on live Neon (2026-09-03) already read correctly below.
+// `mark` is what became of the slab. /api/inventory/batch-quality now selects
+// fg_finished_slab.slab_mark and sends it (it did not when the Mark column
+// shipped, which is why the column printed a dash on all 205 slabs of Arva
+// White · 2 cm · 1413 while 11 of them had been cut).
+//
+// IT IS STILL OPTIONAL, and the popup must not read a missing `mark` as "whole".
+// The comment that used to sit here said MarkChip's `legacyGrade` covers a row
+// with no mark by reading the old grade='CTS' write — THAT IS NO LONGER TRUE.
+// scripts/0071 and 0072 regraded all 63 cut slabs to 'B', so on live Neon today
+// slabMarkOf(undefined, 'B') is FULL_SLAB for a slab that has been cut. The
+// route therefore says whether it could read the column at all (`markAvailable`)
+// and the column below renders "?" when it could not, never a dash.
 interface QcSlab { slab: number; grade: string | null; mark?: string | null; issues: string[]; rw: string | null; repolish: string | null; status: string | null; barcode: string | null }
 interface QcTarget { design: string; thickness: string; batch: string }
 
@@ -39,8 +46,8 @@ interface Row {
   a: number; a2: number; b: number; c: number; cts: number; printing: number;
   // `cut` is NOT a grade and does not belong to the partition above — see the
   // column comment in the header. It counts slabs that have been cut, by grade
-  // OR by mark, and therefore overlaps A/A2/B/C on purpose: the natural slab
-  // from 2026-09-03 on is grade A AND mark CTS.
+  // OR by mark, and therefore overlaps A/A2/B/C on purpose: every one of the 61
+  // cut slabs on the floor today is grade B AND mark CTS, counted under both.
   trial: number; ungraded: number; cut: number; pending_polish: number; pending_rw: number;
   approved: boolean; designApproved: boolean; pending: boolean;
 }
@@ -61,8 +68,10 @@ type Agg = Record<(typeof NUMS)[number], number>;
  *  same "-" a real zero does. The register would look right and be wrong.
  *
  *  This is not hypothetical any more. /api/inventory/summary grew a `cut` column
- *  in the same breath as this file (slabs cut by grade OR by mark — the 62 rows
- *  measured on live Neon 2026-09-03), and the two may deploy in either order. A
+ *  in the same breath as this file (slabs cut by grade OR by mark — 61 on the
+ *  floor, measured on live Neon 2026-09-03, all found by the mark since 0071 and
+ *  0072 emptied the grade of routing states), and the two may deploy in either
+ *  order. A
  *  register running against a route that does not send `cut` yet prints "-" in
  *  that one column, which is visibly missing rather than quietly wrong — and,
  *  crucially, leaves every other column and both totals correct. */
@@ -127,11 +136,17 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
   const [qcRows, setQcRows] = useState<QcSlab[] | null>(null);
   const [qcTruncated, setQcTruncated] = useState(false);
   const [qcError, setQcError] = useState<string | null>(null);
+  // Whether the route could read fg_finished_slab.slab_mark for this answer.
+  // Starts FALSE and is only turned on by an explicit `markAvailable: true` in
+  // the payload — a route older than this file sends no such key, and the safe
+  // reading of silence is "this answer cannot tell you what has been cut",
+  // never "nothing here has been cut". See the interface comment at the top.
+  const [qcMarks, setQcMarks] = useState(false);
   const qcSeq = useRef(0);
   const openQuality = (r: Row) => {
     const seq = ++qcSeq.current;
     setQc({ design: r.design, thickness: r.thickness, batch: r.batch });
-    setQcRows(null); setQcTruncated(false); setQcError(null);
+    setQcRows(null); setQcTruncated(false); setQcError(null); setQcMarks(false);
     // The SHOWN values travel as-is, "-" placeholders included — the route
     // resolves them the way the register grouped them (canonical design,
     // display batch, "-" = not recorded).
@@ -148,10 +163,11 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
         }
         setQcRows(Array.isArray(body?.slabs) ? body.slabs : []);
         setQcTruncated(Boolean(body?.truncated));
+        setQcMarks(body?.markAvailable === true);
       })
       .catch(() => { if (seq === qcSeq.current) setQcError("Could not load the slab list — the network request failed."); });
   };
-  const closeQuality = () => { qcSeq.current++; setQc(null); setQcRows(null); setQcTruncated(false); setQcError(null); };
+  const closeQuality = () => { qcSeq.current++; setQc(null); setQcRows(null); setQcTruncated(false); setQcError(null); setQcMarks(false); };
 
   useEffect(() => {
     let alive = true;
@@ -350,27 +366,34 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
                   CTS is a GRADE, and the grade columns are a PARTITION: every slab
                   on the floor is in exactly one of A / A2 / B / C / CTS / Print /
                   Trial / No Gr., which is what lets a person add the row across and
-                  land on Slabs. It counts grade = 'CTS' — the 62 rows measured on
-                  live Neon 2026-09-03 — and it will shrink to zero as the owner
-                  replaces those grades with the real A/B/C verdicts he is
-                  collecting by hand. That is correct, not a regression.
+                  land on Slabs. It counts grade = 'CTS', and IT NOW READS ZERO ON
+                  EVERY ROW: the comment here used to say it would "shrink to zero as
+                  the owner replaces those grades with the real A/B/C verdicts he is
+                  collecting by hand", and that is not what happened — the verdicts
+                  turned out to be unrecoverable, so scripts/0071 and 0072 moved all
+                  63 slabs to grade 'B' on his decision. Measured on live Neon
+                  2026-09-03: zero rows with grade 'CTS' or 'SAMPLE' anywhere. The
+                  column stays because the grade is still a column anyone can write,
+                  and a routing word reappearing in it must show up somewhere — but
+                  it is no longer where you look to find cut stone.
 
                   CUT is not a grade and does not partition anything. It counts
                   slabs whose GRADE says cut OR whose MARK does, so it OVERLAPS the
-                  grade columns deliberately: the natural slab from now on is grade
-                  A and mark CTS, and it is counted under both A and Cut. It sits
-                  out past "No Gr." for exactly that reason — inside the grade block
-                  it would break the one arithmetic check the register exists to let
-                  you do by eye.
+                  grade columns deliberately: today all 61 cut slabs on the floor are
+                  grade B and mark CTS, and each is counted under both B and Cut. It
+                  sits out past "No Gr." for exactly that reason — inside the grade
+                  block it would break the one arithmetic check the register exists
+                  to let you do by eye.
 
-                  THIS IS THE COLUMN THAT ANSWERS "what here has been cut" once the
-                  grade stops saying so. Without it the register would have gone on
-                  showing CTS = 0 over a yard full of cut stone. The counts belong
+                  THIS IS THE ONLY COLUMN THAT ANSWERS "what here has been cut", now
+                  that the grade no longer says so at all — with the CTS column at
+                  zero, take Cut away and the register shows a yard full of cut stone
+                  as ordinary grade B stock. The counts belong
                   to /api/inventory/summary (cts / cut); the third tuple slot is the
                   note that tells the next reader which question each one answers,
                   and nothing else uses it. */}
               {([["Slabs","total"],["A","a"],["A2","a2"],["B","b"],["C","c"],
-                 ["CTS","cts","The GRADE 'CTS' — the legacy way a cut slab was recorded, before the mark carried it. Part of the grade split, so the grade columns still add up to Slabs."],
+                 ["CTS","cts","The GRADE 'CTS' — the legacy way a cut slab was recorded, before the mark carried it. Zero everywhere since scripts/0071 and 0072 regraded those 63 slabs to B; use the Cut column to find cut stone. Part of the grade split, so the grade columns still add up to Slabs."],
                  ["Print","printing"],["Trial","trial"],["No Gr.","ungraded"],
                  ["Cut","cut","Slabs that are no longer whole — cut to size or cut down for samples, by grade or by mark. NOT a grade: it overlaps the grade columns, so do not add it into the row."],
                  ["R/W","pending_rw"]] as [string, (typeof NUMS)[number], string?][]).map(([label, k, note]) => (
@@ -518,6 +541,16 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
                   ];
                   return <p className="mb-2 text-xs text-gray-500">{parts.join(" · ")}.</p>;
                 })()}
+                {/* SAID ONCE, IN WORDS, not left to a column of question marks.
+                    A Sales user reads the summary line and the Grade column; if the
+                    Mark column is unreadable they have to be told, because the row
+                    they are about to quote may be a cut slab and nothing else on
+                    this screen would say so. */}
+                {!qcMarks && (
+                  <p className="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+                    The slab mark could not be read for this list, so it cannot say which of these slabs have been cut — check inventory before quoting any of them as a full slab.
+                  </p>
+                )}
                 <div className="max-h-[60vh] overflow-y-auto rounded-xl border border-gray-200">
                   <table className="w-full text-sm">
                     <thead className="sticky top-0 bg-white">
@@ -528,7 +561,14 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
                             drill-down — the only per-slab list that login has — so it is
                             the one place a cut slab has to declare itself before somebody
                             quotes it as a full slab. Grade stays the stone's verdict;
-                            this column says what became of it. */}
+                            this column says what became of it.
+
+                            AND THE GRADE COLUMN CANNOT COVER FOR IT ANY MORE. It used to:
+                            a cut slab read "CTS" there and was identifiable even with no
+                            Mark column at all. scripts/0071 and 0072 moved all 63 of them
+                            to 'B', so the Grade column now reads exactly like every other
+                            B slab in the plant and this column is the ONLY thing on the
+                            screen that distinguishes them. */}
                         <th className="px-3 py-2">Mark</th>
                         <th className="px-3 py-2">Quality issue</th>
                         <th className="px-3 py-2">R/W</th>
@@ -542,8 +582,21 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
                           <td className="px-3 py-2 font-medium text-gray-900">{displaySlab(s.slab, s.barcode)}</td>
                           <td className="px-3 py-2">{s.grade ?? <span className="text-gray-400">—</span>}</td>
                           {/* hideWhole: most slabs are whole, and a column of identical
-                              "Full slab" chips would bury the two marks worth seeing. */}
-                          <td className="px-3 py-2"><MarkChip mark={s.mark} legacyGrade={s.grade} hideWhole /></td>
+                              "Full slab" chips would bury the two marks worth seeing.
+
+                              THE DASH IS ONLY HONEST WHEN THE MARK WAS READ. When the
+                              route could not read slab_mark, MarkChip would fall back to
+                              legacyGrade — and since scripts/0071 and 0072 every cut slab
+                              reads grade 'B', so the fallback resolves to FULL_SLAB and
+                              hideWhole prints "—" over a slab that has been cut. On the
+                              Sales drill-down that dash IS the quote. So an unread column
+                              prints "?" instead, and legacyGrade is not passed at all —
+                              it has nothing left to say. */}
+                          <td className="px-3 py-2">
+                            {qcMarks
+                              ? <MarkChip mark={s.mark} hideWhole />
+                              : <span className="font-semibold text-amber-600" title="The slab mark could not be read for this list, so whether this slab has been cut is UNKNOWN. Do not quote it as a full slab on the strength of this row — check the slab in inventory first.">?</span>}
+                          </td>
                           <td className="px-3 py-2">
                             {s.issues.length ? <span className="text-gray-700">{s.issues.join(", ")}</span> : <span className="text-gray-300">—</span>}
                           </td>

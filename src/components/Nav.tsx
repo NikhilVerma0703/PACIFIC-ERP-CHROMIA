@@ -84,17 +84,32 @@ function NavLink({ href, icon, label, path, office, exact }: {
 }) {
   const active = office && href === "/office"
     ? SHOP_PATHS.some(p => (p === "/" ? path === "/" : path.startsWith(p)))
-    // A PREFIX MATCH NEEDS A PATH BOUNDARY. Plain startsWith lit two rows at
-    // once as soon as one nav href was a prefix of another: opening Month
-    // Incentive (/scoreboard/incentive) also bolded Shift Scoreboard
-    // (/scoreboard), so the sidebar claimed the wrong page was open. Requiring
-    // the next character to be "/" or "?" keeps the drill-down behaviour the
-    // comment above wants — /batch/slabs still lights Batch Lookup — while a
-    // SIBLING route stops lighting its neighbour. Section() at the bottom of
-    // this file has always matched this way; this is the same rule.
+    // A PREFIX MATCH NEEDS A PATH BOUNDARY: the next character must be "/".
+    // That is all this clause does — it stops a href matching MID-SEGMENT (a
+    // /report row lighting up on a future /report-archive) while keeping the
+    // drill-down the comment above wants, so /batch/slabs still lights Batch
+    // Lookup. No query-string arm: path is usePathname(), which never carries
+    // one (the /scoreboard row's comment below relies on the same fact).
+    //
+    // IT IS NOT WHAT FIXED THE DOUBLE-LIT SIDEBAR, and it does not stop a
+    // NESTED nav row lighting its parent — /scoreboard/incentive still meets
+    // /scoreboard at a boundary. `exact: true` on the parent row is what fixed
+    // that and is still what a new nested row needs. Measured over all 110
+    // page routes in src/app against all 64 nav hrefs: not one href is a
+    // mid-segment prefix of a real path, so this clause lights exactly the rows
+    // plain startsWith did — it is a guard for the next href somebody adds, not
+    // a fix for anything on screen.
+    //
+    // STILL WRONG for exactly the reason above: /fab/supervisor (Cut Queue)
+    // stays lit beside its four /fab/supervisor/* rows, and the office arm
+    // above startsWith()es raw over SHOP_PATHS, so /slab-intake lights
+    // Shop Floor via "/slab". A bare `exact` on Cut Queue would only move the
+    // damage — /fab/supervisor/sinks has no row of its own and needs Cut Queue
+    // lit. That wants an "exact unless no other row claims the path" rule,
+    // which nobody has written yet.
     : href === "/" || href === "/sales" || exact
       ? path === href
-      : path === href || path.startsWith(href + "/") || path.startsWith(href + "?");
+      : path === href || path.startsWith(href + "/");
   return (
     <Link href={href}
       className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
@@ -129,8 +144,10 @@ function NavLink({ href, icon, label, path, office, exact }: {
  * disagree and React would warn about hydration.
  */
 function Section({ label, items, path }: { label: string; items: { href: string; icon: string; label: string; exact?: boolean }[]; path: string }) {
+  // Matches NavLink's rule above, including the absence of a query-string arm:
+  // path is usePathname() and carries no "?".
   const holdsCurrent = items.some((t) =>
-    t.exact ? path === t.href || path.startsWith(t.href + "?") : path === t.href || path.startsWith(t.href + "/"));
+    t.exact ? path === t.href : path === t.href || path.startsWith(t.href + "/"));
   const [folded, setFolded] = useState(false);
   useEffect(() => {
     try { setFolded(localStorage.getItem("nav-fold:" + label) === "1"); } catch { /* private mode */ }

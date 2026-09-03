@@ -17,12 +17,18 @@ import { Lightbox, type LightboxPhoto } from "@/components/Lightbox";
 
 interface Kpi {
   total: number; gradeA: number; gradeA2: number; gradeB: number; gradeC: number;
-  // `cut` is the honest name for what the CTS card counts: slabs that HAVE BEEN
-  // CUT, by grade OR by mark (/api/inventory/kpi anyCutWhere). `cts` is the same
-  // number under the older key — the route returns both so this screen could not
-  // go blank on deploy — and it is optional here only because `cut` is the one
-  // that is read; see the card below.
-  cut?: number; cts: number; printing: number; available: number; reserved: number; packed: number;
+  // `cut` is the honest name for what the old CTS card counted: slabs that HAVE
+  // BEEN CUT, by grade OR by mark (/api/inventory/kpi anyCutWhere). `cts` is the
+  // same number under the older key — the route returns both so this screen
+  // could not go blank on deploy — and it is optional here only because `cut` is
+  // the one that is read; see the card below.
+  //
+  // NULLABLE, and the null is load-bearing: the route sends null for "the slab
+  // mark could not be read, so we cannot say how much stock has been cut". It
+  // must not be coalesced to 0 anywhere on this screen. 0 means a yard with no
+  // cut slabs in it, which is a thing somebody will quote against; null means we
+  // do not know, and it renders "?".
+  cut?: number | null; cts: number | null; printing: number; available: number; reserved: number; packed: number;
   dispatched: number; returned: number; ctsStatus: number; chromia: number;
   pendingPolish: number; pendingRw: number;
   thk12cm: number; thk2cm: number; thk3cm: number;
@@ -563,14 +569,24 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
     const next = { ...EMPTY, ...patch };
     setView("slabs"); setF(next); run(next);
   };
-  const card = (label: string, value: number, tone = "text-gray-900", patch?: Partial<typeof EMPTY>) => (
+  // `note` replaces the default "Click to see these slabs" hover text, for a card
+  // whose number needs a sentence of its own — today that is the Cut card, which
+  // OVERLAPS the grade cards and must never be added into them.
+  //
+  // `value` may be NULL, meaning "this number could not be computed" — the cut
+  // count when the slab mark is unreadable. It prints "?" in muted amber, never
+  // a zero: a zero on this strip is read as "no cut stock here" and quoted
+  // against, which is exactly the sentence nobody may be told by accident.
+  const card = (label: string, value: number | null | undefined, tone = "text-gray-900", patch?: Partial<typeof EMPTY>, note?: string) => (
     <div
       className={`rounded-xl border border-gray-200 bg-white p-4 ${patch ? "cursor-pointer transition hover:border-brand hover:shadow-sm" : ""}`}
-      title={patch ? "Click to see these slabs" : undefined}
+      title={note ?? (patch ? "Click to see these slabs" : undefined)}
       onClick={patch ? () => applyCard(patch) : undefined}
     >
       <div className="text-[11px] font-medium uppercase tracking-wide text-gray-400">{label}</div>
-      <div className={`mt-1 text-2xl font-semibold tabular-nums ${tone}`}>{value.toLocaleString("en-IN")}</div>
+      <div className={`mt-1 text-2xl font-semibold tabular-nums ${typeof value === "number" ? tone : "text-amber-600"}`}>
+        {typeof value === "number" ? value.toLocaleString("en-IN") : "?"}
+      </div>
     </div>
   );
   const inputCls = "w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
@@ -619,41 +635,77 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
         <div className="space-y-4">
           <div>
             <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400">Stock</p>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-8">
               {card("Total Slabs", kpi.total, "text-gray-900", {})}
               {card("Available", kpi.available, "text-emerald-600", { status: "AVAILABLE" })}
               {card("Reserved", kpi.reserved, "text-amber-600", { status: "RESERVED" })}
               {card("Packed", kpi.packed, "text-amber-600", { status: "PACKED" })}
               {card("Returned", kpi.returned, "text-sky-600", { status: "RETURNED" })}
-              {card("Cut to size", kpi.ctsStatus, "text-amber-600", { status: "CTS" })}
+              {/* TWO CARDS ABOUT CUT SLABS, AND THEY ARE NOT THE SAME CARD — the same
+                  distinction the register draws between its CTS and Cut columns.
+
+                  "Cut to size (status)" is the inventory STATUS somebody applied by
+                  hand. "Cut (any signal)" is the FACT: grade says cut, or the mark
+                  does. The gap between them is the point — a slab is very often cut
+                  without anyone remembering to apply the status, which is why the
+                  dispatch rule reads the mark and not this. */}
+              {card("Cut to size (status)", kpi.ctsStatus, "text-amber-600", { status: "CTS" },
+                "Slabs someone moved to the CTS status by hand. NOT the same as the Cut card beside it: a slab is usually cut without anyone applying this status. Click to see these slabs.")}
+              {/* MOVED OUT OF "GRADES (IN STOCK)", AND THIS IS THE WHOLE FIX.
+
+                  This card used to sit in the grade block between Grade C and
+                  Printing, under a heading that says "Grades" and above a row of
+                  cards a person naturally adds up. It counts grade-OR-mark, so it
+                  is not a grade and it does not partition anything. Measured on
+                  live Neon 2026-09-03: on the floor A 8,304 + A2 859 + B 3,424 +
+                  C 2,346 + Trial 384 + ungraded 1,311 = 16,628, exactly the
+                  on-floor total — and adding this card's 61 gave 16,689, 61 too
+                  many, because all 61 cut slabs read grade 'B' since scripts/0072
+                  and were counted twice. Before the regrade they read grade 'CTS'
+                  and the six cards were disjoint — CTS was a grade like any other.
+                  They are not disjoint any more, so the card cannot stay here.
+
+                  The summary route's own header warned about exactly this
+                  ("widening the `cts` column to count it would have counted that
+                  slab twice ... and the row would stop adding up") and the register
+                  put Cut outside the grade block for the same reason. This strip
+                  now does what the register does.
+
+                  The click-through is `mark: "CTS"`, not `grade: "CTS"`: both
+                  resolve to the same grade-OR-mark clause (searchWhere
+                  cutSignalWhere), but no slab carries that GRADE any more, so
+                  filling in the Grade filter box would show the user a filter
+                  nothing on the floor actually matches. */}
+              {card("Cut (any signal)", kpi.cut ?? kpi.cts, "text-indigo-700", { mark: "CTS" },
+                "Slabs that are no longer whole — cut to size or cut down for samples, by grade or by mark. NOT a grade: these slabs are also counted in the Grade cards below (all of them read Grade B today), so do NOT add this number into that row. '?' means the slab mark could not be read and the count is unknown. Click to see these slabs.")}
               {card("At Chromia", kpi.chromia ?? 0, "text-violet-600", { status: "CHROMIA" })}
             </div>
           </div>
           <div>
+            {/* A PARTITION AGAIN. Every card in this block counts one exclusive
+                value of the grade column, so no slab is in two of them and a person
+                may add them across. (Trial and ungraded are not shown here, so the
+                visible row sums to less than Total Slabs — but never to MORE than it,
+                which is the failure that matters: a card that double-counts makes the
+                strip claim more stock than the plant holds.)
+
+                The CTS card that used to sit between Grade C and Printing has moved up
+                into the Stock row as "Cut (any signal)". It counted grade-OR-mark, all
+                61 of those slabs read grade 'B' since scripts/0072, and it was
+                therefore adding 61 slabs to this block that Grade B had already
+                counted. Nothing that overlaps another card belongs under this heading.
+
+                There is no grade-only CTS card left because there is nothing left for
+                it to count: measured on live Neon 2026-09-03, zero rows anywhere carry
+                grade 'CTS' or 'SAMPLE'. A card reading a permanent 0 under "Grades"
+                would be a place for the eye to check for cut stock and find none. */}
             <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400">Grades (in stock)</p>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
               {card("Grade A", kpi.gradeA, "text-gray-900", { grade: "A" })}
               {card("Grade A2", kpi.gradeA2, "text-gray-900", { grade: "A2" })}
-              {card("Grade B", kpi.gradeB, "text-gray-900", { grade: "B" })}
+              {card("Grade B", kpi.gradeB, "text-gray-900", { grade: "B" },
+                "Slabs graded B. Includes the 61 already-cut slabs scripts/0071 and 0072 regraded from CTS to B — the Cut card in the Stock row is what tells them apart. Click to see these slabs.")}
               {card("Grade C", kpi.gradeC, "text-gray-900", { grade: "C" })}
-              {/* THE CARD THAT WOULD HAVE READ ZERO. It counted g_("CTS") — the GRADE
-                  — so the day fabrication stops overwriting the grade and records the
-                  cut in the mark instead, a yard full of cut slabs would have shown 0
-                  here. `cut` is the route's grade-OR-mark count (60 on the floor today,
-                  either way); `cts` is the same number under the old key, kept for the
-                  deploy window in which this file is newer than the route or older
-                  than it. Neither can be added to the other — every one of the 62 live
-                  rows carries BOTH signals, so a sum would report 120 cut slabs where
-                  there are 60.
-
-                  The click-through stays `grade: "CTS"` because buildInventoryWhere now
-                  resolves a cut value to `grade = X OR mark = X` — the same rows the
-                  card counted, found by either signal. It is CTS only, not SAMPLE: no
-                  slab anywhere reads SAMPLE today (measured on live Neon 2026-09-03),
-                  and when sampling starts marking slabs they are found through the mark
-                  dropdown in the filter row rather than by widening this card into two
-                  different questions. */}
-              {card("CTS", kpi.cut ?? kpi.cts, "text-gray-900", { grade: "CTS" })}
               {card("Printing", kpi.printing, "text-gray-900", { grade: "Printing" })}
             </div>
           </div>

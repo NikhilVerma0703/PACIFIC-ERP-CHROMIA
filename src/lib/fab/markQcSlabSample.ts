@@ -61,6 +61,18 @@ export async function markQcSlabSample(pacificQcId: string): Promise<void> {
   // it is already blocked from dispatch and its history is already recorded.
   if (!marked.ok) return;
 
+  // AND AN IDEMPOTENT RE-MARK IS ALSO DONE. changed:false with applied:true
+  // means the row ALREADY read slab_mark = 'SAMPLE', so this is a repeat of a
+  // decision that has already been taken and there is nothing left to write.
+  //
+  // The same hole markQcSlabCts had, and latent here only because no live row
+  // carries a SAMPLE mark yet (measured 2026-09-03: 63 CTS, 48,329 FULL_SLAB, 0
+  // SAMPLE). Without this, a re-mark on a database having a bad minute would
+  // reach the legacy branch and overwrite a real verdict with 'SAMPLE' — and
+  // after scripts/0071 and 0072 the grade test in that statement's WHERE no
+  // longer catches it, because a slab that has already been cut now reads 'B'.
+  if (marked.applied && !marked.changed) return;
+
   // AND TELL INVENTORY — fg_finished_slab is what the dispatch rule reads.
   // This runs BEFORE the grade write now: it carries the SAMPLE mark across
   // into fg_finished_slab.slab_mark and reads the row back, and its answer is
@@ -90,6 +102,11 @@ export async function markQcSlabSample(pacificQcId: string): Promise<void> {
       WHERE  id = ${pacificQcId}
         -- Only a slab that has not already been cut. See the header.
         AND  upper(btrim(coalesce(quality_grade, ''))) NOT IN ('CTS', 'SAMPLE')
+        -- AND THE MARK AGREES IT IS STILL WHOLE. After scripts/0071 and 0072
+        -- the grade test above catches nothing: every cut slab reads 'B'. The
+        -- mark is what remembers, and it is tested in the statement so a
+        -- concurrent pick cannot slip between the read and the write.
+        AND  upper(btrim(coalesce(slab_mark, 'FULL_SLAB'))) = 'FULL_SLAB'
     `;
   } catch (err) {
     // scripts/0056 not applied — still record SAMPLE, which is the part that
@@ -100,12 +117,30 @@ export async function markQcSlabSample(pacificQcId: string): Promise<void> {
     // and that silence is exactly why quality_grade_before_cts sat NULL on all
     // 48,377 rows for a fortnight with nobody the wiser.
     console.error("[fab] verdict NOT preserved for qc", pacificQcId, "— falling back to a grade-only SAMPLE write", err);
-    await prisma.$executeRaw`
-      UPDATE polish_qc
-      SET    quality_grade = 'SAMPLE'
-      WHERE  id = ${pacificQcId}
-        AND  upper(btrim(coalesce(quality_grade, ''))) NOT IN ('CTS', 'SAMPLE')
-    `;
+    try {
+      // Still narrowed by the mark: losing the preservation column is no reason
+      // to also lose the re-mark guard, which is the one that stops 'SAMPLE'
+      // landing on top of a verdict.
+      await prisma.$executeRaw`
+        UPDATE polish_qc
+        SET    quality_grade = 'SAMPLE'
+        WHERE  id = ${pacificQcId}
+          AND  upper(btrim(coalesce(quality_grade, ''))) NOT IN ('CTS', 'SAMPLE')
+          AND  upper(btrim(coalesce(slab_mark, 'FULL_SLAB'))) = 'FULL_SLAB'
+      `;
+    } catch (err2) {
+      // No slab_mark column either (scripts/0057 unapplied). No row on such a
+      // database can be "already marked", so the narrowing was a no-op there and
+      // dropping it changes which rows move not at all — it only lets the
+      // statement parse.
+      console.error("[fab] mark-narrowed SAMPLE write failed for qc", pacificQcId, "— no slab_mark column; writing the grade unnarrowed", err2);
+      await prisma.$executeRaw`
+        UPDATE polish_qc
+        SET    quality_grade = 'SAMPLE'
+        WHERE  id = ${pacificQcId}
+          AND  upper(btrim(coalesce(quality_grade, ''))) NOT IN ('CTS', 'SAMPLE')
+      `;
+    }
   }
 
   // AND MIRROR THE GRADE. The refresh above ran before the grade changed, so
