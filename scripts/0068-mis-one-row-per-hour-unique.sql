@@ -58,9 +58,41 @@ SELECT date::date AS day, hour, count(*) AS rows, array_agg(id) AS ids
 HAVING count(*) > 1
  ORDER BY 1 DESC;
 
--- 2) THE INDEX. Run ONLY after (1) returns no rows. Partial because one row has
---    no date at all and legacy rows may carry only date_and_time — those are
---    outside this promise, exactly as the WHERE clause says.
+-- 2) THE INDEX — APPLIED 2026-09-03, FORWARD-DATED.
+--
+-- The full-table version below cannot be created and may never be: 247 groups
+-- holding 501 rows violate it, and resolving each one means saying which of a
+-- pair is the real hour, which is a reading of the plant's intent and not a
+-- migration's business.
+--
+-- But every one of those duplicates PREDATES 2026-07-01 — measured again on
+-- 2026-09-03: 0 duplicate groups on or after 1 July, against 247 before it.
+-- That is not a coincidence, it is the create-path guard working; the hole that
+-- stayed open was the EDIT path, which the code now closes too.
+--
+-- So the constraint is applied to the period the plant is actually working in.
+-- It covers 1,474 rows today and every row entered from now on, which is where
+-- a double-entry would do live damage to the downtime report, the CEO report and
+-- the shift score. The legacy rows keep their duplicates and stay editable, and
+-- the dedupe query in (1) is left above for whoever settles them.
+--
+-- WHY A DATE IN THE PREDICATE IS SAFE HERE. Postgres evaluates the WHERE against
+-- each row's own `date`, so no row can escape the index by the clock moving; a
+-- row written today with an old date is simply outside it, exactly as a row with
+-- a NULL date is. The cutoff is a statement about which rows were trustworthy
+-- when the constraint was added, not a window that slides.
+--
+-- NOT IN prisma/schema.prisma: Prisma cannot express a partial index, so
+-- @@unique would generate the FULL one and `migrate diff` would propose creating
+-- something that fails. This lives in the database and in this file. (The house
+-- rule is already never to run `prisma db push` — see the note in the project's
+-- memory — which is what would otherwise threaten an index Prisma does not know.)
+
+CREATE UNIQUE INDEX IF NOT EXISTS mis_date_hour_recent_unique_idx
+    ON mis (date, hour)
+ WHERE date >= '2026-07-01' AND date IS NOT NULL;
+
+-- THE FULL-TABLE VERSION, still blocked on (1):
 --
 -- CREATE UNIQUE INDEX IF NOT EXISTS mis_date_hour_unique_idx
 --     ON mis (date, hour)

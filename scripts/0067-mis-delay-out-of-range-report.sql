@@ -24,6 +24,12 @@
 --   * 0 rows have a single bucket above 60,
 --   * 3 rows have a TOTAL above 60 — the same three delayReclass.ts's header
 --     notes as pre-existing and deliberately left correctable.
+-- RUN 2026-09-03, AND IT DID REPORT NOTHING: 0 negatives, 0 single buckets over
+-- 60. The three total-over-60 rows are the expected ones (69, 69 and 61 minutes,
+-- on 2025-08-04 16-17, 2025-09-20 11-12 and 2026-06-19 16-17) and are left
+-- alone, exactly as section 3 says. Nothing was repaired because nothing needed
+-- repairing; the guard that now refuses these is prevention, not cleanup.
+--
 -- So this script is expected to report NOTHING today. It is written anyway: the
 -- hole was open for the whole life of the table, the check that closes it is new,
 -- and the next person to ask "did anything get through?" should have the query
