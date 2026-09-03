@@ -74,6 +74,112 @@ export function gradeBlocksDispatch(grade: unknown): boolean {
   return (CUT_GRADES as readonly string[]).includes(upper);
 }
 
+// ───────────────────────────── AND NOW THE MARK, FROM 2026-09-03 ────────────
+//
+// The owner, in his developer's words: "grade should be A/B/C like normal, and
+// the MARK is CTS or sampling." Today fabrication OVERWRITES quality_grade with
+// 'CTS' (lib/fab/markQcSlabCts.ts), which destroys the polishing line's A/B/C
+// verdict — its own header says "CTS is not a grade, it's a mark" and that both
+// writes happen only "until dispatch reads the mark instead". This is that.
+//
+// The mark lives in its own column: polish_qc.slab_mark (scripts/0057) and, as
+// of the migration that ships with this change, fg_finished_slab.slab_mark —
+// FULL_SLAB / CTS / SAMPLE, the three states in src/lib/fab/slabMark.ts.
+//
+// WHY THE TWO LISTS BELOW SPELL THE SAME TWO WORDS AND ARE STILL SEPARATE:
+// CUT_GRADES is what the LEGACY grade column may say; CUT_MARKS is what the NEW
+// mark column may say. They are different columns with different writers, and a
+// grade that stops being a routing state one day (which is the whole point of
+// this change) must not silently stop being a refused MARK on the same edit.
+// This is the dispatch-side copy of slabMark.ts's SLAB_MARKS minus FULL_SLAB,
+// for the same reason CUT_GRADES is a copy: this module imports nothing, so
+// `node --test` can reach it and so can a client component.
+
+/** The marks that mean the slab has been cut. FULL_SLAB is the only other
+ *  value, and it is the only one that may leave as a full slab. */
+export const CUT_MARKS = ["CTS", "SAMPLE"] as const;
+export type CutMark = (typeof CUT_MARKS)[number];
+
+/** A stored mark, normalised to one of the two cut states, or null.
+ *
+ *  Tolerant the same way slabMark.ts's parseSlabMark is — "cts", " Cts ",
+ *  "full slab" and "FULL-SLAB" all read as the person meant them — and strict
+ *  about the set: anything outside the three states is NOT guessed at. It is
+ *  not a cut mark, so it does not block, and the grade rule below still gets
+ *  its say. */
+function cutMarkOf(mark: unknown): CutMark | null {
+  if (typeof mark !== "string") return null;
+  const m = mark.trim().toUpperCase().replace(/[\s-]+/g, "_");
+  return (CUT_MARKS as readonly string[]).includes(m) ? (m as CutMark) : null;
+}
+
+/**
+ * Whether a slab's MARK forbids dispatching it as a full slab.
+ *
+ * The mark is the fact itself: a slab fabrication cut, or sampling cut down, is
+ * not whole, whatever anyone later writes in the grade column. Case-insensitive
+ * for the same reason gradeBlocksDispatch is — a mark reading "cts" is the same
+ * physical slab as one reading "CTS", and an exact comparison would let it onto
+ * a lorry.
+ *
+ * A slab with NO mark — undefined, null, "", or a database that has not had the
+ * migration yet — is not blocked BY THIS FUNCTION. That is deliberate and it is
+ * safe only because it is never used alone: see slabBlocksDispatch.
+ */
+export function markBlocksDispatch(mark: unknown): boolean {
+  return cutMarkOf(mark) !== null;
+}
+
+/**
+ * THE DISPATCH RULE. Either signal saying cut is enough to refuse.
+ *
+ * The OR is the whole safety property of this change, and the reason it can be
+ * deployed in either order relative to its migration:
+ *
+ *   * A database WITHOUT fg_finished_slab.slab_mark has no mark to read, so
+ *     every slab is refused on exactly the grade it is refused on today — the
+ *     62 rows measured on live Neon on 2026-09-03 (60 in stock, 2 already
+ *     DISPATCHED), which are every slab the block refuses at all.
+ *   * A database WITH it refuses those SAME 62 — all 62 have a polish_qc row
+ *     whose mark already says CTS, and the backfill copies it across — PLUS any
+ *     slab whose mark says cut while its grade has been left alone, which is
+ *     precisely what this change exists to allow fabrication to start doing.
+ *
+ * So it can only ever refuse MORE. Nothing that is refused today becomes
+ * dispatchable, in either deploy order, at any point in between. That is the
+ * one failure that matters here: removing the grade write before the rule moved
+ * would have silently un-blocked dispatch for every slab fabrication cuts.
+ *
+ * The grade half stays for as long as the grade write does. When lib/fab stops
+ * writing quality_grade = 'CTS', this keeps working unchanged — the mark half
+ * carries it, and the grade half goes on covering the 62 legacy rows whose
+ * grade the owner is still collecting by hand.
+ */
+export function slabBlocksDispatch(slab: { grade?: unknown; mark?: unknown }): boolean {
+  return markBlocksDispatch(slab.mark) || gradeBlocksDispatch(slab.grade);
+}
+
+/**
+ * WHICH WAY THE SLAB WAS CUT, or null if it was not.
+ *
+ * Exists for the refusal MESSAGE, and the message matters: "cut to size" and
+ * "cut down for samples" send an inventory user to two different people to ask
+ * why, and one wording for both would send half of them to the wrong one.
+ *
+ * The MARK WINS when both speak, because the mark is the fact and the grade is
+ * the legacy shadow of it — a slab marked SAMPLE whose grade still reads CTS
+ * from an older fabrication pass went to the sample shelf, and that is where
+ * whoever is asking should go looking.
+ */
+export function dispatchCut(slab: { grade?: unknown; mark?: unknown }): CutMark | null {
+  const byMark = cutMarkOf(slab.mark);
+  if (byMark) return byMark;
+  const g = canonicalGrade(slab.grade);
+  if (g == null) return null;
+  const upper = g.toUpperCase();
+  return (CUT_GRADES as readonly string[]).includes(upper) ? (upper as CutMark) : null;
+}
+
 export type StatusAction = "reserve" | "release" | "pack" | "dispatch" | "return" | "cts" | "uncts" | "chromia" | "unchromia";
 
 /** Slab lifecycle: which statuses each action may move FROM, and where it lands. */

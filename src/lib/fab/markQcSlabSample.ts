@@ -15,16 +15,29 @@
 // sample shelf could go out on a lorry as a full slab, and nothing in the system
 // would have objected.
 //
-// ─────────────────────────────────── IT WRITES THREE THINGS, DELIBERATELY ───
-//   polish_qc.slab_mark                = 'SAMPLE'   the fact itself (0057)
-//   polish_qc.quality_grade            = 'SAMPLE'   what dispatch reads today
-//   polish_qc.quality_grade_before_cts = the verdict, kept before it is lost
+// ─────────────────────────────────── WHAT IT WRITES, AND WHEN ───────────────
+//   polish_qc.slab_mark                = 'SAMPLE'   the fact itself (0057).
+//                                                   ALWAYS.
+//   polish_qc.quality_grade            = 'SAMPLE'   ONLY while dispatch cannot
+//                                                   yet read the mark.
+//   polish_qc.quality_grade_before_cts = the verdict, kept before it is lost —
+//                                        only on that same legacy branch, since
+//                                        otherwise nothing is destroying it.
 //
-// The grade write is the same compromise markQcSlabCts makes: lib/inventory
-// blocks dispatch on the GRADE, so until that rule reads the mark instead, the
-// grade is the load-bearing signal and writing only the new column would leave
-// the slab dispatchable. The verdict is preserved first (scripts/0056) so "A ·
-// Sample" can still be shown — the stone was good AND it has been cut up.
+// The grade write is the same compromise markQcSlabCts makes, and it is now
+// resolved the same way. The owner, 2026-09-03: "grade should be A/B/C like
+// normal, and the MARK is CTS or sampling." lib/inventory blocks dispatch on
+// the mark OR the grade now (slabBlocksDispatch), but it reads the mark from
+// fg_finished_slab.slab_mark, a column that arrives with scripts/0070 — which
+// may land before or after this code. So refreshInventoryMirror pushes the mark
+// into finished goods, reads the row back, and says whether it is really there;
+// only then is the grade left alone. No column, no permission slip, no change:
+// a slab cut for samples goes on being refused on exactly the signal it is
+// refused on today. See markQcSlabCts.ts for the full argument.
+//
+// "A · Sample" — the stone was good AND it has been cut up — is what the whole
+// change is for. On the new branch it needs no preservation column at all: the
+// A is simply never overwritten.
 //
 // ─────────────────────────────────── ONLY A WHOLE SLAB IS TAKEN ─────────────
 // The guard is in the WHERE, not in JavaScript. A slab already CTS keeps its
@@ -48,24 +61,45 @@ export async function markQcSlabSample(pacificQcId: string): Promise<void> {
   // it is already blocked from dispatch and its history is already recorded.
   if (!marked.ok) return;
 
+  // AND TELL INVENTORY — fg_finished_slab is what the dispatch rule reads.
+  // This runs BEFORE the grade write now: it carries the SAMPLE mark across
+  // into fg_finished_slab.slab_mark and reads the row back, and its answer is
+  // what decides whether the grade has to be overwritten at all.
+  const mirror = await refreshInventoryMirror(pacificQcId);
+  if (mirror.markInMirror) return;
+
+  // THE LEGACY BRANCH — no scripts/0070, or no finished-goods row to mark. The
+  // mark cannot refuse this slab at dispatch, so the grade still has to.
   try {
     await prisma.$executeRaw`
       UPDATE polish_qc
       SET    quality_grade_before_cts = COALESCE(
                quality_grade_before_cts,
                -- Only a real verdict is worth keeping. Routing states and
-               -- "Not graded yet" are not history, they are noise.
-               NULLIF(NULLIF(NULLIF(NULLIF(quality_grade, 'CTS'), 'SAMPLE'), 'Printing'), '')
+               -- "Not graded yet" are not history, they are noise. Folded for
+               -- case and whitespace, the way this column is compared
+               -- everywhere else — an exact NULLIF chain would have filed a
+               -- grade of "cts" or " Sample " away as a quality verdict.
+               CASE
+                 WHEN upper(btrim(coalesce(quality_grade, ''))) IN ('CTS', 'SAMPLE', 'PRINTING', '') THEN NULL
+                 WHEN upper(btrim(coalesce(quality_grade, ''))) LIKE 'NOT GRADED%' THEN NULL
+                 ELSE btrim(quality_grade)
+               END
              ),
              quality_grade = 'SAMPLE'
       WHERE  id = ${pacificQcId}
         -- Only a slab that has not already been cut. See the header.
         AND  upper(btrim(coalesce(quality_grade, ''))) NOT IN ('CTS', 'SAMPLE')
     `;
-  } catch {
+  } catch (err) {
     // scripts/0056 not applied — still record SAMPLE, which is the part that
     // stops the slab being dispatched whole. The verdict is lost, as it has
     // always been on the CTS path.
+    //
+    // AND SAY SO. The identical catch on the CTS path was a bare `catch {}`,
+    // and that silence is exactly why quality_grade_before_cts sat NULL on all
+    // 48,377 rows for a fortnight with nobody the wiser.
+    console.error("[fab] verdict NOT preserved for qc", pacificQcId, "— falling back to a grade-only SAMPLE write", err);
     await prisma.$executeRaw`
       UPDATE polish_qc
       SET    quality_grade = 'SAMPLE'
@@ -74,6 +108,9 @@ export async function markQcSlabSample(pacificQcId: string): Promise<void> {
     `;
   }
 
-  // AND TELL INVENTORY — finished_slab.grade is what the dispatch rule reads.
+  // AND MIRROR THE GRADE. The refresh above ran before the grade changed, so
+  // finished goods is still holding the pre-SAMPLE grade — and on this branch
+  // that grade is the only thing standing between a slab that is now a pile of
+  // sample pieces and a lorry.
   await refreshInventoryMirror(pacificQcId);
 }

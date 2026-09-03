@@ -28,11 +28,50 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
 import { inventoryGate } from "@/lib/inventory/access";
-import { approvedOnlyWhere } from "@/lib/inventory/searchWhere";
+import { approvedOnlyWhere, slabMarkAvailable, isMissingSlabMarkError } from "@/lib/inventory/searchWhere";
 import { customerKey } from "@/lib/inventory/filterValues";
+import { CUT_GRADES } from "@/lib/inventory/grading";
+import { SLAB_MARKS } from "@/lib/fab/slabMark";
 import { isAdmin } from "@/lib/rbac";
 
 const db = prisma as any;
+
+// ─────────────────────────────── AND THE MARK, FROM 2026-09-03 ──────────────
+//
+// THE OPTION THAT WAS ABOUT TO VANISH. Every list on this route is read back
+// off live rows, which is exactly what makes it honest — and exactly what makes
+// it fail here. "CTS" appears in the grade dropdown today only because 62 slabs
+// still carry grade='CTS' (60 on the floor, 2 dispatched — measured on live
+// Neon 2026-09-03). Fabrication is about to stop writing that grade and record
+// the fact in fg_finished_slab.slab_mark instead, so the day the last legacy
+// row is regraded to its real A/B/C the CTS option would simply stop being
+// offered — and with it the only way anyone had to find a cut slab from the
+// filter row. Hence `marks`.
+//
+// WHAT MAY BE OFFERED. The same discipline as every other list here: an option
+// is offered only if something can come back from it. So the mark list is the
+// live mark values, PLUS any cut value the GRADE column still carries — because
+// buildInventoryWhere resolves a cut filter to `grade = X OR mark = X`, so a
+// database whose marks are all still FULL_SLAB (or that has no mark column at
+// all) really can answer "CTS" with those 62 rows. Nothing is invented: SAMPLE
+// is not offered today because no slab anywhere reads SAMPLE, in either column.
+
+/** The offerable mark values, in state order (FULL_SLAB, CTS, SAMPLE) rather
+ *  than alphabetical — the three are a progression, not a list of names. */
+function offerableMarks(markValues: string[], gradeValues: string[], hasMarkColumn: boolean): string[] {
+  const offer = new Set<string>(markValues);
+  // A cut GRADE is a cut slab, whatever the mark column says or does not say.
+  for (const g of gradeValues) {
+    const up = g.trim().toUpperCase();
+    if ((CUT_GRADES as readonly string[]).includes(up)) offer.add(up);
+  }
+  // No column yet (scripts/0070 unapplied) means no live marks to read, but the
+  // "still whole" filter degrades to `grade IS NULL OR grade NOT IN (cut)` and
+  // answers with all but 62 of the ~23,000 slabs on the table. Offering it is
+  // not a guess.
+  if (!hasMarkColumn) offer.add("FULL_SLAB");
+  return SLAB_MARKS.filter((m) => offer.has(m));
+}
 
 const clean = (xs: any[], field: string): string[] =>
   xs.map((r) => r[field]).filter((v: unknown): v is string => typeof v === "string" && v.trim() !== "");
@@ -50,9 +89,22 @@ export async function GET() {
     const by = (field: string) =>
       db.finishedSlab.groupBy({ by: [field], where: { ...base, [field]: { not: null } }, _count: { _all: true } });
 
-    const [thick, grade, bay, pi, cust, design, aliases] = await Promise.all([
+    // The mark groupBy runs ONLY once the probe says the column is there, and
+    // still catches a miss: the probe answers per process and the migration can
+    // land (or a client be regenerated) between the two, and an unguarded
+    // groupBy on a missing column would 500 the whole filter row — killing the
+    // thickness, grade, bay, PI, customer and design dropdowns over a column
+    // that has not shipped yet. Same approval gate (`base`) as every other list
+    // here, so the mark list cannot enumerate stock the caller may not see.
+    const hasMark = await slabMarkAvailable();
+    const [thick, grade, bay, pi, cust, design, aliases, mark] = await Promise.all([
       by("slabThickness"), by("grade"), by("bayNumber"), by("reservedForPi"), by("customer"), by("design"),
       db.designAlias.findMany({ select: { variant: true, canonical: true } }).catch(() => []),
+      hasMark
+        ? db.finishedSlab
+            .groupBy({ by: ["slabMark"], where: base, _count: { _all: true } })
+            .catch((e: any) => { if (!isMissingSlabMarkError(e)) throw e; return []; })
+        : Promise.resolve([]),
     ]);
 
     // Lower-cased keys: buildInventoryWhere excludes merged-away variants case-INsensitively,
@@ -100,9 +152,15 @@ export async function GET() {
       return a.localeCompare(b);
     });
 
+    const grades = clean(grade, "grade").sort((a, b) => a.localeCompare(b));
     return Response.json({
       thicknesses: clean(thick, "slabThickness").sort((a, b) => a.localeCompare(b)),
-      grades: clean(grade, "grade").sort((a, b) => a.localeCompare(b)),
+      // The GRADE list is left exactly as it was — additive only. It still
+      // offers CTS while the 62 legacy rows carry it, and simply stops when the
+      // owner has replaced them with the real verdicts he is collecting by
+      // hand. `marks` is what carries the option forward from then on.
+      grades,
+      marks: offerableMarks(clean(mark, "slabMark"), grades, hasMark),
       bays: clean(bay, "bayNumber").sort((a, b) => a.localeCompare(b)),
       pis,
       customers,

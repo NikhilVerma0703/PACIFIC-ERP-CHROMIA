@@ -4,8 +4,16 @@
 // header. Designs collapsed by default; all trial designs under "Trials".
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { displaySlab } from "@/lib/slabLabel";
+// The same chip the slab table and the fab CEO board use — one drawing of one
+// fact, so the three screens cannot disagree about what a cut slab looks like.
+import { MarkChip } from "@/components/fab/SlabChips";
 
-interface QcSlab { slab: number; grade: string | null; issues: string[]; rw: string | null; repolish: string | null; status: string | null; barcode: string | null }
+// `mark` is OPTIONAL: /api/inventory/batch-quality returns a deliberately CLOSED
+// shape (its own header says so) and does not carry the mark yet. It is declared
+// here so the popup starts showing it the moment the route does — and until then
+// MarkChip's `legacyGrade` reads the old grade='CTS' write, which is how all 62
+// cut slabs measured on live Neon (2026-09-03) already read correctly below.
+interface QcSlab { slab: number; grade: string | null; mark?: string | null; issues: string[]; rw: string | null; repolish: string | null; status: string | null; barcode: string | null }
 interface QcTarget { design: string; thickness: string; batch: string }
 
 // R/W and repolish, tinted by what they mean on the floor: "RW Required and
@@ -29,11 +37,44 @@ interface Row {
   design: string; thickness: string; batch: string; rawBatch?: string; total: number; dispatched: number;
   bay5: number; bay4: number; bay3: number; nobay: number;
   a: number; a2: number; b: number; c: number; cts: number; printing: number;
-  trial: number; ungraded: number; pending_polish: number; pending_rw: number;
+  // `cut` is NOT a grade and does not belong to the partition above — see the
+  // column comment in the header. It counts slabs that have been cut, by grade
+  // OR by mark, and therefore overlaps A/A2/B/C on purpose: the natural slab
+  // from 2026-09-03 on is grade A AND mark CTS.
+  trial: number; ungraded: number; cut: number; pending_polish: number; pending_rw: number;
   approved: boolean; designApproved: boolean; pending: boolean;
 }
-const NUMS = ["total","dispatched","bay5","bay4","bay3","nobay","a","a2","b","c","cts","printing","trial","ungraded","pending_polish","pending_rw"] as const;
+// THE ORDER OF THIS LIST IS THE ORDER OF THE COLUMNS. The grand-total row in the
+// tfoot renders `NUMS.filter(...).map(...)`, while the header is a separate
+// literal — so a key inserted here in the wrong place prints every grand total
+// from that point on under the wrong heading, with no error anywhere. "cut" goes
+// where its column goes: after the grade partition, beside R/W, because it is
+// not a grade. tests/inventoryMarkFilter.test.ts pins the two orders together.
+const NUMS = ["total","dispatched","bay5","bay4","bay3","nobay","a","a2","b","c","cts","printing","trial","ungraded","cut","pending_polish","pending_rw"] as const;
 type Agg = Record<(typeof NUMS)[number], number>;
+
+/** EVERY COUNT ARRIVES AS A NUMBER OR AS ZERO — NEVER AS undefined.
+ *
+ *  sumRows below does `out[k] += r[k]`, so ONE key missing from the summary
+ *  payload does not blank one cell: it makes that column NaN for the design, the
+ *  thickness group, the design total AND the grand total, and NaN renders as the
+ *  same "-" a real zero does. The register would look right and be wrong.
+ *
+ *  This is not hypothetical any more. /api/inventory/summary grew a `cut` column
+ *  in the same breath as this file (slabs cut by grade OR by mark — the 62 rows
+ *  measured on live Neon 2026-09-03), and the two may deploy in either order. A
+ *  register running against a route that does not send `cut` yet prints "-" in
+ *  that one column, which is visibly missing rather than quietly wrong — and,
+ *  crucially, leaves every other column and both totals correct. */
+function normalizeRow(r: Record<string, unknown>): Row {
+  const out: Record<string, unknown> = { ...r };
+  for (const k of NUMS) {
+    const n = Number(r?.[k]);
+    out[k] = Number.isFinite(n) ? n : 0;
+  }
+  return out as unknown as Row;
+}
+
 function sumRows(rows: Row[]): Agg {
   const out = Object.fromEntries(NUMS.map((k) => [k, 0])) as Agg;
   for (const r of rows) for (const k of NUMS) out[k] += r[k];
@@ -51,6 +92,11 @@ function Cells({ v }: { v: Agg }) {
       <td className={`${bcell} font-semibold`}>{v.total || "-"}</td>
       {cell(v.a, "font-semibold")}{cell(v.a2)}{cell(v.b)}{cell(v.c)}
       {cell(v.cts)}{cell(v.printing)}{cell(v.trial)}{cell(v.ungraded, "text-gray-500")}
+      {/* Indigo, the same ink MarkChip uses for a fabrication mark, and never the
+          red of R/W beside it: a cut slab is not a fault. It is also not on the
+          grade scale, which is why it is out here past "No Gr." rather than
+          sitting between C and Print pretending to be a verdict. */}
+      {cell(v.cut, "font-medium text-indigo-700")}
       {cell(v.pending_rw, "font-semibold text-red-600")}
     </>
   );
@@ -112,7 +158,7 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
     const load = () =>
       fetch(`/api/inventory/summary${showPending ? "?pending=1" : ""}`)
         .then((r) => (r.ok ? r.json() : []))
-        .then((d) => { if (alive) setRows(Array.isArray(d) ? d : []); })
+        .then((d) => { if (alive) setRows(Array.isArray(d) ? d.map(normalizeRow) : []); })
         .catch(() => {})
         .finally(() => { if (alive) setLoading(false); });
     load();
@@ -298,17 +344,46 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
               <th className="cursor-pointer border border-brand-dark/40 px-3 py-2 hover:bg-brand-dark/40" title="Sort · Shift+Click adds a level" onClick={(e) => onSort("name", e.shiftKey)}>Colour Name{arrow("name")}</th>
               <th className="border border-brand-dark/40 px-2 py-2">Thick</th>
               <th className="border border-brand-dark/40 px-2 py-2">Batch No</th>
-              {([["Slabs","total"],["A","a"],["A2","a2"],["B","b"],["C","c"],["CTS","cts"],["Print","printing"],["Trial","trial"],["No Gr.","ungraded"],["R/W","pending_rw"]] as [string, (typeof NUMS)[number]][]).map(([label, k]) => (
-                <th key={k} className="cursor-pointer border border-brand-dark/40 px-2 py-2 hover:bg-brand-dark/40" title="Sort · Shift+Click adds a level" onClick={(e) => onSort(k, e.shiftKey)}>{label}{arrow(k)}</th>
+              {/* TWO COLUMNS ABOUT CUT SLABS, AND THEY ARE NOT THE SAME COLUMN.
+                  This is the whole shape of the change, in a table header.
+
+                  CTS is a GRADE, and the grade columns are a PARTITION: every slab
+                  on the floor is in exactly one of A / A2 / B / C / CTS / Print /
+                  Trial / No Gr., which is what lets a person add the row across and
+                  land on Slabs. It counts grade = 'CTS' — the 62 rows measured on
+                  live Neon 2026-09-03 — and it will shrink to zero as the owner
+                  replaces those grades with the real A/B/C verdicts he is
+                  collecting by hand. That is correct, not a regression.
+
+                  CUT is not a grade and does not partition anything. It counts
+                  slabs whose GRADE says cut OR whose MARK does, so it OVERLAPS the
+                  grade columns deliberately: the natural slab from now on is grade
+                  A and mark CTS, and it is counted under both A and Cut. It sits
+                  out past "No Gr." for exactly that reason — inside the grade block
+                  it would break the one arithmetic check the register exists to let
+                  you do by eye.
+
+                  THIS IS THE COLUMN THAT ANSWERS "what here has been cut" once the
+                  grade stops saying so. Without it the register would have gone on
+                  showing CTS = 0 over a yard full of cut stone. The counts belong
+                  to /api/inventory/summary (cts / cut); the third tuple slot is the
+                  note that tells the next reader which question each one answers,
+                  and nothing else uses it. */}
+              {([["Slabs","total"],["A","a"],["A2","a2"],["B","b"],["C","c"],
+                 ["CTS","cts","The GRADE 'CTS' — the legacy way a cut slab was recorded, before the mark carried it. Part of the grade split, so the grade columns still add up to Slabs."],
+                 ["Print","printing"],["Trial","trial"],["No Gr.","ungraded"],
+                 ["Cut","cut","Slabs that are no longer whole — cut to size or cut down for samples, by grade or by mark. NOT a grade: it overlaps the grade columns, so do not add it into the row."],
+                 ["R/W","pending_rw"]] as [string, (typeof NUMS)[number], string?][]).map(([label, k, note]) => (
+                <th key={k} className="cursor-pointer border border-brand-dark/40 px-2 py-2 hover:bg-brand-dark/40" title={note ? `${note} · Sort · Shift+Click adds a level` : "Sort · Shift+Click adds a level"} onClick={(e) => onSort(k, e.shiftKey)}>{label}{arrow(k)}</th>
               ))}
               {canApprove && <th className="border border-brand-dark/40 px-2 py-2">Approved</th>}
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={canApprove ? 15 : 14} className="px-3 py-10 text-center text-gray-400">Loading...</td></tr>
+              <tr><td colSpan={canApprove ? 16 : 15} className="px-3 py-10 text-center text-gray-400">Loading...</td></tr>
             ) : groups.length === 0 ? (
-              <tr><td colSpan={canApprove ? 15 : 14} className="px-3 py-10 text-center text-gray-400">No stock matches.</td></tr>
+              <tr><td colSpan={canApprove ? 16 : 15} className="px-3 py-10 text-center text-gray-400">No stock matches.</td></tr>
             ) : groups.map(({ name, rows: list, agg }, gi) => {
               const slno = String(gi + 1).padStart(2, "0");
               const isOpen = open.has(name);
@@ -449,6 +524,12 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
                       <tr className="border-b border-gray-100 text-left text-gray-500">
                         <th className="px-3 py-2">Slab #</th>
                         <th className="px-3 py-2">Grade</th>
+                        {/* GRADE AND MARK ARE TWO QUESTIONS. This popup is the SALES
+                            drill-down — the only per-slab list that login has — so it is
+                            the one place a cut slab has to declare itself before somebody
+                            quotes it as a full slab. Grade stays the stone's verdict;
+                            this column says what became of it. */}
+                        <th className="px-3 py-2">Mark</th>
                         <th className="px-3 py-2">Quality issue</th>
                         <th className="px-3 py-2">R/W</th>
                         <th className="px-3 py-2">Repolish</th>
@@ -460,6 +541,9 @@ export function StockByDesign({ canApprove = false, showPending = false, onFilte
                         <tr key={s.slab} className="border-t border-gray-50 hover:bg-gray-50/60">
                           <td className="px-3 py-2 font-medium text-gray-900">{displaySlab(s.slab, s.barcode)}</td>
                           <td className="px-3 py-2">{s.grade ?? <span className="text-gray-400">—</span>}</td>
+                          {/* hideWhole: most slabs are whole, and a column of identical
+                              "Full slab" chips would bury the two marks worth seeing. */}
+                          <td className="px-3 py-2"><MarkChip mark={s.mark} legacyGrade={s.grade} hideWhole /></td>
                           <td className="px-3 py-2">
                             {s.issues.length ? <span className="text-gray-700">{s.issues.join(", ")}</span> : <span className="text-gray-300">—</span>}
                           </td>

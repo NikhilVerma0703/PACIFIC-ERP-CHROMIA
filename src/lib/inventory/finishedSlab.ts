@@ -8,8 +8,8 @@
 import { Prisma, type SlabStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
-  canonicalGrade, gradeBlocksDispatch, CUT_TO_SIZE_GRADE, SAMPLE_GRADE, CUT_GRADES, TRANSITIONS,
-  DEFAULT_RESERVATION_DAYS, type StatusAction,
+  canonicalGrade, slabBlocksDispatch, dispatchCut, SAMPLE_GRADE, CUT_TO_SIZE_GRADE, CUT_GRADES, CUT_MARKS,
+  TRANSITIONS, DEFAULT_RESERVATION_DAYS, type StatusAction,
 } from "./grading";
 
 export { DEFAULT_RESERVATION_DAYS, type StatusAction } from "./grading";
@@ -245,6 +245,88 @@ export interface StatusChangeResult {
 }
 
 /**
+ * IS fg_finished_slab.slab_mark THERE YET? ONE DETECTOR, AND IT MUST BE PROVEN.
+ *
+ * The migration that adds the column (scripts/0070) and this code may land in
+ * either order, so every read of the mark has to survive its absence.
+ *
+ * ─────────────────────────── WHY THIS IS A TRI-STATE AND NOT A BOOLEAN ──────
+ * It was a boolean latch that started at "not missing" and only ever moved to
+ * "missing". Three independent reviewers found the same hole in it, and it is
+ * the exact failure this whole change exists to prevent — an already-cut slab
+ * leaving on a lorry as a full slab.
+ *
+ * THE HOLE. There were TWO detectors for one fact. This one was memoised for
+ * the life of the process; the fab side (slabMarkStore.refreshInventoryMirror)
+ * re-probes with raw SQL on EVERY call. That asymmetry is fatal in one
+ * direction: a process that starts before the migration, dispatches once and
+ * latches "missing", then sees 0070 applied. The fab side's fresh probe now
+ * says the mark is in the mirror, so markQcSlabCts STOPS writing
+ * quality_grade = 'CTS' — while this side is still latched to grade-only reads.
+ * The next slab is grade 'A', marked CTS, and nothing refuses it.
+ *
+ * The optimistic START was the second half of the same bug: "not missing" is
+ * not the same as "readable", so a permission slip derived from it would be
+ * granted before anything had ever proved the column exists.
+ *
+ * So: READABLE means a read has SUCCEEDED with the column. Nothing else grants
+ * it. slabMarkReadable() is what the fab side must ask before it stops writing
+ * the grade, and it answers false until proven otherwise.
+ *
+ * ─────────────────────────── AND IT RECOVERS ────────────────────────────────
+ * "missing" is a fact about a moment, not for ever: the migration lands while
+ * processes are running. So a missing verdict expires and is re-probed. The
+ * memo still does its job — a 500-slab dispatch on an unmigrated database pays
+ * one failed query, not 500 — while a long-lived process still picks the column
+ * up within RECHECK_MS instead of needing a restart.
+ */
+type MarkColumnState = "unknown" | "readable" | "missing";
+let slabMarkColumn: MarkColumnState = "unknown";
+/** When a "missing" verdict stops being trusted. 0 while it is trusted. */
+let slabMarkRecheckAt = 0;
+const RECHECK_MS = 60_000;
+
+/** Whether a read has PROVEN this database can serve fg_finished_slab.slab_mark.
+ *  False while unknown or missing — the safe answer, because the only caller
+ *  uses it to decide whether the CTS grade write may stop. */
+export function slabMarkReadable(): boolean {
+  return slabMarkColumn === "readable";
+}
+
+/** The row the lifecycle rules need, with the mark when the database has one. */
+async function readSlabForStatusChange(sn: number) {
+  const base = { status: true, reservedForPi: true, grade: true } as const;
+  const missingIsStale = slabMarkColumn === "missing" && Date.now() >= slabMarkRecheckAt;
+  if (slabMarkColumn !== "missing" || missingIsStale) {
+    try {
+      const row = await db.finishedSlab.findUnique({
+        where: { slabNumber: sn },
+        select: { ...base, slabMark: true },
+      });
+      // PROOF, and the only thing that grants it. A missing row proves nothing
+      // about the column, so it leaves the state alone.
+      if (row) slabMarkColumn = "readable";
+      return row;
+    } catch (e: any) {
+      // ONLY a missing column, and nothing else. Prisma raises P2022 for one
+      // ("The column `X` does not exist in the current database"), and that is
+      // not an error worth failing a dispatch over: the grade rule below is
+      // untouched and still refuses every slab it refuses today.
+      //
+      // A dropped connection or a timeout is a DIFFERENT thing and is rethrown.
+      // Swallowing it here would put this process into grade-only reads on the
+      // strength of one bad second — quietly, since the retry below would then
+      // succeed.
+      const msg = String(e?.message || "");
+      if (e?.code !== "P2022" && !/slab_mark|slabMark/.test(msg)) throw e;
+      slabMarkColumn = "missing";
+      slabMarkRecheckAt = Date.now() + RECHECK_MS;
+    }
+  }
+  return db.finishedSlab.findUnique({ where: { slabNumber: sn }, select: base });
+}
+
+/**
  * Apply a lifecycle action to a list of slabs. Invalid transitions are skipped
  * (reported, never forced). Reserve sets PI/customer + expiry (default 7 days;
  * caller enforces that only Admin overrides). Release clears the hold. Every
@@ -269,25 +351,37 @@ export async function changeSlabStatus(
   const days = Number.isFinite(opts.expiryDays) && (opts.expiryDays as number) > 0 ? (opts.expiryDays as number) : DEFAULT_RESERVATION_DAYS;
 
   for (const sn of slabNumbers) {
-    const slab = await db.finishedSlab.findUnique({
-      where: { slabNumber: sn },
-      select: { status: true, reservedForPi: true, grade: true },
-    });
+    const slab = await readSlabForStatusChange(sn);
     if (!slab) { res.missing.push(sn); continue; }
     if (!from.includes(slab.status)) { res.skipped.push({ slab: sn, reason: `${slab.status} → ${t.to} not allowed` }); continue; }
-    // A slab QC graded cut-to-size is not shipping as a full slab, whatever its
+    // A slab that has been cut is not shipping as a full slab, whatever its
     // status says. Checked here rather than in TRANSITIONS because that table is
     // keyed by status alone; this is the second, independent signal.
-    if (action === "dispatch" && gradeBlocksDispatch(slab.grade)) {
+    //
+    // BOTH SIGNALS, OR'd (slabBlocksDispatch). The MARK is the real one — the
+    // owner: "grade should be A/B/C like normal, and the MARK is CTS or
+    // sampling" — but the GRADE stays read for as long as anything writes it:
+    //   * the 62 rows measured on live Neon on 2026-09-03 that read grade CTS
+    //     (60 in stock, 2 already dispatched) are every slab this block refuses
+    //     at all, and the owner is still collecting their real A/B/C verdicts by
+    //     hand, so their grade is left exactly as it is;
+    //   * `slab.slabMark` is undefined on a database that has not had
+    //     scripts/0070 yet (see readSlabForStatusChange), and on that database
+    //     the grade half is the ONLY thing between an already-cut slab and a
+    //     lorry.
+    // Dropping the grade half before the mark is everywhere would silently
+    // un-block dispatch for every slab fabrication cuts. The OR can only ever
+    // refuse more, never less, which is the only safe direction here.
+    if (action === "dispatch" && slabBlocksDispatch({ grade: slab.grade, mark: slab.slabMark })) {
       // WHICH WAY IT WAS CUT, in the message. "Cut to size" and "cut down for
       // samples" send an inventory user to two different people to ask why, and
       // a single wording would send half of them to the wrong one.
-      const cutAs = String(canonicalGrade(slab.grade) ?? "").toUpperCase();
+      const cutAs = dispatchCut({ grade: slab.grade, mark: slab.slabMark });
       res.skipped.push({
         slab: sn,
         reason: cutAs === SAMPLE_GRADE
           ? `cut down for samples — not dispatchable as a full slab`
-          : `graded ${CUT_TO_SIZE_GRADE} — cut to size, not dispatchable as a full slab`,
+          : `marked ${CUT_TO_SIZE_GRADE} — cut to size, not dispatchable as a full slab`,
       });
       continue;
     }
@@ -333,6 +427,29 @@ export async function changeSlabStatus(
         { grade: null },
         { AND: CUT_GRADES.map(g => ({ NOT: { grade: { equals: g, mode: "insensitive" as const } } })) },
       ];
+      // AND THE MARK, once the database has one. The race this guard loses is
+      // the same one, moved: after fabrication stops writing quality_grade =
+      // 'CTS', a slab cut between the read above and this write changes ONLY
+      // its mark, and the grade clause would not notice it.
+      //
+      // ONLY when the column is known to be there. A filter on a column that
+      // does not exist is not a refusal — it is a P2022 that fails the whole
+      // updateMany, so an unmigrated database would stop dispatching anything
+      // at all. readSlabForStatusChange has already run for this slab, so the
+      // flag is settled by the time we get here.
+      //
+      // `as any` on this one clause: the generated client in node_modules may
+      // predate the schema edit that declares slabMark, and this must typecheck
+      // without a `prisma generate` having been run first. The rest of the
+      // clause stays typed, which is the point of Prisma.FinishedSlabWhereInput
+      // being named above at all.
+      //
+      // No `{ slabMark: null }` branch, unlike the grade clause above: the
+      // column is NOT NULL DEFAULT 'FULL_SLAB' (scripts/0070), so there is no
+      // NULL for `NOT` to compare against and swallow.
+      if (slabMarkReadable()) {
+        guard.AND = CUT_MARKS.map(m => ({ NOT: { slabMark: { equals: m, mode: "insensitive" as const } } })) as any;
+      }
     }
     const n = await db.finishedSlab.updateMany({ where: guard, data });
     if (n.count === 0) { res.skipped.push({ slab: sn, reason: "changed concurrently — retry" }); continue; }

@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { canonicalGrade, gradeBlocksDispatch, CUT_GRADES, TRANSITIONS, DEFAULT_RESERVATION_DAYS } from "../src/lib/inventory/grading.ts";
+import {
+  canonicalGrade, gradeBlocksDispatch, markBlocksDispatch, slabBlocksDispatch, dispatchCut,
+  CUT_GRADES, CUT_MARKS, TRANSITIONS, DEFAULT_RESERVATION_DAYS,
+} from "../src/lib/inventory/grading.ts";
 
 test("canonicalGrade normalizes QC grades", () => {
   assert.equal(canonicalGrade("A"), "A");
@@ -135,4 +138,143 @@ test("the CTS status remains a dead end, independently of grade", () => {
   assert.equal(TRANSITIONS.dispatch.from.includes("CTS"), false);
   assert.equal(TRANSITIONS.uncts.from.includes("CTS"), true);
   assert.equal(TRANSITIONS.uncts.to, "AVAILABLE");
+});
+
+// --- AND NOW BY MARK, WHICH IS THE ONE THAT MEANS IT ------------------------
+//
+// The owner, 2026-09-03: "grade should be A/B/C like normal, and the MARK is CTS
+// or sampling." Until this change fabrication OVERWROTE quality_grade with 'CTS'
+// (lib/fab/markQcSlabCts.ts) purely so the dispatch rule would refuse the slab —
+// destroying the polishing line's verdict to make a routing decision. The mark
+// now carries that job, so the grade can go back to being a grade.
+//
+// The grade half stays live throughout, and these tests hold that: the rule is
+// an OR, it can only ever refuse MORE, and nothing refused today is allowed
+// afterwards in EITHER deploy order.
+
+test("a slab MARKED cut is refused dispatch, whatever its case", () => {
+  assert.equal(markBlocksDispatch("CTS"), true);
+  assert.equal(markBlocksDispatch("cts"), true);
+  assert.equal(markBlocksDispatch("Cts"), true);
+  assert.equal(markBlocksDispatch("  CTS  "), true);
+  assert.equal(markBlocksDispatch("SAMPLE"), true);
+  assert.equal(markBlocksDispatch("sample"), true);
+  assert.equal(markBlocksDispatch("  Sample  "), true);
+  // Both cut marks come from ONE list, so a third can never be added to one
+  // place and forgotten in the other.
+  assert.deepEqual([...CUT_MARKS], ["CTS", "SAMPLE"]);
+  for (const m of CUT_MARKS) assert.equal(markBlocksDispatch(m), true, m);
+});
+
+test("a whole slab's mark blocks nothing", () => {
+  // FULL_SLAB is the state every slab starts in, and all but 62 of the polish_qc
+  // rows on live Neon on 2026-09-03 are in it. If this ever returned true the
+  // yard would stop shipping.
+  for (const m of ["FULL_SLAB", "full slab", "FULL-SLAB", "  full_slab  "]) {
+    assert.equal(markBlocksDispatch(m), false, `${m} must remain dispatchable`);
+  }
+  // Not a cut mark merely for starting with the same letters — a slab someone
+  // marked "Sample cutting" is not one the system may quietly impound.
+  for (const m of ["SAMPLES", "SAMPLED", "CT", "CTSX", "Sample cutting"]) {
+    assert.equal(markBlocksDispatch(m), false, `${m} must remain dispatchable`);
+  }
+});
+
+test("NO MARK IS NOT A CUT MARK — the unmigrated database must still dispatch", () => {
+  // fg_finished_slab.slab_mark does not exist until scripts/0070 is applied, and
+  // the code may deploy first, so `slab.slabMark` arrives as undefined. If a
+  // missing mark blocked, that deploy order would refuse EVERY slab in the yard.
+  // The grade half is what refuses the cut ones there — see the deploy-order
+  // test below.
+  for (const m of [null, undefined, "", "   ", 7, {}, ["CTS"]]) {
+    assert.equal(markBlocksDispatch(m), false, `${JSON.stringify(m) ?? "undefined"} must not block`);
+  }
+});
+
+test("THE TRUTH TABLE: either signal saying cut is enough to refuse", () => {
+  // mark cut + grade clean -> blocked. The point of the whole change: the slab
+  // keeps its real A/B/C verdict AND is still refused dispatch.
+  assert.equal(slabBlocksDispatch({ grade: "A", mark: "CTS" }), true);
+  assert.equal(slabBlocksDispatch({ grade: "C (Reject)", mark: "SAMPLE" }), true);
+
+  // grade cut + mark clean -> blocked. THE LEGACY 62: the rows measured on live
+  // Neon on 2026-09-03 reading grade 'CTS' (60 in stock, 2 already dispatched),
+  // whose real verdicts are unrecoverable and are being collected by hand. They
+  // must stay refused whether or not their mark has been backfilled yet.
+  assert.equal(slabBlocksDispatch({ grade: "CTS", mark: "FULL_SLAB" }), true);
+  assert.equal(slabBlocksDispatch({ grade: "SAMPLE", mark: "FULL_SLAB" }), true);
+  assert.equal(slabBlocksDispatch({ grade: "CTS", mark: undefined }), true);
+
+  // both cut -> blocked. Every one of the 62 is this row today: polish_qc says
+  // grade 'CTS' AND slab_mark 'CTS' on all 62, which is what made moving the
+  // rule safe in the first place.
+  assert.equal(slabBlocksDispatch({ grade: "CTS", mark: "CTS" }), true);
+
+  // both clean -> allowed. The ordinary slab, and the other half of the promise:
+  // this change refuses more, never less, but it must not refuse this.
+  assert.equal(slabBlocksDispatch({ grade: "A", mark: "FULL_SLAB" }), false);
+  assert.equal(slabBlocksDispatch({ grade: null, mark: "FULL_SLAB" }), false);
+  assert.equal(slabBlocksDispatch({}), false);
+});
+
+test("the combined rule is case-insensitive on BOTH signals", () => {
+  // The existing gradeBlocksDispatch tests already care about this: an exact
+  // comparison would let a slab written 'cts' by an import or a hand edit ship
+  // as a full slab, which is the precise failure the rule exists to prevent.
+  for (const grade of ["cts", "Cts", "  CTS  ", "sample", "Sample"])
+    assert.equal(slabBlocksDispatch({ grade, mark: "FULL_SLAB" }), true, `grade ${grade}`);
+  for (const mark of ["cts", "Cts", "  CTS  ", "sample", "Sample"])
+    assert.equal(slabBlocksDispatch({ grade: "A", mark }), true, `mark ${mark}`);
+});
+
+test("EITHER DEPLOY ORDER REFUSES EVERY SLAB REFUSED TODAY", () => {
+  // The migration may land before or after the code. Today's rule is the grade
+  // alone; tomorrow's is grade OR mark. Additive means: for every slab, if the
+  // grade rule refuses it then the combined rule refuses it too — with the mark
+  // present, absent, or anything at all.
+  const grades = ["A", "A2", "B", "C", "C (Reject)", "c (reject)", "Printing", "CTS", "cts",
+                  "SAMPLE", "sample", "Not graded yet", "", null, undefined];
+  const marks = [undefined, null, "", "FULL_SLAB", "full slab", "CTS", "cts", "SAMPLE", "nonsense"];
+  for (const grade of grades) for (const mark of marks) {
+    if (gradeBlocksDispatch(grade)) {
+      assert.equal(slabBlocksDispatch({ grade, mark }), true,
+        `grade ${JSON.stringify(grade)} is refused today and must stay refused (mark ${JSON.stringify(mark)})`);
+    }
+  }
+  // And with no mark at all — the code-before-migration case — the combined rule
+  // is EXACTLY today's rule, slab for slab. Not merely a superset: identical.
+  for (const grade of grades) {
+    assert.equal(slabBlocksDispatch({ grade }), gradeBlocksDispatch(grade), JSON.stringify(grade));
+  }
+});
+
+test("dispatchCut says WHICH WAY the slab was cut, for the refusal message", () => {
+  // "Cut to size" and "cut down for samples" send an inventory user to two
+  // different people to ask why; one wording would send half of them to the
+  // wrong one.
+  assert.equal(dispatchCut({ grade: "A", mark: "CTS" }), "CTS");
+  assert.equal(dispatchCut({ grade: "A", mark: "SAMPLE" }), "SAMPLE");
+  assert.equal(dispatchCut({ grade: "cts", mark: "FULL_SLAB" }), "CTS", "legacy grade, normalised");
+  assert.equal(dispatchCut({ grade: "sample" }), "SAMPLE");
+  // The MARK WINS when the two disagree: it is the fact, the grade is the legacy
+  // shadow of it. A slab whose mark says SAMPLE went to the sample shelf,
+  // whatever an older fabrication pass left in its grade.
+  assert.equal(dispatchCut({ grade: "CTS", mark: "SAMPLE" }), "SAMPLE");
+  // Null exactly when nothing blocks, so the message can never claim a slab was
+  // cut when the rule in fact let it through.
+  for (const s of [{ grade: "A", mark: "FULL_SLAB" }, {}, { grade: null, mark: null }])
+    assert.equal(dispatchCut(s), null, JSON.stringify(s));
+  for (const grade of ["A", "B", "CTS", "sample", null, "Printing"])
+    for (const mark of [undefined, "FULL_SLAB", "CTS", "sample", "nonsense"])
+      assert.equal(dispatchCut({ grade, mark }) !== null, slabBlocksDispatch({ grade, mark }),
+        `${JSON.stringify(grade)} / ${JSON.stringify(mark)}`);
+});
+
+test("gradeBlocksDispatch is untouched — other callers still depend on it", () => {
+  // It is deliberately NOT rewritten to delegate: it is the half of the rule
+  // that covers the legacy 62, it has callers of its own, and the tests above it
+  // in this file are the record of what it must keep doing.
+  assert.equal(gradeBlocksDispatch("CTS"), true);
+  assert.equal(gradeBlocksDispatch("A"), false);
+  assert.deepEqual([...CUT_GRADES], ["CTS", "SAMPLE"]);
 });

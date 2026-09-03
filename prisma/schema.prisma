@@ -2917,6 +2917,18 @@ model FinishedSlab {
   // ---- QC-owned: overwritten each time the slab passes QC ----
   design         String?   @map("design")
   grade          String?   @map("grade") // A / A2 / B / C / CTS / Printing (exclusive)
+  // WHAT BECAME OF THE SLAB, beside how good the stone is. FULL_SLAB / CTS /
+  // SAMPLE, mirrored from polish_qc.slab_mark (scripts/0057) by scripts/0070.
+  //
+  // THE DISPATCH RULE READS THIS. lib/inventory/grading.ts refuses to dispatch a
+  // slab whose MARK says cut — `grade` above kept that job alone until 2026-09-03,
+  // which is why fabrication had to overwrite the polishing line's A/B/C verdict
+  // with 'CTS' to stop an already-cut slab leaving whole. Both signals are read
+  // now (slabBlocksDispatch ORs them), so the grade write can finally go.
+  //
+  // DECLARED HERE BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS — that is
+  // exactly how alt_role and alt_branch were lost. Same note as on PolishQc.
+  slabMark       String    @default("FULL_SLAB") @map("slab_mark")
   slabThickness  String?   @map("slab_thickness")
   qualityIssue   String[]  @default([]) @map("quality_issue") // mirrored from PolishQc each QC pass
   polishType     String?   @map("polish_type") // Polish / Suede / Honed / Leathered

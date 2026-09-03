@@ -4,10 +4,51 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
 import { summaryGate, SLABS_ONLY_ROLES } from "@/lib/inventory/access";
+import { slabMarkAvailable, isMissingSlabMarkError } from "@/lib/inventory/searchWhere";
 import { displayBatch } from "@/lib/batchDisplay";
 
 const db = prisma as any;
-const KEYS = ["total","dispatched","bay5","bay4","bay3","nobay","a","a2","b","c","cts","printing","trial","ungraded","pending_polish","pending_rw"];
+const KEYS = ["total","dispatched","bay5","bay4","bay3","nobay","a","a2","b","c","cts","printing","trial","ungraded","cut","pending_polish","pending_rw"];
+
+// ═══════════════ THE CUT COLUMN, AND WHY IT IS NOT A GRADE COLUMN ═══════════
+//
+// The register's one arithmetic check — the grade columns add up to Slabs — is
+// the reason this is a NEW column rather than a widening of `cts`.
+//
+// A grade column is a PARTITION: every slab on the floor lands in exactly one
+// of A / A2 / B / C / CTS / Printing / Trial / Ungraded, which is what lets a
+// person add the row across and get the total. That is not a style choice; the
+// Trial column silently broke it once already (see the comment on that column
+// below and tests/inventorySummaryColumns.test.ts).
+//
+// The MARK is not a grade and does not partition the same set. From 2026-09-03
+// fabrication records a cut in fg_finished_slab.slab_mark and STOPS overwriting
+// the grade, so the natural next slab is grade A **and** mark CTS. Widening the
+// `cts` column to count it would have counted that slab twice — once under A,
+// once under CTS — and the row would stop adding up, for every design with a
+// cut slab in it. Moving it out of A into CTS would be worse: it would answer
+// "how many grade A slabs do I have" with a number that is short by however
+// many of them fabrication happened to take, which is exactly the destruction
+// of the polishing verdict this whole change exists to stop.
+//
+// So the grade columns stay purely about GRADE — untouched, still summing to
+// Slabs — and `cut` sits beside them as its own count, deliberately overlapping
+// them. It answers a different question: not "how good is this stone" but "how
+// much of this stock is no longer a whole slab".
+//
+// TODAY THE TWO AGREE. All 62 slabs whose grade reads CTS (60 on the floor, 2
+// dispatched — measured on live Neon 2026-09-03) are the same 62 the mark calls
+// cut, so `cts` and `cut` print the same number per row until the owner starts
+// replacing those grades with the real A/B/C verdicts he is collecting by hand.
+// From then on `cts` shrinks to zero and `cut` carries the fact — which is the
+// whole point, and why the register must show `cut` rather than `cts` to
+// anyone asking what has been cut.
+
+/** Cut = grade says so OR mark says so (the same OR as grading.ts
+ *  slabBlocksDispatch and searchWhere anyCutWhere). Without the mark column it
+ *  degrades to today's grade-only test, which finds exactly the same 62. */
+const cutExpr = (hasMark: boolean) =>
+  hasMark ? "(grade IN ('CTS','SAMPLE') OR slab_mark IN ('CTS','SAMPLE'))" : "grade IN ('CTS','SAMPLE')";
 
 export async function GET(request: Request) {
   const g = await summaryGate();
@@ -15,8 +56,12 @@ export async function GET(request: Request) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   if (SLABS_ONLY_ROLES.has(String((g.user as any)?.role ?? ""))) return Response.json({ error: "Not available for this login" }, { status: 403 });
   try {
-    const [rows, aliases] = await Promise.all([
-      db.$queryRaw`
+    // $queryRawUnsafe, and NOTHING user-supplied goes near it: the only moving
+    // part is `cut`, chosen by cutExpr() from two string literals a few lines
+    // up. It is a raw string only because the register has to run in BOTH
+    // deploy orders — the tagged template cannot vary its own text, and the
+    // alternative was two copies of a 25-line query drifting apart.
+    const registerSql = (cut: string) => `
         SELECT coalesce(design, '(no design)') AS design,
                coalesce(slab_thickness, '-')   AS thickness,
                coalesce(batch_number, '-')     AS batch,
@@ -39,11 +84,37 @@ export async function GET(request: Request) {
                -- check the register exists to let you do by eye.
                count(*) FILTER (WHERE status <> 'DISPATCHED' AND grade = 'Trial')::int   AS trial,
                count(*) FILTER (WHERE status <> 'DISPATCHED' AND grade IS NULL)::int      AS ungraded,
+               -- Cut slabs, from EITHER signal. Deliberately overlaps the grade
+               -- columns instead of joining their sum -- see the header. Same
+               -- 'status <> DISPATCHED' as the rest so it is read against the
+               -- same Slabs total they are.
+               count(*) FILTER (WHERE status <> 'DISPATCHED' AND ${cut})::int             AS cut,
                count(*) FILTER (WHERE status <> 'DISPATCHED' AND repolish_status = 'Repolish Required')::int AS pending_polish,
                count(*) FILTER (WHERE status <> 'DISPATCHED' AND rw_status = 'RW Required and ongoing')::int AS pending_rw
         FROM fg_finished_slab
         GROUP BY 1, 2, 3
-        ORDER BY 1, 2, 3`,
+        ORDER BY 1, 2, 3`;
+
+    // The register must not go dark over a column that has not shipped. The
+    // probe answers first; the catch covers the window where the migration (or
+    // a client regeneration) lands between the probe and this query, and
+    // re-runs the identical query with the grade-only test -- which is exactly
+    // what this page printed yesterday. Anything that is NOT a missing
+    // slab_mark is rethrown to the 500 below, because "the register is empty"
+    // must never be this route's answer to a database that is actually down.
+    const fetchRows = async (): Promise<any[]> => {
+      const hasMark = await slabMarkAvailable();
+      if (!hasMark) return db.$queryRawUnsafe(registerSql(cutExpr(false)));
+      try {
+        return await db.$queryRawUnsafe(registerSql(cutExpr(true)));
+      } catch (e: any) {
+        if (!isMissingSlabMarkError(e)) throw e;
+        return db.$queryRawUnsafe(registerSql(cutExpr(false)));
+      }
+    };
+
+    const [rows, aliases] = await Promise.all([
+      fetchRows(),
       db.designAlias.findMany({ select: { variant: true, canonical: true } }).catch(() => []),
     ]);
     const hiddenRows: any[] = await db.$queryRaw`SELECT design FROM fg_sales_hidden_design WHERE batch = ''`.catch(() => []);

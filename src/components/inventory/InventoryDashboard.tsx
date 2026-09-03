@@ -4,13 +4,25 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { displaySlab } from "@/lib/slabLabel";
 import { displayBatch } from "@/lib/batchDisplay";
 import { NONE } from "@/lib/inventory/filterValues";
+// THE MARK, BESIDE THE GRADE. Both imports are pure and import-free themselves
+// (slabMark.ts states that rule in its own header), so a client component may
+// take them. MarkChip is the fab module's chip, reused rather than re-drawn:
+// two chips for one fact would drift, and the fab CEO board and this table must
+// not disagree about what a cut slab looks like.
+import { SLAB_MARKS, SLAB_MARK_LABEL, slabMarkOf } from "@/lib/fab/slabMark";
+import { MarkChip } from "@/components/fab/SlabChips";
 import { StockByDesign } from "./StockByDesign";
 import { PolishingReport } from "./PolishingReport";
 import { Lightbox, type LightboxPhoto } from "@/components/Lightbox";
 
 interface Kpi {
   total: number; gradeA: number; gradeA2: number; gradeB: number; gradeC: number;
-  cts: number; printing: number; available: number; reserved: number; packed: number;
+  // `cut` is the honest name for what the CTS card counts: slabs that HAVE BEEN
+  // CUT, by grade OR by mark (/api/inventory/kpi anyCutWhere). `cts` is the same
+  // number under the older key — the route returns both so this screen could not
+  // go blank on deploy — and it is optional here only because `cut` is the one
+  // that is read; see the card below.
+  cut?: number; cts: number; printing: number; available: number; reserved: number; packed: number;
   dispatched: number; returned: number; ctsStatus: number; chromia: number;
   pendingPolish: number; pendingRw: number;
   thk12cm: number; thk2cm: number; thk3cm: number;
@@ -21,6 +33,14 @@ interface Slab {
   bayNumber: string | null; frameNumber: string | null; status: string; source: string | null;
   sqft: number; sqm: number;
   ageDays: number | null; qualityIssue: string[] | null; barcode: string | null;
+  // WHAT BECAME OF THE SLAB — FULL_SLAB / CTS / SAMPLE (fg_finished_slab.slab_mark,
+  // scripts/0070). OPTIONAL on purpose, and it must stay optional: the column does not
+  // exist on live Neon yet (measured 2026-09-03), so /api/inventory returns rows without
+  // it, and a required field here would be a type that lies about today's payload.
+  // Everything below reads it through slabMarkOf(mark, grade), which falls back to the
+  // legacy grade='CTS' write — so the 62 rows that carry it (60 in stock, 2 dispatched)
+  // read as cut on the screen from the first render, migration or no migration.
+  slabMark?: string | null;
 }
 interface Alias { id: string; variant: string; canonical: string; createdBy: string | null }
 
@@ -59,7 +79,35 @@ const STATUS_TINT: Record<string, string> = {
 // not be reached by that filter at all, while it offered "7 mm", which no slab has. The
 // real values come from /api/inventory/filters; these remain only as the fallback for a
 // failed fetch, so the row still works offline.
-const FALLBACK_GRADES = ["A", "A2", "B", "C", "Trial"];
+//
+// FALLBACK_GRADES WAS MISSING CTS, AND THAT WAS A LIVE BUG (owner, this week).
+// On a failed /api/inventory/filters fetch this list IS the grade dropdown, and
+// with CTS absent from it there was no way to select CTS at all — on the exact
+// screen whose CTS KPI card had just sent the user looking for those 62 slabs
+// (60 in stock, 2 dispatched, measured on live Neon 2026-09-03). The guard a few
+// hundred lines down re-adds whatever f.grade holds, so the card's own click
+// still worked; typing the search by hand did not.
+//
+// The list is now the intake vocabulary (lib/inventory/intakeRules GRADE_OPTIONS
+// is the authority: A, A2, B, C, CTS, SAMPLE, Printing) — every value the intake
+// form can WRITE must be a value this row can FIND, or the degraded path hides
+// stock the plant just entered. It is a hand copy and not an import because
+// intakeRules pulls in grading.ts; tests/inventoryMarkFilter.test.ts asserts the
+// two lists agree, so the copy cannot drift in silence.
+//
+// "Trial" is NOT in GRADE_OPTIONS and stays anyway: it is a real value in the
+// grade column (the summary route counts grade = 'Trial' and the register pins a
+// "Trial" group at the bottom), so dropping it would make trial stock
+// unfilterable in this path — the same regression this list already caused once
+// with CTS. Additive only: a slab findable today stays findable.
+const FALLBACK_GRADES = ["A", "A2", "B", "C", "CTS", "SAMPLE", "Printing", "Trial"];
+// THE MARK'S OWN FALLBACK — the three states in lib/fab/slabMark.ts, in full,
+// because unlike grade there is no drifted history to preserve: slab_mark is NOT
+// NULL DEFAULT 'FULL_SLAB' with a CHECK constraint pinning it to exactly these
+// three (scripts/0070), so the vocabulary is closed and the column is never null.
+// That is also why the select below offers no "— no mark —" option the way grade
+// and bay do: there is no such row to find.
+const FALLBACK_MARKS: string[] = [...SLAB_MARKS];
 // Only reached if the fetch fails. Mirrors the list this replaced, minus "7 mm" (no slab
 // has it) — dropping "8 mm"/"10 mm" here would make 32 slabs unfilterable in the degraded
 // path, which the old list handled.
@@ -68,7 +116,10 @@ const FALLBACK_THICKNESSES = ["1.2 cm", "2 cm", "3 cm", "8 mm", "10 mm"];
 // every bay that exists on the floor, not only the ones that happen to hold stock today.
 const BAYS = ["Bay 1", "Bay 2", "Bay 3", "Bay 4", "Bay 5"];
 
-interface FilterOpts { thicknesses: string[]; grades: string[]; bays: string[]; pis: string[]; customers: string[]; designs: string[] }
+// `marks` is OPTIONAL and its absence is load-bearing — see the mark select below.
+// An /api/inventory/filters that does not return the key is one that does not know
+// the word yet, and that is a different thing from one that returned an empty list.
+interface FilterOpts { thicknesses: string[]; grades: string[]; bays: string[]; pis: string[]; customers: string[]; designs: string[]; marks?: string[] }
 const NO_OPTS: FilterOpts = { thicknesses: [], grades: [], bays: [], pis: [], customers: [], designs: [] };
 const ACTIONS = [
   { value: "", label: "Change status…" },
@@ -80,7 +131,11 @@ const ACTIONS = [
   { value: "uncts", label: "Undo CTS (back to Available)" },
   { value: "release", label: "Release to Available" },
 ];
-const EMPTY = { design: "", batch: "", thickness: "", grade: "", slab: "", bay: "", status: "", source: "", rw: "", pi: "", customer: "" };
+// `mark` rides with the rest as the query param `mark` (FULL_SLAB / CTS / SAMPLE).
+// Every consumer of EMPTY walks Object.entries and skips blank values, so an extra
+// key costs nothing anywhere: the search, the KPI cards, the Excel export URL and
+// the Retry all carry it automatically the moment it is set.
+const EMPTY = { design: "", batch: "", thickness: "", grade: "", mark: "", slab: "", bay: "", status: "", source: "", rw: "", pi: "", customer: "" };
 
 // displaySlab (NB-label rule for legacy 9,000,000+ slabs) is shared from
 // lib/slabLabel so this table and the register popup cannot disagree.
@@ -92,6 +147,49 @@ const EMPTY = { design: "", batch: "", thickness: "", grade: "", slab: "", bay: 
 // "none available" on it. This carries the HTTP status up to the catch so the
 // banner can say which of the two happened; the rows on screen are left alone.
 class LoadFailed extends Error {}
+
+/**
+ * THE GRADE CELL, WITH WHAT HAPPENED TO THE SLAB BESIDE IT.
+ *
+ * Two facts, two questions: the GRADE is how good the stone is (the polishing
+ * line's A/B/C verdict), the MARK is what became of it (FULL_SLAB / CTS /
+ * SAMPLE). Until now the grade column answered both, because fabrication
+ * OVERWROTE quality_grade with 'CTS' — so a cut slab's real verdict was
+ * destroyed and every inventory screen identified it by a word sitting in the
+ * wrong column. The owner: "grade should be A/B/C like normal, and the MARK is
+ * CTS or sampling."
+ *
+ * A grade-A slab that fabrication cut must therefore read as BOTH. Showing only
+ * "A" hides the cut — that slab cannot go out whole (lib/inventory/grading.ts
+ * slabBlocksDispatch refuses it) and a Sales user reading the table has no way
+ * to see why. Showing only "CTS" is the bug being fixed.
+ *
+ * QUIET BY DEFAULT: no chip on a FULL_SLAB row. Every uncut slab in the yard is
+ * FULL_SLAB, so a chip on each would be a column of identical noise a thousand
+ * rows deep and the two interesting marks would disappear into it.
+ *
+ * THE ONE SPECIAL CASE — `redundant`. The 62 legacy rows measured on live Neon
+ * (2026-09-03) have grade = 'CTS' AND mark CTS: the same word twice, because
+ * their real A/B/C is gone and the owner is collecting it by hand. Printing
+ * "CTS CTS" would read as a rendering bug, so the chip stands alone there — it
+ * carries the same word plus the tooltip that says it is a mark, which is
+ * strictly more than the bare text was saying. Nothing is hidden: when the
+ * owner supplies the real grades those rows simply start reading "A" + chip,
+ * with no change here.
+ */
+function GradeCell({ grade, mark }: { grade: string | null; mark?: string | null }) {
+  // slabMarkOf falls back to the legacy grade='CTS' write, so this is correct
+  // BEFORE scripts/0070 lands (no slab_mark on the row at all) and after it.
+  const m = slabMarkOf(mark, grade);
+  if (m === "FULL_SLAB") return <>{grade ?? "—"}</>;
+  const redundant = typeof grade === "string" && grade.trim().toUpperCase() === m;
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+      {!redundant && <span>{grade ?? "—"}</span>}
+      <MarkChip mark={m} />
+    </span>
+  );
+}
 
 const fmtAt = (iso: string) => {
   const d = new Date(iso);
@@ -538,7 +636,24 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
               {card("Grade A2", kpi.gradeA2, "text-gray-900", { grade: "A2" })}
               {card("Grade B", kpi.gradeB, "text-gray-900", { grade: "B" })}
               {card("Grade C", kpi.gradeC, "text-gray-900", { grade: "C" })}
-              {card("CTS", kpi.cts, "text-gray-900", { grade: "CTS" })}
+              {/* THE CARD THAT WOULD HAVE READ ZERO. It counted g_("CTS") — the GRADE
+                  — so the day fabrication stops overwriting the grade and records the
+                  cut in the mark instead, a yard full of cut slabs would have shown 0
+                  here. `cut` is the route's grade-OR-mark count (60 on the floor today,
+                  either way); `cts` is the same number under the old key, kept for the
+                  deploy window in which this file is newer than the route or older
+                  than it. Neither can be added to the other — every one of the 62 live
+                  rows carries BOTH signals, so a sum would report 120 cut slabs where
+                  there are 60.
+
+                  The click-through stays `grade: "CTS"` because buildInventoryWhere now
+                  resolves a cut value to `grade = X OR mark = X` — the same rows the
+                  card counted, found by either signal. It is CTS only, not SAMPLE: no
+                  slab anywhere reads SAMPLE today (measured on live Neon 2026-09-03),
+                  and when sampling starts marking slabs they are found through the mark
+                  dropdown in the filter row rather than by widening this card into two
+                  different questions. */}
+              {card("CTS", kpi.cut ?? kpi.cts, "text-gray-900", { grade: "CTS" })}
               {card("Printing", kpi.printing, "text-gray-900", { grade: "Printing" })}
             </div>
           </div>
@@ -702,6 +817,55 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
                 })()}
                 <option value={NONE}>— not graded —</option>
               </select>
+
+              {/* ─────────────────────────── FIND A CUT SLAB BY ITS MARK ───────
+                  THE QUESTION THIS ANSWERS: "if this change happens will it
+                  become unfilterable in the inventory?" Until today every
+                  surface on this screen identified a cut slab by its GRADE —
+                  this dropdown, the CTS KPI card, the register's CTS column —
+                  and nothing anywhere filtered by the mark. The moment
+                  fabrication stops writing grade = 'CTS' there would have been
+                  no way left to find one. This is that way.
+
+                  IT ONLY APPEARS WHEN IT WORKS. `marks` absent from
+                  /api/inventory/filters means the server does not know the word
+                  yet (either deploy order is allowed — see scripts/0070), and a
+                  select that posts `mark=CTS` to a route that ignores it would
+                  hand back the WHOLE yard while claiming to show cut slabs.
+                  That is the same class of lie as the empty-shelf incident
+                  above, so the control hides instead and the grade filter —
+                  which still finds all 62 legacy rows — carries on doing the
+                  job it does today. Self-healing: the option list is the
+                  server's own answer, so this lights up by itself the moment
+                  the route ships, and stays dark on a database without the
+                  column (where the route can only answer with an empty list).
+
+                  A FAILED FETCH IS THE EXCEPTION: optsFailed means we learned
+                  nothing either way, and the same fallback rule the grade,
+                  thickness and bay selects use applies — offer the vocabulary
+                  so the row still works offline. */}
+              {(opts.marks?.length || optsFailed || f.mark) ? (
+                <select className={inputCls} value={f.mark} onChange={(e) => { const n = { ...f, mark: e.target.value }; setF(n); run(n); }}
+                  title="What became of the slab — whole, cut to size by fabrication, or cut down for samples. Not a quality grade.">
+                  <option value="">Any mark</option>
+                  {(() => {
+                    const list = opts.marks?.length ? opts.marks : FALLBACK_MARKS;
+                    // Same guard as grade and thickness: keep a selected value that
+                    // is not in the list, or the select would read "Any mark" while
+                    // the results ARE filtered.
+                    const all = f.mark && !list.includes(f.mark) ? [...list, f.mark] : list;
+                    // Plant words, not column values: SLAB_MARK_LABEL turns
+                    // FULL_SLAB into "Full slab". An unrecognised value (a mark
+                    // some future migration adds) prints raw rather than being
+                    // dropped — this row must never silently hide a filter the
+                    // server just offered it.
+                    return all.map((m) => (
+                      <option key={m} value={m}>{SLAB_MARK_LABEL[m as keyof typeof SLAB_MARK_LABEL] ?? m}</option>
+                    ));
+                  })()}
+                </select>
+              ) : null}
+
               <select className={inputCls} value={f.thickness} onChange={(e) => { const n = { ...f, thickness: e.target.value }; setF(n); run(n); }}>
                 <option value="">Any thickness</option>
                 {(() => {
@@ -783,7 +947,10 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
                       <td className="px-3 py-2">{r.design ?? "—"}</td>
                       <td className="px-3 py-2">{displayBatch(r.batchNumber)}</td>
                       <td className="px-3 py-2">{r.slabThickness ?? "—"}</td>
-                      <td className="px-3 py-2">{r.grade ?? "—"}</td>
+                      {/* Same cell as the results table below — the basket is where a
+                          dispatch is actually assembled, so a cut slab must read as cut
+                          HERE above anywhere else. */}
+                      <td className="px-3 py-2"><GradeCell grade={r.grade} mark={r.slabMark} /></td>
                       <td className="px-3 py-2">{r.bayNumber ?? "—"}</td>
                       <td className="px-3 py-2"><span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">{r.status}</span></td>
                       <td className="px-3 py-2 text-right">
@@ -984,7 +1151,14 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
                   <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
                     {([
                       ["Design", detail.slab.design], ["Batch", displayBatch(detail.slab.batchNumber)], ["Thickness", detail.slab.slabThickness],
-                      ["Grade", detail.slab.grade], ["Polish type", detail.slab.polishType],
+                      ["Grade", detail.slab.grade],
+                      // WHAT BECAME OF IT, spelled out rather than chipped: this grid is
+                      // string pairs, and the panel is where somebody asks "why can I not
+                      // dispatch this one" — "Cut to size" answers it in words. Reads
+                      // correctly on a database without slab_mark, because slabMarkOf
+                      // falls back to the legacy grade='CTS' write.
+                      ["Mark", SLAB_MARK_LABEL[slabMarkOf(detail.slab.slabMark, detail.slab.grade)]],
+                      ["Polish type", detail.slab.polishType],
                       ["Quality issues", (detail.slab.qualityIssue ?? []).join(", ") || null],
                       ["Bay", detail.slab.bayNumber], ["Frame", detail.slab.frameNumber],
                       ["Size", `${detail.slab.sqft} sqft · ${detail.slab.sqm} sqm`],
@@ -1098,7 +1272,7 @@ const SlabRows = memo(function SlabRows({ rows, sel, onToggle, onOpen }: {
           <td className="px-3 py-2">{r.design ?? "—"}</td>
           <td className="px-3 py-2">{displayBatch(r.batchNumber)}</td>
           <td className="px-3 py-2">{r.slabThickness ?? "—"}</td>
-          <td className="px-3 py-2">{r.grade ?? "—"}</td>
+          <td className="px-3 py-2"><GradeCell grade={r.grade} mark={r.slabMark} /></td>
           <td className="px-3 py-2 max-w-[180px] truncate" title={(r.qualityIssue ?? []).join(", ")}>{r.qualityIssue?.length ? r.qualityIssue.join(", ") : "—"}</td>
           <td className="px-3 py-2">{r.polishType ?? "—"}</td>
           <td className="px-3 py-2">{r.bayNumber ?? "—"}</td>
