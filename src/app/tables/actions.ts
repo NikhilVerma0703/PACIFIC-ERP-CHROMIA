@@ -778,7 +778,7 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
             const photoWarn = await storePhotos(fd, model, dupe.id, opName, data.qualityGrade);
             revalidatePath(`/tables/${model}`); revalidatePath("/batch");
             return photoWarn
-              ? `${PHOTO_WARN_PREFIX} Saved — slab ${data.slabNumber} is stored, but a photo was not. ${photoWarn}`
+              ? `${PHOTO_WARN_PREFIX} — slab ${data.slabNumber} is stored, but a photo was not. ${photoWarn}`
               : "ok";
           } catch (e) { return `Save failed: ${friendlyDbError(e)}`; }
         }

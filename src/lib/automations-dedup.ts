@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { prisma } from "@/lib/prisma";
-import { REJECT_GRADE_FIELD, isRejectGrade } from "@/lib/photoSlots";
+import { mergeFromOlder } from "@/lib/dedupMerge";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
 
@@ -40,6 +40,24 @@ export async function deduplicatePolishing(opts: { dryRun?: boolean } = {}) {
   // --- Polish QC dedupe + merge ---
   const qc: any[] = await db.polishQc.findMany({ select: { id: true, linkIds: true, createdTime: true, ...Object.fromEntries(writable.map((f) => [f, true])) } });
   const linkGroups = new Map<string, any[]>();
+  // ─────────── THIS BRANCH IS UNREVIEWED, AND IT IS THE DANGEROUS ONE ───────
+  // Every QC row with an empty link array is collected here and DELETED below
+  // (with dryRun:false). The reject-merge guard a few lines down was reviewed
+  // hard; this was not, and it is the larger hazard by three orders of
+  // magnitude. Measured on live Neon 2026-09-04:
+  //
+  //   * 14,551 rows carry an empty link — 30% of polish_qc;
+  //   * 491 of them are graded 'C (Reject)' — real verdicts, not phantoms;
+  //   * entry_photo has NO foreign key to polish_qc (a loose model/recordId
+  //     pair), so their photographs are NOT cascade-deleted, they are ORPHANED:
+  //     251 of the 256 PolishQc photographs on the database, 159 of them on
+  //     rejects.
+  //
+  // Nothing calls deduplicatePolishing today and dryRun defaults true, so this
+  // cannot fire — which is the only reason it is a comment and not a fix.
+  // BEFORE ANYONE WIRES THIS UP OR PASSES dryRun:false, this branch needs its
+  // own decision, and at minimum it must refuse to delete a row that carries a
+  // reject grade or has entry_photo rows keyed to it.
   const unlinked: string[] = [];
   for (const r of qc) {
     const link = (r.linkIds ?? []) as string[];
@@ -55,35 +73,9 @@ export async function deduplicatePolishing(opts: { dryRun?: boolean } = {}) {
     if (g.length <= 1) continue;
     g.sort((a, b) => t(b.createdTime) - t(a.createdTime));
     const keep = g[0], older = g.slice(1);
-    const data: Record<string, unknown> = {};
-    for (const f of writable) {
-      if (keep[f] !== null && keep[f] !== undefined) continue;
-      for (const o of older) {
-        if (o[f] === null || o[f] === undefined) continue;
-        // ─────── A REJECT IS NOT A FIELD THIS MERGE MAY FILL IN ────────────
-        // Every other empty field on the kept row is worth recovering from the
-        // duplicate about to be deleted. The GRADE is different, and only when
-        // the value is C (Reject): copying it MANUFACTURES A VERDICT on a row
-        // that had none, and it does it with no photographs — the older row's
-        // entry_photo rows are keyed to ITS id, which this same pass deletes,
-        // so the evidence does not come across even when it existed.
-        //
-        // That would be the one way left to get a reject into polish_qc without
-        // the two photographs the owner's rule demands (2026-09-04), after the
-        // three human paths were closed: the QC form, the tables editor, and
-        // Add & verify. This is not a person making a verdict — it is a tidy-up
-        // job — and a tidy-up job must not decide that a slab was rejected.
-        //
-        // SO THE FIELD STAYS NULL, which is the honest answer: nobody graded
-        // this row. It shows as ungraded, a human grades it on the QC form, and
-        // the photographs are taken then. Nothing is lost that was ever really
-        // there. The count comes back in the result so a run that hits this is
-        // visible rather than silent.
-        if (f === REJECT_GRADE_FIELD && isRejectGrade(o[f] as string)) { rejectGradesNotMerged++; break; }
-        data[f] = o[f];
-        break;
-      }
-    }
+    const merged = mergeFromOlder(keep, older, writable);
+    const data = merged.data;
+    rejectGradesNotMerged += merged.rejectGradesRefused;
     if (Object.keys(data).length) qcMerge.push({ id: keep.id, data });
     for (const o of older) qcDelete.push(o.id);
   }

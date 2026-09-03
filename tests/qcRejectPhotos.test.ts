@@ -8,6 +8,7 @@ import {
   rejectPhotoDecision, rejectGradeNotHere, photoProblem,
   type PhotoSlotName,
 } from "../src/lib/photoSlots.ts";
+import { mergeFromOlder } from "../src/lib/dedupMerge.ts";
 import { GRADE_OPTIONS } from "../src/lib/inventory/intakeRules.ts";
 
 // THE REJECT-PHOTO RULE (owner, 2026-09-03): a Polish QC slab graded C may not
@@ -536,25 +537,114 @@ test("the screens apply the SAME photo conditions the server does", () => {
 // photographs, because the older row's entry_photo rows are keyed to the id this
 // same pass deletes. After the three human paths were closed it was the only way
 // left to get a reject in without the pair.
-const dedup = readFileSync(new URL("../src/lib/automations-dedup.ts", import.meta.url), "utf8");
+//
+// THESE RUN THE DECISION. The first attempt matched the module's source text
+// with regexes, which is the weakness a reviewer named on this rule's sibling:
+// such a test passes with the logic inverted. mergeFromOlder was lifted into an
+// import-free module precisely so it can be driven with real values.
+const W = ["qualityGrade", "design", "slabThickness", "inspector"];
+const merge = (keep: Record<string, unknown>, older: Record<string, unknown>[]) =>
+  mergeFromOlder(keep, older, W);
 
-test("the dedup merge refuses to copy a reject grade onto a row with no verdict", () => {
-  assert.match(dedup, /import \{[^}]*isRejectGrade[^}]*\} from "@\/lib\/photoSlots"/,
-    "the guard must use the shared predicate, not a second spelling of 'is this a C'");
-  const guard = dedup.indexOf("isRejectGrade(o[f]");
-  const copy = dedup.indexOf("data[f] = o[f]");
-  assert.ok(guard > 0, "the reject guard is gone from the dedup merge — the fourth door is open again");
-  assert.ok(copy > 0, "the merge no longer copies fields? this test needs rewriting");
-  assert.ok(guard < copy, "the guard must run BEFORE the copy, or it guards nothing");
-  assert.match(dedup, /rejectGradesNotMerged/,
-    "a refused merge must be COUNTED and returned, or a run that hits it is silent");
+test("an empty field is recovered from the duplicate about to be deleted", () => {
+  const r = merge({ design: null, inspector: null }, [{ design: "Carrara Cloud", inspector: "Ravi" }]);
+  assert.deepEqual(r.data, { design: "Carrara Cloud", inspector: "Ravi" });
+  assert.equal(r.rejectGradesRefused, 0);
 });
 
-test("only the grade is guarded — the merge still recovers every other field", () => {
-  // A guard that skipped the whole row would quietly stop recovering design,
-  // thickness, inspector and the rest, which is the opposite of the intent.
-  assert.match(dedup, /f === REJECT_GRADE_FIELD && isRejectGrade/,
-    "the guard must be narrowed to the grade field; anything wider breaks the dedupe's real job");
+test("a field the kept row already has is never overwritten", () => {
+  const r = merge({ design: "Simply White" }, [{ design: "Carrara Cloud" }]);
+  assert.deepEqual(r.data, {}, "the newest row's own value wins — the merge only FILLS");
+});
+
+test("a reject grade is refused, and counted", () => {
+  for (const g of ["C", "C (Reject)", "c (reject)", " c ", "​C", "Ｃ"]) {
+    const r = merge({ qualityGrade: null }, [{ qualityGrade: g }]);
+    assert.deepEqual(r.data, {}, `${JSON.stringify(g)} must not be merged onto a row with no verdict`);
+    assert.equal(r.rejectGradesRefused, 1, "a refusal must be counted, or the run is silent");
+  }
+});
+
+test("every other grade still merges — the guard is not a blanket ban", () => {
+  for (const g of ["A", "A2", "B", "CTS", "SAMPLE", "Printing", "Not graded yet"]) {
+    const r = merge({ qualityGrade: null }, [{ qualityGrade: g }]);
+    assert.deepEqual(r.data, { qualityGrade: g }, `${g} is not a reject and must be recovered`);
+    assert.equal(r.rejectGradesRefused, 0);
+  }
+});
+
+test("refusing the grade does not cost the row its other fields", () => {
+  // The bug this guards against is a `continue` that skips the whole duplicate:
+  // the dedupe would quietly stop recovering design, thickness and inspector,
+  // which is its actual job.
+  const r = merge({ qualityGrade: null, design: null, slabThickness: null },
+                  [{ qualityGrade: "C (Reject)", design: "Aureate", slabThickness: "2 cm" }]);
+  assert.deepEqual(r.data, { design: "Aureate", slabThickness: "2 cm" });
+  assert.equal(r.rejectGradesRefused, 1);
+});
+
+test("only the GRADE is guarded — a remark that looks like a C still merges", () => {
+  // THE NARROWING IS LOAD-BEARING AND THIS IS THE TEST THAT PROVES IT. Drop the
+  // `f === REJECT_GRADE_FIELD &&` clause and the guard goes field-agnostic:
+  // every writable field whose value merely LOOKS like a C is refused and
+  // miscounted as a reject. Not hypothetical — 24 live polish_qc rows carry a
+  // remarks value that isRejectGrade() matches, and every one is a shipping
+  // note, not a verdict: 'C/o' (care of) x6, 'C/O' x2, 'C/N' x2, 'C/P', 'C/v',
+  // 'C/0', 'C/o PH', 'C/o CN P/p', 'C/O MPH', 'C/o P/H', 'C/o P/D', 'C/o PD',
+  // 'c/o' — 17 distinct spellings, scanned over all 48,490 rows on 2026-09-04.
+  const W2 = ["qualityGrade", "remarks", "design"];
+  for (const note of ["C/o", "C/O", "C/N", "c/o", "C/o P/H", "C/0"]) {
+    const r = mergeFromOlder({ qualityGrade: null, remarks: null, design: null },
+                             [{ qualityGrade: "A", remarks: note, design: "Costa" }], W2);
+    assert.deepEqual(r.data, { qualityGrade: "A", remarks: note, design: "Costa" },
+      `${JSON.stringify(note)} is a shipping note in the remarks column, not a reject verdict`);
+    assert.equal(r.rejectGradesRefused, 0, "a remark must never be counted as a refused grade");
+  }
+  // And the same string IN THE GRADE COLUMN is still refused, so the narrowing
+  // is what distinguishes them — not the value.
+  const g = mergeFromOlder({ qualityGrade: null }, [{ qualityGrade: "C/o" }], W2);
+  assert.deepEqual(g.data, {}, "in the grade column that same value IS a reject spelling");
+  assert.equal(g.rejectGradesRefused, 1);
+});
+
+test("a reject does not fall through to a kinder grade on a staler duplicate", () => {
+  // Rows arrive newest-first. Reaching past a reject to take an A from an older
+  // row would be inventing a verdict twice over.
+  const r = merge({ qualityGrade: null }, [{ qualityGrade: "C (Reject)" }, { qualityGrade: "A" }]);
+  assert.deepEqual(r.data, {}, "the grade must stay NULL, not become A");
+  assert.equal(r.rejectGradesRefused, 1);
+});
+
+test("a null on the newest duplicate still reaches the next one", () => {
+  const r = merge({ qualityGrade: null }, [{ qualityGrade: null }, { qualityGrade: "A2" }]);
+  assert.deepEqual(r.data, { qualityGrade: "A2" }, "a null is skipped, not treated as a stop");
+});
+
+test("and a reject BEHIND a null is still caught", () => {
+  const r = merge({ qualityGrade: null }, [{ qualityGrade: null }, { qualityGrade: "C (Reject)" }]);
+  assert.deepEqual(r.data, {}, "the guard must survive the loop reaching the second row");
+  assert.equal(r.rejectGradesRefused, 1);
+});
+
+test("the live dedupe uses this decision rather than a second copy of it", () => {
+  const dedup = readFileSync(new URL("../src/lib/automations-dedup.ts", import.meta.url), "utf8");
+  const code = dedup.replace(/\/\/[^\n]*/g, "");
+  // PIN THE CALL AND THE USE OF ITS RESULT. Asserting only the ABSENCE of one
+  // expression spelling was not enough: a reviewer re-inlined the old unguarded
+  // loop with the locals renamed, left the now-unused import in place, and all
+  // 38 tests passed — the fourth door open again and the suite green. A
+  // re-inline now has to delete an assertion rather than rename a variable.
+  assert.match(code, /const merged = mergeFromOlder\(keep, older, writable\);/,
+    "the dedupe no longer calls the decision that is under test");
+  assert.match(code, /const data = merged\.data;/,
+    "the decision is called but its result is not what gets merged");
+  // And the counter must be ACCUMULATED, not merely declared and returned:
+  // deleting the += made every run report 0 forever, which is the exact silence
+  // the counter exists to prevent, and the old assertion still passed.
+  assert.match(code, /rejectGradesNotMerged \+= merged\.rejectGradesRefused/,
+    "refusals are no longer added up — the run reports 0 however many it refused");
+  assert.doesNotMatch(code, /data\[[a-zA-Z]+\] = [a-zA-Z]+\[[a-zA-Z]+\]/,
+    "a merge loop has been inlined again, whatever its variables are called");
 });
 
 // ─── AND THE PHOTO THAT WAS BEING THROWN AWAY ───────────────────────────────
@@ -563,25 +653,32 @@ test("only the grade is guarded — the merge still recovers every other field",
 // photo an operator attached was discarded and they were shown the same green
 // "Saved" as anyone else. Live for the five press-line stations.
 test("completing a placeholder keeps its photo, like any other create", () => {
-  // The BRANCH, not the import at the top of the file — indexOf found the import
-  // and sliced 1,800 characters of unrelated code, which is a test that fails for
-  // a reason that has nothing to do with the rule it is guarding.
+  // The BRANCH, not the import at the top of the file. And comments stripped,
+  // because the branch's own comment quotes the old `return "ok"` — a raw search
+  // finds the PROSE and reports the fix as broken.
   const i = actions.indexOf("startsWith(AUTOFILL_PREFIX)");
   assert.ok(i > 0, "the placeholder branch has moved; find it before trusting this test");
-  // COMMENTS STRIPPED FIRST. The branch's own comment quotes the old behaviour
-  // ("used to `return \"ok\"` here"), so a raw search finds the PROSE before the
-  // code and reports the photo store as coming too late. This repo has shipped
-  // that mistake before — an absence assertion firing on the sentence that
-  // describes the fix.
   const branch = actions.slice(i, i + 1800).replace(/\/\/[^\n]*/g, "");
+
+  // PIN THE ARGUMENTS. Substring positions alone did not guard this: a reviewer
+  // rewrote the call as storePhotos(new FormData(), model, dupe.id, ...) — the
+  // original bug restored in full, the operator's photo discarded, a green
+  // "Saved" shown — and every test still passed. Keying it to a nonexistent
+  // record id passed too. It must be THE POSTED FORM, stored against THE ROW
+  // BEING OVERWRITTEN.
+  assert.match(branch, /storePhotos\(fd, model, dupe\.id,/,
+    "the placeholder's photo must come from the posted form and be keyed to the row it completes");
+
+  // And nothing may return between the update and the store, or the photo is
+  // dropped exactly as it was before.
+  const upd = branch.indexOf(".update(");
   const store = branch.indexOf("storePhotos(");
-  // The success return is a TERNARY now (warn ? amber sentence : "ok"), so there
-  // is no bare `return "ok"` left to find — searching for one is how this test
-  // would go on passing after someone reverted the fix to a plain return.
+  assert.ok(upd > 0 && store > upd, "the store must follow the update");
+  assert.doesNotMatch(branch.slice(upd, store), /return /,
+    "something returns between the update and the photo store — the attachment is discarded again");
+
   const ret = branch.indexOf("return photoWarn");
-  assert.ok(store > 0, "the placeholder branch stores no photo — the attachment is discarded again");
-  assert.ok(ret > 0, "the branch no longer returns the photo warning; a failed store is silent again");
-  assert.ok(store < ret, "the photo must be stored BEFORE the success return, or it is dropped");
+  assert.ok(ret > store, "the success return must come after the store, not before it");
   assert.match(branch, /PHOTO_WARN_PREFIX/,
-    "a store failure here must warn like it does on the ordinary create, not show a green tick");
+    "a store failure here must warn like the ordinary create does, not show a green tick");
 });
