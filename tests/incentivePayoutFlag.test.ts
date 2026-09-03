@@ -29,14 +29,20 @@ const PAGE = "src/app/scoreboard/incentive/page.tsx";
 const src = readFileSync(PAGE, "utf8");
 const lines = src.split(/\r?\n/);
 
-/** Lines inside a multi-line `{SHOW_PAYOUT_AMOUNTS && ( … )}` or
- *  `{SHOW_PAYOUT_AMOUNTS && <> … </>}` block, plus the lines that name the flag
- *  themselves. A single-line guard is covered by the second half. */
+/** Lines inside a multi-line `{FLAG && ( … )}` or `{FLAG && <> … </>}` block for
+ *  EITHER flag, plus the lines that name a flag themselves. A single-line guard
+ *  is covered by the second half.
+ *
+ *  BOTH FLAGS COUNT AS A GUARD HERE, and the test below draws the line between
+ *  them instead. SHOW_LADDER_AMOUNTS (on) may carry the ladder's published rung
+ *  amounts; SHOW_PAYOUT_AMOUNTS (off) carries this month's pool, a shift's share
+ *  of it and a person's slice. A rupee figure behind NEITHER is the leak this
+ *  file exists to catch. */
 function guardedLines(): Set<number> {
   const guarded = new Set<number>();
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (!/SHOW_PAYOUT_AMOUNTS/.test(line)) continue;
+    if (!/SHOW_PAYOUT_AMOUNTS|SHOW_LADDER_AMOUNTS/.test(line)) continue;
     guarded.add(i);
     // Only an unterminated opener starts a block: `&& (` or `&& <>` at the end.
     if (!/&&\s*(\(|<>)\s*$/.test(line)) continue;
@@ -117,4 +123,46 @@ test("the flag's own comment does not repeat the false claim", () => {
   // bug, so the sentence itself is pinned.
   assert.ok(!/Nothing else on the page reads it/.test(src),
     "the flag comment claims nothing else on the page draws these numbers — the three-shift table and the pool KPIs did exactly that");
+});
+
+// ── THE LINE BETWEEN THE TWO FLAGS ──────────────────────────────────────────
+// SHOW_LADDER_AMOUNTS was added after the first flag was widened too far and
+// the owner asked for the ladder's amounts back ("Where are the incentive
+// amounts in this bar"). It exists to show the PUBLISHED SCHEME — what each
+// rung pays — and nothing else. The risk it introduces is that it becomes a
+// back door for the very figures the other flag hides, one well-meant edit at a
+// time, so the boundary is pinned here rather than left to a comment.
+test("the ladder flag is on, and the payout flag is still off", () => {
+  assert.match(src, /const SHOW_LADDER_AMOUNTS = true;/);
+  assert.match(src, /const SHOW_PAYOUT_AMOUNTS = false;/);
+});
+
+test("the ladder flag guards ONLY the scheme's own rungs", () => {
+  // This month's pool, a shift's share of it and a person's bands are promises
+  // about THIS month and belong to SHOW_PAYOUT_AMOUNTS. `t.pool` is the ladder
+  // constant's own rung and is the one rupee figure this flag may carry.
+  const THIS_MONTHS_MONEY = /\b(poolNow|poolReal|poolAll|money\.|\.bands\b|[wa]\.share\b)/;
+  const ladderGuarded: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!/SHOW_LADDER_AMOUNTS/.test(lines[i])) continue;
+    if (/^\s*(\*|\/\/)/.test(lines[i])) continue;          // the flag's own prose
+    if (/const SHOW_LADDER_AMOUNTS/.test(lines[i])) continue;
+    if (THIS_MONTHS_MONEY.test(lines[i])) ladderGuarded.push(`${PAGE}:${i + 1}`);
+  }
+  assert.deepEqual(ladderGuarded, [],
+    "SHOW_LADDER_AMOUNTS is being used to draw one of THIS month's money figures — that belongs behind SHOW_PAYOUT_AMOUNTS; see both flags' comments");
+});
+
+test("a reader still cannot derive a shift's slice from the page", () => {
+  // The defect the widening fixed: share x pool, two figures on one screen. The
+  // ladder amounts alone do not reconstitute it, because a shift's SHARE is
+  // still hidden — so this asserts the half that must stay hidden is hidden. If
+  // someone un-gates the share columns while the ladder shows amounts, the
+  // multiplication is back on the screen and this fails.
+  const shareEscaped = CODE.filter(({ n, text }) =>
+    /\b[wa]\.share\b/.test(text) && !GUARDED.has(n - 1));
+  assert.deepEqual(shareEscaped.map((e) => `${PAGE}:${e.n}`), []);
+  // and belt: the per-shift share must not be behind the LADDER flag either,
+  // which the previous test enforces from the other direction.
+  assert.ok(/SHOW_PAYOUT_AMOUNTS/.test(src), "the payout flag has been deleted entirely");
 });

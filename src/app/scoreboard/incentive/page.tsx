@@ -36,6 +36,37 @@ import { AutoRefresh } from "../AutoRefresh";
  *  reason the page exists; none of them is a promise of money. */
 const SHOW_PAYOUT_AMOUNTS = false;
 
+/** WHAT EACH RUNG OF THE LADDER PAYS — AND THIS ONE IS ON.
+ *
+ *  THE FLAG ABOVE WAS WIDENED TOO FAR AND THE OWNER SAID SO. Asked to hide the
+ *  payout figures, the widening took the ladder's rupee labels with them, on
+ *  the reasoning that a share of a pool whose size is printed beside it is a
+ *  rupee figure. That reasoning is right about the MONTH'S OWN pool and wrong
+ *  about the LADDER, and the owner's words on seeing the bare bar were "Where
+ *  are the incentive amounts in this bar / Put the incentive amounts what we had
+ *  previously".
+ *
+ *  THE DISTINCTION, and it is the whole reason this is a second flag and not a
+ *  loosening of the first:
+ *    - The ladder is the SCHEME. 7,000 slabs pays this, 8,000 pays that. It is
+ *      published policy that every incharge on the floor is meant to know, it
+ *      is the same numbers whatever this month does, and it promises nobody
+ *      anything. incentiveLadder.TIERS is a constant in the repo.
+ *    - The month's own pool, a shift's share of it, and a person's slice ARE
+ *      promises of money about THIS month, and the three decisions behind them
+ *      (step ladder vs interpolated, the equal-thirds salary split, which
+ *      quality method settles the month) are still open. They stay behind
+ *      SHOW_PAYOUT_AMOUNTS.
+ *
+ *  SO THE ARITHMETIC A READER CAN DO IS DELIBERATELY BOUNDED: they can see what
+ *  the scheme pays at each rung and where the month sits against those rungs.
+ *  They cannot see this month's pool, any shift's share of it, or any person's
+ *  amount, so no shift's slice is derivable by multiplying two figures on the
+ *  page — which was the actual defect the widening was fixing. If the owner
+ *  wants the month's own pool back as well, that is SHOW_PAYOUT_AMOUNTS, not
+ *  this one. */
+const SHOW_LADDER_AMOUNTS = true;
+
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
@@ -161,7 +192,10 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                     figure SHOW_PAYOUT_AMOUNTS is holding back. Same for the
                     next rung — named by its slab count instead. */}
                 <div className="text-sm font-semibold text-green-800">Pool unlocked{SHOW_PAYOUT_AMOUNTS ? ` — ${lakh(pool.poolNow)}` : ""} on {half(pool.counted)} counted slabs</div>
-                {pool.next && <p className="mt-1 text-sm text-gray-700">{fmt(pool.next.slabs - Math.floor(pool.counted))} more counted slabs reach the {SHOW_PAYOUT_AMOUNTS ? lakh(pool.next.pool) : `${fmt(pool.next.slabs / 1000)}k`} row.</p>}
+                {/* The NEXT RUNG is a ladder figure, not this month's pool — the
+                    same distinction the two flags draw. It names a rung the
+                    scheme publishes, so it reads with the amount. */}
+                {pool.next && <p className="mt-1 text-sm text-gray-700">{fmt(pool.next.slabs - Math.floor(pool.counted))} more counted slabs reach the {fmt(pool.next.slabs / 1000)}k row{SHOW_LADDER_AMOUNTS ? <> — {lakh(pool.next.pool)}</> : null}.</p>}
               </Card>
             )}
 
@@ -228,11 +262,13 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
               <div className="relative mt-1 h-9 w-full text-[11px] text-gray-500">
                 {pool.ladder.map((t) => (
                   <div key={t.slabs} className="absolute -translate-x-1/2 text-center leading-tight" style={{ left: at(t.slabs) }}>
-                    {/* The rungs stay — where the month sits is the point of
-                        the bar. What each rung PAYS is a pool figure, so it
-                        goes with the rest of them while the flag is off. */}
+                    {/* The rungs AND what each one pays — the published scheme,
+                        which is what the bar is for. Behind SHOW_LADDER_AMOUNTS,
+                        not SHOW_PAYOUT_AMOUNTS: see both flags' comments for why
+                        these two rupee figures are not the same kind of thing as
+                        this month's pool or a shift's slice of it. */}
                     <div className="font-semibold text-gray-700">{fmt(t.slabs / 1000)}k</div>
-                    {SHOW_PAYOUT_AMOUNTS && <div>{lakh(t.pool)}</div>}
+                    {SHOW_LADDER_AMOUNTS && <div>{lakh(t.pool)}</div>}
                   </div>
                 ))}
               </div>
