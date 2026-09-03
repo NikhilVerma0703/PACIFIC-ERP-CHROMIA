@@ -48,8 +48,31 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   // template (lib/sales/emailTemplates.ts), so it has to be a real http(s) URL
   // before it is stored — a "javascript:" or bare "track.cma-cgm.com/..." value
   // reaches the customer's inbox as a live link nobody here can vet.
-  if (body.trackingLink != null && body.trackingLink !== "" && !/^https?:\/\/\S+$/i.test(String(body.trackingLink).trim())) {
-    return NextResponse.json({ error: "Tracking link must be a full http:// or https:// URL" }, { status: 400 });
+  //
+  // The first version of this guard was /^https?:\/\/\S+$/i, which blocked
+  // "javascript:" but happily accepted
+  //     https://a.com"><script>...</script>
+  // — no whitespace, so it matched — and emailTemplates.ts then interpolated it
+  // unescaped into href="${trackingLink}". Parse it properly instead, and reject
+  // the characters that end an attribute. The template ALSO escapes now (that is
+  // the durable half of the fix); this half stops the value being stored at all.
+  //
+  // What this refuses that the old one allowed: quotes, angle brackets,
+  // backticks and any internal whitespace. A real carrier link
+  // (https://track.cma-cgm.com/csinfo?SearchBy=Container&Reference=MSBU1095261)
+  // has none of those — query strings, &, = and % are all still fine. Measured
+  // 2026-09-03: 32 sales_shipment_docs rows, 0 with a tracking_link, so no
+  // stored value is refused by tightening this.
+  if (body.trackingLink != null && body.trackingLink !== "") {
+    const raw = String(body.trackingLink).trim();
+    let parsed: URL | null = null;
+    try { parsed = new URL(raw); } catch { parsed = null; }
+    if (/["'<>`\s]/.test(raw) || !parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+      return NextResponse.json({ error: "Tracking link must be a full http:// or https:// URL, with no spaces or quotes" }, { status: 400 });
+    }
+    // Store the trimmed form — otherwise a value with a stray leading space is
+    // validated in one shape and saved in another.
+    body.trackingLink = raw;
   }
 
   const data: Record<string, unknown> = {};
@@ -81,14 +104,64 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     }).catch(() => {});
   }
 
-  // NO auto-send here. This route used to fire sendShippingDocsEmail in the
-  // background the moment BL No. + the three PDFs were present, while the
-  // "Send Shipping Docs" button saves through this same route and then mails
-  // explicitly — one customer-facing mail, two triggers racing each other.
-  // /doc-upload still auto-sends when the last PDF lands (that is the path that
-  // actually completes the document set), and the button covers the rest; both
-  // go through the claim in sendShippingDocsEmail. Re-adding a trigger here
-  // brings the double-send back.
+  // ── THE auto-send decision point ────────────────────────────────────────────
+  // There is exactly ONE place that decides to auto-mail the shipping documents,
+  // and this is it. Read the history before moving it again:
+  //
+  //  1. Originally BOTH this route and /doc-upload fired sendShippingDocsEmail
+  //     in the background, and the "Send Shipping Docs" button saved through
+  //     this route and then mailed explicitly — three triggers, one customer,
+  //     duplicate mails.
+  //  2. The repair deleted the trigger here and left /doc-upload as "the path
+  //     that actually completes the document set". It is not. The three PDFs
+  //     never reach /doc-upload on their own: ShippingDocsClient holds them in
+  //     browser state (handlePdfUpload only calls setState) and pushes all three
+  //     from uploadShippingDocs(), which every flow calls immediately BEFORE
+  //     this PATCH. So /doc-upload always sees bl_no exactly as it was — NULL on
+  //     the ordinary "type the BL No. and save" ordering — decides not to send,
+  //     and then this route stored the BL and sent nothing either. An order that
+  //     used to mail itself the moment the set was complete went silent.
+  //
+  // Here is the only point that runs after BOTH the PDFs and blNo are durable,
+  // so here is where the decision belongs. `docs` is the row as just written.
+  //
+  // Two things keep this from becoming the double-send again:
+  //   - onlyIfUnsent — the readiness test below is a plain read, so two saves
+  //     landing together both see "not sent"; the stamp is claimed atomically by
+  //     the compare-and-swap inside sendShippingDocsEmail, and onlyIfUnsent says
+  //     an automatic trigger must never re-mail an order that already carries a
+  //     stamp. Only a human at the button may deliberately re-send a corrected
+  //     set.
+  //   - autoSend:false — the "Send Shipping Docs" button saves through this same
+  //     route and then mails explicitly. If this fired there too, the button
+  //     would be racing a background sender it started itself: the CAS lets one
+  //     through, and the loser (usually the button) returns 400 "already being
+  //     sent", which the operator reads as a failure and retries — and the retry
+  //     DOES send, because it swaps on the new stamp. That is a genuine duplicate
+  //     produced by the duplicate guard. So the button passes autoSend:false and
+  //     owns its own send; every other caller (plain Save, the dispatch-email
+  //     save, anything future that omits the flag) keeps the automatic one.
+  //
+  // Measured 2026-09-03: 32 sales_shipment_docs rows, 31 with a container_no but
+  // 0 with a bl_no, 0 with any of the three PDFs and 0 with
+  // shipping_docs_mail_sent_at — the BL-release mail has never actually fired in
+  // production. Nothing will alert us if this path is dead; the first symptom is
+  // a bank waiting on documents nobody mailed.
+  if (body.autoSend !== false) {
+    const ready =
+      !!docs.blNo &&
+      typeof docs.blDocUrl === "string"          && docs.blDocUrl.startsWith("data:") &&
+      typeof docs.fumigationCertUrl === "string" && docs.fumigationCertUrl.startsWith("data:") &&
+      typeof docs.bankDetailsUrl === "string"    && docs.bankDetailsUrl.startsWith("data:") &&
+      !docs.shippingDocsMailSentAt;
+    if (ready) {
+      // Fire and forget: a mailer outage must not fail the save the operator
+      // just made. The claim/rollback inside the sender keeps the stamp honest.
+      import("@/lib/sales/sendShippingDocsEmail")
+        .then(({ sendShippingDocsEmail }) => sendShippingDocsEmail(id, undefined, { onlyIfUnsent: true }))
+        .catch(() => {});
+    }
+  }
 
   return NextResponse.json(docs);
 }

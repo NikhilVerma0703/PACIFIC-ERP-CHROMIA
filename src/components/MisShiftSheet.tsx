@@ -99,10 +99,27 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
   /** Entering a batch carries its design forward and starts the slab count where
    * the previous hour of that batch ended. Both stay editable.
    *
-   * FILLS EMPTY BOXES ONLY. It used to overwrite whatever was on screen, so a
-   * design and a starting slab typed for this hour vanished the moment the batch
-   * field lost focus — no warning, no undo, and the operator usually noticed
-   * after saving. A carry is a convenience; what the person typed outranks it. */
+   * NEVER OVERWRITES WHAT THE OPERATOR TYPED. It used to overwrite whatever was
+   * on screen, so a design and a starting slab typed for this hour vanished the
+   * moment the batch field lost focus — no warning, no undo, and the operator
+   * usually noticed after saving. A carry is a convenience; what the person
+   * typed outranks it.
+   *
+   * BUT "EMPTY" IS NOT THE SAME AS "UNTYPED", and the first repair of this bug
+   * used the wrong one. `design` and `startSlab` are initialised from the SERVER
+   * prefill (src/app/entry/mis/page.tsx fills prefill.design and prefill.startSlab
+   * from the press rows of this hour window whenever press rows exist — the
+   * ordinary case on a running line), so both boxes are non-empty before the
+   * operator has touched anything. Deferring to them made the carry a no-op in
+   * exactly the case it exists for — continuing the slab count from that batch's
+   * previous hour — and the amber banner then told the operator it had "kept what
+   * you typed" about a machine prefill they had never typed.
+   *
+   * So a value still equal to the prefill counts as EMPTY here: the carry (which
+   * knows the batch) outranks the press prefill (which only knows the hour), and
+   * operator input outranks both. Same prefill-vs-typed distinction dirtyEntryCount
+   * below already makes for the discard warning — one definition of "the person
+   * put this here", used by both. */
   const carryFromBatch = async () => {
     const b = batch.trim();
     if (!b || b === lookedUp.current) return;
@@ -114,8 +131,13 @@ export function MisShiftSheet({ rows, loggedDay, date, shift, hour: hourParam, o
       const c = await lastMisEntryForBatch(b, `${hourDate}T${hour.slice(0, 2)}:00:00+05:30`);
       if (seq !== carrySeq.current) return; // a newer batch was entered meanwhile
       if (!c || (!c.design && c.nextStartSlab == null)) { setCarried(null); return; }
-      const filledDesign = !!c.design && !design.trim();
-      const filledSlab = c.nextStartSlab != null && !startSlab.trim();
+      // "Typed" = holds something, and that something is not still the server
+      // prefill for this hour. A box the operator has not touched is free for
+      // the carry to fill even when the press data already put a value in it.
+      const typed = (now: string, pre: string | undefined) =>
+        !!now.trim() && now.trim() !== (pre ?? "").trim();
+      const filledDesign = !!c.design && !typed(design, prefill?.design);
+      const filledSlab = c.nextStartSlab != null && !typed(startSlab, prefill?.startSlab);
       if (filledDesign && c.design) setDesign(c.design);
       if (filledSlab && c.nextStartSlab != null) setStartSlab(String(c.nextStartSlab));
       const kept: string[] = [];

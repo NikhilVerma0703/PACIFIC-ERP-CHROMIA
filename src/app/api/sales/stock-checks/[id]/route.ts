@@ -41,6 +41,44 @@ export async function PATCH(
     );
   }
 
+  // THE ADVANCE GATE, SECOND COPY. AVAILABLE and PARTIAL write
+  // salesOrder.status = "PACKING" further down, which is the point the warehouse
+  // starts pulling slabs — money spent on the customer's behalf. That write had
+  // no advance check of its own; it trusted the order already being in
+  // PENDING_STOCK_CHECK to mean the advance had settled. It did not: until the
+  // sibling fix in /api/sales/orders/[id]/status, a SALESPERSON could PATCH an
+  // unpaid order straight into PENDING_STOCK_CHECK and it arrived here
+  // indistinguishable from one whose money had come in. Both doors into PACKING
+  // are now guarded, because that is the door the money walks out of.
+  //
+  // "Settled" is paid_at OR overridden_at — an RM waiver releases the order
+  // exactly like a receipt does, and that documented, audited override
+  // (/api/sales/orders/[id]/payment-division) is the way past this check. There
+  // is deliberately no admin bypass: the bypass IS the override, which leaves a
+  // record of who waived what.
+  //
+  // Checked BEFORE the stock-check row is written so nothing lands half-done,
+  // and the stock page keeps the panel and the typed notes open on a non-2xx, so
+  // Commercial loses no work — they re-submit once the advance is recorded.
+  // Measured on the live database 2026-09-03: of the 9 orders sitting in
+  // PENDING_STOCK_CHECK, none has an ADVANCE division at all, and no order in
+  // the database has an unsettled one. This refuses nothing that exists today.
+  if (body.status === "AVAILABLE" || body.status === "PARTIAL") {
+    const advanceDivs: any[] = await db.salesPaymentDivision.findMany({
+      where: { orderId: check.orderId, type: "ADVANCE" },
+    });
+    if (advanceDivs.length > 0 && !advanceDivs.every((d: any) => !!d.paidAt || !!d.overriddenAt)) {
+      return NextResponse.json(
+        {
+          error:
+            "Advance payment has not been received for this order, so it cannot move to Packing. Record the advance in Payments, or have an RM override it, then confirm the stock again.",
+          code: "ADVANCE_UNPAID",
+        },
+        { status: 422 }
+      );
+    }
+  }
+
   const updated = await db.salesStockCheck.update({
     where: { id },
     data: {

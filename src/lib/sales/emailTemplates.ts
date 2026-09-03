@@ -16,6 +16,32 @@ ${body}
 </body></html>`;
 }
 
+/**
+ * HTML-escape a value before it is interpolated into an attribute or a text node.
+ *
+ * The tracking link is the one field in these templates that is free text typed
+ * by an operator AND lands inside an attribute (`href="..."`). The shipping
+ * PATCH route validates it on the way in, but a validator is a filter and the
+ * template is the injection point: a value like
+ *   https://a.com"><script>...</script>
+ * contains no whitespace, so the route's original /^https?:\/\/\S+$/ guard
+ * passed it happily and it broke straight out of the href in a customer-facing
+ * ETA reminder. Escaping here closes it for every row, including the ones
+ * stored before any guard existed and any future caller that forgets to check.
+ *
+ * `&` -> `&amp;` is correct inside an href — browsers decode it back — so a
+ * real carrier URL like ...?SearchBy=Container&Reference=MSBU1095261 still
+ * resolves exactly as typed. Nothing legitimate is altered by this.
+ */
+export function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function tbl(rows: [string, string][]): string {
   return `<table style="border-collapse:collapse;width:100%;margin:16px 0;font-size:14px">
 ${rows.map(([k, v]) => `  <tr>
@@ -105,7 +131,23 @@ export function etaReminderHtml(clientName: string, order: any, customBody?: str
   const etaStr = eta
     ? `${String(eta.getDate()).padStart(2,"0")}.${String(eta.getMonth()+1).padStart(2,"0")}.${eta.getFullYear()}`
     : "---";
-  const trackingLink = container?.trackingLink || container?.trackingUrl || null;
+  // Render the link only if it really is http(s), and escape it. Two separate
+  // reasons, both live:
+  //   - the scheme check: rows written before the shipping route grew a
+  //     tracking-link guard were never validated at all, so a "javascript:..."
+  //     or a bare "track.cma-cgm.com/..." can still be sitting in
+  //     sales_shipment_docs.tracking_link. A bare host is a dead relative href
+  //     in a mail client anyway; a javascript: one is a live link nobody here
+  //     vetted. Both fall through to the container/vessel line below instead.
+  //   - the escape: see escapeHtml above — the value goes into an href AND into
+  //     the visible link text, and the route's guard alone let quotes through.
+  // Measured 2026-09-03 before this change: 32 sales_shipment_docs rows, 0 with
+  // a tracking_link at all, so this refuses nothing that exists today.
+  const rawTrackingLink = container?.trackingLink || container?.trackingUrl || null;
+  const trackingLink =
+    typeof rawTrackingLink === "string" && /^https?:\/\/\S/i.test(rawTrackingLink.trim())
+      ? escapeHtml(rawTrackingLink.trim())
+      : null;
   return plain(`
 <p>Hello Sir,</p>
 <p>Please note that the shipment will arrive on <strong>${etaStr}</strong>.</p>

@@ -40,6 +40,35 @@ export async function writeSlabEvent(
   } catch { /* event log is best-effort */ }
 }
 
+/**
+ * WHICH STATUSES A QC WRITE MAY RE-PLACE. An ALLOW-list, and it is one because
+ * the blacklist it replaces protected nothing at all.
+ *
+ * That blacklist named RESERVED and PACKED — "committed to a customer or
+ * physically loaded" — and both are empty. Counted on live Neon 2026-09-03,
+ * fg_finished_slab holds 16,748 AVAILABLE (9,713 with a frame, 10,101 with a
+ * bay), 6,536 DISPATCHED (608 framed, 854 bayed), 62 CHROMIA (5 framed) and
+ * ZERO rows in RESERVED, PACKED, RETURNED or CTS. So the guard refused nothing
+ * on today's data, the 'qc_location_kept' audit event below could never fire,
+ * and a grade or bay correction on a DISPATCHED or CHROMIA slab still cleared
+ * its frame and wrote the QC row's stale bay back over inventory's — which is
+ * the precise failure the guard was added to stop, on the 613 framed slabs it
+ * was never going to cover.
+ *
+ * AVAILABLE — plain stock; QC is what places it, so QC may re-place it.
+ * RETURNED  — came back off a lorry; a re-QC there IS the pass that re-places
+ *             it, so it stays relocatable (0 rows today, but that is the whole
+ *             point of writing the rule from the meaning and not from the counts).
+ *
+ * Everything else keeps the location inventory is working from: DISPATCHED (it
+ * has left), CHROMIA (the printing module holds it), RESERVED/PACKED (committed
+ * to a customer), CTS (cutting has it). None of this refuses legitimate work —
+ * an EXPLICIT bay passed by the caller (opts.bay) still wins for every status,
+ * and the dispatch team's own assignSlabLocation() is untouched by this rule.
+ * The only thing withheld is QC's implicit "and put it back where my row says".
+ */
+const RELOCATABLE_STATUSES = ["AVAILABLE", "RETURNED"] as const;
+
 const barcodeStr = (v: unknown): string | null =>
   typeof v === "string" ? v : v && typeof v === "object" ? JSON.stringify(v).slice(0, 200) : null;
 
@@ -64,9 +93,8 @@ const barcodeStr = (v: unknown): string | null =>
  * Callers that pass nothing — the undo restore in actionLog.ts and the fab
  * mirror refresh in fab/slabMarkStore.ts, both of which only want the QC data
  * re-projected — now leave location alone, which is what they always meant.
- * And a RESERVED or PACKED slab is never relocated by QC at all: it has been
- * committed to a customer or physically loaded, and inventory's location is the
- * one the shop floor is working from.
+ * And even when the caller says yes, only a slab whose STATUS still means "QC
+ * places this one" is actually moved — see RELOCATABLE_STATUSES below.
  */
 export async function autolinkFinishedSlabFromQc(
   slabNumber: number | null | undefined,
@@ -105,10 +133,10 @@ export async function autolinkFinishedSlabFromQc(
   if (opts.polishType !== undefined) qcFields.polishType = opts.polishType ?? null;
 
   const existing = await db.finishedSlab.findUnique({ where: { slabNumber }, select: { id: true, frameNumber: true, bayNumber: true, status: true } });
-  // A slab held for a customer or already loaded is never relocated by a QC
-  // write, whatever the caller asked for — that is the case the frame clear
-  // actually costs money in, so it is refused here rather than trusted upstream.
-  const held = !!existing && (existing.status === "RESERVED" || existing.status === "PACKED");
+  // A slab that is no longer plain stock is never relocated by a QC write,
+  // whatever the caller asked for — that is the case the frame clear actually
+  // costs money in, so it is refused here rather than trusted upstream.
+  const held = !!existing && !(RELOCATABLE_STATUSES as readonly string[]).includes(existing.status);
   const relocating = !existing || (opts.relocate === true && !held);
   if (existing && !relocating) {
     delete qcFields.frameNumber;                       // whoever put it in a frame knows where it is

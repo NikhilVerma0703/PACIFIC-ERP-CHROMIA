@@ -79,7 +79,38 @@ async function canManageTarget(id: string): Promise<{ ok: boolean; message: stri
   // doing Sales Admin work would be locked out of the International Sales
   // logins that are the only rows their own page shows them.
   const myBranch = (((me as any)?.branch as string | undefined) ?? "SHOP_FLOOR");
-  const target = await getUserPrimary(id);
+  // getUserPrimary selects { role, branch }, so this put the users.branch COLUMN
+  // on the critical path of setActive / resetPassword / setStation for the first
+  // time — and it was unwrapped, so on a database without that column every
+  // user-management click became an unhandled server-action error instead of a
+  // sentence in the page's error strip.
+  //
+  // WE ARE DELIBERATELY NOT FAILING OPEN HERE. The tempting shape — catch, then
+  // "department unknown, fall back to the rank check alone" — hands anyone who
+  // can induce a database error the exact IDOR the department rule above was
+  // added to close (a Shop Floor INCHARGE resetting an International Sales
+  // password). A security check that a thrown exception switches off is not a
+  // check. So: catch it, refuse, and SAY WHY, in the same shape
+  // signOutEverywhere already uses for a missing session_version column.
+  //
+  // Refusing costs nothing real, because the column is not in doubt: on the
+  // production database users.branch is NOT NULL and populated on all 46 logins
+  // (SHOP_FLOOR 36, OFFICE 5, FABRICATION 3, CHROMIA 1, INTERNATIONAL_SALES 1 —
+  // measured 2026-09-03), and login/actions.ts selects branch unguarded on every
+  // single sign-in, so on a database that lacked it nobody could sign in to
+  // reach this screen at all. The defensive re-filtering in lib/users.ts
+  // listUsersRows and the try/catch in page.tsx are leftovers from before that
+  // migration landed; they are in other files and were left alone.
+  //
+  // Note this catch cannot mask a transient outage that the rank check would
+  // have survived: getUserRoles(id) three lines up is an unguarded
+  // findUnique on the same row, so a database that is down has already thrown.
+  let target: { role: string; branch: string } | null;
+  try {
+    target = await getUserPrimary(id);
+  } catch {
+    return { ok: false, message: "Could not read that login's department (users.branch) — nothing was changed." };
+  }
   if (!target) return { ok: false, message: "That login no longer exists." };
   const manageable = new Set([...assignableBranches(myRole, myBranch), myBranch]);
   // Retired department: nothing new may be created on CHROMIA, but the logins

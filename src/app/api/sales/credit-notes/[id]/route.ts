@@ -65,11 +65,43 @@ export async function PATCH(
   // everyone. APPLYING an issued credit to the next order stays open to every
   // sales duty — that is the salesperson's own quoting flow, it moves an existing
   // credit rather than creating value, and the picker already scopes by client.
+  //
+  // REPORTING_MANAGER was added back after the first cut of this gate refused it.
+  // Two reasons, both about what the module actually permits:
+  //   1. The sibling override, orders/[id]/payment-division/route.ts, lets
+  //      REPORTING_MANAGER (with SALES_ADMIN / ERP ADMIN) waive a whole ADVANCE
+  //      division — uncapped money the company never receives, and that waiver
+  //      also releases the order into PENDING_STOCK_CHECK. Trusting an RM with
+  //      that while refusing them the smaller concession here — a credit bounded
+  //      by the note amount, usable only by the same client on a later order —
+  //      was incoherent, and it left an SP's bad note with no one above them able
+  //      to REJECT it.
+  //   2. lib/sales/session.ts derives the duty when users.sales_role is unset:
+  //      MANAGER tier -> REPORTING_MANAGER, MEMBER -> SALESPERSON. COMMERCIAL and
+  //      ACCOUNTS are only ever reached by someone typing that value into the
+  //      column. Measured on live 2026-09-03: of the users who can enter the
+  //      module (branch INTERNATIONAL_SALES + ERP admins) exactly 1 holds a
+  //      sales_role at all — SALES_ADMIN — and 0 hold COMMERCIAL or ACCOUNTS. So
+  //      the first list refused both of the duties the module hands out by
+  //      default and admitted two nobody has yet.
+  // SALESPERSON stays out: that is the hole this gate was cut for.
+  //
+  // The 403 names the duties because the order page can only *guess* who may act
+  // (it reads the role from /api/sales/me, which can fail) — when it guesses wrong
+  // and lets the click through, this message is what the clerk sees.
+  const CN_EDIT_ROLES = ["SALES_ADMIN", "COMMERCIAL", "ACCOUNTS", "REPORTING_MANAGER"] as const;
   if (editingNote) {
     const salesRole = (session.user as any).salesRole as string | null;
-    const mayEdit =
-      salesRole === "SALES_ADMIN" || salesRole === "COMMERCIAL" || salesRole === "ACCOUNTS";
-    if (!mayEdit) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    if (!CN_EDIT_ROLES.includes(salesRole as any)) {
+      return NextResponse.json(
+        {
+          error:
+            "Only Commercial, Accounts, a Reporting Manager or a Sales Admin can inspect, issue or reject a credit note. You can still raise one and apply an issued credit to an order.",
+          code: "CN_ROLE_FORBIDDEN",
+        },
+        { status: 403 }
+      );
+    }
   }
 
   if (body.status !== undefined) {

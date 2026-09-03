@@ -122,6 +122,45 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     );
   }
 
+  // PENDING_STOCK_CHECK IS NOT A MANUAL STEP — refused outright, from any state.
+  //
+  // The system writes it itself, in exactly two places and only once every
+  // ADVANCE division is settled: /api/sales/payments/[id] (Accounts marks the
+  // advance paid) and /api/sales/orders/[id]/payment-division (an RM waives it)
+  // both call advanceIfAdvancesSettled(), which moves the order AND opens the
+  // stock check in one step.
+  //
+  // Leaving it PATCHable here walked around the advance gate below in two hops.
+  // PENDING_STOCK_CHECK is index 1 and PACKING is index 2, so `targetIdx >=
+  // PACKING_IDX` never fired on it; and once an order sits in
+  // PENDING_STOCK_CHECK the stock-check route (/api/sales/stock-checks/[id],
+  // status AVAILABLE or PARTIAL) writes status = PACKING itself. A SALESPERSON
+  // — an allowed role here, confined by ownership only to their own orders —
+  // could therefore send one PATCH {status:"PENDING_STOCK_CHECK"} on an order
+  // whose advance had not arrived, and it landed in Commercial's queue looking
+  // exactly like an order whose money had. Commercial confirms stock, the order
+  // is in PACKING, the warehouse pulls slabs, and nobody was ever paid. The
+  // comment above claiming the gate covers "PACKING and everything to the right
+  // of it" was only true of the front door.
+  //
+  // Refused rather than gated because no caller asks for it: the stepper
+  // (sales/orders/[id]/StatusFlowClient.tsx) only offers a manual advance from
+  // PACKING onward (canManuallyAdvance), ProductionClient only ever sends
+  // IN_PRODUCTION or PACKING, and sales_order_logs holds zero STATUS_CHANGED
+  // rows into PENDING_STOCK_CHECK. This takes away no work anyone has ever done.
+  // It sits after the ladder check on purpose, so a jump from DELIVERED still
+  // reports TRANSITION_NOT_ALLOWED — the more accurate complaint.
+  if (status === "PENDING_STOCK_CHECK") {
+    return Response.json(
+      {
+        error:
+          "An order moves to Stock Check by itself once the advance is settled — it cannot be set by hand. Record the advance payment, or have an RM override it, and the order will move.",
+        code: "STATUS_NOT_MANUAL",
+      },
+      { status: 422 }
+    );
+  }
+
   // Payment gate: block PACKING and everything past it until the advance is
   // settled. A manager waiver (overridden_at, written by
   // /api/sales/orders/[id]/payment-division) settles a division without money

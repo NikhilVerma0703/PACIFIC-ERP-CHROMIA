@@ -1,4 +1,4 @@
--- 0067: one MIS row per (date, hour) — the rule the app enforces, put in the DB.
+-- 0068: one MIS row per (date, hour) — the rule the app enforces, put in the DB.
 --
 -- NOT APPLIED, AND IT CANNOT BE YET: the index below FAILS on today's data. Read
 -- the dedupe section first; the CREATE UNIQUE INDEX is the last step, after the

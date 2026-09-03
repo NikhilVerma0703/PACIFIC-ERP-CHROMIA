@@ -83,6 +83,16 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       orderId
     );
   } else if (action === "override") {
+    // Which division is being waived decides whether the release below runs, so
+    // read the type BEFORE the UPDATE: if this read throws, nothing has been
+    // written yet and the caller can simply retry. Scoped by order_id to match
+    // the UPDATE's own WHERE — a divisionId belonging to another order matches
+    // neither, so it changes nothing and releases nothing.
+    const target = await db.salesPaymentDivision.findFirst({
+      where: { id: divisionId, orderId },
+      select: { type: true },
+    });
+
     // paid_at is deliberately NOT written here. An override is permission to move
     // on without the money, not a receipt: paidAmount and the paid % on the order
     // page both key on paid_at / amount_received, and stamping paid_at would book
@@ -102,7 +112,19 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     // still refusing ("Awaiting advance payment") and the only way out was
     // Accounts falsely clicking Mark Paid — the very write the paragraph above
     // exists to avoid.
-    await advanceIfAdvancesSettled(orderId, callerId);
+    //
+    // ...but ONLY for an ADVANCE. This used to run after every override. Waiving
+    // a BL_TO_PAY or CAD division — a shipment-stage payment, nothing to do with
+    // the advance — on an order still parked in PENDING_PAYMENT whose ADVANCE
+    // divisions happened to be settled moved the order to PENDING_STOCK_CHECK
+    // and created a stock check row, logged as "All advance payments settled",
+    // none of which the RM asked for. The release exists to undo the deadlock a
+    // waived ADVANCE causes; only settling an advance should ever trigger it.
+    // Rare today (0 overridden divisions live on 2026-09-03) and cheap to
+    // prevent, but it is an unrequested state change on a live order.
+    if (target?.type === "ADVANCE") {
+      await advanceIfAdvancesSettled(orderId, callerId);
+    }
     // Audit log
     try {
       await db.salesOrderLog.create({

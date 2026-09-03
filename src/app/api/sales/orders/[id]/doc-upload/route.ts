@@ -114,7 +114,7 @@ export async function PATCH(
   const { id } = await params;
   const refused = await assertOrderVisible(session.user, id);
   if (refused) return refused;
-  const body = await req.json() as { type: string; data: any };
+  const body = await req.json() as { type: string; data: any; autoSend?: boolean };
   const { type, data } = body;
 
   const validTypes = [
@@ -178,8 +178,27 @@ export async function PATCH(
       documentData, id
     );
 
-    // After uploading a shipping doc, check if auto-send trigger conditions are met
-    if (["blDoc", "fumigationCert", "bankDetails"].includes(type) && data) {
+    // After uploading a shipping doc, check if auto-send trigger conditions are met.
+    //
+    // autoSend:false means "the caller is mid-flow and will decide about mailing
+    // itself — do not start a background sender behind it". ShippingDocsClient's
+    // uploadShippingDocs() sends it on all three PDFs, because it re-POSTs every
+    // PDF it holds (including ones hydrated from the row on mount, so it fires on
+    // ordinary saves, not just when a file is picked) and then PATCHes /shipping.
+    // Without the flag one click started up to three background senders plus its
+    // own explicit POST: the compare-and-swap in sendShippingDocsEmail let one
+    // through and handed the button a 400 "already being sent", which the screen
+    // painted red — so the operator clicked again, the second click swapped on
+    // the new stamp, and the customer got a real duplicate of the BL-release
+    // mail. It also kicked off four concurrent generateCombinedShipmentPdf runs.
+    //
+    // The auto-send decision now lives in the /shipping PATCH, which is the only
+    // point that runs after BOTH the PDFs and the BL number are persisted — see
+    // the long note there. This trigger is kept, unchanged in behaviour, for any
+    // caller that uploads a document WITHOUT following it with a shipping PATCH:
+    // omitting the flag still auto-sends, so nothing that worked before is
+    // refused, and it is a live safety net if a future upload path forgets.
+    if (["blDoc", "fumigationCert", "bankDetails"].includes(type) && data && body.autoSend !== false) {
       try {
         const { sendShippingDocsEmail } = await import("@/lib/sales/sendShippingDocsEmail");
         const check = await db.$queryRawUnsafe(

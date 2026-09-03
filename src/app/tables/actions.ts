@@ -376,7 +376,7 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
       // 45-minute breakdown in another and the shift scores uptime it never
       // had, while the sum stays comfortably under 60. Only the values the form
       // actually carried are bounded — an edit to the remarks must not be
-      // blocked by a stored figure this save is not touching (scripts/0066
+      // blocked by a stored figure this save is not touching (scripts/0067
       // reports those separately).
       for (const k of MIS_DELAY_COLUMNS) {
         if (!fd.has(k)) continue;
@@ -394,13 +394,48 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
     // Std slabs/hr, merged with the stored row exactly like the delay cap above:
     // on an edit the damage is done by BLANKING the Std of an hour that already
     // has an Actual, which is the same missing target as never entering one.
+    //
+    // ONLY WHEN THIS SAVE ACTUALLY MOVES ONE OF THE TWO. The first version keyed
+    // off fd.has() alone, and /tables/Mis/[id] posts every editable field on every
+    // save — so the check re-judged a STORED blank on edits that never went near
+    // it. 13 live mis rows (of 7,106, counted on Neon 2026-09-03) carry
+    // slabs_per_hour_actual > 0 with slabs_per_hour_std NULL or 0, and every one
+    // of them became unsaveable for ANY unrelated correction: a remark, an
+    // incharge name, a delay reclassification. Worse, there is no number the
+    // editor could honestly type to get out of it — what the Std of those legacy
+    // hours should be is an OPEN CEO DECISION (blank Std vs. a std-rate master),
+    // so the guard demanded an answer nobody is yet allowed to give.
+    //
+    // A guard that refuses legitimate work is worse than the bug it fixed. The
+    // rule it exists for is untouched: entering an Actual on a Std-less hour is a
+    // change to Actual, and blanking the Std of an hour that has one is a change
+    // to Std — both still refused. Same shape as the `moved` hour rule and the
+    // date-sanity rule below: compare against the stored row, and never re-judge
+    // a value this save is leaving exactly as it found it.
     if (fd.has("slabsPerHourStd") || fd.has("slabsPerHourActual")) {
       const cur = await delegateOf(model).findUnique({ where: { id }, select: { slabsPerHourStd: true, slabsPerHourActual: true } }).catch(() => null);
-      const sErr = misStdRequiredError(
-        fd.has("slabsPerHourStd") ? data.slabsPerHourStd : (cur as Record<string, unknown> | null)?.slabsPerHourStd,
-        fd.has("slabsPerHourActual") ? data.slabsPerHourActual : (cur as Record<string, unknown> | null)?.slabsPerHourActual,
+      const stored = cur as Record<string, unknown> | null;
+      // Blank/null/unparseable all mean "not entered" here, the same way
+      // requiredFields.asNumber reads them — otherwise "" vs null would read as
+      // an edit and put the 13 rows straight back into the trap.
+      const numOrNull = (v: unknown): number | null => {
+        if (v == null || v === "") return null;
+        const n = typeof v === "number" ? v : Number(String(v).trim());
+        return Number.isFinite(n) ? n : null;
+      };
+      const mergedStd = fd.has("slabsPerHourStd") ? data.slabsPerHourStd : stored?.slabsPerHourStd;
+      const mergedActual = fd.has("slabsPerHourActual") ? data.slabsPerHourActual : stored?.slabsPerHourActual;
+      // If the read FAILED we cannot tell a change from an untouched value, and
+      // guessing "changed" would put the 13 rows straight back into the trap on
+      // any Neon hiccup. This rule guards a REPORTING TARGET, not money leaving
+      // the building (unlike the duplicate-hour rule above, which blocks on a
+      // read failure for exactly that reason), so the safe answer here is to let
+      // the correction through and leave the target to the CEO decision.
+      const touched = stored != null && (
+        numOrNull(mergedStd) !== numOrNull(stored.slabsPerHourStd) ||
+        numOrNull(mergedActual) !== numOrNull(stored.slabsPerHourActual)
       );
-      if (sErr) return sErr;
+      if (touched) { const sErr = misStdRequiredError(mergedStd, mergedActual); if (sErr) return sErr; }
     }
     // The hour rule, against the MERGED row: retyping an hour (or a date) onto a
     // slot another row already holds creates precisely the duplicate the create
@@ -409,7 +444,7 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
     // Only when the slot actually MOVES, not merely because the edit form posted
     // the field (it posts every editable field on every save). The 501 rows that
     // already sit in 247 duplicate pairs — all of them older than the create-path
-    // guard, see scripts/0067 — must stay editable, and an edit that leaves the
+    // guard, see scripts/0068 — must stay editable, and an edit that leaves the
     // hour where it is cannot create a clash that was not already there. Same
     // shape as the date-sanity rule below: an untouched value is not re-judged.
     if (fd.has("hour") || fd.has("date")) {
@@ -435,25 +470,41 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
     if (changed) { const dErr = await dateSanity(model, data, cur?.batchKey ?? null, cur?.date ? new Date(cur.date) : null); if (dErr) return dErr; }
   }
   // If this QC edit changes the slab number, the old number's inventory row must
-  // be re-projected (or removed) — capture it before the update. The bay and the
-  // grade are read in the same query because they decide whether the autolink
-  // below may touch the slab's LOCATION: a spelling fix in the inspector field
-  // used to clear the frame of a slab already packed for a proforma invoice and
-  // silently put back the QC row's months-old bay, and the loading crew then
-  // could not find it. Only a real change to bay or grade says anything new
-  // about where the slab is.
+  // be re-projected (or removed) — capture it before the update. The BAY is read
+  // in the same query because it decides whether the autolink below may touch the
+  // slab's LOCATION: a spelling fix in the inspector field used to clear the frame
+  // of a slab already packed for a proforma invoice and silently put back the QC
+  // row's months-old bay, and the loading crew then could not find it.
+  //
+  // BAY, AND ONLY BAY. The first version of this guard also let a qualityGrade
+  // change grant the relocation, and that was wrong twice over:
+  //
+  //   1. A GRADE SAYS NOTHING ABOUT WHERE A SLAB IS. Re-grading a slab B does not
+  //      move it out of the frame dispatch put it in, yet on live data that edit
+  //      granted relocation on any of the 9,713 AVAILABLE slabs holding a frame.
+  //   2. IT FIRED ON EDITS THAT TOUCHED NO GRADE AT ALL. saveRow force-sets
+  //      data.qualityGrade = "Not graded yet" a hundred lines above when the form
+  //      submits a blank grade, and the /tables/PolishQc/[id] form posts every
+  //      editable field on every save. For the 194 polish_qc rows whose
+  //      quality_grade is NULL or blank (counted on live Neon 2026-09-03), that
+  //      auto-applied default compared unequal to the stored "" — so ANY edit at
+  //      all (inspector spelling, remarks, thickness) claimed a grade change and
+  //      relocated the slab. That is the original bug, reachable again through the
+  //      fix meant to close it.
+  //
+  // Nothing legitimate is refused by dropping it: the grade itself is still
+  // projected onto the inventory row by autolinkFinishedSlabFromQc like every
+  // other QC-owned field, and a genuine re-QC comes through createRow, which asks
+  // for the relocation outright.
   let qcPrevSlabNumber: number | null = null;
   let qcRelocates = false;
   if (model === "PolishQc") {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const prev: any = await delegateOf(model).findUnique({ where: { id }, select: { slabNumber: true, bay: true, qualityGrade: true } }).catch(() => null);
+    const prev: any = await delegateOf(model).findUnique({ where: { id }, select: { slabNumber: true, bay: true } }).catch(() => null);
     qcPrevSlabNumber = Number(prev?.slabNumber ?? NaN) || null;
     // No `prev` (the read failed) means nothing is known to have changed, and the
     // safe answer to "may I move this slab" is no.
-    qcRelocates = !!prev && (
-      (fd.has("bay") && String(data.bay ?? "") !== String(prev?.bay ?? "")) ||
-      (fd.has("qualityGrade") && String(data.qualityGrade ?? "") !== String(prev?.qualityGrade ?? ""))
-    );
+    qcRelocates = !!prev && fd.has("bay") && String(data.bay ?? "") !== String(prev?.bay ?? "");
   }
   try {
     await delegateOf(model).update({ where: { id }, data });

@@ -36,6 +36,34 @@ function isBase64DataUri(s: string | null | undefined): boolean {
   return !!s && s.startsWith("data:");
 }
 
+/**
+ * The same rule the shipping PATCH route enforces, checked here first.
+ *
+ * The route answers 400 for a bad tracking link, and that 400 rejects the WHOLE
+ * shipping save — vessel, ports, weights, packing items, everything typed in the
+ * same session goes unsaved with only "tracking link" to explain it, and on the
+ * dispatch path the mail used to go out on top of the save that never happened.
+ * Catching it in the browser means the operator is told about the one bad field
+ * before anything is sent, so no other edit is thrown away and no email is
+ * mailed against unsaved data.
+ *
+ * Deliberately the same rule, not a stricter one: this must never refuse a link
+ * the server would have accepted, or the field becomes unusable with no way to
+ * find out why. The server stays the authority — this is an early, friendlier
+ * copy of it. Returns the message to show, or null when the value is fine.
+ */
+function trackingLinkProblem(v: string | null | undefined): string | null {
+  if (v == null || v === "") return null;
+  const raw = String(v).trim();
+  if (/["'<>`\s]/.test(raw)) return "The tracking link cannot contain spaces, quotes or angle brackets.";
+  let parsed: URL | null = null;
+  try { parsed = new URL(raw); } catch { parsed = null; }
+  if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+    return "The tracking link must be a full http:// or https:// URL.";
+  }
+  return null;
+}
+
 function fmt(d: string | null | undefined) {
   if (!d) return "";
   return new Date(d).toISOString().slice(0, 10);
@@ -277,11 +305,18 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
     }
   }
 
-  function buildPayload() {
+  // autoSend=false tells the shipping PATCH "I am about to mail this myself, do
+  // not start a background sender behind me". Only the Send Shipping Docs button
+  // passes false; Save and the dispatch-email save leave the automatic
+  // BL-release mail switched on, because typing the BL No. and saving is the
+  // ordinary way the document set gets completed. See the long note in
+  // src/app/api/sales/orders/[id]/shipping/route.ts.
+  function buildPayload(autoSend: boolean) {
     // Explicitly whitelist small metadata fields only.
     // Large base64 PDFs (blDocUrl, fumigationCertUrl, bankDetailsUrl) go via /doc-upload.
     const f = form as Record<string, unknown>;
     return {
+      autoSend,
       containerNo:        f.containerNo        ?? null,
       vesselName:         f.vesselName         ?? null,
       portOfLoading:      f.portOfLoading      ?? null,
@@ -309,6 +344,17 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
     // The route refuses non-PDFs (415) and oversized files (413) — a refusal
     // must THROW so the caller's catch shows it, not vanish into a discarded
     // Promise.all while the screen claims the document is in.
+    //
+    // autoSend:false on every one of these. This function re-POSTs all three
+    // PDFs on EVERY save and send — blDocFile/fumigationFile/bankDetailsFile are
+    // hydrated from the row on mount, so it re-uploads documents that were
+    // already stored; that is the mainline, not an edge case. Each POST used to
+    // re-arm /doc-upload's auto-send, so one click on "Send Shipping Docs"
+    // raced up to three background senders it had started itself against its own
+    // explicit POST. The compare-and-swap let exactly one through and the button
+    // usually lost, showing the operator a red failure for a mail the customer
+    // had just received — and the retry then sent a real duplicate. The single
+    // auto-send decision now lives in the shipping PATCH.
     const uploads: Array<{ type: string; label: string; file: { data: string } | null }> = [
       { type: "blDoc",          label: "BL document",           file: blDocFile },
       { type: "fumigationCert", label: "fumigation certificate", file: fumigationFile },
@@ -321,7 +367,7 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
           const r = await fetch(`/api/sales/orders/${orderId}/doc-upload`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ type: u.type, data: u.file!.data }),
+            body: JSON.stringify({ type: u.type, data: u.file!.data, autoSend: false }),
           });
           if (!r.ok) {
             const err = await r.json().then((j) => j?.error).catch(() => null);
@@ -348,15 +394,24 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
   }
 
   async function save() {
+    // Checked before anything is uploaded: a link the route would reject fails
+    // the whole PATCH, and every other field typed this session goes unsaved
+    // with it. Say so up front and send nothing.
+    const linkProblem = trackingLinkProblem(form.trackingLink);
+    if (linkProblem) { setError(`${linkProblem} Nothing was saved — correct the link and save again.`); return; }
     setSaving(true); setSaved(false); setError(null);
     try {
       // Upload large PDF docs first (separate endpoint, no body size limit issue)
       await uploadShippingDocs();
-      // Then save metadata (small JSON payload)
+      // Then save metadata (small JSON payload). autoSend stays on: typing the
+      // BL No. and pressing Save is the ordinary way the document set is
+      // completed, and this PATCH is the point where both the PDFs and the BL
+      // number are finally durable — so this is the click that mails the
+      // BL-release email when everything is ready.
       const r = await fetch(`/api/sales/orders/${orderId}/shipping`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildPayload()),
+        body: JSON.stringify(buildPayload(true)),
       });
       if (!r.ok) throw new Error((await r.json()).error ?? "Failed");
       const d = await r.json();
@@ -372,17 +427,26 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
   }
 
   async function sendDispatchEmail() {
+    const linkProblem = trackingLinkProblem(form.trackingLink);
+    if (linkProblem) { setDispatchError(`${linkProblem} Nothing was saved and no email was sent.`); return; }
     setDispatchSending(true); setDispatchSent(false); setDispatchError(null);
     try {
       // Upload PDFs first, then save metadata — inside the try, so a refused
       // upload lands in dispatchError instead of an unhandled rejection with
       // the button stuck on "sending".
       await uploadShippingDocs();
-      await fetch(`/api/sales/orders/${orderId}/shipping`, {
+      const s = await fetch(`/api/sales/orders/${orderId}/shipping`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildPayload()),
+        body: JSON.stringify(buildPayload(true)),
       });
+      // This save's result used to be ignored entirely. That was harmless while
+      // the route could only answer 200; once it started answering 400 for a bad
+      // tracking link, an operator pasting "track.cma-cgm.com/..." got a dispatch
+      // email mailed to the customer on top of a save that never happened — the
+      // mail describes container details the row does not hold. Stop here
+      // instead, the same way sendShippingDocsEmail does.
+      if (!s.ok) throw new Error((await s.json().catch(() => null))?.error ?? "Could not save the shipping details — nothing was sent.");
       const r = await fetch(`/api/sales/orders/${orderId}/dispatch-email`, { method: "POST" });
       if (!r.ok) throw new Error((await r.json()).error ?? "Failed to send");
       setDispatchSent(true);
@@ -395,6 +459,8 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
   }
 
   async function sendShippingDocsEmail() {
+    const linkProblem = trackingLinkProblem(form.trackingLink);
+    if (linkProblem) { setShippingError(`${linkProblem} Nothing was saved and no email was sent.`); return; }
     setShippingSending(true); setShippingSent(false); setShippingError(null);
     try {
       // The three PDFs live only in browser state until uploadShippingDocs()
@@ -406,14 +472,33 @@ export default function ShippingDocsClient({ orderId, piItems = [] }: { orderId:
       // with no BL in it. Upload first, and stop on a failed save rather than
       // mailing on top of it.
       await uploadShippingDocs();
+      // autoSend:false — this button mails explicitly two lines down, so the
+      // PATCH must not start a background sender that would race it.
       const s = await fetch(`/api/sales/orders/${orderId}/shipping`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildPayload()),
+        body: JSON.stringify(buildPayload(false)),
       });
       if (!s.ok) throw new Error((await s.json().catch(() => null))?.error ?? "Could not save the shipping details — nothing was sent.");
       const r = await fetch(`/api/sales/orders/${orderId}/shipping-docs-email`, { method: "POST" });
-      if (!r.ok) throw new Error((await r.json()).error ?? "Failed to send");
+      if (!r.ok) {
+        const msg = (await r.json().catch(() => null))?.error ?? "Failed to send";
+        // "already sent" / "already being sent" are the compare-and-swap in
+        // sendShippingDocsEmail telling us somebody else won the race — an
+        // auto-trigger from another tab, or a second operator on the same order.
+        // The mail WENT; it just did not go through this POST. Reporting that as
+        // a red failure is what produced the duplicate this whole group is about:
+        // the operator sees "failed" for a mail the customer already has, clicks
+        // again, and the second click swaps on the new stamp and really does send
+        // a second copy. Report the truth — the documents are out — and let the
+        // "Last sent" stamp on reload show who actually sent them.
+        if (/already (being )?sent/i.test(msg)) {
+          setShippingSent(true);
+          setDocs(d => ({ ...d, shippingDocsMailSentAt: d.shippingDocsMailSentAt ?? new Date().toISOString() }));
+          return;
+        }
+        throw new Error(msg);
+      }
       setShippingSent(true);
       setDocs(d => ({ ...d, shippingDocsMailSentAt: new Date().toISOString() }));
     } catch (e: any) {

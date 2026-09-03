@@ -69,6 +69,20 @@ const CN_COLORS: Record<string, string> = {
   REJECTED:           "bg-red-100 text-red-700",
 };
 
+// Who may move a credit note along its lifecycle (Mark Inspected / Issue /
+// Reject). This MUST stay in step with CN_EDIT_ROLES in the PATCH handler at
+// api/sales/credit-notes/[id]/route.ts — the server is the authority, this list
+// only decides whether we draw the buttons.
+//
+// It exists because the PATCH gate was added without touching this page: the
+// three buttons were still drawn for everyone who could open the order, so a
+// SALESPERSON who had just raised a damage note (POST /api/sales/credit-notes
+// has no role gate — they legitimately can) saw three live buttons that always
+// answered a bare "Forbidden", with nothing saying whose job it was instead.
+const CN_LIFECYCLE_ROLES: readonly string[] = [
+  "SALES_ADMIN", "COMMERCIAL", "ACCOUNTS", "REPORTING_MANAGER",
+];
+
 export default function OrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [order, setOrder]     = useState<Order | null>(null);
@@ -371,6 +385,15 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     (s, d) => s + (d.paidAt ? d.amount : (d.amountReceived ?? 0)), 0);
   const paidPct            = total > 0 ? Math.round((paidAmount / total) * 100) : 0;
   const totalAppliedCredit = appliedCNs.reduce((s, cn) => s + cn.amount, 0);
+
+  // null means /api/sales/me has not answered yet, or the request failed — NOT
+  // "no permission". We deliberately show the lifecycle buttons in that case:
+  // hiding them on an unknown role would silently strip Commercial/Accounts of
+  // their own job the one time that fetch drops, and the PATCH refuses the
+  // click anyway with a message naming the duties (updateCN prints it in cnMsg).
+  // Guessing generously and letting the server say no beats a screen that
+  // quietly refuses legitimate work.
+  const mayEditCN = userSalesRole === null || CN_LIFECYCLE_ROLES.includes(userSalesRole);
 
   return (
     <div className="max-w-3xl">
@@ -858,26 +881,37 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                     <p className="text-base font-bold text-slate-900">{cn.currency} {cn.amount.toFixed(2)}</p>
                     <p className="text-xs text-slate-400">{new Date(cn.createdAt).toLocaleDateString()}</p>
                     <div className="flex gap-1 mt-1 justify-end">
-                      {cn.status === "PENDING_INSPECTION" && (
+                      {mayEditCN && cn.status === "PENDING_INSPECTION" && (
                         <button onClick={() => updateCN(cn.id, "INSPECTED")}
                           disabled={cnStatusBusy === cn.id}
                           className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded font-semibold hover:bg-blue-200 disabled:opacity-50 transition">
                           {cnStatusBusy === cn.id ? "Saving..." : "Mark Inspected"}
                         </button>
                       )}
-                      {cn.status === "INSPECTED" && (
+                      {mayEditCN && cn.status === "INSPECTED" && (
                         <button onClick={() => updateCN(cn.id, "ISSUED")}
                           disabled={cnStatusBusy === cn.id}
                           className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded font-semibold hover:bg-green-200 disabled:opacity-50 transition">
                           {cnStatusBusy === cn.id ? "Saving..." : "Issue"}
                         </button>
                       )}
-                      {(cn.status === "PENDING_INSPECTION" || cn.status === "INSPECTED") && (
+                      {mayEditCN && (cn.status === "PENDING_INSPECTION" || cn.status === "INSPECTED") && (
                         <button onClick={() => updateCN(cn.id, "REJECTED")}
                           disabled={cnStatusBusy === cn.id}
                           className="text-xs px-2 py-0.5 bg-red-100 text-red-600 rounded font-semibold hover:bg-red-200 disabled:opacity-50 transition">
                           {cnStatusBusy === cn.id ? "..." : "Reject"}
                         </button>
+                      )}
+                      {/* Not a dead row: the note is still waiting on someone, so
+                          say who instead of leaving a blank corner that reads as
+                          "nothing left to do here". Only shown on the two states
+                          that can still move — ISSUED and REJECTED are terminal
+                          for everybody. */}
+                      {!mayEditCN && (cn.status === "PENDING_INSPECTION" || cn.status === "INSPECTED") && (
+                        <span className="text-xs text-slate-400 italic"
+                          title="Inspecting, issuing and rejecting credit notes is a Commercial / Accounts duty; a Reporting Manager or Sales Admin can also act.">
+                          {cn.status === "PENDING_INSPECTION" ? "Awaiting inspection" : "Awaiting issue"} — Commercial / Accounts / RM
+                        </span>
                       )}
                     </div>
                   </div>
