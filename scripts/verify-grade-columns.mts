@@ -183,16 +183,87 @@ console.log(`  A ${gr.reduce((a, x) => a + x.gradeA, 0)}  A2 ${gr.reduce((a, x) 
 
 // ---- THE LADDER FIGURE, which is the one the payout is read off -----------
 // `counted` is what the tier ladder is looked up on, so it gets its own lines
-// and its own arithmetic. points = credit with slow-product slabs counted
-// twice, summed per shift instance AFTER scoreShift rounds each one — so it
-// need not equal credit + slowSlabs exactly, and the residual is printed
-// rather than asserted away.
+// and its own arithmetic.
+//
+// THIS BLOCK USED TO PRINT THE WRONG DECOMPOSITION AND THEN CERTIFY IT. It said
+// "credit + slow slabs counted twice = <sum> exact, <points> after per-shift
+// rounding (residual points - credit - slowSlabs)", directly above ALL CHECKS
+// PASSED, and both halves were wrong:
+//
+//   * slowSlabs is a COUNT OF SLABS; what the doubling adds is CREDIT. A slow
+//     grade B is one slab and half a slab of credit, so the count runs above
+//     the contribution by half for every slow B - 14 on live August 2026
+//     (measured 2026-09-03, and it moves as QC files).
+//   * the true pre-rounding total is therefore LOWER than that sum, and the
+//     rounding residual correspondingly LARGER and POSITIVE: scoreShift rounds
+//     every shift INSTANCE, a weighted total can only end in .0 or .5, and
+//     Math.round takes every .5 UP. On the same August read the old line
+//     printed "residual -0.5" where the drift was +13.5 over 27 rounded-up
+//     instances.
+//
+// The two errors point in opposite directions and very nearly cancel, so the
+// line looked almost right - which is exactly why a script that exists to
+// SURFACE this drift printed it as half a slab and then passed the run. The
+// figures now come from incentiveMonth's `decomposition`, which builds the
+// doubling's CREDIT off the claim rebuild, and the residual is ASSERTED into
+// the only band per-instance rounding can produce: 0 to half an instance each,
+// never negative. That turns the line from decoration into a check.
 console.log(`\n  counted (the ladder's own figure) : ${shown(counted)}`);
 eq("pool.counted is plant.points", counted ?? NaN, points ?? NaN);
-console.log(`  credit ${shown(credit, 1)} + slow slabs counted twice ${shown(slowSlabs)}` +
-            ` = ${shown((credit ?? NaN) + (slowSlabs ?? NaN), 1)} exact,` +
+const dec = (inc as { decomposition?: { plant?: unknown; byLetter?: unknown; disagreements?: unknown } }).decomposition;
+if (dec === undefined) badFields.push("decomposition = undefined (no such field)");
+const decCredit = numOf(dec?.plant, "decomposition.plant.credit");
+const decPoints = numOf(dec?.plant, "decomposition.plant.points");
+const doubling = numOf(dec?.plant, "decomposition.plant.doubling");
+const exact = numOf(dec?.plant, "decomposition.plant.exact");
+const residual = numOf(dec?.plant, "decomposition.plant.rounding");
+const roundedUp = numOf(dec?.plant, "decomposition.plant.roundedUp");
+const decInstances = numOf(dec?.plant, "decomposition.plant.instances");
+const disagreements = numOf(dec, "decomposition.disagreements");
+const plantInstances = numOf(inc.plant, "plant.instances");
+console.log(`  credit ${shown(credit, 1)} + doubling ${shown(doubling, 1)} = ${shown(exact, 1)} exact,` +
             ` ${shown(points)} after per-shift rounding` +
-            ` (residual ${shown((points ?? NaN) - (credit ?? NaN) - (slowSlabs ?? NaN), 1)})`);
+            ` (residual ${(residual ?? NaN) >= 0 ? "+" : ""}${shown(residual, 1)},` +
+            ` ${shown(roundedUp)} of ${shown(decInstances)} instances rounded up)`);
+console.log((slowSlabs ?? 0) > 0
+  ? `  the doubling applied to ${shown(slowSlabs)} SLABS, which is a different quantity:` +
+    ` ${shown((slowSlabs ?? NaN) - (doubling ?? NaN), 1)} more than the credit it added,` +
+    ` being half a slab for each slow-hour slab that graded B`
+  : `  no hour this month ran a standard of 10/hr or less, so the doubling is 0 on both counts`);
+eq("decomposition.plant.credit is plant.credit", decCredit ?? NaN, credit ?? NaN);
+eq("decomposition.plant.points is plant.points", decPoints ?? NaN, points ?? NaN);
+eq("decomposition counts the same shift instances plantTotals does", decInstances ?? NaN, plantInstances ?? NaN);
+ok("credit + doubling = the exact pre-rounding total",
+   Math.abs((decCredit ?? NaN) + (doubling ?? NaN) - (exact ?? NaN)) < 1e-9,
+   `${shown(decCredit, 1)} + ${shown(doubling, 1)} vs ${shown(exact, 1)}`);
+ok("credit + doubling + rounding = counted, the figure the ladder is read off",
+   Math.abs((decCredit ?? NaN) + (doubling ?? NaN) + (residual ?? NaN) - (counted ?? NaN)) < 1e-9,
+   `${shown(decCredit, 1)} + ${shown(doubling, 1)} + ${shown(residual, 1)} vs ${shown(counted, 1)}`);
+// THE BOUND, and it is the whole reason the residual is worth naming: rounding
+// a multiple of a half, per instance, can only ADD, and only half an instance
+// at a time. A residual outside this is not rounding and the line should stop
+// calling it that.
+ok("the residual is within [0, instances / 2] - the only thing per-instance rounding can do",
+   (residual ?? NaN) >= -1e-9 && (residual ?? NaN) <= (decInstances ?? NaN) / 2 + 1e-9,
+   `${shown(residual, 1)} over ${shown(decInstances)} instances, so at most ${shown((decInstances ?? NaN) / 2, 1)}`);
+ok("the residual is exactly half a slab for each instance it moved",
+   Math.abs((residual ?? NaN) - (roundedUp ?? NaN) / 2) < 1e-9,
+   `${shown(residual, 1)} vs ${shown(roundedUp)} / 2`);
+// The doubling is rebuilt from the claim and a fresh QC read; the score's own
+// weighted total came from a QC read milliseconds earlier. A slab re-graded in
+// between lands here and nowhere else.
+eq("no shift instance where the doubling and the score disagree beyond rounding", disagreements ?? NaN, 0);
+// Per letter, so a wrong row is named instead of hiding inside a plant total.
+for (const l of inc.letters) {
+  const d = (dec?.byLetter as Record<string, Record<string, number>> | undefined)?.[l.shift];
+  if (!d) { badFields.push(`decomposition.byLetter.${l.shift} = undefined (no such field)`); continue; }
+  ok(`shift ${l.shift}: good ${shown(l.credit, 1)} + doubling ${shown(d.doubling, 1)}` +
+     ` + rounding ${shown(d.rounding, 1)} = counted ${shown(l.points)}`,
+     Math.abs(l.credit + d.doubling + d.rounding - l.points) < 1e-9
+     && d.credit === l.credit && d.points === l.points && d.instances === l.instances
+     && d.rounding >= -1e-9 && d.rounding <= d.instances / 2 + 1e-9,
+     `slow slabs ${l.slowSlabs}, ${d.roundedUp} of ${d.instances} instances rounded up`);
+}
 console.log(`  pool now ${shown(poolNow)} on a ${shown(floor)}-slab floor;` +
             ` next tier ${nextSlabs == null ? "none — top of the ladder" : `${shown(nextSlabs)} slabs for ${shown(nextPool)}`}`);
 console.log(`  projection at share ${share == null ? "n/a" : (share * 100).toFixed(2) + "%"}:` +

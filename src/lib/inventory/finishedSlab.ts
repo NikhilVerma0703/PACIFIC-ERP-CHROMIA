@@ -511,10 +511,102 @@ async function readSlabForStatusChange(sn: number) {
 }
 
 /**
+ * THE `cts` ACTION NOW RECORDS THE CUT IN THE MARK AS WELL AS THE STATUS.
+ *
+ * WHY. `cts` used to write `{ status: 'CTS' }` and nothing else, so the fact it
+ * recorded lived in the one column this module has spent the whole of 0070/0071
+ * /0072 moving OFF. Two consequences, both live:
+ *
+ *   * The status and the mark disagreed by construction. A slab Commercial
+ *     marked CTS read status 'CTS' / slab_mark 'FULL_SLAB', and slabMark is what
+ *     changeSlabStatus refuses a dispatch on — so the cut fact the button
+ *     recorded was invisible to the rule that exists to act on it. (The status
+ *     is not in TRANSITIONS.dispatch.from, so such a slab could not be
+ *     dispatched from CTS; but `uncts` or `release` moves it back to AVAILABLE
+ *     and from there nothing refused it.)
+ *   * Nothing on a COMMERCIAL screen could find it. The status filter stopped
+ *     offering CTS (InventoryDashboard STATUSES) and the KPI card that replaced
+ *     that door renders inside `{!slabsOnly && kpi && (`, which never draws for
+ *     Commercial — the role that owns this button. The Mark filter IS drawn for
+ *     them, and after this change it is what finds the row.
+ *
+ * ONE-WAY, AND THAT IS THE HOUSE RULE, NOT A SHORTCUT. Every other writer of
+ * either slab_mark column carries `coalesce(slab_mark,'FULL_SLAB') =
+ * 'FULL_SLAB'` in its WHERE — slabMarkStore.setSlabMark, its
+ * refreshInventoryMirror, and both of scripts/0070's backfills. slabMark.ts
+ * states it as "only a FULL_SLAB moves": a slab is cut once, and a mark is never
+ * downgraded. So this never writes over a stored CTS or SAMPLE, and there is
+ * deliberately no inverse — see the note on `uncts` in changeSlabStatus.
+ *
+ * RAW SQL, NOT `db.finishedSlab.updateMany`, for the reason isMissingMarkColumn
+ * documents: the GENERATED CLIENT may not know the field even where the column
+ * exists (searchWhere.ts:61-63 calls that a real state of a working copy). A
+ * client-path write would fail there and the mark would go unrecorded on a
+ * database that can hold it. Raw SQL asks Postgres, which is the thing that
+ * actually has the column.
+ *
+ * BEST-EFFORT, AND IT NEVER FAILS THE STATUS CHANGE. Called only after the
+ * guarded status write has actually landed, and every failure is swallowed and
+ * logged — the same contract refreshInventoryMirror keeps, for the same reason:
+ * a database missing scripts/0070 must not make a legitimate status change
+ * throw. Failing here leaves exactly today's behaviour (status CTS, mark
+ * FULL_SLAB) plus a line in the log saying so.
+ */
+async function recordCutMark(sn: number, by?: string | null, source?: string | null): Promise<void> {
+  try {
+    const n: number = await db.$executeRaw`
+      UPDATE fg_finished_slab
+      SET    slab_mark = 'CTS'
+      WHERE  slab_number = ${sn}
+        AND  coalesce(slab_mark, 'FULL_SLAB') = 'FULL_SLAB'
+    `;
+    // 0 rows is the ordinary idempotent case — the slab was already marked cut,
+    // by fabrication's mirror or by an earlier press of this button — and is not
+    // worth an event or a line in the log. It is the COMMON case, not a corner:
+    // measured on live Neon 2026-09-03, 60 of the rows this action can act on
+    // (status AVAILABLE / RESERVED / PACKED) already carried slab_mark 'CTS',
+    // written by fabrication's mirror. The plant is live and that moves, so
+    // re-derive rather than trusting the 60:
+    //   SELECT count(*) FROM fg_finished_slab
+    //   WHERE status::text IN ('AVAILABLE','RESERVED','PACKED')
+    //     AND slab_mark IN ('CTS','SAMPLE');
+    if (n > 0) await writeSlabEvent(sn, "cts", { field: "slabMark", oldValue: "FULL_SLAB", newValue: "CTS", by, source });
+  } catch (e) {
+    // A missing column is scripts/0070 unapplied and is expected on such a
+    // database — quieter, but still said, because it is the reason the mark
+    // filter will not find the slab this action just recorded.
+    if (isMissingMarkColumn(e)) console.error("[inventory] slab", sn, "marked CTS by status only — fg_finished_slab.slab_mark not writable", e);
+    else console.error("[inventory] slab", sn, "marked CTS by status only — the mark write failed", e);
+  }
+}
+
+/**
  * Apply a lifecycle action to a list of slabs. Invalid transitions are skipped
  * (reported, never forced). Reserve sets PI/customer + expiry (default 7 days;
  * caller enforces that only Admin overrides). Release clears the hold. Every
  * change writes a SlabEvent (old -> new, who, source).
+ *
+ * `cts` ALSO WRITES THE MARK (recordCutMark above). `uncts`, `release` AND THE
+ * SLAB-INTAKE STATUS OVERRIDE DO NOT CLEAR IT, and that asymmetry is the point,
+ * not an oversight:
+ *
+ *   * The two directions are not each other's mirror image. Setting the mark can
+ *     only ever REFUSE a dispatch; clearing it can only ever ALLOW one, and this
+ *     module's standing rule for that difference is fail closed.
+ *   * Inventory cannot tell whose mark it is. fabrication's mirror
+ *     (slabMarkStore.refreshInventoryMirror) and scripts/0070's backfill write
+ *     the same column and the same value, so a clear here would silently erase a
+ *     real fabrication cut and put an already-cut slab back on a lorry — the
+ *     exact incident 0070/0071/0072 exist to close.
+ *
+ * THE COST IS REAL AND IS STATED ON THE SCREEN. `uncts` exists so a mis-click is
+ * recoverable (see TRANSITIONS in grading.ts); after this change it recovers the
+ * STATUS but not the mark, so a wrongly-marked slab returns to AVAILABLE and
+ * still will not dispatch as a full slab. There is no in-app un-mark anywhere in
+ * this codebase — not for fabrication's marks either — so this does not create
+ * that gap, it extends it to one more writer. InventoryDashboard says so beside
+ * the button rather than leaving it to be discovered on a lorry, and clearing a
+ * wrong mark is a database correction, like every other wrong mark.
  */
 export async function changeSlabStatus(
   slabNumbers: number[],
@@ -673,6 +765,10 @@ export async function changeSlabStatus(
       : action === "dispatch" ? ([effectivePi ? `PI ${effectivePi}` : null, opts.customer].filter(Boolean).join(" · ") || null)
       : null;
     await writeSlabEvent(sn, action, { field: "status", oldValue: slab.status, newValue: t.to + (detail ? ` (${detail})` : ""), by: opts.by, source: src });
+    // AFTER the guarded status write, and only for a slab it actually moved.
+    // Marking is permanent (recordCutMark), so it must not be applied to a slab
+    // whose status change lost the race above and was reported as skipped.
+    if (action === "cts") await recordCutMark(sn, opts.by, src);
     res.updated++;
   }
   return res;

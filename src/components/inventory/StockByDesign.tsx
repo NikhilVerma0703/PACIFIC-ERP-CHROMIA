@@ -352,6 +352,35 @@ export function StockByDesign({ canApprove = false, showPending = false, filterO
     const byDesign = new Map<string, Row[]>();
     for (const r of rows) {
       if (canApprove && r.pending) continue; // pending stock sits in the strip above
+      // ─── A LINE WITH NOTHING ON THE FLOOR IS A ROW OF DASHES, AND IT IS DROPPED ───
+      //
+      // A register line is one (design, thickness, batch) group over ALL slabs,
+      // dispatched included — that is what makes the `dispatched` count possible.
+      // But EVERY COLUMN THIS TABLE PRINTS is on-floor only (`status <>
+      // 'DISPATCHED'` in /api/inventory/summary; `dispatched` is in NUMS and is
+      // filtered out of both Cells and the tfoot). So a group whose slabs have all
+      // been dispatched renders Slabs, every grade column, Cut and R/W as "-": a
+      // full-width row of dashes, on the one screen whose whole banner effort is
+      // about not letting an empty-looking table be read as missing data.
+      //
+      // Measured on live Neon 2026-09-03, admin, approved-only: bay 'Bay 1' gave 2
+      // lines against a Grand Total of 1, the second being Costa 3 cm D1375 —
+      // one slab, dispatched — printing dashes across, under a footer that said
+      // "2 colour(s) in stock". Unfiltered the same day, 36 of 2,031 approved lines
+      // and 2 of 160 colours. The plant is live and these move; re-derive with
+      //   SELECT count(*) FROM (
+      //     SELECT count(*) FILTER (WHERE status <> 'DISPATCHED') AS total
+      //     FROM fg_finished_slab GROUP BY coalesce(design,'(no design)'),
+      //          coalesce(slab_thickness,'-'), coalesce(batch_number,'-')) s
+      //   WHERE total = 0;
+      //
+      // NOTHING PRINTED CHANGES BY DROPPING THEM. `total` is the count of on-floor
+      // slabs, so total === 0 forces every other rendered column of that row to 0
+      // as well — the design roll-up, the thickness sub-total and the Grand Total
+      // are all identical with the line and without it. What does change is the
+      // footer's colour count, and that is the second half of the same bug: it
+      // says "in stock" about a colour holding no stock.
+      if (r.total === 0) continue;
       if (term && !r.design.toLowerCase().includes(term)) continue;
       if (thick && r.thickness !== thick) continue;
       if (batchQ.trim() && !r.batch.toLowerCase().includes(batchQ.trim().toLowerCase())) continue;
@@ -635,8 +664,20 @@ export function StockByDesign({ canApprove = false, showPending = false, filterO
           Every number below — the Slabs total, the grade split, the grand total
           in the footer — is computed over the filtered stock, and a person
           reading a register they believe is the whole plant will quote it as
-          one. The count of colours under the table is the same number under a
-          filter, so it cannot carry this on its own. */}
+          one.
+
+          THE SENTENCE THAT USED TO END THIS COMMENT WAS WRONG and is replaced
+          rather than softened. It said the colour count under the table "is the
+          same number under a filter, so it cannot carry this on its own". It is
+          not: that count is `groups.length`, which is exactly what the four
+          server filters and the three browser ones narrow — bay 'Bay 1' on live
+          Neon 2026-09-03 gave 2 colours against 160 unfiltered. The count moves
+          with the filter like everything else here.
+
+          The banner is still the right place for the disclosure, for the reason
+          the first paragraph gives — the numbers being narrowed are the ones in
+          the table, not the tally under it — but not for the reason that
+          sentence gave. */}
       {(shownAny || refetching) && !loadError && (
         <p className="rounded-lg border border-brand/30 bg-brand/5 px-3 py-2 text-xs font-medium text-gray-700">
           {shownAny
@@ -831,6 +872,12 @@ export function StockByDesign({ canApprove = false, showPending = false, filterO
           )}
         </table>
       </div>
+      {/* "IN STOCK", AND NOW IT MEANS IT. `groups` no longer contains lines whose
+          on-floor total is 0 (see the drop in the groups memo), so a colour whose
+          every slab has been dispatched is not counted here as one the yard holds.
+          It used to be: bay 'Bay 1' on live Neon 2026-09-03 read "2 colour(s) in
+          stock" over a Grand Total of 1. One change fixes both halves, because
+          this line and the table are the same list. */}
       {!loading && <p className="text-xs text-gray-400">{groups.length.toLocaleString("en-IN")} colour(s) in stock.</p>}
       {qc && (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 sm:p-8" onClick={closeQuality}>

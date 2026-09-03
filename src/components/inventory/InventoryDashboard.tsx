@@ -731,11 +731,50 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
           <div>
             <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400">Stock</p>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-8">
-              {card("Total Slabs", kpi.total, "text-gray-900", {})}
+              {/* ═══ TOTAL SLABS COUNTS DISPATCHED STOCK. THE REGISTER BELOW DOES NOT ═══
+                  This card has no status clause (route: `db.finishedSlab.count({ where: w })`),
+                  so it counts stock that has already left. Every column the stock register
+                  prints carries `status <> 'DISPATCHED'`, so its Grand Total does not. Two
+                  numbers, one screen, captions that both name the same filter.
+
+                  Unfiltered nobody confuses them — measured on live Neon 2026-09-03, admin,
+                  approved-only: 22,418 against a Grand Total of 15,774. Under a REGISTER
+                  filter they land next to each other and look like the same question asked
+                  twice: bay 'Bay 4' the same day reads 4,565 under "These cards count bay
+                  Bay 4 only" against 4,459 under "every count below is for Bay 4 only".
+                  The plant is live, so re-derive rather than quoting those:
+                    SELECT count(*) FILTER (WHERE status <> 'DISPATCHED') AS on_floor,
+                           count(*) FILTER (WHERE status =  'DISPATCHED') AS dispatched
+                    FROM fg_finished_slab WHERE bay_number = 'Bay 4';
+                  (the KPI figures are additionally narrowed by approvedOnlyWhere).
+
+                  THE FIX IS THE DISPATCHED CARD BELOW, and it is the one of the three
+                  options on offer that adds a fact instead of a sentence. The 106 had
+                  nothing on screen to attach to — /api/inventory/kpi has always returned
+                  `dispatched` and this strip has never rendered it — so the gap read as a
+                  disagreement. With the card drawn, Available + Reserved + Packed +
+                  Returned + Dispatched + Chromia (+ the legacy CTS card while it is
+                  non-zero) is every value of the SlabStatus enum, and it closes on Total
+                  Slabs exactly: verified against live Neon 2026-09-03, unfiltered
+                  22,418 = 15,718 + 0 + 0 + 0 + 6,644 + 55 + 1, and under bay 'Bay 4'
+                  4,565 = 4,456 + 0 + 0 + 0 + 106 + 3 + 0.
+
+                  Not chosen: making Total Slabs on-floor under a register filter, which
+                  would give the same card two meanings depending on a control somewhere
+                  else on the page; and a sentence alone, which explains a number the
+                  strip still refuses to show. A card is clickable, and the click lands on
+                  the dispatched slabs themselves.
+
+                  IF A STATUS IS EVER ADDED TO THE ENUM WITHOUT A CARD HERE, the row stops
+                  closing and this comment is the thing that says so. */}
+              {card("Total Slabs", kpi.total, "text-gray-900", {},
+                "Every slab matching the filters, INCLUDING stock already dispatched — so this is larger than the stock register's Grand Total below, which counts only what is still on the floor. The difference is the Dispatched card beside it. Click to clear the filters and list the whole yard.")}
               {card("Available", kpi.available, "text-emerald-600", { status: "AVAILABLE" })}
               {card("Reserved", kpi.reserved, "text-amber-600", { status: "RESERVED" })}
               {card("Packed", kpi.packed, "text-amber-600", { status: "PACKED" })}
               {card("Returned", kpi.returned, "text-sky-600", { status: "RETURNED" })}
+              {card("Dispatched", kpi.dispatched, "text-gray-500", { status: "DISPATCHED" },
+                "Slabs that have left the yard. Counted in Total Slabs above and in NO column of the stock register below, which counts stock still on the floor — this card is that difference. Click to see them.")}
               {/* TWO CARDS ABOUT CUT SLABS, AND THEY ARE NOT THE SAME CARD — the same
                   distinction the register draws between its CTS and Cut columns.
 
@@ -1228,6 +1267,36 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
                 {st.action === "reserve" && !admin && <p className="pb-2 text-xs text-gray-400">7-day hold (Admin can change)</p>}
               </div>
               {tooMany && <p className="mt-2 text-xs font-medium text-red-600">{sel.size} slabs selected — actions are limited to {MAX_ACTION_SLABS} at a time. Remove some from the selection above.</p>}
+              {/* ─────────── MARK CTS IS PERMANENT, AND IT SAYS SO BEFORE THE CLICK ────
+                  changeSlabStatus's `cts` now also writes fg_finished_slab.slab_mark
+                  = 'CTS'. That is what makes the cut FINDABLE — by the Mark filter
+                  above, which Commercial does have, unlike the status filter (CTS
+                  left it) and unlike the "CTS status (legacy)" card (it renders
+                  inside `!slabsOnly`, so the role that owns this button never sees
+                  it) — and it is what makes the dispatch rule refuse the slab, since
+                  that rule reads the mark and not the status.
+
+                  The mark is ONE-WAY everywhere in this codebase: fabrication's own
+                  writers all carry "only a FULL_SLAB moves" and nothing anywhere
+                  clears one. So "Undo CTS" returns the STATUS to Available and
+                  leaves the mark standing. That asymmetry is deliberate and safe in
+                  the only direction that matters (setting a mark can only refuse a
+                  dispatch; clearing one can only allow it) — but it is also a thing
+                  a person must know BEFORE pressing this on 500 slabs, because
+                  `uncts` is the documented recovery for a mis-click and it no longer
+                  recovers everything. Hence a line on the screen, not a tooltip. */}
+              {/* Shown for the two actions it is about, and for both roles: the
+                  Commercial select and the admin ACTIONS list write the same
+                  st.action, and Commercial's default ("" resolving to dispatch)
+                  is deliberately not one of them — a dispatch note about cutting
+                  is noise on the screen that role uses all day. */}
+              {(st.action === "cts" || st.action === "uncts") && (
+                <p className="mt-2 text-xs font-medium text-amber-700">
+                  Mark CTS also records the cut on the slab itself, so it stops being dispatchable as a full
+                  slab and the Mark filter finds it. That mark is permanent — Undo CTS puts the status back to
+                  Available but does not un-cut the slab.
+                </p>
+              )}
               <p className="mt-2 text-xs text-gray-500">Blank field = unchanged. Reservations auto-release after the hold lapses. Every change is logged to the audit trail.</p>
             </div>
           )}

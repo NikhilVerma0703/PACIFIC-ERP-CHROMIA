@@ -24,8 +24,8 @@ import {
   type ShiftLetter,
 } from "@/lib/shiftScoreMath";
 import {
-  rollUpByLetter, splitPoolByLetter, plantTotals, projectOutstanding,
-  type LetterTotals, type LetterShare,
+  rollUpByLetter, splitPoolByLetter, plantTotals, projectOutstanding, decomposeCounted,
+  type LetterTotals, type LetterShare, type CountedParts,
 } from "@/lib/incentiveMath";
 import { poolFor, nextTier, FLOOR_SLABS, TIERS, pctOfSalary, bandAmounts, ROLES } from "@/lib/incentiveLadder";
 
@@ -188,6 +188,29 @@ export interface IncentiveMonth {
    *  printed. See incentiveMath.ts. */
   shares: { weighted: LetterShare[]; aggregate: LetterShare[] };
   plant: ReturnType<typeof plantTotals>;
+  /** POOL.COUNTED, TAKEN APART: good slabs + what the slow-hour doubling adds
+   *  in CREDIT + what per-instance rounding adds. The three sum to
+   *  `pool.counted` exactly, per letter and for the plant, because `rounding`
+   *  is the leftover — so a reader adding the printed row lands on the figure
+   *  the ladder is read off instead of a figure two apart from it.
+   *
+   *  IT DOES NOT CHANGE THE PAYOUT. `pool.counted` is still plant.points,
+   *  still the sum of scoreShift's per-instance Math.round; this only names
+   *  what was already inside it. See CountedParts in incentiveMath.ts for the
+   *  two errors the old "credit + slowSlabs" sub-line made.
+   *
+   *  `disagreements` is 0 whenever the rebuilt doubling and the score's own
+   *  weighted total agree — measured 0 on live June, July and August 2026
+   *  (2026-09-03, re-measured by scripts/verify-grade-columns.mts, which
+   *  asserts it). A non-zero value on a live plant is most likely a slab
+   *  re-graded between the score's QC read and this file's, and the page says
+   *  so rather than printing a decomposition that has stopped describing the
+   *  score. */
+  decomposition: {
+    byLetter: Record<ShiftLetter, CountedParts>;
+    plant: CountedParts;
+    disagreements: number;
+  };
   pool: {
     counted: number;
     poolNow: number;
@@ -315,8 +338,13 @@ async function present(model: string, slabs: number[]): Promise<Set<number>> {
 const emptyStages = (): Record<Stage, number> => ({ "at-qc": 0, "at-polish": 0, pressed: 0, nowhere: 0, routed: 0 });
 
 /** What one claimed slab is, for the groups table: the design and batch of the
- *  MIS hour that claimed it, and whether that hour ran a slow product. */
-interface ClaimedSlab { mult: number; design: string | null; batch: string | null }
+ *  MIS hour that claimed it, whether that hour ran a slow product, and WHICH
+ *  SHIFT INSTANCE claimed it. `key` is `${anchor}${letter}` — shiftKeyOf's own
+ *  string — and it is here so the doubling's CREDIT can be totalled per
+ *  instance and checked against that instance's rounded `points`. See
+ *  decomposeCounted in incentiveMath.ts for why that credit cannot come from
+ *  the score itself. */
+interface ClaimedSlab { mult: number; design: string | null; batch: string | null; key: string }
 
 /** EVERY SLAB THE MONTH CLAIMED, by number, with the MIS hour that claimed it.
  *
@@ -408,7 +436,7 @@ async function claimedByMonth(from: string, scoredTo: string, now: Date, scored:
       if (!who) claimedBy.set(n, who = new Set());
       who.add(key);
       const cur = owner.get(n);
-      if (cur == null || mult < cur.mult) owner.set(n, { mult, design: r.design ?? null, batch: r.batch ?? null });
+      if (cur == null || mult < cur.mult) owner.set(n, { mult, design: r.design ?? null, batch: r.batch ?? null, key });
     }
   }
 
@@ -565,6 +593,16 @@ export async function incentiveMonth(month: string, now = new Date()): Promise<I
     return g;
   };
   let unreconciled = 0;
+  // THE DOUBLING'S CREDIT, PER SHIFT INSTANCE — the one quantity the counted
+  // total is built from that scoreShift does not report. It accumulates the
+  // weighted total into a local and returns Math.round() of it, so neither the
+  // exact figure nor the slow slabs' credit survives the function; only
+  // `slowSlabs`, a COUNT, does, and a count is not a contribution (a slow
+  // grade B is one slab and half a slab of credit). Totalled here off the same
+  // rebuild the grade columns use, keyed by shiftKeyOf's own string, and
+  // checked instance by instance against the score's `points` — see
+  // `decomposition` below.
+  const doublingByInstance = new Map<string, number>();
   for (const [slab, own] of claimed) {
     const waiting = waitingBySlab.get(slab);
     // The design and batch of a WAITING slab come from the TrackedSlab, not
@@ -591,6 +629,11 @@ export async function incentiveMonth(month: string, now = new Date()): Promise<I
       continue;
     }
     g.claimed += 1; g.graded += 1;
+    // gradeCredit x (mult - 1): what this slab adds ON TOP of its plain credit
+    // because its hour ran a slow standard. A reject adds nothing (credit 0),
+    // a B adds a half, an A adds one.
+    if (own.mult > 1 && credit > 0)
+      doublingByInstance.set(own.key, (doublingByInstance.get(own.key) ?? 0) + credit * (own.mult - 1));
     const u = String(q.qualityGrade).trim().toUpperCase();
     // A2 before A: "A2".startsWith("A") is true, and the whole point of the
     // column is that the two are told apart.
@@ -637,6 +680,9 @@ export async function incentiveMonth(month: string, now = new Date()): Promise<I
   }
   phantomRuns.sort((a, b) => b.count - a.count);
 
+  // ---- The counted total, taken apart so the parts add up to it ------------
+  const decomposition = decomposeCounted(data.shifts, doublingByInstance);
+
   // ---- The pool, now and if the waiting slabs grade like the month has ------
   const counted = plant.points;
   const share = plant.rawShare;
@@ -674,7 +720,7 @@ export async function incentiveMonth(month: string, now = new Date()): Promise<I
   return {
     month, from, to, scoredTo: data.to, asOf: now.toISOString(),
     monthEnded: shiftRange(to, "C").end <= now,
-    letters, shares, plant,
+    letters, shares, plant, decomposition,
     pool: { counted, poolNow: poolFor(counted), floor: FLOOR_SLABS, next: nextTier(counted), ladder: TIERS },
     outstanding: { total: slabs.length, claimed: monthClaimed, unreconciled, unclaimed, contested, byStage, real, byLetter, groups, slabs, phantomRuns },
     projection: {

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { gradeCredit } from "../src/lib/shiftScoreMath.ts";
+import { decomposeCounted, type CountedInstance } from "../src/lib/incentiveMath.ts";
 
 // THE MONTH INCENTIVE TABLE — /scoreboard/incentive?month=YYYY-MM.
 //
@@ -46,6 +47,9 @@ const page = read("../src/app/scoreboard/incentive/page.tsx");
 // again will be reading THIS file and not those two.
 const tracker = read("../scripts/incentive-tracker.mts");
 const notice = read("../scripts/make-incentive-month-pdf.py");
+// incentiveMath.ts is the one file in this chain with no @/ alias imports, so
+// its arithmetic can be RUN here as well as read.
+const mathLib = read("../src/lib/incentiveMath.ts");
 
 /** THE SAME FILE WITH ITS COMMENTS TAKEN OUT.
  *
@@ -669,4 +673,182 @@ test("the routed column still exists, and the row's invariant still names it", (
   assert.match(table, /graded \+ still waiting \+ routed = claimed/, "the invariant must still name all three terms");
   assert.match(table, /g\.stages\.routed \? "text-amber-700"/, "the column must still be rendered");
   assert.equal(CLAIM_BY_MONTH.length, 3, "the months measured above are the evidence for 'expected 0'");
+});
+
+// ───────────────────────── the counted total, and the parts that make it ────
+//
+// THE KPI SAID "5,105½ good slabs + 1,327 counted a second time" UNDER A VALUE
+// OF 6,432, and 5,105.5 + 1,327 is 6,432.5. The half-slab discrepancy read as a
+// rounding note. It was two errors, of fourteen slabs and of thirteen and a
+// half, pointing in opposite directions and very nearly cancelling:
+//
+//   * slowSlabs is a COUNT OF THE SLABS the doubling applied to. What the
+//     doubling CONTRIBUTES is credit — gradeCredit x (multiplier - 1) — and a
+//     slow slab that graded B is one slab and half a slab. So the count runs
+//     above the contribution by half for every slow B.
+//   * scoreShift rounds EVERY SHIFT INSTANCE (points = Math.round(weighted)).
+//     A weighted total can only end in .0 or .5, and Math.round takes .5 UP, so
+//     the drift is one-directional, grows with the instance count, and sat
+//     inside `counted` with no name.
+//
+// NOTHING ABOUT THE PAYOUT CHANGED. `points`, and with it pool.counted, the
+// ladder tier, the projection, the three shift shares under both quality
+// methods and every band amount, are the same numbers before and after —
+// checked by running incentiveMonth for 2026-06, 2026-07 and 2026-08 on one
+// clock against the pre-edit code and diffing the whole snapshot (2026-09-03:
+// byte-identical on all three). Only the sentences beside the figures changed.
+//
+// The live figures MOVE HOUR BY HOUR as QC files, so none is asserted as a
+// constant here; scripts/verify-grade-columns.mts recomputes them against live
+// data and asserts the arithmetic there. What is asserted HERE is the
+// arithmetic itself, which does not move: decomposeCounted is pure and imports
+// no @/ alias, so unlike incentiveMonth.ts it can be RUN rather than only read.
+
+const mkInstance = (o: Partial<CountedInstance> & { anchor: string; shift: CountedInstance["shift"] }): CountedInstance =>
+  ({ quantity: 1, people: [], graded: 0, rawQuality: null, points: 0, ...o });
+
+test("credit + doubling + rounding is the counted total, exactly", () => {
+  // Two instances of A, the first of them ending in a half: 10 graded at a 0.75
+  // share is 7.5 credit, +2 doubling is 9.5, which scoreShift rounded to 10.
+  const rows = [
+    mkInstance({ anchor: "2026-08-01", shift: "A", graded: 10, rawQuality: 0.75, points: 10 }),
+    mkInstance({ anchor: "2026-08-02", shift: "A", graded: 4, rawQuality: 0.5, points: 2 }),
+    mkInstance({ anchor: "2026-08-01", shift: "B", graded: 6, rawQuality: 0.5, points: 3 }),
+  ];
+  const d = decomposeCounted(rows, new Map([["2026-08-01A", 2]]));
+  assert.equal(d.byLetter.A.credit, 9.5, "7.5 + 2 good slabs");
+  assert.equal(d.byLetter.A.doubling, 2);
+  assert.equal(d.byLetter.A.exact, 11.5, "the pre-rounding total, which ends in a half");
+  assert.equal(d.byLetter.A.rounding, 0.5, "one instance ended in a half and rounded up");
+  assert.equal(d.byLetter.A.roundedUp, 1);
+  assert.equal(d.byLetter.A.points, 12);
+  for (const p of [d.byLetter.A, d.byLetter.B, d.byLetter.C, d.plant])
+    assert.equal(p.credit + p.doubling + p.rounding, p.points, "the printed row must add to the printed total");
+  assert.equal(d.plant.points, 15);
+  assert.equal(d.disagreements, 0);
+});
+
+test("the doubling is CREDIT, and a slow grade B makes it smaller than the slab count", () => {
+  // The exact shape the old sub-line got wrong: two slow slabs, one A and one
+  // B. The COUNT is 2. The CREDIT they add is 1 + 0.5. Printing the count where
+  // the contribution belongs overstates the month by half a slab per slow B —
+  // 14 slabs on live August 2026, measured 2026-09-03 and moving as QC files.
+  const rows = [mkInstance({ anchor: "2026-08-01", shift: "C", graded: 2, rawQuality: 0.75, points: 3 })];
+  const d = decomposeCounted(rows, new Map([["2026-08-01C", 1.5]]));
+  assert.equal(d.byLetter.C.credit, 1.5, "one A and one B");
+  assert.equal(d.byLetter.C.doubling, 1.5, "NOT 2 — the B doubles to one slab, not to two");
+  assert.equal(d.byLetter.C.exact, 3);
+  assert.equal(d.byLetter.C.rounding, 0, "nothing to round: the exact total is whole");
+});
+
+test("the rounding residual can only be a plus, and never more than half an instance each", () => {
+  // The bound is the whole reason the residual is worth naming: rounding a
+  // multiple of a half, per instance, can only ADD, and only 0.5 at a time. A
+  // residual outside it is not rounding at all, and
+  // scripts/verify-grade-columns.mts asserts the same bound on live data.
+  const rows = Array.from({ length: 8 }, (_, i) =>
+    mkInstance({ anchor: `2026-08-0${i + 1}`, shift: "B", graded: 1, rawQuality: 0.5, points: 1 }));
+  const d = decomposeCounted(rows, new Map());
+  assert.equal(d.byLetter.B.exact, 4, "eight halves");
+  assert.equal(d.byLetter.B.points, 8, "each rounded up on its own");
+  assert.equal(d.byLetter.B.rounding, 4);
+  assert.equal(d.byLetter.B.roundedUp, 8);
+  assert.equal(d.byLetter.B.rounding, d.byLetter.B.instances / 2, "the bound, met exactly");
+  assert.equal(d.disagreements, 0);
+});
+
+test("an instance the score and the rebuilt doubling disagree about is counted, not swallowed", () => {
+  // On a live plant the doubling is rebuilt from a QC read milliseconds after
+  // the score's own. A slab re-graded in between makes one instance's leftover
+  // fall outside [0, +½]. The row still ADDS UP — `rounding` is defined as the
+  // leftover — so the identity proves nothing here and this count is the only
+  // signal there is. 0 on live June, July and August 2026 (2026-09-03).
+  const rows = [mkInstance({ anchor: "2026-08-01", shift: "A", graded: 4, rawQuality: 0.5, points: 9 })];
+  const good = decomposeCounted(rows, new Map([["2026-08-01A", 7]]));
+  assert.equal(good.disagreements, 0, "2 + 7 = 9, nothing left to round");
+  const bad = decomposeCounted(rows, new Map([["2026-08-01A", 4]]));
+  assert.equal(bad.disagreements, 1, "2 + 4 = 6 against a score of 9 is not rounding");
+  assert.equal(bad.byLetter.A.credit + bad.byLetter.A.doubling + bad.byLetter.A.rounding, 9,
+    "and the row still adds up, which is exactly why the count has to exist");
+});
+
+test("the decomposition counts the instances rollUpByLetter counts, and no others", () => {
+  // Same filter, or `credit` here and `credit` on the three-shifts table are
+  // sums over two different populations and the row stops adding up.
+  const rows = [
+    mkInstance({ anchor: "2026-08-01", shift: "A", quantity: 0, people: [], graded: 0, rawQuality: null, points: 0 }),
+    mkInstance({ anchor: "2026-08-02", shift: "A", quantity: 0, people: ["Ramesh"], graded: 2, rawQuality: 1, points: 2 }),
+  ];
+  const d = decomposeCounted(rows, new Map());
+  assert.equal(d.byLetter.A.instances, 1, "an instance with no slabs and no crew is not a shift");
+  assert.match(after(mathLib, "export function decomposeCounted", 1400), /r\.quantity > 0 \|\| r\.people\.length > 0/,
+    "the filter must be the one rollUpByLetter uses");
+  assert.match(after(mathLib, "export function rollUpByLetter", 400), /r\.quantity > 0 \|\| r\.people\.length > 0/,
+    "…and that is where it is copied from");
+});
+
+test("the doubling's credit is totalled per shift instance, because the score does not report it", () => {
+  // scoreShift accumulates `weighted` into a local and returns
+  // Math.round(weighted); neither the exact total nor the slow slabs' credit
+  // survives the function, only `slowSlabs`, which is a count. So the credit is
+  // totalled off the same claim rebuild the grade columns use, keyed by
+  // shiftKeyOf's own string so it lands on the instance the score scored.
+  assert.match(lib, /const doublingByInstance = new Map<string, number>\(\)/,
+    "the doubling must be accumulated per shift instance");
+  assert.match(lib, /doublingByInstance\.set\(own\.key, \(doublingByInstance\.get\(own\.key\) \?\? 0\) \+ credit \* \(own\.mult - 1\)\)/,
+    "…as gradeCredit x (mult - 1), which is what a slow slab ADDS, not how many slabs there are");
+  assert.match(claimedByMonthFn(), /owner\.set\(n, \{ mult, design: r\.design \?\? null, batch: r\.batch \?\? null, key \}\)/,
+    "the claim must carry the shift instance that claimed the slab");
+  assert.match(lib, /decomposeCounted\(data\.shifts, doublingByInstance\)/,
+    "and the decomposition must be built from the SCORE's instances, not from the rebuild's own");
+});
+
+test("the screen prints the doubling's CREDIT, and names the rounding instead of hiding it", () => {
+  const kpi = after(page, 'label="Counted good slabs"', 400);
+  assert.match(kpi, /decomposition\.plant\.doubling/, "the sub-line must print the doubling's credit");
+  assert.match(kpi, /decomposition\.plant\.rounding/, "…and the rounding as a term of its own");
+  assert.ok(!/good slabs \+ \$\{fmt\(plant\.slowSlabs\)\} counted a second time/.test(page),
+    "the sub-line is printing the slow-slab COUNT as the doubling's contribution again");
+  // The "Counted twice" KPI is still a slab count and must say so — that is what
+  // a shift wants to know. What it must not do is claim to be the contribution.
+  const twice = after(page, 'label="Counted twice"', 400);
+  assert.match(twice, /a count of SLABS/, "the count must be labelled a count");
+  assert.ok(!/each added once more, so \+\$\{fmt\(plant\.slowSlabs\)\} to the count/.test(page),
+    "the KPI still asserts the slab count is what the doubling adds");
+  // …and the three-shifts table must let a reader add the row across.
+  const table = page.slice(page.indexOf("The three shifts"), page.indexOf("What each person would take"));
+  assert.match(table, /Good \+ doubling \+ rounding = Counted/, "the table must state the identity it now satisfies");
+  assert.match(table, /half\(d\.doubling\)/, "a Doubling column, per letter");
+  assert.match(table, /drift\(d\.rounding\)/, "a Rounding column, per letter");
+  assert.match(table, /half\(decomposition\.plant\.doubling\)/, "…and both on the plant row, or the footer runs narrower than the header");
+  assert.match(table, /drift\(decomposition\.plant\.rounding\)/);
+  assert.match(table, /decomposition\.disagreements > 0/,
+    "the screen must say when the doubling has stopped describing the score");
+});
+
+test("the verification script re-derives the decomposition instead of certifying the old one", () => {
+  // scripts/verify-grade-columns.mts printed "credit + slow slabs counted twice
+  // = <sum> exact … (residual -0.5)" directly above ALL CHECKS PASSED, so the
+  // one line it printed about the figure the ladder is read off was hiding the
+  // drift it exists to surface.
+  const v = read("../scripts/verify-grade-columns.mts");
+  assert.ok(!code(v).includes("+ slow slabs counted twice ${shown(slowSlabs)}"),
+    "the script still prints the slab count as the exact total's second term");
+  assert.match(v, /decomposition\.plant\.doubling/, "the doubling must be read from the decomposition");
+  assert.match(v, /the residual is within \[0, instances \/ 2\]/,
+    "the residual must be ASSERTED into the band per-instance rounding can produce, not merely printed");
+  assert.match(v, /no shift instance where the doubling and the score disagree beyond rounding/,
+    "and the per-instance disagreement count must fail the run");
+});
+
+test("the notice prints the same three parts, and refuses a snapshot without them", () => {
+  assert.ok(!code(notice, true).includes('slow_extra = P["points"] - P["credit"]'),
+    "the notice still infers the difficulty rule's worth as points - credit, which is the doubling AND the rounding drift");
+  assert.ok(notice.includes('DEC = M["decomposition"]'), "the notice must read the snapshot's own decomposition");
+  assert.ok(notice.includes('if "decomposition" not in M'),
+    "a snapshot cut before the decomposition existed must stop the render, as the grade-column guard beside it does");
+  assert.match(notice, /the difficulty rule caught \{num\(P\['slowSlabs'\]\)\} good slabs/,
+    "the slab count must be described as a count of slabs");
+  assert.match(notice, /<b>\{half\(doubling\)\}<\/b> counted slabs/, "and the rule's worth must be the credit it adds");
+  assert.match(notice, /\{drift\(rounding\)\}/, "the rounding must appear as its own signed term");
 });

@@ -66,10 +66,15 @@ export type HourRow = {
    *  carried alongside `made` (which is only its WIDTH) so a caller can name
    *  the individual slab numbers rather than just count them. The monthly
    *  report needs the numbers themselves to ask QC how those slabs graded,
-   *  whenever QC reached them: for August 2026 the month's hours declared
-   *  6,262 slabs across 6,261 distinct numbers, and 444 of those numbers were
-   *  not graded until September (measured on live Neon 2026-09-03), so a grade
-   *  join keyed on the month's own QC window would have missed them.
+   *  whenever QC reached them — hundreds of a month's slabs get their QC row
+   *  only after the month has closed, so a grade join keyed on the month's own
+   *  QC window would miss them. That count climbs hour by hour while a month is
+   *  fresh (August 2026 read 348 on the morning of 2026-09-03 and 374 that
+   *  evening); scripts/verify-grade-columns.mts re-derives it, and no figure
+   *  here should be quoted from this comment. The numbers also let the report
+   *  see one typed twice: August 2026 declared 6,262 slabs across 6,261
+   *  distinct numbers until scripts/0073 trimmed the 11-12 hour of 5 August,
+   *  and has read 6,261 across 6,261 since (live Neon, 2026-09-03).
    *  Null when the hour typed no range; kept raw, so every caller applies its
    *  own guard — see slabsOf/rangeImpossible above and the enumeration in
    *  lib/monthlyReport. */

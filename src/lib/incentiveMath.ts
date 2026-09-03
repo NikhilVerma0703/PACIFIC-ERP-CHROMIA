@@ -115,6 +115,116 @@ export function rollUpByLetter(rows: readonly ScoredInstance[]): LetterTotals[] 
   });
 }
 
+/** The slice of ShiftScore the counted-slab DECOMPOSITION needs. It is
+ *  ScoredInstance plus `anchor`, and it is a separate type rather than a
+ *  widening of ScoredInstance so that nothing which already builds one has to
+ *  change. `anchor` is here because the doubling's CREDIT cannot be derived
+ *  from a ShiftScore at all — see decomposeCounted — and has to be handed in
+ *  per shift INSTANCE, which is what anchor + shift names. */
+export interface CountedInstance {
+  anchor: string;
+  shift: ShiftLetter;
+  quantity: number;
+  people: string[];
+  graded: number;
+  rawQuality: number | null;
+  points: number;
+}
+
+/** `points` — THE FIGURE THE LADDER IS READ OFF — TAKEN APART SO THAT A READER
+ *  ADDING THE PARTS UP LANDS ON IT.
+ *
+ *      credit + doubling + rounding = points
+ *
+ *  exactly and by construction, because `rounding` is DEFINED as the leftover.
+ *  The screen used to print `credit` and `slowSlabs` beside `points` and let a
+ *  reader infer the sum, and that sum was wrong twice over:
+ *
+ *    - `slowSlabs` is a COUNT OF SLABS, not the credit those slabs contribute.
+ *      A grade B slab in a slow hour is counted once in `slowSlabs` and adds
+ *      half a slab of credit, so the count overstates the contribution by half
+ *      for every slow B. On live August 2026 the two differed by 14 (measured
+ *      2026-09-03; re-measure with scripts/verify-grade-columns.mts, which
+ *      prints both). Hence `doubling`, which is the CREDIT.
+ *    - scoreShift rounds EVERY SHIFT INSTANCE, and every fraction it can meet
+ *      is exactly a half, which Math.round takes UP — so the rounding drift is
+ *      one-directional and grows with the number of instances. It is never
+ *      negative and never more than half an instance each. Hence `rounding`,
+ *      named instead of hidden inside a sum that did not add.
+ *
+ *  Both figures MOVE HOUR BY HOUR while QC files, so nothing here carries a
+ *  measured constant. */
+export interface CountedParts {
+  /** Good slabs: A = 1, B = ½, C = 0. Summed exactly as LetterTotals.credit
+   *  is, over the same instances, so the two are the same number. */
+  credit: number;
+  /** What the slow-hour doubling ADDS, in credit — sum over graded good slabs
+   *  in slow hours of gradeCredit x (multiplier - 1). NOT a slab count. */
+  doubling: number;
+  /** credit + doubling: the volume total BEFORE scoreShift rounds each shift
+   *  instance. Ends in a half whenever an odd number of halves survive. */
+  exact: number;
+  /** points - exact. Per instance this is 0 or +0.5; over a month it is a
+   *  small positive number, and it can never exceed instances / 2. */
+  rounding: number;
+  points: number;
+  instances: number;
+  /** How many instances the rounding actually moved (each by exactly +0.5). */
+  roundedUp: number;
+}
+
+const blankParts = (): CountedParts =>
+  ({ credit: 0, doubling: 0, exact: 0, rounding: 0, points: 0, instances: 0, roundedUp: 0 });
+
+/** Decompose the counted total per letter and for the plant.
+ *
+ *  `doublingByInstance` is keyed `${anchor}${shift}` and comes from the caller
+ *  because ShiftScore does not report it: scoreShift accumulates the weighted
+ *  total into a local and returns only `Math.round(weighted)`, so the exact
+ *  figure and the slow slabs' credit both leave the function unrecorded. An
+ *  instance missing from the map contributes 0, which is right for a month
+ *  with no slow hours and is also what a caller that cannot rebuild the claim
+ *  should hand in — the decomposition then degenerates to "credit + rounding",
+ *  still adding to `points`.
+ *
+ *  `disagreements` is the check: per instance `points - exact` must lie in
+ *  [0, 0.5], because that is the only thing rounding a multiple of a half can
+ *  do. Anything else means the caller's doubling and the score's own weighted
+ *  total have drifted — on a live plant most likely a slab re-graded between
+ *  the two reads, and worth saying so rather than printing a decomposition
+ *  that quietly stops describing the score. */
+export function decomposeCounted(
+  rows: readonly CountedInstance[],
+  doublingByInstance: ReadonlyMap<string, number>,
+): { byLetter: Record<ShiftLetter, CountedParts>; plant: CountedParts; disagreements: number } {
+  const byLetter: Record<ShiftLetter, CountedParts> = { A: blankParts(), B: blankParts(), C: blankParts() };
+  const plant = blankParts();
+  let disagreements = 0;
+  for (const r of rows) {
+    // The same population rollUpByLetter counts, so `instances` and `credit`
+    // here are the same instances and the same number as LetterTotals'.
+    if (!(r.quantity > 0 || r.people.length > 0)) continue;
+    const credit = (r.rawQuality ?? 0) * r.graded;
+    const doubling = doublingByInstance.get(`${r.anchor}${r.shift}`) ?? 0;
+    const drift = r.points - (credit + doubling);
+    if (drift < -1e-9 || drift > 0.5 + 1e-9) disagreements += 1;
+    for (const t of [byLetter[r.shift], plant]) {
+      t.credit += credit;
+      t.doubling += doubling;
+      t.points += r.points;
+      t.instances += 1;
+      if (Math.abs(drift) > 1e-9) t.roundedUp += 1;
+    }
+  }
+  // Derived last, from the totals, so the identity holds on the printed row
+  // and not merely instance by instance.
+  for (const t of [byLetter.A, byLetter.B, byLetter.C, plant]) {
+    t.exact = t.credit + t.doubling;
+    t.rounding = t.points - t.exact;
+  }
+  return { byLetter, plant, disagreements };
+}
+
 export interface LetterShare {
   shift: ShiftLetter;
   /** The quality score the split used, under the chosen method. */

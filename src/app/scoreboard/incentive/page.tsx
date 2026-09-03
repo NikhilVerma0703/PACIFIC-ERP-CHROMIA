@@ -74,6 +74,13 @@ const pct = (n: number | null | undefined, d = 1) => (n == null ? "—" : `${(n 
 const inr = (n: number) => "₹" + new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(n));
 const lakh = (n: number) => (n >= 100_000 ? `₹${(n / 100_000).toFixed(n % 100_000 ? 1 : 0)} lakh` : inr(n));
 const half = (n: number) => (Number.isInteger(n) ? fmt(n) : `${fmt(Math.floor(n))}½`);
+/** A PER-INSTANCE ROUNDING RESIDUAL, always signed and always to one decimal,
+ *  so it reads as a correction to a sum rather than as a count of slabs. It is
+ *  a multiple of a half by construction: scoreShift rounds each shift
+ *  instance's weighted total, that total can only end in .0 or .5, and
+ *  Math.round takes every .5 UP — so this is never negative and never larger
+ *  than half the instance count. */
+const drift = (n: number) => `${n < 0 ? "−" : "+"}${Math.abs(n).toFixed(1)}`;
 const monthLabel = (m: string) => new Date(`${m}-01T00:00:00Z`).toLocaleString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
 const shiftMonth = (m: string, by: number) => {
   const [y, mo] = m.split("-").map(Number);
@@ -143,7 +150,7 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
       )}
 
       {m && (() => {
-        const { pool, projection, outstanding, plant, qc } = m;
+        const { pool, projection, outstanding, plant, qc, decomposition } = m;
         const belowFloor = pool.counted < pool.floor;
         const ladderMax = pool.ladder[pool.ladder.length - 1].slabs;
         const at = (n: number) => `${Math.max(0, Math.min(100, (n / ladderMax) * 100)).toFixed(2)}%`;
@@ -201,8 +208,26 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
 
             {/* ---- The six numbers ------------------------------------------- */}
             <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
-              <Kpi label="Counted good slabs" value={half(pool.counted)} sub={`floor ${fmt(pool.floor)} · ${half(plant.credit)} good slabs + ${fmt(plant.slowSlabs)} counted a second time`} />
-              <Kpi label="Counted twice" value={fmt(plant.slowSlabs)} sub={`good slabs from hours with a standard of ${SLOW_STD_MAX}/hr or less — each added once more, so +${fmt(plant.slowSlabs)} to the count`} />
+              {/* THE SUB-LINE IS THE DECOMPOSITION AND IT NOW ADDS UP. It used
+                  to read "credit + slowSlabs", which is not how `counted` is
+                  reached and missed it in both directions at once:
+                    - slowSlabs is a COUNT OF SLABS, and the doubling's
+                      contribution is CREDIT — a slow grade B is one slab and
+                      half a slab of credit, so the count runs above the
+                      contribution by half for every slow B;
+                    - scoreShift rounds every shift INSTANCE, always upwards
+                      (a weighted total can only end in .0 or .5), and that
+                      drift was inside the figure with no name.
+                  The two errors point opposite ways and nearly cancelled,
+                  which is what hid them: on live August 2026 the old line
+                  printed a sum 0.5 from `counted` while being 14 wrong on one
+                  term and 13.5 wrong on the other. All three figures move
+                  hour by hour as QC files; scripts/verify-grade-columns.mts
+                  recomputes and asserts them. */}
+              <Kpi label="Counted good slabs" value={half(pool.counted)}
+                sub={`floor ${fmt(pool.floor)} · ${half(plant.credit)} good slabs + ${half(decomposition.plant.doubling)} credit from the slow-hour doubling + ${drift(decomposition.plant.rounding)} per-shift rounding`} />
+              <Kpi label="Counted twice" value={fmt(plant.slowSlabs)}
+                sub={`good slabs from hours with a standard of ${SLOW_STD_MAX}/hr or less — a count of SLABS. They add ${half(decomposition.plant.doubling)} of credit between them — half a slab less for each of them that graded B.`} />
               {/* Whether the pool is open is a fact about the month's count and
                   stays on screen; what it is worth does not, while the flag is
                   off — it was the largest rupee figure on the page. */}
@@ -293,6 +318,9 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
               <H2>The three shifts</H2>
               <p className="mb-3 text-xs text-gray-500">
                 Counted slabs already carry both rules: B = ½, reject = 0, and a slab from an hour whose standard is {SLOW_STD_MAX}/hr or less counts twice.
+                <b>Good + doubling + rounding = Counted</b> on every row. <i>Slow slabs</i> is how many slabs the doubling applied to; <i>doubling</i> is the credit
+                it added, which is the smaller of the two whenever a slow slab graded B. <i>Rounding</i> is what the per-shift rounding put in — scoring rounds
+                each shift instance on its own, and a half always goes up, so it is a small plus and never a minus.
                 Per shift divides by shifts the line was actually running. Quality is scored between the {Math.round(QUALITY_FLOOR * 100)}% floor and the {Math.round(QUALITY_TARGET * 100)}% target —
                 two ways, because the scoreboard and the August notice did it differently: the scoreboard averages each shift instance&apos;s score, the notice scored the month&apos;s whole grade share once.
               </p>
@@ -306,7 +334,21 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                           (u.startsWith("A")), and the batch table below splits
                           them — so an unqualified "A" here is 423 slabs adrift
                           of the A column down there on live August 2026. */}
-                      <th className="py-2 pr-3">A+A2 / B / C</th><th className="py-2 pr-3">Good</th><th className="py-2 pr-3">Counted twice</th><th className="py-2 pr-3">Counted</th>
+                      <th className="py-2 pr-3">A+A2 / B / C</th><th className="py-2 pr-3">Good</th>
+                      {/* THREE COLUMNS WHERE THERE USED TO BE ONE, because one
+                          could not make the row add up. "Counted twice" printed
+                          a SLAB COUNT next to Good and Counted and invited the
+                          reader to add it — which lands 3.5 above Counted on A
+                          and 4.5 below on C (live August 2026, 2026-09-03;
+                          these move as QC files). The count is still here,
+                          because a shift wants to know how many of its slabs
+                          the rule caught; beside it now sit the CREDIT that
+                          count contributed and the rounding, and those three
+                          plus Good are Counted exactly. */}
+                      <th className="py-2 pr-3">Slow slabs<br /><span className="normal-case text-gray-400">counted twice</span></th>
+                      <th className="py-2 pr-3">Doubling<br /><span className="normal-case text-gray-400">credit it adds</span></th>
+                      <th className="py-2 pr-3">Rounding<br /><span className="normal-case text-gray-400">per shift</span></th>
+                      <th className="py-2 pr-3">Counted</th>
                       <th className="py-2 pr-3">Per shift</th><th className="py-2 pr-3">Grade share</th>
                       <th className="py-2 pr-3">Quality<br /><span className="normal-case text-gray-400">per-shift avg</span></th>
                       <th className="py-2 pr-3">Quality<br /><span className="normal-case text-gray-400">month share</span></th>
@@ -324,6 +366,7 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                     {m.letters.map((l) => {
                       const w = m.shares.weighted.find((s) => s.shift === l.shift)!;
                       const a = m.shares.aggregate.find((s) => s.shift === l.shift)!;
+                      const d = decomposition.byLetter[l.shift];
                       return (
                         <tr key={l.shift} className="border-t border-gray-100">
                           <td className="py-2 pr-3 font-semibold text-gray-900">Shift {l.shift}</td>
@@ -335,6 +378,8 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                           <td className="py-2 pr-3 text-gray-600">{fmt(l.gradeA)} / {fmt(l.gradeB)} / {fmt(l.gradeC)}</td>
                           <td className="py-2 pr-3">{half(l.credit)}</td>
                           <td className="py-2 pr-3 text-gray-600">{fmt(l.slowSlabs)}</td>
+                          <td className="py-2 pr-3">{half(d.doubling)}</td>
+                          <td className="py-2 pr-3 text-gray-600" title={`${d.roundedUp} of ${fmt(l.instances)} shift instances ended in a half and rounded up`}>{drift(d.rounding)}</td>
                           <td className="py-2 pr-3 font-semibold text-gray-900">{fmt(l.points)}</td>
                           <td className="py-2 pr-3">{l.pointsPerShift.toFixed(1)}</td>
                           <td className="py-2 pr-3">{pct(l.rawShare)}</td>
@@ -352,7 +397,10 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                       <td className="py-2 pr-3">{fmt(plant.instances)}</td><td className="py-2 pr-3 text-gray-600">{m.letters.reduce((x, l) => x + l.effectiveShifts, 0).toFixed(1)}</td>
                       <td className="py-2 pr-3">{fmt(plant.claimed)}</td><td className="py-2 pr-3">{fmt(plant.graded)}</td><td className="py-2 pr-3">{fmt(plant.ungraded)}</td>
                       <td className="py-2 pr-3 text-gray-600">{fmt(plant.gradeA)} / {fmt(plant.gradeB)} / {fmt(plant.gradeC)}</td>
-                      <td className="py-2 pr-3">{half(plant.credit)}</td><td className="py-2 pr-3 text-gray-600">{fmt(plant.slowSlabs)}</td><td className="py-2 pr-3 font-semibold">{fmt(plant.points)}</td>
+                      <td className="py-2 pr-3">{half(plant.credit)}</td><td className="py-2 pr-3 text-gray-600">{fmt(plant.slowSlabs)}</td>
+                      <td className="py-2 pr-3">{half(decomposition.plant.doubling)}</td>
+                      <td className="py-2 pr-3 text-gray-600" title={`${decomposition.plant.roundedUp} of ${fmt(decomposition.plant.instances)} shift instances ended in a half and rounded up`}>{drift(decomposition.plant.rounding)}</td>
+                      <td className="py-2 pr-3 font-semibold">{fmt(plant.points)}</td>
                       <td className="py-2 pr-3">—</td><td className="py-2 pr-3">{pct(plant.rawShare)}</td><td className="py-2 pr-3">—</td><td className="py-2 pr-3">—</td>
                       {/* The two 100% cells are the giveaway that the columns
                           above them are shares of a whole, so they go with
@@ -363,6 +411,23 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                   </tbody>
                 </table>
               </div>
+              {/* THE DECOMPOSITION'S OWN TRIPWIRE. Good + doubling + rounding =
+                  Counted holds by construction whatever happens — rounding is
+                  the leftover — so the row adding up proves nothing on its own.
+                  What CAN break is the doubling: it is rebuilt from the claim
+                  and a fresh QC read, and the score's own weighted total came
+                  from a QC read milliseconds earlier, so a slab re-graded in
+                  between makes one instance's leftover fall outside the
+                  [0, +½] that per-instance rounding can produce. 0 on live
+                  June, July and August 2026 (measured 2026-09-03); a run of
+                  them that survives a refresh is not a race. */}
+              {decomposition.disagreements > 0 && (
+                <p className="mt-2 text-xs text-amber-700">
+                  {fmt(decomposition.disagreements)} shift instance{decomposition.disagreements === 1 ? "" : "s"} where the doubling and the score disagree by more than
+                  per-shift rounding can explain. Counted is still the score&apos;s own figure; the Doubling and Rounding columns are the ones to distrust. Refresh —
+                  a slab re-graded between two reads shows up here once and goes away.
+                </p>
+              )}
             </Card>
 
             {/* ---- What each person would take --------------------------------- */}

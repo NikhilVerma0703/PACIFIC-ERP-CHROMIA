@@ -48,7 +48,29 @@
 -- 6,262 -> 6,261 and now equals its own distinct-slab count, so the six grade
 -- columns add across to the Slabs cell beside them and the two screens agree.
 -- Achievement moves 84.2% -> 84.2% (6,261/7,439 = 84.16%, 6,262/7,439 = 84.18%);
--- the 5 August day row goes 313 -> 312 and its own achievement with it.
+-- the 5 August day row goes 322 -> 321 and its own achievement with it.
+--
+-- ─────────────────────────── CORRECTED AFTER THE FACT ───────────────────────
+-- THE DAY FIGURE ON THE LINE ABOVE WAS WRONG, AND THIS SCRIPT HAD ALREADY RUN.
+-- It said the day fell from 313 to 312, and no reading of the data produces
+-- either number; the figure was asserted, never measured. Measured on live Neon
+-- 2026-09-03, after the trim:
+--   * the REPORT DAY — 06:00 5 Aug to 06:00 6 Aug IST, the window every figure
+--     on these screens uses — holds 24 filed hours and reads
+--     getDailyReport('2026-08-05').day = {made 321, target 345, pct 93.04}; the
+--     CEO monthly's 2026-08-05 row reads the same 321.
+--   * before this trim the same day read 322. One hour narrowed by one slab,
+--     so the day moved by exactly one.
+--   * the MIS CALENDAR-LABEL day (00:00-24:00 IST, off the `date` column) is a
+--     different question with a different answer, 325. Neither is 312 or 313.
+-- Re-derive rather than quoting any of these — MIS rows can still be edited:
+--   npx tsx scripts/check-monthly-vs-daily.mts 2026-08
+--
+-- AND THE POINT OF LEAVING THIS NOTE HERE: a sentence in an applied script is
+-- not true merely because the script ran. The action_log payload below
+-- ('august_made', '6262 -> 6261') was measured and is right; the day figure
+-- printed beside it in prose was not, and it survived review because it sat in
+-- a script whose SQL was correct. Measure the numbers in the comment too.
 --
 -- ONE ROW, ONE COLUMN. The design, batch, standard, delays, crew and timestamp
 -- are all untouched — the only thing wrong with this row is the last slab
@@ -137,8 +159,12 @@ COMMIT;
 --     -> made 6,261 = distinct 6,261 = the incentive's claimed 6,261, and the
 --        mix table's grade columns add across to the Slabs cell.
 --
--- (c) The day still reconciles: sum(mix.made) === r.made, and the 5 August day
---     row is 312. npx tsx scripts/check-monthly-vs-daily.mts 2026-08
+-- (c) The day still reconciles: sum(mix.made) === r.made, and the 5 August
+--     REPORT day (06:00-06:00 IST) reads one slab below whatever it read before
+--     this ran — 321 against 322 when checked on 2026-09-03. This checklist
+--     said "312", which nothing produces; see CORRECTED AFTER THE FACT above.
+--     Derive it, do not quote it:
+--     npx tsx scripts/check-monthly-vs-daily.mts 2026-08
 --
 -- (d) NOTHING in the incentive moved: /scoreboard/incentive?month=2026-08 still
 --     reads 6,261 claimed, the same shift A count, the same pool.

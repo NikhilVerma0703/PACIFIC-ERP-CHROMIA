@@ -395,3 +395,143 @@ test("the batch-lookup QC table no longer answers 'what has been cut' with a sta
   assert.match(qcSlabs, /CTS: "CTS \(legacy status\)"/);
   assert.match(qcSlabs, /const STATUS_NOTE: Record<string, string> = \{/, "the badge carries no note saying it is not the cut record");
 });
+
+// ══════════════════ ROUND 3 — THE CUT FACT, AND TWO TOTALS ══════════════════
+//
+// R1. The `cts` ACTION wrote a status and nothing else, so the fact it recorded
+// lived in the one column this whole body of work has been moving off. Removing
+// CTS from the dashboard's STATUSES then took away the only control that could
+// find what the button writes: the replacement door — the "CTS status (legacy)"
+// KPI card — renders inside `{!slabsOnly && kpi && (`, which never draws for a
+// COMMERCIAL login, and Commercial is the role that owns the button. Measured on
+// live Neon 2026-09-03: status 'CTS' 1 row (slab 154757), slab_mark 'CTS' 63
+// rows / 61 on the floor, fg_slab_event 1 status->CTS write ever and 0 out.
+//
+// R2. TWO NUMBERS FOR ONE FILTER. The KPI "Total Slabs" card has no status
+// clause and counts dispatched stock; every column of the register below it
+// carries `status <> 'DISPATCHED'`. Unfiltered nobody confuses them; under a
+// register filter they land side by side under captions that both name it.
+//
+// R3. A register line is a (design, thickness, batch) group over ALL slabs, but
+// every printed column is on-floor only — so an all-dispatched group printed a
+// full row of dashes and was counted as a colour "in stock".
+//
+// The subject files are read as text for the reason at the top of this file:
+// finishedSlab.ts imports @/lib/prisma and the two components are "use client"
+// TSX, so node --test cannot import any of them.
+const finishedSlab = read("../src/lib/inventory/finishedSlab.ts");
+
+/** The dashboard's offered status list, as the constant actually spells it. */
+function offeredStatuses(): string[] {
+  const m = dashboard.match(/const STATUSES = \[([^\]]*)\]/);
+  assert.ok(m, "the STATUSES constant moved or was renamed");
+  return (m![1].match(/"[^"]*"/g) ?? []).map((s) => s.slice(1, -1));
+}
+
+test("marking CTS records the cut on the slab, not only in the status column", () => {
+  assert.match(finishedSlab, /async function recordCutMark\(/, "the cts action no longer writes the mark");
+  assert.match(finishedSlab, /if \(action === "cts"\) await recordCutMark\(sn, opts\.by, src\);/,
+    "the cts action does not call the mark write");
+  const fn = finishedSlab.slice(finishedSlab.indexOf("async function recordCutMark("));
+  const body = fn.slice(0, fn.indexOf("\n/**"));
+  // ONE-WAY, the rule slabMark.ts states as "only a FULL_SLAB moves" and that
+  // slabMarkStore and both of scripts/0070's backfills carry in SQL. Without
+  // this clause the button would overwrite a stored SAMPLE — a real fabrication
+  // fact — with CTS.
+  assert.match(body, /coalesce\(slab_mark, 'FULL_SLAB'\) = 'FULL_SLAB'/,
+    "the mark write is not narrowed to FULL_SLAB — it can overwrite a stored cut mark");
+  assert.match(body, /SET\s+slab_mark = 'CTS'/, "the mark write does not set CTS");
+  // It must never be the reason a legitimate status change fails: no rethrow.
+  const cat = body.slice(body.indexOf("} catch"));
+  assert.ok(!/throw/.test(cat), "the mark write rethrows — a database without scripts/0070 would fail the status change");
+  assert.match(cat, /console\.error/, "a failed mark write is swallowed silently");
+});
+
+test("the mark is only written for a slab whose status change actually landed", () => {
+  // recordCutMark is permanent. Applying it to a slab whose guarded updateMany
+  // lost the race — reported as "changed concurrently" and skipped — would mark
+  // a slab this action did not move.
+  const loop = finishedSlab.slice(finishedSlab.indexOf("for (const sn of slabNumbers)"));
+  const guardAt = loop.indexOf("changed concurrently");
+  const markAt = loop.indexOf("await recordCutMark(sn");
+  assert.ok(guardAt > 0 && markAt > 0, "the concurrency guard or the mark call moved");
+  assert.ok(markAt > guardAt, "the mark is written before the status write is known to have landed");
+});
+
+test("nothing un-marks a slab — uncts returns the status, never the mark", () => {
+  // The asymmetry is the safety property: setting a mark can only REFUSE a
+  // dispatch, clearing one can only ALLOW it, and inventory cannot tell its own
+  // mark from fabrication's (slabMarkStore.refreshInventoryMirror writes the
+  // same column and the same value). Anything writing FULL_SLAB from here would
+  // put an already-cut slab back on a lorry.
+  const code = finishedSlab.split("\n").filter((l) => !l.trim().startsWith("//") && !l.trim().startsWith("*")).join("\n");
+  // The WRITE side only. `slabMark: "FULL_SLAB"` also appears as a WHERE in the
+  // autolink mirror, where it IS the one-way rule ("only a FULL_SLAB moves") and
+  // must stay — so this looks at what lands in `data:` and in a SQL SET.
+  assert.ok(!/SET\s+slab_mark = 'FULL_SLAB'/.test(code), "a raw statement writes FULL_SLAB over a slab's mark");
+  assert.ok(!/data: \{[^}]*slabMark: "FULL_SLAB"/.test(code), "a client write puts FULL_SLAB into a slab's mark");
+  // …and the one-way WHERE is still there, guarding the mirror it belongs to.
+  assert.match(code, /where: \{ slabNumber, slabMark: "FULL_SLAB" \}/,
+    "the autolink mirror lost its one-way guard — it can now downgrade a cut mark");
+  // Exactly one raw statement in this file sets the mark, and it sets CTS.
+  assert.deepEqual(code.match(/SET\s+slab_mark = '[A-Z_]+'/g), ["SET    slab_mark = 'CTS'"]);
+  // …and the screen says so, because uncts is the documented recovery for a
+  // mis-click and it no longer recovers everything.
+  assert.match(dashboard, /That mark is permanent/, "the dashboard does not say the cut mark survives Undo CTS");
+});
+
+test("Commercial can find what its own CTS button writes", () => {
+  // The two doors that do NOT open for this role, which is why the mark is the
+  // fix rather than a new card: the status filter no longer offers CTS at all,
+  // and the legacy card is inside the !slabsOnly block.
+  assert.ok(!offeredStatuses().includes("CTS"), "the status filter offers CTS again");
+  assert.match(dashboard, /\{!slabsOnly && kpi && \(/, "the KPI strip is no longer gated to non-Commercial logins");
+  // The Mark select IS drawn for every role — it sits in the shared filter form,
+  // not inside a !slabsOnly block — and after the mark write it answers.
+  const form = dashboard.slice(dashboard.indexOf("<form className="), dashboard.indexOf("{loadError &&"));
+  assert.ok(form.length > 0, "the filter form moved");
+  assert.match(form, /value=\{f\.mark\}/, "the mark select left the shared filter row");
+  assert.ok(!/!slabsOnly/.test(form), "part of the filter row became non-Commercial — the mark door may have closed");
+});
+
+test("the KPI Stock row accounts for every status, so Total Slabs closes", () => {
+  // Total Slabs has no status clause and counts dispatched stock; the register
+  // below counts only what is on the floor. The difference had nothing on screen
+  // to attach to — /api/inventory/kpi has always returned `dispatched` and this
+  // strip never rendered it. Verified on live Neon 2026-09-03, approved-only:
+  // unfiltered 22,418 = 15,718 + 0 + 0 + 0 + 6,644 + 55 + 1; bay 'Bay 4'
+  // 4,565 = 4,456 + 0 + 0 + 0 + 106 + 3 + 0.
+  assert.match(dashboard, /card\("Dispatched", kpi\.dispatched/, "the Stock row still has no Dispatched card");
+  const stock = dashboard.slice(dashboard.indexOf('card("Total Slabs"'), dashboard.indexOf("Grades (in stock)"));
+  assert.ok(stock.length > 0, "the Stock card row moved");
+  for (const s of statusesFromTransitions())
+    assert.match(stock, new RegExp(`\\{ status: "${s}" \\}`), `no card in the Stock row counts status ${s} — Total Slabs no longer closes`);
+  // And the card that is the sum says which way it differs from the register.
+  assert.match(stock, /INCLUDING stock already dispatched/, "Total Slabs does not say it counts dispatched stock");
+});
+
+test("the register prints no all-dash rows and counts no empty colour as stock", () => {
+  // Every printed column is on-floor only, so `total === 0` forces all of them
+  // to "-". Measured on live Neon 2026-09-03, admin, approved-only: bay 'Bay 1'
+  // gave 2 lines / Grand Total 1 / "2 colour(s) in stock", the second line being
+  // Costa 3 cm D1375 (one dispatched slab). Dropping such lines changed no
+  // rendered grand total under any filter tried — they are all zero by
+  // construction — and moved the colour tally 160 -> 158 unfiltered.
+  const memo = register.slice(register.indexOf("const groups = useMemo"), register.indexOf("const thickOptions"));
+  assert.ok(memo.length > 0, "the groups memo moved");
+  assert.match(memo, /if \(r\.total === 0\) continue;/, "the register still renders lines with nothing on the floor");
+  // The footer counts the SAME list, which is why one drop fixes both halves.
+  assert.match(register, /\{groups\.length\.toLocaleString\("en-IN"\)\} colour\(s\) in stock\./);
+});
+
+test("the banner no longer claims the colour count is filter-proof", () => {
+  // It said the tally under the table "is the same number under a filter, so it
+  // cannot carry this on its own". groups.length is exactly what the filters
+  // narrow — bay 'Bay 1' gave 2 against 160 unfiltered.
+  const quoted = register.indexOf("THE SENTENCE THAT USED TO END THIS COMMENT WAS WRONG");
+  assert.ok(quoted > 0, "the correction was deleted rather than kept — the next reader will re-derive the wrong rule");
+  // The claim survives only inside that correction, never as a live assertion.
+  const before = register.slice(0, quoted);
+  assert.ok(!/count of colours under the table is the same number/.test(before),
+    "the stale claim about the colour count is still made as if it were true");
+});

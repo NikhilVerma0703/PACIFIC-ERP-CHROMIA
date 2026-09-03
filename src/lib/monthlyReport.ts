@@ -234,9 +234,12 @@ async function monthCore(month: string, capDay: string | null, now: number = Dat
   // declared by another month's MIS, 61 in no MIS range at all. (This comment
   // said 938 and 61, which add to 999 rather than 1,000; the split is measured
   // in one pass now, by declaredOutside, so it cannot drift again.) So the join
-  // is on the SLAB NUMBERS, and the QC fetch is unwindowed — 450 of August's
-  // own slabs had their latest QC row land after the month closed and 348 of
-  // those carry a verdict, and a month-windowed join would have lost the lot.
+  // is on the SLAB NUMBERS, and the QC fetch is unwindowed — several hundred of
+  // August's own slabs had their latest QC row land after the month closed
+  // (450, of which 348 carried a verdict, on the morning of 2026-09-03; the
+  // verdict count had climbed to 374 by that evening, and it keeps climbing
+  // while a month is fresh — see gradeProduced), and a month-windowed join
+  // would have lost the lot.
   //
   // THE EXCLUSIONS ARE THE MIX'S OWN, DELIBERATELY. An hour that reaches no
   // shift is skipped below and skipped here; an hour whose range is impossibly
@@ -247,13 +250,17 @@ async function monthCore(month: string, capDay: string | null, now: number = Dat
   // FIRST CLAIM WINS, so the per-design sets PARTITION the month: a slab
   // number two hours both typed belongs to exactly one design row, and the
   // grade columns therefore add DOWN the page as well as across it. That
-  // overlap is a data-entry fault and it is real — August 2026 declared 6,262
-  // slabs across 6,261 distinct numbers, because the 12-13 hour of 5 August
-  // starts at 152439, the number the 11-12 hour of the same day and the same
-  // batch (D1403, Simply White) already ended on. Confirmed on live Neon
-  // 2026-09-03 by expanding every August range: exactly one number in the
-  // month is claimed twice. The report prints both counts side by side rather
-  // than hiding the gap; see the Slabs and Numbers columns on sheet two.
+  // overlap is a data-entry fault and it was real here — August 2026 declared
+  // 6,262 slabs across 6,261 distinct numbers UNTIL scripts/0073 trimmed the
+  // 11-12 hour of 5 August, which had ended on 152439, the number the 12-13
+  // hour of the same day and the same batch (D1403, Simply White) also started
+  // on. Since that script ran the month reads 6,261 across 6,261 and no August
+  // number is claimed twice (live Neon, 2026-09-03). Both counts move as MIS is
+  // filed and edited; scripts/verify-grade-columns.mts re-derives them, and
+  // this partition is what keeps the columns adding up whichever way they land.
+  // The report prints both counts side by side rather than hiding the gap, so
+  // the next overlap announces itself; see the Slabs and Numbers columns on
+  // sheet two.
   //
   // AND THE SECOND CLAIM IS NOT ALWAYS THE SAME DESIGN, which is why each row
   // records WHO took the number off it. First claim wins across the whole
@@ -262,9 +269,12 @@ async function monthCore(month: string, capDay: string | null, now: number = Dat
   // whose own hours did nothing wrong. Measured on live Neon 2026-09-03: June
   // 2026 has exactly one such number, 144340, kept by Taj Aureate and claimed
   // again by Carrara Royale, which is why Carrara Royale reads 79 slabs across
-  // 78 distinct numbers; July's 27 overlaps and August's 1 are all a design
-  // re-typing its own number. Without this counter the sheet's note blamed the
-  // wrong design's data entry for June's gap.
+  // 78 distinct numbers; July's 27 overlaps were all a design re-typing its own
+  // number, and August has had none of either kind since scripts/0073 ran.
+  // These counts move with every MIS edit — re-derive them from `contested` on
+  // the mix rows rather than reading them off this comment. Without this
+  // counter the sheet's note blamed the wrong design's data entry for June's
+  // gap.
   const slabOwner = new Map<number, string>();
 
   // Maintenance, summed from each day's OWN maintenance assembly — the same
@@ -763,8 +773,11 @@ export async function getMonthlyReport(month: string) {
     // DISTINCT slab numbers those claims covered, which is what the grade
     // columns partition. The two are equal only when no hour typed a number
     // twice and every hour typed a range slab numbers can be read off — August
-    // 2026 read 6,262 against 6,261 on 2026-09-03 because one hour re-typed one
-    // number, and these figures move as MIS is filed. The footnote had to move
+    // 2026 read 6,262 against 6,261 until scripts/0073 trimmed the hour that had
+    // re-typed a number, and 6,261 against 6,261 after it (live Neon,
+    // 2026-09-03). Both figures move as MIS is filed and edited, so read them
+    // off the screen or scripts/verify-grade-columns.mts, not off this line.
+    // The footnote had to move
     // into the table because the table may now break across printed pages: the
     // continuation page carries the header and not the note.
     // `contested` says whether the second claim came from ANOTHER design,

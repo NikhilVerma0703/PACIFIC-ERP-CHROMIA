@@ -47,6 +47,14 @@ _g = (M.get("outstanding") or {}).get("groups") or []
 if _g and "share" not in _g[0]:
     sys.exit(f"{SRC.name} predates the per-batch grade columns (2026-09-03) - "
              f"re-run: npx tsx scripts/incentive-month.mts {MONTH}")
+# The counted total's decomposition (credit / doubling / rounding), added
+# 2026-09-03. Without it this notice would have to go back to inferring the
+# difficulty rule's worth as points - credit, which is the doubling and the
+# rounding drift added together and labelled as the doubling alone. Same fix as
+# above: re-cut the snapshot rather than default the field.
+if "decomposition" not in M:
+    sys.exit(f"{SRC.name} predates the counted-slab decomposition (2026-09-03) - "
+             f"re-run: npx tsx scripts/incentive-month.mts {MONTH}")
 
 # --------------------------------------------------------------- helpers
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
@@ -85,6 +93,11 @@ def half(n):
     return num(n) if float(n).is_integer() else f"{num(int(n))}½"
 
 
+def drift(n):
+    """A per-shift rounding residual: signed, one decimal, never a slab count."""
+    return f"{'-' if n < 0 else '+'}{abs(n):.1f}"
+
+
 def pct(x, d=1):
     return "-" if x is None else f"{x * 100:.{d}f}%"
 
@@ -116,8 +129,19 @@ projected = PR["projectedReal"]
 pool_plan = MONEY["pool"]
 real = O["real"]
 by = O["byStage"]
-exact_counted = sum(l["credit"] for l in M["letters"]) + sum(0 for _ in ())  # credit only; points exact not in JSON
-slow_extra = P["points"] - P["credit"]
+# THE COUNTED TOTAL IN THE THREE PARTS THAT ACTUALLY MAKE IT, and this notice
+# used to get them wrong. `slow_extra` was points - credit, which is the
+# doubling AND the per-shift rounding drift added together, and it was printed
+# as "what the difficulty rule is worth" beside a slab COUNT (plant.slowSlabs)
+# offered as the same quantity. It is not: a slow-hour slab that graded B is
+# one slab and half a slab of credit. Both figures now come from the snapshot's
+# own decomposition, where credit + doubling + rounding = counted exactly.
+DEC = M["decomposition"]
+credit_exact = DEC["plant"]["credit"]
+doubling = DEC["plant"]["doubling"]
+rounding = DEC["plant"]["rounding"]
+exact_counted = DEC["plant"]["exact"]
+DL = DEC["byLetter"]
 
 # --------------------------------------------------------------- styles (the wall notice's)
 BRAND = colors.HexColor("#0f4c5c")
@@ -227,8 +251,22 @@ def story():
            [tdl("<b>Grade</b>"), tdl("A grade A slab counts as one. A grade B counts as half. A reject counts as nothing - never a minus, so there is no reason to leave a bad slab out of MIS."), tdl("A = 1, B = ½, C = 0")],
            [tdl("<b>Difficulty</b>"), tdl("If the hour's STANDARD output is 10 slabs or fewer, every good slab in it counts twice. The multiplier is set by the standard, not by what you achieved - nobody earns it by working slowly."), tdl("Standard &lt;= 10/hr: A = 2, B = 1, C = 0")]],
           [26 * mm, 104 * mm, 40 * mm]))
-    A(Paragraph(f"In {MONTH_NAME} the difficulty rule is worth <b>{num(round(slow_extra))}</b> counted slabs: {num(P['slowSlabs'])} good slabs came from slow-design hours and counted twice. "
-                f"Counted the old way the month stands at {half(P['credit'])} even before the waiting slabs grade - and it is the doubling that puts the floor within reach.", S["b"]))
+    # THE DIFFICULTY RULE'S WORTH IS THE CREDIT IT ADDS, NOT THE SLABS IT
+    # CAUGHT. This paragraph used to give one figure for both, and it was
+    # neither: points - credit is the doubling AND the per-shift rounding drift
+    # added together, printed beside plant.slowSlabs as though the two were the
+    # same quantity. They differ by half a slab for every slow-hour slab that
+    # graded B. All three terms now come from the snapshot's decomposition and
+    # add to the counted total exactly.
+    A(Paragraph((f"In {MONTH_NAME} the difficulty rule caught {num(P['slowSlabs'])} good slabs from slow-design hours, and it is worth "
+                 f"<b>{half(doubling)}</b> counted slabs - fewer than the slabs it caught, because a slab that graded B is one slab "
+                 f"and only half a slab of credit. "
+                 f"Counted the old way the month stands at {half(credit_exact)} even before the waiting slabs grade, "
+                 f"and it is the doubling that puts the floor within reach. " if P["slowSlabs"] else
+                 f"In {MONTH_NAME} no hour ran a standard of 10 slabs or fewer, so the difficulty rule added nothing and the month "
+                 f"stands on its {half(credit_exact)} good slabs alone. ")
+                + f"{half(credit_exact)} + {half(doubling)} is {half(exact_counted)}; the counted total is {num(counted)} because every shift is scored "
+                  f"on its own and rounded on its own, and a half always rounds up - {drift(rounding)} across the month.", S["b"]))
 
     # ---- the month in numbers
     A(Paragraph(f"{MONTH_NAME} in numbers", S["h"]))
@@ -236,7 +274,7 @@ def story():
             (num(real), "awaiting QC"), (pct(P["rawShare"]), "grade share (A = 1, B = ½)"), (num(counted), "counted good slabs")]))
     A(Spacer(1, 3))
     A(Paragraph(f"Of the {num(P['graded'])} slabs QC has reached: {num(P['gradeA'])} grade A, {num(P['gradeB'])} grade B, {num(P['gradeC'])} rejects - "
-                f"{half(P['credit'])} good slabs before the difficulty rule, {num(round(slow_extra))} added by it. "
+                f"{half(credit_exact)} good slabs before the difficulty rule, {half(doubling)} added by it, {drift(rounding)} from rounding each shift on its own. "
                 f"A grade share of {pct(P['rawShare'])} is a good month. "
                 f"A further {num(by['routed'])} slabs were routed by QC to cut-to-size and will not grade; they are neither counted nor waited for.", S["b"]))
 
@@ -264,7 +302,8 @@ def story():
     A(Paragraph("Five steps, and every one of them traces back to the individual slab records behind it.", S["b"]))
     out.extend(bullets([
         f"<b>Count each shift's good slabs.</b> Shift {k}: {num(l['gradeA'])} A + {num(l['gradeB'])} B + {num(l['gradeC'])} rejects = {half(l['credit'])} good, "
-        f"then {num(l['slowSlabs'])} slow-design slabs counted twice -> <b>{num(l['points'])} counted</b>.",
+        f"then the difficulty rule on {num(l['slowSlabs'])} slow-design slabs adds {half(DL[k]['doubling'])} "
+        f"and rounding the shift's own instances adds {drift(DL[k]['rounding'])} -> <b>{num(l['points'])} counted</b>.",
         f"<b>Divide by the shifts actually worked.</b> {num(l['points'])} counted / {l['effectiveShifts']:.1f} running shifts = <b>{l['pointsPerShift']:.1f} a shift</b>. "
         f"Time the line was down for breakdown or power cut comes out of the divisor.",
         f"<b>Score the quality.</b> ({pct(l['rawShare'])} - 87%) / (97% - 87%) = <b>{pct(l['qualityAggregate'])}</b>. 87% or below scores nothing; 97% or above scores the full 100%.",

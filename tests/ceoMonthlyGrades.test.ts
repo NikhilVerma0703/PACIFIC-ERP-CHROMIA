@@ -636,3 +636,57 @@ test("the late-verdict figure is described as an ARRIVAL, not a grading date", (
   assert.ok(sheets.includes("r.producedGradedAfterOnImportStamp === 0"),
     "the sentence no longer adapts; on a pre-cutover month it would deny a created_time that is there");
 });
+
+test("no comment reasserts the duplicate claim scripts/0073 deleted", () => {
+  // F7. The 152439 overlap was REAL and is REPAIRED: commit b3a102b applied
+  // scripts/0073, and on live Neon 2026-09-03 August 2026 read made 6,261,
+  // producedSlabs 6,261, typedTwice 0 — the same run that this guard exists to
+  // keep the prose honest about. Two comments went on describing the state that
+  // commit removed, in the present tense, because a measured figure had been
+  // written down as though it were a spec. So: a source file may still tell the
+  // story of the overlap — it is why the partition below it exists — but every
+  // place that quotes the 6,262 must also say it was repaired, or the sentence
+  // is a live claim about a state that is gone.
+  //
+  // Deliberately NOT a database assertion. The figure moves with every MIS
+  // edit; what must not move is the tense. scripts/verify-grade-columns.mts and
+  // scripts/check-monthly-vs-daily.mts are where the live numbers are re-derived.
+  for (const [name, src] of [["dailyReport.ts", daily], ["monthlyReport.ts", monthly]] as const) {
+    for (let i = src.indexOf("6,262"); i >= 0; i = src.indexOf("6,262", i + 1)) {
+      const near = src.slice(Math.max(0, i - 300), i + 300);
+      assert.ok(/0073|until|had (?:re-)?typed/.test(near),
+        `${name} quotes August's 6,262 without saying scripts/0073 repaired it — the overlap is gone and the sentence reads as present tense`);
+    }
+  }
+  // And the fix must not have been made by simply deleting the history: the
+  // repair is the reason the two counts are printed side by side at all.
+  assert.ok(/scripts\/0073|0073/.test(monthly),
+    "monthlyReport no longer names the script that closed the overlap it partitions against");
+});
+
+test("scripts/0073 states a 5 August day figure the data actually produces", () => {
+  // F6. The header claimed "the 5 August day row goes 313 -> 312" and its
+  // checklist repeated 312. Nothing produces either. Measured on live Neon
+  // 2026-09-03, after the trim: getDailyReport('2026-08-05').day = {made 321,
+  // target 345, pct 93.04}, the CEO monthly's 2026-08-05 row agrees, and the
+  // MIS calendar-label day (00:00-24:00 IST) is a different question at 325.
+  // The trim narrowed one hour by one slab, so 322 -> 321.
+  //
+  // The SQL was correct and is applied; only the prose was wrong — which is the
+  // whole point of this guard. A script that has already run against live data
+  // is not thereby a trustworthy description of what it did.
+  const s0073 = read("../scripts/0073-mis-152439-claimed-twice.sql");
+  assert.ok(s0073.includes("322 -> 321"),
+    "the corrected day figure is gone from the header");
+  // The forbidden thing is the ASSERTION, not the word: the correction note
+  // above has to quote 312 and 313 in order to say they were never measured.
+  // So the guard bans the shapes that state them as the figure.
+  assert.ok(!/313\s*->|->\s*312|row is 312/.test(s0073),
+    "the unmeasured 312/313 day figure is being stated as the 5 August day row again");
+  assert.ok(s0073.includes("CORRECTED AFTER THE FACT"),
+    "the note saying an applied script's prose was wrong has been dropped — the next reader will trust the next assertion");
+  // The action_log payload is the part that WAS measured and is written to the
+  // database. It must survive any prose repair untouched.
+  assert.ok(s0073.includes("'august_made', '6262 -> 6261, now equal to the distinct slab count'"),
+    "the action_log payload changed — that row is already in the database and describes what ran");
+});
