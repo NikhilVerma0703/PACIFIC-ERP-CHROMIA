@@ -25,7 +25,7 @@ import {
 } from "@/lib/shiftScoreMath";
 import {
   rollUpByLetter, splitPoolByLetter, plantTotals, projectOutstanding, decomposeCounted,
-  type LetterTotals, type LetterShare, type CountedParts,
+  type LetterTotals, type LetterShare, type CountedParts, type CountedMismatch,
 } from "@/lib/incentiveMath";
 import { poolFor, nextTier, FLOOR_SLABS, TIERS, pctOfSalary, bandAmounts, ROLES } from "@/lib/incentiveLadder";
 
@@ -189,29 +189,58 @@ export interface IncentiveMonth {
   shares: { weighted: LetterShare[]; aggregate: LetterShare[] };
   plant: ReturnType<typeof plantTotals>;
   /** POOL.COUNTED, TAKEN APART: good slabs + what the slow-hour doubling adds
-   *  in CREDIT + what per-instance rounding adds. The three sum to
-   *  `pool.counted` exactly, per letter and for the plant, because `rounding`
-   *  is the leftover — so a reader adding the printed row lands on the figure
-   *  the ladder is read off instead of a figure two apart from it.
+   *  in CREDIT. TWO terms, and they ADD to `pool.counted` — per letter and for
+   *  the plant — as real arithmetic, not because a third term was defined as
+   *  whatever was left over. A reader adding the printed row lands on the
+   *  figure the ladder is read off.
    *
-   *  IT DOES NOT CHANGE THE PAYOUT. `pool.counted` is still plant.points,
-   *  still the sum of scoreShift's per-instance Math.round; this only names
-   *  what was already inside it. See CountedParts in incentiveMath.ts for the
-   *  two errors the old "credit + slowSlabs" sub-line made.
+   *  THERE USED TO BE A THIRD TERM. scoreShift rounded every shift INSTANCE,
+   *  the only reachable fraction is a half, and Math.round takes a half UP — so
+   *  `pool.counted` was inflated by half a slab per instance that ended in one
+   *  (+3 to +16 over a month, never negative). `rounding` carried that drift,
+   *  and being the leftover it also silently absorbed any genuine error in
+   *  `doubling`. scoreShift keeps the exact total as of 2026-09-04 and the term
+   *  is deleted. See CountedParts in incentiveMath.ts for the two errors the
+   *  older "credit + slowSlabs" sub-line made before that.
    *
-   *  `disagreements` is 0 whenever the rebuilt doubling and the score's own
-   *  weighted total agree — measured 0 on live June, July and August 2026
-   *  (2026-09-03, re-measured by scripts/verify-grade-columns.mts, which
-   *  asserts it). A non-zero value on a live plant is most likely a slab
-   *  re-graded between the score's QC read and this file's, and the page says
-   *  so rather than printing a decomposition that has stopped describing the
-   *  score. */
+   *  THE PAYOUT MOVED, AND DOWNWARD, BY DESIGN. `pool.counted` is still
+   *  plant.points, but plant.points is now the exact weighted total rather than
+   *  a sum of rounded-up ones, so a month's counted figure falls by the drift
+   *  that used to inflate it and can itself end in a half. Nothing rounds it on
+   *  the way to poolFor() — see the note beside `pool` below.
+   *
+   *  `disagreements` counts the shift instances where the score's own total and
+   *  this file's rebuild of credit + doubling do NOT agree, and `mismatches`
+   *  names them: the day, the letter and the size of the gap. It is a genuine
+   *  contradiction now, not a rounding allowance — the old check tolerated any
+   *  gap in [0, +½] and so could not see a half-slab error in `doubling` at
+   *  all. Measured 0 on live June, July and August 2026 (2026-09-04;
+   *  re-measure with scripts/verify-grade-columns.mts). A non-zero value on a
+   *  live plant is most likely a slab re-graded between the score's QC read and
+   *  this file's, and the page says which shift rather than printing a
+   *  decomposition that has stopped describing the score. */
   decomposition: {
     byLetter: Record<ShiftLetter, CountedParts>;
     plant: CountedParts;
     disagreements: number;
+    mismatches: CountedMismatch[];
   };
+  /** THE LADDER, READ OFF THE EXACT COUNTED TOTAL.
+   *
+   *  `counted` is plant.points unaltered, and NOTHING between scoreShift and
+   *  poolFor() rounds it: rollUpByLetter and plantTotals are plain sums, and
+   *  the assignment below is bare. That matters because of the owner's ruling
+   *  of 2026-09-04 — a month at 6,999½ does NOT unlock the 7,000 rung — which
+   *  incentiveLadder.poolFor() honours only for as long as it is handed the
+   *  true figure. Rounding `counted` up ANYWHERE on this path would pay a
+   *  ₹3,00,000 pool on half a slab that was never pressed. See the policy note
+   *  in incentiveLadder.ts.
+   *
+   *  A shortfall may be floored for display (the screens say "580 more" where
+   *  579½ would do): that is the conservative direction and it never reaches
+   *  the ladder. */
   pool: {
+    /** Can end in a half. */
     counted: number;
     poolNow: number;
     floor: number;

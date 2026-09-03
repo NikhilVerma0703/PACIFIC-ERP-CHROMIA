@@ -23,14 +23,40 @@ export const TIERS: readonly { slabs: number; pool: number }[] = [
 
 export const FLOOR_SLABS = TIERS[0].slabs;
 
-/** The pool a counted-good-slab total unlocks; 0 below the floor. */
+/** The pool a counted-good-slab total unlocks; 0 below the floor.
+ *
+ *  7,000 MEANS 7,000 — A POLICY DECISION, NOT AN ACCIDENT OF `>=`.
+ *  Taken by the owner on 2026-09-04, on the question "should a month at 6,999.5
+ *  slabs unlock the Rs 3,00,000?": no. `countedSlabs` can end in a half — since
+ *  2026-09-04 scoreShift keeps each instance's exact weighted total instead of
+ *  rounding it, so the month's figure is a true multiple of a half — and half a
+ *  slab short of a rung is short of the rung. `6999.5 >= 7000` is false and
+ *  poolFor returns 0; nobody is paid a rupee.
+ *
+ *  DO NOT "HELPFULLY" ROUND THIS. Not here, not in the caller, not on the way
+ *  in. Math.round(6999.5) is 7000 and would hand over Rs 3,00,000 on half a
+ *  slab that was never pressed; Math.ceil is worse. The rungs are whole numbers
+ *  because they are targets, not because the total must be one. Nothing on the
+ *  path scoreShift -> rollUpByLetter -> plantTotals -> incentiveMonth's
+ *  `counted` -> here rounds, and tests/incentiveMath.test.ts pins both the
+ *  ruling at every rung and the absence of rounding on that path.
+ *
+ *  NO EPSILON IS NEEDED ON THE COMPARISON. Every value the system can produce
+ *  is an exact multiple of a half (gradeCredit in {0, ½, 1}, stdMultiplier in
+ *  {1, 2}) and halves are exactly representable in float64 far beyond these
+ *  magnitudes, so 13,999 halves summed one at a time is exactly 6999.5 and
+ *  14,000 is exactly 7000. There is no float creep to tip a month over a rung,
+ *  and adding a tolerance would only re-introduce the generosity this ruling
+ *  refuses. */
 export function poolFor(countedSlabs: number): number {
   let pool = 0;
   for (const t of TIERS) if (countedSlabs >= t.slabs) pool = t.pool;
   return pool;
 }
 
-/** The next row up, or null at the top of the ladder. */
+/** The next row up, or null at the top of the ladder. The mirror of poolFor's
+ *  ruling: at 6,999½ the next row is still 7,000, because 6,999½ has not
+ *  reached it. */
 export function nextTier(countedSlabs: number): { slabs: number; pool: number } | null {
   return TIERS.find((t) => countedSlabs < t.slabs) ?? null;
 }

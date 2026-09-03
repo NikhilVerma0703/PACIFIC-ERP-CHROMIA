@@ -82,11 +82,43 @@ test("a share of the pool becomes a percentage of salary on a third of the bill"
 
 /* ---------------------------------------------------- the roll-up by letter */
 
-const inst = (o: Partial<ScoredInstance> & { shift: ScoredInstance["shift"] }): ScoredInstance => ({
-  quantity: 0, graded: 0, ungraded: 0, gradeA: 0, gradeB: 0, gradeC: 0, goodSlabs: 0, slowSlabs: 0,
-  points: 0, weight: 1, hoursLogged: 8, breakdownMin: 0, poweroutMin: 0, quality: null, rawQuality: null,
-  people: ["someone"], ...o,
-});
+/** A synthetic scored instance.
+ *
+ *  gradeA AND gradeB ARE LOAD-BEARING HERE, AND WERE NOT ALWAYS. rollUpByLetter
+ *  used to rebuild a letter's credit as rawQuality x graded; since 2026-09-04 it
+ *  sums gradeA + gradeB / 2 off the row instead, because the old way divided and
+ *  multiplied back and that round trip is not exact in floating point. A fixture
+ *  that sets rawQuality and leaves the grade counts at 0 therefore now rolls up
+ *  to credit 0 — and a quality share of nothing, which is a shift's whole
+ *  quality slice of the pool.
+ *
+ *  TWO OF THESE TESTS DID EXACTLY THAT AND WENT ON PASSING UNTIL THE DAY THE
+ *  ARITHMETIC MOVED, because tsconfig.json excludes tests/ — so omitting a
+ *  REQUIRED field of ScoredInstance is not a type error in this file, and
+ *  `npx tsc --noEmit` will never tell you. `npm test` is the only gate that
+ *  sees it.
+ *
+ *  So: give the grades, and rawQuality is DERIVED from them unless you pass one
+ *  deliberately. When you do pass both, they must agree — a fixture whose stated
+ *  quality contradicts its own grade counts is testing a state the plant cannot
+ *  produce, and would have hidden this. */
+const inst = (o: Partial<ScoredInstance> & { shift: ScoredInstance["shift"] }): ScoredInstance => {
+  const gradeA = o.gradeA ?? 0, gradeB = o.gradeB ?? 0, graded = o.graded ?? 0;
+  const credit = gradeA + gradeB * 0.5;
+  const derived = graded ? credit / graded : null;
+  if (o.rawQuality != null && graded > 0 && Math.abs(o.rawQuality - derived!) > 1e-9)
+    throw new Error(
+      `fixture disagrees with itself: rawQuality ${o.rawQuality} but gradeA ${gradeA} + gradeB ${gradeB}/2 ` +
+      `over ${graded} graded is ${derived}. Fix the grade counts, not the assertion.`);
+  return {
+    quantity: 0, ungraded: 0, gradeC: 0, goodSlabs: 0, slowSlabs: 0,
+    points: 0, weight: 1, hoursLogged: 8, breakdownMin: 0, poweroutMin: 0,
+    quality: null, people: ["someone"],
+    ...o,
+    graded, gradeA, gradeB,
+    rawQuality: o.rawQuality ?? derived,
+  };
+};
 
 test("credit is rebuilt exactly, so a half slab is not lost to per-instance rounding", () => {
   // 3 A + 1 B = 3.5 good slabs. scoreShift rounds goodSlabs to 4 on the row;
@@ -103,8 +135,8 @@ test("the two quality methods differ exactly where instances straddle the target
   // = 0.75. The aggregate share is 95.5%, scaled = 0.85. Same slabs, different
   // score — and the notice used the second.
   const rows = [
-    inst({ shift: "C", quantity: 100, graded: 100, rawQuality: 0.99, quality: scaleQuality(0.99), points: 99 }),
-    inst({ shift: "C", quantity: 100, graded: 100, rawQuality: 0.92, quality: scaleQuality(0.92), points: 92 }),
+    inst({ shift: "C", quantity: 100, graded: 100, gradeA: 99, gradeC: 1, quality: scaleQuality(0.99), points: 99 }),
+    inst({ shift: "C", quantity: 100, graded: 100, gradeA: 92, gradeC: 8, quality: scaleQuality(0.92), points: 92 }),
   ];
   const c = rollUpByLetter(rows).find((r) => r.shift === "C")!;
   assert.equal(c.instances, 2);
@@ -115,12 +147,15 @@ test("the two quality methods differ exactly where instances straddle the target
 
 test("a letter with no work takes no share, and the other two share the whole pool", () => {
   const rows = [
-    inst({ shift: "A", quantity: 100, graded: 100, rawQuality: 0.96, quality: scaleQuality(0.96), points: 96, weight: 1 }),
-    inst({ shift: "A", quantity: 100, graded: 100, rawQuality: 0.96, quality: scaleQuality(0.96), points: 96, weight: 1 }),
-    inst({ shift: "A", quantity: 100, graded: 100, rawQuality: 0.96, quality: scaleQuality(0.96), points: 96, weight: 1 }),
-    inst({ shift: "B", quantity: 90, graded: 90, rawQuality: 0.93, quality: scaleQuality(0.93), points: 90, weight: 1 }),
-    inst({ shift: "B", quantity: 90, graded: 90, rawQuality: 0.93, quality: scaleQuality(0.93), points: 90, weight: 1 }),
-    inst({ shift: "B", quantity: 90, graded: 90, rawQuality: 0.93, quality: scaleQuality(0.93), points: 90, weight: 1 }),
+    // A: 96 of 100 good. B: 83 A and one B over 90 = 83.5, the nearest credit a
+    // real shift can reach (credit moves in halves, so 0.93 x 90 = 83.7 cannot
+    // happen). What the test turns on is A outscoring B, which is unchanged.
+    inst({ shift: "A", quantity: 100, graded: 100, gradeA: 96, gradeC: 4, quality: scaleQuality(0.96), points: 96, weight: 1 }),
+    inst({ shift: "A", quantity: 100, graded: 100, gradeA: 96, gradeC: 4, quality: scaleQuality(0.96), points: 96, weight: 1 }),
+    inst({ shift: "A", quantity: 100, graded: 100, gradeA: 96, gradeC: 4, quality: scaleQuality(0.96), points: 96, weight: 1 }),
+    inst({ shift: "B", quantity: 90, graded: 90, gradeA: 83, gradeB: 1, gradeC: 6, quality: scaleQuality(83.5 / 90), points: 90, weight: 1 }),
+    inst({ shift: "B", quantity: 90, graded: 90, gradeA: 83, gradeB: 1, gradeC: 6, quality: scaleQuality(83.5 / 90), points: 90, weight: 1 }),
+    inst({ shift: "B", quantity: 90, graded: 90, gradeA: 83, gradeB: 1, gradeC: 6, quality: scaleQuality(83.5 / 90), points: 90, weight: 1 }),
   ];
   const totals = rollUpByLetter(rows);
   for (const method of ["weighted", "aggregate"] as const) {
@@ -137,7 +172,7 @@ test("a letter with no work takes no share, and the other two share the whole po
 
 test("the per-shift rate divides by RUNNING shifts, so a broken night does not drag the rate", () => {
   const rows = [
-    inst({ shift: "B", quantity: 80, graded: 80, rawQuality: 0.95, quality: scaleQuality(0.95), points: 80, weight: 1 }),
+    inst({ shift: "B", quantity: 80, graded: 80, gradeA: 76, gradeC: 4, quality: scaleQuality(0.95), points: 80, weight: 1 }),
     // the plant spent this one broken: no slabs, no divisor
     inst({ shift: "B", quantity: 0, graded: 0, points: 0, weight: 0, hoursLogged: 8, breakdownMin: 480 }),
   ];
@@ -148,7 +183,7 @@ test("the per-shift rate divides by RUNNING shifts, so a broken night does not d
 });
 
 test("credibility discounts a letter with fewer than three shifts", () => {
-  const rows = [inst({ shift: "A", quantity: 100, graded: 100, rawQuality: 0.97, quality: 1, points: 100 })];
+  const rows = [inst({ shift: "A", quantity: 100, graded: 100, gradeA: 97, gradeC: 3, quality: 1, points: 100 })];
   const a = rollUpByLetter(rows).find((r) => r.shift === "A")!;
   assert.equal(Math.round(a.credibility * 1000) / 1000, 0.333);
 });

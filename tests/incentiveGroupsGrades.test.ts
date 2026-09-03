@@ -3,6 +3,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { gradeCredit } from "../src/lib/shiftScoreMath.ts";
 import { decomposeCounted, type CountedInstance } from "../src/lib/incentiveMath.ts";
+// The ladder, so the owner's "7,000 means 7,000" ruling is pinned against the
+// function the payout calls rather than against a restatement of it. It became
+// a live question, not a hypothetical, the moment the counted total stopped
+// being a whole number.
+import { poolFor, nextTier, TIERS, FLOOR_SLABS } from "../src/lib/incentiveLadder.ts";
 
 // THE MONTH INCENTIVE TABLE — /scoreboard/incentive?month=YYYY-MM.
 //
@@ -691,12 +696,33 @@ test("the routed column still exists, and the row's invariant still names it", (
 //     the drift is one-directional, grows with the instance count, and sat
 //     inside `counted` with no name.
 //
-// NOTHING ABOUT THE PAYOUT CHANGED. `points`, and with it pool.counted, the
-// ladder tier, the projection, the three shift shares under both quality
-// methods and every band amount, are the same numbers before and after —
-// checked by running incentiveMonth for 2026-06, 2026-07 and 2026-08 on one
-// clock against the pre-edit code and diffing the whole snapshot (2026-09-03:
-// byte-identical on all three). Only the sentences beside the figures changed.
+// AND THEN THE PAYOUT FIGURE ITSELF MOVED, ON PURPOSE (2026-09-04). Naming the
+// rounding was not enough: `rounding` was DEFINED as points - (credit +
+// doubling), and a leftover makes a row add up whether or not it is right, so
+// the three-term identity could not fail and a half-slab error in `doubling`
+// simply moved into the leftover with every check still green — reviewers
+// demonstrated 92 of 184 such errors invisible. scoreShift therefore stopped
+// rounding each shift instance and keeps the exact weighted total, on the
+// owner's decision, and the term is deleted rather than explained.
+//
+// SO THE COUNTED TOTAL FELL, AND ONLY EVER FELL — a half can only round UP, so
+// the old figure was inflated on every month in the data and never deflated:
+// August 6,434 -> 6,420.5, July 4,581 -> 4,565, June 1,934 -> 1,929.5, with the
+// three shift shares moving by up to 0.03 of a percentage point (all measured
+// 2026-09-04). Not one of the three months changed tier or pool, because all
+// three sit below the 7,000 floor. The identity a reader adds up is now
+//
+//     credit + doubling = counted
+//
+// in two terms with no remainder, and a gap between the scorer's total and the
+// rebuild's is a MISMATCH, named by day / letter / size, instead of a silent
+// entry in a column.
+//
+// AND THE OWNER'S RULING GOES WITH IT (2026-09-04, on whether 6,999.5 should
+// unlock the Rs 3,00,000): "Agreed — 7,000 should mean 7,000." Now that a
+// counted total can end in a half that is a live question, so it is pinned at
+// the bottom of this file rather than left to poolFor's `>=` being read
+// correctly by the next person.
 //
 // The live figures MOVE HOUR BY HOUR as QC files, so none is asserted as a
 // constant here; scripts/verify-grade-columns.mts recomputes them against live
@@ -704,28 +730,42 @@ test("the routed column still exists, and the row's invariant still names it", (
 // arithmetic itself, which does not move: decomposeCounted is pure and imports
 // no @/ alias, so unlike incentiveMonth.ts it can be RUN rather than only read.
 
+// gradeA / gradeB are REQUIRED on a row now, and every row below sets them:
+// decomposeCounted builds credit as gradeA + gradeB / 2, straight off the
+// integer grade counts, rather than as rawQuality x graded — a divide followed
+// by a multiply back, which is not exact for every reachable pair and was
+// caught out by an ulp on live 2026-07-18 shift B. The defaults here are the
+// empty row, not a shortcut: a row that means to have credit says so in its own
+// grade counts.
 const mkInstance = (o: Partial<CountedInstance> & { anchor: string; shift: CountedInstance["shift"] }): CountedInstance =>
-  ({ quantity: 1, people: [], graded: 0, rawQuality: null, points: 0, ...o });
+  ({ quantity: 1, people: [], graded: 0, gradeA: 0, gradeB: 0, rawQuality: null, points: 0, ...o });
 
-test("credit + doubling + rounding is the counted total, exactly", () => {
-  // Two instances of A, the first of them ending in a half: 10 graded at a 0.75
-  // share is 7.5 credit, +2 doubling is 9.5, which scoreShift rounded to 10.
+test("credit + doubling IS the counted total, in two terms and with no remainder", () => {
+  // Two instances of A, the first of them ending in a half: 5 A and 5 B is 7.5
+  // credit, +2 doubling is 9.5, and 9.5 is what the scorer now hands over. It
+  // used to hand over Math.round(9.5) = 10 and the extra half sat in a third
+  // column called `rounding`.
   const rows = [
-    mkInstance({ anchor: "2026-08-01", shift: "A", graded: 10, rawQuality: 0.75, points: 10 }),
-    mkInstance({ anchor: "2026-08-02", shift: "A", graded: 4, rawQuality: 0.5, points: 2 }),
-    mkInstance({ anchor: "2026-08-01", shift: "B", graded: 6, rawQuality: 0.5, points: 3 }),
+    mkInstance({ anchor: "2026-08-01", shift: "A", graded: 10, gradeA: 5, gradeB: 5, rawQuality: 0.75, points: 9.5 }),
+    mkInstance({ anchor: "2026-08-02", shift: "A", graded: 4, gradeA: 1, gradeB: 2, rawQuality: 0.5, points: 2 }),
+    mkInstance({ anchor: "2026-08-01", shift: "B", graded: 6, gradeA: 2, gradeB: 2, rawQuality: 0.5, points: 3 }),
   ];
   const d = decomposeCounted(rows, new Map([["2026-08-01A", 2]]));
   assert.equal(d.byLetter.A.credit, 9.5, "7.5 + 2 good slabs");
   assert.equal(d.byLetter.A.doubling, 2);
-  assert.equal(d.byLetter.A.exact, 11.5, "the pre-rounding total, which ends in a half");
-  assert.equal(d.byLetter.A.rounding, 0.5, "one instance ended in a half and rounded up");
-  assert.equal(d.byLetter.A.roundedUp, 1);
-  assert.equal(d.byLetter.A.points, 12);
+  assert.equal(d.byLetter.A.points, 11.5, "the counted total, and it ends in a half");
+  // EXACTLY, not within a tolerance: every term is an exact multiple of a half
+  // (gradeCredit in {0, ½, 1}, the slow multiplier in {1, 2}) and a half is
+  // exactly representable in float64.
   for (const p of [d.byLetter.A, d.byLetter.B, d.byLetter.C, d.plant])
-    assert.equal(p.credit + p.doubling + p.rounding, p.points, "the printed row must add to the printed total");
-  assert.equal(d.plant.points, 15);
+    assert.equal(p.credit + p.doubling, p.points, "the printed row must add to the printed total");
+  assert.equal(d.plant.points, 14.5);
   assert.equal(d.disagreements, 0);
+  assert.deepEqual(d.mismatches, []);
+  // The deleted third term must not come back as a field that is always zero:
+  // that is the same leftover with a smaller value, and a reader would add it.
+  for (const k of ["rounding", "roundedUp", "exact"])
+    assert.ok(!(k in d.plant), `CountedParts still carries \`${k}\`, which the identity has no room for`);
 });
 
 test("the doubling is CREDIT, and a slow grade B makes it smaller than the slab count", () => {
@@ -733,43 +773,69 @@ test("the doubling is CREDIT, and a slow grade B makes it smaller than the slab 
   // B. The COUNT is 2. The CREDIT they add is 1 + 0.5. Printing the count where
   // the contribution belongs overstates the month by half a slab per slow B —
   // 14 slabs on live August 2026, measured 2026-09-03 and moving as QC files.
-  const rows = [mkInstance({ anchor: "2026-08-01", shift: "C", graded: 2, rawQuality: 0.75, points: 3 })];
+  const rows = [mkInstance({ anchor: "2026-08-01", shift: "C", graded: 2, gradeA: 1, gradeB: 1, rawQuality: 0.75, points: 3 })];
   const d = decomposeCounted(rows, new Map([["2026-08-01C", 1.5]]));
   assert.equal(d.byLetter.C.credit, 1.5, "one A and one B");
   assert.equal(d.byLetter.C.doubling, 1.5, "NOT 2 — the B doubles to one slab, not to two");
-  assert.equal(d.byLetter.C.exact, 3);
-  assert.equal(d.byLetter.C.rounding, 0, "nothing to round: the exact total is whole");
-});
-
-test("the rounding residual can only be a plus, and never more than half an instance each", () => {
-  // The bound is the whole reason the residual is worth naming: rounding a
-  // multiple of a half, per instance, can only ADD, and only 0.5 at a time. A
-  // residual outside it is not rounding at all, and
-  // scripts/verify-grade-columns.mts asserts the same bound on live data.
-  const rows = Array.from({ length: 8 }, (_, i) =>
-    mkInstance({ anchor: `2026-08-0${i + 1}`, shift: "B", graded: 1, rawQuality: 0.5, points: 1 }));
-  const d = decomposeCounted(rows, new Map());
-  assert.equal(d.byLetter.B.exact, 4, "eight halves");
-  assert.equal(d.byLetter.B.points, 8, "each rounded up on its own");
-  assert.equal(d.byLetter.B.rounding, 4);
-  assert.equal(d.byLetter.B.roundedUp, 8);
-  assert.equal(d.byLetter.B.rounding, d.byLetter.B.instances / 2, "the bound, met exactly");
+  assert.equal(d.byLetter.C.points, 3, "and 1.5 + 1.5 is the counted total, with nothing over");
   assert.equal(d.disagreements, 0);
 });
 
-test("an instance the score and the rebuilt doubling disagree about is counted, not swallowed", () => {
-  // On a live plant the doubling is rebuilt from a QC read milliseconds after
-  // the score's own. A slab re-graded in between makes one instance's leftover
-  // fall outside [0, +½]. The row still ADDS UP — `rounding` is defined as the
-  // leftover — so the identity proves nothing here and this count is the only
-  // signal there is. 0 on live June, July and August 2026 (2026-09-03).
-  const rows = [mkInstance({ anchor: "2026-08-01", shift: "A", graded: 4, rawQuality: 0.5, points: 9 })];
-  const good = decomposeCounted(rows, new Map([["2026-08-01A", 7]]));
-  assert.equal(good.disagreements, 0, "2 + 7 = 9, nothing left to round");
-  const bad = decomposeCounted(rows, new Map([["2026-08-01A", 4]]));
-  assert.equal(bad.disagreements, 1, "2 + 4 = 6 against a score of 9 is not rounding");
-  assert.equal(bad.byLetter.A.credit + bad.byLetter.A.doubling + bad.byLetter.A.rounding, 9,
-    "and the row still adds up, which is exactly why the count has to exist");
+test("eight half-slab instances total four slabs, not eight", () => {
+  // THIS IS THE INFLATION THE CHANGE REMOVES, at its purest. Eight instances of
+  // one grade B each is four good slabs. Under the old scorer each instance was
+  // Math.round(0.5) = 1 and the month counted EIGHT — a 100% overstatement on
+  // this shape, +13.5 slabs on live August 2026 across 92 real instances. A
+  // half can only round UP, so the drift was one-directional: the counted total
+  // was inflated on every full month in the data and never once deflated.
+  const rows = Array.from({ length: 8 }, (_, i) =>
+    mkInstance({ anchor: `2026-08-0${i + 1}`, shift: "B", graded: 1, gradeB: 1, rawQuality: 0.5, points: 0.5 }));
+  const d = decomposeCounted(rows, new Map());
+  assert.equal(d.byLetter.B.instances, 8);
+  assert.equal(d.byLetter.B.credit, 4, "eight halves");
+  assert.equal(d.byLetter.B.points, 4, "…and four is what the month counts");
+  assert.equal(d.byLetter.B.credit + d.byLetter.B.doubling, d.byLetter.B.points);
+  assert.equal(d.disagreements, 0);
+});
+
+test("a HALF-slab disagreement is caught and named, which is the whole point of deleting the leftover", () => {
+  // THE 92-OF-184 BLIND SPOT, in one row. The old acceptance window was
+  // `drift < -1e-9 || drift > 0.5 + 1e-9` — any gap in [0, +½] was read as
+  // "that is the per-instance rounding" — so a doubling that came back half a
+  // slab short landed in `rounding` and every check stayed green. The window is
+  // symmetric now (|gap| > 1e-9), because there is no rounding left for a gap
+  // to be.
+  //
+  // Ten A and two B is 11 credit; the scorer's exact total is 14.5, so the
+  // doubling must be 3.5. Hand in 3 and it is a mismatch of exactly half a
+  // slab — invisible before, named now.
+  const rows = [mkInstance({ anchor: "2026-08-01", shift: "A", graded: 12, gradeA: 10, gradeB: 2, rawQuality: 11 / 12, points: 14.5 })];
+  const good = decomposeCounted(rows, new Map([["2026-08-01A", 3.5]]));
+  assert.equal(good.disagreements, 0, "11 + 3.5 = 14.5, and the row is right");
+  assert.deepEqual(good.mismatches, []);
+  const bad = decomposeCounted(rows, new Map([["2026-08-01A", 3]]));
+  assert.equal(bad.disagreements, 1, "11 + 3 = 14 against a score of 14.5 is a contradiction, not a rounding note");
+  // …and it says WHICH day, WHICH letter and BY HOW MUCH, so the reader can go
+  // and look. A bare count is not something anyone can act on.
+  assert.deepEqual(bad.mismatches, [{ anchor: "2026-08-01", shift: "A", points: 14.5, rebuilt: 14, gap: 0.5 }]);
+  assert.equal(bad.disagreements, bad.mismatches.length, "the count must be the list's length, not a second tally");
+  // The row now visibly does NOT add up, which is the honesty the change buys:
+  // under the leftover it added up regardless.
+  assert.notEqual(bad.byLetter.A.credit + bad.byLetter.A.doubling, bad.byLetter.A.points);
+});
+
+test("mismatches come worst-gap-first, then oldest", () => {
+  // A reader chasing one starts with the one that moves the total most.
+  const rows = [
+    mkInstance({ anchor: "2026-08-03", shift: "A", graded: 2, gradeA: 2, rawQuality: 1, points: 4 }),
+    mkInstance({ anchor: "2026-08-01", shift: "B", graded: 2, gradeA: 2, rawQuality: 1, points: 5 }),
+    mkInstance({ anchor: "2026-08-02", shift: "C", graded: 2, gradeA: 2, rawQuality: 1, points: 4 }),
+  ];
+  const d = decomposeCounted(rows, new Map());
+  // credit is 2 on every row (two grade A), no doubling is handed in, so each
+  // gap is that row's points less 2.
+  assert.deepEqual(d.mismatches.map((x) => [x.anchor, x.shift, x.gap]),
+    [["2026-08-01", "B", 3], ["2026-08-02", "C", 2], ["2026-08-03", "A", 2]]);
 });
 
 test("the decomposition counts the instances rollUpByLetter counts, and no others", () => {
@@ -777,7 +843,7 @@ test("the decomposition counts the instances rollUpByLetter counts, and no other
   // sums over two different populations and the row stops adding up.
   const rows = [
     mkInstance({ anchor: "2026-08-01", shift: "A", quantity: 0, people: [], graded: 0, rawQuality: null, points: 0 }),
-    mkInstance({ anchor: "2026-08-02", shift: "A", quantity: 0, people: ["Ramesh"], graded: 2, rawQuality: 1, points: 2 }),
+    mkInstance({ anchor: "2026-08-02", shift: "A", quantity: 0, people: ["Ramesh"], graded: 2, gradeA: 2, rawQuality: 1, points: 2 }),
   ];
   const d = decomposeCounted(rows, new Map());
   assert.equal(d.byLetter.A.instances, 1, "an instance with no slabs and no crew is not a shift");
@@ -788,9 +854,9 @@ test("the decomposition counts the instances rollUpByLetter counts, and no other
 });
 
 test("the doubling's credit is totalled per shift instance, because the score does not report it", () => {
-  // scoreShift accumulates `weighted` into a local and returns
-  // Math.round(weighted); neither the exact total nor the slow slabs' credit
-  // survives the function, only `slowSlabs`, which is a count. So the credit is
+  // scoreShift accumulates `weighted` into a local and returns it; the slow
+  // slabs' share of that total does not survive the function, only `slowSlabs`,
+  // which is a count. So the credit is
   // totalled off the same claim rebuild the grade columns use, keyed by
   // shiftKeyOf's own string so it lands on the instance the score scored.
   assert.match(lib, /const doublingByInstance = new Map<string, number>\(\)/,
@@ -803,10 +869,10 @@ test("the doubling's credit is totalled per shift instance, because the score do
     "and the decomposition must be built from the SCORE's instances, not from the rebuild's own");
 });
 
-test("the screen prints the doubling's CREDIT, and names the rounding instead of hiding it", () => {
+test("the screen prints the doubling's CREDIT, in an identity with no leftover", () => {
   const kpi = after(page, 'label="Counted good slabs"', 400);
   assert.match(kpi, /decomposition\.plant\.doubling/, "the sub-line must print the doubling's credit");
-  assert.match(kpi, /decomposition\.plant\.rounding/, "…and the rounding as a term of its own");
+  assert.ok(!/\.rounding/.test(code(kpi)), "the sub-line still prints a rounding term, which no longer exists");
   assert.ok(!/good slabs \+ \$\{fmt\(plant\.slowSlabs\)\} counted a second time/.test(page),
     "the sub-line is printing the slow-slab COUNT as the doubling's contribution again");
   // The "Counted twice" KPI is still a slab count and must say so — that is what
@@ -817,13 +883,97 @@ test("the screen prints the doubling's CREDIT, and names the rounding instead of
     "the KPI still asserts the slab count is what the doubling adds");
   // …and the three-shifts table must let a reader add the row across.
   const table = page.slice(page.indexOf("The three shifts"), page.indexOf("What each person would take"));
-  assert.match(table, /Good \+ doubling \+ rounding = Counted/, "the table must state the identity it now satisfies");
+  // THE NEGATIVE ASSERTIONS RUN ON THE COMMENT-STRIPPED SOURCE. This codebase
+  // explains a removal in prose at the place it was removed from, so the very
+  // sentences saying the rounding term is gone contain the string that says it
+  // is present — the same trap `code()` exists for further up this file.
+  const tableCode = code(table);
+  assert.match(table, /Good \+ doubling = Counted/, "the table must state the identity it now satisfies");
+  assert.ok(!/Good \+ doubling \+ rounding = Counted/.test(tableCode), "the three-term identity is back on the screen");
   assert.match(table, /half\(d\.doubling\)/, "a Doubling column, per letter");
-  assert.match(table, /drift\(d\.rounding\)/, "a Rounding column, per letter");
-  assert.match(table, /half\(decomposition\.plant\.doubling\)/, "…and both on the plant row, or the footer runs narrower than the header");
-  assert.match(table, /drift\(decomposition\.plant\.rounding\)/);
-  assert.match(table, /decomposition\.disagreements > 0/,
-    "the screen must say when the doubling has stopped describing the score");
+  assert.match(table, /half\(decomposition\.plant\.doubling\)/, "…and on the plant row, or the footer runs narrower than the header");
+  // THE ROUNDING COLUMN AND ITS HEADER GO TOGETHER OR THE ROW RUNS NARROWER
+  // THAN THE HEADER — the same failure the two 100% cells are guarded against
+  // in tests/incentivePayoutFlag.test.ts.
+  assert.ok(!/drift\(d\.rounding\)/.test(tableCode), "the per-letter Rounding cell is still drawn");
+  assert.ok(!/drift\(decomposition\.plant\.rounding\)/.test(tableCode), "the plant row's Rounding cell is still drawn");
+  assert.ok(!/>Rounding</.test(tableCode), "the Rounding header outlived the column it heads");
+  // THE COUNTED CELLS MUST USE THE HALF FORMATTER. fmt() is
+  // toLocaleString({maximumFractionDigits: 0}) and rounds UP: fmt(6420.5) is
+  // "6,421", one clear of the KPI two inches above that prints half(pool
+  // .counted) = "6,420½", and the row Good + Doubling would not add across to
+  // it. This is the defect the change would otherwise reintroduce at the last
+  // moment, on the screen, having removed it from the score.
+  assert.match(table, /half\(l\.points\)/, "the per-letter Counted cell must print halves");
+  assert.match(table, /half\(plant\.points\)/, "…and so must the plant row's");
+  assert.ok(!/fmt\(l\.points\)/.test(tableCode) && !/fmt\(plant\.points\)/.test(tableCode),
+    "a counted total is going through fmt(), which rounds 6420.5 up to 6,421");
+  assert.match(table, /decomposition\.mismatches\.length > 0/,
+    "the screen must say when the score and the rebuild have stopped agreeing");
+  assert.match(table, /x\.anchor/, "…and name the day");
+  assert.match(table, /x\.gap/, "…and the size of the gap");
+});
+
+// ── THE OWNER'S LADDER RULING ───────────────────────────────────────────────
+// 2026-09-04, asked whether a month at 6,999.5 counted slabs should unlock the
+// Rs 3,00,000: "Agreed — 7,000 should mean 7,000."
+//
+// poolFor() already tested `countedSlabs >= t.slabs`, so this needed no code
+// change — but a ruling that lives only in a `>=` nobody has read is one
+// well-meant Math.round away from being reversed, and it only became reachable
+// at all when the counted total stopped being a whole number. Pinned here
+// against the SAME function the payout calls.
+test("7,000 means 7,000 — a month at 6,999½ unlocks nothing", () => {
+  assert.equal(poolFor(6999.5), 0, "half a slab short is short");
+  assert.equal(poolFor(6999.9), 0);
+  assert.equal(poolFor(7000), TIERS[0].pool, "and 7,000 exactly does unlock");
+  assert.equal(nextTier(6999.5)?.slabs, TIERS[0].slabs, "6,999½ is still reaching for the 7,000 row");
+  assert.equal(FLOOR_SLABS, TIERS[0].slabs, "the floor the screens compare against is the first rung");
+  // Every rung, at the half-slab boundary: half a slab past a rung pays that
+  // rung and no more, and half a slab short of the next pays the one below.
+  for (let i = 0; i < TIERS.length; i++) {
+    assert.equal(poolFor(TIERS[i].slabs), TIERS[i].pool, `${TIERS[i].slabs} pays its own row`);
+    assert.equal(poolFor(TIERS[i].slabs - 0.5), i === 0 ? 0 : TIERS[i - 1].pool,
+      `${TIERS[i].slabs}½ short must pay the row below, not this one`);
+    assert.equal(poolFor(TIERS[i].slabs + 0.5), TIERS[i].pool, "half a slab past a rung is not the next rung");
+  }
+});
+
+test("no float creep can tip a half-slab month over a rung", () => {
+  // The pathology checked rather than assumed. Every value the system can
+  // produce is an exact multiple of a half — gradeCredit is in {0, ½, 1} and
+  // the slow multiplier in {1, 2} — and a half is exactly representable in
+  // float64, so a sum of 13,999 of them is exactly 6999.5 and not 6999.50001.
+  // That is why the `>=` needs NO epsilon, and why adding one would hand back
+  // the generosity the ruling refuses.
+  let n = 0;
+  for (let i = 0; i < 13_999; i++) n += 0.5;
+  assert.equal(n, 6999.5);
+  assert.equal(poolFor(n), 0, "13,999 halves is not 7,000 slabs");
+  n += 0.5;
+  assert.equal(n, 7000);
+  assert.equal(poolFor(n), TIERS[0].pool);
+});
+
+test("nothing on the path from the scorer to the ladder rounds the counted total", () => {
+  // The ruling is only worth pinning if the figure reaching poolFor is the
+  // scorer's own. Source-text, because incentiveMonth.ts imports "@/lib/prisma"
+  // and cannot be run under `node --test`.
+  const scorer = read("../src/lib/shiftScore.ts");
+  const ret = after(scorer, "export async function scoreShift", 30_000);
+  assert.ok(!/points:\s*Math\.round/.test(ret), "scoreShift is rounding the weighted total again");
+  assert.ok(!/goodSlabs:\s*Math\.round/.test(ret), "scoreShift is rounding the credit again");
+  // plant.points -> counted -> poolFor, with nothing in between. The slice runs
+  // from the assignment to the returned `pool` object, which is where poolFor
+  // is actually called; anything that rounded `counted` would have to sit
+  // inside it.
+  const path = code(lib).slice(code(lib).indexOf("const counted = plant.points"));
+  assert.notEqual(path.indexOf("poolFor(counted)"), -1, "the ladder must be read off `counted` itself");
+  const upToLadder = path.slice(0, path.indexOf("poolFor(counted)"));
+  assert.ok(!/Math\.(round|ceil)\(\s*counted/.test(upToLadder),
+    "counted is being rounded UP on its way to the ladder — that pays a pool on half a slab nobody pressed");
+  assert.ok(!/counted\s*=\s*Math\./.test(upToLadder), "counted is being reassigned through a rounding function");
+  assert.match(path, /nextTier\(counted\)/, "…and so must the rung it is still reaching for");
 });
 
 test("the verification script re-derives the decomposition instead of certifying the old one", () => {
@@ -835,10 +985,22 @@ test("the verification script re-derives the decomposition instead of certifying
   assert.ok(!code(v).includes("+ slow slabs counted twice ${shown(slowSlabs)}"),
     "the script still prints the slab count as the exact total's second term");
   assert.match(v, /decomposition\.plant\.doubling/, "the doubling must be read from the decomposition");
-  assert.match(v, /the residual is within \[0, instances \/ 2\]/,
-    "the residual must be ASSERTED into the band per-instance rounding can produce, not merely printed");
-  assert.match(v, /no shift instance where the doubling and the score disagree beyond rounding/,
+  // The three residual assertions are replaced by the ONE the two-term identity
+  // earns. A residual check can only restate the leftover's definition; this
+  // one can fail.
+  assert.ok(!code(v).includes("decomposition.plant.rounding"), "the script still reads the deleted rounding term");
+  assert.ok(!code(v).includes("decomposition.plant.exact"), "the script still reads the deleted exact term");
+  assert.match(v, /credit \+ doubling = counted, the figure the ladder is read off/,
+    "the identity must be ASSERTED against the ladder's own figure");
+  assert.match(v, /no shift instance where the score and the rebuilt decomposition disagree/,
     "and the per-instance disagreement count must fail the run");
+  // shown() defaults to 0 digits and (6420.5).toFixed(0) is "6421", so a
+  // counted total printed with the default would be rounded UP directly above
+  // ALL CHECKS PASSED, one slab clear of the wall notice.
+  assert.ok(!code(v).includes("shown(counted)"), "the counted total is printed with 0 digits and rounds up");
+  assert.ok(!code(v).includes("shown(l.points)"), "a letter's counted total is printed with 0 digits");
+  // And the owner's ruling is exercised against the live ladder, not assumed.
+  assert.match(v, /poolFor\(6999\.5\)/, "the verification run must exercise the 7,000-means-7,000 ruling");
 });
 
 test("the notice prints the same three parts, and refuses a snapshot without them", () => {
@@ -850,5 +1012,46 @@ test("the notice prints the same three parts, and refuses a snapshot without the
   assert.match(notice, /the difficulty rule caught \{num\(P\['slowSlabs'\]\)\} good slabs/,
     "the slab count must be described as a count of slabs");
   assert.match(notice, /<b>\{half\(doubling\)\}<\/b> counted slabs/, "and the rule's worth must be the credit it adds");
-  assert.match(notice, /\{drift\(rounding\)\}/, "the rounding must appear as its own signed term");
+  // THE THIRD SHAPE GUARD. A snapshot cut before 2026-09-04 carries an inflated
+  // counted total (by up to 16 slabs) and a dead `rounding` key, and this
+  // notice no longer prints that term — so without a guard it would render
+  // silently and go on the wall wrong.
+  assert.ok(notice.includes('{"rounding", "roundedUp", "exact"} & set(_dp)'),
+    "a snapshot cut before the exact counted total must stop the render, as the two guards beside it do");
+  assert.match(notice, /_dp\["credit"\] \+ _dp\["doubling"\] - _dp\["points"\]/,
+    "…and so must a snapshot whose two terms do not add to the counted total");
+  assert.ok(!code(notice, true).includes('DEC["plant"]["rounding"]'), "the notice still reads the deleted rounding term");
+  assert.ok(!code(notice, true).includes('DEC["plant"]["exact"]'), "the notice still reads the deleted exact term");
+  assert.ok(!/def drift\(/.test(notice), "drift() is dead once the rounding term goes");
+  // THE SCREEN AND THE WALL MUST NOT PRINT ONE TOTAL TWO WAYS. Python's int()
+  // TRUNCATES, so num(6420.5) is "6,420"; the ERP's fmt() rounds UP to "6,421".
+  // Left alone, the notice and the screen would print August's total ONE SLAB
+  // APART, in opposite directions from the truth. Every counted figure goes
+  // through half() on both sides.
+  assert.ok(!/num\(counted\)/.test(notice), "a counted total is going through num(), which truncates 6420.5 to 6,420");
+  assert.ok(!/num\(l\["points"\]\)/.test(notice) && !/num\(l\['points'\]\)/.test(notice),
+    "a letter's counted total is going through num()");
+  assert.match(notice, /half\(counted\)/, "the counted total must print halves");
+  assert.match(notice, /half\(l\["points"\]\)/, "…and so must the per-letter Counted cell");
+  assert.match(notice, /num\(FLOOR\)/, "the floor stays whole — a rung is a target, not a measurement");
+});
+
+test("the launcher's tracker prints the same decomposition, and the same halves, as the screen", () => {
+  // A PRE-EXISTING DIVERGENCE, fixed here because the formatter swap opened the
+  // file anyway. page.tsx's sub-line was corrected on 2026-09-03 to print the
+  // doubling's CREDIT; this copy was never brought along and went on printing
+  // the slab COUNT, so a reader holding the launcher up beside the screen saw
+  // two different decompositions of one total.
+  assert.ok(!/good slabs \+ \$\{fmt\(plant\.slowSlabs\)\} counted a second time/.test(tracker),
+    "the tracker still prints the slow-slab COUNT as the doubling's contribution");
+  assert.ok(!/each added once more, so \+\$\{fmt\(plant\.slowSlabs\)\} to the count/.test(tracker),
+    "…and still asserts the slab count is what the doubling adds");
+  assert.match(tracker, /half\(decomposition\.plant\.doubling\)/, "it must print the doubling's credit");
+  // Its own fmt() is Intl en-IN wrapped in an explicit Math.round, so it rounds
+  // 6420.5 UP to 6,421 — one above the pool.counted KPI on the same page, which
+  // already uses half().
+  assert.ok(!/fmt\(l\.points\)/.test(tracker) && !/fmt\(plant\.points\)/.test(tracker),
+    "a counted total is going through the tracker's fmt(), which rounds it up");
+  assert.match(tracker, /half\(l\.points\)/, "the per-letter Counted cell must print halves");
+  assert.match(tracker, /half\(plant\.points\)/, "…and so must the plant row's");
 });

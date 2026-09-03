@@ -47,13 +47,37 @@ _g = (M.get("outstanding") or {}).get("groups") or []
 if _g and "share" not in _g[0]:
     sys.exit(f"{SRC.name} predates the per-batch grade columns (2026-09-03) - "
              f"re-run: npx tsx scripts/incentive-month.mts {MONTH}")
-# The counted total's decomposition (credit / doubling / rounding), added
+# The counted total's decomposition (credit / doubling), added
 # 2026-09-03. Without it this notice would have to go back to inferring the
 # difficulty rule's worth as points - credit, which is the doubling and the
 # rounding drift added together and labelled as the doubling alone. Same fix as
 # above: re-cut the snapshot rather than default the field.
 if "decomposition" not in M:
     sys.exit(f"{SRC.name} predates the counted-slab decomposition (2026-09-03) - "
+             f"re-run: npx tsx scripts/incentive-month.mts {MONTH}")
+# AND IT MUST BE CUT SINCE THE PER-INSTANCE ROUNDING WENT (2026-09-04). Until
+# then scoreShift rounded EVERY SHIFT INSTANCE, and the only fraction it can
+# meet is a half, which rounds UP - so a snapshot cut before that carries a
+# counted total that is INFLATED and never deflated (by 13.5 slabs on live
+# August 2026, 16 on July, 4.5 on June, measured 2026-09-04) together with a
+# third `rounding` term that named the drift. This notice no longer prints that
+# term, so such a snapshot would render SILENTLY: a wall notice up to sixteen
+# slabs high, whose "good + doubling" line does not add across to the counted
+# total printed beside it, with nothing on the page to say so. Both marks are
+# refused - the dead key, and the identity itself - because a hand-edit could
+# remove one and not the other. Same fix as the two guards above: re-cut the
+# snapshot from the live database, never patch the JSON.
+_dp = (M.get("decomposition") or {}).get("plant") or {}
+if {"rounding", "roundedUp", "exact"} & set(_dp):
+    sys.exit(f"{SRC.name} predates the exact counted total (2026-09-04): it still carries a per-shift "
+             f"rounding term, so its counted total is inflated - "
+             f"re-run: npx tsx scripts/incentive-month.mts {MONTH}")
+if not {"credit", "doubling", "points"} <= set(_dp):
+    sys.exit(f"{SRC.name} has no credit / doubling / points on decomposition.plant - "
+             f"re-run: npx tsx scripts/incentive-month.mts {MONTH}")
+if abs(_dp["credit"] + _dp["doubling"] - _dp["points"]) > 1e-9:
+    sys.exit(f"{SRC.name}: good {_dp['credit']} + doubling {_dp['doubling']} is not the counted total "
+             f"{_dp['points']}. The snapshot does not add up and no notice may be printed from it - "
              f"re-run: npx tsx scripts/incentive-month.mts {MONTH}")
 
 # --------------------------------------------------------------- helpers
@@ -86,16 +110,21 @@ def lakh(n):
 
 
 def num(n):
+    """A WHOLE number, and only ever a whole one. int() TRUNCATES, so num(6420.5)
+    is "6,420" while the ERP screen's fmt() rounds the same figure UP to
+    "6,421" - the same month printed one slab apart, in opposite directions
+    from the truth, on the wall and on the screen. Since 2026-09-04 a counted
+    total can end in a half, so every counted or points figure goes through
+    half() below and num() is kept for the genuinely whole ones: slab counts,
+    shift counts and the ladder's rungs."""
     return f"{int(n):,}"
 
 
 def half(n):
+    """A slab figure that may end in a half, and 6420.5 is written 6,420½ - the
+    same string the incentive screen's own half() produces, so the notice on the
+    wall and the screen behind the login cannot print one total two ways."""
     return num(n) if float(n).is_integer() else f"{num(int(n))}½"
-
-
-def drift(n):
-    """A per-shift rounding residual: signed, one decimal, never a slab count."""
-    return f"{'-' if n < 0 else '+'}{abs(n):.1f}"
 
 
 def pct(x, d=1):
@@ -129,18 +158,22 @@ projected = PR["projectedReal"]
 pool_plan = MONEY["pool"]
 real = O["real"]
 by = O["byStage"]
-# THE COUNTED TOTAL IN THE THREE PARTS THAT ACTUALLY MAKE IT, and this notice
-# used to get them wrong. `slow_extra` was points - credit, which is the
-# doubling AND the per-shift rounding drift added together, and it was printed
-# as "what the difficulty rule is worth" beside a slab COUNT (plant.slowSlabs)
-# offered as the same quantity. It is not: a slow-hour slab that graded B is
-# one slab and half a slab of credit. Both figures now come from the snapshot's
-# own decomposition, where credit + doubling + rounding = counted exactly.
+# THE COUNTED TOTAL IN THE TWO PARTS THAT MAKE IT, and this notice used to get
+# them wrong twice over. `slow_extra` was points - credit, which is the doubling
+# AND the per-shift rounding drift added together, and it was printed as "what
+# the difficulty rule is worth" beside a slab COUNT (plant.slowSlabs) offered as
+# the same quantity. It is not: a slow-hour slab that graded B is one slab and
+# half a slab of credit. Then, for a day, it printed three terms - credit,
+# doubling and a `rounding` residual DEFINED as the leftover, which made the row
+# add up whether or not it was right.
+#
+# There are two terms now and no remainder: scoreShift keeps the exact weighted
+# total (2026-09-04), so credit + doubling = counted is real arithmetic, the
+# guard above refuses any snapshot on which it does not hold, and the counted
+# total itself can end in a half.
 DEC = M["decomposition"]
 credit_exact = DEC["plant"]["credit"]
 doubling = DEC["plant"]["doubling"]
-rounding = DEC["plant"]["rounding"]
-exact_counted = DEC["plant"]["exact"]
 DL = DEC["byLetter"]
 
 # --------------------------------------------------------------- styles (the wall notice's)
@@ -229,18 +262,18 @@ def story():
     # ---- where the month stands
     if below and projected >= FLOOR:
         A(band(f"<b>PROVISIONAL - NOT YET PAYABLE.</b> {MONTH_NAME} has not cleared the {num(FLOOR)} floor - yet. Counted today, the plant made "
-               f"<b>{num(counted)}</b> good slabs against a floor of {num(FLOOR)}, so as things stand there is nothing to pay out. "
+               f"<b>{half(counted)}</b> good slabs against a floor of {num(FLOOR)}, so as things stand there is nothing to pay out. "
                f"<b>{num(real)}</b> slabs pressed in {MONTH_NAME} are still waiting for QC. Graded at the {pct(PR['share'])} the month has actually run, they take it to "
                f"about <b>{num(round(projected))}</b> - over the line, and into the first pool of <b>{lakh(pool_plan)}</b>. "
                f"This month is decided at the polishing line, not at the press.", AMBER_BG, AMBER))
     elif below:
-        A(band(f"<b>NOT PAYABLE.</b> {num(counted)} good slabs counted against a floor of {num(FLOOR)}. Even if every one of the {num(real)} slabs still waiting "
+        A(band(f"<b>NOT PAYABLE.</b> {half(counted)} good slabs counted against a floor of {num(FLOOR)}. Even if every one of the {num(real)} slabs still waiting "
                f"for QC grades at the month's {pct(PR['share'])}, the month reaches about {num(round(projected))} - below the floor. No pool is unlocked.", RED_BG, RED))
     else:
-        A(band(f"<b>POOL UNLOCKED.</b> {num(counted)} good slabs counted - the {lakh(POOL['poolNow'])} row. "
+        A(band(f"<b>POOL UNLOCKED.</b> {half(counted)} good slabs counted - the {lakh(POOL['poolNow'])} row. "
                + (f"{num(POOL['next']['slabs'] - int(counted))} more counted slabs reach the {lakh(POOL['next']['pool'])} row." if POOL.get("next") else ""), GREEN_BG, GREEN))
     A(Spacer(1, 4))
-    A(kpis([(num(counted), "counted good slabs today"), (num(FLOOR), "where the pool starts"),
+    A(kpis([(half(counted), "counted good slabs today"), (num(FLOOR), "where the pool starts"),
             (num(real), "still waiting for QC"), (f"~{num(round(projected))}", "projected when grading is done"),
             (lakh(pool_plan) if pool_plan else "-", "the pool that unlocks")]))
 
@@ -256,8 +289,11 @@ def story():
     # neither: points - credit is the doubling AND the per-shift rounding drift
     # added together, printed beside plant.slowSlabs as though the two were the
     # same quantity. They differ by half a slab for every slow-hour slab that
-    # graded B. All three terms now come from the snapshot's decomposition and
-    # add to the counted total exactly.
+    # graded B. Both terms now come from the snapshot's decomposition and add to
+    # the counted total EXACTLY - the sentence that used to explain away the
+    # difference ("every shift is scored on its own and rounded on its own, and
+    # a half always rounds up") is gone, because the scorer no longer rounds and
+    # there is no difference left to explain.
     A(Paragraph((f"In {MONTH_NAME} the difficulty rule caught {num(P['slowSlabs'])} good slabs from slow-design hours, and it is worth "
                  f"<b>{half(doubling)}</b> counted slabs - fewer than the slabs it caught, because a slab that graded B is one slab "
                  f"and only half a slab of credit. "
@@ -265,16 +301,17 @@ def story():
                  f"and it is the doubling that puts the floor within reach. " if P["slowSlabs"] else
                  f"In {MONTH_NAME} no hour ran a standard of 10 slabs or fewer, so the difficulty rule added nothing and the month "
                  f"stands on its {half(credit_exact)} good slabs alone. ")
-                + f"{half(credit_exact)} + {half(doubling)} is {half(exact_counted)}; the counted total is {num(counted)} because every shift is scored "
-                  f"on its own and rounded on its own, and a half always rounds up - {drift(rounding)} across the month.", S["b"]))
+                + f"{half(credit_exact)} + {half(doubling)} is {half(counted)}, and that is the counted total exactly - "
+                  f"two figures, nothing left over. A counted total can end in a half, because a grade B is half a good slab "
+                  f"and nothing rounds it away.", S["b"]))
 
     # ---- the month in numbers
     A(Paragraph(f"{MONTH_NAME} in numbers", S["h"]))
     A(kpis([(num(P["instances"]), "shifts run"), (num(P["claimed"]), "slabs pressed"), (num(P["graded"]), "graded by QC"),
-            (num(real), "awaiting QC"), (pct(P["rawShare"]), "grade share (A = 1, B = ½)"), (num(counted), "counted good slabs")]))
+            (num(real), "awaiting QC"), (pct(P["rawShare"]), "grade share (A = 1, B = ½)"), (half(counted), "counted good slabs")]))
     A(Spacer(1, 3))
     A(Paragraph(f"Of the {num(P['graded'])} slabs QC has reached: {num(P['gradeA'])} grade A, {num(P['gradeB'])} grade B, {num(P['gradeC'])} rejects - "
-                f"{half(credit_exact)} good slabs before the difficulty rule, {half(doubling)} added by it, {drift(rounding)} from rounding each shift on its own. "
+                f"{half(credit_exact)} good slabs before the difficulty rule and {half(doubling)} added by it, {half(counted)} counted in all. "
                 f"A grade share of {pct(P['rawShare'])} is a good month. "
                 f"A further {num(by['routed'])} slabs were routed by QC to cut-to-size and will not grade; they are neither counted nor waited for.", S["b"]))
 
@@ -284,8 +321,8 @@ def story():
     for i, k in enumerate(ORDER, 1):
         l = L[k]
         rows.append([tdl(f"<b>{i}</b>&nbsp; Shift {k}"), td(num(l["instances"])), td(num(l["claimed"])), td(num(l["graded"])),
-                     td(num(l["points"])), td(f"{l['pointsPerShift']:.1f}"), td(pct(l["rawShare"])), td(pct(l["qualityAggregate"])), td(pct(SH[k]["share"]))])
-    rows.append([tdl("<b>Plant</b>"), td(num(P["instances"])), td(num(P["claimed"])), td(num(P["graded"])), td(num(counted)),
+                     td(half(l["points"])), td(f"{l['pointsPerShift']:.1f}"), td(pct(l["rawShare"])), td(pct(l["qualityAggregate"])), td(pct(SH[k]["share"]))])
+    rows.append([tdl("<b>Plant</b>"), td(num(P["instances"])), td(num(P["claimed"])), td(num(P["graded"])), td(half(counted)),
                  td(f"{counted / sum(l['effectiveShifts'] for l in M['letters']):.1f}"), td(pct(P["rawShare"])), td("-"), td("100%")])
     A(tbl(rows, [30 * mm, 14 * mm, 18 * mm, 18 * mm, 24 * mm, 18 * mm, 20 * mm, 20 * mm, 18 * mm], bold_rows=[len(rows) - 1]))
     A(Paragraph("Counted slabs already include both rules. Per shift is counted slabs divided by shifts worked, after removing the time the line was stopped by "
@@ -303,8 +340,8 @@ def story():
     out.extend(bullets([
         f"<b>Count each shift's good slabs.</b> Shift {k}: {num(l['gradeA'])} A + {num(l['gradeB'])} B + {num(l['gradeC'])} rejects = {half(l['credit'])} good, "
         f"then the difficulty rule on {num(l['slowSlabs'])} slow-design slabs adds {half(DL[k]['doubling'])} "
-        f"and rounding the shift's own instances adds {drift(DL[k]['rounding'])} -> <b>{num(l['points'])} counted</b>.",
-        f"<b>Divide by the shifts actually worked.</b> {num(l['points'])} counted / {l['effectiveShifts']:.1f} running shifts = <b>{l['pointsPerShift']:.1f} a shift</b>. "
+        f"-> <b>{half(l['points'])} counted</b>.",
+        f"<b>Divide by the shifts actually worked.</b> {half(l['points'])} counted / {l['effectiveShifts']:.1f} running shifts = <b>{l['pointsPerShift']:.1f} a shift</b>. "
         f"Time the line was down for breakdown or power cut comes out of the divisor.",
         f"<b>Score the quality.</b> ({pct(l['rawShare'])} - 87%) / (97% - 87%) = <b>{pct(l['qualityAggregate'])}</b>. 87% or below scores nothing; 97% or above scores the full 100%.",
         f"<b>Split the pool 70 / 30.</b> 70% x ({l['pointsPerShift']:.1f} / {vtot:.1f}) + 30% x ({(l['qualityAggregate'] or 0) * 100:.1f} / {qtot * 100:.1f}) = "
@@ -372,8 +409,9 @@ def story():
         "2 Category B (R&amp;D) and 5 managers, 112 in all, on a production salary bill of Rs 41,00,000 a month - and from that bill being shared equally across the three shifts. "
         "A change in either changes every amount here.",
         "<b>Safety comes first.</b> Any lost-time accident in a shift means no incentive for that shift that month, whatever the score. Nothing in these figures checks for one.",
-        "<b>Counting.</b> The month is the shift window - 06:00 on the 1st to 06:00 on the 1st of the next month - not the calendar date. Counted slabs are rounded per shift instance, "
-        "as the scoreboard does; the unrounded plant total is a few slabs lower and does not change the row.",
+        "<b>Counting.</b> The month is the shift window - 06:00 on the 1st to 06:00 on the 1st of the next month - not the calendar date. Counted slabs are the "
+        "EXACT total, not a rounded one: a grade B is half a good slab, so a month's counted total can end in a half, and it is written with a ½. Nothing rounds it "
+        "up before the row it pays on is looked up: half a slab short of a row is short of it, and 6,999½ counted does not reach the 7,000 row.",
         "<b>Quality score.</b> Each shift's month-long grade share is scored once between 87% and 97%, which is how the notice on the wall describes it. "
         f"The scoreboard averages each night's score instead; on {MONTH_NAME} the two differ by at most {max(abs(SH[x]['share'] - SHW[x]['share']) for x in 'ABC') * 100:.2f} points of share "
         f"(about {inr(max(abs(SH[x]['share'] - SHW[x]['share']) for x in 'ABC') * pool_plan / 1366667 * 20000)} to an operator). Management should confirm which reading applies before settlement.",

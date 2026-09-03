@@ -62,7 +62,7 @@ const STAGE_LABEL: Record<Stage, string> = {
 
 /* ------------------------------------------------------------------ page */
 function render(m: Month, prev: Month | null): string {
-  const { pool, projection, outstanding, plant, qc } = m;
+  const { pool, projection, outstanding, plant, qc, decomposition } = m;
   const belowFloor = pool.counted < pool.floor;
   const ladderMax = pool.ladder[pool.ladder.length - 1].slabs;
   const at = (n: number) => `${Math.max(0, Math.min(100, (n / ladderMax) * 100)).toFixed(2)}%`;
@@ -91,8 +91,17 @@ function render(m: Month, prev: Month | null): string {
          ${pool.next ? `<p>${fmt(pool.next.slabs - Math.floor(pool.counted))} more counted slabs reach the ${lakh(pool.next.pool)} row.</p>` : ""}</div>`;
 
   const kpis = [
-    ["Counted good slabs", half(pool.counted), `floor ${fmt(pool.floor)} · ${half(plant.credit)} good slabs + ${fmt(plant.slowSlabs)} counted a second time`],
-    ["Counted twice", fmt(plant.slowSlabs), `good slabs from hours with a standard of ${SLOW_STD_MAX}/hr or less — each added once more, so +${fmt(plant.slowSlabs)} to the count`],
+    // THE SUB-LINE IS THE DECOMPOSITION AND IT ADDS UP. It used to read
+    // "credit + slowSlabs", the sentences page.tsx replaced on 2026-09-03 and
+    // this copy was never brought along, so the launcher and the screen printed
+    // two different decompositions of one total. slowSlabs is a COUNT OF SLABS;
+    // what the doubling contributes is CREDIT, and a slow grade B is one slab
+    // and half a slab of credit. Good + doubling = Counted, in two terms, with
+    // no rounding remainder: scoreShift keeps the exact weighted total since
+    // 2026-09-04, so Counted can end in a half and every counted figure here
+    // goes through half() rather than fmt(), which would round it up.
+    ["Counted good slabs", half(pool.counted), `floor ${fmt(pool.floor)} · ${half(plant.credit)} good slabs + ${half(decomposition.plant.doubling)} credit from the slow-hour doubling`],
+    ["Counted twice", fmt(plant.slowSlabs), `good slabs from hours with a standard of ${SLOW_STD_MAX}/hr or less — a count of SLABS. They add ${half(decomposition.plant.doubling)} of credit between them — half a slab less for each of them that graded B.`],
     ["Pool today", pool.poolNow ? lakh(pool.poolNow) : "—", pool.poolNow ? "unlocked" : `${fmt(pool.floor - Math.floor(pool.counted))} short of the floor`],
     ["Still to grade", fmt(outstanding.real), `${fmt(outstanding.total)} claimed and uncounted · ${fmt(outstanding.byStage.nowhere)} never seen · ${fmt(outstanding.byStage.routed)} routed`],
     ["Projected", fmt(Math.round(projection.projectedReal)), `if the real ones grade at ${pct(projection.share)} → ${projection.poolReal ? lakh(projection.poolReal) : "no pool"}`],
@@ -113,7 +122,7 @@ function render(m: Month, prev: Month | null): string {
   const shiftRows = order.map((s, i) => { const l = letter(s); return `
     <tr><td class="name"><span class="rank${i === 0 ? " first" : ""}">${i + 1}</span>Shift ${s}</td>
       <td>${fmt(l.instances)}</td><td class="mut">${l.effectiveShifts.toFixed(1)}</td><td>${fmt(l.claimed)}</td><td>${fmt(l.graded)}</td><td>${fmt(l.ungraded)}</td>
-      <td class="mut">${fmt(l.gradeA)} / ${fmt(l.gradeB)} / ${fmt(l.gradeC)}</td><td>${half(l.credit)}</td><td class="mut">${fmt(l.slowSlabs)}</td><td class="strong">${fmt(l.points)}</td>
+      <td class="mut">${fmt(l.gradeA)} / ${fmt(l.gradeB)} / ${fmt(l.gradeC)}</td><td>${half(l.credit)}</td><td class="mut">${fmt(l.slowSlabs)}</td><td class="strong">${half(l.points)}</td>
       <td>${l.pointsPerShift.toFixed(1)}</td><td>${pct(l.rawShare)}</td><td>${pct(l.qualityWeighted, 0)}</td><td>${pct(l.qualityAggregate, 0)}</td>
       <td>${pct(shareW(s).share)}</td><td class="strong">${pct(shareA(s).share)}</td></tr>`; }).join("");
 
@@ -197,7 +206,7 @@ ${verdict}
   <p class="note" style="margin:0 0 10px">Counted slabs carry both rules: B = ½, reject = 0, and a slab from an hour whose standard is ${SLOW_STD_MAX}/hr or less counts twice. Per shift divides by shifts the line was actually running. Quality is scored between the ${Math.round(QUALITY_FLOOR * 100)}% floor and the ${Math.round(QUALITY_TARGET * 100)}% target, two ways: <b>month share</b> scores the month's whole grade share once (the notice's way — the shares in bold); <b>per-shift avg</b> averages each shift instance's score (the scoreboard's way).</p>
   <div class="scroll"><table><thead><tr><th>Shift</th><th>Shifts</th><th>Running</th><th>Pressed</th><th>Graded</th><th>To grade</th><th>A / B / C</th><th>Good</th><th>Counted twice</th><th>Counted</th><th>Per shift</th><th>Grade share</th><th>Quality<br><small>per-shift avg</small></th><th>Quality<br><small>month share</small></th><th>Share<br><small>per-shift avg</small></th><th>Share<br><small>month share</small></th></tr></thead>
   <tbody>${shiftRows}
-  <tr class="total"><td>Plant</td><td>${fmt(plant.instances)}</td><td>${m.letters.reduce((x, l) => x + l.effectiveShifts, 0).toFixed(1)}</td><td>${fmt(plant.claimed)}</td><td>${fmt(plant.graded)}</td><td>${fmt(plant.ungraded)}</td><td>${fmt(plant.gradeA)} / ${fmt(plant.gradeB)} / ${fmt(plant.gradeC)}</td><td>${half(plant.credit)}</td><td>${fmt(plant.slowSlabs)}</td><td>${fmt(plant.points)}</td><td>—</td><td>${pct(plant.rawShare)}</td><td>—</td><td>—</td><td>100%</td><td>100%</td></tr></tbody></table></div></div>
+  <tr class="total"><td>Plant</td><td>${fmt(plant.instances)}</td><td>${m.letters.reduce((x, l) => x + l.effectiveShifts, 0).toFixed(1)}</td><td>${fmt(plant.claimed)}</td><td>${fmt(plant.graded)}</td><td>${fmt(plant.ungraded)}</td><td>${fmt(plant.gradeA)} / ${fmt(plant.gradeB)} / ${fmt(plant.gradeC)}</td><td>${half(plant.credit)}</td><td>${fmt(plant.slowSlabs)}</td><td>${half(plant.points)}</td><td>—</td><td>${pct(plant.rawShare)}</td><td>—</td><td>—</td><td>100%</td><td>100%</td></tr></tbody></table></div></div>
 <div class="card"><h2>What it pays${m.money.pool ? ` on the ${lakh(m.money.pool)} pool` : ""}</h2>
   ${!m.money.pool ? `<p class="mut">Nothing to share out — the projection on real slabs does not reach ${fmt(pool.floor)}.</p>` : `
   <p class="note" style="margin:0 0 10px">${belowFloor ? "A planning figure: the pool the real projection reaches, not one the counted total has unlocked. " : ""}Each shift's slice becomes a percentage of salary on a third of the ₹41 lakh bill, and everyone on the shift takes that percentage of their own pay. The main figure is the month-share method; the small one after the slash is the per-shift-average method where it differs.</p>

@@ -64,13 +64,19 @@ export interface LetterTotals {
   gradeB: number;
   gradeC: number;
   /** Exact good-slab count: A = 1, B = 0.5, C = 0, before the slow multiplier.
-   *  Rebuilt from rawQuality x graded rather than summing the per-instance
-   *  rounded goodSlabs, so a half-slab survives. */
+   *  Built DIRECTLY from the grade counts on the row — gradeA + gradeB / 2 —
+   *  and not from rawQuality x graded. rawQuality is itself credit / graded, so
+   *  that form divided and multiplied back: a round trip that is not exact for
+   *  every reachable pair (a reviewer brute-forced the space and found 7.8% of
+   *  pairs off by an ulp, and it fires on live data — 2026-07-18 shift B was
+   *  out by 1.8e-15). gradeA and gradeB are integers, so the sum here is an
+   *  exact multiple of a half. */
   credit: number;
   slowSlabs: number;
   /** What the volume pool pays on: credit with slow-product slabs doubled.
-   *  Sum of per-instance points, which scoreShift rounds — so this is a whole
-   *  number even when the exact figure ends in a half. */
+   *  The sum of the per-instance points scoreShift reports, which are now
+   *  EXACT — so this can end in a half, and a half here is half a real slab
+   *  rather than an artefact. */
   points: number;
   pointsPerShift: number;
   /** credit / graded for the whole month. */
@@ -86,7 +92,7 @@ export function rollUpByLetter(rows: readonly ScoredInstance[]): LetterTotals[] 
     const mine = rows.filter((r) => r.shift === shift && (r.quantity > 0 || r.people.length > 0));
     const sum = (f: (r: ScoredInstance) => number) => mine.reduce((a, r) => a + f(r), 0);
     const graded = sum((r) => r.graded);
-    const credit = sum((r) => (r.rawQuality ?? 0) * r.graded);
+    const credit = sum((r) => r.gradeA + r.gradeB * 0.5);
     const qNum = sum((r) => (r.quality ?? 0) * r.graded);
     const effectiveShifts = sum((r) => r.weight);
     const points = sum((r) => r.points);
@@ -127,6 +133,12 @@ export interface CountedInstance {
   quantity: number;
   people: string[];
   graded: number;
+  /** The grade counts credit is built from — integers, so gradeA + gradeB / 2
+   *  is an exact multiple of a half. Present here, and not just `rawQuality`,
+   *  so that this file's credit and rollUpByLetter's are the SAME arithmetic on
+   *  the same row and cannot drift apart by an ulp. */
+  gradeA: number;
+  gradeB: number;
   rawQuality: number | null;
   points: number;
 }
@@ -134,9 +146,9 @@ export interface CountedInstance {
 /** `points` — THE FIGURE THE LADDER IS READ OFF — TAKEN APART SO THAT A READER
  *  ADDING THE PARTS UP LANDS ON IT.
  *
- *      credit + doubling + rounding = points
+ *      credit + doubling = points
  *
- *  exactly and by construction, because `rounding` is DEFINED as the leftover.
+ *  and that is now REAL ARITHMETIC, not a definition. There is no third term.
  *  The screen used to print `credit` and `slowSlabs` beside `points` and let a
  *  reader infer the sum, and that sum was wrong twice over:
  *
@@ -146,83 +158,101 @@ export interface CountedInstance {
  *      for every slow B. On live August 2026 the two differed by 14 (measured
  *      2026-09-03; re-measure with scripts/verify-grade-columns.mts, which
  *      prints both). Hence `doubling`, which is the CREDIT.
- *    - scoreShift rounds EVERY SHIFT INSTANCE, and every fraction it can meet
- *      is exactly a half, which Math.round takes UP — so the rounding drift is
- *      one-directional and grows with the number of instances. It is never
- *      negative and never more than half an instance each. Hence `rounding`,
- *      named instead of hidden inside a sum that did not add.
+ *    - scoreShift used to round EVERY SHIFT INSTANCE, and the only fraction it
+ *      can meet is a half, which Math.round takes UP. That drift was carried
+ *      here as a `rounding` term DEFINED as points - (credit + doubling), and
+ *      a leftover always makes the row add up — so the row added up whether or
+ *      not it was right. Reviewers showed on constructed data that 92 of 184
+ *      possible half-slab errors in `doubling` landed silently in `rounding`
+ *      with every check still green. scoreShift now keeps the exact total
+ *      (2026-09-04), so the term is gone and the difference it used to absorb
+ *      is a MISMATCH — see `mismatches` below.
  *
  *  Both figures MOVE HOUR BY HOUR while QC files, so nothing here carries a
  *  measured constant. */
 export interface CountedParts {
-  /** Good slabs: A = 1, B = ½, C = 0. Summed exactly as LetterTotals.credit
-   *  is, over the same instances, so the two are the same number. */
+  /** Good slabs: A = 1, B = ½, C = 0. Built from the same gradeA + gradeB / 2
+   *  as LetterTotals.credit, over the same instances, so the two are the same
+   *  number by construction rather than by luck. */
   credit: number;
   /** What the slow-hour doubling ADDS, in credit — sum over graded good slabs
    *  in slow hours of gradeCredit x (multiplier - 1). NOT a slab count. */
   doubling: number;
-  /** credit + doubling: the volume total BEFORE scoreShift rounds each shift
-   *  instance. Ends in a half whenever an odd number of halves survive. */
-  exact: number;
-  /** points - exact. Per instance this is 0 or +0.5; over a month it is a
-   *  small positive number, and it can never exceed instances / 2. */
-  rounding: number;
+  /** The scorer's own total for these instances. Equal to credit + doubling
+   *  unless the two counts have genuinely drifted apart, which is what
+   *  `mismatches` names. Can end in a half. */
   points: number;
   instances: number;
-  /** How many instances the rounding actually moved (each by exactly +0.5). */
-  roundedUp: number;
 }
 
-const blankParts = (): CountedParts =>
-  ({ credit: 0, doubling: 0, exact: 0, rounding: 0, points: 0, instances: 0, roundedUp: 0 });
+const blankParts = (): CountedParts => ({ credit: 0, doubling: 0, points: 0, instances: 0 });
+
+/** ONE SHIFT INSTANCE WHERE THE SCORER AND THE REBUILD DO NOT AGREE — the day,
+ *  the letter and the size of the gap, so the reader can go and look. */
+export interface CountedMismatch {
+  /** The IST day the shift instance STARTED, as scoreRange anchors it. */
+  anchor: string;
+  shift: ShiftLetter;
+  /** What scoreShift says the instance was worth. */
+  points: number;
+  /** credit + doubling, rebuilt from the claim. */
+  rebuilt: number;
+  /** points - rebuilt, signed, in slabs. Never 0 in this list. */
+  gap: number;
+}
 
 /** Decompose the counted total per letter and for the plant.
  *
  *  `doublingByInstance` is keyed `${anchor}${shift}` and comes from the caller
  *  because ShiftScore does not report it: scoreShift accumulates the weighted
- *  total into a local and returns only `Math.round(weighted)`, so the exact
- *  figure and the slow slabs' credit both leave the function unrecorded. An
- *  instance missing from the map contributes 0, which is right for a month
- *  with no slow hours and is also what a caller that cannot rebuild the claim
- *  should hand in — the decomposition then degenerates to "credit + rounding",
- *  still adding to `points`.
+ *  total into a local and returns the total alone, so the slow slabs' share of
+ *  it leaves the function unrecorded. An instance missing from the map
+ *  contributes 0 — right for a month with no slow hours, and what a caller that
+ *  cannot rebuild the claim should hand in, though for such a caller every slow
+ *  instance then reads as a mismatch, which is the honest outcome.
  *
- *  `disagreements` is the check: per instance `points - exact` must lie in
- *  [0, 0.5], because that is the only thing rounding a multiple of a half can
- *  do. Anything else means the caller's doubling and the score's own weighted
- *  total have drifted — on a live plant most likely a slab re-graded between
- *  the two reads, and worth saying so rather than printing a decomposition
- *  that quietly stops describing the score. */
+ *  THE ALARM. Per instance `points` must EQUAL `credit + doubling`: both sides
+ *  are sums of exact multiples of a half, exactly representable in float64, so
+ *  the only tolerance needed is against arithmetic dust (1e-9). Anything larger
+ *  is a real contradiction between the scorer and the rebuild — on a live plant
+ *  most likely a slab re-graded between the two QC reads — and each one is
+ *  reported with its day, its letter and its size rather than counted into a
+ *  bare total the reader cannot act on. The old check accepted any gap in
+ *  [0, +0.5] as "that is the rounding", which swallowed exactly the half-slab
+ *  errors it was supposed to catch. */
 export function decomposeCounted(
   rows: readonly CountedInstance[],
   doublingByInstance: ReadonlyMap<string, number>,
-): { byLetter: Record<ShiftLetter, CountedParts>; plant: CountedParts; disagreements: number } {
+): {
+  byLetter: Record<ShiftLetter, CountedParts>;
+  plant: CountedParts;
+  disagreements: number;
+  mismatches: CountedMismatch[];
+} {
   const byLetter: Record<ShiftLetter, CountedParts> = { A: blankParts(), B: blankParts(), C: blankParts() };
   const plant = blankParts();
-  let disagreements = 0;
+  const mismatches: CountedMismatch[] = [];
   for (const r of rows) {
     // The same population rollUpByLetter counts, so `instances` and `credit`
     // here are the same instances and the same number as LetterTotals'.
     if (!(r.quantity > 0 || r.people.length > 0)) continue;
-    const credit = (r.rawQuality ?? 0) * r.graded;
+    const credit = r.gradeA + r.gradeB * 0.5;
     const doubling = doublingByInstance.get(`${r.anchor}${r.shift}`) ?? 0;
-    const drift = r.points - (credit + doubling);
-    if (drift < -1e-9 || drift > 0.5 + 1e-9) disagreements += 1;
+    const gap = r.points - (credit + doubling);
+    if (Math.abs(gap) > 1e-9) {
+      mismatches.push({ anchor: r.anchor, shift: r.shift, points: r.points, rebuilt: credit + doubling, gap });
+    }
     for (const t of [byLetter[r.shift], plant]) {
       t.credit += credit;
       t.doubling += doubling;
       t.points += r.points;
       t.instances += 1;
-      if (Math.abs(drift) > 1e-9) t.roundedUp += 1;
     }
   }
-  // Derived last, from the totals, so the identity holds on the printed row
-  // and not merely instance by instance.
-  for (const t of [byLetter.A, byLetter.B, byLetter.C, plant]) {
-    t.exact = t.credit + t.doubling;
-    t.rounding = t.points - t.exact;
-  }
-  return { byLetter, plant, disagreements };
+  // Worst gap first, then oldest — a reader chasing one starts with the one
+  // that moves the total most.
+  mismatches.sort((x, y) => Math.abs(y.gap) - Math.abs(x.gap) || x.anchor.localeCompare(y.anchor) || x.shift.localeCompare(y.shift));
+  return { byLetter, plant, disagreements: mismatches.length, mismatches };
 }
 
 export interface LetterShare {

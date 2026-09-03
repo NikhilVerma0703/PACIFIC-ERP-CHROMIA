@@ -74,12 +74,21 @@ const pct = (n: number | null | undefined, d = 1) => (n == null ? "—" : `${(n 
 const inr = (n: number) => "₹" + new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(n));
 const lakh = (n: number) => (n >= 100_000 ? `₹${(n / 100_000).toFixed(n % 100_000 ? 1 : 0)} lakh` : inr(n));
 const half = (n: number) => (Number.isInteger(n) ? fmt(n) : `${fmt(Math.floor(n))}½`);
-/** A PER-INSTANCE ROUNDING RESIDUAL, always signed and always to one decimal,
- *  so it reads as a correction to a sum rather than as a count of slabs. It is
- *  a multiple of a half by construction: scoreShift rounds each shift
- *  instance's weighted total, that total can only end in .0 or .5, and
- *  Math.round takes every .5 UP — so this is never negative and never larger
- *  than half the instance count. */
+/** A SIGNED GAP BETWEEN TWO COUNTS OF THE SAME THING, to one decimal, so it
+ *  reads as a correction to a sum rather than as a count of slabs.
+ *
+ *  IT USED TO NAME THE PER-INSTANCE ROUNDING RESIDUAL and there is no such
+ *  thing any more: scoreShift kept `Math.round(weighted)` per shift instance
+ *  until 2026-09-04, a weighted total can only end in .0 or .5, and Math.round
+ *  takes every .5 UP — so the month's counted total was inflated by a half for
+ *  every instance that ended in one, and the screen carried that drift as a
+ *  third column with `rounding` DEFINED as points − (good + doubling). A
+ *  leftover makes a row add up whether or not it is right, which is why the
+ *  column is gone and Good + doubling = Counted is now real arithmetic.
+ *
+ *  What is left for this to format is the one thing that is genuinely a
+ *  correction: `decomposition.mismatches[].gap`, the size of a real
+ *  disagreement between the scorer's own total and the rebuild's. */
 const drift = (n: number) => `${n < 0 ? "−" : "+"}${Math.abs(n).toFixed(1)}`;
 const monthLabel = (m: string) => new Date(`${m}-01T00:00:00Z`).toLocaleString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
 const shiftMonth = (m: string, by: number) => {
@@ -208,24 +217,30 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
 
             {/* ---- The six numbers ------------------------------------------- */}
             <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
-              {/* THE SUB-LINE IS THE DECOMPOSITION AND IT NOW ADDS UP. It used
-                  to read "credit + slowSlabs", which is not how `counted` is
-                  reached and missed it in both directions at once:
+              {/* THE SUB-LINE IS THE DECOMPOSITION AND IT ADDS UP IN TWO TERMS.
+                  It used to read "credit + slowSlabs", which is not how
+                  `counted` is reached and missed it in both directions at
+                  once:
                     - slowSlabs is a COUNT OF SLABS, and the doubling's
                       contribution is CREDIT — a slow grade B is one slab and
                       half a slab of credit, so the count runs above the
                       contribution by half for every slow B;
-                    - scoreShift rounds every shift INSTANCE, always upwards
+                    - scoreShift rounded every shift INSTANCE, always upwards
                       (a weighted total can only end in .0 or .5), and that
                       drift was inside the figure with no name.
                   The two errors point opposite ways and nearly cancelled,
                   which is what hid them: on live August 2026 the old line
                   printed a sum 0.5 from `counted` while being 14 wrong on one
-                  term and 13.5 wrong on the other. All three figures move
-                  hour by hour as QC files; scripts/verify-grade-columns.mts
-                  recomputes and asserts them. */}
+                  term and 13.5 wrong on the other.
+                  THE SECOND ERROR IS NOW GONE AT THE SOURCE rather than named
+                  here: scoreShift keeps the exact weighted total (2026-09-04),
+                  so there is no rounding term to print and Counted itself can
+                  end in a half — which is why every counted figure on this
+                  page goes through half(). Both figures move hour by hour as
+                  QC files; scripts/verify-grade-columns.mts recomputes and
+                  asserts them. */}
               <Kpi label="Counted good slabs" value={half(pool.counted)}
-                sub={`floor ${fmt(pool.floor)} · ${half(plant.credit)} good slabs + ${half(decomposition.plant.doubling)} credit from the slow-hour doubling + ${drift(decomposition.plant.rounding)} per-shift rounding`} />
+                sub={`floor ${fmt(pool.floor)} · ${half(plant.credit)} good slabs + ${half(decomposition.plant.doubling)} credit from the slow-hour doubling`} />
               <Kpi label="Counted twice" value={fmt(plant.slowSlabs)}
                 sub={`good slabs from hours with a standard of ${SLOW_STD_MAX}/hr or less — a count of SLABS. They add ${half(decomposition.plant.doubling)} of credit between them — half a slab less for each of them that graded B.`} />
               {/* Whether the pool is open is a fact about the month's count and
@@ -318,9 +333,9 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
               <H2>The three shifts</H2>
               <p className="mb-3 text-xs text-gray-500">
                 Counted slabs already carry both rules: B = ½, reject = 0, and a slab from an hour whose standard is {SLOW_STD_MAX}/hr or less counts twice.
-                <b>Good + doubling + rounding = Counted</b> on every row. <i>Slow slabs</i> is how many slabs the doubling applied to; <i>doubling</i> is the credit
-                it added, which is the smaller of the two whenever a slow slab graded B. <i>Rounding</i> is what the per-shift rounding put in — scoring rounds
-                each shift instance on its own, and a half always goes up, so it is a small plus and never a minus.
+                <b>Good + doubling = Counted</b> on every row — two terms and no remainder, so a row that does not add across is a fault and not a rounding note.
+                <i>Slow slabs</i> is how many slabs the doubling applied to; <i>doubling</i> is the credit it added, which is the smaller of the two whenever a
+                slow slab graded B. A counted total can end in a <b>half</b>, because a grade B is half a good slab and nothing rounds it away any more.
                 Per shift divides by shifts the line was actually running. Quality is scored between the {Math.round(QUALITY_FLOOR * 100)}% floor and the {Math.round(QUALITY_TARGET * 100)}% target —
                 two ways, because the scoreboard and the August notice did it differently: the scoreboard averages each shift instance&apos;s score, the notice scored the month&apos;s whole grade share once.
               </p>
@@ -335,19 +350,30 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                           them — so an unqualified "A" here is 423 slabs adrift
                           of the A column down there on live August 2026. */}
                       <th className="py-2 pr-3">A+A2 / B / C</th><th className="py-2 pr-3">Good</th>
-                      {/* THREE COLUMNS WHERE THERE USED TO BE ONE, because one
+                      {/* TWO COLUMNS WHERE THERE USED TO BE ONE, because one
                           could not make the row add up. "Counted twice" printed
                           a SLAB COUNT next to Good and Counted and invited the
                           reader to add it — which lands 3.5 above Counted on A
                           and 4.5 below on C (live August 2026, 2026-09-03;
                           these move as QC files). The count is still here,
                           because a shift wants to know how many of its slabs
-                          the rule caught; beside it now sit the CREDIT that
-                          count contributed and the rounding, and those three
-                          plus Good are Counted exactly. */}
+                          the rule caught; beside it now sits the CREDIT that
+                          count contributed, and that plus Good is Counted
+                          exactly.
+                          THERE WAS A THIRD, "Rounding / per shift", UNTIL
+                          2026-09-04. It named what scoreShift's per-instance
+                          Math.round added, and it was DEFINED as the leftover
+                          points − (good + doubling) — so the row added up
+                          whether or not it was right, and a half-slab error in
+                          Doubling landed in it invisibly. The scorer now keeps
+                          the exact total, the term is zero by construction, and
+                          it is deleted rather than printed as a zero. Any gap
+                          between the two counts is now a MISMATCH and is named
+                          under the table with its day, its shift and its size.
+                          Delete the column without deleting this header and the
+                          plant row runs narrower than the header. */}
                       <th className="py-2 pr-3">Slow slabs<br /><span className="normal-case text-gray-400">counted twice</span></th>
                       <th className="py-2 pr-3">Doubling<br /><span className="normal-case text-gray-400">credit it adds</span></th>
-                      <th className="py-2 pr-3">Rounding<br /><span className="normal-case text-gray-400">per shift</span></th>
                       <th className="py-2 pr-3">Counted</th>
                       <th className="py-2 pr-3">Per shift</th><th className="py-2 pr-3">Grade share</th>
                       <th className="py-2 pr-3">Quality<br /><span className="normal-case text-gray-400">per-shift avg</span></th>
@@ -379,8 +405,7 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                           <td className="py-2 pr-3">{half(l.credit)}</td>
                           <td className="py-2 pr-3 text-gray-600">{fmt(l.slowSlabs)}</td>
                           <td className="py-2 pr-3">{half(d.doubling)}</td>
-                          <td className="py-2 pr-3 text-gray-600" title={`${d.roundedUp} of ${fmt(l.instances)} shift instances ended in a half and rounded up`}>{drift(d.rounding)}</td>
-                          <td className="py-2 pr-3 font-semibold text-gray-900">{fmt(l.points)}</td>
+                          <td className="py-2 pr-3 font-semibold text-gray-900" title={`${half(d.credit)} good + ${half(d.doubling)} doubling over ${fmt(l.instances)} shift instances`}>{half(l.points)}</td>
                           <td className="py-2 pr-3">{l.pointsPerShift.toFixed(1)}</td>
                           <td className="py-2 pr-3">{pct(l.rawShare)}</td>
                           <td className="py-2 pr-3">{pct(l.qualityWeighted, 0)}</td>
@@ -399,8 +424,7 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                       <td className="py-2 pr-3 text-gray-600">{fmt(plant.gradeA)} / {fmt(plant.gradeB)} / {fmt(plant.gradeC)}</td>
                       <td className="py-2 pr-3">{half(plant.credit)}</td><td className="py-2 pr-3 text-gray-600">{fmt(plant.slowSlabs)}</td>
                       <td className="py-2 pr-3">{half(decomposition.plant.doubling)}</td>
-                      <td className="py-2 pr-3 text-gray-600" title={`${decomposition.plant.roundedUp} of ${fmt(decomposition.plant.instances)} shift instances ended in a half and rounded up`}>{drift(decomposition.plant.rounding)}</td>
-                      <td className="py-2 pr-3 font-semibold">{fmt(plant.points)}</td>
+                      <td className="py-2 pr-3 font-semibold" title={`${half(decomposition.plant.credit)} good + ${half(decomposition.plant.doubling)} doubling over ${fmt(decomposition.plant.instances)} shift instances`}>{half(plant.points)}</td>
                       <td className="py-2 pr-3">—</td><td className="py-2 pr-3">{pct(plant.rawShare)}</td><td className="py-2 pr-3">—</td><td className="py-2 pr-3">—</td>
                       {/* The two 100% cells are the giveaway that the columns
                           above them are shares of a whole, so they go with
@@ -411,22 +435,45 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                   </tbody>
                 </table>
               </div>
-              {/* THE DECOMPOSITION'S OWN TRIPWIRE. Good + doubling + rounding =
-                  Counted holds by construction whatever happens — rounding is
-                  the leftover — so the row adding up proves nothing on its own.
-                  What CAN break is the doubling: it is rebuilt from the claim
-                  and a fresh QC read, and the score's own weighted total came
-                  from a QC read milliseconds earlier, so a slab re-graded in
-                  between makes one instance's leftover fall outside the
-                  [0, +½] that per-instance rounding can produce. 0 on live
-                  June, July and August 2026 (measured 2026-09-03); a run of
-                  them that survives a refresh is not a race. */}
-              {decomposition.disagreements > 0 && (
-                <p className="mt-2 text-xs text-amber-700">
-                  {fmt(decomposition.disagreements)} shift instance{decomposition.disagreements === 1 ? "" : "s"} where the doubling and the score disagree by more than
-                  per-shift rounding can explain. Counted is still the score&apos;s own figure; the Doubling and Rounding columns are the ones to distrust. Refresh —
-                  a slab re-graded between two reads shows up here once and goes away.
-                </p>
+              {/* THE DECOMPOSITION'S OWN TRIPWIRE, AND IT IS THE THING THE
+                  TWO-TERM IDENTITY BUYS. While there was a `rounding` column,
+                  Good + doubling + rounding = Counted held by construction —
+                  rounding was DEFINED as the leftover — so the row adding up
+                  proved nothing, and a half-slab error in the doubling simply
+                  moved into the leftover with every check still green
+                  (reviewers demonstrated 92 of 184 such errors invisible). With
+                  the leftover gone, points must EQUAL credit + doubling per
+                  shift instance, and any gap is a real contradiction between
+                  the scorer's own total and the rebuild's.
+                  WHAT CAN LEGITIMATELY CAUSE ONE: the doubling is rebuilt from
+                  the claim and a fresh QC read, and the score's weighted total
+                  came from a QC read milliseconds earlier, so a slab re-graded
+                  in between shows up here once and goes away on a refresh. A
+                  run of them that survives a refresh is not a race.
+                  0 on live June, July and August 2026 (measured 2026-09-04), so
+                  this does not draw today — which is why `mismatches` names the
+                  DAY, the SHIFT and the SIZE rather than printing a bare count
+                  a reader cannot act on. */}
+              {decomposition.mismatches.length > 0 && (
+                <div className="mt-2 rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
+                  <b>
+                    {fmt(decomposition.mismatches.length)} shift instance{decomposition.mismatches.length === 1 ? "" : "s"} where the score and the rebuilt
+                    decomposition disagree.
+                  </b>{" "}
+                  Good + doubling must equal Counted exactly; on {decomposition.mismatches.length === 1 ? "this one it does" : "these it does"} not.
+                  Counted is still the score&apos;s own figure and the ladder is read off it; the Doubling column is the one to distrust.
+                  Refresh — a slab re-graded between two reads shows up here once and goes away.
+                  <ul className="mt-1 list-disc pl-5">
+                    {decomposition.mismatches.slice(0, 12).map((x) => (
+                      <li key={`${x.anchor}${x.shift}`}>
+                        {x.anchor} shift {x.shift} — score {half(x.points)}, rebuilt {half(x.rebuilt)}, {drift(x.gap)}
+                      </li>
+                    ))}
+                  </ul>
+                  {decomposition.mismatches.length > 12 && (
+                    <div className="mt-1">… and {fmt(decomposition.mismatches.length - 12)} more, smaller. Run scripts/verify-grade-columns.mts for the full list.</div>
+                  )}
+                </div>
               )}
             </Card>
 

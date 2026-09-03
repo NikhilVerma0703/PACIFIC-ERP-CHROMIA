@@ -38,6 +38,11 @@
 import { getMonthlyReport } from "../src/lib/monthlyReport.ts";
 import { incentiveMonth, monthBounds } from "../src/lib/incentiveMonth.ts";
 import { shiftKeyOf, shiftRange, MAX_SLABS_PER_HOUR, type ShiftLetter } from "../src/lib/shiftScoreMath.ts";
+// The ladder itself, so the owner's "7,000 means 7,000" ruling is exercised
+// against the function the payout calls rather than against a copy of it.
+// `nextTier` is aliased because this file already binds that name to
+// pool.next, which is the RESULT of calling it on this month.
+import { poolFor, nextTier as ladderNext, TIERS as LADDER } from "../src/lib/incentiveLadder.ts";
 import { prisma } from "../src/lib/prisma.ts";
 
 const month = process.argv[2] ?? "2026-08";
@@ -185,46 +190,48 @@ console.log(`  A ${gr.reduce((a, x) => a + x.gradeA, 0)}  A2 ${gr.reduce((a, x) 
 // `counted` is what the tier ladder is looked up on, so it gets its own lines
 // and its own arithmetic.
 //
-// THIS BLOCK USED TO PRINT THE WRONG DECOMPOSITION AND THEN CERTIFY IT. It said
-// "credit + slow slabs counted twice = <sum> exact, <points> after per-shift
-// rounding (residual points - credit - slowSlabs)", directly above ALL CHECKS
-// PASSED, and both halves were wrong:
+// THIS BLOCK USED TO CERTIFY AN IDENTITY THAT COULD NOT FAIL. It asserted
+// "credit + doubling + rounding = counted", where incentiveMath.ts DEFINED
+// `rounding` as counted - (credit + doubling) — a leftover. A leftover makes
+// the row add up whether or not it is right, so the sum landed on `counted`
+// whatever the doubling did, and the run went green on data where the doubling
+// was half a slab wrong; reviewers demonstrated 92 of 184 possible half-slab
+// errors invisible to exactly this check. Two further assertions ("the residual
+// is within [0, instances / 2]" and "the residual is exactly half a slab for
+// each instance it moved") described the same leftover, could only ever restate
+// its definition, and are gone with it.
 //
-//   * slowSlabs is a COUNT OF SLABS; what the doubling adds is CREDIT. A slow
-//     grade B is one slab and half a slab of credit, so the count runs above
-//     the contribution by half for every slow B - 14 on live August 2026
-//     (measured 2026-09-03, and it moves as QC files).
-//   * the true pre-rounding total is therefore LOWER than that sum, and the
-//     rounding residual correspondingly LARGER and POSITIVE: scoreShift rounds
-//     every shift INSTANCE, a weighted total can only end in .0 or .5, and
-//     Math.round takes every .5 UP. On the same August read the old line
-//     printed "residual -0.5" where the drift was +13.5 over 27 rounded-up
-//     instances.
+// SINCE 2026-09-04 scoreShift keeps the exact weighted total instead of
+// rounding every shift INSTANCE, and rounding a half can only ever round UP, so
+// the month's counted total was inflated and never deflated. There is now no
+// residual, and the identity this script asserts is the whole of it:
 //
-// The two errors point in opposite directions and very nearly cancel, so the
-// line looked almost right - which is exactly why a script that exists to
-// SURFACE this drift printed it as half a slab and then passed the run. The
-// figures now come from incentiveMonth's `decomposition`, which builds the
-// doubling's CREDIT off the claim rebuild, and the residual is ASSERTED into
-// the only band per-instance rounding can produce: 0 to half an instance each,
-// never negative. That turns the line from decoration into a check.
-console.log(`\n  counted (the ladder's own figure) : ${shown(counted)}`);
+//     credit + doubling === points
+//
+// with nothing left over to absorb an error. Both sides are sums of exact
+// multiples of a half (gradeCredit is in {0, ½, 1}, the slow multiplier in
+// {1, 2}) and a half is exactly representable in float64, so this holds
+// BIT-EXACTLY on live data rather than merely within a tolerance — which is why
+// it is asserted with === as well as at 1e-9. The tolerance is belt: its job is
+// to catch a real disagreement between the scorer and the rebuild, not to
+// police an ulp.
+//
+// COUNTED CAN NOW END IN A HALF, so every counted figure below is printed to
+// one decimal. shown() defaults to 0 digits and (6420.5).toFixed(0) is "6421" —
+// this script would otherwise print the ladder's own figure rounded UP, one
+// slab clear of the wall notice, directly above ALL CHECKS PASSED.
+console.log(`\n  counted (the ladder's own figure) : ${shown(counted, 1)}`);
 eq("pool.counted is plant.points", counted ?? NaN, points ?? NaN);
-const dec = (inc as { decomposition?: { plant?: unknown; byLetter?: unknown; disagreements?: unknown } }).decomposition;
+const dec = (inc as { decomposition?: { plant?: unknown; byLetter?: unknown; disagreements?: unknown; mismatches?: unknown } }).decomposition;
 if (dec === undefined) badFields.push("decomposition = undefined (no such field)");
 const decCredit = numOf(dec?.plant, "decomposition.plant.credit");
 const decPoints = numOf(dec?.plant, "decomposition.plant.points");
 const doubling = numOf(dec?.plant, "decomposition.plant.doubling");
-const exact = numOf(dec?.plant, "decomposition.plant.exact");
-const residual = numOf(dec?.plant, "decomposition.plant.rounding");
-const roundedUp = numOf(dec?.plant, "decomposition.plant.roundedUp");
 const decInstances = numOf(dec?.plant, "decomposition.plant.instances");
 const disagreements = numOf(dec, "decomposition.disagreements");
 const plantInstances = numOf(inc.plant, "plant.instances");
-console.log(`  credit ${shown(credit, 1)} + doubling ${shown(doubling, 1)} = ${shown(exact, 1)} exact,` +
-            ` ${shown(points)} after per-shift rounding` +
-            ` (residual ${(residual ?? NaN) >= 0 ? "+" : ""}${shown(residual, 1)},` +
-            ` ${shown(roundedUp)} of ${shown(decInstances)} instances rounded up)`);
+console.log(`  credit ${shown(decCredit, 1)} + doubling ${shown(doubling, 1)} = counted ${shown(counted, 1)}` +
+            ` over ${shown(decInstances)} shift instances — two terms, no remainder`);
 console.log((slowSlabs ?? 0) > 0
   ? `  the doubling applied to ${shown(slowSlabs)} SLABS, which is a different quantity:` +
     ` ${shown((slowSlabs ?? NaN) - (doubling ?? NaN), 1)} more than the credit it added,` +
@@ -233,37 +240,80 @@ console.log((slowSlabs ?? 0) > 0
 eq("decomposition.plant.credit is plant.credit", decCredit ?? NaN, credit ?? NaN);
 eq("decomposition.plant.points is plant.points", decPoints ?? NaN, points ?? NaN);
 eq("decomposition counts the same shift instances plantTotals does", decInstances ?? NaN, plantInstances ?? NaN);
-ok("credit + doubling = the exact pre-rounding total",
-   Math.abs((decCredit ?? NaN) + (doubling ?? NaN) - (exact ?? NaN)) < 1e-9,
-   `${shown(decCredit, 1)} + ${shown(doubling, 1)} vs ${shown(exact, 1)}`);
-ok("credit + doubling + rounding = counted, the figure the ladder is read off",
-   Math.abs((decCredit ?? NaN) + (doubling ?? NaN) + (residual ?? NaN) - (counted ?? NaN)) < 1e-9,
-   `${shown(decCredit, 1)} + ${shown(doubling, 1)} + ${shown(residual, 1)} vs ${shown(counted, 1)}`);
-// THE BOUND, and it is the whole reason the residual is worth naming: rounding
-// a multiple of a half, per instance, can only ADD, and only half an instance
-// at a time. A residual outside this is not rounding and the line should stop
-// calling it that.
-ok("the residual is within [0, instances / 2] - the only thing per-instance rounding can do",
-   (residual ?? NaN) >= -1e-9 && (residual ?? NaN) <= (decInstances ?? NaN) / 2 + 1e-9,
-   `${shown(residual, 1)} over ${shown(decInstances)} instances, so at most ${shown((decInstances ?? NaN) / 2, 1)}`);
-ok("the residual is exactly half a slab for each instance it moved",
-   Math.abs((residual ?? NaN) - (roundedUp ?? NaN) / 2) < 1e-9,
-   `${shown(residual, 1)} vs ${shown(roundedUp)} / 2`);
+// THE ONE CHECK THE TWO-TERM IDENTITY EARNS, and it replaces the three that
+// could not fail. There is no third term to absorb a wrong doubling: if the
+// scorer's total and the rebuild's do not agree, this says so.
+ok("credit + doubling = counted, the figure the ladder is read off, to 1e-9",
+   Math.abs((decCredit ?? NaN) + (doubling ?? NaN) - (counted ?? NaN)) < 1e-9,
+   `${shown(decCredit, 1)} + ${shown(doubling, 1)} vs ${shown(counted, 1)}`);
+ok("…and EXACTLY, because every term is an exact multiple of a half",
+   (decCredit ?? NaN) + (doubling ?? NaN) === (counted ?? NaN),
+   `${shown(decCredit, 1)} + ${shown(doubling, 1)} - ${shown(counted, 1)} = ` +
+   `${(decCredit ?? NaN) + (doubling ?? NaN) - (counted ?? NaN)}`);
 // The doubling is rebuilt from the claim and a fresh QC read; the score's own
 // weighted total came from a QC read milliseconds earlier. A slab re-graded in
-// between lands here and nowhere else.
-eq("no shift instance where the doubling and the score disagree beyond rounding", disagreements ?? NaN, 0);
+// between lands here and nowhere else — and now it lands NAMED, because the
+// check is symmetric (|gap| > 1e-9) instead of accepting any gap in [0, +½] as
+// "that is the rounding", which is what made the half-slab errors invisible.
+eq("no shift instance where the score and the rebuilt decomposition disagree", disagreements ?? NaN, 0);
+const decMismatches = (dec as { mismatches?: unknown } | undefined)?.mismatches;
+if (!Array.isArray(decMismatches)) badFields.push("decomposition.mismatches = not an array");
+const mismatches = (Array.isArray(decMismatches) ? decMismatches : []) as
+  { anchor: string; shift: string; points: number; rebuilt: number; gap: number }[];
+for (const x of mismatches.slice(0, 20))
+  console.log(`  MISMATCH ${x.anchor} shift ${x.shift}: score ${shown(x.points, 1)},` +
+              ` rebuilt ${shown(x.rebuilt, 1)}, gap ${x.gap >= 0 ? "+" : ""}${shown(x.gap, 1)}`);
+if (mismatches.length > 20) console.log(`  … and ${mismatches.length - 20} more, smaller`);
 // Per letter, so a wrong row is named instead of hiding inside a plant total.
 for (const l of inc.letters) {
   const d = (dec?.byLetter as Record<string, Record<string, number>> | undefined)?.[l.shift];
   if (!d) { badFields.push(`decomposition.byLetter.${l.shift} = undefined (no such field)`); continue; }
   ok(`shift ${l.shift}: good ${shown(l.credit, 1)} + doubling ${shown(d.doubling, 1)}` +
-     ` + rounding ${shown(d.rounding, 1)} = counted ${shown(l.points)}`,
-     Math.abs(l.credit + d.doubling + d.rounding - l.points) < 1e-9
-     && d.credit === l.credit && d.points === l.points && d.instances === l.instances
-     && d.rounding >= -1e-9 && d.rounding <= d.instances / 2 + 1e-9,
-     `slow slabs ${l.slowSlabs}, ${d.roundedUp} of ${d.instances} instances rounded up`);
+     ` = counted ${shown(l.points, 1)}, exactly`,
+     l.credit + d.doubling === l.points
+     && Math.abs(l.credit + d.doubling - l.points) < 1e-9
+     && d.credit === l.credit && d.points === l.points && d.instances === l.instances,
+     `slow slabs ${l.slowSlabs}, ${d.instances} instances, residue ${l.credit + d.doubling - l.points}`);
 }
+
+// ---- THE OWNER'S LADDER RULING, RUN RATHER THAN ASSUMED -------------------
+// 2026-09-04, the owner, asked whether a month at 6,999.5 slabs should unlock
+// the Rs 3,00,000: "Agreed — 7,000 should mean 7,000."
+//
+// Now that `counted` can end in a half this is a live question and not a
+// hypothetical, so it is exercised here against the SAME poolFor() the payout
+// path calls, not against a restatement of the rule. poolFor tests
+// `countedSlabs >= t.slabs`, so 6999.5 >= 7000 is false and nobody is paid a
+// rupee. There is no epsilon on that comparison and there must never be one:
+// every value the system can produce is an exact multiple of a half, so a
+// tolerance would buy nothing and would hand back the generosity the ruling
+// refuses.
+//
+// THE MIRROR CHECK MATTERS AS MUCH — nothing may round `counted` UP on the way
+// in. pool.counted === plant.points is asserted here as an identity, and
+// plant.points is the scorer's own exact total.
+console.log(`\n  the ladder ruling — 7,000 means 7,000`);
+eq("a month at 6,999.5 counted slabs unlocks nothing", poolFor(6999.5), 0);
+eq("…nor at 6,999.9", poolFor(6999.9), 0);
+eq("a month at exactly 7,000 unlocks the first rung", poolFor(7000), LADDER[0].pool);
+eq("half a slab past a rung still pays that rung and no more", poolFor(7999.5), LADDER[0].pool);
+ok("6,999.5 is short of the floor, and the rung it is still reaching for is 7,000",
+   ladderNext(6999.5)?.slabs === LADDER[0].slabs,
+   `nextTier(6999.5) = ${JSON.stringify(ladderNext(6999.5))}`);
+// The float pathology checked rather than assumed: 13,999 halves summed one at
+// a time is exactly 6999.5, and the 14,000th makes exactly 7000.
+let halves = 0;
+for (let i = 0; i < 13_999; i++) halves += 0.5;
+ok("13,999 halves summed one at a time is exactly 6999.5, and it unlocks nothing",
+   halves === 6999.5 && poolFor(halves) === 0, `${halves}, poolFor = ${poolFor(halves)}`);
+halves += 0.5;
+ok("…and the 14,000th half makes exactly 7000, which does unlock",
+   halves === 7000 && poolFor(halves) === LADDER[0].pool, `${halves}, poolFor = ${poolFor(halves)}`);
+ok("nothing rounded THIS month's counted total up on the way to the ladder",
+   (counted ?? NaN) === (points ?? NaN) && poolFor(counted ?? NaN) === (poolNow ?? NaN),
+   `counted ${shown(counted, 1)} = plant.points ${shown(points, 1)},` +
+   ` poolFor = ${poolFor(counted ?? NaN)} vs pool.poolNow ${shown(poolNow)}`);
+
 console.log(`  pool now ${shown(poolNow)} on a ${shown(floor)}-slab floor;` +
             ` next tier ${nextSlabs == null ? "none — top of the ladder" : `${shown(nextSlabs)} slabs for ${shown(nextPool)}`}`);
 console.log(`  projection at share ${share == null ? "n/a" : (share * 100).toFixed(2) + "%"}:` +

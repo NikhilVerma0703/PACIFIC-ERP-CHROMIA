@@ -135,11 +135,25 @@ export interface ShiftScore {
    *  reject nine times more profitable than pressing a good slab.
    *
    *  Only GRADED slabs count. A slab QC has not reached yet earns nothing yet
-   *  and is not held against anyone; the figure rises as QC works through. */
+   *  and is not held against anyone; the figure rises as QC works through.
+   *
+   *  EXACT, AND IT CAN END IN A HALF. Every term is cr x mult with cr in
+   *  {0, ½, 1} and mult in {1, 2}, so the total is an exact multiple of a half
+   *  and every value is exactly representable in float64 — there is no epsilon
+   *  to chase. This used to be Math.round(weighted), which threw the exact
+   *  figure away at the point of RECORD: the only fraction reachable is a half,
+   *  Math.round takes a half UP and never down, so the month's counted total
+   *  was inflated by half a slab for every instance that ended in one and could
+   *  never be deflated. Summed over a month that ran +3 to +16 slabs, always
+   *  positive. Keeping the exact figure makes goodSlabs + doubling = points
+   *  real arithmetic instead of a sum with a leftover term to absorb the
+   *  difference. A consumer that genuinely needs a whole number rounds it
+   *  where it displays it — never here. */
   points: number;
   /** The plain good-slab count, BEFORE the slow-product multiplier: A = 1,
    *  B = 0.5, C = 0. This is the physical output of the shift and the figure
-   *  OEE and the reports use; `points` above is what the pool pays on. */
+   *  OEE and the reports use; `points` above is what the pool pays on.
+   *  Exact and half-capable, for the same reason and by the same argument. */
   goodSlabs: number;
   /** How many of the graded good slabs came from an hour whose standard was
    *  10/hour or less, and so counted twice. Shown so a shift can see where the
@@ -374,11 +388,15 @@ export async function scoreShift(anchor: string, shift: ShiftLetter, exclude?: S
       gradeA: a, gradeB: b, gradeC: c,
       avgMm,
       // credit IS the plain good-slab count: A adds 1, B adds 0.5, C adds 0.
-      goodSlabs: Math.round(credit),
+      // REPORTED EXACT, NOT ROUNDED — see the note on `points` below.
+      goodSlabs: credit,
       slowSlabs: doubled,
       // points is what the volume pool pays on: the same count with each slow-
-      // product slab counted twice.
-      points: Math.round(weighted),
+      // product slab counted twice. Also exact: a half here is a real half a
+      // slab, and rounding it at the point of RECORD is what used to inflate
+      // the month's counted total. Anything that needs a whole number rounds
+      // it at the point of USE.
+      points: weighted,
       breakdownMin, poweroutMin, hoursLogged,
       weight: shiftWeight(hoursLogged, breakdownMin + poweroutMin, slabs.length),
       contested, wideRows, flagged,
