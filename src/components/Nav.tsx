@@ -84,7 +84,17 @@ function NavLink({ href, icon, label, path, office, exact }: {
 }) {
   const active = office && href === "/office"
     ? SHOP_PATHS.some(p => (p === "/" ? path === "/" : path.startsWith(p)))
-    : href === "/" || href === "/sales" || exact ? path === href : path.startsWith(href);
+    // A PREFIX MATCH NEEDS A PATH BOUNDARY. Plain startsWith lit two rows at
+    // once as soon as one nav href was a prefix of another: opening Month
+    // Incentive (/scoreboard/incentive) also bolded Shift Scoreboard
+    // (/scoreboard), so the sidebar claimed the wrong page was open. Requiring
+    // the next character to be "/" or "?" keeps the drill-down behaviour the
+    // comment above wants — /batch/slabs still lights Batch Lookup — while a
+    // SIBLING route stops lighting its neighbour. Section() at the bottom of
+    // this file has always matched this way; this is the same rule.
+    : href === "/" || href === "/sales" || exact
+      ? path === href
+      : path === href || path.startsWith(href + "/") || path.startsWith(href + "?");
   return (
     <Link href={href}
       className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
@@ -414,7 +424,13 @@ export function Nav({
     ...(showAdmin ? [{ href: "/admin/users", icon: I.users, label: "Users & Roles" }] : []),
     // Scoreboard ranks named people and feeds an incentive payout, so it is
     // ADMIN-only — not showAdmin, which also admits shop-floor incharges.
-    ...(isAdmin ? [{ href: "/scoreboard", icon: I.report, label: "Shift Scoreboard" }] : []),
+    // exact: Month Incentive below is /scoreboard/incentive, a nav row of its
+    // own, so the prefix rule lit BOTH — opening the incentive page bolded Shift
+    // Scoreboard and the sidebar claimed the wrong page was open. This is the
+    // case the exact flag was added for (see its comment on NavLink). Safe with
+    // the scoreboard's ?from=/?to= filters because path is usePathname(), which
+    // carries no query string.
+    ...(isAdmin ? [{ href: "/scoreboard", icon: I.report, label: "Shift Scoreboard", exact: true }] : []),
     // The month's settlement — counted slabs against the 7,000 floor, what is
     // still at QC, and what the pool pays. Same gate as the scoreboard: it
     // shows money by shift and is only ever read by the people who settle it.

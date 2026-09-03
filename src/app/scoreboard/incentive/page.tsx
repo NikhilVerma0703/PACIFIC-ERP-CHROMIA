@@ -11,6 +11,11 @@ import { AutoRefresh } from "../AutoRefresh";
 // what is still waiting at QC, and what the pool becomes when it lands. Admin
 // only — middleware gates /scoreboard/* and this is the in-page check every
 // admin screen carries as well.
+/** The per-shift share of the pool and the rupee amounts per pay band. OFF at
+ *  the owner's request until the scheme's three open decisions are settled; the
+ *  figures are still computed and tested, this only draws them. */
+const SHOW_PAYOUT_AMOUNTS = false;
+
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
@@ -120,7 +125,22 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
               <Kpi label="Pool today" value={pool.poolNow ? lakh(pool.poolNow) : "—"} sub={pool.poolNow ? "unlocked" : `${fmt(pool.floor - Math.floor(pool.counted))} short of the floor`} />
               <Kpi label="Still to grade" value={fmt(outstanding.real)} sub={`${fmt(outstanding.total)} claimed and uncounted · ${fmt(outstanding.byStage.nowhere)} never seen · ${fmt(outstanding.byStage.routed)} routed`} />
               <Kpi label="Projected" value={fmt(Math.round(projection.projectedReal))} sub={`if the real ones grade at ${pct(projection.share)} → ${projection.poolReal ? lakh(projection.poolReal) : "no pool"}`} />
-              <Kpi label="Grade share" value={pct(plant.rawShare)} sub={`${fmt(plant.gradeA)} A · ${fmt(plant.gradeB)} B · ${fmt(plant.gradeC)} rejects of ${fmt(plant.graded)} graded`} />
+              <Kpi label="Grade share" value={pct(plant.rawShare)}
+                sub={`${fmt(plant.gradeA)} A · ${fmt(plant.gradeB)} B · ${fmt(plant.gradeC)} rejects of ${fmt(plant.graded)} graded`}
+                working={<>
+                  <b className="text-gray-900">Good slabs ÷ graded slabs.</b> Not A ÷ graded — a
+                  B is half a good slab, a reject is none.
+                  <div className="mt-2 font-mono text-[11px] leading-5 text-gray-700">
+                    ({fmt(plant.gradeA)} × 1) + ({fmt(plant.gradeB)} × ½) + ({fmt(plant.gradeC)} × 0)<br />
+                    = {half(plant.credit)} good<br />
+                    ÷ {fmt(plant.graded)} graded = <b>{pct(plant.rawShare)}</b>
+                  </div>
+                  <div className="mt-2">
+                    Dividing {fmt(plant.gradeA)} A by {fmt(plant.graded)} gives{" "}
+                    {pct(plant.graded ? plant.gradeA / plant.graded : null)} — that is the share that
+                    came out top grade, a different question.
+                  </div>
+                </>} />
               <Kpi label="QC pace" value={qc.avgPerDay7 ? `${fmt(Math.round(qc.avgPerDay7))}/day` : "—"} sub={qc.daysToClear != null ? `≈ ${qc.daysToClear} day${qc.daysToClear === 1 ? "" : "s"} to clear the backlog` : "no grading in the last 7 days"} />
             </div>
 
@@ -214,6 +234,18 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
             </Card>
 
             {/* ---- What each person would take --------------------------------- */}
+            {/* HIDDEN ON THE OWNER'S INSTRUCTION (2026-09-03): "Don't show these
+                numbers as of now. We'll show the numbers in this screen later."
+                The share-of-pool percentages and the per-band rupee amounts are
+                the ones he means — they rest on three scheme decisions that are
+                still his to confirm (the step ladder, the equal-thirds salary
+                split, and which quality method settles the month), so putting a
+                rupee figure in front of anyone now would read as a promise.
+
+                The whole card is behind one flag rather than deleted: every
+                figure it draws is still computed, still tested, and comes back
+                by setting this to true. Nothing else on the page reads it. */}
+            {SHOW_PAYOUT_AMOUNTS && (
             <Card className="mb-4">
               <H2>What it pays{m.money.pool ? ` on the ${lakh(m.money.pool)} pool` : ""}</H2>
               {!m.money.pool ? (
@@ -256,6 +288,7 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                 </>
               )}
             </Card>
+            )}
 
             {/* ---- The slabs still to come ------------------------------------- */}
             <Card className="mb-4">
