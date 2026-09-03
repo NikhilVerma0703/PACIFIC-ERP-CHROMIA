@@ -12,6 +12,7 @@ import { tableMeta, delegateOf, coerceField, selectOptions, type FieldMeta } fro
 import { hhmmToSeconds } from "@/lib/time";
 import { OPERATOR_FIELDS } from "@/lib/operatorFields";
 import { currentUser } from "@/lib/rbac";
+import { REJECT_GRADE_FIELD, rejectGradeNotHere } from "@/lib/photoSlots";
 import { THICKNESS_FIELDS, canonThickness } from "@/lib/thickness";
 import { logAction } from "@/lib/actionLog";
 import { skipSlab, unskipSlab } from "@/lib/batchRange";
@@ -182,6 +183,31 @@ export async function createVerifiedSlab(model: string, batch: string, fd: FormD
     if (!fd.has(f.prismaField) && f.kind !== "bool") continue;
     data[f.prismaField] = coerceField(f.kind, fd.get(f.prismaField));
   }
+  // ─────────── THE THIRD DOOR, AND IT WAS OPEN FOR A DAY ──────────────────
+  // THIS FORM POSTS NO PHOTOS, so it cannot record a reject, so it must not be
+  // able to create one. The owner's rule (2026-09-04) is that a slab graded
+  // C (Reject) carries the far and near photographs — and his ruling on THIS
+  // screen was "Dont let it add c grade slabs. Instead prompt the user saying
+  // you can only add non-c grade slabs; if you really want to add c grade slabs
+  // either do it from tables or from the qc form."
+  //
+  // WHY IT IS HERE AND NOT ONLY IN AddSlabForm. The form carries the identical
+  // check, and that one is a COURTESY: it stops the operator before they type.
+  // This is the guard. createVerifiedSlab is a server action, so a hand-built
+  // POST reaches it with no form involved at all — a reviewer demonstrated
+  // exactly that, replaying this loop against a FormData carrying
+  // qualityGrade='C (Reject)' and zero photo fields, and watched it insert.
+  //
+  // AND WHY THE OTHER TWO PATHS REFUSE DIFFERENTLY. createRow and saveRow (in
+  // app/tables/actions.ts) ask for the two photographs, because those screens
+  // can carry them. This one has no PhotoField anywhere in its tree, so asking
+  // would be asking for something the operator cannot give; it refuses the
+  // GRADE instead and names the two screens that can take it.
+  {
+    const rErr = rejectGradeNotHere(model, data[REJECT_GRADE_FIELD] == null ? null : String(data[REJECT_GRADE_FIELD]));
+    if (rErr) return { ok: false, message: rErr };
+  }
+
   const key = normalizeBatch(batch);
   data.batchKey = key;
   const me = await currentUser();

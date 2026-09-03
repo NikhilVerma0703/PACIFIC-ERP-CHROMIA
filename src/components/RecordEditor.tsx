@@ -11,8 +11,12 @@ import { secondsToHHMM } from "@/lib/time";
 import { THICKNESS_FIELDS, THICKNESS_OPTS, canonThickness } from "@/lib/thickness";
 import { OPERATOR_FIELDS } from "@/lib/operatorFields";
 import { isRequiredField } from "@/lib/requiredFields";
-import { PhotoField } from "./PhotoField";
-import { PHOTO_SLOTS, hasPhotoPair, PAIR_TARGET, PAIR_HARD_MAX } from "@/lib/photoSlots";
+import { PhotoField, type PhotoFieldState } from "./PhotoField";
+import {
+  PHOTO_SLOTS, hasPhotoPair, PAIR_TARGET, PAIR_HARD_MAX, PHOTO_WARN_PREFIX,
+  REJECT_GRADE_FIELD, REJECT_PHOTOS_RULE, isRejectGrade, rejectPhotosRequired, photoProblem,
+  type PhotoSlotName,
+} from "@/lib/photoSlots";
 import { isCurated } from "@/lib/categoricalFields";
 import { classifyMixer, mixerFullLabel } from "@/lib/mixerLabels";
 import type { SiloFormInfo } from "@/lib/silo";
@@ -188,7 +192,7 @@ function groupFields(fs: FieldMeta[]): { title: string; fields: FieldMeta[] }[] 
   return [...groups.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)).map((t) => ({ title: t, fields: groups.get(t)! }));
 }
 
-export function RecordEditor({ model, id, fields, values, mode, options = {}, hideFields = [], operatorName, silos, canEditBags, onSaved, canDelete = false }: { model: string; id?: string; fields: FieldMeta[]; values: Record<string, unknown>; mode: "edit" | "new"; options?: Record<string, string[]>; hideFields?: string[]; operatorName?: string | null; silos?: SiloFormInfo[]; canEditBags?: boolean; onSaved?: () => void; canDelete?: boolean; }) {
+export function RecordEditor({ model, id, fields, values, mode, options = {}, hideFields = [], operatorName, silos, canEditBags, onSaved, canDelete = false, storedPhotoSlots = [] }: { model: string; id?: string; fields: FieldMeta[]; values: Record<string, unknown>; mode: "edit" | "new"; options?: Record<string, string[]>; hideFields?: string[]; operatorName?: string | null; silos?: SiloFormInfo[]; canEditBags?: boolean; onSaved?: () => void; canDelete?: boolean; storedPhotoSlots?: PhotoSlotName[]; }) {
   // guardAction: a dropped connection mid-save shows in the bar instead of
   // throwing the page to global-error with the edits half typed (lib/guardAction).
   const [msg, action, pending] = useActionState(mode === "edit" ? guardedSaveRow : guardedCreateRow, undefined);
@@ -224,6 +228,52 @@ export function RecordEditor({ model, id, fields, values, mode, options = {}, hi
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending, msg]);
+
+  // ---- THE REJECT RULE, on the edit screen (lib/photoSlots) ----------------
+  // THE BACK DOOR is the point of this half. Guarding only the entry form would
+  // make the rule decoration: save the slab as B with no photos, open it here,
+  // change the grade to C, done. tables/actions.ts saveRow enforces it for real;
+  // this draws it so nobody meets it as a surprise.
+  //
+  // Two things keep it from bricking honest work, and both mirror what saveRow
+  // does — they have to agree, or the screen refuses what the server allows:
+  //   * A photo ALREADY ON FILE satisfies its slot. Editing the remarks of a
+  //     properly photographed reject must never demand a re-upload of a slab
+  //     that has long since left the bay.
+  //   * A row that was ALREADY a reject when it loaded is not re-judged. Of the
+  //     1,253 'C (Reject)' rows on live Neon (2026-09-04) exactly ONE carries
+  //     both photos, because until today the pair was optional here; demanding
+  //     them on every edit would make the other 1,252 uncorrectable forever,
+  //     and no photograph of those slabs can be taken now. The rule bites where
+  //     it was asked to: on a grade being CHANGED to C.
+  const storedSlots = new Set<PhotoSlotName>(storedPhotoSlots);
+  const loadedGrade = display(values[REJECT_GRADE_FIELD]);
+  const [grade, setGrade] = useState(loadedGrade);
+  const [photoState, setPhotoState] = useState<Record<string, PhotoFieldState>>({});
+  const [blocked, setBlocked] = useState<string | null>(null);
+  const wasReject = mode === "edit" && isRejectGrade(loadedGrade);
+  const mustPhoto = rejectPhotosRequired(model, grade) && !wasReject;
+  const slotRequired = (slot: PhotoSlotName) => mustPhoto && !storedSlots.has(slot);
+
+  const guardRejectPhotos = (e: React.FormEvent<HTMLFormElement>) => {
+    if (!mustPhoto) { setBlocked(null); return; }
+    const fd = new FormData(e.currentTarget);
+    for (const p of PHOTO_SLOTS) {
+      if (!slotRequired(p.slot)) continue;
+      // The same three conditions the server applies — see the note on the
+      // twin guard in SmartSlabForm; a size-only test refuses on the server
+      // for a photo this screen called acceptable.
+      const bad = photoProblem(fd.get(p.field), p.label);
+      if (!bad) continue;
+      e.preventDefault();
+      setBlocked(photoState[p.slot] === "busy"
+        ? `The ${p.label} is still compressing — wait for “✓ ready”, then save.`
+        : `${REJECT_PHOTOS_RULE} ${bad}`);
+      return;
+    }
+    setBlocked(null);
+  };
+  const compressing = mustPhoto && PHOTO_SLOTS.some((p) => slotRequired(p.slot) && photoState[p.slot] === "busy");
 
   const hidden = new Set(hideFields);
   const editable = fields.filter((f) => f.editable && !hidden.has(f.prismaField));
@@ -295,7 +345,20 @@ export function RecordEditor({ model, id, fields, values, mode, options = {}, hi
   }
 
   return (
-    <form action={action}>
+    <form
+      action={action}
+      onSubmit={guardRejectPhotos}
+      // Change events bubble, so one listener sees the grade select without the
+      // uncontrolled FieldInput having to know the reject rule exists.
+      onChange={(e) => {
+        // React types a bubbled change target as the FORM, not the control that
+        // fired it — hence the widening. All this listener reads is name+value,
+        // which every input and select carries.
+        const t = e.target as unknown as { name?: string; value?: string };
+        if (t.name === REJECT_GRADE_FIELD) { setGrade(t.value ?? ""); setBlocked(null); }
+        else if (PHOTO_SLOTS.some((p) => p.field === t.name)) setBlocked(null);
+      }}
+    >
       <input type="hidden" name="__model" value={model} />
       {id ? <input type="hidden" name="__id" value={id} /> : null}
       {hideFields.map((hf) => values[hf] != null ? <input key={hf} type="hidden" name={hf} value={String(values[hf])} /> : null)}
@@ -341,16 +404,34 @@ export function RecordEditor({ model, id, fields, values, mode, options = {}, hi
           (owner, 2026-09-01). Added, not replaced: the strip above this form
           keeps every photo, because a defect photo is evidence. */}
       {hasPhotoPair(model) ? (
-        <div className="mb-4 grid max-w-2xl grid-cols-1 gap-4 sm:grid-cols-2">
-          {PHOTO_SLOTS.map((p) => (
-            <PhotoField key={p.slot} field={p.field} label={p.title} hint={p.hint} target={PAIR_TARGET} hardMax={PAIR_HARD_MAX} />
-          ))}
+        <div className="mb-4 max-w-2xl">
+          {mustPhoto && (
+            <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs leading-relaxed text-red-700">
+              <b>C (Reject)</b> — both photos are mandatory before this grade can be saved: the {PHOTO_SLOTS.map((p) => p.label).join(" and the ")}.
+              {storedSlots.size > 0 && " Photos already on file count — only the missing ones are asked for."}
+            </div>
+          )}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {PHOTO_SLOTS.map((p) => (
+              <PhotoField
+                key={p.slot} field={p.field} label={p.title} hint={p.hint}
+                target={PAIR_TARGET} hardMax={PAIR_HARD_MAX}
+                status={slotRequired(p.slot) ? "required" : storedSlots.has(p.slot) ? "onFile" : "optional"}
+                onState={(s) => setPhotoState((m) => ({ ...m, [p.slot]: s }))}
+              />
+            ))}
+          </div>
         </div>
       ) : (
         <div className="mb-4 max-w-sm"><PhotoField /></div>
       )}
       <div className="sticky bottom-0 -mx-5 mt-6 flex items-center justify-between gap-3 border-t border-gray-200 bg-white/85 px-5 py-3 backdrop-blur safe-bottom">
-        <div className="text-sm">{delMsg ? <span className="text-red-600">{delMsg}</span> : msg === "ok" ? <span className="text-green-600">Saved &#10003;</span> : msg?.startsWith("✓") ? <span className="text-green-600">{msg}</span> : msg ? <span className="text-red-600">{msg}</span> : <span className="text-gray-400">{editable.length} editable fields</span>}</div>
+        {/* A refusal this screen made outranks the last server answer — see the
+            same rule in SmartSlabForm's bottom bar. */}
+        {/* Amber for "saved, but a photo did not land" — the edit IS stored and
+            must not be retyped, but it is not the green everything-landed
+            either. Same rule as SmartSlabForm's bar; see PHOTO_WARN_PREFIX. */}
+        <div className="text-sm">{blocked ? <span className="text-red-600">{blocked}</span> : delMsg ? <span className="text-red-600">{delMsg}</span> : msg === "ok" ? <span className="text-green-600">Saved &#10003;</span> : msg?.startsWith("✓") ? <span className="text-green-600">{msg}</span> : msg?.startsWith(PHOTO_WARN_PREFIX) ? <span className="text-amber-700">{msg}</span> : msg ? <span className="text-red-600">{msg}</span> : <span className="text-gray-400">{editable.length} editable fields</span>}</div>
         <div className="flex items-center gap-2">
           {mode === "edit" && canDelete && id && (
             <button type="button" onClick={onDelete} disabled={deleting || pending}
@@ -358,7 +439,7 @@ export function RecordEditor({ model, id, fields, values, mode, options = {}, hi
               {deleting ? "Deleting…" : "Delete"}
             </button>
           )}
-          <button disabled={pending || deleting} className="rounded-lg bg-brand px-5 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-60">{pending ? "Saving…" : mode === "edit" ? "Save changes" : "Create record"}</button>
+          <button disabled={pending || deleting || compressing} className="rounded-lg bg-brand px-5 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-60">{pending ? "Saving…" : compressing ? "Compressing photo…" : mode === "edit" ? "Save changes" : "Create record"}</button>
         </div>
       </div>
     </form>

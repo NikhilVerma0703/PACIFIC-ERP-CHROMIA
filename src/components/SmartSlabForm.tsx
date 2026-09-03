@@ -13,8 +13,11 @@ import { isCurated, OTHER_SENTINEL } from "@/lib/categoricalFields";
 import { secondsToHHMM } from "@/lib/time";
 import type { SlabMode } from "@/lib/smartEntry";
 import { isRequiredField } from "@/lib/requiredFields";
-import { PhotoField } from "./PhotoField";
-import { PHOTO_SLOTS, hasPhotoPair, PAIR_TARGET, PAIR_HARD_MAX } from "@/lib/photoSlots";
+import { PhotoField, type PhotoFieldState } from "./PhotoField";
+import {
+  PHOTO_SLOTS, hasPhotoPair, PAIR_TARGET, PAIR_HARD_MAX, PHOTO_WARN_PREFIX,
+  REJECT_GRADE_FIELD, REJECT_PHOTOS_RULE, isRejectGrade, rejectPhotosRequired, photoProblem,
+} from "@/lib/photoSlots";
 
 const guardedCreateRow = guardAction(createRow, SERVER_UNREACHABLE);
 
@@ -31,16 +34,43 @@ const inputCls = "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 te
 
 /** The photo inputs for a slab entry. Polish QC gets the far/near pair the slab
  *  -intake form uses — the same two views of the same defect, so a grade can be
- *  looked at again later — but OPTIONAL here (owner, 2026-09-01): QC entry runs
- *  slab after slab and must never be stopped by a camera. Every other station
- *  keeps the single generic photo it has always had. Both post through
- *  createRow → savePhotoFromForm, which stores whichever slots arrive. */
-function PhotoFields({ model }: { model: string }) {
+ *  looked at again later. Every other station keeps the single generic photo it
+ *  has always had. Both post through createRow → savePhotoFromForm, which stores
+ *  whichever slots arrive.
+ *
+ *  OPTIONAL ON EVERY GRADE BUT A REJECT. The pair started out optional here
+ *  (owner, 2026-09-01) because QC entry runs slab after slab and must never be
+ *  stopped by a camera, and that is still true for A, A2 and B — 43,360 of the
+ *  44,449 graded slabs on live Neon, 2026-09-04. The owner narrowed it on
+ *  2026-09-03: a C (Reject) may not be saved without both photos, because a
+ *  reject is the one verdict whose evidence somebody comes back to look at.
+ *  Narrowed, not reversed — nothing about the other grades changed.
+ *
+ *  The slots go red the moment C is picked, not at Save: discovering a camera
+ *  requirement after filling the whole form is how an operator learns to grade
+ *  the slab B instead. lib/photoSlots owns the predicate; tables/actions.ts
+ *  enforces it again on the server, because this check can be bypassed. */
+function PhotoFields({ model, grade, onSlotState }: {
+  model: string;
+  grade: string;
+  onSlotState: (slot: string, s: PhotoFieldState) => void;
+}) {
   if (!hasPhotoPair(model)) return <PhotoField />;
+  const must = isRejectGrade(grade);
   return (
     <>
+      {must && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs leading-relaxed text-red-700 sm:col-span-2 lg:col-span-3">
+          <b>C (Reject)</b> — both photos are mandatory before this slab can be saved: the {PHOTO_SLOTS.map((p) => p.label).join(" and the ")}.
+        </div>
+      )}
       {PHOTO_SLOTS.map((p) => (
-        <PhotoField key={p.slot} field={p.field} label={p.title} hint={p.hint} target={PAIR_TARGET} hardMax={PAIR_HARD_MAX} />
+        <PhotoField
+          key={p.slot} field={p.field} label={p.title} hint={p.hint}
+          target={PAIR_TARGET} hardMax={PAIR_HARD_MAX}
+          status={must ? "required" : "optional"}
+          onState={(s) => onSlotState(p.slot, s)}
+        />
       ))}
     </>
   );
@@ -145,6 +175,14 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
   const [loading, setLoading] = useState(false);
   const [batchLocked, setBatchLocked] = useState(false);
   const [savedCount, setSavedCount] = useState(0);
+  // The grade the operator has picked, watched only so the two photo slots can
+  // go red the instant it becomes a reject (see PhotoFields). The field itself
+  // stays uncontrolled — this mirrors it, it does not own it.
+  const [grade, setGrade] = useState("");
+  const [photoState, setPhotoState] = useState<Record<string, PhotoFieldState>>({});
+  // A refusal this form made itself, kept apart from `msg` (the server's answer)
+  // so a client refusal never looks like a save that failed at the far end.
+  const [blocked, setBlocked] = useState<string | null>(null);
   const router = useRouter();
   // The slab box, so a save can empty it and put the cursor back in it. Only
   // the increment mode's box is remounted by the version bump below (its key
@@ -177,6 +215,48 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending, msg]);
+
+  // Every field below lives under key={`fields-${version}`} and is remounted on
+  // a version bump (a new batch, or the reload after a save), so the grade goes
+  // back to its default and both file inputs come back empty. The mirrors have
+  // to be emptied with them — a stale "C" here would paint the next slab's
+  // slots red, and a stale "ready" would let a save through with no photo.
+  useEffect(() => { setGrade(""); setPhotoState({}); setBlocked(null); }, [version]);
+
+  /** THE CLIENT HALF OF THE REJECT RULE — it exists so the operator finds out
+   *  BEFORE waiting out two uploads, not instead of the server check. The same
+   *  rule runs again in tables/actions.ts createRow, which is what actually
+   *  enforces it (this handler can be bypassed; a form can be posted without
+   *  ever running it). Refuse by name — "a photo is required" leaves someone
+   *  looking at two empty slots wondering which one. */
+  const guardRejectPhotos = (e: React.FormEvent<HTMLFormElement>) => {
+    if (!rejectPhotosRequired(model, grade)) { setBlocked(null); return; }
+    const fd = new FormData(e.currentTarget);
+    for (const p of PHOTO_SLOTS) {
+      // THE SAME THREE CONDITIONS THE SERVER APPLIES, not just "a file is
+      // attached". This used to test `f.size > 0` alone, so a small file with a
+      // non-image MIME passed here and was refused by the action — the operator
+      // refused for a photo they HAD attached, with nothing on screen saying
+      // why, and the way out of a form that will not save is to type a
+      // different grade. photoProblem is the one spelling, in lib/photoSlots.
+      const bad = photoProblem(fd.get(p.field), p.label);
+      if (!bad) continue;
+      e.preventDefault();
+      // Mid-compression is a WAIT, not a mistake: PhotoField empties the input
+      // the moment it starts shrinking an oversized camera JPEG, so the photo
+      // the operator just attached is genuinely not on the form yet.
+      setBlocked(photoState[p.slot] === "busy"
+        ? `The ${p.label} is still compressing — wait for “✓ ready”, then save.`
+        : `${REJECT_PHOTOS_RULE} ${bad}`);
+      return;
+    }
+    setBlocked(null);
+  };
+
+  // Save stays down while a photo the rule DEMANDS is still being shrunk —
+  // otherwise the honest thing to do with a tap is refuse it, and a refusal for
+  // work already done is the one that gets a rule worked around.
+  const compressing = rejectPhotosRequired(model, grade) && PHOTO_SLOTS.some((p) => photoState[p.slot] === "busy");
 
   const paramSet = new Set(paramFieldSet);
   const editable = fields.filter((f) => f.editable && f.prismaField !== batchField);
@@ -222,7 +302,23 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
   }
 
   return (
-    <form action={action} autoComplete="off">
+    <form
+      action={action}
+      autoComplete="off"
+      onSubmit={guardRejectPhotos}
+      // One listener instead of threading a callback through SlabField: change
+      // events bubble, and the only two the reject rule cares about are the
+      // grade (which turns it on) and a photo slot (which can turn a standing
+      // refusal off). Everything else falls through untouched.
+      onChange={(e) => {
+        // React types a bubbled change target as the FORM, not the control that
+        // fired it — hence the widening. All this listener reads is name+value,
+        // which every input and select carries.
+        const t = e.target as unknown as { name?: string; value?: string };
+        if (t.name === REJECT_GRADE_FIELD) { setGrade(t.value ?? ""); setBlocked(null); }
+        else if (PHOTO_SLOTS.some((p) => p.field === t.name)) setBlocked(null);
+      }}
+    >
       <Toast trigger={savedCount} text="Saved — enter the next slab" />
       {batch.trim() && defaults && (
         <div className="sticky top-0 z-10 -mx-5 mb-4 border-b border-brand/20 bg-brand/[0.06] px-5 py-2 backdrop-blur">
@@ -281,13 +377,19 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
         )}
         <div className="rounded-2xl border border-gray-200 bg-white p-4">
           <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">Slab details</div>
-          <div className={grid}>{slabF.map((f) => <SlabField key={f.prismaField} f={f} locked={false} def={f.prismaField === "qualityGrade" ? "Not graded yet" : ""} opts={options[f.prismaField]} operatorName={operatorName} unlocked={unlocked} onUnlock={(fld) => setUnlocked((s) => new Set(s).add(fld))} required={isRequiredField(model, f.prismaField)} />)}<PhotoFields model={model} /></div>
+          <div className={grid}>{slabF.map((f) => <SlabField key={f.prismaField} f={f} locked={false} def={f.prismaField === "qualityGrade" ? "Not graded yet" : ""} opts={options[f.prismaField]} operatorName={operatorName} unlocked={unlocked} onUnlock={(fld) => setUnlocked((s) => new Set(s).add(fld))} required={isRequiredField(model, f.prismaField)} />)}<PhotoFields model={model} grade={grade} onSlotState={(slot, s) => setPhotoState((m) => ({ ...m, [slot]: s }))} /></div>
         </div>
       </div>
 
       <div className="sticky bottom-0 -mx-5 mt-6 flex items-center justify-between gap-3 border-t border-gray-200 bg-white/85 px-5 py-3 backdrop-blur safe-bottom">
-        <div className="text-sm">{msg === "ok" ? <span className="text-green-600">Saved &#10003; — enter the next slab</span> : msg ? <span className="text-red-600">{msg}</span> : <span className="text-gray-400">{tableName} · smart entry</span>}</div>
-        <button disabled={pending} className="min-h-[44px] rounded-lg bg-brand px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-60">{pending ? "Saving…" : "Save slab"}</button>
+        {/* A refusal this form made outranks the last server answer: the slab on
+            screen is the one that was just refused, and leaving a stale green
+            "Saved ✓" above it would read as if this one had saved too. */}
+        {/* "Saved, but a photo did not land" is amber, not red: the slab IS in
+            the table, and red reads as "nothing saved" — which an operator
+            answers by entering the slab again. See PHOTO_WARN_PREFIX. */}
+        <div className="text-sm">{blocked ? <span className="text-red-600">{blocked}</span> : msg === "ok" ? <span className="text-green-600">Saved &#10003; — enter the next slab</span> : msg?.startsWith(PHOTO_WARN_PREFIX) ? <span className="text-amber-700">{msg}</span> : msg ? <span className="text-red-600">{msg}</span> : <span className="text-gray-400">{tableName} · smart entry</span>}</div>
+        <button disabled={pending || compressing} className="min-h-[44px] rounded-lg bg-brand px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-60">{pending ? "Saving…" : compressing ? "Compressing photo…" : "Save slab"}</button>
       </div>
     </form>
   );

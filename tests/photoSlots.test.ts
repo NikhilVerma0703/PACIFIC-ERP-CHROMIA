@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   PHOTO_SLOTS, ALL_PHOTO_FIELDS, SINGLE_PHOTO_FIELD, PHOTO_PAIR_MODELS,
   hasPhotoPair, slotOfFilename, PAIR_TARGET, PAIR_HARD_MAX,
+  rejectPhotosRequired,
 } from "../src/lib/photoSlots.ts";
 import { DEFECT_PHOTOS } from "../src/lib/inventory/intakeRules.ts";
 
@@ -126,16 +127,55 @@ test("the QC form and the tables editor ask the same question about the same mod
   }
 });
 
-test("the QC photos are optional — the form may not refuse a slab for a missing one", () => {
-  // The owner's rule, 2026-09-01: "like the slab intake form but not mandatory".
-  // QC runs slab after slab; a required camera would stop the line.
+test("the QC photos stay optional on every grade but a reject", () => {
+  // THIS TEST WAS NARROWED ON 2026-09-04, and the history matters because the
+  // narrowing looks like a reversal and is not.
+  //
+  // Owner, 2026-09-01: "like the slab intake form but not mandatory" — QC runs
+  // slab after slab and a required camera stops the line. This test asserted
+  // that no slot on the QC form could say "required" at all.
+  //
+  // Owner, 2026-09-03: a C (Reject) may not be saved without both photos,
+  // because a reject is the one verdict somebody comes back to look at. On live
+  // Neon 2026-09-04 that is 1,254 of the 44,635 graded slabs; the other 43,381
+  // A / A2 / B slabs are untouched, which is the whole of the 2026-09-01
+  // decision still standing. Both counts rise every shift — re-measure, don't
+  // trust them; the ratio is the point, not the figures.
+  //
+  // So the assertion is no longer "never required" — it is "required ONLY when
+  // the shared predicate says reject", which is the rule as it now stands.
+  for (const g of ["A", "A2", "B", "Not graded yet", "CTS", "SAMPLE", "Printing", "", null]) {
+    assert.equal(rejectPhotosRequired("PolishQc", g), false,
+      `${JSON.stringify(g)} must not require a photo — QC entry must not be stopped for it`);
+  }
+  assert.equal(rejectPhotosRequired("PolishQc", "C (Reject)"), true, "the one verdict the pair is demanded for");
+
   const pairBlock = entryForm.slice(entryForm.indexOf("function PhotoFields"), entryForm.indexOf("function PumpBoxes"));
   assert.ok(pairBlock.includes("PHOTO_SLOTS.map"), "the pair should be rendered in PhotoFields");
-  assert.ok(!/required/.test(pairBlock), "no photo slot on the QC form may be marked required");
+  // Required must be CONDITIONAL. A constant `status="required"` would put the
+  // camera back in front of all 43,360 non-reject slabs.
+  assert.ok(!/status=\s*["']required["']/.test(pairBlock), "no slot may be unconditionally required");
+  assert.match(pairBlock, /status=\{[^}]*\?/, "the slot's status must be decided per grade, not fixed");
+
   for (const [name, s] of [["the QC entry form", entryForm], ["the tables editor", tablesEditor]] as const) {
+    // Unchanged, and still the point: the intake form's path REFUSES the entry
+    // outright, which is not what a reject save does — the row is written and
+    // the operator is told what did not land (tables/actions.ts storePhotos).
     assert.ok(
       !s.includes("requiredPhotoProblem") && !s.includes("saveRequiredPhoto"),
       `${name} must not use the intake form's mandatory-photo path`,
+    );
+    // Neither screen hard-codes the grade it is JUDGING — that half of the old
+    // test still holds, and is what keeps CTS out of the rule. Prose is fine
+    // (both files explain the rule in comments, and the red banner says
+    // "C (Reject)" on screen); a COMPARISON against a grade literal is not.
+    assert.ok(
+      !/[=!]==?\s*["'`]\s*C[\s("']/.test(s),
+      `${name} must ask lib/photoSlots what a reject is, never compare the grade to a literal`,
+    );
+    assert.ok(
+      !/\.(startsWith|includes|match)\(\s*["'`/]\s*C[\s("']/.test(s),
+      `${name} must not sniff the grade string itself — that is how CTS became a reject in gradeCredit`,
     );
   }
 });

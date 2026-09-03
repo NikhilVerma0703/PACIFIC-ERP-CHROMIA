@@ -33,6 +33,13 @@ export default async function EditRecord({ params }: { params: Promise<{ model: 
   ]);
   if (!row) notFound();
   const canEditBags = needsSilos ? await isManager() : false;
+  // Which of the far/near pair this record ALREADY has, read back from the
+  // stored filename prefixes. The editor needs it for the reject rule: a slab
+  // graded C must carry both photos, and one already on file satisfies its slot
+  // — a rule that made a correctly photographed record unsaveable for a remarks
+  // fix would be worse than no rule. saveRow re-derives this for itself; the
+  // screen saying so first is the courtesy (same shape as the intake form).
+  const storedPhotoSlots = [...new Set(photos.map((ph) => slotOfFilename(ph.filename)).filter((s) => s !== null))];
   const PhotoStrip = () =>
     photos.length ? (
       <div className="mb-4 flex flex-wrap gap-3">
@@ -93,7 +100,7 @@ export default async function EditRecord({ params }: { params: Promise<{ model: 
       <h1 className="mb-1 text-xl font-semibold">Edit record</h1>
       {ownRow ? <p className="mb-4 text-sm text-gray-500">Your own entry — you can correct it. Other records are view-only for you.</p> : polishQcShared ? <p className="mb-4 text-sm text-gray-500">Polish QC — any QC operator can correct this entry; the change is logged.</p> : null}
       <PhotoStrip />
-      <Card><RecordEditor model={model} id={id} fields={meta.fields} values={row} mode="edit" options={options} hideFields={HIDDEN_FORM_FIELDS[model] ?? []} operatorName={operatorName} silos={needsSilos ? silos : undefined} canEditBags={canEditBags} canDelete={await isAdmin()} /></Card>
+      <Card><RecordEditor model={model} id={id} fields={meta.fields} values={row} mode="edit" options={options} hideFields={HIDDEN_FORM_FIELDS[model] ?? []} operatorName={operatorName} silos={needsSilos ? silos : undefined} canEditBags={canEditBags} canDelete={await isAdmin()} storedPhotoSlots={storedPhotoSlots} /></Card>
     </Shell>
   );
 }

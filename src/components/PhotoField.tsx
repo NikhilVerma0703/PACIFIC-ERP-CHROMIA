@@ -9,6 +9,15 @@
 import { useRef, useState } from "react";
 import { SINGLE_PHOTO_FIELD } from "@/lib/photoSlots";
 
+/** What the chip beside the label says. "optional" is this component's whole
+ *  history and stays the default; "required" and "on file" exist for the QC
+ *  reject rule, where the pair stops being optional the moment C is picked and
+ *  a photo already stored satisfies it. The CHIP is the point: the operator has
+ *  to learn the requirement while filling the form, not from a refusal after
+ *  they have already waited out two uploads. */
+export type PhotoFieldStatus = "optional" | "required" | "onFile";
+export type PhotoFieldState = "" | "busy" | "ready" | "off";
+
 const MAX_DIM = 1920;          // longest edge after downscale
 const TARGET = 2 * 1024 * 1024; // aim under 2 MB on the wire
 const HARD_MAX = 3_500_000;     // never post anything bigger than this
@@ -66,15 +75,48 @@ export function PhotoField({
   hint,
   target = TARGET,
   hardMax = HARD_MAX,
+  status = "optional",
+  onState,
 }: {
   field?: string;
   label?: string;
   hint?: string;
   target?: number;
   hardMax?: number;
+  status?: PhotoFieldStatus;
+  /** Told every time this slot changes state. A form that REFUSES to save
+   *  without the photo needs to know the difference between "not attached" and
+   *  "still compressing" — the second is a wait, not a mistake, and telling the
+   *  operator to attach a photo they just attached is how a rule loses its
+   *  credibility on the floor. */
+  onState?: (s: PhotoFieldState) => void;
 } = {}) {
-  const [state, setState] = useState<"" | "busy" | "ready" | "off">("");
+  const [state, setRawState] = useState<PhotoFieldState>("");
   const gen = useRef(0);
+  // WHAT TO DO NEXT, and it depends on whether this slot is REQUIRED.
+  //
+  // Until 2026-09-04 both alerts below ended "the entry will save without it".
+  // On a C (Reject) slab that is FALSE — the form refuses the save and so does
+  // tables/actions.ts — and it is false in the worst possible direction: the
+  // operator is told to carry on, taps Save, is refused for a photo they did
+  // attach, and the way out of that loop is to type grade B. That is precisely
+  // the corruption the reject rule exists to prevent, produced by the sentence
+  // meant to reassure them.
+  //
+  // So a required slot is asked for a NEW photo (owner, 2026-09-04: "Give a
+  // prompt to the user to take a new photo"), and told how to make one that
+  // fits: a defect filling the frame compresses far smaller than a whole bay,
+  // because a JPEG's size follows the detail in it, not the subject's size.
+  const tail = (what: string) =>
+    status === "required"
+      ? `${what} This photo is REQUIRED for a C (Reject) slab — the entry will NOT save without it. Take a NEW photo: stand closer, or with less in frame (one defect, not the whole bay), then attach it again.`
+      : `${what} Retake or pick a smaller one. The entry will save without it.`;
+  // The callback is read through a ref so a parent passing a fresh arrow every
+  // render cannot change what this component does; every setState below is in
+  // an event handler or after an await, never during render.
+  const onStateRef = useRef(onState);
+  onStateRef.current = onState;
+  const setState = (s: PhotoFieldState) => { setRawState(s); onStateRef.current?.(s); };
 
   const onChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const input = e.target;
@@ -92,7 +134,7 @@ export function PhotoField({
     if (gen.current !== my) return; // a newer selection took over
     if (!use) {
       setState("off");
-      alert("Couldn't shrink this photo enough to upload — retake or pick a smaller one. The entry will save without it.");
+      alert(tail("Couldn't shrink this photo enough to upload."));
       return;
     }
     try {
@@ -102,14 +144,19 @@ export function PhotoField({
       setState("ready");
     } catch {
       setState("off");
-      alert("Couldn't attach the photo on this device — the entry will save without it.");
+      alert(tail("Couldn't attach the photo on this device."));
     }
   };
 
   return (
     <label className="block">
       <span className="mb-1 flex items-center gap-1.5 text-xs font-medium text-gray-600">
-        {label} <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">optional</span>
+        {label}
+        {status === "required"
+          ? <span className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700">required</span>
+          : status === "onFile"
+            ? <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-700">on file</span>
+            : <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">optional</span>}
         {state === "busy" && <span className="text-[10px] text-amber-600">compressing…</span>}
         {state === "ready" && <span className="text-[10px] text-emerald-600">✓ ready</span>}
       </span>

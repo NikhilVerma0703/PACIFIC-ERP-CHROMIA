@@ -22,7 +22,12 @@ import {
   MIS_DELAY_COLUMNS, MAX_DELAY_MINUTES_PER_HOUR, misDelayFieldError, misStdRequiredError,
 } from "@/lib/requiredFields";
 import { MAX_SLABS_PER_HOUR } from "@/lib/shiftScoreMath";
-import { savePhotoFromForm } from "@/lib/entryPhoto";
+import { savePhotoFromForm, saveRejectPhotoPair, requiredPhotoProblem } from "@/lib/entryPhoto";
+import {
+  PHOTO_SLOTS, PHOTO_WARN_PREFIX, REJECT_PHOTOS_RULE,
+  rejectPhotosRequired, rejectPhotoDecision, slotOfFilename,
+  type PhotoSlotName,
+} from "@/lib/photoSlots";
 import { reportWindow } from "@/lib/dailyReport";
 
 /** Today's PRODUCTION day (06:00→06:00 IST) — currentReportDay's arithmetic. */
@@ -319,6 +324,112 @@ function friendlyDbError(e: unknown): string {
   return last.length > 200 ? last.slice(0, 200) + "…" : last;
 }
 
+// ---------------------------------------------------------------------------
+// A REJECT MUST CARRY ITS EVIDENCE
+//
+// Owner, 2026-09-03: "if any user tried to submit any c grade slab he will have
+// to attach as mandatory the two photos ... the fill slab and the close."
+//
+// This is the ENFORCEMENT. The QC form and the tables editor both draw the rule
+// so the operator meets it while filling the form rather than at Save, but a
+// client `required` can be bypassed — the comment three functions down on
+// createRow's mandatory fields says exactly that, and this rule is no different.
+//
+// BOTH PATHS. createRow AND saveRow. A rule guarded on create and forgotten on
+// edit is decoration: grade the slab B, save it, open /tables/PolishQc/<id>,
+// change it to C. That is this repo's dominant bug class — the MIS slab-range
+// and delay-minute guards above were both extended to saveRow for the same
+// reason, after the same hole.
+//
+// WHAT IT MUST NOT DO IS BRICK EXISTING WORK. On live Neon (2026-09-04) there
+// are 1,253 'C (Reject)' rows and exactly ONE of them carries both photos —
+// 7 have a far, 9 have a near — because the pair was optional here until today.
+// So the edit path judges only a grade being CHANGED to a reject, and counts
+// photos ALREADY STORED against the requirement. An untouched reject is not
+// re-judged (the shape MIS's Std rule settled on, and for the same measured
+// reason: a guard that refuses legitimate corrections gets worked around, and
+// the way an operator works around this one is to grade the slab B).
+// ---------------------------------------------------------------------------
+async function rejectPhotoRefusal(
+  fd: FormData,
+  model: string,
+  grade: unknown,
+  id: string | null,
+): Promise<string | null> {
+  if (!rejectPhotosRequired(model, grade == null ? null : String(grade))) return null;
+  // Judged by the SAME limits savePhotoFromForm applies SILENTLY (8 MB, image/*
+  // minus SVG). Checking only "is a file attached" would let a 9 MB photo
+  // satisfy the guard and then be dropped on the floor by the save — leaving
+  // precisely the undocumented reject this rule exists to prevent, with the
+  // operator believing they had photographed it.
+  const problems = new Map<PhotoSlotName, string>();
+  for (const p of PHOTO_SLOTS) {
+    const bad = requiredPhotoProblem(fd, p.field, p.label);
+    if (bad) problems.set(p.slot, bad);
+  }
+  const missingSlots = [...problems.keys()];
+  const say = (d: ReturnType<typeof rejectPhotoDecision>) =>
+    d.refuse ? `⚠ ${REJECT_PHOTOS_RULE} ${problems.get(d.slot)}` : null;
+
+  // WHETHER THE READ IS WORTH DOING — not a second copy of the rule. The stored
+  // row can only ever WIDEN what is allowed (an already-reject row, or a slot
+  // already on file), so a decision that lets this save through knowing neither
+  // fact cannot be turned into a refusal by learning them. A create has no row
+  // to read at all, and must never be let through by a grade it does not have.
+  const blind = rejectPhotoDecision({ model, grade: grade == null ? null : String(grade), missingSlots });
+  if (!blind.refuse || !id) return say(blind);
+
+  try {
+    const prev = await delegateOf(model).findUnique({ where: { id }, select: { qualityGrade: true } });
+    const prevGrade = (prev as { qualityGrade?: unknown } | null)?.qualityGrade ?? null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows: { filename: string }[] = await (prisma as any).$queryRaw`
+      SELECT filename FROM entry_photo WHERE model = ${model} AND record_id = ${id}`;
+    const storedSlots = rows.map((r) => slotOfFilename(r.filename)).filter((s): s is PhotoSlotName => s !== null);
+    // ONE authority for the four rules — see rejectPhotoDecision in lib/photoSlots,
+    // where they are unit-tested against the whole matrix. This function's job is
+    // the two reads and the FormData validation, nothing else.
+    return say(rejectPhotoDecision({
+      model, grade: grade == null ? null : String(grade),
+      prevGrade: prevGrade == null ? null : String(prevGrade),
+      storedSlots, missingSlots,
+    }));
+  } catch {
+    // We cannot tell "an old reject with its photos on file" from "a slab being
+    // graded C right now with none", and both guesses are wrong in a way that
+    // costs something — one blocks a correction nobody can make another way,
+    // the other is the back door standing open. Refuse, and say it is a retry.
+    // This is as narrow as a read-failure block gets: it is reached only for a
+    // save that grades a slab C without carrying both photos itself.
+    return "⚠ Couldn't read this slab's grade and photos to check the reject rule — nothing was saved. Try again in a moment.";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// AND THEN THE STORE HAS TO ACTUALLY WORK.
+//
+// rejectPhotoRefusal validates the pair at the door; savePhotoFromForm is
+// best-effort by design and would swallow a failed INSERT, leaving the exact
+// undocumented reject the rule exists to prevent — row saved as C (Reject),
+// zero photos, operator shown a green "Saved". So on a REJECT save only, the
+// pair goes through the reporting store and the failure is folded into the
+// answer. The row is never rolled back: it is already written, and losing a
+// graded slab to a photo is the thing this whole file refuses to do.
+// ---------------------------------------------------------------------------
+async function storePhotos(
+  fd: FormData, model: string, recordId: string, by: string | null, grade: unknown,
+): Promise<string> {
+  if (!rejectPhotosRequired(model, grade == null ? null : String(grade))) {
+    await savePhotoFromForm(fd, model, recordId, by);   // optional photo, best-effort
+    return "";
+  }
+  const warn = await saveRejectPhotoPair(fd, { model, recordId, by });
+  // The pair is stored above; this picks up anything else the form carried
+  // (the single generic field) without storing the two slots a second time.
+  await savePhotoFromForm(fd, model, recordId, by, { skipFields: PHOTO_SLOTS.map((p) => p.field) });
+  return warn;
+}
+
 export async function saveRow(_prev: string | undefined, fd: FormData): Promise<string | undefined> {
   const model = String(fd.get("__model") || "");
   const id = String(fd.get("__id") || "");
@@ -354,6 +465,10 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
   // Mandatory fields: block clearing them on edit (only when the form sent the field).
   for (const rf of REQUIRED_FORM_FIELDS[model] ?? [])
     if (fd.has(rf) && !String(data[rf] ?? "").trim()) return `${REQUIRED_FIELD_LABELS[rf] ?? rf} is required.`;
+  // The back-door half of the reject-photo rule — see rejectPhotoRefusal above.
+  // data.qualityGrade is undefined when this save never carried the grade, and
+  // an undefined grade is not a reject, so a partial edit is untouched.
+  { const rErr = await rejectPhotoRefusal(fd, model, data.qualityGrade, id); if (rErr) return rErr; }
   { const fbErr = fillerBufferMissing(model, data, fd); if (fbErr) return fbErr; }
   // MIS on EDIT carries the same two money guards as the create path. The slab
   // range and the delay minutes are BOTH editable here, so enforcing them only
@@ -517,7 +632,7 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
     }
   }
   catch (e) { return `Save failed: ${friendlyDbError(e)}`; }
-  await savePhotoFromForm(fd, model, id, me?.name ?? null); // optional photo, best-effort
+  const photoWarn = await storePhotos(fd, model, id, me?.name ?? null, data.qualityGrade);
   // Self-heal: an edited mixer cycle re-runs FIFO allocation (already-linked
   // slots are skipped) so filling in a missing silo/buffer deducts stock.
   if (model === "MixerCycle") { try { await allocateMixerCycle(id); } catch { /* best-effort */ } }
@@ -531,6 +646,10 @@ export async function saveRow(_prev: string | undefined, fd: FormData): Promise<
       if (qcPrevSlabNumber != null && qcPrevSlabNumber !== sn) await relinkFinishedSlabAfterNumberChange(qcPrevSlabNumber, by);
     } catch { /* inventory autolink is best-effort */ }
   }
+  // THE EDIT LANDED AND A PHOTO DID NOT. Not "ok" — the screens paint "ok"
+  // green and a green line is how somebody walks away from a reject whose
+  // evidence was never stored. The edit itself is real and must NOT be retried.
+  if (photoWarn) return `${PHOTO_WARN_PREFIX} — the edit is stored, but a photo was not. ${photoWarn}`;
   return "ok";
 }
 
@@ -624,6 +743,11 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
   // (dropdown untouched or left at "—") — keeps it out of the blank/"—" bucket.
   if (model === "PolishQc" && !String(data.qualityGrade ?? "").trim()) data.qualityGrade = "Not graded yet";
 
+  // A C (Reject) may not be created without both photos — see rejectPhotoRefusal
+  // above. AFTER the default is applied, so the grade judged is the grade stored;
+  // BEFORE anything is written, so a refused reject leaves no row behind.
+  { const rErr = await rejectPhotoRefusal(fd, model, data.qualityGrade, null); if (rErr) return rErr; }
+
   // ---- DOUBLE-ENTRY GUARDS (the dedupe tool exists for history; new entries are blocked up front) ----
   try {
     if (SLAB_STATIONS.has(model) && data.slabNumber != null && data.batchKey) {
@@ -697,7 +821,7 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
     }
   }
   catch (e) { return `Create failed: ${friendlyDbError(e)}`; }
-  await savePhotoFromForm(fd, model, createdId, opName); // optional photo, best-effort
+  const photoWarn = await storePhotos(fd, model, createdId, opName, data.qualityGrade);
   // JOT defect -> instant Telegram alert with the entry photo (best-effort)
   if (model === "Jot" && String(data.slabDefect ?? "").trim()) {
     try { const { jotDefectAlert } = await import("@/lib/telegramReports"); await jotDefectAlert(createdId, data); } catch { /* never blocks the entry */ }
@@ -834,5 +958,10 @@ Latest: slab ${esc(data.slabNumber ?? "—")} at Polish QC. Please check the lin
       if (r) return `✓ Saved — ${r.absorbedKg} kg of this prep covered the tank's unbacked draws (${r.cyclesRelinked} cycle(s) re-linked${r.cleared ? ", deficit cleared" : ", deficit partly remains"}).`;
     } catch { /* best-effort */ }
   }
+  // THE SLAB LANDED AND A PHOTO DID NOT — the reject-only reporting store (see
+  // storePhotos). "ok" clears the form and paints green, which is exactly how
+  // an operator walks away from a C (Reject) with no evidence on file. The row
+  // is written: re-entering it would only be refused as a duplicate.
+  if (photoWarn) return `${PHOTO_WARN_PREFIX} — slab ${String(data.slabNumber ?? "")} is stored, but a photo was not. ${photoWarn}`;
   return "ok";
 }

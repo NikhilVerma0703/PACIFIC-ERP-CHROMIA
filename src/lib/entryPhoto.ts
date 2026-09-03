@@ -2,12 +2,19 @@
 // Saved best-effort from createRow/saveRow; never blocks the entry itself.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
-import { ALL_PHOTO_FIELDS } from "@/lib/photoSlots";
+import { ALL_PHOTO_FIELDS, PHOTO_SLOTS, photoProblem } from "@/lib/photoSlots";
 
 const db = prisma as any;
 const MAX = 8 * 1024 * 1024;
 
-export async function savePhotoFromForm(fd: FormData, model: string, recordId: string, by: string | null): Promise<void> {
+export async function savePhotoFromForm(
+  fd: FormData, model: string, recordId: string, by: string | null,
+  /** Fields another call has already stored. A reject's far/near pair is stored
+   *  by saveRejectPhotoPair below, which REPORTS its failures instead of
+   *  swallowing them; without this the best-effort walk would store the same two
+   *  files a second time and the record would carry duplicate photos. */
+  opts: { skipFields?: readonly string[] } = {},
+): Promise<void> {
   // EVERY photo field the form might carry, not just the generic one: the QC
   // form and the tables editor post the far/near pair, and a save that looked
   // only at __photo would drop both without a word. Each slot is stored
@@ -15,6 +22,7 @@ export async function savePhotoFromForm(fd: FormData, model: string, recordId: s
   // best-effort, because a shop-floor entry is never lost to its photo.
   for (const { field, prefix } of ALL_PHOTO_FIELDS) {
     try {
+      if (opts.skipFields?.includes(field)) continue;
       const f = fd.get(field);
       if (!(f instanceof File) || f.size === 0) continue;
       if (f.size > MAX || !f.type.startsWith("image/") || f.type === "image/svg+xml") continue; // silently skip invalid (SVG excluded — script risk)
@@ -40,11 +48,11 @@ export async function savePhotoFromForm(fd: FormData, model: string, recordId: s
  *  The same limits savePhotoFromForm enforces silently: 8 MB, image/* minus
  *  SVG (script risk — startsWith, so "image/svg+xml;charset=utf-8" is caught). */
 export function requiredPhotoProblem(fd: FormData, field: string, label: string): string | null {
-  const f = fd.get(field);
-  if (!(f instanceof File) || f.size === 0) return `The ${label} is required — attach it before saving.`;
-  if (f.size > MAX) return `The ${label} is too large (max 8 MB) — retake or pick a smaller one.`;
-  if (!f.type.startsWith("image/") || f.type.startsWith("image/svg")) return `The ${label} must be a photo (image file; SVG is not accepted).`;
-  return null;
+  // ONE RULE, TWO SIDES. The conditions moved to lib/photoSlots (import-free, so
+  // the QC screens' submit guards can ask the SAME question this does). They
+  // used to check only "present and non-empty" and the server checked three, so
+  // a small file with a non-image MIME passed on screen and was refused here.
+  return photoProblem(fd.get(field), label);
 }
 
 /** Store the named field's photo, prefixing the filename (far- / near-) so the
@@ -69,6 +77,44 @@ export async function saveRequiredPhoto(
     console.error("[entryPhoto] required photo save failed:", opts.model, opts.recordId, e);
     return `The ${opts.label} could not be stored — attach it again.`;
   }
+}
+
+/** Store a REJECT's far/near pair and say what did not land.
+ *
+ *  WHY THIS EXISTS RATHER THAN savePhotoFromForm. The reject rule validates the
+ *  two files at the door and then hands them to a store that is best-effort BY
+ *  DESIGN — the per-slot swallowing catch above, which is right
+ *  for every other entry: a shop-floor row must never be lost to its camera. On
+ *  a C (Reject) it is wrong. A Neon hiccup, a 22021, or an oversize buffer on
+ *  the INSERT produces exactly the thing the rule exists to prevent — a reject
+ *  row with no photographs — while the operator is shown a green "Saved" and
+ *  walks away believing the evidence is on file.
+ *
+ *  So on a reject the pair goes through saveRequiredPhoto, which reports. The
+ *  ROW IS NOT LOST (it is already written by the time this runs, and re-saving
+ *  would duplicate it); the caller folds the returned sentence into its answer
+ *  so the operator knows to re-attach. This is the shape slab-intake settled on
+ *  — app/slab-intake/actions.ts returns { ok: true, warn: true } for the same
+ *  case, for the same reason.
+ *
+ *  Returns "" when both slots landed. A slot the form did not carry is skipped
+ *  silently: the caller's guard has already decided the save may proceed (an
+ *  edit can be satisfied by a photo already in entry_photo), and re-reporting
+ *  that here would refuse work the rule allows. */
+export async function saveRejectPhotoPair(
+  fd: FormData,
+  opts: { model: string; recordId: string; by: string | null },
+): Promise<string> {
+  const failures: string[] = [];
+  for (const p of PHOTO_SLOTS) {
+    const f = fd.get(p.field);
+    if (!(f instanceof File) || f.size === 0) continue;   // not carried — see above
+    const err = await saveRequiredPhoto(fd, p.field, {
+      model: opts.model, recordId: opts.recordId, by: opts.by, prefix: p.prefix, label: p.label,
+    });
+    if (err) failures.push(err);
+  }
+  return failures.join(" ");
 }
 
 export interface PhotoMeta { id: string; filename: string; at: Date; taken_by: string | null }
