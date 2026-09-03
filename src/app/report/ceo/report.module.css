@@ -90,6 +90,44 @@
 .t .num { text-align: right; white-space: nowrap; }
 .t .muted { color: var(--grey); }
 
+/* A table with more columns than the sheet comfortably holds — the monthly
+ * production mix, which carries Design, Batches, Days, Slabs and Share plus
+ * the six grade columns (A, A2, B, C, Cut, Not yet), eleven in all.
+ *
+ * THIS COMMENT USED TO SAY THE ROW RHYTHM WAS UNTOUCHED, "so a page that
+ * already paginated the mix table paginates it the same way and the printed
+ * page-2 layout does not move". That was false, and it hid a page that was
+ * already broken. Rendered at real print geometry on 2026-09-03 (184.6mm
+ * content box, .sheet at padding 0 / min-height 0, Calibri, August 2026 with
+ * 36 designs), monthly sheet two stood 1,291px against the 1,027px A4 print
+ * box — 70mm over — of which the eleven-column table is 659px. Font size and
+ * HORIZONTAL padding save exactly zero vertical pixels, so nothing here was
+ * offsetting anything. The vertical padding and line-height below are what
+ * actually buy room: the same table measures 551px with them, and the sheet
+ * 1,151px. That still does not fit, because 36 design rows cannot fit — which
+ * is what .split beneath is for. table-layout stays auto: the design names
+ * vary in length and a fixed grid would either clip "Bellagio Green" or waste
+ * a third of the sheet on a month of short names. */
+.tight { font-size: 7pt; }
+.tight th, .tight td { padding-left: 2.5px; padding-right: 2.5px; }
+.tight th:first-child, .tight td:first-child { padding-left: 4px; }
+.tight th:last-child, .tight td:last-child { padding-right: 4px; }
+.tight td { padding-top: 1.4px; padding-bottom: 1.4px; line-height: 1.15; }
+.tight th { padding-top: 1.8px; padding-bottom: 1.8px; }
+
+/* A table LONGER than a page, which therefore has to break across pages well
+ * rather than not at all — the opposite instruction from .keep below.
+ *
+ * The mix table carried .keep, and .keep cannot keep a 659px table on a sheet
+ * that has 395px left: it only forces the whole block past the break, leaving
+ * ~10cm of white at the foot of the printed page and pushing the table onto a
+ * further physical sheet of the cron's PDF (measured 2026-09-03). So the table
+ * may split, a ROW may not, and the header repeats on the continuation page so
+ * the eleven columns are still named where the reader picks the table up. */
+.split { break-inside: auto; page-break-inside: auto; }
+.split thead { display: table-header-group; }
+.split tr { break-inside: avoid; page-break-inside: avoid; }
+
 .pair { display: flex; gap: 16px; align-items: flex-start; }
 .pair > * { flex: 1; min-width: 0; }
 

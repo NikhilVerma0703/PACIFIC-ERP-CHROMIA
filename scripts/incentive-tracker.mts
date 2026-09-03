@@ -122,10 +122,22 @@ function render(m: Month, prev: Month | null): string {
       <td>${pct(a.share)} <small>/ ${pct(w.share)}</small></td><td class="pos">${pct(a.pctSalary, 2)} <small>/ ${pct(w.pctSalary, 2)}</small></td>
       ${m.money.roles.map((r) => `<td>${inr(a.bands[r.key])}${Math.round(a.bands[r.key]) !== Math.round(w.bands[r.key]) ? ` <small title="per-shift-average method">/ ${inr(w.bands[r.key])}</small>` : ""}</td>`).join("")}</tr>`; }).join("");
 
-  const groupRows = outstanding.groups.map((g) => `
+  // THIS TABLE IS A WAITING LIST AND ONLY A WAITING LIST — SO IT FILTERS.
+  // outstanding.groups was widened on 2026-09-03 from "design+batch with slabs
+  // waiting" to "every design+batch the month CLAIMED", so the admin page could
+  // show graded and waiting on one line. Nobody told this table, and it went on
+  // rendering every row: on live August 2026 that is 41 rows of which 8 have
+  // Waiting 0 and a dash in every stage cell — eight blank lines under a heading
+  // that says what is still to come. Worse, `groupRows || "Nothing waiting."`
+  // below became unreachable for any month that claimed anything, so a month
+  // with a genuinely clear backlog would print a table of zeros instead of
+  // saying it was clear. Filtered here rather than in incentiveMonth: the page
+  // wants the full population, this page wants the backlog.
+  const waitingGroups = outstanding.groups.filter((g) => g.count > 0);
+  const groupRows = waitingGroups.map((g) => `
     <tr><td class="name">${esc(g.design)}</td><td class="mut">${esc(g.batch)}</td><td class="strong">${fmt(g.count)}</td><td class="mut">${g.slow ? fmt(g.slow) : "—"}</td>
       ${STAGES.map((s) => `<td class="${g.stages[s] ? s : "dim"}">${g.stages[s] || "—"}</td>`).join("")}
-      <td class="mut">${g.designShare != null ? `${pct(g.designShare)} on ${fmt(g.designGraded)}` : g.designGraded ? `${fmt(g.designGraded)} graded — too few to say` : "none graded yet"}</td></tr>`).join("");
+      <td class="mut">${g.share != null ? `${pct(g.share)} on ${fmt(g.graded)}` : g.graded ? `${fmt(g.graded)} graded — too few to say` : "none graded yet"}</td></tr>`).join("");
 
   const phantom = outstanding.phantomRuns.length ? `
     <div class="phantom"><div class="vt">${fmt(outstanding.byStage.nowhere)} claimed numbers no station has seen — the MIS hours to correct</div>
@@ -195,7 +207,8 @@ ${verdict}
   <div>${stageChips(outstanding.byStage)}</div>
   <div class="three">${(["A", "B", "C"] as const).map((s) => `<div><div class="t">Shift ${s} · ${fmt(Object.values(outstanding.byLetter[s]).reduce((x, y) => x + y, 0))}</div>${stageChips(outstanding.byLetter[s]) || '<span class="mut small">nothing waiting</span>'}</div>`).join("")}</div>
   ${phantom}
-  <div class="scroll"><table><thead><tr><th>Design</th><th>Batch</th><th>Waiting</th><th>Counts ×2</th>${STAGES.map((s) => `<th>${esc(STAGE_LABEL[s])}</th>`).join("")}<th>Design's grade share so far</th></tr></thead><tbody>${groupRows || `<tr><td colspan="${5 + STAGES.length}" class="mut">Nothing waiting.</td></tr>`}</tbody></table></div></div>
+  <p class="note" style="margin:0 0 10px">The ${fmt(waitingGroups.length)} design-and-batch groups with slabs still waiting, of the ${fmt(outstanding.groups.length)} the month claimed. <b>Batch grade share</b> is what THIS design and batch has graded out of the month's own claim, on the payout's scale (A and A2 = 1, B = ½, C = 0), once it has enough graded slabs to mean anything.</p>
+  <div class="scroll"><table><thead><tr><th>Design</th><th>Batch</th><th>Waiting</th><th>Counts ×2</th>${STAGES.map((s) => `<th>${esc(STAGE_LABEL[s])}</th>`).join("")}<th>Batch grade share so far</th></tr></thead><tbody>${groupRows || `<tr><td colspan="${5 + STAGES.length}" class="mut">Nothing waiting.</td></tr>`}</tbody></table></div></div>
 <div class="card"><h2>QC grading, last 14 days</h2><p class="note" style="margin:0 0 10px">Slabs given an A / B / C verdict per production day, whatever month they were pressed in. The backlog clears at this pace or not at all.</p>${qcBars}</div>
 ${waiting}
 ${prevLine}

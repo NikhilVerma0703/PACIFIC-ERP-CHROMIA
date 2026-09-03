@@ -65,11 +65,31 @@ function offerableMarks(markValues: string[], gradeValues: string[], hasMarkColu
     const up = g.trim().toUpperCase();
     if ((CUT_GRADES as readonly string[]).includes(up)) offer.add(up);
   }
-  // No column yet (scripts/0070 unapplied) means no live marks to read, but the
-  // "still whole" filter degrades to `grade IS NULL OR grade NOT IN (cut)` and
-  // answers with all but 62 of the ~23,000 slabs on the table. Offering it is
-  // not a guess.
-  if (!hasMarkColumn) offer.add("FULL_SLAB");
+  // ═════ NO COLUMN, NO OPTIONS — AND FULL_SLAB IS NOT THE EXCEPTION ══════════
+  //
+  // This used to end `if (!hasMarkColumn) offer.add("FULL_SLAB")`, with the
+  // reason: "no live marks to read, but the 'still whole' filter degrades to
+  // `grade IS NULL OR grade NOT IN (cut)` and answers with all but 62 of the
+  // ~23,000 slabs on the table. Offering it is not a guess."
+  //
+  // THAT DEGRADE NO LONGER EXISTS. scripts/0071 and 0072 regraded all 63 cut
+  // slabs from 'CTS' to 'B' (re-measured on live Neon 2026-09-03: zero rows
+  // anywhere carry grade 'CTS' or 'SAMPLE', 63 carry slab_mark 'CTS', 61 of
+  // them on the floor), so the grade-only "still whole" test calls all 61
+  // already-cut slabs whole. searchWhere.wholeSlabWhere and cutSignalWhere
+  // therefore THROW without the mark instead of degrading, and
+  // /api/inventory/summary answers 503 to any `mark=` it cannot honour —
+  // FULL_SLAB included, because a filter that is the exact complement of a
+  // wrong answer is just as wrong.
+  //
+  // So on a checkout where prisma generate has not re-run, this returned
+  // `marks: ['FULL_SLAB']` — a list of length 1, which is exactly the signal
+  // StockByDesign and the slab table read as "the server knows the word, draw
+  // the select". Both drew a mark select offering the single value that gets a
+  // 503, and the register re-issued that known-failing request on its 30s poll
+  // and on every focus. An empty list is the honest answer: the option is
+  // hidden, and it lights up by itself the moment the column is readable again.
+  if (!hasMarkColumn) return [];
   return SLAB_MARKS.filter((m) => offer.has(m));
 }
 

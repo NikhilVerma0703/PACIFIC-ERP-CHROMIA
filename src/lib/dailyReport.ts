@@ -62,6 +62,18 @@ export type HourRow = {
   hour: string | null; h: number | null; shift: ShiftLetter | null;
   incharge: string | null; batch: string | null; design: string | null;
   made: number | null; wideRange: boolean; std: number | null; lost: number;
+  /** The RANGE the hour declared, both ends inclusive, exactly as typed —
+   *  carried alongside `made` (which is only its WIDTH) so a caller can name
+   *  the individual slab numbers rather than just count them. The monthly
+   *  report needs the numbers themselves to ask QC how those slabs graded,
+   *  whenever QC reached them: for August 2026 the month's hours declared
+   *  6,262 slabs across 6,261 distinct numbers, and 444 of those numbers were
+   *  not graded until September (measured on live Neon 2026-09-03), so a grade
+   *  join keyed on the month's own QC window would have missed them.
+   *  Null when the hour typed no range; kept raw, so every caller applies its
+   *  own guard — see slabsOf/rangeImpossible above and the enumeration in
+   *  lib/monthlyReport. */
+  slabFrom: number | null; slabTo: number | null;
   delay: { process: number; cleaning: number; breakdown: number; power: number };
   reasons: string[]; details: string | null; area: string[];
   breakdown: boolean; spares: string | null; actionTaken: string | null; rca: string | null;
@@ -120,6 +132,15 @@ export function assembleHours(mis: MisReportRow[]): HourRow[] {
       /** The range was typed impossibly wide — the hour is set aside, and the
        *  report says how many it set aside rather than dropping them silently. */
       wideRange: rangeImpossible(r.startingSlabNumber, r.endingSlabNumber),
+      // Raw, unguarded: `made` above already carries the guarded WIDTH, and a
+      // caller that wants the numbers must decide for itself what to do with a
+      // range that is backwards or impossibly wide. The null test is EXPLICIT
+      // and comes first — the column is Float?, and Number(null) is 0, which
+      // Number.isFinite happily accepts. Written the short way, an hour that
+      // typed no range would report slab number 0 and the enumeration would
+      // walk from 0 to whatever the other end held.
+      slabFrom: r.startingSlabNumber != null && Number.isFinite(r.startingSlabNumber) ? Number(r.startingSlabNumber) : null,
+      slabTo: r.endingSlabNumber != null && Number.isFinite(r.endingSlabNumber) ? Number(r.endingSlabNumber) : null,
       std: r.slabsPerHourStd ?? null,
       lost: (r.processDelayDurationMinutes ?? 0) + (r.cleaningDelayDurationMinutes ?? 0)
           + (r.breakdownDelayDurationMechanicalOrElectricalMinutes ?? 0) + (r.poweroutDelayDurationMinutes ?? 0),
@@ -306,6 +327,41 @@ export function getMaintenance(hours: HourRow[]) {
 }
 
 /* ----------------------------------------------------------------- quality */
+// ─────────────────────── THE VERDICT RULE, IN ONE PLACE ────────────────────
+// noVerdict/gradeOf lived inside getQuality until the monthly report needed to
+// grade a second population (the slabs a month PRODUCED, as against every QC
+// entry filed in it). They are module scope and exported now for one reason:
+// a second surface writing its own grade predicate is how the CEO's grade
+// table and the CEO's mix table come to disagree about the same 25 slabs. The
+// long explanation of WHY the key is the verdict and deliberately not the
+// slab_mark stays with getQuality below, because that is where a reader
+// looking for the pass rate arrives; this is only the rule itself.
+//
+// Structurally typed on purpose. A caller reading the produced-slab grades
+// selects five columns, not the fourteen QC_SELECT names, and should not have
+// to ship an image blob to reuse the rule.
+export type GradeBearing = { qualityGrade: string | null; qualityGradeBeforeCts: string | null };
+const NO_VERDICT = new Set(["CTS", "SAMPLE"]);
+const up = (v: unknown) => String(v ?? "").trim().toUpperCase();
+
+/** True when the row carries NO verdict on the stone — never judged, or judged
+ *  and then overwritten. See the block inside getQuality for the full history:
+ *  'CTS'/'SAMPLE' in quality_grade is the legacy write, and 'CTS' in
+ *  quality_grade_before_cts is what scripts/0071 and 0072 stamped on the 63
+ *  rows they regraded to 'B' so a later reader could tell the 'B' was decided
+ *  and not measured. CTS and SAMPLE are ROUTING STATES, not verdicts: a slab
+ *  sent to cut-to-size was diverted before the question was asked, so it must
+ *  stay out of BOTH sides of any pass rate. */
+export const noVerdict = (r: GradeBearing): boolean =>
+  NO_VERDICT.has(up(r.qualityGrade)) || up(r.qualityGradeBeforeCts) === "CTS";
+
+/** What a QC row REPORTS as — one definition, used by every grade-keyed figure
+ *  on both reports, because a B column that still counted the 25 cut slabs
+ *  while the total row beside it named them separately would show them to the
+ *  CEO twice. */
+export const gradeOf = (r: GradeBearing): string =>
+  (noVerdict(r) ? "CTS" : r.qualityGrade ?? "Not recorded");
+
 // THREE STATUS FIELDS, THREE DIFFERENT QUESTIONS, THREE DIFFERENT TOTALS.
 // The same 172 slabs carry a QC grade, a polishing status and a rework status,
 // and they do not agree because they are not asking the same thing:
@@ -365,17 +421,13 @@ export function getQuality(entries: EntryRow[], qc: QcRow[]) {
   //                                regraded, precisely so a later reader could
   //                                tell their 'B' was a decision and not a
   //                                measurement. This is that reader.
-  const NO_VERDICT = new Set(["CTS", "SAMPLE"]);
-  const up = (v: unknown) => String(v ?? "").trim().toUpperCase();
-  const noVerdict = (r: (typeof qc)[number]) =>
-    NO_VERDICT.has(up(r.qualityGrade)) || up(r.qualityGradeBeforeCts) === "CTS";
-  // What this row REPORTS as. One definition, used by every grade-keyed figure
-  // below, because a grade table whose B row still counted the 25 cut slabs
-  // while the total row beside it named them separately would show them to the
-  // CEO twice — 231 B against 206 real ones.
-  const gradeOf = (r: (typeof qc)[number]) =>
-    (noVerdict(r) ? "CTS" : r.qualityGrade ?? "Not recorded");
-
+  //
+  // The two predicates themselves are `noVerdict` and `gradeOf` at module
+  // scope above — they were local consts here until the monthly report's
+  // produced-slab grades needed the identical rule, and one rule is the whole
+  // point. Nothing about what they compute changed in the move: measured on
+  // live Neon 2026-09-03 over August 2026, before and after, graded 5,840,
+  // passed 5,475, pass rate 93.75%, CTS 25, ungraded 525.
   const grades = tally(qc, gradeOf);
   const cts = qc.filter(noVerdict);
   const graded = qc.filter((r) =>

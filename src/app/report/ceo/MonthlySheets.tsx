@@ -184,6 +184,23 @@ function SheetMonth({ r }: { r: MonthlyReport }) {
 function SheetDepth({ r }: { r: MonthlyReport }) {
   const m = r.maintenance;
   const worstArea = m.byArea[0] ?? null;
+  const pg = r.producedGrades;
+  // Rows where the hours declared MORE slabs than there are distinct slab
+  // numbers to grade — a number typed twice. Named on the page rather than
+  // smoothed away: a row whose columns do not add up is exactly what a reader
+  // is entitled to have explained, and the fix is a correction on the MIS row,
+  // not on this report.
+  //
+  // AND THE NOTE MUST NAME THE RIGHT FAULT. It used to assert the cause was
+  // always the design's own double-typing, which is not true when the number
+  // was taken by a DIFFERENT design: June 2026's Carrara Royale reads 79 slabs
+  // across 78 distinct numbers, and its own hours typed 79 distinct numbers —
+  // slab 144340 was already Taj Aureate's, so its grade sits on Taj Aureate's
+  // row (live Neon, 2026-09-03). `contested` is that count, so the sentence can
+  // say which of the two happened rather than guessing.
+  const overclaimed = r.mix.filter((x) => x.numbered !== x.made);
+  const overclaimDeficit = overclaimed.reduce((a, x) => a + (x.made - x.numbered), 0);
+  const anyContested = overclaimed.some((x) => x.contested > 0);
   return (
     <div className={s.sheet}>
       <Mast r={r} />
@@ -279,24 +296,100 @@ function SheetDepth({ r }: { r: MonthlyReport }) {
         </div>
       )}
 
-      <Section name="What the line ran" note="Slabs per design, from the same hourly rows the day figures count" />
-      <table className={`${s.t} ${s.keep}`}>
+      <Section name="What the line ran"
+        note="Slabs per design from the same hourly rows the day figures count — and how those very slabs graded, whenever QC reached them" />
+      {/* .split, not .keep: at 36 designs this table is longer than the room
+          left on the page, so "never break" only moves the whole block to the
+          next physical sheet. See report.module.css — both classes carry the
+          measurement. */}
+      <table className={`${s.t} ${s.split} ${s.tight}`}>
         <thead><tr>
           <th>Design</th><th className={s.num}>Batches</th><th className={s.num}>Days</th>
           <th className={s.num}>Slabs</th><th className={s.num}>Share</th>
+          <th className={s.num}>A</th><th className={s.num}>A2</th>
+          <th className={s.num}>B</th><th className={s.num}>C</th>
+          <th className={s.num}>Cut</th><th className={s.num}>Not yet</th>
         </tr></thead>
         <tbody>
           {r.mix.map((m2) => (
-            <tr key={m2.design}>
+            <tr key={m2.key}>
               <td className={s.key}>{m2.design}</td>
               <td className={s.num}>{m2.batches || DASH}</td>
               <td className={s.num}>{m2.days}</td>
               <td className={s.num}>{num(m2.made)}</td>
               <td className={s.num}>{share(m2.made, r.made)}</td>
+              <td className={s.num}>{m2.grades.A || NDASH}</td>
+              <td className={s.num}>{m2.grades.A2 || NDASH}</td>
+              <td className={s.num}>{m2.grades.B || NDASH}</td>
+              <td className={s.num}>{m2.grades.C || NDASH}</td>
+              <td className={s.num}>{m2.grades.cut || NDASH}</td>
+              <td className={s.num}>{m2.grades.ungraded || NDASH}</td>
             </tr>
           ))}
+          {/* The total row is the point of the six grade columns: they add
+              DOWN as well as across, because each slab number belongs to
+              exactly one design row (lib/monthlyReport partitions them). */}
+          <tr className={s.total}>
+            <td>All designs</td>
+            <td className={s.num}>{NDASH}</td>
+            <td className={s.num}>{NDASH}</td>
+            <td className={s.num}>{num(r.made)}</td>
+            <td className={s.num}>100%</td>
+            <td className={s.num}>{num(pg.A)}</td>
+            <td className={s.num}>{num(pg.A2)}</td>
+            <td className={s.num}>{num(pg.B)}</td>
+            <td className={s.num}>{num(pg.C)}</td>
+            <td className={s.num}>{pg.cut || NDASH}</td>
+            <td className={s.num}>{num(pg.ungraded)}</td>
+          </tr>
         </tbody>
       </table>
+      <p className={s.note}>
+        The six grade columns are the verdicts of <em>those same slabs</em> — the numbers the design&rsquo;s own
+        hours declared, looked up in QC whenever it reached them, including after the month closed:{" "}
+        {num(r.producedGradedAfter)} of {monthLong(r.month)}&rsquo;s slabs got a verdict only in the month after,
+        and a grade table windowed on the month would show none of them. They add across to Slabs and down to
+        the total row. <strong>Cut</strong> is a slab routed to cut-to-size or sampling with no verdict
+        surviving — neither a pass nor a reject; <strong>Not yet</strong> is a slab QC has not reached, or one
+        still recorded &ldquo;Not graded yet&rdquo;.
+        {/* THE ONE PLACE THIS REPORT AND THE INCENTIVE SCREEN DISAGREE ON PURPOSE.
+            Measured 2026-09-03 for August: this table prints B 146 and Cut 25;
+            /scoreboard/incentive prints B 171 for the same month, and 171 - 146
+            is exactly those 25. Both are right for the question each is asked —
+            this one reports what was INSPECTED, so a slab whose verdict was
+            destroyed and set to B by decision (scripts/0071, 0072) is not a
+            measured B and sits in Cut; the incentive screen reports what is
+            PAID, and gradeCredit() pays each of them half a slab like any other
+            B. Neither number is wrong and neither can be quietly changed to
+            match the other, so each screen names the gap where it prints the
+            figure. scripts/verify-grade-columns.mts asserts the difference is
+            EXACTLY the cut count, so if it ever drifts one of them is broken. */}
+        {pg.cut > 0 && (
+          <>
+            {" "}The month-incentive screen counts those same{" "}
+            <strong>{num(pg.cut)}</strong> cut slabs under <strong>B</strong>, because the payout pays each of
+            them half a slab of credit, so its B for {monthLong(r.month)} reads exactly that much higher than
+            this table&rsquo;s. Both are right: this table reports what was <em>inspected</em>, that one
+            reports what is <em>paid</em>.
+          </>
+        )}
+        {overclaimed.length > 0 && (
+          <>
+            {" "}<strong>{num(overclaimDeficit)} slab number{overclaimDeficit === 1 ? " was" : "s were"} claimed
+            twice</strong> — {overclaimed.map((m2) =>
+              `${m2.design} declared ${num(m2.made)} across ${num(m2.numbered)} distinct numbers`
+              + (m2.contested > 0
+                ? ` (${num(m2.contested)} of them already claimed by ${m2.contestedWith.join(" and ")})`
+                : "")).join("; ")}
+            {" "}— so {overclaimed.length === 1 ? "that row" : "those rows"}, and the total beneath, fall short
+            of Slabs by that much: the grades count slab NUMBERS, Slabs counts what the hours CLAIMED.{" "}
+            {anyContested
+              ? "First claim wins across the whole month, so a number two designs both typed is graded on the row that typed it first, not on the row that lost it."
+              : "The gap is a number typed twice, not a missing slab."}{" "}
+            Correct the range on the MIS row and the figures meet.
+          </>
+        )}
+      </p>
 
       <div className={s.foot}>
         <span>Pacific Surfaces &nbsp;·&nbsp; Monthly Report &nbsp;·&nbsp; {monthLong(r.month)}</span>
@@ -373,35 +466,139 @@ function MisGaps({ r, canFill }: { r: MonthlyReport; canFill: boolean }) {
   );
 }
 
+/* The produced-slab grade table, in GRADE ORDER rather than by size — it sits
+ * beside a table sorted by count, and the CEO reads the pair across. A fixed
+ * order also means the four grades stay in the order the plant says them (A,
+ * A2, B, C) with the two non-verdicts after, exactly as the mix columns on
+ * sheet two, so the same six numbers are in the same six places on both pages. */
+const PRODUCED_ROWS: [string, (g: MonthlyReport["producedGrades"]) => number][] = [
+  ["A", (g) => g.A],
+  ["A2", (g) => g.A2],
+  ["B", (g) => g.B],
+  ["C (reject)", (g) => g.C],
+  ["Cut to size / sample", (g) => g.cut],
+  ["Not graded yet", (g) => g.ungraded],
+];
+
+/* The raw grade keys getQuality tallies, said the way the produced table says
+ * them, so the two tables side by side name one thing one way. "CTS" is the
+ * bucket key lib/dailyReport's gradeOf folds every no-verdict row into — the
+ * legacy 'CTS'/'SAMPLE' grade write and the 'B' scripts/0071 and 0072 decided
+ * rather than measured — and "cut to size" is what it means on the floor.
+ * Labels only: the numbers are getQuality's, untouched. */
+const GRADE_LABEL: Record<string, string> = {
+  "C (Reject)": "C (reject)",
+  CTS: "Cut to size / sample",
+};
+
 function SheetQualityMonth({ r, canFill }: { r: MonthlyReport; canFill: boolean }) {
   const q = r.quality;
+  const pg = r.producedGrades;
+  // A or A2 over the four real grades — the SAME shape as getQuality's
+  // passRate, with the non-verdicts out of both sides, so the two rates the
+  // note prints side by side are comparable. Its denominator is the month's
+  // own slabs; getQuality's is every entry filed in the month.
+  const producedGraded = pg.A + pg.A2 + pg.B + pg.C;
+  const producedRate = producedGraded ? (100 * (pg.A + pg.A2)) / producedGraded : null;
   const faultTop = q.faultsAll.slice(0, 10);
   return (
     <div className={s.sheet}>
       <Mast r={r} />
 
-      {/* ENTRIES, not slabs — and the label says so. A slab inspected twice
-          is two QC entries and one slab, so this table's total and the
-          distinct-slab figure below it are different numbers on purpose;
-          labelling both "inspected slabs" made the sheet contradict itself. */}
-      <Section name="Quality grades" note={`all ${num(q.inspected)} QC entries this month, covering ${num(q.inspectedSlabs)} distinct slabs`} />
-      <table className={`${s.t} ${s.keep}`}>
-        <thead><tr><th>Grade</th><th className={s.num}>QC entries</th><th className={s.num}>Share</th></tr></thead>
-        <tbody>
-          {q.grades.map(([g, n]) => (
-            <tr key={g}>
-              <td className={s.key}>{g}</td>
-              <td className={s.num}>{num(n)}</td>
-              <td className={s.num}>{share(n, q.inspected)}</td>
-            </tr>
-          ))}
-          <tr className={s.total}>
-            <td>Total QC entries</td>
-            <td className={s.num}>{num(q.inspected)}</td>
-            <td className={s.num}>100%</td>
-          </tr>
-        </tbody>
-      </table>
+      {/* THE TWO POPULATIONS, SIDE BY SIDE — the whole reason the owner asked
+          for this. QC does not grade a month's stone inside that month: it
+          clears a backlog from earlier batches while the month's own last
+          slabs are still queued. So "the grades this month" is two different
+          questions with two different answers, and printing only the right
+          hand one (which is all this sheet used to carry) tells the CEO the
+          month's quality using other months' stone. Measured on live Neon
+          2026-09-03 for August 2026: 6,390 QC entries were filed in the month,
+          of which 5,390 were for slabs August declared and 1,000 were not —
+          939 of those placed in another month's MIS and 61 placed in no MIS
+          range at all, which is why the note below says "cannot be placed"
+          rather than the "stone from earlier batches" it used to assert. 348
+          of August's own slabs got their verdict only in September. Pass rate
+          94.7% on the month's own slabs, 93.8% across every entry filed.
+          NOTHING IS DOUBLE-COUNTED BETWEEN THEM: they are two denominators,
+          each with its own total row, and neither is a subtotal of the other.
+          The prose beneath states the overlap in slabs so nobody has to add
+          the two totals together to find out.
+          The right-hand table counts ENTRIES, not slabs, and its label says
+          so — a slab inspected twice is two QC entries and one slab. */}
+      <Section name="Quality grades"
+        note="two populations, and they are not the same slabs — the month's own stone on the left, everything QC touched this month on the right" />
+      <div className={s.pair}>
+        <div>
+          {/* "by distinct slab number", said in the label and again in the
+              total row. The KPI tile on page one and the Slabs column on page
+              two both count what the hours CLAIMED (r.made); this table can
+              only count numbers it can look up, and for August 2026 those are
+              6,262 and 6,261 — two figures one word apart on one document is
+              how a reader concludes the report cannot add up. */}
+          <div className={s.subLabel}>Slabs {monthLong(r.month)} produced · by distinct slab number, graded whenever QC reached them</div>
+          <table className={`${s.t} ${s.keep}`}>
+            <thead><tr><th>Grade</th><th className={s.num}>Slabs</th><th className={s.num}>Share</th></tr></thead>
+            <tbody>
+              {PRODUCED_ROWS.map(([label, n]) => (
+                <tr key={label}>
+                  <td className={s.key}>{label}</td>
+                  <td className={s.num}>{num(n(pg))}</td>
+                  <td className={s.num}>{share(n(pg), pg.slabs)}</td>
+                </tr>
+              ))}
+              <tr className={s.total}>
+                <td>Distinct slab numbers</td>
+                <td className={s.num}>{num(pg.slabs)}</td>
+                <td className={s.num}>100%</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <div className={s.subLabel}>All QC entries filed this month · any month&rsquo;s stone</div>
+          <table className={`${s.t} ${s.keep}`}>
+            <thead><tr><th>Grade</th><th className={s.num}>QC entries</th><th className={s.num}>Share</th></tr></thead>
+            <tbody>
+              {q.grades.map(([g, n]) => (
+                <tr key={g}>
+                  <td className={s.key}>{GRADE_LABEL[g] ?? g}</td>
+                  <td className={s.num}>{num(n)}</td>
+                  <td className={s.num}>{share(n, q.inspected)}</td>
+                </tr>
+              ))}
+              <tr className={s.total}>
+                <td>Total QC entries</td>
+                <td className={s.num}>{num(q.inspected)}</td>
+                <td className={s.num}>100%</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <p className={s.note}>
+        The two totals cover different stone and must not be added together.{" "}
+        {r.made === r.producedSlabs ? (
+          <>{monthLong(r.month)} pressed <strong>{num(r.made)} slabs</strong>, every one a distinct number.</>
+        ) : (
+          <>{monthLong(r.month)}&rsquo;s hours declared <strong>{num(r.made)} slabs</strong> across{" "}
+          <strong>{num(r.producedSlabs)} distinct slab numbers</strong> — page one counts the claims, the
+          left-hand table the numbers; page two names the rows where they part.</>
+        )}{" "}
+        QC filed <strong>{num(q.inspected)} entries</strong> in the same window, covering {num(q.inspectedSlabs)}{" "}
+        distinct slabs.{" "}
+        {r.qcEntriesElsewhere + r.qcEntriesUnplaced === 0 ? (
+          <>Every one of them was for a slab this month declared.</>
+        ) : (
+          <>Only <strong>{num(r.qcEntriesOnOwnSlabs)}</strong> were for slabs this month declared; of the other{" "}
+          {num(r.qcEntriesElsewhere + r.qcEntriesUnplaced)}, {num(r.qcEntriesElsewhere)} carry a number another
+          month&rsquo;s MIS declared and {num(r.qcEntriesUnplaced)} sit in no MIS range at all.</>
+        )}
+        Going the other way, {num(r.producedGradedAfter)} of the month&rsquo;s own slabs were graded only after
+        the month closed — counted on the left, absent from the right — and a further {num(pg.ungraded)} carry
+        no verdict yet. Pass rate is{" "}
+        <strong>{pct1(producedRate)}</strong> on the month&rsquo;s own slabs against <strong>{pct1(q.passRate)}</strong>{" "}
+        across every entry filed; both are A or A2 over A+A2+B+C, with cut-to-size and sampling out of each side.
+      </p>
 
       <Section name="Quality across the month"
         note="From polishing and QC over the same window; stations queue, so polished and inspected are different slab sets" />

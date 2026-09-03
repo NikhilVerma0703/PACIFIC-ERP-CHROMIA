@@ -14,11 +14,46 @@ import { TRANSITIONS } from "./grading.ts";
  *  for. */
 export const GRADE_OPTIONS = ["A", "A2", "B", "C", "CTS", "SAMPLE", "Printing"] as const;
 
-/** The SlabStatus enum members, in lifecycle order for the select. A hand
- *  copy of prisma's enum because this module must stay import-free for the
- *  tests — the drift guard is the test asserting this list equals the set of
- *  statuses TRANSITIONS (grading.ts) moves between. */
+/** The SlabStatus enum members, in lifecycle order. A hand copy of prisma's
+ *  enum because this module must stay import-free for the tests — the drift
+ *  guard is the test asserting this list equals the set of statuses TRANSITIONS
+ *  (grading.ts) moves between.
+ *
+ *  THIS LIST VALIDATES; IT NO LONGER POPULATES A PICKER. That split is the whole
+ *  point of the pair, and it was one constant doing both jobs until 2026-09-03.
+ *  validateSlabDetails checks against THIS list, so every status the database
+ *  can hold stays writable — including CTS, which exactly one row carries
+ *  (slab 154757, Arva White, grade B, mark CTS — measured on live Neon
+ *  2026-09-03; the other counts that day were AVAILABLE 16,585, DISPATCHED
+ *  6,742, CHROMIA 62, and RESERVED / PACKED / RETURNED nil). Taking CTS out of
+ *  here to stop OFFERING it would have made that one row unsaveable: open it in
+ *  the intake form, correct its bay, and the save would be refused for a status
+ *  nobody touched. */
 export const SLAB_STATUSES = ["AVAILABLE", "RESERVED", "PACKED", "DISPATCHED", "RETURNED", "CTS", "CHROMIA"] as const;
+
+/** The statuses a PICKER may offer from a standing start — SLAB_STATUSES minus
+ *  the two that are somebody else's to write.
+ *
+ *  CHROMIA is the Chromia register's (statusChangeRefusal below refuses a hand
+ *  write outright); it was already filtered out at the point of use in
+ *  SlabIntakeForm and has simply moved here, so the rule is stated once.
+ *
+ *  CTS is new here, and it is the owner's call: "look at any status filter in
+ *  finished goods. It has CTS which should ideally not be there as we have moved
+ *  it to any mark filter right?" He is right — since scripts/0070 the fact that
+ *  a slab has been CUT lives in slab_mark, and 63 rows carry slab_mark = 'CTS'
+ *  (61 on the floor, measured on live Neon 2026-09-03) against the ONE row that
+ *  carries status = 'CTS'. Offering the status as if it answered "what has been
+ *  cut" points the reader at 1 slab and away from 61.
+ *
+ *  NOT OFFERED IS NOT THE SAME AS NOT ALLOWED, and the distinction is the safety
+ *  property here: a row that already holds one of these statuses must still be
+ *  editable, so the callers re-add the current status as an option (the rule
+ *  SlabIntakeForm applies, and the same guard the inventory dashboard's grade
+ *  and thickness selects have always used for a value that is set but not
+ *  offered). Nothing here narrows what the API accepts — that is SLAB_STATUSES,
+ *  above, and it is unchanged. */
+export const SLAB_STATUS_OPTIONS = SLAB_STATUSES.filter((s) => s !== "CHROMIA" && s !== "CTS");
 
 /** Every status TRANSITIONS knows — what the drift test compares SLAB_STATUSES against. */
 export const statusesFromTransitions = (): string[] =>

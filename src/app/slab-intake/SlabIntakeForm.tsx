@@ -19,7 +19,7 @@
 import { useMemo, useRef, useState, useTransition } from "react";
 import { Card, H2 } from "@/components/ui";
 import { compressPhoto } from "@/components/PhotoField";
-import { GRADE_OPTIONS, SLAB_STATUSES, DEFECT_PHOTOS, type DefectPhotoSlot } from "@/lib/inventory/intakeRules";
+import { GRADE_OPTIONS, SLAB_STATUSES, SLAB_STATUS_OPTIONS, DEFECT_PHOTOS, type DefectPhotoSlot } from "@/lib/inventory/intakeRules";
 import { PAIR_TARGET, PAIR_HARD_MAX } from "@/lib/photoSlots";
 import { Lightbox, type LightboxPhoto } from "@/components/Lightbox";
 import { lookupSlab, saveSlab, type LookupRes, type QcReference, type SlabPhotos } from "./actions";
@@ -449,12 +449,29 @@ export function SlabIntakeForm({ lists }: { lists: Lists }) {
 
               <Field label="Status" hint={exists && current?.status === "CHROMIA" ? "set by the Chromia register — override it here only to correct a wrong mark" : null}>
                 <select className={inputCls} value={draft.status} onChange={(e) => set({ status: e.target.value })}>
-                  {/* CHROMIA is the Chromia register's to write (the intake
-                      bridge), never a hand target — the option only renders
-                      when it IS the current status, so it can be kept or
-                      overridden out of, but not chosen into. */}
+                  {/* OFFERED IS SLAB_STATUS_OPTIONS; ALLOWED IS STILL SLAB_STATUSES.
+                      Two statuses are somebody else's to write and neither may be
+                      chosen INTO from here, but both may be kept or overridden OUT
+                      of — so each renders exactly when it IS the current status.
+
+                      CHROMIA is the Chromia register's (the intake bridge); this
+                      rule used to be spelt out here and has moved into
+                      intakeRules.SLAB_STATUS_OPTIONS so it is stated once.
+
+                      CTS joined it on 2026-09-03, on the owner's call: the fact
+                      that a slab has been cut lives in slab_mark now, where 63 rows
+                      carry 'CTS' (61 on the floor) against the ONE row that carries
+                      status = 'CTS' — slab 154757, measured on live Neon that day.
+                      Offering the status invited somebody to record "this slab was
+                      cut" in the column that no longer means it.
+
+                      THE ONE ROW MUST STAY EDITABLE, which is what the second half
+                      of the test does: open slab 154757 and CTS is in this list,
+                      selected, so correcting its bay does not silently move it to
+                      Available — and validateSlabDetails still accepts the save,
+                      because SLAB_STATUSES (which validates) never lost the word. */}
                   {SLAB_STATUSES
-                    .filter((s) => s !== "CHROMIA" || (exists && current?.status === "CHROMIA"))
+                    .filter((s) => (SLAB_STATUS_OPTIONS as readonly string[]).includes(s) || (exists && current?.status === s))
                     .map((s) => <option key={s} value={s}>{STATUS_LABEL[s] ?? s}</option>)}
                 </select>
               </Field>

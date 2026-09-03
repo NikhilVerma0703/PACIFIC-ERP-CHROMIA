@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { Shell } from "@/components/Shell";
 import { Card, H2, Kpi, Badge, Empty, fmt } from "@/components/ui";
 import { isAdmin } from "@/lib/rbac";
-import { incentiveMonth, currentMonthIST, STAGES, REAL_STAGES, type Stage } from "@/lib/incentiveMonth";
+import { incentiveMonth, currentMonthIST, STAGES, REAL_STAGES, MIN_GRADED_TO_SAY, type Stage } from "@/lib/incentiveMonth";
 import { QUALITY_FLOOR, QUALITY_TARGET, SLOW_STD_MAX, type ShiftLetter } from "@/lib/shiftScoreMath";
 import { AutoRefresh } from "../AutoRefresh";
 
@@ -60,6 +60,16 @@ const STAGE_LABEL: Record<Stage, string> = {
 const STAGE_TONE: Record<Stage, "brand" | "green" | "amber" | "red"> = {
   "at-qc": "green", "at-polish": "brand", pressed: "brand", nowhere: "red", routed: "amber",
 };
+/** The same five stages, short enough to head a column in a seventeen-column
+ *  table. The long labels above still head the chips, where there is room. */
+const STAGE_SHORT: Record<Stage, string> = {
+  "at-qc": "At QC", "at-polish": "On polish", pressed: "Pressed", nowhere: "Never seen", routed: "Routed",
+};
+/** ROUTED IS NOT WAITING AND IT IS NOT A GRADE. A slab QC sent to cut-to-size
+ *  or printing has been through QC and will never grade, so it belongs in
+ *  neither the four grade columns nor the "still to come" subtotal — it gets a
+ *  column of its own, outside both, and the row still adds up to Claimed. */
+const WAIT_STAGES = STAGES.filter((s) => s !== "routed");
 
 export default async function IncentiveMonthPage({ searchParams }: { searchParams: Promise<{ month?: string }> }) {
   if (!(await isAdmin())) redirect("/");
@@ -109,6 +119,20 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
         const stageRow = (rec: Record<Stage, number>) => STAGES.filter((s) => rec[s] > 0).map((s) => (
           <Badge key={s} tone={STAGE_TONE[s]}>{fmt(rec[s])} {STAGE_LABEL[s].toLowerCase()}</Badge>
         ));
+        // The batch table's own totals, summed from the rows the reader can
+        // see rather than from the month-wide figures beside them. That is the
+        // point of a totals line here: if a column of rows and its total came
+        // from two different places, the total could be right while the column
+        // was wrong, and nobody would know which to believe.
+        const sum = (f: (g: (typeof outstanding.groups)[number]) => number) => outstanding.groups.reduce((a, g) => a + f(g), 0);
+        const tot = {
+          claimed: sum((g) => g.claimed), graded: sum((g) => g.graded),
+          A: sum((g) => g.gradeA), A2: sum((g) => g.gradeA2), B: sum((g) => g.gradeB), C: sum((g) => g.gradeC),
+          decided: sum((g) => g.decidedB), slow: sum((g) => g.slow),
+          waiting: sum((g) => g.count - g.stages.routed), routed: sum((g) => g.stages.routed),
+          stage: (s: Stage) => sum((g) => g.stages[s]),
+        };
+        const totShare = tot.graded ? (tot.A + tot.A2 + tot.B * 0.5) / tot.graded : null;
         return (
           <>
             {/* ---- Where the month stands ------------------------------------ */}
@@ -152,8 +176,18 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                 sub={pool.poolNow ? (SHOW_PAYOUT_AMOUNTS ? "unlocked" : `the count is over the ${fmt(pool.floor)} floor`) : `${fmt(pool.floor - Math.floor(pool.counted))} short of the floor`} />
               <Kpi label="Still to grade" value={fmt(outstanding.real)} sub={`${fmt(outstanding.total)} claimed and uncounted · ${fmt(outstanding.byStage.nowhere)} never seen · ${fmt(outstanding.byStage.routed)} routed`} />
               <Kpi label="Projected" value={fmt(Math.round(projection.projectedReal))} sub={`if the real ones grade at ${pct(projection.share)} → ${projection.poolReal ? (SHOW_PAYOUT_AMOUNTS ? lakh(projection.poolReal) : "over the floor") : "no pool"}`} />
+              {/* "A" HERE IS A AND A2 TOGETHER, AND THE SCREEN NOW SAYS SO.
+                  scoreShift buckets on u.startsWith("A"), so plant.gradeA is
+                  the two passes added — correct, and not something to change:
+                  gradeCredit pays A and A2 the same 1. What was wrong was
+                  silence. The batch table below splits them into their own
+                  columns, so on live August 2026 (measured 2026-09-03) this
+                  KPI read "5,000 A" and the table's footer read A 4,577 +
+                  A2 423 — the same 5,000 slabs printed as two different values
+                  of "A", 423 apart, on one screen. Same reason the three-shifts
+                  table's grade column is headed "A+A2". */}
               <Kpi label="Grade share" value={pct(plant.rawShare)}
-                sub={`${fmt(plant.gradeA)} A · ${fmt(plant.gradeB)} B · ${fmt(plant.gradeC)} rejects of ${fmt(plant.graded)} graded`}
+                sub={`${fmt(plant.gradeA)} A and A2 · ${fmt(plant.gradeB)} B · ${fmt(plant.gradeC)} rejects of ${fmt(plant.graded)} graded`}
                 working={<>
                   <b className="text-gray-900">Good slabs ÷ graded slabs.</b> Not A ÷ graded — a
                   B is half a good slab, a reject is none.
@@ -163,9 +197,15 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                     ÷ {fmt(plant.graded)} graded = <b>{pct(plant.rawShare)}</b>
                   </div>
                   <div className="mt-2">
-                    Dividing {fmt(plant.gradeA)} A by {fmt(plant.graded)} gives{" "}
+                    The {fmt(plant.gradeA)} counts <b>A and A2 together</b> — the score does not
+                    separate them, because both are passes and both earn a whole slab of credit. The
+                    batch table lower down does separate them, so its A column is smaller than this
+                    number and its A + A2 add back to it.
+                  </div>
+                  <div className="mt-2">
+                    Dividing {fmt(plant.gradeA)} A and A2 by {fmt(plant.graded)} gives{" "}
                     {pct(plant.graded ? plant.gradeA / plant.graded : null)} — that is the share that
-                    came out top grade, a different question.
+                    came out a pass at all, a different question.
                   </div>
                 </>} />
               <Kpi label="QC pace" value={qc.avgPerDay7 ? `${fmt(Math.round(qc.avgPerDay7))}/day` : "—"} sub={qc.daysToClear != null ? `≈ ${qc.daysToClear} day${qc.daysToClear === 1 ? "" : "s"} to clear the backlog` : "no grading in the last 7 days"} />
@@ -217,7 +257,11 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                     <tr className="text-left text-[11px] uppercase tracking-wider text-gray-500">
                       <th className="py-2 pr-3">Shift</th><th className="py-2 pr-3">Shifts</th><th className="py-2 pr-3">Running</th>
                       <th className="py-2 pr-3">Pressed</th><th className="py-2 pr-3">Graded</th><th className="py-2 pr-3">To grade</th>
-                      <th className="py-2 pr-3">A / B / C</th><th className="py-2 pr-3">Good</th><th className="py-2 pr-3">Counted twice</th><th className="py-2 pr-3">Counted</th>
+                      {/* A+A2, not A: scoreShift buckets both passes together
+                          (u.startsWith("A")), and the batch table below splits
+                          them — so an unqualified "A" here is 423 slabs adrift
+                          of the A column down there on live August 2026. */}
+                      <th className="py-2 pr-3">A+A2 / B / C</th><th className="py-2 pr-3">Good</th><th className="py-2 pr-3">Counted twice</th><th className="py-2 pr-3">Counted</th>
                       <th className="py-2 pr-3">Per shift</th><th className="py-2 pr-3">Grade share</th>
                       <th className="py-2 pr-3">Quality<br /><span className="normal-case text-gray-400">per-shift avg</span></th>
                       <th className="py-2 pr-3">Quality<br /><span className="normal-case text-gray-400">month share</span></th>
@@ -336,6 +380,7 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
               <p className="mb-3 text-xs text-gray-500">
                 Every slab a shift&apos;s MIS range claimed that has no A / B / C verdict yet, checked against the press, jot, oven and polish tables.
                 A slab QC routed to CTS or Printing has been through QC and will not grade; a number no station has ever seen was claimed by a mistyped range and will not either.
+                These are the month&apos;s backlog only — the table below puts them next to what the same batches have already graded.
               </p>
               <div className="mb-4 flex flex-wrap gap-2">{stageRow(outstanding.byStage)}</div>
               <div className="mb-4 grid grid-cols-1 gap-2 md:grid-cols-3">
@@ -366,30 +411,160 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                 </div>
               )}
 
+            </Card>
+
+            {/* ---- One row per batch: what graded and what is still waiting ---- */}
+            {/* ONE TABLE, NOT TWO. The owner asked for A / A2 / B / C columns on
+                the table above and was told every row on it is a WAITING slab
+                and so ungraded by definition; he answered "Maybe make a table
+                to show graded slabs or show graded slabs in the same table
+                instead of keeping it in different tables" (2026-09-03). This is
+                that table. It is NOT the waiting list with four columns bolted
+                on: its POPULATION is every design+batch the month claimed, so
+                the batch that graded best — which by definition has nothing
+                left waiting — is on it too. For August 2026, 41 rows against
+                the waiting list's 33 (measured on live Neon 2026-09-03). */}
+            <Card className="mb-4">
+              <H2>The month by design and batch — {fmt(tot.claimed)} slabs</H2>
+              <p className="mb-1 text-xs text-gray-500">
+                Every slab the month&apos;s MIS ranges claimed, one row per design and batch: the {fmt(tot.graded)} QC has graded
+                and the {fmt(tot.waiting)} still to come, side by side. Each row adds up two ways —
+                <b> A + A2 + B + C = graded</b>, and <b> graded + still waiting + routed = claimed</b> — and so does the total line at the foot.
+              </p>
+              <p className="mb-3 text-xs text-gray-500">
+                CTS and Printing are ROUTINGS, not verdicts: a slab sent to cut-to-size was diverted before anyone judged it, so it sits in its own
+                column and in none of the four grades — it is never counted twice. Nothing here is capped or collapsed; all {fmt(outstanding.groups.length)} batches
+                are listed, the ones with slabs still waiting first.
+              </p>
+              <p className="mb-3 text-xs text-gray-500">
+                <b>A and A2 are separate columns here and nowhere else on this page.</b> The scoring counts both as passes worth a whole slab and does not tell
+                them apart, so the Grade share figure at the top of the page and the A+A2 column in the three-shifts table each report {fmt(plant.gradeA)} where
+                this table reports {fmt(tot.A)} A and {fmt(tot.A2)} A2. They are the same slabs — {fmt(tot.A)} + {fmt(tot.A2)} = {fmt(tot.A + tot.A2)} — split
+                because the plant sells them as different products and a batch drifting from A to A2 is worth seeing.
+              </p>
+              {outstanding.unreconciled > 0 && (
+                <p className="mb-3 rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-800">
+                  {fmt(outstanding.unreconciled)} claimed slabs are in neither half of this table — the score and this table disagree about what the month
+                  claimed. They are left out of every figure above so the columns still add up, but the difference is real and needs looking at.
+                </p>
+              )}
+              {/* THE DRIFT THAT USED TO BE SILENT. `unreconciled` above only ever
+                  caught slabs the rebuild believed in and the score did not; a
+                  slab drifting the other way reached no row, so the "Claimed,
+                  not yet counted — N" card above and this table's "Still
+                  waiting" total would print different numbers with nothing on
+                  the page to say why. Both are 0 on live August 2026: measured
+                  three times on 2026-09-03 as QC kept grading (954, then 953,
+                  then 952 outstanding) and the rows summed to the same figure
+                  every time. */}
+              {outstanding.unclaimed > 0 && (
+                <p className="mb-3 rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-800">
+                  {fmt(outstanding.unclaimed)} of the {fmt(outstanding.total)} slabs on the backlog card above are on no row of this table — the score has them
+                  and this table&apos;s rebuild of the month&apos;s claim does not. That is why the {fmt(tot.waiting + tot.routed)} still-outstanding slabs counted
+                  here are fewer than the {fmt(outstanding.total)} counted there. The backlog card is the one to believe; this needs looking at.
+                </p>
+              )}
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
+                    <tr className="text-left text-[10px] uppercase tracking-wider text-gray-400">
+                      <th className="py-1 pr-3" colSpan={3} />
+                      <th className="border-l border-gray-200 py-1 pl-2 pr-3 text-gray-500" colSpan={6}>Graded — {fmt(tot.graded)}</th>
+                      <th className="border-l border-gray-200 py-1 pl-2 pr-3 text-gray-500" colSpan={5}>Still waiting — {fmt(tot.waiting)}</th>
+                      <th className="border-l border-gray-200 py-1 pl-2 pr-3" colSpan={2} />
+                    </tr>
                     <tr className="text-left text-[11px] uppercase tracking-wider text-gray-500">
-                      <th className="py-2 pr-3">Design</th><th className="py-2 pr-3">Batch</th><th className="py-2 pr-3">Waiting</th>
-                      <th className="py-2 pr-3">Counts ×2</th>
-                      {STAGES.map((s) => <th key={s} className="py-2 pr-3">{STAGE_LABEL[s]}</th>)}
-                      <th className="py-2">Design&apos;s grade share so far</th>
+                      <th className="py-2 pr-3">Design</th><th className="py-2 pr-3">Batch</th><th className="py-2 pr-3">Claimed</th>
+                      <th className="border-l border-gray-200 py-2 pl-2 pr-3">A</th><th className="py-2 pr-3">A2</th>
+                      <th className="py-2 pr-3">B</th><th className="py-2 pr-3">C</th>
+                      <th className="py-2 pr-3">Graded</th><th className="py-2 pr-3">Batch share</th>
+                      <th className="border-l border-gray-200 py-2 pl-2 pr-3">Waiting</th>
+                      {WAIT_STAGES.map((s) => <th key={s} className="py-2 pr-3">{STAGE_SHORT[s]}</th>)}
+                      <th className="border-l border-gray-200 py-2 pl-2 pr-3">Routed</th>
+                      {/* THERE WAS A "DESIGN'S SHARE, ALL BATCHES" COLUMN HERE
+                          UNTIL 2026-09-03. It joined the MIS design spelling to
+                          QC's, and on live August 2026 it read "none graded
+                          yet" on 7 of the 41 rows whose own Graded column, on
+                          the same line, read 115 / 19 / 7 / 6 / 5 / 5 / 4 —
+                          161 graded slabs denied — while the rows it DID match
+                          borrowed each other's slabs (GLENCO / D1411, 50 graded
+                          of its own, printed "95.4% on 206"). The Batch share
+                          column, in the graded block, is this row's own four
+                          grade counts and needs no name join at all; see
+                          incentiveMonth.ts for the full measurement. */}
+                      <th className="py-2">Waiting ×2</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {outstanding.groups.map((g) => (
+                    {outstanding.groups.map((g) => {
+                      const waiting = g.count - g.stages.routed;
+                      return (
                       <tr key={`${g.design} ${g.batch}`} className="border-t border-gray-100">
                         <td className="py-1.5 pr-3 font-medium text-gray-900">{g.design}</td>
                         <td className="py-1.5 pr-3 text-gray-600">{g.batch}</td>
-                        <td className="py-1.5 pr-3 font-semibold">{fmt(g.count)}</td>
-                        <td className="py-1.5 pr-3 text-gray-600">{g.slow ? fmt(g.slow) : "—"}</td>
-                        {STAGES.map((s) => <td key={s} className={`py-1.5 pr-3 ${g.stages[s] ? (s === "nowhere" ? "text-red-700" : s === "routed" ? "text-amber-700" : "text-gray-700") : "text-gray-300"}`}>{g.stages[s] || "—"}</td>)}
-                        <td className="py-1.5 text-gray-600">{g.designShare != null ? `${pct(g.designShare)} on ${fmt(g.designGraded)}` : g.designGraded ? `${fmt(g.designGraded)} graded — too few to say` : "none graded yet"}</td>
+                        <td className="py-1.5 pr-3 font-semibold">{fmt(g.claimed)}</td>
+                        <td className="border-l border-gray-200 py-1.5 pl-2 pr-3 text-gray-700">{g.gradeA || <span className="text-gray-300">—</span>}</td>
+                        <td className="py-1.5 pr-3 text-gray-700">{g.gradeA2 || <span className="text-gray-300">—</span>}</td>
+                        <td className="py-1.5 pr-3 text-gray-700">
+                          {g.gradeB || <span className="text-gray-300">—</span>}
+                          {g.decidedB > 0 && <span className="text-amber-700" title={`${g.decidedB} of these were graded B by decision, not by inspection — see the note below the table`}> †{g.decidedB}</span>}
+                        </td>
+                        <td className={`py-1.5 pr-3 ${g.gradeC ? "text-red-700" : "text-gray-300"}`}>{g.gradeC || "—"}</td>
+                        <td className="py-1.5 pr-3 text-gray-500">{fmt(g.graded)}</td>
+                        <td className="py-1.5 pr-3 text-gray-600">{g.share != null ? pct(g.share) : <span className="text-gray-400">{g.graded ? `${fmt(g.graded)} graded — too few to say` : "none graded yet"}</span>}</td>
+                        <td className="border-l border-gray-200 py-1.5 pl-2 pr-3 font-semibold">{waiting || <span className="font-normal text-gray-300">—</span>}</td>
+                        {WAIT_STAGES.map((s) => <td key={s} className={`py-1.5 pr-3 ${g.stages[s] ? (s === "nowhere" ? "text-red-700" : "text-gray-700") : "text-gray-300"}`}>{g.stages[s] || "—"}</td>)}
+                        <td className={`border-l border-gray-200 py-1.5 pl-2 pr-3 ${g.stages.routed ? "text-amber-700" : "text-gray-300"}`}>{g.stages.routed || "—"}</td>
+                        <td className="py-1.5 text-gray-600">{g.slow ? fmt(g.slow) : <span className="text-gray-300">—</span>}</td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
+                  <tfoot>
+                    <tr className="border-t-2 border-gray-300 font-semibold text-gray-900">
+                      <td className="py-2 pr-3">All batches</td>
+                      <td className="py-2 pr-3 font-normal text-gray-500">{fmt(outstanding.groups.length)} rows</td>
+                      <td className="py-2 pr-3">{fmt(tot.claimed)}</td>
+                      <td className="border-l border-gray-200 py-2 pl-2 pr-3">{fmt(tot.A)}</td>
+                      <td className="py-2 pr-3">{fmt(tot.A2)}</td>
+                      <td className="py-2 pr-3">{fmt(tot.B)}{tot.decided > 0 && <span className="font-normal text-amber-700"> †{tot.decided}</span>}</td>
+                      <td className="py-2 pr-3">{fmt(tot.C)}</td>
+                      <td className="py-2 pr-3">{fmt(tot.graded)}</td>
+                      <td className="py-2 pr-3">{pct(totShare)}</td>
+                      <td className="border-l border-gray-200 py-2 pl-2 pr-3">{fmt(tot.waiting)}</td>
+                      {WAIT_STAGES.map((s) => <td key={s} className="py-2 pr-3">{fmt(tot.stage(s))}</td>)}
+                      <td className="border-l border-gray-200 py-2 pl-2 pr-3">{fmt(tot.routed)}</td>
+                      <td className="py-2">{fmt(tot.slow)}</td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
+              <p className="mt-3 text-xs text-gray-500">
+                {tot.decided > 0 && (
+                  <>
+                    <span className="text-amber-700">†</span> {fmt(tot.decided)} of the {fmt(tot.B)} B slabs were graded B by a DECISION, not by an inspection: they were cut to size
+                    and their real verdict was destroyed and could not be recovered, so the owner set them to B (scripts/0071 and 0072, applied 2026-09-03).
+                    The payout pays each of them the same half slab of credit any other B earns, so they are counted as B here too — the dagger is how the table
+                    says which ones they are without putting them anywhere twice.{" "}
+                    {/* AND WHY THE CEO REPORT PRINTS A DIFFERENT B FOR THE SAME MONTH.
+                        Said out loud because somebody will hold the two screens up beside
+                        each other: measured 2026-09-03, this table reads B 171 for August
+                        and the monthly report reads B 146, and 171 - 146 is exactly these
+                        25 decided slabs. The report answers "how did the stone we inspected
+                        grade", where a destroyed verdict is not a measured B; this screen
+                        answers "what does the month pay", where gradeCredit() pays it like
+                        any B. Changing either to match the other would break the screen that
+                        was changed. verify-grade-columns.mts asserts the gap is exactly the
+                        cut count, so a drift means one of them is genuinely wrong. */}
+                    The CEO monthly report asks the opposite question — how the stone that was actually <em>inspected</em> graded — so it keeps these{" "}
+                    {fmt(tot.decided)} out of its B column and shows them under <b>Cut</b>. Its B for the month reads exactly that much lower than the{" "}
+                    {fmt(tot.B)} here, and neither figure is wrong.{" "}
+                  </>
+                )}
+                <b>Batch share</b> is this row&apos;s own A / A2 / B / C on the payout&apos;s scale (A and A2 = 1, B = ½, C = 0), shown once the row has at least{" "}
+                {fmt(MIN_GRADED_TO_SAY)} graded slabs behind it — below that one C in eight reads as a disaster and one A in eight as a triumph, and neither is true.
+                It is built from the four numbers on its own line and from nothing else, so a reader can check it with the row in front of them.
+              </p>
             </Card>
 
             {/* ---- QC pace --------------------------------------------------- */}

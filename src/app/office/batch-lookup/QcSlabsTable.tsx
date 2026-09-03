@@ -6,13 +6,49 @@ import { slabLabel } from "@/lib/slabLabel";
 import type { BatchQcSlab } from "@/lib/batchQcList";
 
 // Finished-goods status, rendered as-is from fg_finished_slab.status.
+//
+// ═══════ "CUT TO SIZE" IS NOT WHAT THIS COLUMN ANSWERS, AND IT SAID IT WAS ═══
+//
+// The status CTS is a word somebody applied by hand. What has actually been cut
+// lives in fg_finished_slab.slab_mark, and the two are two orders of magnitude
+// apart: measured on live Neon 2026-09-03, batch 1413 (Arva White) holds 232
+// finished-goods slabs, ELEVEN of them slab_mark='CTS' — and exactly ONE of
+// those eleven, slab 154757, also carries status='CTS'. Plant-wide it is 63
+// marks against 1 status.
+//
+// So a reader who filtered this table's Status to "Cut to size" was answered
+// with 1 of the 11 cut slabs on the batch in front of them, and this table has
+// no Mark column, so nothing else on it distinguishes the other 10. That is the
+// owner's original complaint ("look at any status filter in finished goods. It
+// has CTS which should ideally not be there as we have moved it to any mark
+// filter right?") reproduced verbatim on a second finished-goods screen; the
+// inventory dashboard's status dropdown dropped the word the same day.
+//
+// TWO CHANGES, and the label change is the one that also covers the BADGE — the
+// filter can be taken away, but slab 154757's row still has to render something,
+// and "Cut to size" on a badge is the same claim in a smaller box. It is named
+// for the column it is read from and carries a note (STATUS_NOTE) saying what it
+// is not. The status is NOT removed from the map: it is a real value the `cts`
+// action still writes, and an unlabelled one would print raw as "CTS".
 const STATUS_LABEL: Record<string, string> = {
   AVAILABLE: "Available",
   RESERVED: "Reserved",
   PACKED: "Packed",
   DISPATCHED: "Dispatched",
   RETURNED: "Returned",
-  CTS: "Cut to size",
+  CTS: "CTS (legacy status)",
+};
+/** Statuses this table will not OFFER as a filter, however many rows carry them.
+ *  Offered is a strict subset of rendered — the same split intakeRules made
+ *  between SLAB_STATUS_OPTIONS (what a picker shows) and SLAB_STATUSES (what is
+ *  valid). Nothing outside this component can set `status`, so unlike the
+ *  dashboard's select there is no "re-add it when something has chosen it"
+ *  guard to write: a value that is never offered here is never selected here. */
+const NOT_OFFERED_STATUS = new Set(["CTS"]);
+/** Said on hover, where somebody about to read the badge as "this was cut" is
+ *  looking. Only CTS needs one; every other status means what it says. */
+const STATUS_NOTE: Record<string, string> = {
+  CTS: "The inventory STATUS 'CTS', applied by hand — NOT the record of what has been cut. That is the slab MARK, which this table does not carry. On batch 1413 eleven slabs are marked cut and only this one carries the status (live Neon, 2026-09-03). Check the slab in Inventory before reading anything here as whole or cut.",
 };
 const STATUS_TONE: Record<string, "brand" | "green" | "amber" | "red"> = {
   AVAILABLE: "brand",
@@ -65,7 +101,10 @@ export function QcSlabsTable({ rows }: { rows: BatchQcSlab[] }) {
     return {
       grades: [...g].sort((a, b) => a.localeCompare(b)),
       thicknesses: [...t].sort((a, b) => a.localeCompare(b)),
-      statuses: [...s].sort((a, b) => a.localeCompare(b)),
+      // NOT_OFFERED_STATUS applied here rather than in the loop above, so the
+      // set the options are drawn from stays the set the rows actually hold —
+      // a reader of `s` should not have to know a value was dropped upstream.
+      statuses: [...s].filter((v) => !NOT_OFFERED_STATUS.has(v)).sort((a, b) => a.localeCompare(b)),
       anyNoLedger,
       // Only offer "—" where a blank actually occurs, so no option is dead on arrival
       // (it can still return nothing in combination with another filter).
@@ -156,9 +195,15 @@ export function QcSlabsTable({ rows }: { rows: BatchQcSlab[] }) {
                   <td className="py-2 pr-4">{s.thickness ?? "—"}</td>
                   <td className="py-2">
                     {s.status ? (
-                      <Badge tone={STATUS_TONE[s.status] ?? "brand"}>
-                        {STATUS_LABEL[s.status] ?? s.status}
-                      </Badge>
+                      // The title rides on a wrapper because Badge takes no
+                      // title of its own, and this note has to reach the hover
+                      // of the one row it belongs to (slab 154757 today) rather
+                      // than being written once somewhere off screen.
+                      <span title={STATUS_NOTE[s.status]}>
+                        <Badge tone={STATUS_TONE[s.status] ?? "brand"}>
+                          {STATUS_LABEL[s.status] ?? s.status}
+                        </Badge>
+                      </span>
                     ) : (
                       <span className="text-gray-400">not in ledger</span>
                     )}

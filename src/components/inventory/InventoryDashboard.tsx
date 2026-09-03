@@ -59,7 +59,42 @@ interface SlabEvent {
 // SlabStatus is a Prisma enum — a fixed set, so it stays hardcoded.
 // CHROMIA (scripts/0063) is written only by the Chromia intake bridge — it is
 // filterable and visible here, but deliberately absent from ACTIONS below.
-const STATUSES = ["", "AVAILABLE", "RESERVED", "PACKED", "DISPATCHED", "RETURNED", "CTS", "CHROMIA"];
+//
+// ══════════════ CTS IS GONE FROM THIS LIST, AND ONLY FROM THIS LIST ══════════
+//
+// The owner, 2026-09-03: "look at any status filter in finished goods. It has
+// CTS which should ideally not be there as we have moved it to any mark filter
+// right?" He is right, and the numbers are why. Measured on live Neon that day,
+// fg_finished_slab.status reads AVAILABLE 16,585 · DISPATCHED 6,742 · CHROMIA
+// 62 · CTS 1 — the single CTS row being slab 154757 (Arva White, 2 cm, batch
+// 1413), which also carries slab_mark 'CTS' and grade 'B'. Meanwhile 63 rows
+// carry slab_mark = 'CTS', 61 of them on the floor. So a person who opened this
+// dropdown looking for "what has been cut" was offered a filter that answers
+// with 1 slab and hides 60, while the Mark filter three controls up answers
+// with all 61. Two controls, the same word, two orders of magnitude apart.
+//
+// WHAT IS **NOT** BEING DONE, because each would break something:
+//   * The Prisma SlabStatus enum keeps CTS — the row exists and the column must
+//     be able to hold it.
+//   * intakeRules.SLAB_STATUSES keeps CTS: that list VALIDATES writes, and
+//     taking the word out of it would make slab 154757 unsaveable from the
+//     intake form. Only the picker list beside it (SLAB_STATUS_OPTIONS) lost it.
+//   * The `cts` / `uncts` ACTIONS below are untouched. The status is still
+//     WRITTEN by hand from this screen and by Commercial, so it must stay
+//     findable — see the guard on the status select, which re-adds CTS as an
+//     option whenever something has actually selected it.
+//
+// RESERVED, PACKED and RETURNED hold zero rows today and stay: they are real
+// lifecycle states that the actions above move slabs into, and a status you can
+// apply but not filter for is the bug this comment is about, upside down.
+const STATUSES = ["", "AVAILABLE", "RESERVED", "PACKED", "DISPATCHED", "RETURNED", "CHROMIA"];
+// The statuses the STOCK REGISTER may be filtered by — a narrower question than
+// the slab table's. Dispatched is excluded because every column the register
+// prints counts stock still on the floor (`status <> 'DISPATCHED'`), so asking
+// for dispatched stock there returns a table of zeros; /api/inventory/summary
+// refuses the value in words for the same reason. The blank "any" entry is the
+// register's own first option, not part of this list.
+const REGISTER_STATUSES = STATUSES.filter((s) => s !== "" && s !== "DISPATCHED");
 
 // Where a row came from: the SlabSource enum, in plant words.
 const SOURCES: [string, string][] = [
@@ -142,6 +177,47 @@ const ACTIONS = [
 // key costs nothing anywhere: the search, the KPI cards, the Excel export URL and
 // the Retry all carry it automatically the moment it is set.
 const EMPTY = { design: "", batch: "", thickness: "", grade: "", mark: "", slab: "", bay: "", status: "", source: "", rw: "", pi: "", customer: "" };
+
+// ═══════════ WHAT THE KPI STRIP IS COUNTING, SAID ON THE KPI STRIP ═══════════
+//
+// The cards mirror the last search — every filter in EMPTY travels to
+// /api/inventory/kpi — and until now NOTHING on the strip said so. That was
+// survivable while the only filters were the ones sitting in the visible boxes
+// directly under the cards. It stopped being survivable when Stock by Design
+// grew its four server-side filters: `onFilters` feeds them straight into
+// kpiFilters, so the strip is narrowed from a control the user set on a
+// different block, and only the register below it grew a heading.
+//
+// Measured on live Neon 2026-09-03, admin with "show unapproved stock" on and
+// the register's mark filter set to CTS: the strip reads Total Slabs 63 (it
+// counts dispatched stock too), Available 60, Grade B 61, Cut (any signal) 61,
+// while the register underneath reads Grand Total 59 under a line saying it is
+// filtered. Approved-only — the default admin view — the same strip reads
+// 61 / 58 / 59 / 59. "Total Slabs 63" beside "Slabs 59", with nothing saying
+// the strip is a cut-slabs-only view, is a number somebody quotes as the plant
+// total (which is 22,361 approved rows, 23,394 in all).
+//
+// The strip already renders one such sentence, for `f.rw === '1'` alone. This
+// generalises it: whatever the cards are counting under, they say so.
+const FILTER_WORD: Record<string, string> = {
+  design: "colour", batch: "batch", thickness: "thickness", grade: "grade", mark: "mark",
+  slab: "slab", bay: "bay", status: "status", source: "source", pi: "PI", customer: "customer",
+};
+function describeFilters(f: typeof EMPTY): string[] {
+  return Object.entries(f).flatMap(([k, v]) => {
+    if (!v) return [];
+    // rw is a flag, not a value: "rw 1" would be gibberish on the screen.
+    if (k === "rw") return ["pending R/W only"];
+    const word = FILTER_WORD[k] ?? k;
+    if (v === NONE) return [`no ${word}`];
+    // Plant words for the two coded columns, exactly as their own selects show
+    // them — a strip saying "mark FULL_SLAB" over a select reading "Full slab"
+    // is two spellings of one filter.
+    if (k === "mark") return [`mark ${SLAB_MARK_LABEL[v as keyof typeof SLAB_MARK_LABEL] ?? v}`];
+    if (k === "source") return [`source ${SOURCES.find(([sv]) => sv === v)?.[1] ?? v}`];
+    return [`${word} ${v}`];
+  });
+}
 
 // displaySlab (NB-label rule for legacy 9,000,000+ slabs) is shared from
 // lib/slabLabel so this table and the register popup cannot disagree.
@@ -259,6 +335,13 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
   const [merging, setMerging] = useState(false);
 
   const kpiFilters = useRef({ ...EMPTY }); // cards mirror the last search
+  // The same filters as words, for the sentence above the cards. It has to be
+  // STATE and the fetch input has to stay a REF (a ref does not re-render, which
+  // is the whole reason it is one), so the only safe arrangement is that nobody
+  // assigns the ref directly — every write goes through here and the two cannot
+  // come to describe different things.
+  const [kpiOn, setKpiOn] = useState<string[]>([]);
+  const applyKpiFilters = (next: typeof EMPTY) => { kpiFilters.current = next; setKpiOn(describeFilters(next)); };
   const showPendingRef = useRef(false);
   const loadKpi = () => {
     const p = new URLSearchParams();
@@ -289,7 +372,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
     // NOTE: the selection is deliberately NOT cleared here — it is cleared only after an
     // action succeeds (applyMove / applyStatus) or when the user clears it themselves.
     lastRun.current = { ...filters };
-    kpiFilters.current = { ...filters };
+    applyKpiFilters({ ...filters });
     loadKpi();
     const p = new URLSearchParams();
     Object.entries(filters).forEach(([k, v]) => { if (v) p.set(k, v); });
@@ -550,7 +633,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
           // tabs at all, so previewing it while parked on "Stock by Design" or
           // "Designs" showed a screen they can never reach.
           if (v !== "admin") setView("slabs");
-          kpiFilters.current = { ...EMPTY };
+          applyKpiFilters({ ...EMPTY });
           run(EMPTY); setF({ ...EMPTY });
         }}
       >
@@ -622,7 +705,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
           </label>
         )}
         {!slabsOnly && <div className="flex gap-1 rounded-xl border border-gray-200 bg-white p-1">
-          <button className={tabCls(view === "slabs")} onClick={() => { setView("slabs"); kpiFilters.current = { ...f }; loadKpi(); }}>Slabs</button>
+          <button className={tabCls(view === "slabs")} onClick={() => { setView("slabs"); applyKpiFilters({ ...f }); loadKpi(); }}>Slabs</button>
           <button className={tabCls(view === "summary")} onClick={() => setView("summary")}>Stock by Design</button>
           <button className={tabCls(view === "activity")} onClick={() => openActivity(evSlab)}>Activity</button>
           {admin && <button className={tabCls(view === "designs")} onClick={() => { setView("designs"); loadDesigns(); }}>Designs</button>}
@@ -633,6 +716,18 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
 
       {!slabsOnly && kpi && (
         <div className="space-y-4">
+          {/* EVERY CARD BELOW IS COUNTED UNDER THESE, so they are named here.
+              See describeFilters at the top of the file for the measurements —
+              the short version is that the register's four server filters reach
+              these cards through onFilters and used to move Total Slabs from
+              22,361 to 61 with nothing on the strip saying why. Rendered above
+              the Stock row rather than beside any one card because it governs
+              all four blocks: Stock, Grades, Thickness and Needs attention. */}
+          {kpiOn.length > 0 && (
+            <p className="rounded-lg border border-brand/30 bg-brand/5 px-3 py-2 text-xs font-medium text-gray-700">
+              These cards count {kpiOn.join(" · ")} only — not the whole plant. Clear the filters to count everything.
+            </p>
+          )}
           <div>
             <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400">Stock</p>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-8">
@@ -644,13 +739,35 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
               {/* TWO CARDS ABOUT CUT SLABS, AND THEY ARE NOT THE SAME CARD — the same
                   distinction the register draws between its CTS and Cut columns.
 
-                  "Cut to size (status)" is the inventory STATUS somebody applied by
-                  hand. "Cut (any signal)" is the FACT: grade says cut, or the mark
-                  does. The gap between them is the point — a slab is very often cut
+                  The STATUS card is the inventory STATUS somebody applied by hand.
+                  "Cut (any signal)" is the FACT: grade says cut, or the mark does.
+                  The gap between them is the point — a slab is very often cut
                   without anyone remembering to apply the status, which is why the
-                  dispatch rule reads the mark and not this. */}
-              {card("Cut to size (status)", kpi.ctsStatus, "text-amber-600", { status: "CTS" },
-                "Slabs someone moved to the CTS status by hand. NOT the same as the Cut card beside it: a slab is usually cut without anyone applying this status. Click to see these slabs.")}
+                  dispatch rule reads the mark and not this.
+
+                  ═════ IT NOW HIDES ITSELF AT ZERO, AND IT IS RENAMED (2026-09-03) ══
+                  It used to be titled "Cut to size (status)" and to render always.
+                  Beside a card reading 61 that is a card reading 1 with almost the
+                  same name, under a status the filter row no longer offers — three
+                  ways for one number to be misread as "the plant has cut one slab".
+                  Measured on live Neon 2026-09-03: status CTS 1 row (slab 154757),
+                  slab_mark CTS 63 rows, 61 of them on the floor.
+
+                  So it says LEGACY in its own title, and it renders only while the
+                  count is above zero. That second half matters more than the first:
+                  the moment somebody releases slab 154757 this card disappears
+                  instead of sitting at a permanent 0 under the word CTS, which is
+                  exactly the "place for the eye to check for cut stone and find
+                  none" that the Grades block below refuses to keep. It is also the
+                  ONLY door left to a status='CTS' row now that the dropdown does not
+                  offer the word — and the `cts` ACTION can still create one — so
+                  hiding it at zero is safe and removing it would not be.
+
+                  The click still sets status: "CTS". That value is FOUND, not
+                  offered; the status select re-adds it as an option when it is set,
+                  so the filter row cannot read "Any status" over a filtered table. */}
+              {kpi.ctsStatus > 0 && card("CTS status (legacy)", kpi.ctsStatus, "text-amber-600", { status: "CTS" },
+                "The old inventory STATUS 'CTS', applied by hand — NOT the count of cut slabs, which is the Cut card beside it (a slab is usually cut without anyone applying this status). The status is no longer offered in the status filter: what has been cut lives in the slab MARK now. 1 slab carries it today, against 61 cut slabs on the floor. Click to see it.")}
               {/* MOVED OUT OF "GRADES (IN STOCK)", AND THIS IS THE WHOLE FIX.
 
                   This card used to sit in the grade block between Grade C and
@@ -736,8 +853,23 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
           // another role this still pulled ?pending=1 and folded unapproved
           // stock into totals that role can never see.
           showPending={showPending && admin}
-          onFilters={(sf) => { kpiFilters.current = { ...EMPTY, design: sf.design, thickness: sf.thickness, batch: sf.batch }; loadKpi(); }}
-          onOpenSlabs={admin ? (sel) => { const next = { ...EMPTY, design: sel.design ?? "", thickness: sel.thickness ?? "", batch: sel.batch ?? "" }; setView("slabs"); setF(next); run(next); } : undefined}
+          // THE OPTION LISTS, HANDED DOWN RATHER THAN FETCHED TWICE. `opts` is
+          // already this component's copy of /api/inventory/filters, so bays and
+          // marks are the live values read back off the column; SOURCES and
+          // REGISTER_STATUSES are the constants the slab filter row above uses.
+          // One list per column, for both screens — the register and the slab
+          // table cannot come to offer different options for the same question.
+          //
+          // `marks` is passed straight through, ABSENCE AND ALL: an
+          // /api/inventory/filters that returns no `marks` key is one that does
+          // not know the word, and the register hides the control rather than
+          // posting a `mark=` the summary route would refuse. Same rule as the
+          // slab table's own mark select a few hundred lines down.
+          filterOptions={{ bays: opts.bays, marks: opts.marks, sources: SOURCES, statuses: REGISTER_STATUSES }}
+          // The four ride along with design/thickness/batch so the KPI strip
+          // above the register counts the same stock the register does.
+          onFilters={(sf) => { applyKpiFilters({ ...EMPTY, design: sf.design, thickness: sf.thickness, batch: sf.batch, source: sf.source, status: sf.status, bay: sf.bay, mark: sf.mark }); loadKpi(); }}
+          onOpenSlabs={admin ? (sel) => { const next = { ...EMPTY, design: sel.design ?? "", thickness: sel.thickness ?? "", batch: sel.batch ?? "", source: sel.source ?? "", status: sel.status ?? "", bay: sel.bay ?? "", mark: sel.mark ?? "" }; setView("slabs"); setF(next); run(next); } : undefined}
         />
       ) : view === "designs" && admin ? (
         <div className="space-y-3">
@@ -930,7 +1062,19 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
                 })()}
                 <option value={NONE}>— not set —</option>
               </select>
-              <select className={inputCls} value={f.status} onChange={(e) => { const n = { ...f, status: e.target.value }; setF(n); run(n); }}>{STATUSES.map((s) => <option key={s} value={s}>{s || "Any status"}</option>)}</select>
+              {/* THE SAME GUARD THE GRADE, THICKNESS AND MARK SELECTS CARRY, and
+                  it is what lets CTS leave the offered list without stranding the
+                  one row that holds it. STATUSES no longer offers CTS (see the
+                  constant), but the "CTS status (legacy)" KPI card still sets it,
+                  and a select whose value is not among its options renders as
+                  blank — so the box would read "Any status" while the table below
+                  it WAS filtered. Re-adding a status only when something has
+                  already selected it means it is never OFFERED from a standing
+                  start and never silently dropped once chosen. */}
+              <select className={inputCls} value={f.status} onChange={(e) => { const n = { ...f, status: e.target.value }; setF(n); run(n); }}>
+                {(f.status && !STATUSES.includes(f.status) ? [...STATUSES, f.status] : STATUSES)
+                  .map((s) => <option key={s} value={s}>{s || "Any status"}</option>)}
+              </select>
               <select className={inputCls} value={f.source} onChange={(e) => { const n = { ...f, source: e.target.value }; setF(n); run(n); }}>
                 <option value="">Any source</option>
                 {SOURCES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}

@@ -19,7 +19,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
 import { scoreRange, type OutstandingSlab } from "@/lib/shiftScore";
-import { shiftRange, plusDay, type ShiftLetter } from "@/lib/shiftScoreMath";
+import {
+  shiftRange, shiftKeyOf, plusDay, stdMultiplier, gradeCredit, MAX_SLABS_PER_HOUR,
+  type ShiftLetter,
+} from "@/lib/shiftScoreMath";
 import {
   rollUpByLetter, splitPoolByLetter, plantTotals, projectOutstanding,
   type LetterTotals, type LetterShare,
@@ -45,17 +48,101 @@ export interface TrackedSlab extends OutstandingSlab {
   stage: Stage;
 }
 
+/** How many graded slabs a grade share needs behind it before it is worth
+ *  printing. Below this a row says nothing: one C in eight slabs reads as a
+ *  disaster and one A in eight reads as a triumph, and neither is true. */
+export const MIN_GRADED_TO_SAY = 30;
+
+/** ONE ROW OF THE MONTH'S WORK, PER DESIGN AND BATCH — graded and waiting on
+ *  the same line.
+ *
+ *  IT USED TO BE A WAITING LIST AND ONLY A WAITING LIST. `groups` held only the
+ *  design+batch combinations with something still outstanding, which is right
+ *  for a backlog and wrong the moment the row also shows grades: a batch the
+ *  month pressed and QC has since finished would be the one batch missing from
+ *  the table, and it would be missing precisely BECAUSE it went well. Measured
+ *  on live Neon for August 2026 (2026-09-03): 41 design+batch rows claimed,
+ *  of which 8 have nothing waiting — those 8 were invisible here.
+ *
+ *  THE ROW RECONCILES BY EYE, and that is the whole reason the two halves are
+ *  on one line:
+ *
+ *      gradeA + gradeA2 + gradeB + gradeC = graded
+ *      graded + count                     = claimed        (`count` = waiting
+ *                                                           + routed, i.e. the
+ *                                                           sum of `stages`)
+ *
+ *  Nothing appears under two headings: a slab is EITHER graded (in exactly one
+ *  of the four grade columns) OR still outstanding (in exactly one stage). CTS
+ *  and Printing are routings, not verdicts, so they stay in `stages.routed` and
+ *  out of all four grade columns — the register already shipped the other bug
+ *  twice, a cut count sitting inside a grade block that already contained the
+ *  same slabs. */
 export interface OutstandingGroup {
   design: string;
   batch: string;
+  /** Every slab of this design+batch the month claimed — the row's population,
+   *  and the figure the other two must add back up to. */
+  claimed: number;
+  /** Claimed slabs QC has given a countable verdict. = the four grade columns. */
+  graded: number;
+  /** A and A2 kept apart: they are both passes and both earn 1, but the plant
+   *  sells them as different products, so a batch drifting from A to A2 is a
+   *  fact the owner wants to see rather than one averaged away. */
+  gradeA: number;
+  gradeA2: number;
+  gradeB: number;
+  gradeC: number;
+  /** Of `gradeB`, how many are a DECISION rather than a measurement.
+   *
+   *  scripts/0071 and 0072 (applied 2026-09-03) regraded all 63 cut-to-size
+   *  slabs from 'CTS' to 'B' because their real verdicts were destroyed and
+   *  could not be recovered, and stamped quality_grade_before_cts='CTS' on them
+   *  so a later reader could tell. gradeCredit() sees a plain 'B' and pays each
+   *  one 0.5, so the month's SCORE counts them — and this table must count them
+   *  in the same column for the same reason, or it would disagree with the
+   *  payout about what August contained. This field is how the screen can SAY
+   *  so without adding them anywhere twice: measured on live Neon 2026-09-03,
+   *  25 of August's 171 B slabs are decided, all on ARVA WHITE / D1413 (23) and
+   *  GLENCO (2). NOT a separate column — a note inside the B cell. */
+  decidedB: number;
+  /** THIS ROW'S OWN grade share (A=1, A2=1, B=0.5, C=0 over `graded`), null
+   *  below MIN_GRADED_TO_SAY.
+   *
+   *  THE ONLY GRADE SHARE ON THE ROW, SINCE 2026-09-03. There used to be a
+   *  second one beside it, `designShare`/`designGraded` — the same scale per
+   *  DESIGN across every batch and every slab QC graded in the window — and it
+   *  was removed rather than kept and labelled, because it was joining the MIS
+   *  design SPELLING to the QC design SPELLING and the two spellings are not
+   *  the same vocabulary. Measured on live Neon 2026-09-03, August 2026:
+   *    - 7 of the 41 rows printed "none graded yet" over 161 slabs their OWN
+   *      Graded column on the same line reported as graded (115, 19, 7, 6, 5,
+   *      5, 4), because MIS spells them 'GLENCO - 2', 'Glenco-2', 'Viola',
+   *      'Statuario trail-2', 'Toffee lite trial', '08' and 'Super White &
+   *      Albester White' and QC has no such design;
+   *    - worse, QC's single 'GLENCO' bucket holds 206 graded slabs INCLUDING
+   *      the GLENCO-2 ones, so the GLENCO / D1411 row (50 graded of its own)
+   *      printed "95.4% on 206" over a denominator containing another row's
+   *      115 slabs. A design column that silently borrows another row's slabs
+   *      is the "same quantity reading two ways on one screen" this table
+   *      exists to prevent.
+   *  Every row now carries its own share computed from its own four grade
+   *  counts, which needs no name join at all, so nothing was lost by dropping
+   *  it. If a design-level figure is ever wanted again, roll THESE rows up by
+   *  the MIS design — never re-join to QC's spelling. */
+  share: number | null;
+  /** STILL OUTSTANDING — waiting plus routed, i.e. the sum of `stages`.
+   *
+   *  Keeps its old name deliberately: scripts/incentive-tracker.mts renders it
+   *  under a "waiting" heading and that meaning has not changed. What changed
+   *  is that rows with `count` 0 now exist, because the table no longer stops
+   *  at the batches with something left to come. */
   count: number;
-  /** How many of these count double. */
+  /** How many of the OUTSTANDING ones count double (paired with `count`, not
+   *  with `claimed`, so the two columns beside each other still describe the
+   *  same set of slabs). */
   slow: number;
   stages: Record<Stage, number>;
-  /** Grade share this design has achieved so far this month, when it has
-   *  graded enough to say (>= 30), else null. */
-  designShare: number | null;
-  designGraded: number;
 }
 
 export interface LetterMoney {
@@ -89,6 +176,31 @@ export interface IncentiveMonth {
   };
   outstanding: {
     total: number;
+    /** Every slab the month claimed — graded and outstanding together. This is
+     *  the population `groups` describes, and it equals plant.claimed; the
+     *  groups table sums to it. */
+    claimed: number;
+    /** Claimed slabs that reconciled to NEITHER a verdict NOR an outstanding
+     *  row — a slab this file's rebuild of the month's claim believes in and
+     *  scoreRange() does not. Zero on live August 2026 data (measured
+     *  2026-09-03) and it must stay zero: it is one half of the drift alarm for
+     *  the two derivations of "what the month claimed", and such slabs are left
+     *  OUT of `claimed` so the table's columns keep adding up while it is
+     *  shown. */
+    unreconciled: number;
+    /** THE OTHER HALF OF THE SAME ALARM, and until 2026-09-03 there was no such
+     *  half. A slab scoreRange() reports as outstanding that the rebuild does
+     *  NOT have drifts the opposite way, and it used to be entirely silent: the
+     *  groups loop iterates `claimed`, so such a slab reaches no row and is
+     *  missing from `groups`' `count` with nothing said. The screen would then
+     *  print "Claimed, not yet counted — N" on one card and "Still waiting — N
+     *  minus a few" two inches below it and give the reader no way to tell
+     *  which was wrong. Also zero on live August 2026 (measured 2026-09-03:
+     *  sum of groups.count = 954 = outstanding.total, all distinct). Unlike
+     *  `unreconciled` these slabs ARE in `total`, `byStage` and `slabs` — they
+     *  came from the score, which is the authority on the backlog — they are
+     *  only absent from the per-batch table. */
+    unclaimed: number;
     byStage: Record<Stage, number>;
     real: number;
     byLetter: Record<ShiftLetter, Record<Stage, number>>;
@@ -154,6 +266,120 @@ async function present(model: string, slabs: number[]): Promise<Set<number>> {
 
 const emptyStages = (): Record<Stage, number> => ({ "at-qc": 0, "at-polish": 0, pressed: 0, nowhere: 0, routed: 0 });
 
+/** What one claimed slab is, for the groups table: the design and batch of the
+ *  MIS hour that claimed it, and whether that hour ran a slow product. */
+interface ClaimedSlab { mult: number; design: string | null; batch: string | null }
+
+/** EVERY SLAB THE MONTH CLAIMED, by number, with the MIS hour that claimed it.
+ *
+ *  WHY THIS EXISTS AT ALL, AND WHY IT IS NOT A SECOND OPINION. ShiftScore
+ *  reports the slabs it could NOT count (`outstanding`, with design and batch
+ *  per slab) and a bare COUNT of the ones it could (`quantity`, `gradeA/B/C`).
+ *  The graded slabs' numbers never leave scoreShift, so a table that wants
+ *  grades per design+batch cannot get them from ShiftScore and has to rebuild
+ *  the claim. This is that rebuild, and it is written to be the SAME set of
+ *  slabs, rule for rule, because a table of grades that disagreed with the
+ *  payout about which slabs August contained would be worse than no table:
+ *
+ *    - the same MIS window and the same where-clause as scoreShift (dateAndTime
+ *      when it is there, else the IST day LABEL in `date`);
+ *    - the same shift membership: shiftKeyOf() lands an instant in exactly the
+ *      shiftRange() window scoreShift filters on, because the three windows
+ *      tile 06→14→22→06 IST with no gap. A row with no dateAndTime dated by its
+ *      `date` label (stored at UTC midnight = 05:30 IST) therefore falls in the
+ *      PREVIOUS day's C shift under both rules, not in that day's A;
+ *    - only shift instances that have ENDED, as scoreRange does — a running
+ *      shift is not scored, so its slabs are not claimed. TWO CLOCKS USED TO
+ *      DECIDE THAT, which is why `scored` is a parameter now. scoreRange()
+ *      takes its own new Date() inside itself, strictly LATER than the `now`
+ *      incentiveMonth was called with and hands down here, so a shift instance
+ *      ending in the gap between the two was scored and not claimed — its
+ *      slabs came back as outstanding from a shift this rebuild had never
+ *      heard of, and landed on no row of the table. The gap is milliseconds
+ *      wide and 0 slabs fell in it on live August 2026 (2026-09-03), but it is
+ *      open once every eight hours and needs no failure to fire. A shift now
+ *      counts as ended if it ended by `now` OR scoreRange actually scored it,
+ *      which is a union and therefore can only ADD instances — an instance
+ *      scoreRange dropped for having neither slabs nor a crew still passes the
+ *      `now` test and is claimed exactly as before;
+ *    - the same range guards: non-numeric, non-positive, backwards, or
+ *      MAX_SLABS_PER_HOUR wide and above is not a claim;
+ *    - the same lower-multiplier-wins rule when two rows cover one slab, so the
+ *      design and batch reported here are the ones scoreShift's rowBySlab would
+ *      have reported (checked against every one of the 958 slabs outstanding on
+ *      August at 2026-09-03, on live Neon: 0 disagreements);
+ *    - the same double-claim rule: a slab two SHIFTS both claimed scores for
+ *      neither and is dropped here too, unless an admin has awarded it. August
+ *      2026 has 0 contested slabs, so this arm is unexercised in production
+ *      today; it is here because a month with one would otherwise put a slab in
+ *      this table that the payout does not contain.
+ *
+ *  MEASURED: rebuilt 6,261 slabs for August 2026 against scoreRange's
+ *  6,261 (sum of ShiftScore.quantity) — exact, on 736 MIS rows, one query. */
+async function claimedByMonth(from: string, scoredTo: string, now: Date, scored: Set<string>): Promise<Map<number, ClaimedSlab>> {
+  const lo = shiftRange(from, "A").start;
+  const hi = shiftRange(scoredTo, "C").end;
+  const mis: any[] = await db.mis.findMany({
+    where: {
+      OR: [
+        { dateAndTime: { gte: lo, lt: hi } },
+        { AND: [{ dateAndTime: null }, { date: { gte: lo, lt: hi } }] },
+      ],
+    },
+    select: {
+      date: true, dateAndTime: true, design: true, batch: true,
+      startingSlabNumber: true, endingSlabNumber: true, slabsPerHourStd: true,
+    },
+  });
+
+  const claimedBy = new Map<number, Set<string>>();   // slab -> shift keys that claimed it
+  const owner = new Map<number, ClaimedSlab>();
+  for (const r of mis) {
+    const ts = r.dateAndTime ?? r.date;
+    if (!ts) continue;
+    const key = shiftKeyOf(new Date(ts));
+    const anchor = key.slice(0, 10), letter = key.slice(10) as ShiftLetter;
+    if (anchor < from || anchor > scoredTo) continue;
+    // Ended by OUR clock, or scored by scoreRange's — see the two-clocks note
+    // in this function's doc. Union, never intersection: an instance scoreRange
+    // dropped (it filters out shifts with no slabs AND no crew) is still ended
+    // and must still be claimed.
+    if (shiftRange(anchor, letter).end > now && !scored.has(key)) continue;
+    const a = Number(r.startingSlabNumber), b = Number(r.endingSlabNumber);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b < a) continue;
+    if (b - a >= MAX_SLABS_PER_HOUR) continue;
+    const mult = stdMultiplier(r.slabsPerHourStd);
+    for (let n = a; n <= b; n++) {
+      let who = claimedBy.get(n);
+      if (!who) claimedBy.set(n, who = new Set());
+      who.add(key);
+      const cur = owner.get(n);
+      if (cur == null || mult < cur.mult) owner.set(n, { mult, design: r.design ?? null, batch: r.batch ?? null });
+    }
+  }
+
+  const contested = [...claimedBy].filter(([, who]) => who.size > 1).map(([n]) => n);
+  if (contested.length) {
+    // An ADMIN'S RULING beats the default, exactly as in scoreRange: an awarded
+    // slab scores for the winner and therefore belongs in this table; an
+    // unruled one scores for nobody and must not appear. (The design and batch
+    // of an awarded slab are still taken by the lower-multiplier rule across
+    // BOTH claimants' rows rather than the winner's alone — a difference only a
+    // contested slab whose two claimants typed different designs could show,
+    // and there are none live today.)
+    const awarded = new Set<number>();
+    for (let i = 0; i < contested.length; i += 5000) {
+      const rows: any[] = await db.slabClaimAward.findMany({
+        where: { slabNumber: { in: contested.slice(i, i + 5000) } },
+        select: { slabNumber: true },
+      });
+      for (const r of rows) awarded.add(Number(r.slabNumber));
+    }
+    for (const n of contested) if (!awarded.has(n)) owner.delete(n);
+  }
+  return owner;
+}
+
 export async function incentiveMonth(month: string, now = new Date()): Promise<IncentiveMonth> {
   const { from, to } = monthBounds(month);
   const data = await scoreRange(from, to);
@@ -187,40 +413,158 @@ export async function incentiveMonth(month: string, now = new Date()): Promise<I
   for (const s of slabs) { byStage[s.stage] += 1; byLetter[s.shift][s.stage] += 1; }
   const real = REAL_STAGES.reduce((a, st) => a + byStage[st], 0);
 
-  // Grade share per design so far this month, for the groups table. Built from
-  // the same latest-verdict rule the score uses, over the slabs the month
-  // claimed; a design with fewer than 30 graded says nothing yet.
-  const designShare = new Map<string, { graded: number; credit: number }>();
-  {
-    // The graded slabs' designs come from QC itself, which is the more reliable
-    // spelling; group by the QC design, upper-cased and trimmed.
-    const key = (d: unknown) => String(d ?? "").trim().toUpperCase();
-    const rows: any[] = await db.$queryRaw`
-      SELECT upper(trim(design)) AS design, count(*)::int AS graded,
-             sum(CASE WHEN upper(quality_grade) LIKE 'A%' THEN 1 WHEN upper(quality_grade) LIKE 'B%' THEN 0.5 ELSE 0 END)::float AS credit
-      FROM polish_qc
-      WHERE coalesce(created_time, imported_at) >= ${shiftRange(from, "A").start}
-        AND coalesce(created_time, imported_at) < ${new Date(shiftRange(to, "C").end.getTime() + 21 * 86400_000)}
-        AND quality_grade IS NOT NULL AND quality_grade NOT ILIKE 'Not graded%'
-        AND upper(quality_grade) NOT IN ('CTS') AND upper(quality_grade) NOT LIKE 'PRINT%'
-      GROUP BY 1`;
-    for (const r of rows) designShare.set(key(r.design), { graded: Number(r.graded), credit: Number(r.credit) });
+  // ---- What the month's claimed slabs GRADED, per design and batch ---------
+  // The waiting half of a groups row comes from `slabs` above. The graded half
+  // needs the slab NUMBERS scoreShift counted, which it does not report — so
+  // the claim is rebuilt (claimedByMonth, above) and everything in it that is
+  // not waiting is looked up in QC here, under scoreShift's own rules:
+  // newest verdict per slab wins, and gradeCredit() decides what a verdict is.
+  const claimed = await claimedByMonth(from, data.to, now, new Set(data.shifts.map((s) => `${s.anchor}${s.shift}`)));
+  const waitingBySlab = new Map<number, TrackedSlab>();
+  for (const s of slabs) waitingBySlab.set(s.slab, s);
+  const toGrade = [...claimed.keys()].filter((n) => !waitingBySlab.has(n));
+  const gradedQc: any[] = [];
+  for (let i = 0; i < toGrade.length; i += 5000) {
+    gradedQc.push(...await db.polishQc.findMany({
+      where: { slabNumber: { in: toGrade.slice(i, i + 5000) } },
+      // qualityGradeBeforeCts rides along for `decidedB` — see OutstandingGroup.
+      select: { slabNumber: true, qualityGrade: true, qualityGradeBeforeCts: true, createdTime: true, importedAt: true },
+    }));
   }
+  // Newest verdict per slab — scoreShift's rule, character for character, so a
+  // re-graded slab reports the same outcome on this table as in the payout.
+  const stampOf = (q: any) => new Date(q.createdTime ?? q.importedAt ?? 0).getTime();
+  gradedQc.sort((x, y) => stampOf(y) - stampOf(x));
+  const verdictOf = new Map<number, any>();
+  for (const q of gradedQc) if (q.slabNumber != null && !verdictOf.has(Number(q.slabNumber))) verdictOf.set(Number(q.slabNumber), q);
 
+  // THERE WAS A SECOND, DESIGN-LEVEL GRADE SHARE HERE, AND IT IS GONE.
+  // A raw GROUP BY over polish_qc gave every row a `designShare` /
+  // `designGraded` pair "across all batches of this design", joined to the row
+  // by upper(trim(design)) — QC's spelling against MIS's. Removed 2026-09-03,
+  // for two measured reasons and one that would have bitten later:
+  //
+  //   - IT PRINTED "none graded yet" OVER GRADED SLABS. 7 of August 2026's 41
+  //     rows, 161 slabs, each row's own Graded column on the same line reading
+  //     115 / 19 / 7 / 6 / 5 / 5 / 4 — because MIS says 'GLENCO - 2',
+  //     'Glenco-2', 'Viola', 'Statuario trail-2', 'Toffee lite trial', '08',
+  //     'Super White & Albester White' and QC has no design of those names.
+  //   - WORSE, WHERE IT DID JOIN IT BORROWED. QC's one 'GLENCO' bucket (206
+  //     graded) contains the GLENCO-2 slabs, so GLENCO / D1411 — 50 graded of
+  //     its own — printed "95.4% on 206" over a denominator holding another
+  //     row's 115 slabs. Two rows of one screen reporting one quantity two
+  //     ways is exactly what this table exists to stop.
+  //   - IT COUNTED ROWS, NOT SLABS. The comment above it claimed it was "built
+  //     from the same latest-verdict rule the score uses"; it was a plain
+  //     count(*) with no newest-per-slab dedupe, so a slab QC re-inspected
+  //     inside the window counted once under each verdict. Zero impact on the
+  //     August window (6,230 rows over 6,230 distinct slabs, measured
+  //     2026-09-03) but polish_qc holds 268 slabs carrying 537 rows between
+  //     them, so the shape is real and the claim was false.
+  //
+  // Nothing replaced it: `share` on each row is the same arithmetic over that
+  // row's OWN four grade counts and needs no name join at all. A design-level
+  // figure, if ever wanted again, is a roll-up of THESE rows by MIS design.
+  //
+  // WHAT THAT QUERY'S COMMENT ALSO CARRIED, KEPT HERE BECAUSE IT IS STILL TRUE
+  // OF THE GRADE COLUMNS BELOW. scripts/0071 and 0072 (applied 2026-09-03)
+  // regraded all 63 cut-to-size slabs from 'CTS' to 'B', so they are plain 'B'
+  // rows now and this table counts them at half a slab of credit — 25 of them
+  // fall in August (23 Arva White, 2 GLENCO - 2). That is deliberate:
+  // gradeCredit() pays them 0.5 too, so the table and the money agree about
+  // what August contained. Excluding them the other way — by
+  // quality_grade_before_cts, the noVerdict rule the CEO's PASS RATE uses —
+  // answers a different question ("what share of INSPECTED slabs passed") and
+  // would disagree with the credit this same page pays on. `decidedB` names
+  // them on screen so the choice is visible rather than silent. The routing
+  // states need no filter here: gradeCredit() returns null for 'CTS',
+  // 'PRINT%' and anything else that is not A/B/C, which is what keeps a
+  // routing out of a grade column — that rule, not a WHERE clause, is now the
+  // only one, and it is the one the payout uses.
+
+  // ---- One row per design+batch the month claimed --------------------------
   const groupMap = new Map<string, OutstandingGroup>();
-  for (const s of slabs) {
-    const design = String(s.design ?? "(no design)").trim() || "(no design)";
-    const batch = String(s.batch ?? "—").trim() || "—";
-    const k = `${design}${batch}`;
+  // LENGTH-PREFIXED KEY. The old one was `${design}${batch}`, which can collide:
+  // design "AB" batch "C" and design "A" batch "BC" are the same string, so two
+  // different batches merge into one row whose columns still add up and are
+  // still wrong — the quietest kind of error this table can make. Prefixing the
+  // design's length makes the split unambiguous whatever either half contains,
+  // and does it in ASCII, unlike a separator character.
+  const rowFor = (design: string, batch: string): OutstandingGroup => {
+    const k = `${design.length}:${design}${batch}`;
     let g = groupMap.get(k);
     if (!g) {
-      const ds = designShare.get(design.toUpperCase());
-      g = { design, batch, count: 0, slow: 0, stages: emptyStages(), designShare: ds && ds.graded >= 30 ? ds.credit / ds.graded : null, designGraded: ds?.graded ?? 0 };
+      g = {
+        design, batch, claimed: 0, graded: 0,
+        gradeA: 0, gradeA2: 0, gradeB: 0, gradeC: 0, decidedB: 0, share: null,
+        count: 0, slow: 0, stages: emptyStages(),
+      };
       groupMap.set(k, g);
     }
-    g.count += 1; if (s.mult > 1) g.slow += 1; g.stages[s.stage] += 1;
+    return g;
+  };
+  let unreconciled = 0;
+  for (const [slab, own] of claimed) {
+    const waiting = waitingBySlab.get(slab);
+    // The design and batch of a WAITING slab come from the TrackedSlab, not
+    // from `own`, so the two halves of the row can never be filed under two
+    // different spellings of the same batch. They agree today — checked against
+    // every one of the 958 slabs outstanding on August at 2026-09-03, 0
+    // disagreements — and this makes that structural rather than lucky.
+    const design = String((waiting ? waiting.design : own.design) ?? "(no design)").trim() || "(no design)";
+    const batch = String((waiting ? waiting.batch : own.batch) ?? "—").trim() || "—";
+    const g = rowFor(design, batch);
+    if (waiting) {
+      g.claimed += 1; g.count += 1; g.stages[waiting.stage] += 1;
+      if (waiting.mult > 1) g.slow += 1;
+      continue;
+    }
+    const q = verdictOf.get(slab);
+    const credit = gradeCredit(q?.qualityGrade);
+    if (credit == null) {
+      // Neither graded nor listed as outstanding by the score — the two
+      // derivations of "what the month claimed" have drifted. Left OUT of
+      // `claimed` so the row's columns still add up, and counted so the page
+      // can say so. 0 on live August 2026 data.
+      unreconciled += 1;
+      continue;
+    }
+    g.claimed += 1; g.graded += 1;
+    const u = String(q.qualityGrade).trim().toUpperCase();
+    // A2 before A: "A2".startsWith("A") is true, and the whole point of the
+    // column is that the two are told apart.
+    if (u === "A2") g.gradeA2 += 1;
+    else if (u.startsWith("A")) g.gradeA += 1;
+    else if (u.startsWith("B")) {
+      g.gradeB += 1;
+      if (String(q.qualityGradeBeforeCts ?? "").trim().toUpperCase() === "CTS") g.decidedB += 1;
+    } else g.gradeC += 1;
   }
-  const groups = [...groupMap.values()].sort((a, b) => b.count - a.count || a.design.localeCompare(b.design));
+  // THE DRIFT ALARM'S OTHER HALF. The loop above walks `claimed`, so a slab the
+  // SCORE reports as outstanding and the rebuild does not have reaches no row
+  // at all: it is in `total` and in `byStage` but missing from every row's
+  // `count`, and without this the page would print two different figures for
+  // the same backlog two inches apart with nothing to explain the gap. Counted,
+  // not corrected — the score is the authority on the backlog, and a rebuild
+  // that has lost a slab needs a person, not a patch. 0 on live August 2026,
+  // measured three times on 2026-09-03 as QC kept grading (954, 953, 952
+  // outstanding) with the rows summing to the same figure each time.
+  let unclaimed = 0;
+  for (const s of slabs) if (!claimed.has(s.slab)) unclaimed += 1;
+  for (const g of groupMap.values()) {
+    // The row's own share, on gradeCredit's scale: A and A2 are passes worth 1,
+    // B is half a slab of credit, C earns nothing. Same arithmetic as
+    // ShiftScore.rawQuality, over this row's slabs instead of a shift's.
+    g.share = g.graded >= MIN_GRADED_TO_SAY ? (g.gradeA + g.gradeA2 + g.gradeB * 0.5) / g.graded : null;
+  }
+  // Outstanding first — this table is still, in part, the list of what the
+  // month is waiting on, and that is what an admin opens it for. Fully graded
+  // batches fall below, largest first, where they read as the month's record.
+  const groups = [...groupMap.values()]
+    .filter((g) => g.claimed > 0)
+    .sort((a, b) => b.count - a.count || b.claimed - a.claimed
+      || a.design.localeCompare(b.design) || a.batch.localeCompare(b.batch));
+  const monthClaimed = groups.reduce((a, g) => a + g.claimed, 0);
 
   // Phantom runs: contiguous `nowhere` numbers claimed by one hour.
   const phantomRuns: IncentiveMonth["outstanding"]["phantomRuns"] = [];
@@ -271,7 +615,7 @@ export async function incentiveMonth(month: string, now = new Date()): Promise<I
     monthEnded: shiftRange(to, "C").end <= now,
     letters, shares, plant,
     pool: { counted, poolNow: poolFor(counted), floor: FLOOR_SLABS, next: nextTier(counted), ladder: TIERS },
-    outstanding: { total: slabs.length, byStage, real, byLetter, groups, slabs, phantomRuns },
+    outstanding: { total: slabs.length, claimed: monthClaimed, unreconciled, unclaimed, byStage, real, byLetter, groups, slabs, phantomRuns },
     projection: {
       share, addReal, projectedReal, poolReal: poolFor(projectedReal),
       addAll, projectedAll, poolAll: poolFor(projectedAll),

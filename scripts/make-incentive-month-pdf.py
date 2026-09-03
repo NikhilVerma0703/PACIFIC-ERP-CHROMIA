@@ -35,6 +35,19 @@ SRC = ROOT / "docs" / "incentive" / f"{MONTH}.json"
 OUT = Path(sys.argv[2]) if len(sys.argv) > 2 else ROOT / "docs" / f"INCENTIVE-{MONTH}.pdf"
 M = json.loads(SRC.read_text(encoding="utf8"))
 
+# THE SNAPSHOT HAS TO BE THE CURRENT SHAPE, AND SAYING SO IS CHEAPER THAN A
+# KeyError HALFWAY THROUGH A NOTICE. outstanding.groups gained per-row grade
+# counts (graded / share / gradeA / gradeA2 / ...) and lost the design-level
+# pair (designShare / designGraded) on 2026-09-03. A notice cut from a snapshot
+# written before that would either crash mid-render or, worse if the fields were
+# defaulted, print a quality column of blanks over batches QC has finished. The
+# fix is always the same: re-run scripts/incentive-month.mts, which rebuilds the
+# JSON from the live database.
+_g = (M.get("outstanding") or {}).get("groups") or []
+if _g and "share" not in _g[0]:
+    sys.exit(f"{SRC.name} predates the per-batch grade columns (2026-09-03) - "
+             f"re-run: npx tsx scripts/incentive-month.mts {MONTH}")
+
 # --------------------------------------------------------------- helpers
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
           "September", "October", "November", "December"]
@@ -281,16 +294,34 @@ def story():
                 + (f"; <b>{num(by['nowhere'])}</b> claimed numbers no station has seen, which will not grade and are left out of the projection" if by["nowhere"] else "")
                 + f". QC has been grading about <b>{num(round(QC['avgPerDay7']))} slabs a day</b> over the last week"
                 + (f" - at that pace the backlog clears in roughly <b>{QC['daysToClear']} days</b>." if QC.get("daysToClear") else "."), S["b"]))
-    groups = O["groups"][:10]
-    rows = [[th("Design"), th("Batch"), th("Waiting"), th("Counts x2"), th("At QC"), th("At polish"), th("Pressed only"), th("Design's grade share so far")]]
+    # THE CAPTION UNDER THIS TABLE IS THE SENTENCE THE MONTH IS SETTLED FROM, SO
+    # IT COUNTS THE ROWS IT IS DESCRIBING AND NOT THE LIST THEY CAME FROM.
+    # outstanding.groups was widened on 2026-09-03 from "design+batch with slabs
+    # waiting" to "every design+batch the month CLAIMED", so the admin page could
+    # show graded and waiting on one line. The caption still said "The N
+    # design-and-batch groups with slabs waiting" over len(groups): on live
+    # August 2026 that went from a true 33 to a false 41, because 8 of the new
+    # rows have nothing waiting at all. The table body was never wrong - the
+    # rows are sorted by waiting count and sliced to ten, so all ten still had
+    # slabs waiting - which is exactly what made the caption dangerous: nothing
+    # on the printed page revealed the overcount. Filter first, count what is
+    # left, and say both numbers.
+    waiting_groups = [g for g in O["groups"] if g["count"] > 0]
+    groups = waiting_groups[:10]
+    # "Batch grade share" replaces "Design's grade share": the design-level
+    # figure was removed from incentiveMonth.ts on 2026-09-03 because it joined
+    # the MIS design spelling to QC's and printed "none graded yet" over 161
+    # graded slabs on live August. This is the row's own four grade counts.
+    rows = [[th("Design"), th("Batch"), th("Waiting"), th("Counts x2"), th("At QC"), th("At polish"), th("Pressed only"), th("Batch grade share so far")]]
     for g in groups:
-        ds = g["designShare"]
+        gs = g["share"]
         rows.append([tdl(esc(g["design"])), td(esc(g["batch"])), td(num(g["count"])), td(num(g["slow"]) if g["slow"] else "-"),
                      td(num(g["stages"]["at-qc"]) if g["stages"]["at-qc"] else "-"), td(num(g["stages"]["at-polish"]) if g["stages"]["at-polish"] else "-"),
                      td(num(g["stages"]["pressed"]) if g["stages"]["pressed"] else "-"),
-                     td(f"{pct(ds)} on {num(g['designGraded'])}" if ds is not None else (f"{num(g['designGraded'])} graded - too few to say" if g["designGraded"] else "none graded yet"))])
+                     td(f"{pct(gs)} on {num(g['graded'])}" if gs is not None else (f"{num(g['graded'])} graded - too few to say" if g["graded"] else "none graded yet"))])
     A(KeepTogether([tbl(rows, [38 * mm, 16 * mm, 16 * mm, 18 * mm, 16 * mm, 18 * mm, 20 * mm, 28 * mm]),
-                    Paragraph(f"The {len(O['groups'])} design-and-batch groups with slabs waiting, largest {len(groups)} shown. "
+                    Paragraph(f"The {len(waiting_groups)} design-and-batch groups with slabs waiting, largest {len(groups)} shown; "
+                              f"{MONTH_NAME} claimed {len(O['groups'])} groups in all, and the other {len(O['groups']) - len(waiting_groups)} are fully graded. "
                               f"The projection assumes the outstanding slabs grade at the same {pct(PR['share'])} the month has already achieved. "
                               f"If quality holds, {MONTH_NAME} pays. If a large batch comes back badly, it may not - which is the honest position, and the reason this notice is marked provisional.", S["note"])]))
 
