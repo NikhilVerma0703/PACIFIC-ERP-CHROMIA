@@ -293,6 +293,31 @@ export function slabMarkReadable(): boolean {
   return slabMarkColumn === "readable";
 }
 
+/**
+ * PROOF FROM THE OTHER PATH, and without it this whole change does nothing.
+ *
+ * "readable" could only ever be earned by readSlabForStatusChange — a DISPATCH
+ * read. But the process that needs the answer is the FABRICATION one: markQcSlab
+ * Cts asks slabMarkReadable() to decide whether it may stop overwriting
+ * quality_grade. A serverless invocation that marks a slab cut and never
+ * dispatches anything would therefore always be told "not readable", fall to the
+ * legacy branch, and destroy the verdict again — exactly the bug this was
+ * written to end, surviving its own fix.
+ *
+ * refreshInventoryMirror already SELECTs slab_mark straight out of
+ * fg_finished_slab. If that returns at all, the column exists — the same fact,
+ * proven by a different query. So it reports it here and the two paths share one
+ * state, which is the property the reviewers insisted on: they can never
+ * disagree, because there is only one answer.
+ *
+ * POSITIVE PROOF ONLY. A failure over there is not evidence of absence (a
+ * dropped connection looks the same), and the dispatch side's own catch plus the
+ * recheck timer already handle a genuinely missing column.
+ */
+export function noteSlabMarkProven(): void {
+  slabMarkColumn = "readable";
+}
+
 /** The row the lifecycle rules need, with the mark when the database has one. */
 async function readSlabForStatusChange(sn: number) {
   const base = { status: true, reservedForPi: true, grade: true } as const;

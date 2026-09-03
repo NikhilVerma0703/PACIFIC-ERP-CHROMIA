@@ -28,7 +28,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { SLAB_MARKS, SLAB_MARK_LABEL, parseSlabMark, type SlabMark } from "@/lib/fab/slabMark";
-import { autolinkFinishedSlabFromQc, slabMarkReadable } from "@/lib/inventory/finishedSlab";
+import { autolinkFinishedSlabFromQc, slabMarkReadable, noteSlabMarkProven } from "@/lib/inventory/finishedSlab";
 
 export type SlabMarkWrite =
   /** The slab now carries `mark`. `changed` is false when it already did
@@ -264,6 +264,10 @@ export async function refreshInventoryMirror(pacificQcId: string): Promise<Mirro
     const rows = await prisma.$queryRaw<Array<{ slab_mark: string | null }>>`
       SELECT slab_mark FROM fg_finished_slab WHERE slab_number = ${slabNumber}
     `;
+    // THE QUERY CAME BACK, SO THE COLUMN IS THERE. Tell the one detector, or
+    // the dispatch side never learns it from a fabrication-only invocation and
+    // the grade write below never stops. See noteSlabMarkProven.
+    noteSlabMarkProven();
     const stored = parseSlabMark(rows?.[0]?.slab_mark);
     // AND THE DISPATCH SIDE MUST AGREE IT CAN READ IT.
     //

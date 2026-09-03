@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   canonicalGrade, gradeBlocksDispatch, markBlocksDispatch, slabBlocksDispatch, dispatchCut,
   CUT_GRADES, CUT_MARKS, TRANSITIONS, DEFAULT_RESERVATION_DAYS,
@@ -277,4 +278,52 @@ test("gradeBlocksDispatch is untouched — other callers still depend on it", ()
   assert.equal(gradeBlocksDispatch("CTS"), true);
   assert.equal(gradeBlocksDispatch("A"), false);
   assert.deepEqual([...CUT_GRADES], ["CTS", "SAMPLE"]);
+});
+
+/* ------------------------------------- the detector both paths must share */
+
+// The CTS fix nearly survived into production doing nothing. slabMarkReadable()
+// gates whether markQcSlabCts may stop overwriting quality_grade, but only a
+// DISPATCH read could earn "readable" — and the process that asks is the
+// FABRICATION one, which may never dispatch anything. It would have been told
+// "not readable" for ever, taken the legacy branch, and destroyed the verdict
+// again. noteSlabMarkProven() is what lets the mirror read prove the same fact.
+//
+// Structural, because these live in a module that imports the Prisma client and
+// cannot be loaded under node --test. What is asserted is the wiring: that the
+// proof exists, is exported, and is actually called from the fabrication side.
+
+test("THE FAB PATH CAN PROVE THE MARK COLUMN, NOT ONLY THE DISPATCH PATH", () => {
+  const fs = readFileSync(new URL("../src/lib/inventory/finishedSlab.ts", import.meta.url), "utf8");
+  assert.match(fs, /export function noteSlabMarkProven\(\)/,
+    "finishedSlab must export a way for another path to report the column exists");
+  assert.match(fs, /export function slabMarkReadable\(\)/);
+
+  const store = readFileSync(new URL("../src/lib/fab/slabMarkStore.ts", import.meta.url), "utf8");
+  assert.match(store, /noteSlabMarkProven\(\)/,
+    "the mirror read-back must report its proof, or a fabrication-only process never learns it");
+  assert.ok(store.includes("noteSlabMarkProven") && store.includes("slabMarkReadable"),
+    "both halves of the one detector are used here");
+
+  // The proof must be taken BEFORE the answer is computed, or the very call that
+  // proves the column still answers false and the grade write runs once more.
+  // Match the RETURN, not the interface field of the same name declared far
+  // above it — the first version of this test found `markInMirror:` at the type
+  // declaration on line 147 and failed on correct code.
+  const proveAt = store.indexOf("noteSlabMarkProven()");
+  const answerAt = store.search(/return \{ markInMirror:/);
+  assert.ok(proveAt !== -1, "the mirror read must report its proof");
+  assert.ok(answerAt !== -1, "expected a `return { markInMirror: ... }` in the read-back");
+  assert.ok(proveAt < answerAt,
+    "prove the column before deciding markInMirror, not after — otherwise the very call that proves it still answers false and the grade write runs once more");
+});
+
+test("there is ONE state, so the two paths cannot disagree", () => {
+  const fs = readFileSync(new URL("../src/lib/inventory/finishedSlab.ts", import.meta.url), "utf8");
+  // Exactly one declaration of the state, and both accessors read that one.
+  assert.equal((fs.match(/let slabMarkColumn\b/g) ?? []).length, 1,
+    "one detector or none — a second copy is the bug three reviewers found");
+  const store = readFileSync(new URL("../src/lib/fab/slabMarkStore.ts", import.meta.url), "utf8");
+  assert.ok(!/let\s+\w*[Ss]labMarkColumn/.test(store),
+    "the fab side must not keep its own idea of whether the column exists");
 });
