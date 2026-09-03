@@ -758,8 +758,28 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
         if (String((dupe as { remarks?: string | null }).remarks ?? "").startsWith(AUTOFILL_PREFIX)) {
           try {
             await delegateOf(model).update({ where: { id: dupe.id }, data: { ...data, remarks: (data.remarks as string | undefined) ?? null, enteredById: me?.id ?? null } });
+            // THE PHOTO GOES WITH IT. This branch used to `return "ok"` here,
+            // and the only photo store in createRow sits at the END of the
+            // function — so an operator who completed an auto-added placeholder
+            // AND attached a photo had that photo silently discarded, and was
+            // shown the same green "Saved" as anyone else. Completing a
+            // placeholder IS the real entry for that slab; it is a create in
+            // every sense except that a row already existed to overwrite, so it
+            // keeps its photo like a create does.
+            //
+            // Reached today only by the five press-line stations (SLAB_STATIONS
+            // is Press / Oven / Jot / Distributor / Kreos), which carry the
+            // single generic photo field, so `grade` is not a reject and
+            // storePhotos takes its best-effort branch — the same one the
+            // ordinary create takes for them. Routed through storePhotos rather
+            // than savePhotoFromForm anyway, so that if Polish QC is ever added
+            // to SLAB_STATIONS this path demands and REPORTS a reject's pair
+            // exactly as the others do, instead of quietly losing the evidence.
+            const photoWarn = await storePhotos(fd, model, dupe.id, opName, data.qualityGrade);
             revalidatePath(`/tables/${model}`); revalidatePath("/batch");
-            return "ok";
+            return photoWarn
+              ? `${PHOTO_WARN_PREFIX} Saved — slab ${data.slabNumber} is stored, but a photo was not. ${photoWarn}`
+              : "ok";
           } catch (e) { return `Save failed: ${friendlyDbError(e)}`; }
         }
         return `⚠ Slab ${data.slabNumber} is already entered at this station for batch ${data.batch ?? data.batchNumber ?? data.batchKey} — not saved (duplicate).`;

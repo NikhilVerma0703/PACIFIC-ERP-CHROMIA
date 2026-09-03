@@ -6,6 +6,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { prisma } from "@/lib/prisma";
+import { REJECT_GRADE_FIELD, isRejectGrade } from "@/lib/photoSlots";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
 
@@ -47,6 +48,9 @@ export async function deduplicatePolishing(opts: { dryRun?: boolean } = {}) {
   }
   const qcDelete: string[] = [];
   const qcMerge: { id: string; data: Record<string, unknown> }[] = [];
+  /** Reject grades this merge REFUSED to copy onto a row that had no verdict.
+   *  Non-zero means a run met the case the guard exists for. */
+  let rejectGradesNotMerged = 0;
   for (const g of linkGroups.values()) {
     if (g.length <= 1) continue;
     g.sort((a, b) => t(b.createdTime) - t(a.createdTime));
@@ -54,7 +58,31 @@ export async function deduplicatePolishing(opts: { dryRun?: boolean } = {}) {
     const data: Record<string, unknown> = {};
     for (const f of writable) {
       if (keep[f] !== null && keep[f] !== undefined) continue;
-      for (const o of older) { if (o[f] !== null && o[f] !== undefined) { data[f] = o[f]; break; } }
+      for (const o of older) {
+        if (o[f] === null || o[f] === undefined) continue;
+        // ─────── A REJECT IS NOT A FIELD THIS MERGE MAY FILL IN ────────────
+        // Every other empty field on the kept row is worth recovering from the
+        // duplicate about to be deleted. The GRADE is different, and only when
+        // the value is C (Reject): copying it MANUFACTURES A VERDICT on a row
+        // that had none, and it does it with no photographs — the older row's
+        // entry_photo rows are keyed to ITS id, which this same pass deletes,
+        // so the evidence does not come across even when it existed.
+        //
+        // That would be the one way left to get a reject into polish_qc without
+        // the two photographs the owner's rule demands (2026-09-04), after the
+        // three human paths were closed: the QC form, the tables editor, and
+        // Add & verify. This is not a person making a verdict — it is a tidy-up
+        // job — and a tidy-up job must not decide that a slab was rejected.
+        //
+        // SO THE FIELD STAYS NULL, which is the honest answer: nobody graded
+        // this row. It shows as ungraded, a human grades it on the QC form, and
+        // the photographs are taken then. Nothing is lost that was ever really
+        // there. The count comes back in the result so a run that hits this is
+        // visible rather than silent.
+        if (f === REJECT_GRADE_FIELD && isRejectGrade(o[f] as string)) { rejectGradesNotMerged++; break; }
+        data[f] = o[f];
+        break;
+      }
     }
     if (Object.keys(data).length) qcMerge.push({ id: keep.id, data });
     for (const o of older) qcDelete.push(o.id);
@@ -66,5 +94,5 @@ export async function deduplicatePolishing(opts: { dryRun?: boolean } = {}) {
     const allQc = [...qcDelete, ...unlinked];
     if (allQc.length) await db.polishQc.deleteMany({ where: { id: { in: allQc } } });
   }
-  return { dryRun, polishEntryDuplicates: peDelete.length, qcDuplicates: qcDelete.length, qcUnlinked: unlinked.length, qcMerges: qcMerge.length };
+  return { dryRun, polishEntryDuplicates: peDelete.length, qcDuplicates: qcDelete.length, qcUnlinked: unlinked.length, qcMerges: qcMerge.length, rejectGradesNotMerged };
 }

@@ -528,3 +528,60 @@ test("the screens apply the SAME photo conditions the server does", () => {
       "the size-only test is back; that is the mismatch that refuses a photo the operator attached");
   }
 });
+
+// ─── THE FOURTH DOOR: A TIDY-UP JOB MUST NOT DECIDE A SLAB WAS REJECTED ─────
+// automations-dedup merges a deleted duplicate's non-null fields into the kept
+// row. For every field but one that is a recovery; for the GRADE, when the value
+// is a reject, it MANUFACTURES a verdict on a row that had none — and with no
+// photographs, because the older row's entry_photo rows are keyed to the id this
+// same pass deletes. After the three human paths were closed it was the only way
+// left to get a reject in without the pair.
+const dedup = readFileSync(new URL("../src/lib/automations-dedup.ts", import.meta.url), "utf8");
+
+test("the dedup merge refuses to copy a reject grade onto a row with no verdict", () => {
+  assert.match(dedup, /import \{[^}]*isRejectGrade[^}]*\} from "@\/lib\/photoSlots"/,
+    "the guard must use the shared predicate, not a second spelling of 'is this a C'");
+  const guard = dedup.indexOf("isRejectGrade(o[f]");
+  const copy = dedup.indexOf("data[f] = o[f]");
+  assert.ok(guard > 0, "the reject guard is gone from the dedup merge — the fourth door is open again");
+  assert.ok(copy > 0, "the merge no longer copies fields? this test needs rewriting");
+  assert.ok(guard < copy, "the guard must run BEFORE the copy, or it guards nothing");
+  assert.match(dedup, /rejectGradesNotMerged/,
+    "a refused merge must be COUNTED and returned, or a run that hits it is silent");
+});
+
+test("only the grade is guarded — the merge still recovers every other field", () => {
+  // A guard that skipped the whole row would quietly stop recovering design,
+  // thickness, inspector and the rest, which is the opposite of the intent.
+  assert.match(dedup, /f === REJECT_GRADE_FIELD && isRejectGrade/,
+    "the guard must be narrowed to the grade field; anything wider breaks the dedupe's real job");
+});
+
+// ─── AND THE PHOTO THAT WAS BEING THROWN AWAY ───────────────────────────────
+// Completing an auto-added placeholder returned "ok" straight after the update,
+// while createRow's only photo store sits at the end of the function — so the
+// photo an operator attached was discarded and they were shown the same green
+// "Saved" as anyone else. Live for the five press-line stations.
+test("completing a placeholder keeps its photo, like any other create", () => {
+  // The BRANCH, not the import at the top of the file — indexOf found the import
+  // and sliced 1,800 characters of unrelated code, which is a test that fails for
+  // a reason that has nothing to do with the rule it is guarding.
+  const i = actions.indexOf("startsWith(AUTOFILL_PREFIX)");
+  assert.ok(i > 0, "the placeholder branch has moved; find it before trusting this test");
+  // COMMENTS STRIPPED FIRST. The branch's own comment quotes the old behaviour
+  // ("used to `return \"ok\"` here"), so a raw search finds the PROSE before the
+  // code and reports the photo store as coming too late. This repo has shipped
+  // that mistake before — an absence assertion firing on the sentence that
+  // describes the fix.
+  const branch = actions.slice(i, i + 1800).replace(/\/\/[^\n]*/g, "");
+  const store = branch.indexOf("storePhotos(");
+  // The success return is a TERNARY now (warn ? amber sentence : "ok"), so there
+  // is no bare `return "ok"` left to find — searching for one is how this test
+  // would go on passing after someone reverted the fix to a plain return.
+  const ret = branch.indexOf("return photoWarn");
+  assert.ok(store > 0, "the placeholder branch stores no photo — the attachment is discarded again");
+  assert.ok(ret > 0, "the branch no longer returns the photo warning; a failed store is silent again");
+  assert.ok(store < ret, "the photo must be stored BEFORE the success return, or it is dropped");
+  assert.match(branch, /PHOTO_WARN_PREFIX/,
+    "a store failure here must warn like it does on the ordinary create, not show a green tick");
+});
