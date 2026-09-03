@@ -76,15 +76,28 @@ const daysInMonth = (month: string): string[] => {
 };
 
 /** The slab numbers a declared range covers, or null when the range is not one
- *  this report will walk. ONE rule with TWO readers — the month's own
- *  enumeration below and the provenance lookup in `declaredOutside` — and
- *  deliberately the same four conditions shiftScore.claimedSlabs applies:
- *  finite both ends, start above zero, end not before start, width under
- *  MAX_SLABS_PER_HOUR. Two enumerations with different edge cases is how the
- *  scoreboard and the report come to disagree about which slabs a shift
- *  pressed — and, now that sheet three places a QC entry against the MIS
- *  ranges of OTHER months, it is also how one page could call a slab "stone
- *  from another month" that a second page had already counted as this one's. */
+ *  this report will walk: finite both ends, start above zero, end not before
+ *  start, width under MAX_SLABS_PER_HOUR — deliberately the same four
+ *  conditions shiftScore.claimedSlabs applies. Two enumerations with different
+ *  edge cases is how the scoreboard and the report come to disagree about
+ *  which slabs a shift pressed.
+ *
+ *  ONE RANGE RULE, TWO READERS, AND THE READERS MUST AGREE ON THE ROWS TOO.
+ *  This comment used to claim the two readers below were already the same rule.
+ *  They were not, and the gap was printed as a false sentence. The month's own
+ *  enumeration in monthCore takes only hours that REACH A SHIFT (an hour whose
+ *  `hour` cell is blank declares nothing the Slabs column counts, so it may
+ *  declare nothing the grade columns count either); the provenance lookup in
+ *  `declaredElsewhere` used to take every row OUTSIDE the month's window. A
+ *  slab number declared only by a blank-hour row OF THIS MONTH therefore fell
+ *  into neither set and sheet three printed it as sitting "in no MIS range at
+ *  all" — while the NEXT month's report, for which that row is outside the
+ *  window, classified the same slab as declared by another month's MIS.
+ *  Measured on live Neon 2026-09-03 (these counts move as QC files): 28 of
+ *  June 2026's 6,124 such entries, 19 of July's 352, 0 of August's 61.
+ *  `declaredElsewhere` is now the complement of the month's own set over every
+ *  row this rule can read, so no slab can be in neither, and the third bucket
+ *  is worded as what it can actually claim. */
 const walkRange = (a: number | null, b: number | null): [number, number] | null =>
   a == null || b == null || a <= 0 || b < a || b - a >= MAX_SLABS_PER_HOUR ? null : [a, b];
 
@@ -171,10 +184,43 @@ async function monthCore(month: string, capDay: string | null, now: number = Dat
   // designs — so the mix sums to the month's made by construction.
   const mix = new Map<string, {
     design: string; made: number; batches: Set<string>; days: Set<string>;
+    /** THREE COUNTS OF ONE ROW'S SLABS, AND THE SHEET NAMES ALL THREE.
+     *  `made` is what the hours CLAIMED (slabsDeclared, the width of the
+     *  range) and is what the day, week and target arithmetic sums to.
+     *  `claims` is the part of that whose range walkRange can actually name
+     *  slab numbers for. `numbered` (added in getMonthlyReport, from the
+     *  partition below) is how many DISTINCT numbers those claims covered.
+     *  made - claims and claims - numbered are two different faults on the MIS
+     *  row and the note must not report one as the other: measured on live
+     *  Neon 2026-09-03, April 2026's 35-slab deficit is 13 hours that typed
+     *  0->0 plus 22 numbers genuinely typed twice. */
+    claims: number;
+    /** Slabs on hours that declared a width but no walkable range — a start
+     *  at or below zero. `made` counts them (slabsDeclared reads 0->0 as one
+     *  slab); no slab number can be read off them, so the grade columns
+     *  cannot. Counted, not dropped, because the note has to say which of the
+     *  two faults a row's shortfall is. */
+    unreadable: number; unreadableHours: number;
     /** Slab numbers THIS design's hours declared that another row already
      *  owned — see the first-claim-wins note below. */
     contested: number; contestedWith: Set<string>;
   }>();
+
+  /** HOURS THAT REACH NO SHIFT, AND THE SLABS THEY DECLARE.
+   *  An MIS row whose `hour` cell is blank cannot be placed in a shift, so the
+   *  day figure (assembleDay sums the three shifts) does not count it and
+   *  neither does the mix. That exclusion was printed NOWHERE, and it is not
+   *  small: measured on live Neon 2026-09-03, June 2026 has 11 such rows
+   *  declaring 104 slabs — every one of those numbers present in `press` and
+   *  in `polish_entry`, so it is real production — and July 3 rows / 19 slabs.
+   *  These figures move as MIS is filed; scripts/check-monthly-vs-daily.mts
+   *  re-derives them. Counted here the same way an impossible slab range
+   *  already is (day.wideHours), and printed on sheet three, so `made` plus
+   *  this is visible and auditable instead of silently missing. Folding them
+   *  INTO `made` would move a historical production figure and an achievement
+   *  percentage the owner may already have reported; that is his call, not
+   *  this file's. */
+  const unlabelled = { hours: 0, declaring: 0, slabs: 0, days: new Set<string>() };
 
   // WHICH SLAB NUMBERS THE MONTH PRESSED, and which design each belongs to.
   //
@@ -202,9 +248,12 @@ async function monthCore(month: string, capDay: string | null, now: number = Dat
   // number two hours both typed belongs to exactly one design row, and the
   // grade columns therefore add DOWN the page as well as across it. That
   // overlap is a data-entry fault and it is real — August 2026 declared 6,262
-  // slabs across 6,261 distinct numbers, because hour 12-13 on 5 August
-  // re-typed slab 152439, already claimed by an earlier Simply White hour. The
-  // report says so rather than hiding it; see `overclaimed` below.
+  // slabs across 6,261 distinct numbers, because the 12-13 hour of 5 August
+  // starts at 152439, the number the 11-12 hour of the same day and the same
+  // batch (D1403, Simply White) already ended on. Confirmed on live Neon
+  // 2026-09-03 by expanding every August range: exactly one number in the
+  // month is claimed twice. The report prints both counts side by side rather
+  // than hiding the gap; see the Slabs and Numbers columns on sheet two.
   //
   // AND THE SECOND CLAIM IS NOT ALWAYS THE SAME DESIGN, which is why each row
   // records WHO took the number off it. First claim wins across the whole
@@ -250,23 +299,47 @@ async function monthCore(month: string, capDay: string | null, now: number = Dat
     for (const x of hours) {
       // Only rows that reach a shift — the SAME set day.made counts. A row
       // with no hour label carries made the day figure excludes, and counting
-      // it here broke the mix-sums-to-made invariant on real months (June
-      // 2026: 104 phantom slabs; July: 19).
-      if (x.shift == null) continue;
+      // it here would break the mix-sums-to-made invariant. It is COUNTED on
+      // the way past rather than skipped in silence: see `unlabelled` above.
+      if (x.shift == null) {
+        unlabelled.hours++;
+        // Only the rows that actually declared slabs are production the report
+        // is dropping; a blank hour with no range typed costs no figure
+        // anything, and the days list names the days worth correcting.
+        if (x.made != null) {
+          unlabelled.declaring++;
+          unlabelled.slabs += x.made;
+          unlabelled.days.add(date);
+        }
+        continue;
+      }
       // Case-folded design key, canonical batch: "Tiffiny"/"TIFFINY" are one
       // design and "D1399"/"1399" one batch — counting spellings told the
       // owner three Carrara Cloud batches ran in August when two did.
       const k = (x.design ?? "").trim().toLowerCase() || "(not named)";
-      if (!mix.has(k)) mix.set(k, { design: x.design?.trim() || "(not named)", made: 0, batches: new Set(), days: new Set(), contested: 0, contestedWith: new Set() });
+      if (!mix.has(k)) mix.set(k, { design: x.design?.trim() || "(not named)", made: 0, claims: 0, unreadable: 0, unreadableHours: 0, batches: new Set(), days: new Set(), contested: 0, contestedWith: new Set() });
       const e = mix.get(k)!;
       e.made += x.made ?? 0;
       if (x.batch) e.batches.add(normalizeBatch(x.batch));
       e.days.add(date);
       // walkRange is the shared guard — the same one shiftScore.claimedSlabs
-      // applies before it walks a range, and the same one the provenance
-      // lookup uses on other months' hours. See its comment above.
+      // applies before it walks a range, and the same one declaredElsewhere
+      // applies to every OTHER row in the table. See its comment above.
       const range = walkRange(x.slabFrom, x.slabTo);
-      if (!range) continue;
+      if (!range) {
+        // An hour that COUNTED slabs but whose range names none of them. The
+        // only shape that reaches here is a start at or below zero:
+        // slabsDeclared reads 0->0 as one slab while walkRange (and
+        // shiftScore.claimedSlabs) refuse to walk from a number no press ever
+        // stamped. Kept as its own quantity so the sheet's note can say "this
+        // hour's range cannot be a slab number" instead of the false
+        // "this number was claimed twice". An impossibly wide or backwards
+        // range made no claim in `made` either (slabsOf returned null) and so
+        // adds nothing here; the sheet reports those as wideHours.
+        if (x.made != null) { e.unreadable += x.made; e.unreadableHours++; }
+        continue;
+      }
+      e.claims += range[1] - range[0] + 1;
       for (let sn = range[0]; sn <= range[1]; sn++) {
         const held = slabOwner.get(sn);
         if (held === undefined) slabOwner.set(sn, k);
@@ -352,6 +425,7 @@ async function monthCore(month: string, capDay: string | null, now: number = Dat
     mix: [...mix.entries()]
       .map(([key, m]) => ({
         key, design: m.design, made: m.made, batches: m.batches.size, days: m.days.size,
+        claims: m.claims, unreadable: m.unreadable, unreadableHours: m.unreadableHours,
         contested: m.contested,
         // Resolved to the SPELLING that design is printed under, not the
         // folded key, so the note names a row the reader can find on the page.
@@ -363,6 +437,12 @@ async function monthCore(month: string, capDay: string | null, now: number = Dat
      *  belongs to. Partitioned, so summing per design gives the month's own
      *  distinct total exactly once. */
     slabOwner,
+    /** Hours that reached no shift, and the slabs they declared — see
+     *  `unlabelled` above. Reported, never folded into `made`. */
+    unlabelled: {
+      hours: unlabelled.hours, declaring: unlabelled.declaring, slabs: unlabelled.slabs,
+      days: [...unlabelled.days].sort(),
+    },
     maintenance: {
       events: maint.events, minutes: maint.minutes, daysAffected: maint.daysAffected,
       withRca: maint.withRca, sparesHours: maint.sparesHours, power: maint.power,
@@ -381,17 +461,24 @@ async function monthCore(month: string, capDay: string | null, now: number = Dat
 const PRODUCED_QC_SELECT = {
   slabNumber: true, qualityGrade: true, qualityGradeBeforeCts: true,
   createdTime: true, importedAt: true,
+  // Only ever the tie-break below. A cuid says nothing about when a row was
+  // written, but it is unique and it gives the sort a TOTAL order, which
+  // Prisma's fetch order across 5,000-row chunks does not.
+  id: true,
 } satisfies Prisma.PolishQcSelect;
 type ProducedQcRow = Prisma.PolishQcGetPayload<{ select: typeof PRODUCED_QC_SELECT }>;
 
 /** How the slabs a month PRESSED were finally graded — per design and in
  *  total — whenever QC reached them.
  *
- *  UNWINDOWED ON PURPOSE. A slab pressed on 31 August is often graded in
- *  September and it is still an August slab: measured on live Neon 2026-09-03,
- *  450 of August 2026's 6,261 slabs had their latest QC row stamped after the
- *  month's window closed — 348 of them carrying an actual verdict — and none
- *  at all before it opened.
+ *  UNWINDOWED ON PURPOSE. A slab pressed on 31 August is often polished and
+ *  inspected in September and it is still an August slab: measured on live
+ *  Neon on the evening of 2026-09-03, 455 of August 2026's 6,261 slabs had
+ *  their latest QC row stamped after the month's window closed — 367 of them
+ *  carrying a verdict — and none at all before it opened. A windowed join
+ *  would have dropped every one of them into "Not yet". These counts CLIMB
+ *  hour by hour while a month is fresh; do not treat them as a spec, and run
+ *  scripts/verify-grade-columns.mts rather than trusting this line.
  *
  *  ONE ROW PER SLAB, THE NEWEST. A re-graded slab has several QC rows and
  *  reports its latest outcome — shiftScore's rule, on the same createdTime ??
@@ -405,23 +492,36 @@ async function gradeProduced(slabOwner: Map<number, string>, monthEnd: Date) {
   const numbers = [...slabOwner.keys()];
   const byDesign = new Map<string, GradeTally>();
   const total = emptyTally();
-  /** Produced slabs whose VERDICT only arrived after the month closed — the
-   *  figure that says why this join is not windowed on the month.
+  /** Produced slabs carrying a verdict whose QC ROW ARRIVED after the month
+   *  closed — the figure that says why this join is not windowed on the month.
    *
-   *  A VERDICT, NOT MERELY A ROW. This used to count any slab whose latest QC
-   *  row was stamped after the window closed, including rows that still read
-   *  "Not graded yet" — while both sheets print the figure as the count of
-   *  slabs that were GRADED after the month. Measured on live Neon 2026-09-03
-   *  for August 2026: 450 latest rows landed after the month closed but only
-   *  348 of them carry a verdict, so the sheet-three sentence "450 … were not
-   *  graded until after the month closed … and 954 still carry no verdict at
-   *  all" double-counted 102 slabs in two figures a reader reads as disjoint.
-   *  July was 931 against 846, June 286 against 242. Cut-to-size is out of it
-   *  too — a routing state is not a grade — though no month yet measured has
-   *  a cut slab arriving late (0 in June, July and August 2026). */
+   *  AN ARRIVAL, NOT A GRADING DATE, AND THE SHEETS MUST SAY SO. Both sheets
+   *  printed this as "got a verdict only in the month after". The timestamp
+   *  does not support that: polish_qc.created_time has been NULL on every row
+   *  written since the June 2026 cutover (measured 2026-09-03: 0 of the 11,853
+   *  rows imported from July 2026 on carry one, and the column's last value
+   *  anywhere is 2026-06-08), so for a recent month `stamp` falls all the way
+   *  back to importedAt — the Airtable SYNC time. August 2026's late rows were
+   *  imported 1–3 September for slabs pressed through 31 August, against an
+   *  in-window press-to-import lag of 1 day median and 7 at the 95th
+   *  percentile: ordinary pipeline latency crossing a month boundary, not a
+   *  late verdict. A PRE-cutover month means the other thing entirely — 340 of
+   *  April 2026's 341 are clocked on a real created_time — so the count is
+   *  split below and the sentence adapts rather than asserting one of the two.
+   *
+   *  A VERDICT, NOT MERELY A ROW. This used to increment on any slab whose
+   *  latest QC row landed after the window, including rows still reading "Not
+   *  graded yet", while the sheet prints it beside the "still carry no verdict
+   *  at all" figure as though the two were disjoint. Cut-to-size is out of it
+   *  too — a routing state is not a grade. All of these counts MOVE as QC
+   *  files: August's late count read 348 on the morning of 2026-09-03 and 367
+   *  that evening. scripts/verify-grade-columns.mts recomputes them. */
   let gradedAfterMonth = 0;
+  /** Of those, the ones whose only timestamp is the import stamp — so the
+   *  report cannot say when the slab was judged, only when its row arrived. */
+  let lateOnImportStamp = 0;
   for (const d of new Set(slabOwner.values())) byDesign.set(d, emptyTally());
-  if (!numbers.length) return { byDesign, total, gradedAfterMonth };
+  if (!numbers.length) return { byDesign, total, gradedAfterMonth, lateOnImportStamp };
 
   const rows: ProducedQcRow[] = [];
   for (let i = 0; i < numbers.length; i += 5000) {
@@ -431,7 +531,20 @@ async function gradeProduced(slabOwner: Map<number, string>, monthEnd: Date) {
     }));
   }
   const stamp = (q: ProducedQcRow) => new Date(q.createdTime ?? q.importedAt ?? 0).getTime();
-  rows.sort((a, b) => stamp(b) - stamp(a));
+  // NEWEST FIRST, AND DETERMINISTICALLY SO. Sorting on `stamp` alone leaves
+  // rows that share a stamp in whatever order Prisma returned them, which
+  // across several 5,000-row chunks is not a defined order at all — so which
+  // verdict a re-graded slab reports could change between two runs of the same
+  // report. importedAt breaks the tie with a real signal (of two rows carrying
+  // the same createdTime, the later-imported one is the later write) and the
+  // id breaks the rest, giving a total order. No slab in polish_qc has two
+  // rows on one stamp today (measured 2026-09-03; the query is
+  // scripts/verify-grade-columns.mts's territory), so this changes no figure
+  // now — it stops one changing by itself later.
+  rows.sort((a, b) =>
+    stamp(b) - stamp(a)
+    || b.importedAt.getTime() - a.importedAt.getTime()
+    || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
   const latest = new Map<number, ProducedQcRow>();
   for (const q of rows) {
     if (q.slabNumber == null) continue;
@@ -462,41 +575,57 @@ async function gradeProduced(slabOwner: Map<number, string>, monthEnd: Date) {
     // measured 2026-09-03 the two agree exactly on June, July and August 2026
     // (0 of these rows carry a null importedAt), but every QC row written
     // since the June 2026 cutover is stamped createdTime first.
-    if (q && bucket !== "cut" && bucket !== "ungraded" && stamp(q) >= monthEnd.getTime()) gradedAfterMonth++;
+    if (q && bucket !== "cut" && bucket !== "ungraded" && stamp(q) >= monthEnd.getTime()) {
+      gradedAfterMonth++;
+      if (q.createdTime == null) lateOnImportStamp++;
+    }
   }
-  return { byDesign, total, gradedAfterMonth };
+  return { byDesign, total, gradedAfterMonth, lateOnImportStamp };
 }
 
-/** Every slab number declared by an MIS hour OUTSIDE this month's window —
- *  what lets sheet three say whether a QC entry that is not this month's stone
- *  can be PLACED in another month at all.
+/** Every slab number ANY MIS range this report can read declares, minus the
+ *  ones this month's own hours claimed — what lets sheet three say whether a
+ *  QC entry that is not this month's stone can be PLACED against the MIS
+ *  record at all.
  *
  *  WHY THE REPORT NEEDS IT. Sheet three used to call every QC entry that was
  *  not this month's slab "stone from earlier batches". That is a claim about
  *  where a slab came from, and for some of them the database makes no such
  *  claim: measured on live Neon 2026-09-03, of the 1,000 August 2026 entries
- *  that were not August's own slabs, 939 carry a number an MIS hour in another
- *  month declared and 61 sit in no MIS range in ANY month — they may be stone
- *  from before MIS covered the plant, or a mistyped slab number, and the sheet
- *  is not entitled to decide which. The two figures plus the month's own add
- *  to the entries filed exactly, so the sentence can be checked by adding up.
+ *  that were not August's own slabs, 939 carry a number an MIS hour declared
+ *  and 61 sit in no range this report can read — they may be stone from before
+ *  MIS covered the plant, a mistyped slab number, or a number that exists only
+ *  inside a range the report refuses to walk (all 14 of August's placeable
+ *  ones are inside ranges 10,015 to 1,227,644 slabs wide, which it is right to
+ *  refuse). The sheet is not entitled to decide which. The two figures plus the
+ *  month's own add to the entries filed exactly, so the sentence can be checked
+ *  by adding up.
  *
- *  THE COST, measured the same day: the whole mis table is 7,114 rows and this
- *  reads two numeric columns of the ones outside the window in ~0.6s, walked
- *  into a 46,684-number set in 7ms. It runs in the same Promise.all as the
- *  month's QC fetch, so it costs no wall clock the report was not already
- *  spending. Rows with no timestamp are counted OUTSIDE: the window filter
- *  cannot have claimed them for this month. */
-async function declaredOutside(from: Date, to: Date): Promise<Set<number>> {
+ *  THE COMPLEMENT, NOT A SECOND WINDOW. This used to be "every row whose
+ *  dateAndTime is outside the month", which is a DIFFERENT row filter from the
+ *  month's own enumeration (that one also requires an hour label), so a slab
+ *  declared only by a blank-hour row of this month landed in neither set and
+ *  was printed as unplaceable — see walkRange's comment. Taking every readable
+ *  range and subtracting the month's own set makes the two exhaustive by
+ *  construction: no slab number can be in neither, whatever row declared it.
+ *
+ *  THE COST, measured 2026-09-03 (and it grows with the mis table, so measure
+ *  again rather than trusting this): the whole table was 7,122 rows, two
+ *  numeric columns of all of them read in 116ms and walked into a 46,752-number
+ *  set in 2ms — barely more than the outside-the-window subset this replaced,
+ *  because almost every row is outside any one month. The whole monthly report
+ *  runs in 542ms for August 2026 and 750ms for June. It sits in the same
+ *  Promise.all as the month's QC fetch, so it costs no wall clock the report
+ *  was not already spending. */
+async function declaredElsewhere(own: Map<number, string>): Promise<Set<number>> {
   const rows = await prisma.mis.findMany({
-    where: { OR: [{ dateAndTime: { lt: from } }, { dateAndTime: { gte: to } }, { dateAndTime: null }] },
     select: { startingSlabNumber: true, endingSlabNumber: true },
   });
   const declared = new Set<number>();
   for (const r of rows) {
     const range = walkRange(r.startingSlabNumber, r.endingSlabNumber);
     if (!range) continue;
-    for (let sn = range[0]; sn <= range[1]; sn++) declared.add(sn);
+    for (let sn = range[0]; sn <= range[1]; sn++) if (!own.has(sn)) declared.add(sn);
   }
   return declared;
 }
@@ -525,14 +654,17 @@ export async function getMonthlyReport(month: string) {
     // the month; see gradeProduced.
     gradeProduced(core.slabOwner, core.window.to),
     // Where the entries that are NOT this month's slabs came from.
-    declaredOutside(core.window.from, core.window.to),
+    declaredElsewhere(core.slabOwner),
   ]);
 
   // THE THREE BUCKETS ADD TO THE ENTRIES FILED, by construction: every QC row
-  // in the window falls into exactly one arm below. An entry with no slab
-  // number typed cannot be placed either, so it lands in `unplaced` with the
-  // numbers no MIS range covers — the sheet says "cannot be placed", not
-  // "earlier stone", which is the whole point of the split.
+  // in the window falls into exactly one arm below, and `elsewhere` is the
+  // exact complement of `own` over every range walkRange can read, so nothing
+  // falls between the two. An entry with no slab number typed cannot be placed
+  // either, so it lands in `unplaced` with the numbers no READABLE MIS range
+  // covers — the sheet says "in no MIS range this report can read", not
+  // "earlier stone" and not "no MIS range at all", because a number inside a
+  // range the report refuses to walk is not a number the record is missing.
   const qcFrom = { own: 0, elsewhere: 0, unplaced: 0 };
   for (const r of qc) {
     if (r.slabNumber != null && core.slabOwner.has(r.slabNumber)) qcFrom.own++;
@@ -579,6 +711,13 @@ export async function getMonthlyReport(month: string) {
   const ranked = core.days.filter((d) => d.target > 0 && d.pct != null).sort((a, b) => b.pct! - a.pct!);
   const byMade = [...core.days].sort((a, b) => b.made - a.made);
 
+  // The middle of the three slab counts: the part of `made` whose range
+  // walkRange could actually name numbers for. made >= claimed >= producedSlabs
+  // always, and the two gaps are two different data-entry faults. Summed over
+  // the mix, which partitions the month's shift-labelled hours, so it cannot
+  // drift from the Slabs column it is printed beside.
+  const claimed = core.mix.reduce((a, m) => a + m.claims, 0);
+
   return {
     month, monthToDate,
     daysElapsed: core.dates.length,
@@ -617,32 +756,65 @@ export async function getMonthlyReport(month: string) {
     causes,
     // Each mix row carries the grades of ITS OWN slabs — the ones those hours
     // declared — so the six grade figures add across to `numbered` and down the
-    // page to producedGrades.total. `numbered` is printed beside `made` rather
-    // than replacing it: `made` is what the hours claimed and is what sums to
-    // the month's output (the invariant this file exists to keep), while
-    // `numbered` is how many DISTINCT slab numbers those claims covered. They
-    // are equal unless two hours typed the same number, which August 2026 did
-    // exactly once — 6,262 made against 6,261 numbered, measured 2026-09-03.
-    // The sheet prints the gap rather than papering over it, and `contested`
-    // says whether the second claim came from ANOTHER design, because the
-    // sentence that explains the gap is a different sentence when it did.
+    // page to producedGrades.total. `numbered` is printed IN THE TABLE beside
+    // `made`, as its own column, rather than explained in a footnote: `made` is
+    // what the hours claimed and is what sums to the month's output (the
+    // invariant this file exists to keep), while `numbered` is how many
+    // DISTINCT slab numbers those claims covered, which is what the grade
+    // columns partition. The two are equal only when no hour typed a number
+    // twice and every hour typed a range slab numbers can be read off — August
+    // 2026 read 6,262 against 6,261 on 2026-09-03 because one hour re-typed one
+    // number, and these figures move as MIS is filed. The footnote had to move
+    // into the table because the table may now break across printed pages: the
+    // continuation page carries the header and not the note.
+    // `contested` says whether the second claim came from ANOTHER design,
+    // because the sentence that explains the gap is a different sentence then.
     mix: core.mix.map((m) => ({
       ...m,
       grades: producedGrades.byDesign.get(m.key) ?? emptyTally(),
       numbered: (producedGrades.byDesign.get(m.key) ?? emptyTally()).slabs,
     })),
+    /** THE MONTH'S SLAB DEFICIT, SPLIT INTO ITS TWO CAUSES. `made` (what the
+     *  hours claimed) exceeds `producedSlabs` (distinct numbers) for two
+     *  unrelated reasons and the sheet must not report one as the other:
+     *    typedTwice      = claimed - producedSlabs   a number two hours typed
+     *    unreadableSlabs = made - claimed            an hour whose range names
+     *                                                no slab number (a start
+     *                                                at or below zero)
+     *  Measured on live Neon 2026-09-03: April 2026's 35-slab deficit is 13
+     *  unreadable (thirteen 0->0 hours on 2 and 6 April, design blank) plus 22
+     *  typed twice, and July 2025's 119 is 15 plus 104. The old note called the
+     *  whole deficit "slab numbers claimed twice", which for those thirteen
+     *  hours is simply not what happened. */
+    claimedSlabs: claimed,
+    typedTwice: claimed - core.slabOwner.size,
+    unreadableSlabs: core.mix.reduce((a, m) => a + m.unreadable, 0),
+    unreadableHours: core.mix.reduce((a, m) => a + m.unreadableHours, 0),
+    /** MIS hours that reached no shift, and the slabs they declared — real
+     *  production no figure on this report counts. Printed, never folded into
+     *  `made`; moving a month's output is the owner's decision. */
+    unlabelled: core.unlabelled,
     /** The month's own slabs, graded whenever QC got to them — the "produced"
      *  half of the two grade tables on sheet three. */
     producedGrades: producedGrades.total,
-    /** Of those, how many only got a verdict after the month closed. */
+    /** Of those, how many carry a verdict whose QC ROW ARRIVED only after the
+     *  month closed — an arrival, not a grading date. See gradeProduced. */
     producedGradedAfter: producedGrades.gradedAfterMonth,
+    /** …and how many of THOSE have no created_time, so the report can say only
+     *  when the row arrived and not when the slab was judged. Equal to
+     *  producedGradedAfter for every month after the June 2026 cutover; 1 of
+     *  April 2026's 341 (live Neon, 2026-09-03). */
+    producedGradedAfterOnImportStamp: producedGrades.lateOnImportStamp,
     /** QC entries filed this month that were for slabs THIS month pressed —
      *  the gap the CEO asked to see: August 2026 filed 6,390 entries, 5,390 of
      *  them on its own slabs (live Neon, 2026-09-03). */
     qcEntriesOnOwnSlabs: qcFrom.own,
-    /** Of the rest, the ones another month's MIS declared (939 in August 2026)
-     *  and the ones no MIS range in any month covers (61) — see declaredOutside.
-     *  own + elsewhere + unplaced === quality.inspected, always. */
+    /** Of the rest, the ones some readable MIS range declares but this month's
+     *  own hours did not (939 in August 2026, live Neon 2026-09-03 — usually
+     *  another month's hours, and possibly an hour of THIS month that reached
+     *  no shift), and the ones no range this report can read covers (61) — see
+     *  declaredElsewhere. own + elsewhere + unplaced === quality.inspected,
+     *  always. */
     qcEntriesElsewhere: qcFrom.elsewhere,
     qcEntriesUnplaced: qcFrom.unplaced,
     /** Slabs the month pressed, counted as distinct numbers — the denominator

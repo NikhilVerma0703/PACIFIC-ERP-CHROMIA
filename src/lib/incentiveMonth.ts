@@ -36,7 +36,28 @@ const db = prisma as any;
  *  at-qc     — a QC row exists, still "Not graded yet".
  *  at-polish — on the polish line (polish_entry), no QC row yet.
  *  pressed   — seen at press / jot / oven, nothing downstream yet.
- *  nowhere   — no row in any table: the number was claimed and never made. */
+ *  nowhere   — no row in any table: the number was claimed and never made.
+ *
+ *  `routed` IS EXPECTED TO BE ZERO, AND ITS BEING ZERO IS THE POINT. It is
+ *  keyed on OutstandingSlab.verdict, which shiftScore.ts sets to 'cts' only
+ *  when the QC grade is exactly 'CTS' and to 'printing' only when the grade
+ *  starts 'PRINT' — a ROUTING WRITTEN INTO THE VERDICT COLUMN. scripts/0071 and
+ *  0072 took the last of those out: every cut slab now carries the grade the
+ *  owner decided ('B'), keeps its slab_mark='CTS' to say it is cut, and earns
+ *  its half slab of credit like any other B. Re-measure with
+ *      SELECT quality_grade, count(*) FROM polish_qc GROUP BY 1;
+ *  (run 2026-09-03: A / A2 / B / C (Reject) / 'Not graded yet' / NULL and
+ *  nothing else, all time — the counts move hourly, the absence of a routing
+ *  grade does not). So a NON-ZERO `routed` is a regression, not throughput: it
+ *  means something has begun writing a routing state back into the grade, which
+ *  is exactly the standing check scripts/0072 closes with — and the page says so
+ *  rather than printing a column of dashes as if it were a measurement.
+ *
+ *  DO NOT RE-KEY THIS ONTO slab_mark TO "MAKE THE COLUMN WORK". That would move
+ *  the 63 decided-B slabs out of the B column into a routing, scoring them zero
+ *  instead of half a slab each, and would undo the owner's ruling — August alone
+ *  would fall by 12.5 counted slabs (25 decided-B slabs x ½, measured
+ *  2026-09-03). A cut slab KEEPS its verdict and still earns credit. */
 export type Stage = "at-qc" | "at-polish" | "pressed" | "nowhere" | "routed";
 export const STAGES: readonly Stage[] = ["at-qc", "at-polish", "pressed", "nowhere", "routed"];
 /** Stages that can still turn into points. */
@@ -201,6 +222,33 @@ export interface IncentiveMonth {
      *  came from the score, which is the authority on the backlog — they are
      *  only absent from the per-batch table. */
     unclaimed: number;
+    /** SLABS THE MONTH'S MIS RANGES CLAIMED THAT `claimed` AND `groups`
+     *  DELIBERATELY LEAVE OUT: two shifts each typed a range covering them and
+     *  no admin has ruled, so the payout gives them to NEITHER shift and this
+     *  table — which describes what the month pays — cannot file them under
+     *  either shift's design and batch either.
+     *
+     *  DROPPING THEM IS RIGHT AND SAYING NOTHING ABOUT IT WAS NOT. `claimed` was
+     *  headed "every slab the month's MIS ranges claimed" on the screen, and it
+     *  is that minus these. The gap is small but it is real and it points the
+     *  OPPOSITE way from the CEO monthly report's own gap (that report drops MIS
+     *  rows with a blank hourly standard), so the two screens' counts of "the
+     *  slabs this month made" differed by the SUM of two cancelling causes and
+     *  read as one. Measured on live Neon 2026-09-03, by month:
+     *    June 2026   claimed 2,541 + contested 3 = 2,544 distinct slabs claimed
+     *    July 2026           5,424 +           6 = 5,430
+     *    August 2026         6,261 +           0 = 6,261
+     *  (the contested slabs themselves: June 144295-6 and 144340, July 147766-7
+     *  and 148112-5 — and none of them will move unless an MIS range is
+     *  retyped or a ruling is filed.)
+     *
+     *  THE SAME SLABS scoreRange COUNTS AS `totals.contested`, reported here
+     *  from this file's own rebuild so the sentence on the screen is checkable
+     *  against the very population the table draws. The two derivations agreed
+     *  exactly on all three months above; `openDisputes` below is the other
+     *  one, and the page prints both. A month with 0 (August, today) must print
+     *  no clause at all rather than "and 0 more". */
+    contested: number;
     byStage: Record<Stage, number>;
     real: number;
     byLetter: Record<ShiftLetter, Record<Stage, number>>;
@@ -309,14 +357,20 @@ interface ClaimedSlab { mult: number; design: string | null; batch: string | nul
  *      have reported (checked against every one of the 958 slabs outstanding on
  *      August at 2026-09-03, on live Neon: 0 disagreements);
  *    - the same double-claim rule: a slab two SHIFTS both claimed scores for
- *      neither and is dropped here too, unless an admin has awarded it. August
- *      2026 has 0 contested slabs, so this arm is unexercised in production
- *      today; it is here because a month with one would otherwise put a slab in
- *      this table that the payout does not contain.
+ *      neither and is dropped here too, unless an admin has awarded it. It is
+ *      NOT an unexercised arm: measured 2026-09-03 it drops 3 slabs on June
+ *      2026 and 6 on July, and 0 on August. So the returned map is the month's
+ *      claim MINUS those, which is what the payout contains and therefore what
+ *      the table must contain — and the count comes back alongside it so the
+ *      screen can say so instead of heading the table with a total it has
+ *      quietly reduced. See `outstanding.contested`.
  *
  *  MEASURED: rebuilt 6,261 slabs for August 2026 against scoreRange's
- *  6,261 (sum of ShiftScore.quantity) — exact, on 736 MIS rows, one query. */
-async function claimedByMonth(from: string, scoredTo: string, now: Date, scored: Set<string>): Promise<Map<number, ClaimedSlab>> {
+ *  6,261 (sum of ShiftScore.quantity) — exact, on 736 MIS rows, one query.
+ *  Re-measured 2026-09-03: still 6,261, and June 2,541 / July 5,424. August's
+ *  figure is settled because MIS for the month is fully entered; the GRADES
+ *  behind it move hourly, the claim does not. */
+async function claimedByMonth(from: string, scoredTo: string, now: Date, scored: Set<string>): Promise<{ owner: Map<number, ClaimedSlab>; contested: number }> {
   const lo = shiftRange(from, "A").start;
   const hi = shiftRange(scoredTo, "C").end;
   const mis: any[] = await db.mis.findMany({
@@ -359,6 +413,13 @@ async function claimedByMonth(from: string, scoredTo: string, now: Date, scored:
   }
 
   const contested = [...claimedBy].filter(([, who]) => who.size > 1).map(([n]) => n);
+  // How many of them ended up dropped — not how many were contested. An awarded
+  // slab is not contested any more: it scores for the winner and stays on a row,
+  // so counting it here would have the screen apologise for a slab it is
+  // showing. Live today this is the whole of `contested` (0 rows in
+  // slab_claim_award, measured 2026-09-03), and the moment the owner rules on
+  // one it stops being.
+  let dropped = 0;
   if (contested.length) {
     // An ADMIN'S RULING beats the default, exactly as in scoreRange: an awarded
     // slab scores for the winner and therefore belongs in this table; an
@@ -375,9 +436,9 @@ async function claimedByMonth(from: string, scoredTo: string, now: Date, scored:
       });
       for (const r of rows) awarded.add(Number(r.slabNumber));
     }
-    for (const n of contested) if (!awarded.has(n)) owner.delete(n);
+    for (const n of contested) if (!awarded.has(n)) { owner.delete(n); dropped += 1; }
   }
-  return owner;
+  return { owner, contested: dropped };
 }
 
 export async function incentiveMonth(month: string, now = new Date()): Promise<IncentiveMonth> {
@@ -419,7 +480,7 @@ export async function incentiveMonth(month: string, now = new Date()): Promise<I
   // the claim is rebuilt (claimedByMonth, above) and everything in it that is
   // not waiting is looked up in QC here, under scoreShift's own rules:
   // newest verdict per slab wins, and gradeCredit() decides what a verdict is.
-  const claimed = await claimedByMonth(from, data.to, now, new Set(data.shifts.map((s) => `${s.anchor}${s.shift}`)));
+  const { owner: claimed, contested } = await claimedByMonth(from, data.to, now, new Set(data.shifts.map((s) => `${s.anchor}${s.shift}`)));
   const waitingBySlab = new Map<number, TrackedSlab>();
   for (const s of slabs) waitingBySlab.set(s.slab, s);
   const toGrade = [...claimed.keys()].filter((n) => !waitingBySlab.has(n));
@@ -615,7 +676,7 @@ export async function incentiveMonth(month: string, now = new Date()): Promise<I
     monthEnded: shiftRange(to, "C").end <= now,
     letters, shares, plant,
     pool: { counted, poolNow: poolFor(counted), floor: FLOOR_SLABS, next: nextTier(counted), ladder: TIERS },
-    outstanding: { total: slabs.length, claimed: monthClaimed, unreconciled, unclaimed, byStage, real, byLetter, groups, slabs, phantomRuns },
+    outstanding: { total: slabs.length, claimed: monthClaimed, unreconciled, unclaimed, contested, byStage, real, byLetter, groups, slabs, phantomRuns },
     projection: {
       share, addReal, projectedReal, poolReal: poolFor(projectedReal),
       addAll, projectedAll, poolAll: poolFor(projectedAll),

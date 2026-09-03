@@ -208,7 +208,16 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                   off — it was the largest rupee figure on the page. */}
               <Kpi label="Pool today" value={!pool.poolNow ? "—" : SHOW_PAYOUT_AMOUNTS ? lakh(pool.poolNow) : "Unlocked"}
                 sub={pool.poolNow ? (SHOW_PAYOUT_AMOUNTS ? "unlocked" : `the count is over the ${fmt(pool.floor)} floor`) : `${fmt(pool.floor - Math.floor(pool.counted))} short of the floor`} />
-              <Kpi label="Still to grade" value={fmt(outstanding.real)} sub={`${fmt(outstanding.total)} claimed and uncounted · ${fmt(outstanding.byStage.nowhere)} never seen · ${fmt(outstanding.byStage.routed)} routed`} />
+              {/* The routed term is conditional for the reason the batch
+                  table's Routed column carries a sub-head: it is keyed on a QC
+                  GRADE of 'CTS' / 'PRINT…', and no such grade exists in
+                  polish_qc since scripts/0071 and 0072 (re-measure: SELECT
+                  quality_grade, count(*) FROM polish_qc GROUP BY 1). Printing
+                  "0 routed" beside two live figures reads as a measured
+                  category rather than a tripwire; a non-zero value is a
+                  regression and then it says so. */}
+              <Kpi label="Still to grade" value={fmt(outstanding.real)}
+                sub={`${fmt(outstanding.total)} claimed and uncounted · ${fmt(outstanding.byStage.nowhere)} never seen${outstanding.byStage.routed > 0 ? ` · ${fmt(outstanding.byStage.routed)} routed to CTS / Printing — a routing written into the grade` : ""}`} />
               <Kpi label="Projected" value={fmt(Math.round(projection.projectedReal))} sub={`if the real ones grade at ${pct(projection.share)} → ${projection.poolReal ? (SHOW_PAYOUT_AMOUNTS ? lakh(projection.poolReal) : "over the floor") : "no pool"}`} />
               {/* "A" HERE IS A AND A2 TOGETHER, AND THE SCREEN NOW SAYS SO.
                   scoreShift buckets on u.startsWith("A"), so plant.gradeA is
@@ -461,15 +470,49 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                 left waiting — is on it too. For August 2026, 41 rows against
                 the waiting list's 33 (measured on live Neon 2026-09-03). */}
             <Card className="mb-4">
-              <H2>The month by design and batch — {fmt(tot.claimed)} slabs</H2>
+              {/* THE HEADING USED TO SAY "{N} slabs" OVER "Every slab the
+                  month's MIS ranges claimed" AND IT WAS NOT. A slab two shifts
+                  both claimed with no admin ruling is dropped from this
+                  population — rightly, because paying both would pay it twice —
+                  so the figure is the claim MINUS those, and the heading said
+                  nothing. Measured on live Neon 2026-09-03 it is 3 short on
+                  June 2026 (2,541 shown of 2,544 claimed), 6 on July (5,424 of
+                  5,430) and exact on August, so the sentence is untrue on two
+                  of the three months a reader can page back to. Worse, it
+                  pushes this figure the OPPOSITE way from the CEO monthly
+                  report's own gap on the same quantity — that report drops MIS
+                  hours with a blank standard — so the two screens' counts of
+                  "the slabs the month made" differed by the sum of two
+                  cancelling causes and read as one. Both figures are now named
+                  wherever they appear. The clause is conditional because on a
+                  month with none (August, today) "of 6,261 claimed" would be
+                  worse than silence. H2 renders uppercase and narrow, so the
+                  qualifier here is the two FIGURES and their gap — three words
+                  a reader can check — and the sentence explaining the gap is
+                  the paragraph immediately below. */}
+              <H2>
+                The month by design and batch — {fmt(tot.claimed)} slabs
+                {outstanding.contested > 0 && <> payable of {fmt(tot.claimed + outstanding.contested)} claimed</>}
+              </H2>
               <p className="mb-1 text-xs text-gray-500">
-                Every slab the month&apos;s MIS ranges claimed, one row per design and batch: the {fmt(tot.graded)} QC has graded
+                Every slab the month&apos;s MIS ranges claimed and the payout can attribute to one shift, one row per design and batch: the {fmt(tot.graded)} QC has graded
                 and the {fmt(tot.waiting)} still to come, side by side. Each row adds up two ways —
                 <b> A + A2 + B + C = graded</b>, and <b> graded + still waiting + routed = claimed</b> — and so does the total line at the foot.
               </p>
+              {outstanding.contested > 0 && (
+                <p className="mb-1 text-xs text-gray-500">
+                  <b>{fmt(outstanding.contested)} further slabs are on no row of this table.</b> Two shifts each typed a range covering them and no admin has ruled, so the payout
+                  gives them to neither shift and this table cannot file them under either shift&apos;s design and batch. The month&apos;s ranges therefore covered{" "}
+                  {fmt(tot.claimed + outstanding.contested)} distinct slabs in all — {fmt(tot.claimed)} payable and these {fmt(outstanding.contested)} paid to nobody.{" "}
+                  <Link href={`/scoreboard?from=${m.from}&to=${m.to}`} className="text-brand underline">Rule on them</Link> and each joins a row.
+                </p>
+              )}
               <p className="mb-3 text-xs text-gray-500">
-                CTS and Printing are ROUTINGS, not verdicts: a slab sent to cut-to-size was diverted before anyone judged it, so it sits in its own
-                column and in none of the four grades — it is never counted twice. Nothing here is capped or collapsed; all {fmt(outstanding.groups.length)} batches
+                CTS and Printing are ROUTINGS, not verdicts, so they get a column of their own outside the four grades and are never counted twice.
+                <b> That column reads zero, and zero is the reading to expect</b> — no slab in QC carries a CTS or Printing <em>grade</em> at all, because a cut slab now keeps
+                the verdict it was given: the slabs cut to size were graded B by decision (scripts/0071 and 0072) and earn their half slab of credit like any other B.
+                A figure in Routed would therefore be a regression rather than throughput — something writing a routing state back into the grade column, which is the
+                standing check scripts/0072 closes with. Nothing here is capped or collapsed; all {fmt(outstanding.groups.length)} batches
                 are listed, the ones with slabs still waiting first.
               </p>
               <p className="mb-3 text-xs text-gray-500">
@@ -516,7 +559,25 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                       <th className="py-2 pr-3">Graded</th><th className="py-2 pr-3">Batch share</th>
                       <th className="border-l border-gray-200 py-2 pl-2 pr-3">Waiting</th>
                       {WAIT_STAGES.map((s) => <th key={s} className="py-2 pr-3">{STAGE_SHORT[s]}</th>)}
-                      <th className="border-l border-gray-200 py-2 pl-2 pr-3">Routed</th>
+                      {/* A COLUMN THAT CANNOT BE NON-ZERO, LABELLED AS SUCH.
+                          `stages.routed` is keyed on the QC GRADE reading 'CTS'
+                          or starting 'PRINT' (shiftScore.ts), and scripts/0071
+                          and 0072 took the last such grade out of polish_qc: a
+                          cut slab now carries the owner's decided 'B' and its
+                          slab_mark says it is cut. Re-measure with
+                          `SELECT quality_grade, count(*) FROM polish_qc GROUP
+                          BY 1` — on 2026-09-03 the whole table held only A /
+                          A2 / B / C (Reject) / 'Not graded yet' / NULL. The
+                          column stays because it is the visible proof that no
+                          routing has been folded into a grade, and because the
+                          row's printed invariant names it; the sub-head is here
+                          so a reader does not take a column of dashes for a
+                          measurement of nothing happening. Do NOT re-key it
+                          onto slab_mark: see the Stage doc in
+                          incentiveMonth.ts. */}
+                      <th className="border-l border-gray-200 py-2 pl-2 pr-3" title="Slabs whose QC GRADE was written as CTS or Printing. Expected to be zero: a routing is not a verdict, and since scripts/0071 and 0072 a cut slab keeps its decided grade. A figure here is a regression, not throughput.">
+                        Routed<br /><span className="normal-case text-gray-400">expected 0</span>
+                      </th>
                       {/* THERE WAS A "DESIGN'S SHARE, ALL BATCHES" COLUMN HERE
                           UNTIL 2026-09-03. It joined the MIS design spelling to
                           QC's, and on live August 2026 it read "none graded

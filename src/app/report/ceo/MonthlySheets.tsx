@@ -100,11 +100,21 @@ function SheetMonth({ r }: { r: MonthlyReport }) {
   const prevSentence = r.prev && r.prev.made > 0
     ? ` Last month (${monthLong(r.prev.month)}, complete) made ${num(r.prev.made)} at ${pct1(r.prev.pct)}.`
     : "";
+  // THE HEADLINE FIGURE COUNTS CLAIMS, AND SAYS SO WHEN THAT IS NOT THE SLAB
+  // COUNT. r.made is the width of every hour's declared range, which is what
+  // the day, week, target and achievement arithmetic on this page sums to; it
+  // is one MORE than the slabs the plant made whenever an hour re-typed a
+  // number its neighbour already used. Labelling it "slabs produced" with no
+  // caveat put a figure on page one that the grade columns on page two
+  // legitimately cannot reach, and the owner asked which of the two was right.
+  // Both are: this tile now names which one it is and prints the other beside
+  // it. Page two's Numbers column is the same distinct count, per design.
+  const exact = r.made === r.producedSlabs;
   return (
     <div className={s.sheet}>
       <Mast r={r} />
       <Kpis tiles={[
-        [num(r.made), `Slabs produced${soFar}`],
+        [num(r.made), exact ? `Slabs produced${soFar}` : `Slabs claimed · ${num(r.producedSlabs)} numbers`],
         [num(Math.round(r.target)), "Target, summed from the days"],
         [pct1(r.pct), "Achievement"],
         [hm(r.lost), "Time lost"],
@@ -116,8 +126,24 @@ function SheetMonth({ r }: { r: MonthlyReport }) {
         {monthLong(r.month)}{soFar} produced <strong>{num(r.made)} slabs</strong> against a summed target
         of <strong>{num(Math.round(r.target))}</strong> — {pct1(r.pct)} of standard — and
         lost <strong>{hm(r.lost)}</strong> to stoppages across {r.daysRun} running
-        day{r.daysRun === 1 ? "" : "s"}.{prevSentence} Every day row below is exactly that
-        day&rsquo;s own report; the date opens it.
+        day{r.daysRun === 1 ? "" : "s"}.{prevSentence}{" "}
+        {!exact && (
+          <>That {num(r.made)} is what the hours <em>claimed</em>; the ranges they typed cover{" "}
+          <strong>{num(r.producedSlabs)}</strong> distinct slab numbers, which is the count page two grades
+          and page three totals. Page two names the rows where the two part.{" "}</>
+        )}
+        {/* THE EXCLUSION THAT USED TO BE PRINTED NOWHERE. An MIS row with no
+            hour typed cannot be placed in a shift, so every figure on this
+            page leaves it out — and on June 2026 that is 104 slabs whose
+            numbers all appear in `press` and `polish_entry`, which the month
+            incentive screen counts and the payout pays for. Saying so here,
+            on the headline, rather than only in the MIS-discipline note. */}
+        {r.unlabelled.slabs > 0 && (
+          <>A further <strong>{num(r.unlabelled.slabs)} slabs</strong> sit on {r.unlabelled.declaring} hourly
+          row{r.unlabelled.declaring === 1 ? "" : "s"} that carry no hour and so reach no shift: no figure on
+          this page counts them. See MIS discipline on page three.{" "}</>
+        )}
+        Every day row below is exactly that day&rsquo;s own report; the date opens it.
       </p>
 
       <Section name="Week by week" note="Monday-led weeks, clipped to the month" />
@@ -198,9 +224,18 @@ function SheetDepth({ r }: { r: MonthlyReport }) {
   // slab 144340 was already Taj Aureate's, so its grade sits on Taj Aureate's
   // row (live Neon, 2026-09-03). `contested` is that count, so the sentence can
   // say which of the two happened rather than guessing.
-  const overclaimed = r.mix.filter((x) => x.numbered !== x.made);
-  const overclaimDeficit = overclaimed.reduce((a, x) => a + (x.made - x.numbered), 0);
-  const anyContested = overclaimed.some((x) => x.contested > 0);
+  //
+  // AND IT IS TWO FAULTS, NOT ONE. `made - numbered` is not the count of
+  // numbers typed twice, and the note asserted that it was. An hour that typed
+  // its range as 0 -> 0 declares one slab (slabsDeclared counts the width) and
+  // names no slab number at all (walkRange will not walk from zero), so it
+  // widens the gap without any number being claimed twice: April 2026's
+  // 35-slab gap is thirteen such hours plus twenty-two genuine re-types (live
+  // Neon, 2026-09-03). lib/monthlyReport now splits the two, and each row is
+  // listed under the fault that actually produced its shortfall.
+  const retyped = r.mix.filter((x) => x.claims > x.numbered);
+  const unreadable = r.mix.filter((x) => x.unreadable > 0);
+  const anyContested = retyped.some((x) => x.contested > 0);
   return (
     <div className={s.sheet}>
       <Mast r={r} />
@@ -296,8 +331,14 @@ function SheetDepth({ r }: { r: MonthlyReport }) {
         </div>
       )}
 
-      <Section name="What the line ran"
-        note="Slabs per design from the same hourly rows the day figures count — and how those very slabs graded, whenever QC reached them" />
+      {/* THE HEADING NAMES BOTH HALVES OF THE TABLE. It read "What the line
+          ran", which promises an account of the month's production — and then
+          six of its eleven columns deliver QC's verdicts so far, one of which
+          is a backlog column that on a fresh month holds a seventh of the
+          month's slabs. A reader who quotes this block as the month's quality
+          is quoting an incomplete inspection. */}
+      <Section name="What the line ran, and QC's verdicts so far"
+        note="Slabs per design from the same hourly rows the day figures count — and how those very slabs stand in QC today, which for a recent month is not yet finished" />
       {/* .split, not .keep: at 36 designs this table is longer than the room
           left on the page, so "never break" only moves the whole block to the
           next physical sheet. See report.module.css — both classes carry the
@@ -305,7 +346,20 @@ function SheetDepth({ r }: { r: MonthlyReport }) {
       <table className={`${s.t} ${s.split} ${s.tight}`}>
         <thead><tr>
           <th>Design</th><th className={s.num}>Batches</th><th className={s.num}>Days</th>
-          <th className={s.num}>Slabs</th><th className={s.num}>Share</th>
+          {/* TWO COUNTS OF ONE ROW'S SLABS, IN THE TABLE AND LABELLED.
+              The owner put page one's "6,262 SLABS PRODUCED" beside this
+              table's total and asked which was right: the six grade cells summed
+              to 6,261. Both are right and they measure different things — Slabs
+              is the width of the ranges the hours CLAIMED (and is what the day,
+              week and target arithmetic sums to, so it must not change), Numbers
+              is the distinct slab numbers those ranges cover (and is what the
+              six grade columns partition, because a slab can only be graded
+              once). It used to be explained only in the 6.7pt note UNDER the
+              table, which the continuation page of a broken table does not
+              carry; the reconciling figure belongs in a column. */}
+          <th className={s.num}>Slabs<span className={s.colSub}>claimed</span></th>
+          <th className={s.num}>Numbers<span className={s.colSub}>distinct</span></th>
+          <th className={s.num}>Share</th>
           <th className={s.num}>A</th><th className={s.num}>A2</th>
           <th className={s.num}>B</th><th className={s.num}>C</th>
           <th className={s.num}>Cut</th><th className={s.num}>Not yet</th>
@@ -317,6 +371,7 @@ function SheetDepth({ r }: { r: MonthlyReport }) {
               <td className={s.num}>{m2.batches || DASH}</td>
               <td className={s.num}>{m2.days}</td>
               <td className={s.num}>{num(m2.made)}</td>
+              <td className={s.num}>{m2.numbered ? num(m2.numbered) : NDASH}</td>
               <td className={s.num}>{share(m2.made, r.made)}</td>
               <td className={s.num}>{m2.grades.A || NDASH}</td>
               <td className={s.num}>{m2.grades.A2 || NDASH}</td>
@@ -334,6 +389,7 @@ function SheetDepth({ r }: { r: MonthlyReport }) {
             <td className={s.num}>{NDASH}</td>
             <td className={s.num}>{NDASH}</td>
             <td className={s.num}>{num(r.made)}</td>
+            <td className={s.num}>{num(r.producedSlabs)}</td>
             <td className={s.num}>100%</td>
             <td className={s.num}>{num(pg.A)}</td>
             <td className={s.num}>{num(pg.A2)}</td>
@@ -346,12 +402,34 @@ function SheetDepth({ r }: { r: MonthlyReport }) {
       </table>
       <p className={s.note}>
         The six grade columns are the verdicts of <em>those same slabs</em> — the numbers the design&rsquo;s own
-        hours declared, looked up in QC whenever it reached them, including after the month closed:{" "}
-        {num(r.producedGradedAfter)} of {monthLong(r.month)}&rsquo;s slabs got a verdict only in the month after,
-        and a grade table windowed on the month would show none of them. They add across to Slabs and down to
-        the total row. <strong>Cut</strong> is a slab routed to cut-to-size or sampling with no verdict
+        hours declared, looked up in QC whenever it reached them, including after the month closed. They add
+        across to <strong>Numbers</strong>, not to Slabs, and down to the total row; Slabs is what the hours
+        claimed and is the figure every target and achievement on this report is built on.{" "}
+        {/* F5: THE STAMP IS AN ARRIVAL, NOT A GRADING DATE, AND THIS SENTENCE
+            USED TO SAY OTHERWISE ("got a verdict only in the month after").
+            polish_qc.created_time has been empty on every row written since
+            the June 2026 cutover, so for a recent month the only timestamp is
+            the Airtable import — August 2026's late rows were imported 1–3
+            September for stone pressed up to 31 August, against an in-window
+            press-to-import lag of 1 day median (live Neon, 2026-09-03). That
+            is pipeline latency crossing a month boundary, not a late verdict.
+            A pre-cutover month is the other case: 340 of April 2026's 341 sit
+            on a real created_time. The count of the ones with no created_time
+            comes from the data, so the sentence tells the truth for both. */}
+        {r.producedGradedAfter > 0 && (
+          <>The QC row for <strong>{num(r.producedGradedAfter)}</strong> of them arrived only after the month
+          closed, and a grade table windowed on the month would show none of those.{" "}
+          {r.producedGradedAfterOnImportStamp === 0
+            ? "Those rows carry QC's own created_time, so for them that is a grading date."
+            : r.producedGradedAfterOnImportStamp === r.producedGradedAfter
+              ? "None of them carries a grading time of its own — only the Airtable import stamp, which has been QC's only timestamp since the June 2026 cutover — so this says when the row arrived, not when the slab was judged."
+              : `${num(r.producedGradedAfterOnImportStamp)} of them carry no grading time of their own, only the Airtable import stamp, so for those it says when the row arrived and not when the slab was judged.`}{" "}</>
+        )}
+        <strong>Cut</strong> is a slab routed to cut-to-size or sampling with no verdict
         surviving — neither a pass nor a reject; <strong>Not yet</strong> is a slab QC has not reached, or one
-        still recorded &ldquo;Not graded yet&rdquo;.
+        still recorded &ldquo;Not graded yet&rdquo; — {share(pg.ungraded, pg.slabs)} of the month&rsquo;s slabs
+        today, so read this block as QC&rsquo;s progress on the month and not as the month&rsquo;s finished
+        quality.
         {/* THE ONE PLACE THIS REPORT AND THE INCENTIVE SCREEN DISAGREE ON PURPOSE.
             Measured 2026-09-03 for August: this table prints B 146 and Cut 25;
             /scoreboard/incentive prints B 171 for the same month, and 171 - 146
@@ -373,22 +451,36 @@ function SheetDepth({ r }: { r: MonthlyReport }) {
             reports what is <em>paid</em>.
           </>
         )}
-        {overclaimed.length > 0 && (
+        {/* TWO NAMED QUANTITIES, BECAUSE THEY ARE TWO DIFFERENT MIS FAULTS AND
+            ONLY ONE OF THEM IS A NUMBER TYPED TWICE. Both close the same way —
+            correct the range on the row — but a reader told "13 slab numbers
+            were claimed twice" about thirteen hours that typed 0 -> 0 goes
+            looking for a duplicate that does not exist. */}
+        {r.typedTwice > 0 && (
           <>
-            {" "}<strong>{num(overclaimDeficit)} slab number{overclaimDeficit === 1 ? " was" : "s were"} claimed
-            twice</strong> — {overclaimed.map((m2) =>
-              `${m2.design} declared ${num(m2.made)} across ${num(m2.numbered)} distinct numbers`
+            {" "}<strong>{num(r.typedTwice)} slab number{r.typedTwice === 1 ? " was" : "s were"} typed
+            twice</strong> — {retyped.map((m2) =>
+              `${m2.design} claimed ${num(m2.claims)} numbers across ${num(m2.numbered)} distinct ones`
               + (m2.contested > 0
                 ? ` (${num(m2.contested)} of them already claimed by ${m2.contestedWith.join(" and ")})`
                 : "")).join("; ")}
-            {" "}— so {overclaimed.length === 1 ? "that row" : "those rows"}, and the total beneath, fall short
-            of Slabs by that much: the grades count slab NUMBERS, Slabs counts what the hours CLAIMED.{" "}
+            {" "}— so Numbers falls short of Slabs by that much on {retyped.length === 1 ? "that row" : "those rows"}.{" "}
             {anyContested
               ? "First claim wins across the whole month, so a number two designs both typed is graded on the row that typed it first, not on the row that lost it."
-              : "The gap is a number typed twice, not a missing slab."}{" "}
-            Correct the range on the MIS row and the figures meet.
+              : "The gap is one number written on two hours, not a missing slab."}
           </>
         )}
+        {r.unreadableSlabs > 0 && (
+          <>
+            {" "}A further <strong>{num(r.unreadableSlabs)} slab{r.unreadableSlabs === 1 ? "" : "s"}</strong>{" "}
+            {r.unreadableSlabs === 1 ? "sits" : "sit"} on {r.unreadableHours}{" "}
+            hour{r.unreadableHours === 1 ? "" : "s"} whose slab range cannot be a slab number — a range
+            starting at or below zero, which counts a width but names nothing QC can be asked
+            about ({unreadable.map((m2) => `${m2.design} ${num(m2.unreadable)}`).join("; ")}).
+            No number was claimed twice there; the numbers were never typed.
+          </>
+        )}
+        {(r.typedTwice > 0 || r.unreadableSlabs > 0) && <> Correct the range on the MIS row and the two columns meet.</>}
       </p>
 
       <div className={s.foot}>
@@ -501,6 +593,19 @@ function SheetQualityMonth({ r, canFill }: { r: MonthlyReport; canFill: boolean 
   const producedGraded = pg.A + pg.A2 + pg.B + pg.C;
   const producedRate = producedGraded ? (100 * (pg.A + pg.A2)) / producedGraded : null;
   const faultTop = q.faultsAll.slice(0, 10);
+  // WHETHER THERE IS A RIGHT-HAND TABLE AT ALL.
+  // getQuality windows polish_qc on importedAt — the Airtable sync stamp,
+  // which is the only timestamp still moving (created_time stops dead at
+  // 8 June 2026 across the whole table, measured on live Neon 2026-09-03) —
+  // and every pre-cutover row was imported in June 2026. So for any month that
+  // closed before the cutover, `inspected` is 0: April 2026 rendered the
+  // right-hand table with no rows and a total of 0, an em-dash for the
+  // all-entries pass rate in the middle of a sentence, "Every one of them was
+  // for a slab this month declared" about stone that does not exist, and "341
+  // … absent from the right" against an empty table. Those months are
+  // reachable: page.tsx clamps ?m= at the top and not at the bottom. The pair
+  // degrades to the one table that CAN be read, plus a sentence saying why.
+  const hasEntries = q.inspected > 0;
   return (
     <div className={s.sheet}>
       <Mast r={r} />
@@ -526,7 +631,9 @@ function SheetQualityMonth({ r, canFill }: { r: MonthlyReport; canFill: boolean 
           The right-hand table counts ENTRIES, not slabs, and its label says
           so — a slab inspected twice is two QC entries and one slab. */}
       <Section name="Quality grades"
-        note="two populations, and they are not the same slabs — the month's own stone on the left, everything QC touched this month on the right" />
+        note={hasEntries
+          ? "two populations, and they are not the same slabs — the month's own stone on the left, everything QC touched this month on the right; quote the left one for this month's quality"
+          : "the month's own stone, graded whenever QC reached it — no QC entry falls in this month's own window, so there is nothing to set beside it"} />
       <div className={s.pair}>
         <div>
           {/* "by distinct slab number", said in the label and again in the
@@ -535,7 +642,10 @@ function SheetQualityMonth({ r, canFill }: { r: MonthlyReport; canFill: boolean 
               only count numbers it can look up, and for August 2026 those are
               6,262 and 6,261 — two figures one word apart on one document is
               how a reader concludes the report cannot add up. */}
-          <div className={s.subLabel}>Slabs {monthLong(r.month)} produced · by distinct slab number, graded whenever QC reached them</div>
+          <div className={s.subLabel}>
+            {hasEntries ? "★ Quote this one · " : ""}Slabs {monthLong(r.month)} produced · by distinct slab
+            number, graded whenever QC reached them
+          </div>
           <table className={`${s.t} ${s.keep}`}>
             <thead><tr><th>Grade</th><th className={s.num}>Slabs</th><th className={s.num}>Share</th></tr></thead>
             <tbody>
@@ -554,50 +664,92 @@ function SheetQualityMonth({ r, canFill }: { r: MonthlyReport; canFill: boolean 
             </tbody>
           </table>
         </div>
-        <div>
-          <div className={s.subLabel}>All QC entries filed this month · any month&rsquo;s stone</div>
-          <table className={`${s.t} ${s.keep}`}>
-            <thead><tr><th>Grade</th><th className={s.num}>QC entries</th><th className={s.num}>Share</th></tr></thead>
-            <tbody>
-              {q.grades.map(([g, n]) => (
-                <tr key={g}>
-                  <td className={s.key}>{GRADE_LABEL[g] ?? g}</td>
-                  <td className={s.num}>{num(n)}</td>
-                  <td className={s.num}>{share(n, q.inspected)}</td>
+        {/* .pair splits its children evenly, so the surviving table would
+            stretch across the whole sheet on its own and read as a different,
+            wider table from the one every other month prints. The spacer keeps
+            its half; the note beneath says what is missing and why. */}
+        {!hasEntries && <div aria-hidden="true" />}
+        {hasEntries && (
+          <div>
+            <div className={s.subLabel}>All QC entries filed this month · any month&rsquo;s stone</div>
+            <table className={`${s.t} ${s.keep}`}>
+              <thead><tr><th>Grade</th><th className={s.num}>QC entries</th><th className={s.num}>Share</th></tr></thead>
+              <tbody>
+                {q.grades.map(([g, n]) => (
+                  <tr key={g}>
+                    <td className={s.key}>{GRADE_LABEL[g] ?? g}</td>
+                    <td className={s.num}>{num(n)}</td>
+                    <td className={s.num}>{share(n, q.inspected)}</td>
+                  </tr>
+                ))}
+                <tr className={s.total}>
+                  <td>Total QC entries</td>
+                  <td className={s.num}>{num(q.inspected)}</td>
+                  <td className={s.num}>100%</td>
                 </tr>
-              ))}
-              <tr className={s.total}>
-                <td>Total QC entries</td>
-                <td className={s.num}>{num(q.inspected)}</td>
-                <td className={s.num}>100%</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
       <p className={s.note}>
-        The two totals cover different stone and must not be added together.{" "}
+        {/* F7: ONE IMPERATIVE SENTENCE, FIRST. The two tables are the same
+            width, the same styling and adjacent, and the right-hand one
+            carries the familiar headline pass rate — which makes the wrong
+            table the sticky one. The month's quality is the month's own stone;
+            the other table is QC's workload, most of it other months'. */}
+        {hasEntries && (
+          <><strong>For {monthLong(r.month)}&rsquo;s quality, quote the left-hand table.</strong> It is this
+          month&rsquo;s own stone. The right-hand one is QC&rsquo;s workload in the month, this month&rsquo;s
+          slabs and other months&rsquo; mixed together, and the two totals cover different stone and must not
+          be added together.{" "}</>
+        )}
         {r.made === r.producedSlabs ? (
           <>{monthLong(r.month)} pressed <strong>{num(r.made)} slabs</strong>, every one a distinct number.</>
         ) : (
-          <>{monthLong(r.month)}&rsquo;s hours declared <strong>{num(r.made)} slabs</strong> across{" "}
-          <strong>{num(r.producedSlabs)} distinct slab numbers</strong> — page one counts the claims, the
-          left-hand table the numbers; page two names the rows where they part.</>
+          <>{monthLong(r.month)}&rsquo;s hours claimed <strong>{num(r.made)} slabs</strong> across{" "}
+          <strong>{num(r.producedSlabs)} distinct slab numbers</strong> — page one&rsquo;s figures band counts
+          the claims, this table the numbers, and page two prints both as Slabs and Numbers with the rows where
+          they part.</>
         )}{" "}
-        QC filed <strong>{num(q.inspected)} entries</strong> in the same window, covering {num(q.inspectedSlabs)}{" "}
-        distinct slabs.{" "}
-        {r.qcEntriesElsewhere + r.qcEntriesUnplaced === 0 ? (
-          <>Every one of them was for a slab this month declared.</>
+        {/* F6: no right-hand table, so nothing may be said about one. */}
+        {hasEntries ? (
+          <>QC filed <strong>{num(q.inspected)} entries</strong> in the same window, covering{" "}
+          {num(q.inspectedSlabs)} distinct slabs.{" "}
+          {r.qcEntriesElsewhere + r.qcEntriesUnplaced === 0 ? (
+            <>Every one of them was for a slab this month declared.</>
+          ) : (
+            /* F4: "in no MIS range at all" was false. The bucket now means
+               what it can prove — no range this report will WALK covers the
+               number — which includes numbers that sit only inside a range
+               refused as impossibly wide (all 14 of August 2026's are inside
+               ranges 10,015 to 1,227,644 slabs wide, live Neon 2026-09-03). */
+            <>Only <strong>{num(r.qcEntriesOnOwnSlabs)}</strong> were for slabs this month declared; of the
+            other {num(r.qcEntriesElsewhere + r.qcEntriesUnplaced)}, {num(r.qcEntriesElsewhere)} carry a number
+            some MIS hour declared — another month&rsquo;s, or an hour of this month that reached no
+            shift — and {num(r.qcEntriesUnplaced)} sit in no MIS range this report can read: either no range
+            names them, or the only range that does is one it refuses as impossibly wide.</>
+          )}{" "}
+          {r.producedGradedAfter > 0 && (
+            <>Going the other way, the QC row for {num(r.producedGradedAfter)} of the month&rsquo;s own slabs
+            arrived only after the month closed — counted on the left, absent from the right.{" "}</>
+          )}</>
         ) : (
-          <>Only <strong>{num(r.qcEntriesOnOwnSlabs)}</strong> were for slabs this month declared; of the other{" "}
-          {num(r.qcEntriesElsewhere + r.qcEntriesUnplaced)}, {num(r.qcEntriesElsewhere)} carry a number another
-          month&rsquo;s MIS declared and {num(r.qcEntriesUnplaced)} sit in no MIS range at all.</>
+          <>No QC entry falls in this month&rsquo;s own window, so there is no second table to set beside it.
+          Polishing and QC are windowed on their Airtable import stamp — created_time stops dead at 8 June
+          2026 across the whole table (live Neon, 2026-09-03), leaving the import stamp the only timestamp
+          still moving — and every row imported before that cutover carries a June 2026 stamp. A month that
+          closed earlier therefore has no entries of its own, and the sections below read empty for the same
+          reason. The table above still stands: it looks its slabs up BY NUMBER, whenever QC reached them.{" "}
+          {r.producedGradedAfter > 0 && (
+            <>The QC row for {num(r.producedGradedAfter)} of them arrived after the month closed.{" "}</>
+          )}</>
         )}
-        Going the other way, {num(r.producedGradedAfter)} of the month&rsquo;s own slabs were graded only after
-        the month closed — counted on the left, absent from the right — and a further {num(pg.ungraded)} carry
-        no verdict yet. Pass rate is{" "}
-        <strong>{pct1(producedRate)}</strong> on the month&rsquo;s own slabs against <strong>{pct1(q.passRate)}</strong>{" "}
-        across every entry filed; both are A or A2 over A+A2+B+C, with cut-to-size and sampling out of each side.
+        {pg.ungraded > 0 && <>{num(pg.ungraded)} of the month&rsquo;s slabs carry no verdict yet. </>}
+        Pass rate is <strong>{pct1(producedRate)}</strong> on the month&rsquo;s own slabs
+        {hasEntries && <> against <strong>{pct1(q.passRate)}</strong> across every entry filed</>}; A or A2
+        over A+A2+B+C, with cut-to-size and sampling out of each side
+        {hasEntries && <>, so the two are comparable</>}.
       </p>
 
       <Section name="Quality across the month"
@@ -734,6 +886,35 @@ function SheetQualityMonth({ r, canFill }: { r: MonthlyReport; canFill: boolean 
           ? "Every elapsed day holds at least one entry."
           : <>Nothing at all was filed on <strong>{r.zeroDays.length} day{r.zeroDays.length === 1 ? "" : "s"}</strong>: {r.zeroDays.map(dayLabel).join(", ")} — those days show dashes above, not zeros, because an unfiled day is a gap in the record, not a silent line.</>}
       </p>
+      {/* F2: THE EXCLUSION THAT WAS PRINTED NOWHERE.
+          An MIS row whose `hour` cell is blank cannot be placed in a shift, so
+          the day figure (assembleDay sums the three shifts) drops it, and with
+          it every slab it declared. That is not a rounding matter: measured on
+          live Neon 2026-09-03, June 2026 has 11 such rows carrying 104 slabs
+          whose numbers ALL appear in `press` and in `polish_entry` — real
+          production, which /scoreboard/incentive counts and the payout pays
+          for — so the report said June made 2,471 across 2,467 numbers when
+          the plant's own MIS declares 2,575 across 2,544. July has 3 rows and
+          19 slabs; August has none. Printed here beside the impossible-range
+          note, on the same principle: an hour this report sets aside is an
+          hour it must name. Folding them into `made` would move a historical
+          production figure and an achievement percentage — the owner's call,
+          not this page's. */}
+      {r.unlabelled.slabs > 0 && (
+        <p className={s.note}>
+          <strong>{num(r.unlabelled.slabs)} slab{r.unlabelled.slabs === 1 ? "" : "s"} declared on{" "}
+          {r.unlabelled.declaring} hourly row{r.unlabelled.declaring === 1 ? "" : "s"} with no hour typed</strong>{" "}
+          — on {r.unlabelled.days.map(dayLabel).join(", ")}
+          {r.unlabelled.hours > r.unlabelled.declaring
+            && `, out of ${r.unlabelled.hours} rows this month that carry no hour at all`}. A row with no hour
+          reaches no shift, so no figure on this report counts it: the {num(r.made)} slabs on page one
+          and {r.unlabelled.slabs} more make {num(r.made + r.unlabelled.slabs)} that the sheets declare
+          between them. The stone is real — those slab numbers are in the press and polishing records, and the
+          month-incentive screen pays for them. Type the hour on {r.unlabelled.declaring === 1 ? "that row" : "those rows"}{" "}
+          and they join every figure above; until then this report is short by that much and says so here
+          rather than anywhere else.
+        </p>
+      )}
       {r.wideHours > 0 && (
         <p className={s.note}>
           <strong>{num(r.wideHours)} hour{r.wideHours === 1 ? "" : "s"} set aside</strong> for an impossible slab

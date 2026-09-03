@@ -69,6 +69,19 @@ const after = (src: string, marker: string, chars = 4000) => {
   return src.slice(i, i + chars);
 };
 
+/** SCOPED BY THE NEXT DECLARATION, NOT BY A CHARACTER COUNT. Two guards below
+ *  read claimedByMonth() and both used `after(lib, …, 3000)`; adding a comment
+ *  to the function pushed its `slabClaimAward` arm past 3,000 characters and
+ *  the guard failed on prose rather than on code, which is the one way a
+ *  structural test can cry wolf. Bounded by the declaration that follows it
+ *  instead, so it cannot go vacuous OR spurious as the function is documented. */
+const claimedByMonthFn = () => {
+  const i = lib.indexOf("async function claimedByMonth");
+  const j = lib.indexOf("export async function incentiveMonth");
+  assert.ok(i !== -1 && j > i, "claimedByMonth or the function after it has been renamed — this guard would be vacuous");
+  return lib.slice(i, j);
+};
+
 // ───────────────────────────────── the population widened, deliberately ────
 
 test("the table's rows are every batch the month CLAIMED, not only the ones still waiting", () => {
@@ -89,7 +102,7 @@ test("the claim is rebuilt under the score's own rules, not a second opinion", (
   // claimedByMonth() exists because ShiftScore reports the slabs it could NOT
   // count by number and the ones it could only as a total. If it drifts from
   // scoreShift the table stops describing the month the payout paid for.
-  const fn = after(lib, "async function claimedByMonth", 3000);
+  const fn = claimedByMonthFn();
   assert.match(fn, /shiftKeyOf/, "shift membership must be the score's window rule");
   assert.match(fn, /MAX_SLABS_PER_HOUR/, "a typo'd range must be dropped here exactly as scoreShift drops it");
   assert.match(fn, /stdMultiplier/, "the lower-multiplier-wins rule decides which row names the design");
@@ -488,9 +501,172 @@ test("the two derivations of 'which shifts have ended' agree", () => {
   // a swap: an instance scoreRange dropped for having neither slabs nor a crew
   // still passes the `now` test and must still be claimed, or the rebuild would
   // silently shrink instead of drifting loudly.
-  const fn = after(lib, "async function claimedByMonth", 3000);
+  const fn = claimedByMonthFn();
   assert.match(fn, /shiftRange\(anchor, letter\)\.end > now && !scored\.has\(key\)/,
     "a shift must count as ended if it ended by our clock OR scoreRange scored it");
   assert.ok(lib.includes("claimedByMonth(from, data.to, now, new Set(data.shifts.map((s) => `${s.anchor}${s.shift}`)))"),
     "the scored set must be the shifts scoreRange actually returned");
+});
+
+// ────────────── the heading's claim, and the slabs it deliberately leaves out ─
+
+/** WHAT THE MONTH'S RANGES CLAIMED, AND WHAT THIS TABLE SHOWS OF IT — the three
+ *  months a reader can page back to, measured on live Neon 2026-09-03 two ways:
+ *  by running incentiveMonth() itself, and independently by expanding every MIS
+ *  range in SQL and counting distinct slab numbers.
+ *
+ *    month      shown (`claimed`)   dropped (`contested`)   distinct claimed
+ *    2026-06                2,541                       3              2,544
+ *    2026-07                5,424                       6              5,430
+ *    2026-08                6,261                       0              6,261
+ *
+ *  The dropped slabs are 144295, 144296 and 144340 (June) and 147766, 147767
+ *  and 148112-148115 (July). Two shifts' ranges cover each of them and no admin
+ *  has ruled, so the payout gives them to NEITHER shift and no row of a table
+ *  keyed on design+batch can hold them — which is right, and was unsaid.
+ *
+ *  FROZEN, AND UNLIKE THE GRADE COUNTS THESE DO NOT MOVE AS QC WORKS. A month's
+ *  claim changes only when an MIS range is retyped or a ruling is filed
+ *  (slab_claim_award held 0 rows when this was measured, so every contested
+ *  slab was an unruled one). They are here to pin the ARITHMETIC — shown +
+ *  dropped = claimed — not to pin today's figures. */
+const CLAIM_BY_MONTH: [string, number, number, number][] = [
+  ["2026-06", 2541, 3, 2544],
+  ["2026-07", 5424, 6, 5430],
+  ["2026-08", 6261, 0, 6261],
+];
+
+test("the two halves of the month's claim add back to the month's claim", () => {
+  // THE ARITHMETIC THE HEADING NOW PRINTS. If these two figures stop adding to
+  // the distinct claim, the sentence on the screen is wrong again — and it was
+  // wrong the quiet way: 3 short on June, 6 on July, exact on August, so the
+  // only month anybody was looking at was the one that could not reveal it.
+  for (const [month, shown, dropped, distinct] of CLAIM_BY_MONTH) {
+    assert.equal(shown + dropped, distinct, `${month}: claimed + contested must be every slab the ranges claimed`);
+  }
+  assert.ok(CLAIM_BY_MONTH.some(([, , dropped]) => dropped > 0),
+    "a month with contested slabs must stay in this table, or the clause is never exercised");
+  assert.ok(CLAIM_BY_MONTH.some(([, , dropped]) => dropped === 0),
+    "a month with none must stay too — the clause must NOT render 'and 0 more'");
+});
+
+test("the count the screen apologises with is the count actually dropped", () => {
+  // NOT the count of contested slabs. An AWARDED slab is not contested any
+  // more: it scores for the shift the admin gave it to and stays on a row, so
+  // counting it would have the page apologise for a slab it is showing. The
+  // increment therefore has to sit inside the unruled arm, beside the delete.
+  const fn = claimedByMonthFn();
+  assert.match(fn, /if \(!awarded\.has\(n\)\) \{ owner\.delete\(n\); dropped \+= 1; \}/,
+    "the dropped count must be incremented exactly where the slab is deleted, not from contested.length");
+  assert.ok(!/contested: contested\.length/.test(fn),
+    "an awarded slab would be counted as dropped — the page would name a slab it is drawing");
+  assert.match(fn, /return \{ owner, contested: dropped \}/, "the count must come back with the map it describes");
+  assert.match(fn, /Promise<\{ owner: Map<number, ClaimedSlab>; contested: number \}>/,
+    "the signature must carry both, so a caller cannot take the map and drop the count");
+  assert.ok(lib.includes("const { owner: claimed, contested } = await claimedByMonth("),
+    "incentiveMonth must destructure both halves — taking only the map is how the figure went unsaid the first time");
+  assert.match(lib, /contested: number;/, "outstanding.contested must be part of the interface, not a local");
+  assert.ok(lib.includes("unreconciled, unclaimed, contested, byStage"), "and it must actually be returned");
+});
+
+test("the screen names the dropped slabs where the heading is, and only when there are some", () => {
+  const table = page.slice(page.indexOf("The month by design and batch"), page.indexOf("QC grading, last 14 days"));
+  // The OLD sentence, verbatim. It claimed the table held every slab the
+  // ranges claimed, and it held that minus the contested ones.
+  assert.ok(!page.includes("Every slab the month&apos;s MIS ranges claimed, one row per design and batch"),
+    "the heading's blurb still claims the table holds EVERY claimed slab — it holds the payable ones");
+  assert.match(table, /claimed and the payout can attribute to one shift/,
+    "the blurb must say what the population actually is");
+  // Both the heading clause and the paragraph are conditional: on August, today,
+  // there are none, and "and 0 more" would be worse than saying nothing.
+  assert.ok(table.includes("{outstanding.contested > 0 && <> payable of {fmt(tot.claimed + outstanding.contested)} claimed</>}"),
+    "the heading must carry both figures and their gap, and must not render the qualifier on a month with none");
+  assert.match(table, /\{outstanding\.contested > 0 && \(\s*\n\s*<p/,
+    "the explanation must be conditional on the same figure");
+  assert.ok(table.includes("{fmt(tot.claimed + outstanding.contested)} distinct slabs in all"),
+    "the page must print the total the two halves add to, or a reader cannot do the sum");
+  // The disputes are rulable, and the scoreboard is where that happens. A page
+  // that names an exclusion without a way to resolve it is a dead end.
+  assert.match(table, /Rule on them<\/Link>/, "the clause must link to where a ruling is filed");
+});
+
+test("the same slabs are not given two different counts on one screen", () => {
+  // outstanding.contested (this file's rebuild) and openDisputes
+  // (scoreRange's totals.contested) are two derivations of ONE set, and the
+  // page prints both — the heading clause and the amber "waiting on" card.
+  // They agreed exactly on all three months above, measured 2026-09-03. If a
+  // future change makes one of them mean something else, this is the guard
+  // that has to be read: they must stay two readings of one quantity, or one
+  // of the two sentences has to stop calling them "claimed by two shifts".
+  assert.match(page, /\{fmt\(m\.openDisputes\)\} slabs claimed by two shifts, awaiting a ruling/,
+    "the amber card's wording is the other reading of the same slabs");
+  assert.match(lib, /THE SAME SLABS scoreRange COUNTS AS `totals\.contested`/,
+    "the interface must say the two figures are one quantity, or a reader will 'fix' the gap between them");
+});
+
+// ─────────────────────── the routed column: zero is the expected reading ────
+
+test("the routed stage is keyed on the GRADE, and a non-zero value is a regression", () => {
+  // MEASURED ON LIVE NEON 2026-09-03, all time, every distinct value:
+  //   SELECT quality_grade, count(*) FROM polish_qc GROUP BY 1
+  //   -> A / 'Not graded yet' / A2 / B / 'C (Reject)' / NULL, and nothing else.
+  // shiftScore.ts sets verdict 'cts' only for a grade of exactly 'CTS' and
+  // 'printing' only for one starting 'PRINT', so stages.routed is structurally
+  // zero and has been since scripts/0071 and 0072 regraded the 63 cut slabs.
+  // That is the owner's decision working, not a gap: a cut slab keeps its
+  // verdict and still earns credit.
+  assert.equal(gradeCredit("CTS"), null, "a routing is not a verdict");
+  assert.match(lib, /o\.verdict === "cts" \|\| o\.verdict === "printing" \? "routed"/,
+    "routed must stay keyed on the QC verdict");
+  // THE ONE CHANGE THAT MUST NEVER BE MADE TO 'FIX' THE EMPTY COLUMN. Re-keying
+  // routed onto slab_mark would move the 63 decided-B slabs out of B into a
+  // routing, scoring them 0 instead of half a slab each — August alone would
+  // fall by 12.5 counted slabs (25 x 1/2, measured 2026-09-03) and the owner's
+  // ruling would be undone by a screen tidy-up.
+  // code() first: the prose above names the very column it forbids reading, so
+  // an unstripped guard would fire on the sentence that documents the rule.
+  assert.ok(!/slabMark|slab_mark/.test(code(lib)),
+    "the routed stage is being keyed on slab_mark — that scores the owner's 63 decided-B slabs at zero and undoes his ruling");
+  assert.ok(!/slabMark|slab_mark/.test(code(page)), "the page is reading slab_mark to fill the routed column");
+  assert.match(lib, /`routed` IS EXPECTED TO BE ZERO, AND ITS BEING ZERO IS THE POINT/,
+    "the Stage doc must say so, or the next reader treats an empty column as a bug");
+});
+
+test("the screen says zero is the expected reading, rather than showing a column of dashes", () => {
+  const table = page.slice(page.indexOf("The month by design and batch"), page.indexOf("QC grading, last 14 days"));
+  // A column that can only ever be empty and says nothing about itself reads as
+  // a measurement of nothing happening. It is not one — it is a tripwire.
+  assert.match(table, /expected 0<\/span>/, "the Routed column head must say what to expect of it");
+  assert.match(table, /That column reads zero, and zero is the reading to expect/,
+    "the note under the table must state it in prose as well as in the head");
+  assert.match(table, /regression rather than throughput/,
+    "the note must say what a NON-zero value would mean, which is the only reason to keep the column");
+  assert.match(table, /scripts\/0072/, "and must point at the standing check that owns that regression");
+  // The old sentence said a cut slab "sits in its own column and in none of the
+  // four grades". Since 0071/0072 it sits in the B column and NOT in that one,
+  // so the sentence asserted the opposite of what the data does.
+  assert.ok(!page.includes("a slab sent to cut-to-size was diverted before anyone judged it, so it sits in its own"),
+    "the note still says a cut slab lands in the Routed column — since scripts/0071 and 0072 it lands in B by decision");
+  assert.match(table, /a cut slab now keeps\s*\n?\s*the verdict it was given/,
+    "the note must say where a cut slab actually goes");
+  // …and the KPI beside it must not print a permanently-zero term as if it were
+  // one of the month's live figures.
+  const kpi = after(page, 'label="Still to grade"', 700);
+  assert.match(kpi, /outstanding\.byStage\.routed > 0 \?/,
+    "the 'Still to grade' KPI prints '0 routed' unconditionally — a tripwire dressed as a measurement");
+  assert.match(kpi, /a routing written into the grade/,
+    "when it does fire, the KPI must say what it means");
+});
+
+test("the routed column still exists, and the row's invariant still names it", () => {
+  // KEEPING IT IS THE DECISION, NOT AN OVERSIGHT. It is the visible proof that
+  // no routing has been folded into a grade — the exact bug the inventory
+  // register shipped twice — and the printed invariant graded + waiting +
+  // routed = claimed is what a reader checks a row with.
+  assert.match(page, /const WAIT_STAGES = STAGES\.filter\(\(s\) => s !== "routed"\)/,
+    "routed must stay outside the waiting subtotal");
+  const table = page.slice(page.indexOf("The month by design and batch"), page.indexOf("QC grading, last 14 days"));
+  assert.match(table, /graded \+ still waiting \+ routed = claimed/, "the invariant must still name all three terms");
+  assert.match(table, /g\.stages\.routed \? "text-amber-700"/, "the column must still be rendered");
+  assert.equal(CLAIM_BY_MONTH.length, 3, "the months measured above are the evidence for 'expected 0'");
 });

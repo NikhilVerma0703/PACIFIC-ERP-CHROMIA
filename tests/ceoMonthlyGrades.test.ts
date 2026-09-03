@@ -5,18 +5,28 @@ import { MAX_SLABS_PER_HOUR, slabsDeclared, rangeImpossible } from "../src/lib/s
 
 // THE CEO MONTHLY REPORT'S GRADE COLUMNS.
 //
-// WHAT THIS GUARDS. Sheet two's "What the line ran" table now carries A, A2,
+// WHAT THIS GUARDS. Sheet two's design table now carries A, A2,
 // B, C, Cut and Not yet beside Slabs, and sheet three prints the month's own
 // grades beside the month's QC entries. Both rest on ONE claim: that the
 // grades belong to THE SLABS THE MONTH PRESSED, not to whatever QC happened to
 // file during it. Measured on live Neon 2026-09-03 for August 2026, the two
 // populations are nothing like each other:
 //   6,390 QC entries filed in the month, of which 1,000 were for slabs the
-//   month did not press (938 declared by an earlier month's MIS, 61 in no MIS
-//   range at all), and 444 of the month's OWN slabs were not graded until
-//   September. Pass rate 94.71% on the month's own slabs, 93.75% across every
-//   entry. Grading the mix on the month's QC window would have been wrong by
-//   both of those numbers at once.
+//   month did not press (939 carrying a number some other MIS hour declared,
+//   61 in no range this report can read), and 367 of the month's OWN slabs had
+//   their QC row arrive only in September. Pass rate 94.6% on the month's own
+//   slabs, 93.8% across every entry. Grading the mix on the month's QC window
+//   would have been wrong by both of those numbers at once.
+//
+// EVERY FIGURE IN THIS FILE IS A MEASUREMENT WITH A DATE ON IT, NOT A SPEC.
+// August's grade counts climb hour by hour while QC files: its "graded after
+// the month" figure read 348 on the morning of 2026-09-03 and 367 that
+// evening. Nothing here asserts a count against the database — the assertions
+// are all structural, and the numbers are only the evidence for why the
+// structure has to be that way. If a figure quoted here disagrees with the
+// live database, the figure is stale; re-derive with
+// scripts/verify-grade-columns.mts and scripts/check-monthly-vs-daily.mts and
+// do NOT "fix" working code to match a comment.
 //
 // AND ONE ARITHMETIC. The six grade figures must add across to the design's
 // slabs and down to the month's, with cut-to-size in its own column and never
@@ -36,6 +46,16 @@ const daily = read("../src/lib/dailyReport.ts");
 const monthly = read("../src/lib/monthlyReport.ts");
 const sheets = read("../src/app/report/ceo/MonthlySheets.tsx");
 const css = read("../src/app/report/ceo/report.module.css");
+
+/** The source with every comment removed. Assertions about what the PAGE
+ *  SAYS must read only what the page says: this file's own explanations quote
+ *  the wrong sentences they exist to forbid ("got a verdict only in the month
+ *  after", "most of it other months' slabs"), and a guard that matches its own
+ *  rationale is a guard that fires on nothing. Crude on purpose — a "//" or
+ *  "/*" inside a string literal would confuse it, and there are none here. */
+const noComments = (src: string) =>
+  src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^[ 	]*\/\/.*$/gm, " ");
+const sheetsSaid = noComments(sheets);
 
 /** The body of a top-level declaration, up to its closing brace at column 0. */
 function decl(src: string, needle: string): string {
@@ -81,9 +101,10 @@ test("the shared rule still asks BOTH signals", () => {
 });
 
 test("getQuality's own arithmetic is untouched", () => {
-  // Another agent measured this month's pass rate at 93.75% (5,475 of 5,840)
-  // for August 2026 this morning, and the grade columns added here must not
-  // have moved it. These four lines ARE that rate.
+  // The CEO's all-entries pass rate for August 2026 measured 93.75% on
+  // 2026-09-03, and neither the grade columns nor anything since may move it.
+  // These four lines ARE that rate — the assertions are on the lines, not on
+  // the number, because the number climbs as QC files.
   const g = decl(daily, "export function getQuality");
   assert.ok(g.includes('const grades = tally(qc, gradeOf);'), "the grade tally must still key on gradeOf");
   assert.ok(g.includes("const cts = qc.filter(noVerdict);"), "the CTS bucket must still be the no-verdict rows");
@@ -97,10 +118,11 @@ test("getQuality's own arithmetic is untouched", () => {
 // ───────────────────────────────────────── which slabs the grades belong to ──
 
 test("the produced-slab QC fetch is NOT windowed on the month", () => {
-  // A slab pressed on 31 August is usually graded in September and is still an
-  // August slab: 444 of August 2026's 6,261 slabs were graded only after the
-  // month closed (live Neon, 2026-09-03). A where-clause on importedAt here
-  // would drop every one of them into "Not yet".
+  // A slab pressed on 31 August is usually polished and inspected in September
+  // and is still an August slab: the QC row for 455 of August 2026's 6,261
+  // slabs was stamped after the month closed, 367 of them carrying a verdict
+  // (live Neon, evening of 2026-09-03 — this climbs daily). A where-clause on
+  // importedAt here would drop every one of them into "Not yet".
   const gp = decl(monthly, "async function gradeProduced");
   const where = gp.slice(gp.indexOf("findMany"), gp.indexOf("select: PRODUCED_QC_SELECT"));
   assert.ok(where.includes("slabNumber: { in:"), "the produced grades must be fetched BY SLAB NUMBER");
@@ -134,10 +156,11 @@ test("'graded after the month' counts VERDICTS, and reads one clock", () => {
   // increment on any latest QC row stamped after the window closed, including
   // rows still reading "Not graded yet" — so it overlapped the "still carry no
   // verdict at all" figure printed in the same sentence. Measured on live Neon
-  // 2026-09-03 for August 2026: 450 rows landed late, only 348 of them with a
-  // verdict, and the other 102 were also inside the 954 "Not yet". July 931 vs
-  // 846, June 286 vs 242. Re-measured after the gate: 350 / 846 / 242, and the
-  // two figures on sheet three are now disjoint.
+  // 2026-09-03 for August 2026: 455 latest rows landed after the window, only
+  // 367 of them carrying a verdict, and the rest were also inside the "Not
+  // yet" figure printed beside it as though the two were disjoint. July 846,
+  // June 242, on the gated count. August's numbers climb through the day; the
+  // GATE is what this test guards, not the count.
   const gp = decl(monthly, "async function gradeProduced");
   const gate = gp.slice(gp.indexOf("total[bucket]++"), gp.indexOf("gradedAfterMonth++") + 20);
   assert.ok(gate.includes('bucket !== "cut"') && gate.includes('bucket !== "ungraded"'),
@@ -164,11 +187,25 @@ test("every QC entry in the window lands in exactly one provenance bucket", () =
   assert.ok(loop.includes("core.slabOwner.has(r.slabNumber)"), "the month's own slabs must be settled first, on the same map the grades use");
   assert.ok(monthly.includes("qcEntriesElsewhere:") && monthly.includes("qcEntriesUnplaced:"),
     "the split is not carried out to the sheet");
-  const out = decl(monthly, "async function declaredOutside");
-  assert.match(out, /dateAndTime: \{ lt: from \}/, "the outside-the-month window lost its earlier arm");
-  assert.match(out, /dateAndTime: \{ gte: to \}/, "the outside-the-month window lost its later arm");
-  assert.ok(out.includes("dateAndTime: null"),
-    "an MIS row with no timestamp must count as OUTSIDE — the window filter cannot have claimed it for this month");
+  const out = decl(monthly, "async function declaredElsewhere");
+  // THE COMPLEMENT, NOT A SECOND WINDOW — the F4 fix. This lookup used to take
+  // "every MIS row whose dateAndTime is OUTSIDE the month", which is a
+  // different ROW filter from the month's own enumeration (that one also
+  // requires an hour label). A slab number declared only by a blank-hour row of
+  // THIS month therefore sat in neither set and sheet three printed it as
+  // being in no MIS range at all — while the next month's report, for which
+  // the same row is outside the window, called it another month's stone.
+  // Measured on live Neon 2026-09-03: 28 of June 2026's 6,124 such entries,
+  // 19 of July's 352, 0 of August's 61; after the fix July's split reads
+  // 344/333 and June's 28,437/6,096, and the buckets still add to `inspected`.
+  assert.ok(!/dateAndTime/.test(out),
+    "declaredElsewhere is windowed on dateAndTime again — that is a second row filter, and a slab a blank hour of THIS month declared falls between the two sets");
+  assert.ok(!/hour/.test(out),
+    "declaredElsewhere has grown an hour-label filter of its own — it must read every row this range rule can read");
+  assert.match(out, /if \(!own\.has\(sn\)\) declared\.add\(sn\)/,
+    "the elsewhere set must be the exact COMPLEMENT of the month's own slabs, or the two buckets are not exhaustive");
+  assert.ok(monthly.includes("declaredElsewhere(core.slabOwner)"),
+    "the provenance lookup must be handed the same map the grade columns partition");
 });
 
 // ─────────────────────────────────────────────── the enumeration's exclusions ──
@@ -188,11 +225,11 @@ test("the slab enumeration applies the mix's own exclusions, not looser ones", (
   // be this month's on page two and another month's on page three.
   const core = decl(monthly, "async function monthCore");
   assert.ok(core.includes("walkRange(x.slabFrom, x.slabTo)"), "monthCore stopped using the shared range guard");
-  const outside = decl(monthly, "async function declaredOutside");
+  const outside = decl(monthly, "async function declaredElsewhere");
   assert.ok(outside.includes("walkRange(r.startingSlabNumber, r.endingSlabNumber)"),
     "the provenance lookup walks ranges by a rule of its own — it must use walkRange");
   // and the enumeration must sit AFTER the shift gate, inside the same loop
-  const gate = core.indexOf("if (x.shift == null) continue;");
+  const gate = core.indexOf("if (x.shift == null) {");
   assert.ok(gate !== -1 && gate < core.indexOf("walkRange(x.slabFrom"),
     "the enumeration escaped the shift gate — it would count hours the Slabs column does not");
   assert.match(monthly, /import \{ MAX_SLABS_PER_HOUR \} from "@\/lib\/shiftScoreMath"/,
@@ -240,7 +277,95 @@ test("slab numbers partition the month — first claim wins", () => {
   assert.match(core, /const held = slabOwner\.get\(sn\);[\s\S]{0,120}if \(held === undefined\) slabOwner\.set\(sn, k\)/,
     "the enumeration must not overwrite an earlier claim, or a slab lands on two design rows");
   assert.ok(monthly.includes("numbered:"), "the mix row must report its DISTINCT slab count beside `made`");
-  assert.ok(sheets.includes("x.numbered !== x.made"), "the sheet must detect and name a row whose two counts differ");
+});
+
+// ───────────────────────────── the two slab counts, IN the table (F1) ──
+
+test("the reconciling count is a COLUMN, not a footnote", () => {
+  // THE OWNER'S OWN QUESTION. He put page one's "6,262 SLABS PRODUCED" beside
+  // page two's total row (Slabs 6,262, six grade cells summing to 6,261) and
+  // the incentive screen's "6,261 SLABS", and asked which was right. Both are:
+  // 6,261 is the slab count and 6,262 counts one slab twice, because the 12-13
+  // hour of 5 August starts on 152439, the number the 11-12 hour of the same
+  // day and batch already ended on (confirmed on live Neon 2026-09-03 by
+  // expanding every August range — exactly one number in the month is claimed
+  // twice). The difference was explained only in a 6.7pt note UNDER the table,
+  // and .split now lets that table break across printed pages carrying its
+  // header and not its note. So the figure has to be in the table.
+  const mix = sheets.slice(sheets.indexOf('name="What the line ran'), sheets.indexOf("Page 2 of 3"));
+  assert.ok(mix.includes(">Slabs<span") || /Slabs<span className=\{s\.colSub\}/.test(mix),
+    "the Slabs column no longer says WHICH count it is — two different numbers read as one quantity again");
+  assert.ok(/Numbers<span className=\{s\.colSub\}/.test(mix),
+    "the mix table has no Numbers column — the reconciling figure is back in a footnote the continuation page does not carry");
+  assert.ok(mix.includes("{m2.numbered ? num(m2.numbered) : NDASH}"),
+    "the design rows do not print their distinct-number count");
+  assert.ok(mix.includes("{num(r.producedSlabs)}"),
+    "the total row does not print the month's distinct-number count — the column cannot be added up");
+  // and the Slabs column must still be `made`: sum(mix.made) === r.made is the
+  // invariant scripts/check-monthly-vs-daily.mts enforces, and every target
+  // and achievement figure on the report is built on it.
+  assert.ok(mix.includes("{num(m2.made)}") && mix.includes("{num(r.made)}"),
+    "the Slabs column stopped counting what the hours declared");
+  // page one must not print the claim count under an unqualified label either
+  const one = sheets.slice(sheets.indexOf("function SheetMonth"), sheets.indexOf("Page 1 of 3"));
+  assert.ok(one.includes("const exact = r.made === r.producedSlabs;"),
+    "sheet one no longer knows whether its headline figure is the slab count");
+  assert.match(one, /exact \? `Slabs produced\$\{soFar\}` : `Slabs claimed/,
+    "the KPI tile calls the claim count 'slabs produced' with no caveat again — on a month with a re-typed number that is one slab more than the plant made");
+});
+
+test("the deficit is split into its TWO causes, and neither is called the other", () => {
+  // 'N SLAB NUMBERS WERE CLAIMED TWICE' IS FALSE WHERE AN HOUR TYPED 0 -> 0.
+  // slabsDeclared reads 0->0 as one slab; walkRange refuses to walk from zero
+  // (shiftScore.claimedSlabs refuses it too). So made - numbered is not a
+  // duplicate count. Measured on live Neon 2026-09-03: April 2026's 35-slab
+  // deficit is 13 hours that typed 0->0 (design blank, on 2 and 6 April) plus
+  // 22 numbers genuinely typed twice; July 2025 is 15 of 119 and August 2025
+  // 6 of 65. The middle quantity — claims, the part of `made` walkRange can
+  // read — is what separates them.
+  const core = decl(monthly, "async function monthCore");
+  assert.match(core, /e\.claims \+= range\[1\] - range\[0\] \+ 1;/,
+    "the walkable claim count is gone — the note cannot tell a re-typed number from an unreadable range");
+  assert.match(core, /if \(x\.made != null\) \{ e\.unreadable \+= x\.made; e\.unreadableHours\+\+; \}/,
+    "an hour that counted slabs but named no slab number is being dropped silently again");
+  for (const f of ["claimedSlabs:", "typedTwice:", "unreadableSlabs:", "unreadableHours:"]) {
+    assert.ok(monthly.includes(f), `the month does not carry \`${f}\` out to the sheet`);
+  }
+  const note = sheets.slice(sheets.indexOf("const retyped ="), sheets.indexOf("Page 2 of 3"));
+  assert.ok(note.includes("r.mix.filter((x) => x.claims > x.numbered)"),
+    "the re-typed rows must be selected on claims vs numbers, not on made vs numbers — made includes hours that named nothing");
+  assert.ok(note.includes("r.mix.filter((x) => x.unreadable > 0)"), "the unreadable-range rows are no longer listed");
+  assert.ok(/typed\s*\n?\s*twice<\/strong>/.test(note) || note.includes("typed\n            twice</strong>"),
+    "the duplicate sentence lost its name");
+  assert.ok(note.includes("whose slab range cannot be a slab number"),
+    "the second fault is not named — thirteen hours that typed 0->0 are being reported as duplicates");
+  assert.ok(!/slab number\{[^}]*\} claimed\s*\n?\s*twice/.test(note),
+    "the note asserts the whole deficit is numbers claimed twice again");
+});
+
+test("hours that reach no shift are counted and printed, not dropped in silence", () => {
+  // monthCore skips any MIS row whose `hour` cell is blank, because the day
+  // figure (assembleDay sums the three shifts) skips it too — and that
+  // exclusion was printed NOWHERE. Measured on live Neon 2026-09-03: June 2026
+  // has 11 such rows declaring 104 slabs, every one of those numbers present in
+  // `press` AND in `polish_entry`, so the report said June made 2,471 across
+  // 2,467 numbers when the plant's own MIS declares 2,575 across 2,544 — and
+  // /scoreboard/incentive counts them and the payout pays for them. July has
+  // 3 rows / 19 slabs, August none. Counted the way an impossible range
+  // (day.wideHours) already is, and NOT folded into `made`: moving a
+  // historical production figure and an achievement percentage is the owner's
+  // decision, not this file's.
+  const core = decl(monthly, "async function monthCore");
+  assert.match(core, /if \(x\.shift == null\) \{[\s\S]{0,400}unlabelled\.hours\+\+/,
+    "a blank-hour row is skipped without being counted again");
+  assert.match(core, /unlabelled\.slabs \+= x\.made/, "the slabs on a blank-hour row are not counted");
+  assert.ok(!/unlabelled\.slabs.*\bmade \+=/.test(monthly) && !/made \+= unlabelled/.test(monthly),
+    "blank-hour slabs have been folded into `made` — that moves a production figure the owner may already have reported");
+  assert.ok(monthly.includes("unlabelled: core.unlabelled"), "the figure is measured and then thrown away");
+  assert.ok(sheets.includes("{r.unlabelled.slabs > 0 && ("),
+    "the sheet does not print the excluded slabs — the exclusion is invisible again");
+  assert.ok(sheets.includes("{num(r.made + r.unlabelled.slabs)}"),
+    "the sheet must show made + excluded, so a reader can add the two figures up and check them");
 });
 
 test("a claim taken by ANOTHER design is recorded, and the note says so", () => {
@@ -262,6 +387,23 @@ test("a claim taken by ANOTHER design is recorded, and the note says so", () => 
     "the note must name the design that holds the number");
   assert.ok(!/The gap is a typed range, not a missing slab/.test(sheets),
     "the note still asserts the old single cause for every row");
+});
+
+test("the newest QC row per slab is chosen by a TOTAL order", () => {
+  // `rows.sort((a, b) => stamp(b) - stamp(a))` leaves rows that share a stamp
+  // in Prisma's fetch order, which across several 5,000-row chunks is not a
+  // defined order — so which verdict a re-graded slab reports could change
+  // between two runs of the same report. No slab in polish_qc carries two rows
+  // on one stamp today (measured 2026-09-03), so this cannot bite yet; the
+  // point is that it cannot start to.
+  const gp = decl(monthly, "async function gradeProduced");
+  const sort = gp.slice(gp.indexOf("rows.sort("), gp.indexOf("const latest"));
+  assert.ok(sort.includes("importedAt.getTime()"),
+    "the stamp tie has no second key — the newest-row-per-slab choice rides on Prisma's fetch order");
+  assert.ok(/a\.id [<>] b\.id/.test(sort),
+    "the sort has no final total-order key; two rows sharing both timestamps still tie");
+  assert.ok(/id: true/.test(monthly.slice(monthly.indexOf("const PRODUCED_QC_SELECT"), monthly.indexOf("type ProducedQcRow"))),
+    "the tie-break key is not selected, so it is undefined at runtime");
 });
 
 // ───────────────────────────────────────────────── the columns must add up ──
@@ -302,7 +444,7 @@ test("the six grade figures add across to slabs and down to the month", () => {
 // ──────────────────────────────────────────────────────────── what prints ──
 
 test("the mix table prints the six columns and a total row", () => {
-  const mix = sheets.slice(sheets.indexOf('name="What the line ran"'), sheets.indexOf("Page 2 of 3"));
+  const mix = sheets.slice(sheets.indexOf('name="What the line ran'), sheets.indexOf("Page 2 of 3"));
   for (const h of [">A<", ">A2<", ">B<", ">C<", ">Cut<", ">Not yet<"]) {
     assert.ok(mix.includes(h), `the mix table has no ${h} column header`);
   }
@@ -324,9 +466,15 @@ test("both new tables reach the printed page at all", () => {
   // which selectors sit inside @media print, not about geometry.
   const printBlock = css.slice(css.indexOf("@media print"));
   const hidden = printBlock.slice(0, printBlock.indexOf("}"));
-  for (const c of ["tight", "split", "pair", "subLabel", "note"]) {
+  // .colSub carries the one word that tells Slabs from Numbers; hidden in
+  // print, the PDF has two adjacent numeric columns with no way to tell which
+  // is the claim count and which the slab count.
+  for (const c of ["tight", "split", "pair", "subLabel", "note", "colSub"]) {
     assert.ok(!hidden.includes(`.${c}`), `.${c} is hidden in print — the new tables would not reach the PDF`);
   }
+  assert.ok(!/\.colSub[^{]*\{[^}]*display:\s*none/.test(css), ".colSub must not be hidden anywhere");
+  assert.match(css, /\.colSub \{[^}]*display: block/,
+    ".colSub must be a block, or .t th's white-space: nowrap puts the qualifier on the header's own line and widens a twelve-column table");
   assert.ok(sheets.includes("${s.tight}"), "the mix table does not use the narrowed class");
   assert.ok(!/\.tight[^{]*\{[^}]*display:\s*none/.test(css), ".tight must not be hidden anywhere");
 });
@@ -348,6 +496,14 @@ test("the mix table is set to break across pages, not to jump one", () => {
   // guarantee is the SAFE degradation: the table may break at a row boundary
   // with its header repeated, instead of .keep shoving all 659px of it onto a
   // further physical sheet and leaving 10cm of white behind.
+  //
+  // RE-MEASURED 2026-09-03 (evening), same geometry, after the Numbers column
+  // and the two-line headers went in: the mix table is TWELVE columns wide and
+  // still 698px — no horizontal overflow, the header sub-line costs 9px of
+  // height (551 -> 560px), and August sheet two stands 1,237px. Wider than the
+  // page, as before and for the same reason; .split is still what makes that
+  // safe. These are layout measurements of live data, so the row counts (and
+  // therefore the heights) move month by month — re-measure, do not trust.
   assert.ok(!/\$\{s\.keep\}[^>]*\$\{s\.tight\}|\$\{s\.tight\}[^>]*\$\{s\.keep\}/.test(sheets),
     "the mix table carries .keep again — at 36 designs that does not keep it on the page, it only moves the whole block");
   assert.ok(sheets.includes("${s.split}"), "the mix table must be marked as one that may break across pages");
@@ -382,28 +538,101 @@ test("sheet three shows the two populations side by side, labelled", () => {
   assert.ok(sec.includes("by distinct slab number"), "the left table's label no longer says what it counts");
   assert.ok(sec.includes("r.made === r.producedSlabs"),
     "the note must name the claims-vs-numbers difference where it prints, not leave it to a note on another page");
-  assert.ok(sec.includes("must not be added together"),
+  assert.ok(/must not\s+be added together/.test(sec),
     "the note must say the two totals are different populations — they overlap, and adding them counts slabs twice");
   // the measured gap, stated rather than left to the reader
   for (const f of ["r.producedSlabs", "r.qcEntriesOnOwnSlabs", "r.producedGradedAfter", "pg.ungraded"]) {
     assert.ok(sec.includes(f), `the note does not state ${f} — the CEO cannot see how much of the figure is other months' stone`);
   }
   // ...and it must not claim a provenance the database does not carry: 61 of
-  // August 2026's 1,000 foreign entries sit in no MIS range in any month.
-  assert.ok(!/stone from earlier batches/.test(sec),
+  // August 2026's 1,000 foreign entries sit in no MIS range this report reads.
+  assert.ok(!/stone from earlier batches/.test(noComments(sec)),
     "the note asserts every foreign entry is earlier stone again — 61 of August's are in no MIS range at all");
   for (const f of ["r.qcEntriesElsewhere", "r.qcEntriesUnplaced"]) {
     assert.ok(sec.includes(f), `the note does not print ${f} — the split is measured and then thrown away`);
   }
+  // ...nor a provenance it can no longer prove either way (F4). "in no MIS
+  // range at all" was false twice over: a blank-hour row of THIS month could
+  // put a slab there, and so could a range the report deliberately refuses to
+  // walk — all 14 of August 2026's placeable unplaced numbers sit only inside
+  // ranges 10,015 to 1,227,644 slabs wide (live Neon, 2026-09-03).
+  assert.ok(!/no MIS range at all/.test(noComments(sec)),
+    "the third bucket claims the record is silent about those slabs; it can only claim this report cannot read a range for them");
+  assert.ok(sec.includes("no MIS range this report can read"),
+    "the third bucket must be worded as what it can actually claim");
+  assert.ok(/an hour of this month that reached no\s+shift/.test(sec),
+    "the second bucket still says 'another month's MIS' alone — it now also holds this month's own unlabelled hours");
 });
 
-test("the produced pass rate is built the same way as getQuality's", () => {
+test("the pair degenerates safely on a month with no QC entries in its window", () => {
+  // getQuality windows polish_qc on importedAt, and every pre-cutover row was
+  // imported in June 2026 — so for April 2026 `inspected` is 0 and `passRate`
+  // null (verified on live Neon 2026-09-03 through getMonthlyReport itself:
+  // inspected 0, own/elsewhere/unplaced all 0, while the left table still shows
+  // 2,900 graded of 3,236). The sheet rendered an empty right-hand table with a
+  // total of 0, an em-dash for the pass rate in mid-sentence, "Every one of
+  // them was for a slab this month declared" about stone that does not exist,
+  // and "341 … absent from the right" against nothing. Those months are
+  // reachable: page.tsx clamps ?m= at the top and not at the bottom.
+  const q = sheets.slice(sheets.indexOf("function SheetQualityMonth"), sheets.indexOf("Page 3 of 3"));
+  assert.match(q, /const hasEntries = q\.inspected > 0;/,
+    "the pair is not guarded on whether any QC entry can be read at all");
+  assert.ok(/\{hasEntries && \([\s\S]{0,200}All QC entries filed this month/.test(q),
+    "the right-hand table is not gated — it renders with no rows and a total of 0 on a pre-cutover month");
+  assert.ok(/\{!hasEntries && <div aria-hidden/.test(q),
+    "the surviving table has no spacer beside it — on its own it stretches the full sheet width and reads as a different table from every other month's");
+  assert.ok(/hasEntries \? \(\s*\n\s*<>QC filed/.test(q),
+    "the 'QC filed N entries' sentence is ungated; on a month with none it asserts a table that is not there");
+  assert.ok(q.includes("No QC entry falls in this month"),
+    "nothing says WHY the second table is missing — a reader is left to assume the plant inspected nothing");
+  assert.ok(/\{hasEntries && <> against <strong>\{pct1\(q\.passRate\)\}/.test(q),
+    "the second pass rate must only print when there is a second population to have one — otherwise the sentence carries an em-dash where a number belongs");
+  // the "every one of them" branch may not be reachable with nothing filed
+  const every = q.indexOf("Every one of them was for a slab this month declared");
+  assert.ok(every > q.indexOf("hasEntries ? (") && every < q.indexOf("No QC entry falls in this month"),
+    "the 'every one of them' branch sits outside the hasEntries arm — it can print about stone that does not exist");
+});
+
+test("the produced pass rate is built the same way as getQuality's, and the sheet says which to quote", () => {
   // Two rates printed in one sentence must be comparable: A or A2 over the
-  // four real grades, with cut-to-size out of BOTH sides. 94.71% against
-  // 93.75% for August 2026 (live Neon, 2026-09-03).
+  // four real grades, with cut-to-size out of BOTH sides. 94.6% against 93.8%
+  // for August 2026 (live Neon, 2026-09-03 — both move as QC files).
   const q = sheets.slice(sheets.indexOf("function SheetQualityMonth"), sheets.indexOf("Page 3 of 3"));
   assert.match(q, /const producedGraded = pg\.A \+ pg\.A2 \+ pg\.B \+ pg\.C;/,
     "the produced denominator must be the four grades only — including cut or ungraded makes the two rates incomparable");
   assert.match(q, /100 \* \(pg\.A \+ pg\.A2\)\) \/ producedGraded/, "the produced numerator must be A or A2");
   assert.ok(q.includes("pct1(q.passRate)"), "the overall rate must still be getQuality's own");
+  // F7. The two tables are the same width, the same styling and adjacent, and
+  // the right-hand one carries the familiar 93.75% headline — which makes the
+  // WRONG table the sticky one. Two rates in one sentence with nothing saying
+  // which is the month's quality is not a choice a reader should have to make.
+  assert.ok(q.includes("quote the left-hand table"),
+    "nothing tells the reader which table is the month's quality — the familiar headline rate wins by default");
+  assert.ok(q.includes("★ Quote this one"), "the left table's own label does not mark it");
+  assert.ok(!/most of it other months/.test(noComments(q)),
+    "the note asserts most of the right-hand table is other months' stone — for August 2026 it is 1,000 of 6,390");
+});
+
+test("the late-verdict figure is described as an ARRIVAL, not a grading date", () => {
+  // F5. polish_qc.created_time has been NULL on every row written since the
+  // June 2026 cutover (measured 2026-09-03: 0 of the 11,853 rows imported from
+  // July 2026 on carry one; the column's last value anywhere is 8 June 2026),
+  // so for a recent month the only timestamp is the Airtable import. August
+  // 2026's 367 late rows are ALL on the import stamp — imported 1-3 September
+  // for stone pressed to 31 August, against an in-window press-to-import lag of
+  // 1 day median and 7 at the 95th percentile: pipeline latency, not a late
+  // verdict. April 2026 is the other case: 340 of its 341 carry a real
+  // created_time. So the count is split and the sentence adapts.
+  const gp = decl(monthly, "async function gradeProduced");
+  assert.match(gp, /if \(q\.createdTime == null\) lateOnImportStamp\+\+;/,
+    "the split between a real grading time and a bare import stamp is gone — the sheet cannot tell the two months apart");
+  assert.ok(monthly.includes("producedGradedAfterOnImportStamp:"), "the split is measured and then thrown away");
+  assert.ok(!/got a verdict only in the month after|were graded only after the month closed/.test(sheetsSaid),
+    "a sheet is claiming a grading date the timestamp does not carry");
+  assert.ok(/The QC row for[\s\S]{0,140}arrived only after the month\s+closed/.test(sheetsSaid),
+    "sheet two no longer says the QC ROW arrived late");
+  assert.ok(sheetsSaid.includes("only the Airtable import stamp"),
+    "the caveat is gone — a reader takes the import stamp for a verdict date");
+  assert.ok(sheets.includes("r.producedGradedAfterOnImportStamp === 0"),
+    "the sentence no longer adapts; on a pre-cutover month it would deny a created_time that is there");
 });

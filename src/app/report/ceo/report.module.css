@@ -115,6 +115,19 @@
 .tight td { padding-top: 1.4px; padding-bottom: 1.4px; line-height: 1.15; }
 .tight th { padding-top: 1.8px; padding-bottom: 1.8px; }
 
+/* A SECOND LINE INSIDE A COLUMN HEADER, for two columns whose names alone do
+ * not distinguish them: Slabs (what the hours claimed) and Numbers (distinct
+ * slab numbers). The distinction used to live only in a 6.7pt italic note
+ * UNDER the mix table, and .split lets that table break across printed pages —
+ * the continuation page repeats the header and carries no note at all, so the
+ * qualifier has to be in the header.
+ *
+ * display: block, so it takes its own line despite .t th's white-space: nowrap
+ * (nowrap suppresses WRAPPING, not a block child), which keeps the header
+ * exactly as wide as the longer of the two words instead of widening a
+ * twelve-column table. Costs one header line of height, once per table. */
+.colSub { display: block; font-weight: 400; font-size: 5.7pt; letter-spacing: 0.02em; opacity: 0.72; }
+
 /* A table LONGER than a page, which therefore has to break across pages well
  * rather than not at all — the opposite instruction from .keep below.
  *
