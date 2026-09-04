@@ -775,6 +775,15 @@ export async function createRow(_prev: string | undefined, fd: FormData): Promis
             // than savePhotoFromForm anyway, so that if Polish QC is ever added
             // to SLAB_STATIONS this path demands and REPORTS a reject's pair
             // exactly as the others do, instead of quietly losing the evidence.
+            // AND NO DEFECT ALERT FROM HERE, BY THE OWNER'S DECISION (2026-09-04:
+            // "let it be no problem"). jotDefectAlert fires further down the
+            // ordinary create path, which this branch returns before reaching, so
+            // a Jot defect logged by completing one of the 372 open placeholders
+            // is recorded but sends no message to the group. That was raised, it
+            // was measured, and he chose to leave it — so it is a decision, not
+            // an oversight, and a later reviewer should not re-open it as a bug.
+            // If it is ever revisited, the alert belongs here, after the update
+            // and keyed to dupe.id, not to a created row that does not exist.
             const photoWarn = await storePhotos(fd, model, dupe.id, opName, data.qualityGrade);
             revalidatePath(`/tables/${model}`); revalidatePath("/batch");
             return photoWarn

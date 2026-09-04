@@ -658,7 +658,13 @@ test("completing a placeholder keeps its photo, like any other create", () => {
   // finds the PROSE and reports the fix as broken.
   const i = actions.indexOf("startsWith(AUTOFILL_PREFIX)");
   assert.ok(i > 0, "the placeholder branch has moved; find it before trusting this test");
-  const branch = actions.slice(i, i + 1800).replace(/\/\/[^\n]*/g, "");
+  // BOUNDED BY THE BRANCH, NOT BY A CHARACTER COUNT. This was `slice(i, i + 1800)`
+  // and a nine-line comment added later pushed `return photoWarn` outside the
+  // window, failing a test about code that had not changed. A fixed-width slice
+  // is a test that breaks when someone writes a paragraph.
+  const end = actions.indexOf("catch (e) {", i);
+  assert.ok(end > i, "the branch's closing catch has moved; find it before trusting this test");
+  const branch = actions.slice(i, end).replace(/\/\/[^\n]*/g, "");
 
   // PIN THE ARGUMENTS. Substring positions alone did not guard this: a reviewer
   // rewrote the call as storePhotos(new FormData(), model, dupe.id, ...) — the
