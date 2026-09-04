@@ -3,6 +3,9 @@ import { prisma } from "@/lib/prisma";
 import { canDeleteRoboSlab } from "@/lib/rbac";
 import { logActionTx } from "@/lib/actionLog";
 import { SLAB_COMPLETED, SLAB_IN_PROCESSING } from "@/lib/robo/utils";
+import { forwardRunIds } from "@/lib/robo/rangeUpdate";
+import { productionDateOf } from "@/lib/robo/productionDate";
+import { roboThicknessKey } from "@/lib/robo/thickness";
 
 export async function GET(_: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -83,6 +86,16 @@ export async function DELETE(_: NextRequest, { params }: { params: Promise<{ id:
  * PATCH /api/robo/production/[id] — update an existing slab in place.
  * Supplying an Out Time moves the slab from In-Processing to Completed.
  * `delays` appends new delay logs; existing ones are left untouched.
+ *
+ * PRODUCTION DATE and THICKNESS can each be applied to just this slab OR carried
+ * forward across the batch. When `applyProductionDateToRange` (or
+ * `applyThicknessToRange`) is set, the new value lands on this slab and every
+ * following slab in the SAME batch that currently shares its value, stopping at
+ * the first slab that already reads something different — see forwardRunIds. It
+ * is how a run saved with one date gets corrected where it crossed midnight, or
+ * one thickness where the line changed it mid-batch, without editing hundreds of
+ * slabs by hand. Earlier slabs are never in the run, so nothing before the edited
+ * point can move. Everything happens in one transaction.
  */
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -120,9 +133,26 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (body.outTime !== undefined)          data.outTime = body.outTime || null;
   if (body.roymixCycleTime !== undefined)  data.roymixCycleTime = body.roymixCycleTime ? Number(body.roymixCycleTime) : null;
   if (body.roymixBodyWeight !== undefined) data.roymixBodyWeight = body.roymixBodyWeight ? Number(body.roymixBodyWeight) : null;
-  // The slab's own production date, editable when correcting a cross-midnight
-  // slab. Real yyyy-mm-dd or NULL, never "" — the where-builders' invariant.
-  if (body.productionDate !== undefined)   data.productionDate = (typeof body.productionDate === "string" && body.productionDate.trim()) || null;
+
+  // Production Date and Thickness: parsed here, but where they LAND — this slab
+  // alone, or forward across the batch — is decided in the transaction below.
+  // Both hold a real value or NULL, never "" or NaN, the invariant the readers
+  // and the where-builders depend on. When applied forward they are kept OUT of
+  // `data` (the single-row update) and written by updateMany instead.
+  const applyDateForward = body.productionDate !== undefined && Boolean(body.applyProductionDateToRange);
+  const applyThicknessForward = body.thickness !== undefined && Boolean(body.applyThicknessToRange);
+
+  let productionDate: string | null | undefined;
+  if (body.productionDate !== undefined) {
+    productionDate = (typeof body.productionDate === "string" && body.productionDate.trim()) || null;
+    if (!applyDateForward) data.productionDate = productionDate;
+  }
+  let thickness: number | null | undefined;
+  if (body.thickness !== undefined) {
+    const n = body.thickness === null || body.thickness === "" ? null : Number(body.thickness);
+    thickness = n !== null && Number.isNaN(n) ? null : n;
+    if (!applyThicknessForward) data.thickness = thickness;
+  }
 
   if (body.status !== undefined) {
     data.status = body.status;
@@ -130,15 +160,64 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     data.status = body.outTime ? SLAB_COMPLETED : SLAB_IN_PROCESSING;
   }
 
-  // One transaction: the slab update and its appended delay logs land together
-  // or not at all, so a mid-write failure can't leave a half-saved edit.
+  // One transaction: the slab's own edits, any forward-applied range, and the
+  // appended delay logs land together or not at all, so a mid-write failure
+  // can't leave a half-saved edit.
   const record = await prisma.$transaction(async (tx) => {
-    const rec = await tx.roboProductionRecord.update({ where: { id }, data });
+    // 1. This slab's own single-field edits. Skipped when the only change is a
+    //    ranged field, so we never send Prisma an empty update.
+    if (Object.keys(data).length > 0) {
+      await tx.roboProductionRecord.update({ where: { id }, data });
+    }
+
+    // 2. The slab as it now stands — its shift (for new delays) and its batch
+    //    (the scope of a forward range). The ranged fields are still at their
+    //    OLD values here, which is what must define the run.
+    const start = await tx.roboProductionRecord.findUnique({
+      where: { id },
+      select: { shiftId: true, batchRecipeId: true },
+    });
+    if (!start) throw new Error("Slab not found");
+
+    // 3. Forward-applied Production Date / Thickness. The run is every slab from
+    //    this one onward in the batch that shares its current value; earlier
+    //    slabs are never included. A slab with no batch has no run to speak of,
+    //    so the value falls back to this slab alone — the edit still lands.
+    if (applyDateForward || applyThicknessForward) {
+      if (start.batchRecipeId) {
+        const batchSlabs = await tx.roboProductionRecord.findMany({
+          where: { batchRecipeId: start.batchRecipeId },
+          orderBy: [{ serialNumber: "asc" }, { createdAt: "asc" }],
+          select: {
+            id: true,
+            productionDate: true,
+            thickness: true,
+            batchRecipe: { select: { productionDate: true, thickness: true } },
+            shift: { select: { date: true } },
+          },
+        });
+        if (applyDateForward) {
+          const ids = forwardRunIds(batchSlabs, id, (s) => productionDateOf(s));
+          await tx.roboProductionRecord.updateMany({ where: { id: { in: ids } }, data: { productionDate } });
+        }
+        if (applyThicknessForward) {
+          const ids = forwardRunIds(batchSlabs, id, (s) => roboThicknessKey(s));
+          await tx.roboProductionRecord.updateMany({ where: { id: { in: ids } }, data: { thickness } });
+        }
+      } else {
+        const single: Record<string, unknown> = {};
+        if (applyDateForward) single.productionDate = productionDate;
+        if (applyThicknessForward) single.thickness = thickness;
+        await tx.roboProductionRecord.update({ where: { id }, data: single });
+      }
+    }
+
+    // 4. Appended delay logs, against this slab's shift.
     if (Array.isArray(body.delays) && body.delays.length > 0) {
       await tx.roboDelayLog.createMany({
         data: body.delays.map((d: { delayCodeId: string; machineId?: string; machineName?: string; durationMinutes: number; startTime?: string; endTime?: string; remarks?: string }) => ({
-          shiftId:            rec.shiftId,
-          productionRecordId: rec.id,
+          shiftId:            start.shiftId,
+          productionRecordId: id,
           machineId:          d.machineId || null,
           machineName:        d.machineName || null,
           delayCodeId:        d.delayCodeId,
@@ -149,7 +228,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         })),
       });
     }
-    return rec;
+
+    // 5. The slab's final state, for the response.
+    return tx.roboProductionRecord.findUnique({ where: { id } });
   });
 
   return NextResponse.json(record);

@@ -23,6 +23,7 @@ import { findDesignPreset, presetFieldsFor } from "@/lib/robo/design-presets";
 import { nextSlabNumber } from "@/lib/robo/nextNumbers";
 import { SETUP_EDIT_WINDOW_DAYS, daysBetween, describeAge, isSetupStale } from "@/lib/robo/setupAge";
 import { productionDateOf } from "@/lib/robo/productionDate";
+import { roboThicknessOf } from "@/lib/robo/thickness";
 import { SLAB_IN_PROCESSING, formatSlabRemarks, slabStatusClass, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
 
 const MACHINE_ORDER = ["Roycut-1", "Roymix", "Roycut-2", "Roycut-3"];
@@ -49,6 +50,9 @@ interface ProdRecord {
   id: string; serialNumber: number | null; slabNumber: string;
   /** The slab's own production date, when it has one (a batch past midnight). */
   productionDate?: string | null;
+  /** The slab's own thickness, when it has one (a batch that changed thickness
+   *  mid-run). Falls back to the batch setup — see roboThicknessOf. */
+  thickness?: number | null;
   inTime: string | null; outTime: string | null; roymixCycleTime: number | null;
   roymixBodyWeight: number | null; status: string; remarks: string | null; createdAt: string;
   /** The delays logged against this slab. Present so the Recent slabs table
@@ -158,7 +162,7 @@ const btnGhost = "rounded-lg border border-gray-300 px-4 py-2 text-sm font-mediu
 type MachineEntry = { programName: string; toolName: string; liquidName: string; powderName: string; rollerHeight: string; targetCycleTime: string };
 const emptyEntry = (): MachineEntry => ({ programName: "", toolName: "", liquidName: "", powderName: "", rollerHeight: "", targetCycleTime: "" });
 
-const emptySlab = () => ({ serialNumber: "", slabNumber: "", productionDate: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" });
+const emptySlab = () => ({ serialNumber: "", slabNumber: "", productionDate: "", thickness: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" });
 const emptyDelayForm = () => ({ selectedCodeId: "", machineId: "", machineName: "", startTime: "", endTime: "", remarks: "" });
 
 /** What the Recent slabs table prints under Remarks: the slab's own note AND
@@ -255,6 +259,17 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
   const [slabError, setSlabError] = useState("");
   const [slabSaving, setSlabSaving] = useState(false);
   const [slabTaken, setSlabTaken] = useState(false);
+  /** Edit-only: carry the Production Date / Thickness change forward across the
+   *  batch — this slab and every following one that shares its value, up to the
+   *  next change. Off by default, so an ordinary correction touches one slab.
+   *  Reset whenever a different slab is loaded, or the edit is left. */
+  const [applyDateForward, setApplyDateForward] = useState(false);
+  const [applyThicknessForward, setApplyThicknessForward] = useState(false);
+  /** The slab's Production Date / Thickness as loaded, so a save only writes a
+   *  per-slab override when the operator actually changed the value (or ticked
+   *  "apply forward"). An untouched field is left off the request, so the slab
+   *  keeps falling back to the batch instead of getting a copy pinned onto it. */
+  const loaded = useRef<{ productionDate: string; thickness: string }>({ productionDate: "", thickness: "" });
   /** Bumped when the form needs the server to restate where the register ends:
    *  a slab deleted, a correction saved, a save refused as a duplicate, or a
    *  save this form could not count on from itself. An ordinary save does NOT
@@ -332,19 +347,31 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
       setSlab({
         serialNumber: rec.serialNumber != null ? String(rec.serialNumber) : "",
         slabNumber: rec.slabNumber ?? "",
-        // The slab's effective production date, editable — its own if it has
-        // one, else the setup's, else the shift's. Correcting it here changes
-        // only this slab, never the batch or its other slabs.
+        // The slab's effective production date and thickness, editable — its own
+        // if it has one, else the setup's (thickness) or the setup/shift's
+        // (date). With the "apply forward" toggle off, correcting either changes
+        // only this slab; on, it carries across the batch — see saveSlab.
         productionDate: productionDateOf(rec),
+        thickness: roboThicknessOf(rec) != null ? String(roboThicknessOf(rec)) : "",
         inTime: rec.inTime ?? "",
         outTime: rec.outTime ?? "",
         roymixCycleTime: rec.roymixCycleTime != null ? String(rec.roymixCycleTime) : "",
         roymixBodyWeight: rec.roymixBodyWeight != null ? String(rec.roymixBodyWeight) : "",
         remarks: rec.remarks ?? "",
       });
+      // Remember what was loaded, so the save can tell an untouched Date /
+      // Thickness (leave it alone) from a real correction (write it).
+      loaded.current = {
+        productionDate: productionDateOf(rec),
+        thickness: roboThicknessOf(rec) != null ? String(roboThicknessOf(rec)) : "",
+      };
     }
     setSlabError("");
     setSlabTaken(false);
+    // A freshly loaded slab starts with the range toggles off, so opening a slab
+    // to fix one thing can never carry a stale forward-apply into the save.
+    setApplyDateForward(false);
+    setApplyThicknessForward(false);
     setDelays([]);
     resetDelayEntry();
     setEditLoading(false);
@@ -984,20 +1011,37 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     }));
     // No status sent: the server derives it from Out time, so a slab still in
     // the line saves as In-Processing and can be finished from the table below.
+    //
+    // Production Date and Thickness go on the request ONLY when the operator
+    // actually changed them, or ticked "apply forward" — an untouched field is
+    // omitted, so the slab keeps reading the batch's value rather than having a
+    // copy pinned onto it by an edit to something else. When present with the
+    // forward flag, the server carries the value across the batch (the PATCH
+    // handler's forwardRunIds).
+    const dateChanged = slab.productionDate.trim() !== loaded.current.productionDate.trim();
+    const thicknessChanged = slab.thickness.trim() !== loaded.current.thickness.trim();
+    const patchBody: Record<string, unknown> = {
+      serialNumber: slab.serialNumber ? Number(slab.serialNumber) : null,
+      slabNumber: slab.slabNumber.trim(),
+      inTime: slab.inTime || null,
+      outTime: slab.outTime || null,
+      roymixCycleTime: slab.roymixCycleTime ? Number(slab.roymixCycleTime) : null,
+      roymixBodyWeight: slab.roymixBodyWeight ? Number(slab.roymixBodyWeight) : null,
+      remarks: slab.remarks || null,
+      delays: delayPayload,
+    };
+    if (dateChanged || applyDateForward) {
+      patchBody.productionDate = slab.productionDate.trim() || null;
+      patchBody.applyProductionDateToRange = applyDateForward;
+    }
+    if (thicknessChanged || applyThicknessForward) {
+      patchBody.thickness = slab.thickness.trim() || null;
+      patchBody.applyThicknessToRange = applyThicknessForward;
+    }
     const res = await (editingId
       ? fetch(`/api/robo/production/${editingId}`, {
           method: "PATCH", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            serialNumber: slab.serialNumber ? Number(slab.serialNumber) : null,
-            slabNumber: slab.slabNumber.trim(),
-            productionDate: slab.productionDate.trim() || null,
-            inTime: slab.inTime || null,
-            outTime: slab.outTime || null,
-            roymixCycleTime: slab.roymixCycleTime ? Number(slab.roymixCycleTime) : null,
-            roymixBodyWeight: slab.roymixBodyWeight ? Number(slab.roymixBodyWeight) : null,
-            remarks: slab.remarks || null,
-            delays: delayPayload,
-          }),
+          body: JSON.stringify(patchBody),
         })
       : fetch("/api/robo/production", {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -1425,11 +1469,56 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
               </div>
             )}
 
-            {/* Two up on a tablet, four across on the desktop. The four-across
-                row itself is unchanged; it starts at lg now rather than md,
-                which put S.No., Slab number, In time and Out time into ~95px
-                cells on the iPad the operator actually types this on. */}
-            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            {/* The Robo Entry slab layout, two-up on a tablet or desktop and
+                stacked on a phone. The order is deliberate: Production Date (and
+                Thickness, when correcting) lead at the top, then the numbers, the
+                times, the Roymix pair, and Remarks last. */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              {/* Row 1 — Production Date. Defaults to the batch's day and carries
+                  forward slab after slab; the operator changes it only when a run
+                  crosses midnight, and from then on every new slab in the batch
+                  takes the new day. On an edit it can also carry the change across
+                  the rest of the batch (the box below). It spans the row on new
+                  entry, where Thickness is not shown, so the numbers start clean
+                  on the next row. */}
+              <div className={editingId ? "" : "sm:col-span-2"}>
+                <span className={label}>Production Date</span>
+                <input type="date" value={slab.productionDate}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setSlab((p) => ({ ...p, productionDate: v }));
+                    // A new slab moves the working day for the ones after it; an
+                    // edit changes only the slab being corrected — unless the box
+                    // below is ticked to carry it forward.
+                    if (!editingId) workingDate.current = v;
+                  }}
+                  className={inp} />
+                {editingId && (
+                  <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs">
+                    <input type="checkbox" checked={applyDateForward} onChange={(e) => setApplyDateForward(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300" />
+                    <span className="text-gray-600">Apply to <span className="font-medium text-gray-800">this slab and every following one</span> in the batch, up to the next change.</span>
+                  </label>
+                )}
+              </div>
+
+              {/* Thickness — only when correcting a slab. New production still
+                  takes one thickness from the batch setup; this is how a batch
+                  that changed thickness partway through gets fixed, forward from
+                  the slab where it changed. */}
+              {editingId && (
+                <div>
+                  <span className={label}>Thickness (cm)</span>
+                  <input type="number" step="0.1" value={slab.thickness}
+                    onChange={(e) => setSlab((p) => ({ ...p, thickness: e.target.value }))}
+                    placeholder="e.g. 2" className={inp} />
+                  <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs">
+                    <input type="checkbox" checked={applyThicknessForward} onChange={(e) => setApplyThicknessForward(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300" />
+                    <span className="text-gray-600">Apply to <span className="font-medium text-gray-800">this slab and every following one</span> in the batch, up to the next change.</span>
+                  </label>
+                </div>
+              )}
+
+              {/* Row 2 — S.No. and Slab number. */}
               <div>
                 <span className={label}>S.No.</span>
                 <input type="number" value={slab.serialNumber} onChange={(e) => setSlab((p) => ({ ...p, serialNumber: e.target.value }))} className={inp} {...advanceProps("slab")} />
@@ -1442,28 +1531,11 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                   placeholder="e.g. 140748" className={inp} required {...advanceProps("slab")} />
                 {slabTaken && <p className="mt-1 text-xs font-medium text-red-600">Duplicate Slab No. — this slab number already exists.</p>}
               </div>
+
+              {/* Row 3 — In / Out time. Plain labels; the machine the clock was
+                  read off moved to the setup, so the column no longer renames
+                  itself between runs. */}
               <div>
-                {/* The slab's own production date. Defaults to the batch's day
-                    and carries forward slab after slab; the operator changes it
-                    only when a run crosses midnight, and from then on every new
-                    slab in the batch takes the new day. Changing it here never
-                    touches slabs already saved. */}
-                <span className={label}>Production Date</span>
-                <input type="date" value={slab.productionDate}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setSlab((p) => ({ ...p, productionDate: v }));
-                    // A new slab moves the working day for the ones after it; an
-                    // edit changes only the slab being corrected.
-                    if (!editingId) workingDate.current = v;
-                  }}
-                  className={inp} />
-              </div>
-              <div>
-                {/* Plain "In time" / "Out time". The machine names used to be
-                    appended (In time (Robo3)) to say which robot the clock was
-                    read off; the line knows that, and the suffix moved with the
-                    setup, so the same column changed its label between runs. */}
                 <span className={label}>In time</span>
                 <TimeInput value={slab.inTime} onChange={(v) => setSlab((p) => ({ ...p, inTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("slab")} />
               </div>
@@ -1471,6 +1543,8 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                 <span className={label}>Out time</span>
                 <TimeInput value={slab.outTime} onChange={(v) => setSlab((p) => ({ ...p, outTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("slab")} />
               </div>
+
+              {/* Row 4 — the Roymix pair, only when the running setup includes it. */}
               {hasRoymix && (
                 <>
                   <div>
@@ -1483,7 +1557,9 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                   </div>
                 </>
               )}
-              <div className={hasRoymix ? "col-span-2" : "col-span-2 lg:col-span-4"}>
+
+              {/* Last row — Remarks, full width. */}
+              <div className="sm:col-span-2">
                 <span className={label}>Remarks</span>
                 <input value={slab.remarks} onChange={(e) => setSlab((p) => ({ ...p, remarks: e.target.value }))} placeholder="Optional notes for this slab" className={inp} {...advanceProps("slab")} />
               </div>
