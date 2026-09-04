@@ -17,7 +17,22 @@ import { logConsumables } from "@/lib/consumables/quickLog";
 import { addConsumableItem } from "@/lib/consumables/items";
 
 export interface ConsumableItem { itemName: string; unit: string; currentStock: number }
-interface Line { itemName: string; quantity: string; unit: string }
+
+/** One consumable on the panel. Several are the normal case — an hour at a
+ *  machine draws gloves and emery and grease — so "+ line" adds another and
+ *  every line is saved in one go.
+ *
+ *  `key` IS WHY THIS IS NOT AN ARRAY INDEX. The panel was written keyed by
+ *  position, and position is the one thing about a line that changes: remove
+ *  the first of three and every line below it shifts up, so React reuses the
+ *  removed row's DOM for its neighbour and the open "add an item" panel — which
+ *  remembered a NUMBER — reattaches itself to the wrong line. An identity that
+ *  the line keeps for its whole life removes the class of bug rather than the
+ *  instance of it. */
+interface Line { key: string; itemName: string; quantity: string; unit: string }
+
+let lineSeq = 0;
+const blankLine = (): Line => ({ key: `l${++lineSeq}`, itemName: "", quantity: "", unit: "" });
 
 /** The select's escape hatch. A sentinel rather than an empty value so that
  *  "nothing picked" and "I want to add one" stay distinguishable. */
@@ -36,20 +51,21 @@ export function ConsumablesQuickLog({ model, dept, items, batch }: {
   // The list is STATE, not the prop: adding an item has to put it in the
   // dropdown at once, on this page, without a reload. The prop is the seed.
   const [list, setList] = useState<ConsumableItem[]>(items);
-  const [lines, setLines] = useState<Line[]>([{ itemName: "", quantity: "", unit: "" }]);
+  const [lines, setLines] = useState<Line[]>(() => [blankLine()]);
   const [batchNo, setBatchNo] = useState(batch ?? "");
   const [msg, setMsg] = useState<string | null>(null);
   const [pending, start] = useTransition();
 
-  // The add-an-item row: which line asked for it, and what is being typed.
-  const [adding, setAdding] = useState<number | null>(null);
+  // The add-an-item row: WHICH LINE asked for it (by key, not position), and
+  // what is being typed.
+  const [adding, setAdding] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [newUnit, setNewUnit] = useState("");
   const [addMsg, setAddMsg] = useState<string | null>(null);
   const [addPending, startAdd] = useTransition();
 
-  const upd = (i: number, patch: Partial<Line>) => setLines((p) => p.map((l, k) => {
-    if (k !== i) return l;
+  const upd = (key: string, patch: Partial<Line>) => setLines((p) => p.map((l) => {
+    if (l.key !== key) return l;
     const next = { ...l, ...patch };
     if (patch.itemName !== undefined) {
       const hit = list.find((x) => x.itemName.toLowerCase() === patch.itemName!.toLowerCase());
@@ -61,7 +77,7 @@ export function ConsumablesQuickLog({ model, dept, items, batch }: {
   /** Create the item, put it in the dropdown, and select it on the line that
    *  asked. An item that already existed is selected rather than refused —
    *  the operator wanted an item by that name and there is one. */
-  const addItem = (i: number) => startAdd(async () => {
+  const addItem = (key: string) => startAdd(async () => {
     const name = newName.trim();
     if (name.length < 2) { setAddMsg("Type the item's name first."); return; }
     setAddMsg(null);
@@ -71,7 +87,7 @@ export function ConsumablesQuickLog({ model, dept, items, batch }: {
       setList((p) => (p.some((x) => x.itemName.toLowerCase() === r.item.itemName.toLowerCase())
         ? p
         : [...p, r.item].sort((a, b) => a.itemName.localeCompare(b.itemName))));
-      upd(i, { itemName: r.item.itemName, unit: r.item.unit });
+      upd(key, { itemName: r.item.itemName, unit: r.item.unit });
       setAdding(null); setNewName(""); setNewUnit("");
       setMsg(r.existed ? `“${r.item.itemName}” was already on the list — picked it.` : `✓ Added “${r.item.itemName}” to the list`);
     } catch {
@@ -86,8 +102,9 @@ export function ConsumablesQuickLog({ model, dept, items, batch }: {
     try {
       const r = await logConsumables(model, payload, { batch: batchNo });
       if (r === "ok") {
-        setMsg(`✓ Logged ${payload.length} item(s) to ${dept}${batchNo.trim() ? ` on batch ${batchNo.trim()}` : ""}`);
-        setLines([{ itemName: "", quantity: "", unit: "" }]);
+        setMsg(`✓ Logged ${payload.length} item${payload.length === 1 ? "" : "s"} to ${dept}${batchNo.trim() ? ` on batch ${batchNo.trim()}` : ""}`);
+        setLines([blankLine()]);
+        setAdding(null);
       } else setMsg(r);
     } catch {
       setMsg("Could not reach the server — check the connection and try again."); // never bubbles to the page
@@ -111,13 +128,13 @@ export function ConsumablesQuickLog({ model, dept, items, batch }: {
             <span className="text-[11px] text-gray-400">so it shows on that batch&apos;s sign-off sheet</span>
           </label>
 
-          {lines.map((l, i) => (
-            <div key={i} className="space-y-1.5">
+          {lines.map((l) => (
+            <div key={l.key} className="space-y-1.5">
               <div className="flex flex-wrap items-center gap-2">
                 <select value={l.itemName} className={`${inp} min-w-[200px] flex-1`}
                   onChange={(e) => {
-                    if (e.target.value === ADD_NEW) { setAdding(i); setAddMsg(null); setNewName(""); setNewUnit(""); }
-                    else upd(i, { itemName: e.target.value });
+                    if (e.target.value === ADD_NEW) { setAdding(l.key); setAddMsg(null); setNewName(""); setNewUnit(""); }
+                    else upd(l.key, { itemName: e.target.value });
                   }}>
                   <option value="">{list.length ? "— pick item —" : "— no items yet, add one —"}</option>
                   {list.map((it) => (
@@ -125,15 +142,22 @@ export function ConsumablesQuickLog({ model, dept, items, batch }: {
                   ))}
                   <option value={ADD_NEW}>+ Add a new item…</option>
                 </select>
-                <input type="number" step="any" min="0" value={l.quantity} onChange={(e) => upd(i, { quantity: e.target.value })}
+                <input type="number" step="any" min="0" value={l.quantity} onChange={(e) => upd(l.key, { quantity: e.target.value })}
                   placeholder="Qty" className={`${inp} w-24`} />
-                <input value={l.unit} onChange={(e) => upd(i, { unit: e.target.value })} placeholder="Unit" className={`${inp} w-20`} />
+                <input value={l.unit} onChange={(e) => upd(l.key, { unit: e.target.value })} placeholder="Unit" className={`${inp} w-20`} />
                 {lines.length > 1 && (
-                  <button type="button" onClick={() => setLines((p) => p.filter((_, k) => k !== i))} className="text-xs text-gray-400 hover:text-red-600">✕</button>
+                  <button type="button" title="Remove this line"
+                    onClick={() => {
+                      // Close the add panel if it belonged to the line going
+                      // away, or it would hang open over somebody else's row.
+                      setAdding((a) => (a === l.key ? null : a));
+                      setLines((p) => p.filter((x) => x.key !== l.key));
+                    }}
+                    className="text-xs text-gray-400 hover:text-red-600">✕</button>
                 )}
               </div>
 
-              {adding === i && (
+              {adding === l.key && (
                 <div className="flex flex-wrap items-center gap-2 rounded-lg border border-brand/25 bg-brand/[0.03] p-2">
                   <input value={newName} autoFocus placeholder="New item name"
                     onChange={(e) => { setNewName(e.target.value); setAddMsg(null); }}
@@ -141,13 +165,13 @@ export function ConsumablesQuickLog({ model, dept, items, batch }: {
                     // The panel is not inside the entry <form>, so this cannot
                     // submit a slab; it is still handled explicitly so a stray
                     // keypress can never do anything but add an item.
-                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addItem(i); } if (e.key === "Escape") setAdding(null); }}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addItem(l.key); } if (e.key === "Escape") setAdding(null); }}
                     className={`${inp} min-w-[180px] flex-1`} />
                   <input value={newUnit} placeholder="Unit (e.g. KG)"
                     onChange={(e) => setNewUnit(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addItem(i); } if (e.key === "Escape") setAdding(null); }}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addItem(l.key); } if (e.key === "Escape") setAdding(null); }}
                     className={`${inp} w-28`} />
-                  <button type="button" disabled={addPending} onClick={() => addItem(i)}
+                  <button type="button" disabled={addPending} onClick={() => addItem(l.key)}
                     className="rounded-lg bg-brand px-3 py-2 text-xs font-semibold text-white hover:bg-brand-dark disabled:opacity-60">
                     {addPending ? "Adding…" : "Add to list"}
                   </button>
@@ -161,8 +185,8 @@ export function ConsumablesQuickLog({ model, dept, items, batch }: {
           ))}
 
           <div className="flex flex-wrap items-center gap-3 pt-1">
-            <button type="button" onClick={() => setLines((p) => [...p, { itemName: "", quantity: "", unit: "" }])}
-              className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">+ line</button>
+            <button type="button" onClick={() => setLines((p) => [...p, blankLine()])}
+              className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">+ another consumable</button>
             <button type="button" disabled={pending} onClick={save}
               className="rounded-lg bg-brand px-4 py-2 text-xs font-semibold text-white hover:bg-brand-dark disabled:opacity-60">
               {pending ? "Logging…" : "Log consumables"}
