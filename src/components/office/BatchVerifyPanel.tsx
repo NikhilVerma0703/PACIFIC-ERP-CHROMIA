@@ -29,7 +29,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Card, Empty } from "@/components/ui";
 import { readJson } from "@/lib/readJson";
-import { SimpleMaterialsEntry } from "@/components/office/SimpleMaterialsEntry";
+import { BatchRatesPanel } from "@/components/office/BatchRatesPanel";
 import { SignoffCard } from "@/components/office/SignoffCard";
 import { BatchConsumablesTable } from "@/components/office/BatchConsumablesTable";
 
@@ -190,8 +190,34 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
         />
       )}
 
+      {/* BACK TO THE FULL PANEL (owner, 2026-09-05: "before I could add more
+          than two for each silo or filler or resin. now i can only do two. can
+          we revert back to the one just previous to it?").
+
+          WHAT NARROWED IT. c4970af (2026-08-23) replaced BatchRatesPanel here
+          with SimpleMaterialsEntry, a table asking three plain questions per
+          material after the verifiers called the full panel "not very
+          intuitive". It offers a split between exactly TWO suppliers and sends
+          anything with three or more to the full panel read-only. The cap was
+          only ever in that component: costing_batch_material and
+          costing_batch_grit_supplier are keyed (batch, item, seq) and
+          (batch, silo, seq) with no fixed slots, the routes refuse only at 30
+          lines per material and 20 suppliers per silo, and splitMaterial walks
+          however many there are. Batch 1413's filler already carries THREE
+          lines, saved through this panel on 2026-08-22 and unreachable since.
+
+          So the mount is swapped back and nothing else is: BatchRatesPanel and
+          GritSiloRows are byte-identical to their pre-c4970af versions, are
+          what /office/costing has been rendering all along, and take the same
+          four props. A `git checkout` of this file's parent version was the
+          other option and would have dropped two later fixes — the loadSeq
+          race guard above and the consumables sheet below.
+
+          SimpleMaterialsEntry is left in the tree, unmounted: it is the
+          verifiers' own answer to a real complaint about this panel, and
+          deleting it would throw that away rather than shelve it. */}
       {detail && sign.length > 0 && (
-        <SimpleMaterialsEntry
+        <BatchRatesPanel
           key={detail.batchKey}
           batchKey={detail.batchKey}
           batchLabel={detail.batch}
