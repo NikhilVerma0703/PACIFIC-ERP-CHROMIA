@@ -67,7 +67,6 @@ interface Draft {
 }
 
 const inp = "w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
-const ADD_NEW = "__free__";
 let seq = 0;
 const nextKey = () => `new-${++seq}`;
 

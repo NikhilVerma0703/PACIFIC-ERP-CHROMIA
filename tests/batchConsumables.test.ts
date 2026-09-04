@@ -221,3 +221,40 @@ test("the sheet sends only what changed", () => {
   assert.ok(table.includes("draftChanged("), "the sheet must diff drafts against what it loaded");
   assert.ok(table.includes("priceTouched"), "an untouched price box must not be sent at all");
 });
+
+// ---------------------------------------------------------------------------
+// Dropdown only (owner, 2026-09-04). The rule is pinned on BOTH sides, because
+// a rule that lives only in the browser is not a rule: a page open all shift
+// offers an item the store has since renamed, and a replayed request carries
+// any string.
+
+const panel = readFileSync(new URL("../src/components/ConsumablesQuickLog.tsx", import.meta.url), "utf8");
+const floorLog = readFileSync(new URL("../src/lib/consumables/quickLog.ts", import.meta.url), "utf8");
+
+test("the machine-form panel offers the store's list and no way to type a name", () => {
+  assert.ok(/<select[^>]*value=\{l\.itemName\}/.test(panel), "the item is picked from a select bound to itemName");
+  assert.ok(!/<input[^>]*value=\{l\.itemName\}/.test(panel), "no text input may be bound to itemName");
+  assert.ok(!/list=/.test(panel), "no datalist — that is a text box with suggestions");
+  assert.ok(!/addConsumableItem|consumables\/items/.test(panel), "the panel must not import an add-item action");
+  // The unit is the item's: display, never an input the operator can retype.
+  assert.ok(!/<input[^>]*value=\{l\.unit\}/.test(panel), "the unit must not be editable at the machine");
+});
+
+test("the server refuses a name that is not on the store's list, before writing anything", () => {
+  const refuseAt = floorLog.indexOf("is not on the store's list");
+  const txAt = floorLog.indexOf("$transaction");
+  assert.ok(refuseAt > 0, "quickLog must refuse an unknown item by name");
+  assert.ok(txAt > 0 && refuseAt < txAt, "the refusal must come before the transaction");
+  // And what it saves is the stock row's own spelling and unit, not the caller's.
+  assert.ok(/itemName: stock\.itemName/.test(floorLog) && /unit: stock\.unit/.test(floorLog),
+    "a linked line is saved under the store's spelling and unit");
+  // Every saved line is linked, so every saved line decrements — no `if (stockId)` guard left.
+  assert.ok(!/if \(stockId\)/.test(floorLog), "there is no unlinked path left to skip the decrement");
+});
+
+test("the machine-form picker leaves direct materials out", () => {
+  for (const p of ["../src/app/entry/mixer/page.tsx", "../src/app/entry/slab/[model]/page.tsx"]) {
+    const src = readFileSync(new URL(p, import.meta.url), "utf8");
+    assert.ok(/category: \{ not: "DIRECT_MATERIAL" \}/.test(src), `${p} must not offer resin and grit from a machine form`);
+  }
+});

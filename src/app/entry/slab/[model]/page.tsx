@@ -31,7 +31,13 @@ export default async function SmartEntry({ params }: { params: Promise<{ model: 
   if (dept) {
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      consumableItems = (await (prisma as any).inventoryStock.findMany({ select: { itemName: true, unit: true, currentStock: true }, orderBy: { itemName: "asc" } })) as ConsumableItem[];
+      consumableItems = (await (prisma as any).inventoryStock.findMany({
+      // Consumables only. DIRECT_MATERIAL is resin and grit, which the store
+      // receives against invoices and nobody logs from a machine form; offering
+      // it here would let a Press entry decrement the resin stock.
+      where: { category: { not: "DIRECT_MATERIAL" } },
+      select: { itemName: true, unit: true, currentStock: true }, orderBy: { itemName: "asc" },
+    })) as ConsumableItem[];
     } catch { /* panel still renders; items just aren't suggested */ }
   }
   // Line head thickness: exactly these four choices (canonicalised on save)

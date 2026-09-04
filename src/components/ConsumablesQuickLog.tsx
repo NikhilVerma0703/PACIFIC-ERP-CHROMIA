@@ -110,7 +110,11 @@ export function ConsumablesQuickLog({ model, dept, items, batch }: {
               </select>
               <input type="number" step="any" min="0" value={l.quantity} onChange={(e) => upd(l.key, { quantity: e.target.value })}
                 placeholder="Qty" className={`${inp} w-24`} />
-              <input value={l.unit} onChange={(e) => upd(l.key, { unit: e.target.value })} placeholder="Unit" className={`${inp} w-20`} />
+              {/* The unit is the item's, fixed by the store — the same rule the
+                  dashboard states ("counted in this unit"). A retyped unit
+                  would decrement a PCS-counted stock in KG; the server saves
+                  the item's unit regardless, so this is display, not input. */}
+              <span className="inline-flex h-[38px] w-20 items-center rounded-lg border border-gray-200 bg-gray-50 px-3 text-sm text-gray-500">{l.unit || "—"}</span>
               {lines.length > 1 && (
                 <button type="button" title="Remove this line"
                   onClick={() => setLines((p) => p.filter((x) => x.key !== l.key))}
@@ -120,15 +124,15 @@ export function ConsumablesQuickLog({ model, dept, items, batch }: {
           ))}
 
           <div className="flex flex-wrap items-center gap-3 pt-1">
-            <button type="button" onClick={() => setLines((p) => [...p, blankLine()])}
-              className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">+ another consumable</button>
+            <button type="button" disabled={items.length === 0} onClick={() => setLines((p) => [...p, blankLine()])}
+              className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-60">+ another consumable</button>
             <button type="button" disabled={pending || items.length === 0} onClick={save}
               className="rounded-lg bg-brand px-4 py-2 text-xs font-semibold text-white hover:bg-brand-dark disabled:opacity-60">
               {pending ? "Logging…" : "Log consumables"}
             </button>
             {msg && <span className={`text-xs ${msg.startsWith("✓") ? "text-emerald-600" : "text-red-600"}`}>{msg}</span>}
           </div>
-          <p className="text-[11px] text-gray-400">Goes to the Consumables dashboard under {dept}; known items reduce stock (never below 0). Separate from the slab entry above.</p>
+          <p className="text-[11px] text-gray-400">Goes to the Consumables dashboard under {dept} and reduces that item&apos;s stock (never below 0). Separate from the slab entry above.</p>
         </div>
       )}
     </div>
