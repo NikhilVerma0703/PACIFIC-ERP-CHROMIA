@@ -682,3 +682,47 @@ test("completing a placeholder keeps its photo, like any other create", () => {
   assert.match(branch, /PHOTO_WARN_PREFIX/,
     "a store failure here must warn like the ordinary create does, not show a green tick");
 });
+
+// ─── THE UNLINKED SWEEP: A ROW WITH NO LINK IS NOT AUTOMATICALLY JUNK ───────
+// The dedupe was ported as "removes unlinked QC rows", on the Airtable-era
+// assumption that a QC row with no polish-entry link is a stray. Measured on
+// live Neon 2026-09-04 that assumption is false on all 14,647 of them: 13,252
+// carry a real verdict, 491 are graded C (Reject), 4,913 carry quality issues,
+// 14,562 carry an R&W or repolish status, 251 of the database's 256 QC
+// photographs hang off them, and ZERO are actually empty. entry_photo has no
+// foreign key to polish_qc, so those photographs would be orphaned rather than
+// cascaded — unreachable and undeletable through the app.
+test("the unlinked sweep deletes only rows that carry nothing", () => {
+  const dedup = readFileSync(new URL("../src/lib/automations-dedup.ts", import.meta.url), "utf8");
+  const code = dedup.replace(/\/\/[^\n]*/g, "");
+  // The delete must take the FILTERED list, never the raw one. This is the
+  // whole fix: `[...qcDelete, ...unlinked]` was a mass deletion of the QC record.
+  assert.match(code, /const allQc = \[\.\.\.qcDelete, \.\.\.unlinkedEmpty\];/,
+    "the unlinked sweep is deleting the unfiltered list again — 14,647 rows of real inspection data");
+  assert.doesNotMatch(code, /\[\.\.\.qcDelete, \.\.\.unlinked\]/,
+    "the raw unlinked list must never reach a deleteMany");
+  // Every signal that makes a row worth keeping must be consulted.
+  for (const signal of ["qualityGrade", "qualityIssue", "remarks", "rwStatus", "repolishStatus"])
+    assert.ok(code.includes(signal),
+      `the keep-test no longer looks at ${signal} — a row carrying it would be deleted`);
+  // NOT just that entry_photo is queried — that the ANSWER is used. Deleting the
+  // `&& !unlinkedPhotoIds.has(id)` clause leaves the query sitting there
+  // untouched, and an assertion on the query alone stays green while 251
+  // photographs are orphaned.
+  assert.match(code, /entry_photo/, "the photo lookup is gone");
+  assert.match(code, /!unlinkedPhotoIds\.has\(id\)/,
+    "the photo lookup runs but its answer is not used — a row with photographs would still be deleted");
+  assert.match(code, /qcUnlinkedKept/,
+    "a run must report what it declined to delete, or the restraint is invisible");
+});
+
+test("'Not graded yet' is treated as ungraded, not as a verdict worth keeping", () => {
+  // This plant spells ungraded as the literal string far more often than NULL
+  // (3,654 rows against 194), so a keep-test that only checked for null would
+  // treat every one of those as carrying a verdict and never delete anything —
+  // right answer, wrong reason, and it would hide a real regression later.
+  const dedup = readFileSync(new URL("../src/lib/automations-dedup.ts", import.meta.url), "utf8");
+  assert.match(dedup, /const NOT_GRADED = "Not graded yet";/);
+  assert.match(dedup.replace(/\/\/[^\n]*/g, ""), /!==\s*NOT_GRADED/,
+    "the keep-test must exclude 'Not graded yet' explicitly, not rely on a null check");
+});
