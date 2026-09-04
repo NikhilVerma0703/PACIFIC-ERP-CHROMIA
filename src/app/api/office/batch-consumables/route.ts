@@ -18,7 +18,9 @@ import { prisma } from "@/lib/prisma";
 import { currentUser } from "@/lib/rbac";
 import { signableSides } from "@/lib/costing/verification";
 import { normalizeBatch } from "@/lib/normalizeBatch";
-import { batchUsage, editProblem, BATCH_STATIONS, type UsageEdit } from "@/lib/consumables/batchUsage";
+import {
+  batchUsage, editProblem, pricePatch, BATCH_STATIONS, LINE_SOURCE, type UsageEdit,
+} from "@/lib/consumables/batchUsage";
 import { MODEL_DEPT } from "@/lib/consumables/dept";
 
 const db = prisma as any;
@@ -62,6 +64,7 @@ export async function POST(req: NextRequest) {
 
   const edits: UsageEdit[] = Array.isArray(body?.edits) ? body.edits : [];
   const deletes: string[] = Array.isArray(body?.deletes) ? body.deletes.map(String).filter(Boolean) : [];
+  if (deletes.length > 200) return Response.json({ error: "Too many lines removed in one save (max 200)." }, { status: 400 });
   if (edits.length === 0 && deletes.length === 0) return Response.json({ error: "Nothing to save." }, { status: 400 });
   if (edits.length > 200) return Response.json({ error: "Too many lines in one save (max 200)." }, { status: 400 });
 
@@ -74,6 +77,26 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    // A LINE THE FLOOR LOGGED MAY NOT BE DELETED HERE, and that is a stock rule
+    // rather than a permissions one. quickLog decremented the item when the
+    // station reported it; deleting the row leaves that decrement standing
+    // against nothing, so the stock is short by a quantity no screen can now
+    // name. The sheet may correct such a line — quantity, unit, price — it may
+    // not make it vanish. Removing it for real is a store adjustment, on the
+    // store's own screen, where the stock moves with it.
+    if (deletes.length) {
+      const floorRows: any[] = await db.consumptionEntry.findMany({
+        where: { id: { in: deletes }, batchKey, source: LINE_SOURCE.floor },
+        select: { itemName: true },
+      });
+      if (floorRows.length) {
+        const names = [...new Set(floorRows.map((r) => String(r.itemName)))].join(", ");
+        return Response.json({
+          error: `${names} was logged at the machine, so it cannot be removed here — correct the quantity instead, or ask the store to adjust the stock.`,
+        }, { status: 400 });
+      }
+    }
+
     // Departments are upserted by name, exactly as the floor panel does it —
     // the eight seeded names already exist, so this is a read in practice.
     const depts = new Map<string, string>();
@@ -85,7 +108,16 @@ export async function POST(req: NextRequest) {
       }
     }
     const stocks: any[] = await db.inventoryStock.findMany({ select: { id: true, itemName: true } });
-    const byName = new Map<string, string>(stocks.map((s) => [String(s.itemName).toLowerCase(), String(s.id)]));
+    const byName = new Map<string, { id: string; itemName: string }>(
+      stocks.map((s) => [String(s.itemName).toLowerCase(), { id: String(s.id), itemName: String(s.itemName) }]),
+    );
+    // When the batch actually ran — the date a line entered here is filed
+    // under. Read from the press, which every batch passes; null on a batch
+    // with no press rows, and then the save's own time is the honest answer.
+    const firstPress: any = await db.press.findFirst({
+      where: { batchKey, date: { not: null } }, orderBy: { date: "asc" }, select: { date: true },
+    }).catch(() => null);
+    const batchDate: Date | null = firstPress?.date ? new Date(firstPress.date) : null;
 
     let saved = 0;
     let deleted = 0;
@@ -96,18 +128,23 @@ export async function POST(req: NextRequest) {
         const r = await tx.consumptionEntry.deleteMany({ where: { id: { in: deletes }, batchKey } });
         deleted = r.count;
       }
+      const at = new Date();
       for (const e of edits) {
         const itemName = String(e.itemName).trim();
         const unit = String(e.unit ?? "").trim() || "PCS";
         const quantity = Number(e.quantity);
-        const unitPrice = e.unitPrice == null || String(e.unitPrice) === "" ? null : Number(e.unitPrice);
-        const stockId = byName.get(itemName.toLowerCase()) ?? null;
-        // The price carries its author and time whenever it is present. A line
-        // saved with no price clears both rather than keeping a stale name
-        // beside an empty figure.
-        const priced = unitPrice == null
-          ? { unitPrice: null, pricedBy: null, pricedAt: null }
-          : { unitPrice, pricedBy: me.name, pricedAt: new Date() };
+        const stock = byName.get(itemName.toLowerCase());
+        const stockId = stock?.id ?? null;
+        // THE ITEM'S NAME IS THE STOCK ROW'S NAME whenever the line is linked
+        // to one. Typing "gloves" against the "Gloves" row used to save the
+        // typed spelling while linking to the row, so every dashboard that
+        // groups by itemName showed two items that were one.
+        const name = stock?.itemName ?? itemName;
+        // ABSENT PRICE = LEAVE IT ALONE. The sheet sends `unitPrice` only for a
+        // line whose price box was touched, so one verifier saving a new line
+        // can no longer blank the price another typed — nor re-stamp their name
+        // on it. pricePatch returns null for "not carried"; see batchUsageRules.
+        const priced = pricePatch(e, me.name, at);
 
         if (e.id) {
           // Scoped to the batch: an id from another batch cannot be edited
@@ -115,8 +152,12 @@ export async function POST(req: NextRequest) {
           const r = await tx.consumptionEntry.updateMany({
             where: { id: e.id, batchKey },
             data: {
-              itemName, quantity, unit, inventoryStockId: stockId,
-              station: e.station, operatorName: e.operatorName ?? null, ...priced,
+              itemName: name, quantity, unit, inventoryStockId: stockId,
+              // The department follows the station, or a line moved between
+              // stations would keep reporting under the old one.
+              departmentId: depts.get(MODEL_DEPT[e.station] ?? "Production")!,
+              station: e.station, operatorName: e.operatorName ?? null,
+              ...(priced ?? {}),
             },
           });
           saved += r.count;
@@ -124,12 +165,20 @@ export async function POST(req: NextRequest) {
           await tx.consumptionEntry.create({
             data: {
               departmentId: depts.get(MODEL_DEPT[e.station] ?? "Production")!,
-              itemName, quantity, unit, inventoryStockId: stockId,
+              itemName: name, quantity, unit, inventoryStockId: stockId,
               batchKey, station: e.station,
               operatorName: e.operatorName ?? null,
               enteredBy: me.name,
+              // WHICH PATH WROTE THIS. Read back as the sheet's "from the
+              // floor" badge — see scripts/0075 for why it is a column and not
+              // an inference from operatorName, which both paths set.
+              source: LINE_SOURCE.signoff,
+              // The consumption belongs to the batch's own time, not to the day
+              // somebody reconciled it, or every KPI that filters by date files
+              // a week-old drum under sign-off day.
+              date: batchDate ?? at,
               remarks: `Entered at batch sign-off by ${me.name}`,
-              ...priced,
+              ...(priced ?? {}),
             },
           });
           saved += 1;

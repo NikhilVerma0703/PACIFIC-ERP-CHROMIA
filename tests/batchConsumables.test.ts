@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { editProblem, BATCH_STATIONS } from "../src/lib/consumables/batchUsageRules.ts";
+import {
+  editProblem, pricePatch, draftChanged, toLine, LINE_SOURCE, BATCH_STATIONS,
+} from "../src/lib/consumables/batchUsageRules.ts";
 import { MODEL_DEPT } from "../src/lib/consumables/dept.ts";
 
 // The batch consumables sheet is typed by hand by two people and its numbers
@@ -118,4 +120,104 @@ test("saving the sheet does not move stock a second time", () => {
     !/currentStock/.test(api),
     "the sign-off sheet must not touch currentStock — the floor panel already did",
   );
+});
+
+// ---------------------------------------------------------------------------
+// The review's findings, pinned. Every one of these was a live defect on
+// 2026-09-04: a price wiped by a colleague's save, a badge that lied about who
+// recorded a figure, a deleted line that left its stock decrement behind.
+
+test("pricePatch: an absent price is left alone, and only a SET price is signed", () => {
+  const at = new Date("2026-09-04T10:00:00Z");
+  // THE BUG THIS EXISTS TO STOP. The sheet used to send every line on every
+  // save, and the route wrote unitPrice/pricedBy/pricedAt unconditionally — so
+  // Satya prices Gloves, the store incharge saves a sheet opened before that,
+  // and Gloves goes back to null with nobody's name on it.
+  assert.equal(pricePatch({}, "Thiru", at), null, "no price key = do not touch the price columns");
+  // An explicit null is a person clearing the box, and it clears the name too:
+  // an author beside an empty figure is worse than no author.
+  assert.deepEqual(pricePatch({ unitPrice: null }, "Thiru", at), { unitPrice: null, pricedBy: null, pricedAt: null });
+  // A figure carries who put it there and when.
+  assert.deepEqual(pricePatch({ unitPrice: 40 }, "Thiru", at), { unitPrice: 40, pricedBy: "Thiru", pricedAt: at });
+  // Free issue is a price, not an absence.
+  assert.deepEqual(pricePatch({ unitPrice: 0 }, "Satya", at), { unitPrice: 0, pricedBy: "Satya", pricedAt: at });
+});
+
+test("draftChanged: an untouched line is never sent, a touched one always is", () => {
+  const base = { itemName: "Gloves", quantity: "4", unit: "PCS", unitPrice: "40", operatorName: "Suresh", station: "Press" };
+  assert.equal(draftChanged(base, { ...base }), false);
+  // Whitespace alone is not a change — a save must not rewrite a line because
+  // a cursor passed through it.
+  assert.equal(draftChanged({ ...base, itemName: " Gloves " }, base), false);
+  for (const k of ["itemName", "quantity", "unit", "unitPrice", "operatorName", "station"] as const) {
+    assert.equal(draftChanged({ ...base, [k]: "changed" }, base), true, `${k} must count as a change`);
+  }
+  // Clearing the price is a change, so it reaches the server as an explicit null.
+  assert.equal(draftChanged({ ...base, unitPrice: "" }, base), true);
+});
+
+test("fromFloor comes from `source` alone — not from a field both paths write", () => {
+  const row = { id: "e1", itemName: "Gloves", quantity: 2, unit: "PCS", date: new Date() };
+  // The sheet pre-fills the station's operator on every blank line and sends
+  // it, so operatorName says nothing about who recorded the figure.
+  assert.equal(toLine({ ...row, source: LINE_SOURCE.floor, operatorName: null }).fromFloor, true);
+  assert.equal(toLine({ ...row, source: LINE_SOURCE.signoff, operatorName: "Suresh" }).fromFloor, false);
+  // A row from before the column existed is not the floor's, and is not guessed.
+  assert.equal(toLine({ ...row, operatorName: "Suresh" }).fromFloor, false);
+  assert.equal(LINE_SOURCE.floor, "floor");
+  assert.equal(LINE_SOURCE.signoff, "signoff");
+});
+
+test("toLine: a price of 0 survives, and a missing one stays missing", () => {
+  const row = { id: "e1", itemName: "Gloves", quantity: 2, unit: "PCS", date: new Date("2026-08-01T00:00:00Z") };
+  assert.equal(toLine({ ...row, unitPrice: 0 }).unitPrice, 0, "0 is a price, not an absence");
+  assert.equal(toLine(row).unitPrice, null);
+  assert.equal(toLine({ ...row, pricedAt: new Date("2026-09-01T00:00:00Z") }).pricedAt, "2026-09-01T00:00:00.000Z");
+  assert.equal(toLine(row).pricedAt, null);
+});
+
+test("an existing line may not be blanked to zero, but a new one may be zero", () => {
+  // Number(d.quantity || 0) turned a cleared box into 0. On a floor line that
+  // also leaves the store's decrement standing against nothing.
+  assert.match(editProblem({ ...ok, id: "e1", quantity: 0 }, STATIONS) ?? "", /type the corrected figure|remove the line/i);
+  assert.equal(editProblem({ ...ok, quantity: 0 }, STATIONS), null, "a NEW line at zero records 'none used here'");
+});
+
+test("both write paths stamp where the line came from", () => {
+  const floor = readFileSync(new URL("../src/lib/consumables/quickLog.ts", import.meta.url), "utf8");
+  assert.ok(/source: LINE_SOURCE\.floor/.test(floor), "the machine panel must stamp source=floor");
+  assert.ok(/source: LINE_SOURCE\.signoff/.test(api), "the sign-off sheet must stamp source=signoff");
+});
+
+test("the route writes the price only when the edit carries one", () => {
+  assert.ok(api.includes("pricePatch("), "the route must go through pricePatch");
+  assert.ok(
+    !/pricedBy: me\.name/.test(api),
+    "the route must not stamp pricedBy itself — pricePatch decides whether the price columns are touched at all",
+  );
+});
+
+test("a line the floor logged cannot be deleted through the sheet", () => {
+  // Its quantity is already out of the store's stock; deleting the row leaves
+  // that decrement against nothing and no screen can name the shortfall.
+  assert.ok(
+    api.includes("LINE_SOURCE.floor") && /deletes.*source|source.*deletes/s.test(api),
+    "the delete path must refuse rows whose source is the floor",
+  );
+  const guardAt = api.indexOf("source: LINE_SOURCE.floor");
+  const txAt = api.indexOf("$transaction");
+  assert.ok(guardAt > 0 && guardAt < txAt, "the guard must run before the transaction");
+});
+
+test("the floor panel refuses a line with no batch", () => {
+  const floor = readFileSync(new URL("../src/lib/consumables/quickLog.ts", import.meta.url), "utf8");
+  assert.ok(
+    /if \(!batchKey\) return/.test(floor),
+    "a line with no batch appears on no sign-off sheet — it must be refused, not accepted into silence",
+  );
+});
+
+test("the sheet sends only what changed", () => {
+  assert.ok(table.includes("draftChanged("), "the sheet must diff drafts against what it loaded");
+  assert.ok(table.includes("priceTouched"), "an untouched price box must not be sent at all");
 });

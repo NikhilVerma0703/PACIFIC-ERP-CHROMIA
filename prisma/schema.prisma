@@ -3123,6 +3123,9 @@ model InventoryStock {
   inventoryEntries   InventoryEntry[]
   consumptionEntries ConsumptionEntry[]
 
+  // ONE ITEM, ONE ROW: a unique index on lower("itemName") exists in Neon
+  // (scripts/0075) that Prisma cannot declare. migrate diff lists it as a
+  // DROP INDEX — safe drift, named there. Do not "fix" the diff by dropping it.
   @@map("consumable_inventory_stock")
 }
 
@@ -3189,11 +3192,19 @@ model ConsumptionEntry {
   unitPrice    Float?    @map("unit_price")
   pricedBy     String?   @map("priced_by")
   pricedAt     DateTime? @map("priced_at")
+  /// WHICH PATH WROTE THE LINE — 'floor' (the machine-form panel) or 'signoff'
+  /// (the verify screen). scripts/0075. The sheet badges floor lines as the
+  /// station's own evidence; this is the fact it reads, written by the path
+  /// that has it rather than inferred from operator_name, which both set.
+  source       String?   @map("source")
 
   createdAt DateTime @default(now())
 
   @@index([batchKey])
-  @@index([batchKey, station])
+  // `map:` because the index was created by hand in scripts/0074 under this
+  // name; without it Prisma's default name differs and migrate diff proposes
+  // a rename every time anyone looks.
+  @@index([batchKey, station], map: "consumable_consumption_entry_batch_station_idx")
   @@map("consumable_consumption_entry")
 }
 

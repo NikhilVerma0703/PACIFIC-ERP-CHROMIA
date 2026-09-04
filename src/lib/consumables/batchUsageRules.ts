@@ -39,9 +39,39 @@ export interface UsageLine {
   enteredBy: string | null;
   /** True when the line came from the floor's own panel rather than being
    *  typed at sign-off — the sheet marks these, because a figure the station
-   *  reported and a figure the office entered are different kinds of evidence. */
+   *  reported and a figure the office entered are different kinds of evidence.
+   *  Derived from `source` (scripts/0075) and from nothing else: it used to be
+   *  read off operatorName, which the sheet ALSO writes, so sheet-typed lines
+   *  came back badged as the floor's. */
   fromFloor: boolean;
   date: string;
+}
+
+/** The two paths that write a line, as the `source` column spells them. */
+export const LINE_SOURCE = { floor: "floor", signoff: "signoff" } as const;
+
+/** One consumption row as the sheet shows it. Pure, so the badge rule can be
+ *  tested without a database. `r` is the Prisma row (or anything shaped like
+ *  it); dates come out as ISO strings so the result can cross to the client. */
+export function toLine(r: {
+  id: unknown; itemName?: unknown; quantity?: unknown; unit?: unknown; unitPrice?: unknown;
+  pricedBy?: unknown; pricedAt?: unknown; operatorName?: unknown; enteredBy?: unknown;
+  source?: unknown; date?: unknown;
+}): UsageLine {
+  const iso = (d: unknown): string => (d instanceof Date ? d.toISOString() : String(d ?? ""));
+  return {
+    id: String(r.id),
+    itemName: String(r.itemName ?? ""),
+    quantity: Number(r.quantity ?? 0),
+    unit: String(r.unit ?? ""),
+    unitPrice: r.unitPrice == null ? null : Number(r.unitPrice),
+    pricedBy: (r.pricedBy as string | null | undefined) ?? null,
+    pricedAt: r.pricedAt ? iso(r.pricedAt) : null,
+    operatorName: (r.operatorName as string | null | undefined) ?? null,
+    enteredBy: (r.enteredBy as string | null | undefined) ?? null,
+    fromFloor: r.source === LINE_SOURCE.floor,
+    date: iso(r.date),
+  };
 }
 
 export interface StationUsage {
@@ -65,8 +95,38 @@ export interface UsageEdit {
   itemName: string;
   quantity: number;
   unit: string;
+  /** ABSENT means "leave the price as it is". null means "clear it". A number
+   *  sets it. The distinction is what stops one verifier's save from wiping
+   *  the other's price: the sheet sends this key only for a line whose price
+   *  box was actually touched. */
   unitPrice?: number | null;
   operatorName?: string | null;
+}
+
+/** What a save writes to the three price columns for one edit, and whether it
+ *  writes them at all. `by`/`at` are stamped only when a price is SET — a
+ *  cleared price carries no author, and an untouched price is not rewritten,
+ *  so the name on a rupee figure stays the name of the person who put it there. */
+export function pricePatch(e: Pick<UsageEdit, "unitPrice">, by: string, at: Date):
+  { unitPrice: number | null; pricedBy: string | null; pricedAt: Date | null } | null {
+  if (!("unitPrice" in e)) return null;
+  if (e.unitPrice == null) return { unitPrice: null, pricedBy: null, pricedAt: null };
+  return { unitPrice: Number(e.unitPrice), pricedBy: by, pricedAt: at };
+}
+
+/** Has this draft moved from what the sheet loaded? The sheet sends only the
+ *  lines that have, so a stale copy of the sheet cannot overwrite a colleague's
+ *  edits on lines it never touched. Compared as strings, exactly as the boxes
+ *  hold them, so "40" and "40.0" typed over each other still count as a change
+ *  the person made. */
+export interface DraftShape { itemName: string; quantity: string; unit: string; unitPrice: string; operatorName: string; station: string }
+export function draftChanged(a: DraftShape, b: DraftShape): boolean {
+  return a.itemName.trim() !== b.itemName.trim()
+    || a.quantity.trim() !== b.quantity.trim()
+    || a.unit.trim() !== b.unit.trim()
+    || a.unitPrice.trim() !== b.unitPrice.trim()
+    || a.operatorName.trim() !== b.operatorName.trim()
+    || a.station !== b.station;
 }
 
 export interface SaveResult { ok: boolean; error?: string; saved?: number; deleted?: number }
@@ -81,6 +141,11 @@ export function editProblem(e: UsageEdit, stations: ReadonlySet<string>): string
   if (!stations.has(String(e.station ?? ""))) return `“${e.station}” is not a station on this batch.`;
   const q = Number(e.quantity);
   if (!Number.isFinite(q) || q < 0) return `Quantity for “${item}” must be a number, and not negative.`;
+  // A NEW line at zero is "this station used none" and worth recording. An
+  // EXISTING line at zero is almost always a quantity box someone cleared
+  // meaning to retype it — and on a floor line, zero would also leave the
+  // stock decrement standing against nothing. Refuse it and say so.
+  if (e.id && q === 0) return `“${item}” already has a quantity — type the corrected figure rather than leaving it blank, or remove the line.`;
   if (q > 1_000_000) return `Quantity for “${item}” looks like a typo (over a million).`;
   const unit = String(e.unit ?? "").trim();
   if (unit.length > 12) return `The unit for “${item}” is too long.`;

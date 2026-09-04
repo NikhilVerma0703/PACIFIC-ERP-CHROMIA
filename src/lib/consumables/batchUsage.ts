@@ -29,10 +29,10 @@ import { canonPerson } from "@/lib/shiftScoreMath";
 import { MODEL_DEPT } from "./dept";
 // The vocabulary and the validation live in a database-free module so tests can
 // reach them; re-exported here so every existing caller keeps one import.
-import { BATCH_STATIONS, type UsageLine, type StationUsage } from "./batchUsageRules.ts";
+import { BATCH_STATIONS, toLine, type UsageLine, type StationUsage } from "./batchUsageRules.ts";
 
-export { BATCH_STATIONS, editProblem } from "./batchUsageRules.ts";
-export type { UsageLine, StationUsage, UsageEdit, SaveResult } from "./batchUsageRules.ts";
+export { BATCH_STATIONS, editProblem, pricePatch, draftChanged, toLine, LINE_SOURCE } from "./batchUsageRules.ts";
+export type { UsageLine, StationUsage, UsageEdit, SaveResult, DraftShape } from "./batchUsageRules.ts";
 
 const db = prisma as any;
 
@@ -46,26 +46,6 @@ export interface BatchUsage {
    *  rather than dropped: a line nobody can place is still a consumption
    *  somebody recorded against this batch. */
   unplaced: UsageLine[];
-}
-
-const iso = (d: unknown): string => (d instanceof Date ? d.toISOString() : String(d ?? ""));
-
-function toLine(r: any): UsageLine {
-  return {
-    id: String(r.id),
-    itemName: String(r.itemName ?? ""),
-    quantity: Number(r.quantity ?? 0),
-    unit: String(r.unit ?? ""),
-    unitPrice: r.unitPrice == null ? null : Number(r.unitPrice),
-    pricedBy: r.pricedBy ?? null,
-    pricedAt: r.pricedAt ? iso(r.pricedAt) : null,
-    operatorName: r.operatorName ?? null,
-    enteredBy: r.enteredBy ?? null,
-    // The floor panel stamps operatorName at log time; a sign-off line does
-    // not. Reading the flag off the remark would be reading prose again.
-    fromFloor: !!r.operatorName,
-    date: iso(r.date),
-  };
 }
 
 /**
@@ -85,13 +65,15 @@ export async function batchUsage(rawBatch: string): Promise<BatchUsage> {
       orderBy: [{ station: "asc" }, { date: "asc" }],
       select: {
         id: true, itemName: true, quantity: true, unit: true, unitPrice: true,
-        pricedBy: true, pricedAt: true, operatorName: true, enteredBy: true, station: true, date: true,
+        pricedBy: true, pricedAt: true, operatorName: true, enteredBy: true, station: true, date: true, source: true,
       },
     }).catch(() => [] as any[]),
     db.inventoryStock.findMany({ select: { itemName: true, unit: true }, orderBy: { itemName: "asc" } }).catch(() => [] as any[]),
     ...BATCH_STATIONS.map((s) =>
       db[s.delegate].findMany({ where: { batchKey }, select: { [s.person]: true }, take: 2000 })
-        .catch(() => [] as any[])),
+        // A failed read is LOGGED, not swallowed: silently returning [] would
+        // turn a renamed column into "this station never ran the batch".
+        .catch((e: unknown) => { console.error(`batchUsage: ${s.delegate}.${s.person} read failed`, e); return [] as any[]; })),
   ]);
 
   const byStation = new Map<string, UsageLine[]>();

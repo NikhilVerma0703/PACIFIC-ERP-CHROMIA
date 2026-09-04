@@ -121,11 +121,15 @@ export function ConsumablesQuickLog({ model, dept, items, batch }: {
       </button>
       {open && (
         <div className="mt-3 space-y-2">
+          {/* REQUIRED, because a line with no batch is read by nothing. The
+              sign-off sheet is the only place these lines are shown, and it
+              looks them up by batch — so a blank box does not mean "log it
+              anyway", it means "log it where nobody will ever see it". */}
           <label className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-medium text-gray-600">Batch</span>
+            <span className="text-xs font-medium text-gray-600">Batch<span className="text-red-500"> *</span></span>
             <input value={batchNo} onChange={(e) => setBatchNo(e.target.value)} placeholder="e.g. D1425"
-              className={`${inp} w-40`} />
-            <span className="text-[11px] text-gray-400">so it shows on that batch&apos;s sign-off sheet</span>
+              className={`${inp} w-40 ${batchNo.trim() ? "" : "border-amber-400"}`} />
+            <span className="text-[11px] text-gray-400">the batch running at this machine — it is what puts the item on that batch&apos;s sign-off sheet</span>
           </label>
 
           {lines.map((l) => (
@@ -165,11 +169,11 @@ export function ConsumablesQuickLog({ model, dept, items, batch }: {
                     // The panel is not inside the entry <form>, so this cannot
                     // submit a slab; it is still handled explicitly so a stray
                     // keypress can never do anything but add an item.
-                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addItem(l.key); } if (e.key === "Escape") setAdding(null); }}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); if (!addPending) addItem(l.key); } if (e.key === "Escape") setAdding(null); }}
                     className={`${inp} min-w-[180px] flex-1`} />
                   <input value={newUnit} placeholder="Unit (e.g. KG)"
                     onChange={(e) => setNewUnit(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addItem(l.key); } if (e.key === "Escape") setAdding(null); }}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); if (!addPending) addItem(l.key); } if (e.key === "Escape") setAdding(null); }}
                     className={`${inp} w-28`} />
                   <button type="button" disabled={addPending} onClick={() => addItem(l.key)}
                     className="rounded-lg bg-brand px-3 py-2 text-xs font-semibold text-white hover:bg-brand-dark disabled:opacity-60">

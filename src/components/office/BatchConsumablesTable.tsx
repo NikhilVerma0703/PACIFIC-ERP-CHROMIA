@@ -23,6 +23,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Card, Empty } from "@/components/ui";
 import { readJson } from "@/lib/readJson";
+import { draftChanged, type DraftShape } from "@/lib/consumables/batchUsageRules.ts";
 
 const API = "/api/office/batch-consumables";
 
@@ -81,6 +82,12 @@ const blank = (station: string, operator: string): Draft => ({
   operatorName: operator, fromFloor: false, pricedBy: null,
 });
 
+/** The comparable half of a draft — what a save is allowed to have changed. */
+const shapeOf = (d: Draft): DraftShape => ({
+  itemName: d.itemName, quantity: d.quantity, unit: d.unit,
+  unitPrice: d.unitPrice, operatorName: d.operatorName, station: d.station,
+});
+
 export function BatchConsumablesTable({ batchKey, batchLabel, onSaved }: {
   batchKey: string;
   batchLabel?: string;
@@ -88,6 +95,11 @@ export function BatchConsumablesTable({ batchKey, batchLabel, onSaved }: {
 }) {
   const [sheet, setSheet] = useState<Sheet | null>(null);
   const [drafts, setDrafts] = useState<Draft[]>([]);
+  // WHAT THE SHEET LOOKED LIKE WHEN IT LOADED, so a save can send only what
+  // this person actually changed. Sending every line meant a sheet opened five
+  // minutes ago overwrote a colleague's price with the null it still held —
+  // and re-stamped every priced line with the saver's name.
+  const [baseline, setBaseline] = useState<Map<string, DraftShape>>(new Map());
   const [removed, setRemoved] = useState<string[]>([]);
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -106,6 +118,7 @@ export function BatchConsumablesTable({ batchKey, batchLabel, onSaved }: {
     }
     for (const l of s.unplaced) rows.push(draftOf(l, ""));
     setDrafts(rows);
+    setBaseline(new Map(rows.map((d) => [d.key, shapeOf(d)])));
   }, []);
 
   const load = useCallback(async () => {
@@ -150,16 +163,29 @@ export function BatchConsumablesTable({ batchKey, batchLabel, onSaved }: {
     setBusy(true); setNote(null);
     // A line with no item name is the empty row nobody filled in — dropped, not
     // refused, because refusing it would make the pre-filled sheet a trap.
+    //
+    // ONLY WHAT CHANGED IS SENT. An untouched line is left entirely alone by
+    // the save, so two people working the same batch cannot undo each other,
+    // and `unitPrice` is omitted rather than sent as null for a price box
+    // nobody touched — which is what stops a colleague's figure and their name
+    // being wiped. See pricePatch in batchUsageRules.
     const edits = drafts
       .filter((d) => d.itemName.trim() && d.station)
-      .map((d) => ({
-        id: d.id, station: d.station, itemName: d.itemName.trim(),
-        quantity: Number(d.quantity || 0), unit: d.unit.trim() || "PCS",
-        unitPrice: d.unitPrice.trim() === "" ? null : Number(d.unitPrice),
-        operatorName: d.operatorName.trim() || null,
-      }));
+      .filter((d) => !d.id || draftChanged(shapeOf(d), baseline.get(d.key) ?? shapeOf(d)))
+      .map((d) => {
+        const before = baseline.get(d.key);
+        const priceTouched = !d.id || !before || before.unitPrice.trim() !== d.unitPrice.trim();
+        return {
+          id: d.id, station: d.station, itemName: d.itemName.trim(),
+          quantity: Number(d.quantity || 0), unit: d.unit.trim() || "PCS",
+          operatorName: d.operatorName.trim() || null,
+          ...(priceTouched ? { unitPrice: d.unitPrice.trim() === "" ? null : Number(d.unitPrice) } : {}),
+        };
+      });
     if (edits.length === 0 && removed.length === 0) {
-      setBusy(false); setNote({ ok: false, text: "Nothing to save yet — type an item on a line." }); return;
+      setBusy(false);
+      setNote({ ok: false, text: drafts.some((d) => d.itemName.trim()) ? "Nothing has changed since this sheet was opened." : "Nothing to save yet — type an item on a line." });
+      return;
     }
     try {
       const res = await readJson<Sheet & { saved: number; deleted: number }>(await fetch(API, {
@@ -230,21 +256,19 @@ export function BatchConsumablesTable({ batchKey, batchLabel, onSaved }: {
                       {rows.map((d) => (
                         <tr key={d.key} className="border-t border-gray-100 align-top">
                           <td className="px-3 py-1.5">
-                            <div className="flex items-center gap-1.5">
-                              {sheet.items.length > 0 ? (
-                                <select value={sheet.items.some((i) => i.itemName === d.itemName) ? d.itemName : ADD_NEW}
-                                  onChange={(e) => upd(d.key, { itemName: e.target.value === ADD_NEW ? "" : e.target.value })}
-                                  className={`${inp} min-w-[150px]`}>
-                                  <option value="">— pick item —</option>
-                                  {sheet.items.map((i) => <option key={i.itemName} value={i.itemName}>{i.itemName}</option>)}
-                                  <option value={ADD_NEW}>Type a name…</option>
-                                </select>
-                              ) : null}
-                              {(sheet.items.length === 0 || !sheet.items.some((i) => i.itemName === d.itemName)) && (
-                                <input value={d.itemName} onChange={(e) => upd(d.key, { itemName: e.target.value })}
-                                  placeholder="Item name" className={`${inp} min-w-[140px]`} />
-                              )}
-                            </div>
+                            {/* ONE INPUT, NEVER SWAPPED MID-KEYSTROKE. The
+                                select used to disappear the moment what was
+                                typed matched an item exactly, so typing
+                                "Gloves XL" against a list holding "Gloves"
+                                lost focus after the sixth character. A datalist
+                                offers the list and leaves the box alone; the
+                                match is case-insensitive, and the server saves
+                                the stock row's own spelling either way, so
+                                "gloves" and "Gloves" cannot become two items on
+                                the dashboards. */}
+                            <input list="consumable-items" value={d.itemName}
+                              onChange={(e) => upd(d.key, { itemName: e.target.value })}
+                              placeholder="Item name" className={`${inp} min-w-[150px]`} />
                             {d.fromFloor && (
                               <span className="mt-1 inline-block rounded bg-emerald-50 px-1 py-0.5 text-[10px] font-medium text-emerald-700">from the floor</span>
                             )}
@@ -269,14 +293,20 @@ export function BatchConsumablesTable({ batchKey, batchLabel, onSaved }: {
                             <input list={`ops-${st.station}`} value={d.operatorName}
                               onChange={(e) => upd(d.key, { operatorName: e.target.value })}
                               placeholder={st.operators[0] ?? "who was there"} className={inp} />
-                            <datalist id={`ops-${st.station}`}>
-                              {st.operators.map((o) => <option key={o} value={o} />)}
-                            </datalist>
                           </td>
                           <td className="px-3 py-1.5">
-                            <button type="button" onClick={() => drop(d)}
-                              title="Remove this line"
-                              className="text-xs text-gray-400 transition hover:text-red-600">✕</button>
+                            {/* A floor line cannot be removed here: its
+                                quantity is already out of the store's stock,
+                                and deleting the row would leave that decrement
+                                standing against nothing. Correct it instead. */}
+                            {d.fromFloor && d.id ? (
+                              <span title="Logged at the machine — correct the quantity rather than removing it"
+                                className="cursor-default text-xs text-gray-300">✕</span>
+                            ) : (
+                              <button type="button" onClick={() => drop(d)}
+                                title="Remove this line"
+                                className="text-xs text-gray-400 transition hover:text-red-600">✕</button>
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -288,6 +318,10 @@ export function BatchConsumablesTable({ batchKey, batchLabel, onSaved }: {
                     </tbody>
                   </table>
                 </div>
+                {/* One operator list per station, outside the rows. */}
+                <datalist id={`ops-${st.station}`}>
+                  {st.operators.map((o) => <option key={o} value={o} />)}
+                </datalist>
                 <div className="border-t border-gray-100 px-3 py-2">
                   <button type="button"
                     onClick={() => setDrafts((p) => [...p, blank(st.station, st.operators[0] ?? "")])}
@@ -300,6 +334,12 @@ export function BatchConsumablesTable({ batchKey, batchLabel, onSaved }: {
           })}
         </div>
       )}
+
+      {/* One list for every row on the sheet — a datalist per row would repeat
+          the same id dozens of times. */}
+      <datalist id="consumable-items">
+        {sheet.items.map((i) => <option key={i.itemName} value={i.itemName} />)}
+      </datalist>
 
       {sheet.unplaced.length > 0 && (
         <p className="mt-3 text-xs text-amber-700">

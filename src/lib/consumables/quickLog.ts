@@ -10,6 +10,7 @@ import { canUseEntryModel } from "@/lib/stationAccess";
 import { currentUser, rankOf, ROLE_RANK } from "@/lib/rbac";
 import { normalizeBatch } from "@/lib/normalizeBatch";
 import { MODEL_DEPT } from "./dept";
+import { LINE_SOURCE } from "./batchUsageRules.ts";
 
 const db = prisma as any;
 
@@ -39,6 +40,11 @@ export async function logConsumables(model: string, lines: QuickLine[], ctx: Qui
   // way every other batch key in the plant is (normalizeBatch), or the sheet
   // for "D1425" would not find a line logged as "1425".
   const batchKey = normalizeBatch(ctx.batch) || null;
+  // A LINE WITH NO BATCH IS READ BY NOTHING. The sign-off sheet is the only
+  // screen that shows these, and it looks them up by batch — so saving without
+  // one does not mean "record it anyway", it means "record it where nobody will
+  // ever see it". Refused with a sentence rather than accepted into silence.
+  if (!batchKey) return "Enter the batch this machine is running — without it the item cannot appear on that batch's sign-off sheet.";
   try {
     const dept = await db.consumableDepartment.upsert({
       where: { name: MODEL_DEPT[model] }, update: {}, create: { name: MODEL_DEPT[model] },
@@ -56,6 +62,11 @@ export async function logConsumables(model: string, lines: QuickLine[], ctx: Qui
           // The remark is KEPT as well: it is what every existing row has, and
           // a reader who knows to look there should still find it.
           batchKey, station: model, operatorName: by, enteredBy: by,
+          // WHICH PATH WROTE THIS (scripts/0075). The sign-off sheet badges
+          // these as the station's own evidence; it used to infer that from
+          // operatorName, which the sheet also sets, so its badge was wrong in
+          // both directions.
+          source: LINE_SOURCE.floor,
         } });
         if (stockId) {
           // atomic decrement, floored at 0 — identical to the dashboard API

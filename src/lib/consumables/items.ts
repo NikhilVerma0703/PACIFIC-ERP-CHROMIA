@@ -78,18 +78,35 @@ export async function addConsumableItem(model: string, rawName: string, rawUnit:
     });
     if (hit) return { ok: true, item: { itemName: hit.itemName, unit: hit.unit, currentStock: hit.currentStock }, existed: true };
 
-    const created: any = await db.inventoryStock.create({
-      data: {
-        itemName, unit, category: categoryFor(model),
-        // Zero, and honestly zero: nobody on the floor knows what the store
-        // holds. The store sets the real figure when it receives against an
-        // invoice. Logging against a 0-stock item still records the
-        // consumption; the decrement is floored at 0 and simply does nothing.
-        currentStock: 0, minStock: 0, maxStock: 0,
-      },
-      select: { itemName: true, unit: true, currentStock: true },
-    });
-    return { ok: true, item: { itemName: created.itemName, unit: created.unit, currentStock: created.currentStock }, existed: false };
+    try {
+      const created: any = await db.inventoryStock.create({
+        data: {
+          itemName, unit, category: categoryFor(model),
+          // Zero, and honestly zero: nobody on the floor knows what the store
+          // holds. The store sets the real figure when it receives against an
+          // invoice. Logging against a 0-stock item still records the
+          // consumption; the decrement is floored at 0 and simply does nothing.
+          currentStock: 0, minStock: 0, maxStock: 0,
+        },
+        select: { itemName: true, unit: true, currentStock: true },
+      });
+      return { ok: true, item: { itemName: created.itemName, unit: created.unit, currentStock: created.currentStock }, existed: false };
+    } catch (e: any) {
+      // THE CHECK ABOVE IS NOT THE GUARD — the index is. Two incharges at two
+      // stations typing "Gloves" inside one round-trip both pass findFirst and
+      // both insert; once two rows exist the floor's decrement lands on one and
+      // the store's top-up on the other, and the stock is split for good.
+      // scripts/0075 adds UNIQUE (lower("itemName")), so the loser of that race
+      // arrives here (P2002) and is handed the row that won — which is the
+      // answer they wanted anyway.
+      if (e?.code !== "P2002") throw e;
+      const won: any = await db.inventoryStock.findFirst({
+        where: { itemName: { equals: itemName, mode: "insensitive" } },
+        select: { itemName: true, unit: true, currentStock: true },
+      });
+      if (!won) throw e;
+      return { ok: true, item: { itemName: won.itemName, unit: won.unit, currentStock: won.currentStock }, existed: true };
+    }
   } catch (e) {
     console.error("addConsumableItem error:", e);
     return { ok: false, error: "Could not add the item — try again." };
