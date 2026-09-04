@@ -3161,8 +3161,39 @@ model ConsumptionEntry {
   inventoryStockId String?
   inventoryStock   InventoryStock? @relation(fields: [inventoryStockId], references: [id])
 
+  /// WHERE, WHOSE HAND, AND WHAT IT COST — scripts/0074, applied to Neon
+  /// 2026-09-04. Until then a consumption knew only its department, and the
+  /// station, the batch and the person were a sentence in `remarks`. The batch
+  /// sign-off screen has to group by station and name the operator, and neither
+  /// can be read out of prose.
+  ///
+  /// DECLARED HERE BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not
+  /// remove — see the drift note in CLAUDE.md.
+  ///
+  /// All nullable: the table was empty when they were added, nothing was
+  /// backfilled, and a line logged from a form that does not know its batch
+  /// should say so by leaving it null rather than by carrying a guess.
+  batchKey     String?   @map("batch_key")
+  /// The entry model the line was logged against — "Press", "MixerCycle",
+  /// "PolishQc". The department it rolls up to is still `department`; this is
+  /// finer, because two stations share a department (Distributor and Kreos)
+  /// and the owner asked to see them apart.
+  station      String?   @map("station")
+  /// Who was AT the station — read off the batch's own station records, not
+  /// from the login. The person who types a line at sign-off is `enteredBy`.
+  operatorName String?   @map("operator_name")
+  enteredBy    String?   @map("entered_by")
+  /// Rupees per `unit`, set at batch sign-off by Satya or the store incharge.
+  /// PER LINE, by decision (owner, 2026-09-04): the price is what this batch's
+  /// drum cost, not a standing rate for the item.
+  unitPrice    Float?    @map("unit_price")
+  pricedBy     String?   @map("priced_by")
+  pricedAt     DateTime? @map("priced_at")
+
   createdAt DateTime @default(now())
 
+  @@index([batchKey])
+  @@index([batchKey, station])
   @@map("consumable_consumption_entry")
 }
 

@@ -8,13 +8,20 @@
 import { prisma } from "@/lib/prisma";
 import { canUseEntryModel } from "@/lib/stationAccess";
 import { currentUser, rankOf, ROLE_RANK } from "@/lib/rbac";
+import { normalizeBatch } from "@/lib/normalizeBatch";
 import { MODEL_DEPT } from "./dept";
 
 const db = prisma as any;
 
 export interface QuickLine { itemName: string; quantity: number; unit: string }
 
-export async function logConsumables(model: string, lines: QuickLine[]): Promise<string> {
+/** What the line was used ON. Optional, because a form can be filled without a
+ *  batch in hand and a consumption is still worth recording — but a line with
+ *  no batch cannot appear on that batch's sign-off sheet, which is the whole
+ *  reason the field exists, so the panel asks for it and says why. */
+export interface QuickContext { batch?: string | null }
+
+export async function logConsumables(model: string, lines: QuickLine[], ctx: QuickContext = {}): Promise<string> {
   if (!Object.hasOwn(MODEL_DEPT, model)) return "This form has no consumables department.";
   if (!(await canUseEntryModel(model))) return "Not allowed from this login/station.";
   // consumables is a production capability — fab staff are excluded (same as the dashboard gate)
@@ -28,6 +35,10 @@ export async function logConsumables(model: string, lines: QuickLine[]): Promise
   if (clean.length === 0) return "Nothing to log — add an item and quantity.";
   if (clean.length > 20) return "Too many lines in one go (max 20).";
   const by = me0?.name ?? null;
+  // THE BATCH IS WHAT MAKES THE LINE READABLE AT SIGN-OFF. Normalised the same
+  // way every other batch key in the plant is (normalizeBatch), or the sheet
+  // for "D1425" would not find a line logged as "1425".
+  const batchKey = normalizeBatch(ctx.batch) || null;
   try {
     const dept = await db.consumableDepartment.upsert({
       where: { name: MODEL_DEPT[model] }, update: {}, create: { name: MODEL_DEPT[model] },
@@ -41,6 +52,10 @@ export async function logConsumables(model: string, lines: QuickLine[]): Promise
           departmentId: dept.id, itemName: l.itemName, quantity: l.quantity, unit: l.unit,
           remarks: by ? `Logged at ${model} form by ${by}` : `Logged at ${model} form`,
           inventoryStockId: stockId,
+          // The four facts that used to live only inside that remark string.
+          // The remark is KEPT as well: it is what every existing row has, and
+          // a reader who knows to look there should still find it.
+          batchKey, station: model, operatorName: by, enteredBy: by,
         } });
         if (stockId) {
           // atomic decrement, floored at 0 — identical to the dashboard API

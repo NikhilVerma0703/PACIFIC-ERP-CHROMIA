@@ -31,6 +31,7 @@ import { Card, Empty } from "@/components/ui";
 import { readJson } from "@/lib/readJson";
 import { SimpleMaterialsEntry } from "@/components/office/SimpleMaterialsEntry";
 import { SignoffCard } from "@/components/office/SignoffCard";
+import { BatchConsumablesTable } from "@/components/office/BatchConsumablesTable";
 
 const API = "/api/office/batch-verify";
 
@@ -175,6 +176,20 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
 
           Saving re-reads the detail below, because an edit can lapse a mark and
           always moves the completeness answer the buttons obey. */}
+      {/* What the batch CONSUMED at each station, and what it cost — the sheet
+          the owner asked for on 2026-09-04 so Satya and the store incharge can
+          see "what was used where" and price it. Same gate as the materials
+          panel above (sign.length): filling this in is part of signing the
+          batch off, so exactly the people who may mark it may write here. */}
+      {detail && sign.length > 0 && (
+        <BatchConsumablesTable
+          key={detail.batchKey}
+          batchKey={detail.batchKey}
+          batchLabel={detail.batch}
+          onSaved={() => { setSignoffVersion((v) => v + 1); void load(picked); }}
+        />
+      )}
+
       {detail && sign.length > 0 && (
         <SimpleMaterialsEntry
           key={detail.batchKey}
