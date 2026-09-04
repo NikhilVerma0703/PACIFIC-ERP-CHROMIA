@@ -709,7 +709,24 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                       const waiting = g.count - g.stages.routed;
                       return (
                       <tr key={`${g.design} ${g.batch}`} className="border-t border-gray-100">
-                        <td className="py-1.5 pr-3 font-medium text-gray-900">{g.design}</td>
+                        <td className="py-1.5 pr-3 font-medium text-gray-900">
+                          {g.design}
+                          {/* A SLOW DESIGN, MARKED WHERE THE DESIGN IS NAMED
+                              (owner, 2026-09-05). The hour's STANDARD is what
+                              doubles a slab, and the standard belongs to the
+                              MIS hour rather than to the design — so a row run
+                              across two shifts at two standards is part
+                              doubled, and the mark says how many rather than
+                              claiming the whole design was slow. */}
+                          {g.slowClaimed > 0 && (
+                            <sup className="ml-0.5 text-[9px] font-semibold text-brand"
+                              title={g.slowClaimed === g.claimed
+                                ? `Standard ${SLOW_STD_MAX}/hr or less — every one of these ${fmt(g.claimed)} slabs counts twice`
+                                : `${fmt(g.slowClaimed)} of these ${fmt(g.claimed)} slabs came from an hour with a standard of ${SLOW_STD_MAX}/hr or less and count twice`}>
+                              2×
+                            </sup>
+                          )}
+                        </td>
                         <td className="py-1.5 pr-3 text-gray-600">{g.batch}</td>
                         <td className="py-1.5 pr-3 font-semibold">{fmt(g.claimed)}</td>
                         <td className="border-l border-gray-200 py-1.5 pl-2 pr-3 text-gray-700">{g.gradeA || <span className="text-gray-300">—</span>}</td>

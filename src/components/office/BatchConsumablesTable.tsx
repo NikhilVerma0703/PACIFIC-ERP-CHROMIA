@@ -219,118 +219,132 @@ export function BatchConsumablesTable({ batchKey, batchLabel, onSaved }: {
         anything else is what you enter here. Set the price against each line.
       </p>
 
+      {/* ONE CARD, ONE TABLE, STATIONS AS SECTIONS INSIDE IT (owner,
+          2026-09-05: "multiple consumables cards are coming, I want one where
+          I can add one or more consumables in each station"). It used to be a
+          bordered box per station — six or eight of them stacked, each with
+          its own header and its own table, so the sheet read as a pile of
+          cards rather than one sheet, and the columns did not line up down the
+          page because every table sized itself.
+
+          Now: one table, one header, one set of column widths. Each station is
+          a section row naming the station and whoever the batch's records put
+          there, followed by that station's lines and its own "+ consumable"
+          row — so adding one or more consumables per station is a single click
+          in the section it belongs to. */}
       {shown.length === 0 ? (
         <Empty>This batch has no station records yet, so there is nothing to account for.</Empty>
       ) : (
-        <div className="space-y-4">
-          {shown.map((st) => {
-            const rows = drafts.filter((d) => d.station === st.station);
-            return (
-              <div key={st.station} className="rounded-xl border border-gray-200">
-                <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-gray-100 bg-gray-50/70 px-3 py-2">
-                  <div className="text-sm font-semibold text-gray-800">
-                    {st.label}
-                    <span className="ml-2 text-xs font-normal text-gray-400">{st.department}</span>
-                  </div>
-                  <div className="text-xs text-gray-600">
-                    {st.operators.length
-                      ? <>On the machine: <span className="font-medium text-gray-800">{st.operators.join(", ")}</span></>
-                      : <span className="text-gray-400">No operator named on this batch&apos;s records</span>}
-                  </div>
-                </div>
+        <div className="overflow-x-auto rounded-xl border border-gray-200">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50/70 text-left text-[11px] uppercase tracking-wider text-gray-500">
+                <th className="px-3 py-2">Item</th>
+                <th className="px-3 py-2 w-28">Consumed</th>
+                <th className="px-3 py-2 w-24">Unit</th>
+                <th className="px-3 py-2 w-32">Price / unit</th>
+                <th className="px-3 py-2 w-44">Person</th>
+                <th className="px-3 py-2 w-8" />
+              </tr>
+            </thead>
+            {shown.map((st) => {
+              const rows = drafts.filter((d) => d.station === st.station);
+              return (
+                /* A tbody per station: the browser keeps its rows together and
+                   the section header cannot be separated from what it heads. */
+                <tbody key={st.station} className="border-t-2 border-gray-200">
+                  <tr className="bg-gray-50/70">
+                    <th colSpan={6} className="px-3 py-2 text-left">
+                      <span className="flex flex-wrap items-baseline justify-between gap-2">
+                        <span className="text-sm font-semibold text-gray-800">
+                          {st.label}
+                          <span className="ml-2 text-xs font-normal text-gray-400">{st.department}</span>
+                        </span>
+                        <span className="text-xs font-normal text-gray-600">
+                          {st.operators.length
+                            ? <>On the machine: <span className="font-medium text-gray-800">{st.operators.join(", ")}</span></>
+                            : <span className="text-gray-400">No operator named on this batch&apos;s records</span>}
+                        </span>
+                      </span>
+                    </th>
+                  </tr>
 
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="text-left text-[11px] uppercase tracking-wider text-gray-500">
-                        <th className="px-3 py-2">Item</th>
-                        <th className="px-3 py-2 w-28">Consumed</th>
-                        <th className="px-3 py-2 w-24">Unit</th>
-                        <th className="px-3 py-2 w-32">Price / unit</th>
-                        <th className="px-3 py-2 w-44">Person</th>
-                        <th className="px-3 py-2 w-8" />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map((d) => (
-                        <tr key={d.key} className="border-t border-gray-100 align-top">
-                          <td className="px-3 py-1.5">
-                            {/* ONE INPUT, NEVER SWAPPED MID-KEYSTROKE. The
-                                select used to disappear the moment what was
-                                typed matched an item exactly, so typing
-                                "Gloves XL" against a list holding "Gloves"
-                                lost focus after the sixth character. A datalist
-                                offers the list and leaves the box alone; the
-                                match is case-insensitive, and the server saves
-                                the stock row's own spelling either way, so
-                                "gloves" and "Gloves" cannot become two items on
-                                the dashboards. */}
-                            <input list="consumable-items" value={d.itemName}
-                              onChange={(e) => upd(d.key, { itemName: e.target.value })}
-                              placeholder="Item name" className={`${inp} min-w-[150px]`} />
-                            {d.fromFloor && (
-                              <span className="mt-1 inline-block rounded bg-emerald-50 px-1 py-0.5 text-[10px] font-medium text-emerald-700">from the floor</span>
-                            )}
-                          </td>
-                          <td className="px-3 py-1.5">
-                            <input type="number" step="any" min="0" value={d.quantity}
-                              onChange={(e) => upd(d.key, { quantity: e.target.value })} className={inp} />
-                          </td>
-                          <td className="px-3 py-1.5">
-                            <input value={d.unit} onChange={(e) => upd(d.key, { unit: e.target.value })}
-                              placeholder="KG" className={inp} />
-                          </td>
-                          <td className="px-3 py-1.5">
-                            <input type="number" step="any" min="0" value={d.unitPrice}
-                              onChange={(e) => upd(d.key, { unitPrice: e.target.value })}
-                              placeholder="₹ / unit" className={inp} />
-                            {d.pricedBy && d.unitPrice !== "" && (
-                              <span className="mt-0.5 block text-[10px] text-gray-400">priced by {d.pricedBy}</span>
-                            )}
-                          </td>
-                          <td className="px-3 py-1.5">
-                            <input list={`ops-${st.station}`} value={d.operatorName}
-                              onChange={(e) => upd(d.key, { operatorName: e.target.value })}
-                              placeholder={st.operators[0] ?? "who was there"} className={inp} />
-                          </td>
-                          <td className="px-3 py-1.5">
-                            {/* A floor line cannot be removed here: its
-                                quantity is already out of the store's stock,
-                                and deleting the row would leave that decrement
-                                standing against nothing. Correct it instead. */}
-                            {d.fromFloor && d.id ? (
-                              <span title="Logged at the machine — correct the quantity rather than removing it"
-                                className="cursor-default text-xs text-gray-300">✕</span>
-                            ) : (
-                              <button type="button" onClick={() => drop(d)}
-                                title="Remove this line"
-                                className="text-xs text-gray-400 transition hover:text-red-600">✕</button>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                      {rows.length === 0 && (
-                        <tr className="border-t border-gray-100">
-                          <td colSpan={6} className="px-3 py-2 text-xs text-gray-400">Nothing recorded here yet.</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-                {/* One operator list per station, outside the rows. */}
-                <datalist id={`ops-${st.station}`}>
-                  {st.operators.map((o) => <option key={o} value={o} />)}
-                </datalist>
-                <div className="border-t border-gray-100 px-3 py-2">
-                  <button type="button"
-                    onClick={() => setDrafts((p) => [...p, blank(st.station, st.operators[0] ?? "")])}
-                    className="rounded-lg border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-600 transition hover:bg-gray-50">
-                    + line at {st.label}
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+                  {rows.map((d) => (
+                    <tr key={d.key} className="border-t border-gray-100 align-top">
+                      <td className="px-3 py-1.5">
+                        {/* ONE INPUT, NEVER SWAPPED MID-KEYSTROKE. The
+                            select used to disappear the moment what was
+                            typed matched an item exactly, so typing
+                            "Gloves XL" against a list holding "Gloves"
+                            lost focus after the sixth character. A datalist
+                            offers the list and leaves the box alone; the
+                            match is case-insensitive, and the server saves
+                            the stock row's own spelling either way, so
+                            "gloves" and "Gloves" cannot become two items on
+                            the dashboards. */}
+                        <input list="consumable-items" value={d.itemName}
+                          onChange={(e) => upd(d.key, { itemName: e.target.value })}
+                          placeholder="Item name" className={`${inp} min-w-[150px]`} />
+                        {d.fromFloor && (
+                          <span className="mt-1 inline-block rounded bg-emerald-50 px-1 py-0.5 text-[10px] font-medium text-emerald-700">from the floor</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-1.5">
+                        <input type="number" step="any" min="0" value={d.quantity}
+                          onChange={(e) => upd(d.key, { quantity: e.target.value })} className={inp} />
+                      </td>
+                      <td className="px-3 py-1.5">
+                        <input value={d.unit} onChange={(e) => upd(d.key, { unit: e.target.value })}
+                          placeholder="KG" className={inp} />
+                      </td>
+                      <td className="px-3 py-1.5">
+                        <input type="number" step="any" min="0" value={d.unitPrice}
+                          onChange={(e) => upd(d.key, { unitPrice: e.target.value })}
+                          placeholder="₹ / unit" className={inp} />
+                        {d.pricedBy && d.unitPrice !== "" && (
+                          <span className="mt-0.5 block text-[10px] text-gray-400">priced by {d.pricedBy}</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-1.5">
+                        <input list={`ops-${st.station}`} value={d.operatorName}
+                          onChange={(e) => upd(d.key, { operatorName: e.target.value })}
+                          placeholder={st.operators[0] ?? "who was there"} className={inp} />
+                      </td>
+                      <td className="px-3 py-1.5">
+                        {/* A floor line cannot be removed here: its
+                            quantity is already out of the store's stock,
+                            and deleting the row would leave that decrement
+                            standing against nothing. Correct it instead. */}
+                        {d.fromFloor && d.id ? (
+                          <span title="Logged at the machine — correct the quantity rather than removing it"
+                            className="cursor-default text-xs text-gray-300">✕</span>
+                        ) : (
+                          <button type="button" onClick={() => drop(d)}
+                            title="Remove this line"
+                            className="text-xs text-gray-400 transition hover:text-red-600">✕</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+
+                  <tr className="border-t border-gray-100">
+                    <td colSpan={6} className="px-3 py-1.5">
+                      <button type="button"
+                        onClick={() => setDrafts((p) => [...p, blank(st.station, st.operators[0] ?? "")])}
+                        className="rounded-lg border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-600 transition hover:bg-gray-50">
+                        + consumable at {st.label}
+                      </button>
+                      {rows.length === 0 && <span className="ml-2 text-xs text-gray-400">Nothing recorded here yet.</span>}
+                      {/* The station's own people, for its rows' Person boxes. */}
+                      <datalist id={`ops-${st.station}`}>
+                        {st.operators.map((o) => <option key={o} value={o} />)}
+                      </datalist>
+                    </td>
+                  </tr>
+                </tbody>
+              );
+            })}
+          </table>
         </div>
       )}
 

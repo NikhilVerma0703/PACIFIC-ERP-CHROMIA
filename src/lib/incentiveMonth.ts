@@ -163,6 +163,19 @@ export interface OutstandingGroup {
    *  with `claimed`, so the two columns beside each other still describe the
    *  same set of slabs). */
   slow: number;
+  /** How many of `claimed` came from an hour whose STANDARD was 10 slabs an
+   *  hour or less, and so count double. Paired with `claimed`, not with
+   *  `count` — this is the whole row, waiting and graded alike, which is what
+   *  makes it the right figure to mark the DESIGN with (owner, 2026-09-05:
+   *  a 2x over the design name "for the ones which are less than or equal to
+   *  10 slab per hr").
+   *
+   *  A COUNT AND NOT A FLAG, because a row can be mixed: the standard belongs
+   *  to the MIS hour, not to the design, so one batch run across two shifts at
+   *  two standards has some slabs doubling and some not. The screen marks the
+   *  row when any slab doubles and says how many, rather than claiming the
+   *  whole design is slow when only part of it was. */
+  slowClaimed: number;
   stages: Record<Stage, number>;
 }
 
@@ -615,7 +628,7 @@ export async function incentiveMonth(month: string, now = new Date()): Promise<I
       g = {
         design, batch, claimed: 0, graded: 0,
         gradeA: 0, gradeA2: 0, gradeB: 0, gradeC: 0, decidedB: 0, share: null,
-        count: 0, slow: 0, stages: emptyStages(),
+        count: 0, slow: 0, slowClaimed: 0, stages: emptyStages(),
       };
       groupMap.set(k, g);
     }
@@ -642,6 +655,10 @@ export async function incentiveMonth(month: string, now = new Date()): Promise<I
     const design = String((waiting ? waiting.design : own.design) ?? "(no design)").trim() || "(no design)";
     const batch = String((waiting ? waiting.batch : own.batch) ?? "—").trim() || "—";
     const g = rowFor(design, batch);
+    // The multiplier is the claiming MIS hour's, so it is read off `own` on
+    // both branches — the same source the counted total is built from, rather
+    // than the TrackedSlab's copy on one branch and nothing on the other.
+    if (own.mult > 1) g.slowClaimed += 1;
     if (waiting) {
       g.claimed += 1; g.count += 1; g.stages[waiting.stage] += 1;
       if (waiting.mult > 1) g.slow += 1;
@@ -654,6 +671,10 @@ export async function incentiveMonth(month: string, now = new Date()): Promise<I
       // derivations of "what the month claimed" have drifted. Left OUT of
       // `claimed` so the row's columns still add up, and counted so the page
       // can say so. 0 on live August 2026 data.
+      //
+      // Out of `slowClaimed` too, which was incremented above: it is paired
+      // with `claimed` and must describe the same slabs.
+      if (own.mult > 1) g.slowClaimed -= 1;
       unreconciled += 1;
       continue;
     }

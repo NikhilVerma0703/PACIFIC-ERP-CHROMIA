@@ -91,6 +91,20 @@ const claimedByMonthFn = () => {
   return lib.slice(i, j);
 };
 
+/** THE SAME LESSON, THE SAME WEEK, THE SECOND FUNCTION. Four guards below read
+ *  the design+batch loop with `after(lib, …, 4000)`, and on 2026-09-05 adding
+ *  the slow-design marker (a field, an increment and their comments) pushed the
+ *  A2/A branches past 4,000 characters — so the guard failed while the rule it
+ *  guards was untouched. Bumping the number would only move the next failure,
+ *  so this is bounded by the comment that ends the loop, exactly as
+ *  claimedByMonthFn is bounded by the declaration after it. */
+const groupLoop = () => {
+  const i = lib.indexOf("// ---- One row per design+batch the month claimed");
+  const j = lib.indexOf("// THE DRIFT ALARM'S OTHER HALF");
+  assert.ok(i !== -1 && j > i, "the design+batch loop or the comment after it has been renamed — this guard would be vacuous");
+  return lib.slice(i, j);
+};
+
 // ───────────────────────────────── the population widened, deliberately ────
 
 test("the table's rows are every batch the month CLAIMED, not only the ones still waiting", () => {
@@ -100,7 +114,7 @@ test("the table's rows are every batch the month CLAIMED, not only the ones stil
   // is right for a backlog and wrong the moment the row shows grades: the batch
   // that graded best is the one with nothing left waiting, so it would have been
   // the one batch missing from a table of grades.
-  const block = after(lib, "// ---- One row per design+batch the month claimed", 4000);
+  const block = groupLoop();
   assert.match(block, /for \(const \[slab, own\] of claimed\)/,
     "groups must be built from the month's CLAIMED slabs; building from `slabs` again loses every fully-graded batch");
   assert.ok(!/for \(const s of slabs\) \{[\s\S]{0,120}rowFor/.test(block),
@@ -130,7 +144,7 @@ test("a grade column can only ever hold a real verdict — gradeCredit decides",
   // anyone asked whether it was good, so it belongs in neither side of a grade
   // figure. gradeCredit() is the rule that already excludes them from the money;
   // reusing it here is what stops this table inventing a second rule that drifts.
-  const block = after(lib, "// ---- One row per design+batch the month claimed", 4000);
+  const block = groupLoop();
   assert.match(block, /gradeCredit\(q\?\.qualityGrade\)/,
     "the grade columns must be keyed on gradeCredit, not on a hand-rolled string test");
   assert.match(block, /if \(credit == null\) \{/, "a row with no countable verdict must not reach a grade column");
@@ -143,7 +157,7 @@ test("a grade column can only ever hold a real verdict — gradeCredit decides",
 test("A2 is tested before A, or every A2 lands in the A column", () => {
   // "A2".startsWith("A") is true. This is the same shape of bug that made
   // gradeCredit score CTS as a reject for months, because "CTS".startsWith("C").
-  const block = after(lib, "// ---- One row per design+batch the month claimed", 4000);
+  const block = groupLoop();
   const a2 = block.indexOf('u === "A2"');
   const a = block.indexOf('u.startsWith("A")');
   assert.ok(a2 !== -1 && a !== -1, "both branches must exist — A and A2 are separate columns");
@@ -153,7 +167,7 @@ test("A2 is tested before A, or every A2 lands in the A column", () => {
 test("routed slabs stay out of the four grade columns, on both sides", () => {
   // The register's shipped bug, in this table's shape: a cut count sitting
   // inside a grade block that already contained the same slabs.
-  const block = after(lib, "// ---- One row per design+batch the month claimed", 4000);
+  const block = groupLoop();
   const gradeArm = block.slice(block.indexOf("g.claimed += 1; g.graded += 1;"));
   assert.ok(!/stages/.test(gradeArm.slice(0, 600)),
     "the graded arm touches `stages` — a slab would be counted as graded AND as outstanding");
