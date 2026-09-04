@@ -18,7 +18,14 @@
 --    exist, the floor's decrement lands on whichever one findMany returned
 --    last while the store's top-up lands on the other, and the stock is split
 --    for good. A unique index on lower("itemName") makes the second insert
---    fail instead; items.ts catches that and returns the row that won.
+--    fail instead.
+--
+--    THE FLOOR NO LONGER CREATES ITEMS (owner, later on 2026-09-04: "only
+--    dropdown"), so the race this was written for cannot start from a machine
+--    form any more. The index STAYS: the store's own add-item screen
+--    (/api/consumables/inventory) does the same findFirst-then-create, and two
+--    store logins can race it just the same. There it surfaces as a 500 on the
+--    loser rather than a second row, which is the right outcome.
 --
 --    PRISMA CANNOT DECLARE A FUNCTIONAL INDEX, so `prisma migrate diff` will
 --    list this as a DROP INDEX from now on. That is an index tweak of the kind
