@@ -107,7 +107,9 @@ export function ReportsClient() {
 
   const loadSummary = useCallback(async (qs: string) => {
     setLoadingSummary(true);
-    const res = await fetch(`/api/robo/reports/summary${qs}`);
+    // no-store: the browser must re-ask every time, so the KPIs and Delay
+    // Analysis always reflect the live data, never a cached earlier response.
+    const res = await fetch(`/api/robo/reports/summary${qs}`, { cache: "no-store" });
     setSummary(res.ok ? await res.json() : null);
     setLoadingSummary(false);
   }, []);
@@ -115,7 +117,7 @@ export function ReportsClient() {
   const loadHourly = useCallback(async (b: string) => {
     setLoadingHourly(true);
     const qs = b.trim() ? `?batch=${encodeURIComponent(b.trim())}` : "";
-    const res = await fetch(`/api/robo/reports/hourly${qs}`);
+    const res = await fetch(`/api/robo/reports/hourly${qs}`, { cache: "no-store" });
     const data = res.ok ? await res.json() : { series: [] };
     setHourly(data.series ?? []);
     setLoadingHourly(false);
@@ -123,7 +125,7 @@ export function ReportsClient() {
 
   const loadTrends = useCallback(async (days: number) => {
     setLoadingTrends(true);
-    const res = await fetch(`/api/robo/reports/trends?days=${days}`);
+    const res = await fetch(`/api/robo/reports/trends?days=${days}`, { cache: "no-store" });
     const data = res.ok ? await res.json() : { series: [] };
     setTrends(data.series ?? []);
     setLoadingTrends(false);

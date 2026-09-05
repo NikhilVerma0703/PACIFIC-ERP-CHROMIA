@@ -4,6 +4,11 @@ import { resolveBatchRecipeIds } from "@/lib/robo/batchFilter";
 import { productionDateOf } from "@/lib/robo/productionDate";
 import { hourlyProduction } from "@/lib/robo/hourlyProduction";
 
+// Live aggregation, never cached — a stale hourly series is how the same batch's
+// chart would read differently at different times. Always computed fresh.
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 /**
  * GET /api/robo/reports/hourly?batch=<batch number>
  *

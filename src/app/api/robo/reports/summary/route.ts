@@ -4,6 +4,13 @@ import { prisma } from "@/lib/prisma";
 import { resolveBatchRecipeIds } from "@/lib/robo/batchFilter";
 import { delayProductionDateSelectWhere, productionDateOf, productionDateSelectWhere } from "@/lib/robo/productionDate";
 import { productionSpanMinutes, avgSlabsPerHour } from "@/lib/robo/productionSpan";
+import { delayTypesByCode } from "@/lib/robo/delayTypes";
+
+// Never served from a cache: this is a live aggregation of production data, and
+// a stale response is exactly how "the same report shows different numbers later"
+// happens. Always computed fresh, per request, from the current rows.
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 /**
  * GET /api/robo/reports/summary?date=&from=&to=&batch=
@@ -96,18 +103,11 @@ export async function GET(req: NextRequest) {
   const avg = avgSlabsPerHour(totalSlabs, productionTimeMinutes);
 
   // EVERY delay type by total duration, highest first — the Delay Analysis bar
-  // chart and its table show the whole list, not a Top 5. Percentages are the
-  // client's job (against totalDelayMins), so the shape carries only the totals.
-  const byCode: Record<string, { code: string; description: string; category: string; minutes: number; events: number }> = {};
-  for (const d of delays) {
-    const key = d.delayCode.code;
-    if (!byCode[key]) {
-      byCode[key] = { code: key, description: d.delayCode.description, category: d.delayCode.category, minutes: 0, events: 0 };
-    }
-    byCode[key].minutes += d.durationMinutes;
-    byCode[key].events += 1;
-  }
-  const delayTypes = Object.values(byCode).sort((a, b) => b.minutes - a.minutes);
+  // chart and its table show the whole list, not a Top 5. The grouping is a pure,
+  // tested helper (delayTypesByCode) so the chart provably matches the Delay Log
+  // rows: one row = one event even for a multi-Robo delay, no clock, no drift.
+  // Percentages are the client's job (against totalDelayMins).
+  const delayTypes = delayTypesByCode(delays);
 
   return NextResponse.json({
     date: date || null,
