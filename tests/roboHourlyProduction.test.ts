@@ -204,3 +204,39 @@ test("the same records always give the same chart (deterministic, no clock)", ()
   const rows = CASE2_TIMES.map((t, i) => ({ serialNumber: i + 1, productionDate: "2026-08-21", ...t }));
   assert.deepEqual(hourlyProduction(rows), hourlyProduction(rows));
 });
+
+test("BATCH 1432 — late slabs mis-dated to the next day stay in their real hour", () => {
+  // 31 Aug, 11:20 → 22:50. Six slabs complete in 22:00–23:00; two of them wrongly
+  // carry 01 Sep. They must all count in 22:00–23:00 on 31 Aug — none 24h later,
+  // and NO empty next-day timeline after 22:00–23:00.
+  const s = hourlyProduction([
+    { serialNumber: 1, productionDate: "2026-08-31", inTime: "11:20", outTime: "12:00" },
+    { serialNumber: 2, productionDate: "2026-08-31", inTime: "20:00", outTime: "21:30" },
+    { serialNumber: 3, productionDate: "2026-08-31", inTime: "21:35", outTime: "22:05" }, // 22:00–23:00
+    { serialNumber: 4, productionDate: "2026-08-31", inTime: "22:05", outTime: "22:20" }, // 22:00–23:00
+    { serialNumber: 5, productionDate: "2026-08-31", inTime: "22:20", outTime: "22:30" }, // 22:00–23:00
+    { serialNumber: 6, productionDate: "2026-08-31", inTime: "22:30", outTime: "22:40" }, // 22:00–23:00
+    { serialNumber: 7, productionDate: "2026-09-01", inTime: "22:40", outTime: "22:45" }, // mis-dated → still 22:00–23:00
+    { serialNumber: 8, productionDate: "2026-09-01", inTime: "22:45", outTime: "22:50" }, // mis-dated → still 22:00–23:00
+  ]);
+  // 11:00 … 22:00 only — 12 hours, and it ends at 22:00–23:00.
+  assert.deepEqual(s.map((b) => b.hour), [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]);
+  assert.equal(s[s.length - 1].hour, 22);
+  // Not one bucket rolls to 01 Sep, and there is no extra next-day timeline.
+  assert.ok(s.every((b) => b.date === "2026-08-31"), "every hour stays on 31 Aug");
+  // All SIX real slabs of the last hour are counted there — the two mis-dated
+  // ones did NOT jump ~24h forward.
+  assert.equal(s.find((b) => b.hour === 22)!.slabs, 6);
+  assert.equal(s.reduce((a, b) => a + b.slabs, 0), 8); // every slab once, none duplicated
+});
+
+test("a single forward-mis-dated slab mid-run does not open a second day", () => {
+  const s = hourlyProduction([
+    { serialNumber: 1, productionDate: "2026-08-31", inTime: "09:00", outTime: "09:40" },
+    { serialNumber: 2, productionDate: "2026-09-01", inTime: "09:40", outTime: "10:15" }, // wrong date, real time 10:xx
+    { serialNumber: 3, productionDate: "2026-08-31", inTime: "10:15", outTime: "11:05" },
+  ]);
+  assert.deepEqual(s.map((b) => b.hour), [9, 10, 11]);
+  assert.ok(s.every((b) => b.date === "2026-08-31"));
+  assert.equal(s.reduce((a, b) => a + b.slabs, 0), 3);
+});

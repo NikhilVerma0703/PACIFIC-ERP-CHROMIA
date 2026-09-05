@@ -14,26 +14,32 @@
  * is marked with both dates on the axis and there is no gap at the boundary:
  * 23:00–00:00 is immediately followed by 00:00–01:00 of the next date.
  *
- * ── CROSSING MIDNIGHT, ROBUSTLY ────────────────────────────────────────────
- * In/Out are bare HH:MM with no day of their own, so which DAY an hour sits on
- * has to come from elsewhere. Two independent signals are used, so the chart is
- * right whether or not the operator bumped the date at midnight:
+ * ── WHICH DAY EACH HOUR IS ON ──────────────────────────────────────────────
+ * In/Out are bare HH:MM with no day of their own. The day is taken from the
+ * production SEQUENCE, not from trusting each slab's stored date:
  *
- *   1. The slab's production date. The app re-dates a batch's post-midnight
- *      slabs to the next day, so a correctly entered run already carries the day
- *      on every slab; a later, larger date advances the timeline.
+ *   • The FIRST slab in register order — the batch's start — anchors the start
+ *     day.
  *
- *   2. The production SEQUENCE. Walking the slabs in register order
- *      (serialNumber, then createdAt), a slab whose time jumps far BACKWARDS
- *      (more than 12h) against the run so far has crossed midnight even though
- *      its date did not advance — so the day is advanced for it. This is what
- *      saves a cross-midnight batch whose later slabs were never re-dated: its
- *      second half would otherwise fold back onto the start day and be lost.
+ *   • The day then advances ONLY when the times wrap past midnight: walking the
+ *     slabs in register order (serialNumber, then createdAt), a slab whose time
+ *     falls far BEFORE the run so far (more than 12h) has crossed into the next
+ *     day. This fires for a real crossing whether or not the post-midnight slabs
+ *     were re-dated, so a cross-midnight batch never loses its second half.
+ *
+ * A later slab's own stored date is deliberately NOT allowed to advance the day.
+ * A date that jumps forward mid-run while the time barely moved — a late slab
+ * wrongly carrying tomorrow's date — is a data-entry slip, and trusting it is
+ * exactly what threw a batch's last slabs ~24h ahead and drew an empty extra day
+ * (batch 1432: six 22:xx slabs, two of them shifted a day forward). Anchoring on
+ * the start and advancing only on a real time wrap keeps every slab in the hour
+ * it was actually produced, exactly once.
  *
  * Only a large backward jump counts as a crossing, so slabs logged a little out
  * of order never trip it. No wall clock is ever read — the timeline is built
- * entirely from the stored In/Out and dates — so the same records always produce
- * the same chart, and a historical hour never changes because time passed.
+ * entirely from the stored In/Out and the sequence — so the same records always
+ * produce the same chart, and a historical hour never changes because time
+ * passed.
  */
 
 export interface HourlySlab {
@@ -137,14 +143,14 @@ export function hourlyProduction(slabs: readonly HourlySlab[]): HourBucket[] {
     const startM = inM ?? outM;
     if (startM === null) continue; // no time at all → cannot place it
 
-    // Signal 1 — the date. The first dated slab anchors the timeline; a later,
-    // larger date advances it (a re-dated post-midnight slab).
+    // The date anchors the START day, once, from the first dated slab (register
+    // order → the batch's first slab). It never advances the day again: a later
+    // slab's date that jumps forward is the mis-dating that shifted a batch's
+    // last slabs ~24h ahead (batch 1432). The day advances only on a real time
+    // wrap, below — so a genuine crossing is still caught, from the times.
     const day = dayNum(slab.productionDate);
-    if (day !== null) {
-      const base = day * 1440;
-      if (dayBase === null || base > dayBase) dayBase = base;
-    }
-    if (dayBase === null) continue; // no date anywhere yet → nothing to place it on
+    if (day !== null && dayBase === null) dayBase = day * 1440;
+    if (dayBase === null) continue; // no date yet → nothing to place it on
 
     let inAbs = inM !== null ? dayBase + inM : null;
     let outAbs = outM !== null ? dayBase + outM : null;
