@@ -1212,9 +1212,12 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     const wasEdit = Boolean(editingId);
     const finished = Boolean(slab.outTime);
     setSlabSaving(false);
-    // A page-level edit ends by going back to the slab it was about; the
-    // in-page paths stay put so the operator can log the next slab.
-    if (isPageEdit && recordId) { router.push(`/robo/slabs/${recordId}`); router.refresh(); return; }
+    // A page-level edit ends by going back to Slab Records — the filtered list
+    // it was opened from, restored from the filters this tab kept (see
+    // SlabsBrowser) — so the operator can open the next slab, edit and save
+    // without retyping the filter. The in-page paths stay put so the operator
+    // can log the next slab.
+    if (isPageEdit && recordId) { router.push(`/robo/slabs`); router.refresh(); return; }
     setEditingId(null);
     setEditRecord(null);
     setDelayRows([]);

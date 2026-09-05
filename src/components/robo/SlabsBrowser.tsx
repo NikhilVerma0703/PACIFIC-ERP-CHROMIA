@@ -24,6 +24,47 @@ interface SlabRecord {
 
 const EMPTY = { date: "", batchNo: "", slabNumber: "", designName: "" };
 
+/* Slab Records keeps the filters you applied for as long as this browser tab
+   stays open, so opening a slab, editing it and coming back lands on the same
+   filtered list instead of the whole register — the Chromia Slab Records
+   behaviour, reached here without touching the search itself. The applied
+   filters are stashed under this key on every search and read back on mount;
+   Clear Filters (a search with none) removes them, and closing the tab drops
+   them. A manual refresh keeps them, which the workflow allows.
+
+   sessionStorage, not the URL: Robo's Slab Records is a client screen that
+   already owns its filters as state and fetches them itself, so persisting
+   that state leaves the filtering, Edit and Save logic exactly as it was —
+   only the persistence and the return-navigation change. */
+const FILTERS_STORAGE_KEY = "robo:slabs:filters";
+
+function loadStoredFilters(): typeof EMPTY {
+  if (typeof window === "undefined") return EMPTY;
+  try {
+    const raw = window.sessionStorage.getItem(FILTERS_STORAGE_KEY);
+    if (!raw) return EMPTY;
+    const p = JSON.parse(raw) as Partial<typeof EMPTY>;
+    return {
+      date:       typeof p.date === "string" ? p.date : "",
+      batchNo:    typeof p.batchNo === "string" ? p.batchNo : "",
+      slabNumber: typeof p.slabNumber === "string" ? p.slabNumber : "",
+      designName: typeof p.designName === "string" ? p.designName : "",
+    };
+  } catch {
+    return EMPTY;
+  }
+}
+
+function saveStoredFilters(f: typeof EMPTY | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (f) window.sessionStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(f));
+    else window.sessionStorage.removeItem(FILTERS_STORAGE_KEY);
+  } catch {
+    /* storage unavailable (private mode, quota) — filters just won't persist */
+  }
+}
+
 export function SlabsBrowser({ canDelete = false }: {
   /** Whether the signed-in user may delete a slab. A courtesy so a ROBO
    *  operator never meets a button that 403s — the real gate is in the route
@@ -62,6 +103,9 @@ export function SlabsBrowser({ canDelete = false }: {
     if (f.slabNumber.trim()) qs.set("slabNumber", f.slabNumber.trim());
     if (f.designName.trim()) qs.set("designName", f.designName.trim());
     const hasFilters = qs.toString().length > 0;
+    // Remember exactly what was applied so the list can restore it after the
+    // operator opens a slab and returns; a search with no filters clears it.
+    saveStoredFilters(hasFilters ? f : null);
     const res = await fetch(`/api/robo/production?${qs.toString()}`);
     const data: SlabRecord[] = res.ok ? await res.json() : [];
     setResults(data);
@@ -69,7 +113,14 @@ export function SlabsBrowser({ canDelete = false }: {
     setLoading(false);
   }, []);
 
-  useEffect(() => { runSearch(EMPTY); }, [runSearch]);
+  // On mount, restore the filters this tab last applied (if any) and re-run
+  // that search, so returning from Open / Edit / Save lands on the same list.
+  // With nothing stored this is the original first load: the latest records.
+  useEffect(() => {
+    const stored = loadStoredFilters();
+    setFilters(stored);
+    runSearch(stored);
+  }, [runSearch]);
 
   /**
    * Permanently removes one slab record and its delay logs, then re-runs the
