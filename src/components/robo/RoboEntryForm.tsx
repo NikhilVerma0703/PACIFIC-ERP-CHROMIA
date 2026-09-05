@@ -49,6 +49,9 @@ interface BatchEntry {
 interface BatchRecipe { id: string; productionDate: string | null; batchNo: string | null; designName: string; thickness: number | null; targetSlabs: number | null; notes: string | null; entries: BatchEntry[] }
 interface ProdRecord {
   id: string; serialNumber: number | null; slabNumber: string;
+  /** Which batch setup this slab was logged against — so Close Batch can count
+   *  a batch's own still-open slabs. Nullable: a slab may have no batch. */
+  batchRecipeId?: string | null;
   /** The slab's own production date, when it has one (a batch past midnight). */
   productionDate?: string | null;
   /** The slab's own thickness, when it has one (a batch that changed thickness
@@ -435,6 +438,10 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
 
   // ---- batch setup ----
   const [batchOpen, setBatchOpen] = useState(false);
+  // "Close Batch" (Robo Entry): drop the running batch to none for this session
+  // without touching the record. Cleared when the next batch is saved; a refresh
+  // clears it too, which is the accepted trade-off for a no-DB-change close.
+  const [batchClosed, setBatchClosed] = useState(false);
   const [batchError, setBatchError] = useState("");
   const [batchSaving, setBatchSaving] = useState(false);
   const [batch, setBatch] = useState({ productionDate: localDate(), batchNo: "", designName: "", targetSlabs: "", thickness: "", notes: "" });
@@ -600,6 +607,11 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
   }, []);
 
   const latestBatch = shift?.batchRecipes?.[shift.batchRecipes.length - 1] ?? null;
+  // The batch currently being logged to. "Close Batch" sets batchClosed, which
+  // drops this to null so the page reads "No batch running" and the slab form
+  // stops accepting entries — the batch record itself is untouched. The next
+  // New batch (its save) clears batchClosed; so does a refresh, by design.
+  const runningBatch = batchClosed ? null : latestBatch;
   const records = shift?.productionRecords ?? [];
 
   /**
@@ -711,6 +723,34 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     setEditingBatchId(null);
     setBatchOpen(false);
   };
+  /**
+   * "Close Batch" — end the running batch for this session. No DB write: the
+   * batch record and every slab on it are left exactly as they are; the entry
+   * page simply drops to "No batch running" so nothing more is logged to it
+   * until the operator starts the next run with New batch. A page refresh clears
+   * this (the batch is still the shift's most recent), the trade-off for keeping
+   * the action free of any database change.
+   *
+   * Slabs still In-Processing don't block the close — they stay fully editable in
+   * Slabs Records, exactly as a closed shift already allows — but the operator is
+   * warned first, because closing mid-slab is more often a mis-tap than a choice.
+   */
+  const closeBatch = () => {
+    if (!latestBatch) return;
+    const openSlabs = (shift?.productionRecords ?? []).filter(
+      (r) => r.batchRecipeId === latestBatch.id && r.status === SLAB_IN_PROCESSING,
+    ).length;
+    const name = latestBatch.designName?.trim() || latestBatch.batchNo?.trim() || "this batch";
+    const message =
+      openSlabs > 0
+        ? `${openSlabs} slab${openSlabs > 1 ? "s" : ""} in ${name} ${openSlabs > 1 ? "are" : "is"} still In-Processing (no Out time). They stay editable in Slabs Records. Close the batch anyway?`
+        : `Close ${name}? You’ll start the next run with New batch. Nothing is deleted — the batch and its slabs stay in the records.`;
+    if (!confirm(message)) return;
+    setBatchError("");
+    setEditingBatchId(null);
+    setBatchOpen(false);
+    setBatchClosed(true);
+  };
 
   /**
    * Suggest the next S.No. and slab number — but never while an existing slab
@@ -797,7 +837,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
      not the shift's latest. A slab logged under the morning's design must keep
      showing that design's machines even after a new batch was started, or the
      In/Out labels name robots that were not running when it was made. */
-  const activeBatch: BatchRecipe | null = editingId ? editRecord?.batchRecipe ?? null : latestBatch;
+  const activeBatch: BatchRecipe | null = editingId ? editRecord?.batchRecipe ?? null : runningBatch;
 
   const activeMachineNames = activeBatch
     ? activeBatch.entries
@@ -1026,6 +1066,9 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
       await refetchShift();
       setEditingBatchId(null);
       setBatchOpen(false);
+      // The newly saved batch is now the running one — clear any Close Batch
+      // state from before it so the page shows it as running, not closed.
+      setBatchClosed(false);
       say(isEdit
         ? `Setup updated — ${batch.designName.trim()}. The slabs already logged this shift stay on it.`
         : `Batch saved — ${batch.designName.trim()}.`);
@@ -1335,7 +1378,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
         </Card>
       ) : (
         <Card className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          {latestBatch ? (
+          {runningBatch ? (
             <>
               <Badge tone="green">Batch running</Badge>
               {/* The design, and nothing else. The machine chain, the thickness
@@ -1344,12 +1387,14 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                   below, and the chain in particular restated itself whenever a
                   robot was ticked. */}
               <span className="flex min-w-0 items-center gap-2 text-sm text-gray-600">
-                <span className="font-medium text-gray-900">{latestBatch.designName}</span>
+                <span className="font-medium text-gray-900">{runningBatch.designName}</span>
               </span>
-              {/* Two distinct acts, kept as two buttons. "Edit setup" corrects
-                  the run in progress; "New batch" starts another one. Offering
-                  only the second is what made operators start a duplicate setup
-                  to fix a typo. */}
+              {/* Three distinct acts. "Edit setup" corrects the run in progress;
+                  "Close Batch" ends it for this session so nothing more is logged
+                  to it (no DB change — see closeBatch); "New batch" starts the
+                  next run. Offering only New batch is what made operators start a
+                  duplicate setup to fix a typo, or keep logging to a run that was
+                  really over. */}
               <div className="ml-auto flex items-center gap-2">
                 {batchOpen ? (
                   <button type="button" className={btnGhost} onClick={closeBatchForm}>
@@ -1358,6 +1403,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                 ) : (
                   <>
                     <button type="button" className={btnGhost} onClick={startEditBatch}>Edit setup</button>
+                    <button type="button" className={btnGhost} onClick={closeBatch}>Close Batch</button>
                     <button type="button" className={btnGhost} onClick={startNewBatch}>New batch</button>
                   </>
                 )}
@@ -1366,7 +1412,19 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
           ) : (
             <>
               <Badge tone="amber">No batch running</Badge>
-              <span className="text-sm text-gray-500">Robo doesn’t run in every production — set up a batch below when it does.</span>
+              <span className="text-sm text-gray-500">
+                {batchClosed
+                  ? "Batch closed. Start the next run with New batch when Robo is ready."
+                  : "Robo doesn’t run in every production — set up a batch below when it does."}
+              </span>
+              {/* After Close Batch the setup form is collapsed and the shift
+                  already has batches, so it will not reopen on its own — offer
+                  New batch here so the operator can start the next run. On a
+                  fresh shift the form is already open below, so this stays
+                  hidden. */}
+              {!batchOpen && (
+                <button type="button" className={`${btnGhost} ml-auto`} onClick={startNewBatch}>New batch</button>
+              )}
             </>
           )}
         </Card>
