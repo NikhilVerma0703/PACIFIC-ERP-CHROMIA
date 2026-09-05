@@ -24,6 +24,7 @@ import { nextSlabNumber } from "@/lib/robo/nextNumbers";
 import { SETUP_EDIT_WINDOW_DAYS, daysBetween, describeAge, isSetupStale } from "@/lib/robo/setupAge";
 import { productionDateOf } from "@/lib/robo/productionDate";
 import { roboThicknessOf } from "@/lib/robo/thickness";
+import { splitMachineNames, joinMachineNames, firstMachineName } from "@/lib/robo/delayMachines";
 import { SLAB_IN_PROCESSING, formatSlabRemarks, slabStatusClass, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
 
 const MACHINE_ORDER = ["Roycut-1", "Roymix", "Roycut-2", "Roycut-3"];
@@ -63,9 +64,11 @@ interface ActiveShift {
   id: string; shiftNumber: number; date: string; operatorName: string;
   batchRecipes: BatchRecipe[]; productionRecords: ProdRecord[];
 }
-/** A delay already saved against the record being edited — shown read-only. */
+/** A delay already saved against the record being edited. Loaded into an
+ *  editable DelayRow so it can be corrected or removed — delayCodeId drives the
+ *  code picker, machineName may name one Robo or several. */
 interface SavedDelay {
-  id: string; durationMinutes: number;
+  id: string; delayCodeId: string; durationMinutes: number;
   startTime: string | null; endTime: string | null;
   machineName: string | null; remarks: string | null;
   delayCode: { code: string; description: string; category: string } | null;
@@ -77,10 +80,18 @@ interface FullRecord extends ProdRecord {
   batchRecipe: BatchRecipe | null;
   delayLogs: SavedDelay[];
 }
-interface PendingDelay {
-  tempId: number; delayCodeId: string; code: string; description: string; category: string;
-  machineId: string; machineName: string; durationMinutes: number;
-  startTime: string; endTime: string; remarks: string;
+/** One editable delay row. Existing delays carry their DB `id` (so a save
+ *  updates them in place, never duplicates them); a newly added one has none and
+ *  is created. `machineNames` is the set of canonical machine names, because a
+ *  single delay can name more than one Robo. */
+interface DelayRow {
+  key: string;
+  id?: string;
+  delayCodeId: string;
+  machineNames: string[];
+  startTime: string;
+  endTime: string;
+  remarks: string;
 }
 
 /**
@@ -163,7 +174,47 @@ type MachineEntry = { programName: string; toolName: string; liquidName: string;
 const emptyEntry = (): MachineEntry => ({ programName: "", toolName: "", liquidName: "", powderName: "", rollerHeight: "", targetCycleTime: "" });
 
 const emptySlab = () => ({ serialNumber: "", slabNumber: "", productionDate: "", thickness: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" });
-const emptyDelayForm = () => ({ selectedCodeId: "", machineId: "", machineName: "", startTime: "", endTime: "", remarks: "" });
+const emptyDelayForm = () => ({ selectedCodeId: "", machineNames: [] as string[], startTime: "", endTime: "", remarks: "" });
+
+/** Toggle a machine name in a delay's set — add it if absent, drop it if
+ *  present. Order is kept so the first stays first (that is what machineId
+ *  resolves from). */
+const toggleMachineName = (names: string[], name: string): string[] =>
+  names.includes(name) ? names.filter((n) => n !== name) : [...names, name];
+
+/**
+ * The Robo picker for a delay — one delay can name several. Multi-select toggle
+ * buttons over the shift's machines (the same four Robos), highlighted when on.
+ * Shown only for a delay code that is robot-specific; a general delay has none.
+ */
+function MachinePicker({ machines, selected, onToggle }: {
+  machines: { id: string; name: string }[];
+  selected: string[];
+  onToggle: (name: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {machines.map((m) => {
+        const on = selected.includes(m.name);
+        return (
+          <button
+            key={m.id}
+            type="button"
+            aria-pressed={on}
+            onClick={() => onToggle(m.name)}
+            className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
+              on
+                ? "border-amber-500 bg-amber-100 text-amber-800"
+                : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"
+            }`}
+          >
+            {machineLabel(m.name)}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 /** What the Recent slabs table prints under Remarks: the slab's own note AND
  *  its delays, through the same formatter Slabs Records uses, with this
@@ -293,7 +344,13 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
   const [actionError, setActionError] = useState("");
 
   // ---- delays inside the slab entry ----
-  const [delays, setDelays] = useState<PendingDelay[]>([]);
+  const [delayRows, setDelayRows] = useState<DelayRow[]>([]);
+  const delayKeySeq = useRef(0);
+  const nextDelayKey = () => `new-${++delayKeySeq.current}`;
+  const updateDelayRow = (key: string, patch: Partial<DelayRow>) =>
+    setDelayRows((rows) => rows.map((r) => (r.key === key ? { ...r, ...patch } : r)));
+  const removeDelayRow = (key: string) =>
+    setDelayRows((rows) => rows.filter((r) => r.key !== key));
   const [delayForm, setDelayForm] = useState(emptyDelayForm);
   const [delayError, setDelayError] = useState("");
   const [codeSearch, setCodeSearch] = useState("");
@@ -372,7 +429,18 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     // to fix one thing can never carry a stale forward-apply into the save.
     setApplyDateForward(false);
     setApplyThicknessForward(false);
-    setDelays([]);
+    // The slab's existing delays load as editable rows — each keeps its DB id so
+    // a save corrects it in place, and its machine set is unpacked from the
+    // (possibly multi-Robo) machineName. Add / edit / remove all happen here.
+    setDelayRows((rec?.delayLogs ?? []).map((d) => ({
+      key: d.id,
+      id: d.id,
+      delayCodeId: d.delayCodeId ?? "",
+      machineNames: splitMachineNames(d.machineName),
+      startTime: d.startTime ?? "",
+      endTime: d.endTime ?? "",
+      remarks: d.remarks ?? "",
+    })));
     resetDelayEntry();
     setEditLoading(false);
     return rec;
@@ -644,8 +712,14 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
   const typedCode = codeSearch.trim();
   const canAddTypedCode = typedCode.length > 0 && !delayCodes.some((d) => d.code.toLowerCase() === typedCode.toLowerCase());
   const delayDuration = useMemo(() => calcDuration(delayForm.startTime, delayForm.endTime), [delayForm.startTime, delayForm.endTime]);
-  const savedDelays = editingId ? editRecord?.delayLogs ?? [] : [];
-  const totalDelay = delays.reduce((s, d) => s + d.durationMinutes, 0) + savedDelays.reduce((s, d) => s + d.durationMinutes, 0);
+  // A delay row's duration in whole minutes, rounded up like the stored value —
+  // derived from the (editable) times, and the single source for the badge, the
+  // running total and the save.
+  const rowMinutes = (r: { startTime: string; endTime: string }) => {
+    const d = calcDuration(r.startTime, r.endTime);
+    return d ? d.minutes + (d.seconds > 0 ? 1 : 0) : 0;
+  };
+  const totalDelay = delayRows.reduce((s, r) => s + rowMinutes(r), 0);
 
   const say = (msg: string) => { setFlash(msg); window.setTimeout(() => setFlash(""), 4000); };
 
@@ -890,12 +964,11 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     if (!isValidTime(delayForm.startTime) || !isValidTime(delayForm.endTime)) { setDelayError("Enter times as HH:MM in 24-hour format, for example 09:30."); return; }
     const dur = calcDuration(delayForm.startTime, delayForm.endTime);
     if (!dur) { setDelayError("Invalid time range — check the start/end times (delays over 12h aren't accepted)."); return; }
-    if (selectedCode.isRobotSpecific && !delayForm.machineId) { setDelayError("This code needs a machine."); return; }
-    setDelays((prev) => [...prev, {
-      tempId: prev.length ? Math.max(...prev.map((d) => d.tempId)) + 1 : 1,
-      delayCodeId: selectedCode.id, code: selectedCode.code, description: selectedCode.description, category: selectedCode.category,
-      machineId: delayForm.machineId, machineName: delayForm.machineName,
-      durationMinutes: dur.minutes + (dur.seconds > 0 ? 1 : 0),
+    if (selectedCode.isRobotSpecific && delayForm.machineNames.length === 0) { setDelayError("This code needs at least one machine."); return; }
+    setDelayRows((prev) => [...prev, {
+      key: nextDelayKey(),
+      delayCodeId: selectedCode.id,
+      machineNames: selectedCode.isRobotSpecific ? delayForm.machineNames : [],
       startTime: delayForm.startTime, endTime: delayForm.endTime, remarks: delayForm.remarks,
     }]);
     resetDelayEntry();
@@ -962,7 +1035,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     if (isPageEdit && recordId) { router.push(`/robo/slabs/${recordId}`); return; }
     setEditingId(null);
     setEditRecord(null);
-    setDelays([]);
+    setDelayRows([]);
     resetDelayEntry();
     setSlabTaken(false);
     // Back to a blank NEW slab, on the day the operator is logging under — not
@@ -1005,10 +1078,37 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     if (slab.inTime && !isValidTime(slab.inTime)) { setSlabError("In time must be HH:MM in 24-hour format, for example 09:30."); return; }
     if (slab.outTime && !isValidTime(slab.outTime)) { setSlabError("Out time must be HH:MM in 24-hour format, for example 09:30."); return; }
     setSlabSaving(true);
-    const delayPayload = delays.map((d) => ({
-      delayCodeId: d.delayCodeId, machineId: d.machineId || null, machineName: d.machineName || null,
-      durationMinutes: d.durationMinutes, startTime: d.startTime || null, endTime: d.endTime || null, remarks: d.remarks || null,
-    }));
+    // Validate every delay row, then build the payload the server reconciles
+    // against. A row's machine set applies only when its code is robot-specific;
+    // its duration is derived from the (editable) times. A row with no code is an
+    // empty one the operator never filled — dropped, so it neither blocks the
+    // save nor is stored blank.
+    for (const r of delayRows) {
+      if (!r.delayCodeId) continue;
+      const code = delayCodes.find((c) => c.id === r.delayCodeId);
+      if (!r.startTime || !r.endTime || !isValidTime(r.startTime) || !isValidTime(r.endTime) || !calcDuration(r.startTime, r.endTime)) {
+        setSlabError(`Delay ${code?.code ?? ""} needs a valid Start and End time.`); setSlabSaving(false); return;
+      }
+      if (code?.isRobotSpecific && r.machineNames.length === 0) {
+        setSlabError(`Delay ${code.code} needs at least one machine.`); setSlabSaving(false); return;
+      }
+    }
+    const delayPayload = delayRows
+      .filter((r) => r.delayCodeId)
+      .map((r) => {
+        const code = delayCodes.find((c) => c.id === r.delayCodeId);
+        const names = code?.isRobotSpecific ? r.machineNames : [];
+        return {
+          id: r.id,                                   // undefined for a new row → created
+          delayCodeId: r.delayCodeId,
+          machineName: joinMachineNames(names) || null,
+          machineId: names.length ? (machines.find((m) => m.name === firstMachineName(names))?.id ?? null) : null,
+          durationMinutes: rowMinutes(r),
+          startTime: r.startTime || null,
+          endTime: r.endTime || null,
+          remarks: r.remarks || null,
+        };
+      });
     // No status sent: the server derives it from Out time, so a slab still in
     // the line saves as In-Processing and can be finished from the table below.
     //
@@ -1087,7 +1187,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     if (isPageEdit && recordId) { router.push(`/robo/slabs/${recordId}`); router.refresh(); return; }
     setEditingId(null);
     setEditRecord(null);
-    setDelays([]);
+    setDelayRows([]);
     // The delay picker goes with them. It used to be left as it was, so a code
     // chosen but never added with + Add stayed selected on the next slab — see
     // resetDelayEntry.
@@ -1566,18 +1666,19 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
             </div>
 
             {/* Delay summary in the register's own wording, copyable straight
-                into the Remark field. Recomputed from start/end so the seconds
-                show — the stored durationMinutes is rounded up. */}
-            {delays.length > 0 && (
+                into the Remark field. Shown for newly added delays, recomputed
+                from start/end so the seconds show. */}
+            {delayRows.some((r) => !r.id && r.delayCodeId) && (
               <div className="space-y-1">
                 <span className={label}>Delay summary</span>
-                {delays.map((d) => {
-                  const dur = calcDuration(d.startTime, d.endTime);
-                  const mins = dur ? dur.minutes : d.durationMinutes;
+                {delayRows.filter((r) => !r.id && r.delayCodeId).map((r) => {
+                  const dur = calcDuration(r.startTime, r.endTime);
+                  const mins = dur ? dur.minutes : 0;
                   const secs = dur ? dur.seconds : 0;
+                  const code = delayCodes.find((c) => c.id === r.delayCodeId);
                   return (
-                    <p key={d.tempId} className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-sm text-amber-800">
-                      {d.code}-{mins} minutes{secs > 0 ? ` ${secs} seconds` : ""}[{d.startTime}-{d.endTime}]
+                    <p key={r.key} className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-sm text-amber-800">
+                      {code?.code ?? ""}-{mins} minutes{secs > 0 ? ` ${secs} seconds` : ""}[{r.startTime}-{r.endTime}]
                     </p>
                   );
                 })}
@@ -1588,42 +1689,63 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
             <div className="rounded-xl border border-amber-200/70 bg-amber-50/40 p-4">
               <div className="mb-3 flex items-center gap-2">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-amber-800">Delays this slab</h3>
-                {(delays.length > 0 || savedDelays.length > 0) && <Badge tone="amber">{delays.length + savedDelays.length} · {totalDelay} min</Badge>}
+                {delayRows.length > 0 && <Badge tone="amber">{delayRows.length} · {totalDelay} min</Badge>}
               </div>
 
-              {/* Already saved against this slab — read-only. A PATCH only ever
-                  appends, so showing these stops the same delay being logged
-                  twice by someone who cannot see what is already there. */}
-              {savedDelays.length > 0 && (
-                <div className="mb-3 space-y-1.5">
-                  <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Already logged</p>
-                  {savedDelays.map((d) => (
-                    <div key={d.id} className="flex items-center gap-3 rounded-lg bg-gray-50 px-3 py-2">
-                      <span className="w-10 shrink-0 text-xs font-bold text-gray-600">{d.delayCode?.code ?? ""}</span>
-                      {d.delayCode && <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${CATEGORY_COLOR[d.delayCode.category] || "bg-gray-100 text-gray-600"}`}>{d.delayCode.category}</span>}
-                      {d.machineName && <span className="shrink-0 text-xs text-gray-500">{machineLabel(d.machineName)}</span>}
-                      <span className="min-w-0 flex-1 truncate text-sm text-gray-700">{d.delayCode?.description ?? ""}</span>
-                      {d.startTime && d.endTime && <span className="shrink-0 text-xs text-gray-400">{d.startTime}–{d.endTime}</span>}
-                      <span className="shrink-0 text-xs font-medium text-gray-600">{d.durationMinutes}m</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {delays.length > 0 && (
-                <div className="mb-3 space-y-1.5">
-                  {delays.map((d) => {
-                    const dur = calcDuration(d.startTime, d.endTime);
+              {/* Every delay on this slab, existing and new, fully editable —
+                  change the code, the machine(s), the times or the remark on any
+                  row, or remove it with ✕. Existing rows keep their DB id so a
+                  save corrects them in place (never a duplicate); a save persists
+                  the whole set, and a slab can be saved with no delays at all. */}
+              {delayRows.length > 0 && (
+                <div className="mb-3 space-y-2">
+                  {delayRows.map((row) => {
+                    const code = delayCodes.find((c) => c.id === row.delayCodeId) ?? null;
+                    const dur = calcDuration(row.startTime, row.endTime);
+                    const badTimes = Boolean(row.startTime && row.endTime && !dur);
                     return (
-                      <div key={d.tempId} className="flex items-center gap-3 rounded-lg bg-white px-3 py-2 shadow-sm">
-                        <span className="w-10 shrink-0 text-xs font-bold text-gray-800">{d.code}</span>
-                        <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${CATEGORY_COLOR[d.category] || "bg-gray-100 text-gray-600"}`}>{d.category}</span>
-                        {d.machineName && <span className="shrink-0 text-xs text-gray-500">{machineLabel(d.machineName)}</span>}
-                        <span className="min-w-0 flex-1 truncate text-sm text-gray-700">{d.description}</span>
-                        <span className="shrink-0 text-xs text-gray-400">{d.startTime}–{d.endTime}</span>
-                        <span className="shrink-0 text-xs font-medium text-amber-700">{dur ? fmtDuration(dur) : `${d.durationMinutes}m`}</span>
-                        <button type="button" onClick={() => setDelays((prev) => prev.filter((x) => x.tempId !== d.tempId))}
-                          className="shrink-0 text-xs text-gray-300 hover:text-red-500">✕</button>
+                      <div key={row.key} className="rounded-lg border border-amber-200 bg-white p-3 shadow-sm">
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-12">
+                          <div className="col-span-2 sm:col-span-4">
+                            <span className={label}>Delay code</span>
+                            <select value={row.delayCodeId} onChange={(e) => updateDelayRow(row.key, { delayCodeId: e.target.value })} className={inp}>
+                              <option value="">Select code…</option>
+                              {delayCodes.map((c) => <option key={c.id} value={c.id}>{c.code} — {c.description}</option>)}
+                            </select>
+                          </div>
+                          <div className="col-span-1 sm:col-span-2">
+                            <span className={label}>Start</span>
+                            <TimeInput value={row.startTime} onChange={(v) => updateDelayRow(row.key, { startTime: v })} className={inp} />
+                          </div>
+                          <div className="col-span-1 sm:col-span-2">
+                            <span className={label}>End</span>
+                            <TimeInput value={row.endTime} onChange={(v) => updateDelayRow(row.key, { endTime: v })} className={inp} />
+                          </div>
+                          <div className="col-span-1 sm:col-span-2">
+                            <span className={label}>Duration</span>
+                            <div className={`w-full rounded-lg border px-3 py-2 text-sm ${
+                              dur ? "border-green-200 bg-green-50 font-semibold text-green-800"
+                                : badTimes ? "border-red-200 bg-red-50 text-red-600"
+                                : "border-gray-200 bg-gray-50 text-gray-400"}`}>
+                              {dur ? fmtDuration(dur) : badTimes ? "Invalid" : "—"}
+                            </div>
+                          </div>
+                          <div className="col-span-1 flex items-end justify-end sm:col-span-2">
+                            <button type="button" onClick={() => removeDelayRow(row.key)} aria-label="Remove delay"
+                              className="rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-500 transition hover:border-red-300 hover:bg-red-50 hover:text-red-600">✕ Remove</button>
+                          </div>
+                          {code?.isRobotSpecific && (
+                            <div className="col-span-2 sm:col-span-6">
+                              <span className={label}>Machine(s)</span>
+                              <MachinePicker machines={machines} selected={row.machineNames}
+                                onToggle={(name) => updateDelayRow(row.key, { machineNames: toggleMachineName(row.machineNames, name) })} />
+                            </div>
+                          )}
+                          <div className={code?.isRobotSpecific ? "col-span-2 sm:col-span-6" : "col-span-2 sm:col-span-12"}>
+                            <span className={label}>Remarks</span>
+                            <input value={row.remarks} onChange={(e) => updateDelayRow(row.key, { remarks: e.target.value })} placeholder="Optional" className={inp} />
+                          </div>
+                        </div>
                       </div>
                     );
                   })}
@@ -1647,7 +1769,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                         <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${CATEGORY_COLOR[selectedCode.category] || "bg-gray-100 text-gray-600"}`}>{selectedCode.category}</span>
                         <span className="min-w-0 flex-1 truncate text-xs text-gray-500">{selectedCode.description}</span>
                       </div>
-                      <button type="button" aria-label="Clear code" onClick={() => { setDelayForm((p) => ({ ...p, selectedCodeId: "", machineId: "", machineName: "" })); setCodeSearch(""); }}
+                      <button type="button" aria-label="Clear code" onClick={() => { setDelayForm((p) => ({ ...p, selectedCodeId: "", machineNames: [] })); setCodeSearch(""); }}
                         className="shrink-0 rounded-md px-1.5 py-1 text-xs text-gray-400 hover:bg-gray-100 hover:text-red-500">✕</button>
                     </div>
                   ) : newCode.open ? (
@@ -1716,13 +1838,9 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                 </div>
                 {selectedCode?.isRobotSpecific && (
                   <div className="col-span-6 lg:col-span-3">
-                    <span className={label}>Machine</span>
-                    <select value={delayForm.machineId}
-                      onChange={(e) => { const m = machines.find((x) => x.id === e.target.value); setDelayForm((p) => ({ ...p, machineId: e.target.value, machineName: m?.name || "" })); }}
-                      className={inp}>
-                      <option value="">Select machine</option>
-                      {machines.map((m) => <option key={m.id} value={m.id}>{machineLabel(m.name)}</option>)}
-                    </select>
+                    <span className={label}>Machine(s) — pick one or more</span>
+                    <MachinePicker machines={machines} selected={delayForm.machineNames}
+                      onToggle={(name) => setDelayForm((p) => ({ ...p, machineNames: toggleMachineName(p.machineNames, name) }))} />
                   </div>
                 )}
                 <div className="col-span-2 lg:col-span-1">

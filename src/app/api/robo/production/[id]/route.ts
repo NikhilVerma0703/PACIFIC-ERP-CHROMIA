@@ -212,21 +212,54 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       }
     }
 
-    // 4. Appended delay logs, against this slab's shift.
-    if (Array.isArray(body.delays) && body.delays.length > 0) {
-      await tx.roboDelayLog.createMany({
-        data: body.delays.map((d: { delayCodeId: string; machineId?: string; machineName?: string; durationMinutes: number; startTime?: string; endTime?: string; remarks?: string }) => ({
-          shiftId:            start.shiftId,
-          productionRecordId: id,
-          machineId:          d.machineId || null,
-          machineName:        d.machineName || null,
-          delayCodeId:        d.delayCodeId,
-          durationMinutes:    Number(d.durationMinutes),
-          startTime:          d.startTime || null,
-          endTime:            d.endTime || null,
-          remarks:            d.remarks || null,
-        })),
+    // 4. Delay logs — a full reconcile against the set the client sent, so the
+    //    delay log is fully editable. A delay that arrives WITH an id is updated
+    //    in place (change one field, or several, on an existing delay); one
+    //    WITHOUT an id is created; and an existing delay whose id is NOT in the
+    //    payload was removed on screen, so it is deleted. That is edit + remove +
+    //    add in one pass, and because existing delays are updated rather than
+    //    re-created, an edit never leaves a duplicate.
+    //
+    //    This runs ONLY when `delays` is actually present in the request. A PATCH
+    //    that omits it (an edit to something else entirely) leaves the slab's
+    //    delays exactly as they are — it never wipes them.
+    //
+    //    machineName carries one Robo or several, comma-joined (delayMachines.ts);
+    //    machineId is the first, kept for the optional relation. The client has
+    //    already computed both and the duration, so the stored shape and every
+    //    delay calculation are unchanged.
+    if (Array.isArray(body.delays)) {
+      const items = body.delays as Array<{
+        id?: string; delayCodeId: string; machineId?: string | null; machineName?: string | null;
+        durationMinutes?: number; startTime?: string | null; endTime?: string | null; remarks?: string | null;
+      }>;
+      const keepIds = items.map((d) => d.id).filter((x): x is string => typeof x === "string" && x.length > 0);
+
+      // Remove the delays that are gone from the payload. With nothing kept, this
+      // clears them all — which is how a slab saves with no delay at all.
+      await tx.roboDelayLog.deleteMany({
+        where: { productionRecordId: id, ...(keepIds.length > 0 ? { NOT: { id: { in: keepIds } } } : {}) },
       });
+
+      // Update the ones kept, create the new ones. Anything with no delay code is
+      // an empty row the operator never filled — skipped, not saved as a blank.
+      for (const d of items) {
+        if (!d.delayCodeId) continue;
+        const fields = {
+          machineId:       d.machineId || null,
+          machineName:     d.machineName || null,
+          delayCodeId:     d.delayCodeId,
+          durationMinutes: Number(d.durationMinutes) || 0,
+          startTime:       d.startTime || null,
+          endTime:         d.endTime || null,
+          remarks:         d.remarks || null,
+        };
+        if (d.id) {
+          await tx.roboDelayLog.update({ where: { id: d.id }, data: fields });
+        } else {
+          await tx.roboDelayLog.create({ data: { shiftId: start.shiftId, productionRecordId: id, ...fields } });
+        }
+      }
     }
 
     // 5. The slab's final state, for the response.
