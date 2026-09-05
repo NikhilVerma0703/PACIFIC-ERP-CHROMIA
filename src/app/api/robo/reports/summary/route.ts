@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { resolveBatchRecipeIds } from "@/lib/robo/batchFilter";
-import { delayProductionDateSelectWhere, productionDateSelectWhere } from "@/lib/robo/productionDate";
+import { delayProductionDateSelectWhere, productionDateOf, productionDateSelectWhere } from "@/lib/robo/productionDate";
+import { productionSpanMinutes } from "@/lib/robo/productionSpan";
 
 function toMins(t: string): number {
   const [h, m] = (t || "").split(":").map(Number);
@@ -104,6 +105,31 @@ export async function GET(req: NextRequest) {
 
   const totalDelayMins = delays.reduce((s, d) => s + d.durationMinutes, 0);
 
+  /* Total Production Time — the last completed slab's Out Time minus the first
+     slab's In Time, over EXACTLY the filtered slabs (recordWhere, the same set
+     Total Slabs counts). Its own fetch, kept apart from the slabs/hour minutes
+     above: that figure is shift open-to-close time, this is when the slabs
+     themselves started and finished, and the two must not be conflated.
+
+     Each slab's In/Out is paired with its production date (productionDateOf, the
+     per-slab-then-setup-then-shift rule the whole module shows) so a run past
+     midnight or a multi-day filter measures a real distance, not a min/max over
+     bare clock strings. productionSpanMinutes returns null when nothing has
+     completed or no In Time exists, and the KPI then reads "—". */
+  const spanRecords = await prisma.roboProductionRecord.findMany({
+    where: recordWhere,
+    select: {
+      inTime: true,
+      outTime: true,
+      productionDate: true,
+      batchRecipe: { select: { productionDate: true } },
+      shift: { select: { date: true } },
+    },
+  });
+  const productionTimeMinutes = productionSpanMinutes(
+    spanRecords.map((r) => ({ productionDate: productionDateOf(r), inTime: r.inTime, outTime: r.outTime })),
+  );
+
   // EVERY delay type by total duration, highest first — the Delay Analysis bar
   // chart and its table show the whole list, not a Top 5. Percentages are the
   // client's job (against totalDelayMins), so the shape carries only the totals.
@@ -122,6 +148,7 @@ export async function GET(req: NextRequest) {
     date: date || null,
     totalSlabs,
     productionMinutes,
+    productionTimeMinutes,
     slabsPerHour: productionMinutes > 0 ? Math.round((totalSlabs / (productionMinutes / 60)) * 10) / 10 : null,
     totalDelayMins,
     delayEvents: delays.length,

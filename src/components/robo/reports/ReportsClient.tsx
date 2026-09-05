@@ -46,6 +46,10 @@ interface Summary {
   date: string | null;
   totalSlabs: number;
   productionMinutes: number;
+  /** First In Time → last Out Time across the filtered slabs, in minutes; null
+   *  when nothing has completed. Distinct from productionMinutes (shift open
+   *  time) — see the summary route. */
+  productionTimeMinutes: number | null;
   slabsPerHour: number | null;
   totalDelayMins: number;
   delayEvents: number;
@@ -172,8 +176,8 @@ export function ReportsClient() {
       {/* ── KPIs (driven by the date filter) ── */}
       {loadingSummary ? (
         <div className="space-y-5">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            {[0, 1, 2].map(i => (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {[0, 1, 2, 3].map(i => (
               <Card key={i}>
                 <div className="h-3 w-28 animate-pulse rounded bg-slate-100" />
                 <div className="mt-2 h-7 w-20 animate-pulse rounded bg-slate-100" />
@@ -187,10 +191,15 @@ export function ReportsClient() {
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          {/* Order fixed by request: Total Slabs, Total Production Time, Total
+              Delays, Slabs/Hour. Total Production Time uses the same long
+              duration format as Total Delays so the two read alike; "—" when no
+              slab in the selection has completed yet. */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <StatCard label="Total Slabs Produced" value={String(summary?.totalSlabs ?? 0)} />
-            <StatCard label="Slabs / Hour" value={summary?.slabsPerHour != null ? String(summary.slabsPerHour) : "—"} tone="brand" />
+            <StatCard label="Total Production Time" value={summary?.productionTimeMinutes != null ? fmtDurationLong(summary.productionTimeMinutes) : "—"} />
             <StatCard label="Total Delays" value={fmtDurationLong(summary?.totalDelayMins ?? 0)} tone="red" />
+            <StatCard label="Slabs / Hour" value={summary?.slabsPerHour != null ? String(summary.slabsPerHour) : "—"} tone="brand" />
           </div>
 
           {/* ── Delay Analysis — every delay type, full width ── */}
