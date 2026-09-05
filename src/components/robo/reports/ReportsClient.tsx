@@ -154,6 +154,16 @@ export function ReportsClient() {
   const delayData = summary?.delayTypes ?? [];
   const delayTotal = summary?.totalDelayMins ?? 0;
 
+  // The production date(s) the hourly run spans, from the series itself — one
+  // date for a same-day batch, a "first → last" range for one that crossed
+  // midnight. Shown in the chart subtitle so the actual Production Date is on
+  // the chart, not just the hours.
+  const hourlyDates = hourly.map((h) => h.date).filter((d): d is string => Boolean(d));
+  const hourlyDateScope = hourlyDates.length === 0 ? ""
+    : hourlyDates[0] === hourlyDates[hourlyDates.length - 1]
+      ? formatDate(hourlyDates[0])
+      : `${formatDate(hourlyDates[0])} → ${formatDate(hourlyDates[hourlyDates.length - 1])}`;
+
   const dateScope =
     mode === "ALL" ? "All production records to date"
     : mode === "DATE" ? `Production on ${formatDate(date)}`
@@ -220,7 +230,7 @@ export function ReportsClient() {
       <ChartCard
         title="Production Rate per Hour"
         subtitle={batch.trim()
-          ? `Batch ${batch.trim()} — slabs completed each hour, by Out Time, across the batch's run`
+          ? `Batch ${batch.trim()}${hourlyDateScope ? ` · ${hourlyDateScope}` : ""} — slabs completed each hour, by Out Time, across the batch's run`
           : "Slabs completed each hour, by Out Time"}
       >
         {!batch.trim() ? (

@@ -8,7 +8,7 @@
  */
 import {
   Tooltip, ResponsiveContainer, LabelList,
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, LineChart, Line, AreaChart, Area,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, LineChart, Line, AreaChart, Area, ReferenceLine,
 } from "recharts";
 import { fmtDurationLong } from "@/lib/robo/utils";
 import type { HourBucket } from "@/lib/robo/hourlyProduction";
@@ -17,14 +17,27 @@ import {
   type TrendPoint,
 } from "./chart-tokens";
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** "21 Aug" from a yyyy-mm-dd, parsed as text so no timezone shifts the day. */
+function shortDate(d: string | null | undefined): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d ?? "");
+  return m ? `${m[3]} ${MONTHS[Number(m[2]) - 1]}` : "";
+}
+
 /**
  * Production Rate per Hour — slabs completed in each hour of the selected
  * batch's run. One point per hour across the batch's own timeline (see
  * hourlyProduction.ts), the exact count printed above each point, and the
- * 24-hour interval on the x-axis. Angled x-labels so a full run's worth of
- * hours stays readable.
+ * hour interval on the x-axis. Angled x-labels so a full run's worth of hours
+ * stays readable.
+ *
+ * When the run crosses midnight the hours flow straight across the boundary
+ * (…23:00–00:00, 00:00–01:00…) with no gap, and a dated marker is drawn where
+ * the day changes so it is clear which hours belong to which date — the first
+ * date is named in the card subtitle.
  */
 export function HourlyProductionLine({ data }: { data: HourBucket[] }) {
+  const boundaries = data.filter((b, i) => i > 0 && b.date && b.date !== data[i - 1].date);
   return (
     <ResponsiveContainer width="100%" height={340}>
       <LineChart data={data} margin={{ top: 24, right: 20, left: -6, bottom: 44 }}>
@@ -34,6 +47,11 @@ export function HourlyProductionLine({ data }: { data: HourBucket[] }) {
         <YAxis tick={{ fontSize: 11, fill: MUTED }} axisLine={false} tickLine={false} allowDecimals={false} />
         <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ stroke: AXIS, strokeDasharray: "3 3" }}
           formatter={(v: number) => [`${v} slab${v === 1 ? "" : "s"}`, "Completed"]} />
+        {/* Date markers at each midnight the run crossed — drawn behind the line. */}
+        {boundaries.map((b) => (
+          <ReferenceLine key={b.label} x={b.label} stroke={AXIS} strokeDasharray="4 3"
+            label={{ value: shortDate(b.date), position: "top", fontSize: 10, fontWeight: 600, fill: MUTED }} />
+        ))}
         <Line type="monotone" dataKey="slabs" stroke={PRODUCTION_HUE} strokeWidth={2}
           dot={{ r: 3, strokeWidth: 0, fill: PRODUCTION_HUE }} activeDot={{ r: 5 }} name="Slabs">
           <LabelList dataKey="slabs" position="top" style={{ fontSize: 10, fontWeight: 600, fill: "#555" }} />
