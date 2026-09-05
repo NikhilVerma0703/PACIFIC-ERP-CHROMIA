@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { productionSpanMinutes, type SpanSlab } from "../src/lib/robo/productionSpan.ts";
+import { productionSpanMinutes, avgSlabsPerHour, type SpanSlab } from "../src/lib/robo/productionSpan.ts";
 
 /* Total Production Time = last Out Time − first In Time across the filtered
    slabs. Wall-clock "HH:MM" with no day of its own, so the span is date-aware:
@@ -84,4 +84,35 @@ test("an inconsistent negative span (only Out precedes only In) → null", () =>
 test("an exact-hours span drops the minutes cleanly (360 = 6h 0m)", () => {
   const slabs = [slab(DAY, "10:00", "16:00")];
   assert.equal(productionSpanMinutes(slabs), 360);
+});
+
+/* Avg Slabs/hour = Total Slabs ÷ elapsed batch duration (the span), delays LEFT
+   IN. The operator's own definition and example. */
+
+test("avgSlabsPerHour: the operator's example — 46 slabs over 7h 40m ≈ 6.0", () => {
+  // 14:10 → 21:50 = 460 minutes = 7.6667 h; 46 ÷ 7.6667 = 6.0.
+  const span = productionSpanMinutes([slab(DAY, "14:10", "21:50")]); // 460
+  assert.equal(span, 460);
+  assert.equal(avgSlabsPerHour(46, span), 6.0);
+});
+
+test("avgSlabsPerHour: delays are NOT subtracted — the full span is the divisor", () => {
+  // Even with 3h 36m of delay inside the run, the divisor is the whole 7h 40m.
+  assert.equal(avgSlabsPerHour(46, 460), 6.0);
+});
+
+test("avgSlabsPerHour: rounds to one decimal", () => {
+  assert.equal(avgSlabsPerHour(301, 382), 47.3); // 301 ÷ 6.3667 = 47.28…
+  assert.equal(avgSlabsPerHour(10, 60), 10);     // 10 ÷ 1h = 10
+  assert.equal(avgSlabsPerHour(5, 120), 2.5);    // 5 ÷ 2h = 2.5
+});
+
+test("avgSlabsPerHour: no span (nothing completed) or a zero/negative span → null", () => {
+  assert.equal(avgSlabsPerHour(46, null), null);
+  assert.equal(avgSlabsPerHour(46, 0), null);
+  assert.equal(avgSlabsPerHour(46, -30), null);
+});
+
+test("avgSlabsPerHour: zero slabs over a span is a clean 0, not a divide error", () => {
+  assert.equal(avgSlabsPerHour(0, 460), 0);
 });

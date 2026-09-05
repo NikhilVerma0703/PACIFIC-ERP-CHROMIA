@@ -74,3 +74,23 @@ export function productionSpanMinutes(slabs: readonly SpanSlab[]): number | null
   const diff = lastOut - firstIn;
   return diff >= 0 ? diff : null;
 }
+
+/**
+ * Avg Slabs/hour — the operator's definition: Total Slabs Produced ÷ the elapsed
+ * batch duration, where the duration is the production span (first In → last Out,
+ * `productionSpanMinutes`) with DELAYS LEFT IN, not subtracted. A batch of 46
+ * slabs running 14:10 → 21:50 (7h 40m = 460 min) is 46 ÷ 7.6667 ≈ 6.0/hour.
+ *
+ * Built only from the recorded span, so it is deterministic — the same filtered
+ * data always gives the same number, unlike the old figure that divided by shift
+ * open-time measured up to the current clock and so drifted as a shift stayed
+ * open. Rounded to one decimal, to match how it is shown.
+ *
+ * Returns null when there is no duration to divide by — no span (nothing has
+ * completed), or a zero/negative one — so the KPI shows "—" rather than dividing
+ * by zero or inventing a rate.
+ */
+export function avgSlabsPerHour(totalSlabs: number, spanMinutes: number | null): number | null {
+  if (spanMinutes === null || spanMinutes <= 0) return null;
+  return Math.round((totalSlabs / (spanMinutes / 60)) * 10) / 10;
+}

@@ -45,12 +45,13 @@ const HourlyProductionLine = dynamic(
 interface Summary {
   date: string | null;
   totalSlabs: number;
-  productionMinutes: number;
   /** First In Time → last Out Time across the filtered slabs, in minutes; null
-   *  when nothing has completed. Distinct from productionMinutes (shift open
-   *  time) — see the summary route. */
+   *  when nothing has completed. */
   productionTimeMinutes: number | null;
-  slabsPerHour: number | null;
+  /** Total Slabs ÷ that span in hours (delays included), 1 dp; null when there
+   *  is no completed span. Built only from recorded times — no wall clock — so
+   *  it is stable, unlike the old shift-open-time figure. See the summary route. */
+  avgSlabsPerHour: number | null;
   totalDelayMins: number;
   delayEvents: number;
   /** Every delay type, highest duration first — see the summary route. */
@@ -199,7 +200,7 @@ export function ReportsClient() {
             <StatCard label="Total Slabs Produced" value={String(summary?.totalSlabs ?? 0)} />
             <StatCard label="Total Production Time" value={summary?.productionTimeMinutes != null ? fmtDurationLong(summary.productionTimeMinutes) : "—"} />
             <StatCard label="Total Delays" value={fmtDurationLong(summary?.totalDelayMins ?? 0)} tone="red" />
-            <StatCard label="Slabs / Hour" value={summary?.slabsPerHour != null ? String(summary.slabsPerHour) : "—"} tone="brand" />
+            <StatCard label="Avg Slabs/hour" value={summary?.avgSlabsPerHour != null ? String(summary.avgSlabsPerHour) : "—"} tone="brand" />
           </div>
 
           {/* ── Delay Analysis — every delay type, full width ── */}
