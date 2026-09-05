@@ -1069,3 +1069,38 @@ test("the launcher's tracker prints the same decomposition, and the same halves,
   assert.match(tracker, /half\(l\.points\)/, "the per-letter Counted cell must print halves");
   assert.match(tracker, /half\(plant\.points\)/, "…and so must the plant row's");
 });
+
+// ─── slowClaimed: THE 2x MARK ON A PAYROLL SCREEN, GUARDED ──────────────────
+// Three mutants of incentiveMonth.ts passed the whole suite on 2026-09-05:
+// delete the subtraction on the unreconciled path; move the increment below the
+// waiting branch so waiting slabs are never counted; drop the `own.mult > 1`
+// guard so every design is marked 2x. The agent sent to close that died with a
+// half-built transpiler harness; these are the plain structural guards instead,
+// scoped by groupLoop() like the rest of this file, and the LIVE identity
+// (sum(slowClaimed) = slow waiting + slow graded) lives in
+// scripts/verify-grade-columns.mts, where the database is.
+test("slowClaimed is counted off the CLAIM row's multiplier, before the waiting branch", () => {
+  const block = groupLoop();
+  const inc = block.indexOf("if (own.mult > 1) g.slowClaimed += 1");
+  const branch = block.indexOf("if (waiting) {");
+  assert.ok(inc > 0, "the increment is gone — every row will read slowClaimed 0 and no design is marked");
+  assert.ok(branch > 0, "the waiting branch has moved; re-scope this guard");
+  assert.ok(inc < branch, "the increment must run BEFORE the waiting/graded split, or waiting slabs are never counted");
+  assert.ok(!block.includes("if (waiting.mult > 1) g.slowClaimed"), "the multiplier must be read off `own`, the claim row, not the TrackedSlab copy");
+});
+
+test("a slab dropped as unreconciled is taken back OUT of slowClaimed", () => {
+  const block = groupLoop();
+  const dec = block.indexOf("if (own.mult > 1) g.slowClaimed -= 1");
+  const cont = block.indexOf("unreconciled += 1");
+  assert.ok(dec > 0, "the subtraction is gone — an unreconciled slow slab stays inside slowClaimed while it leaves `claimed`, and the row can read 2x N/M with N > M");
+  assert.ok(cont > 0 && dec < cont, "the subtraction must sit on the unreconciled path, before the continue");
+});
+
+test("the 2x mark tells a wholly slow row from a mixed one without a hover", () => {
+  const page = read("../src/app/scoreboard/incentive/page.tsx");
+  assert.ok(page.includes("g.slowClaimed > 0 &&"), "the mark must fire only when some slab doubled");
+  assert.ok(page.includes("g.slowClaimed !== g.claimed &&"),
+    "a MIXED row must show its proportion inline — TIFFINY / D1432 was marked 2x with 13 of 126 doubled and only a tooltip said so");
+  assert.ok(/\{fmt\(g\.slowClaimed\)\}\/\{fmt\(g\.claimed\)\}/.test(page), "the proportion is slowClaimed/claimed, in that order");
+});

@@ -19,7 +19,8 @@ import { currentUser } from "@/lib/rbac";
 import { signableSides } from "@/lib/costing/verification";
 import { normalizeBatch } from "@/lib/normalizeBatch";
 import {
-  batchUsage, editProblem, pricePatch, BATCH_STATIONS, LINE_SOURCE, type UsageEdit,
+  batchUsage, editProblem, floorEditProblem, updatePatch, isUpdate, pricePatch, saverName,
+  BATCH_STATIONS, LINE_SOURCE, SHEET_ITEM_WHERE, type UsageEdit,
 } from "@/lib/consumables/batchUsage";
 import { MODEL_DEPT } from "@/lib/consumables/dept";
 
@@ -33,7 +34,9 @@ async function gate() {
   if (!u) return { ok: false as const, status: 401, error: "Not signed in.", name: "" };
   const role = (u as { role?: string }).role ?? null;
   const email = (u as { email?: string }).email ?? null;
-  const name = (u as { name?: string }).name ?? email ?? "unknown";
+  // Never "": this name is stamped as pricedBy on every price set through the
+  // sheet, and `name ?? email` passed an empty-string name straight through.
+  const name = saverName((u as { name?: string }).name, email);
   if (signableSides(role, email, process.env.WEIGHTS_VERIFIER_EMAILS).length === 0) {
     return { ok: false as const, status: 403, error: "Only the batch verifiers and the store can fill this in.", name };
   }
@@ -81,9 +84,10 @@ export async function POST(req: NextRequest) {
     // rather than a permissions one. quickLog decremented the item when the
     // station reported it; deleting the row leaves that decrement standing
     // against nothing, so the stock is short by a quantity no screen can now
-    // name. The sheet may correct such a line — quantity, unit, price — it may
-    // not make it vanish. Removing it for real is a store adjustment, on the
-    // store's own screen, where the stock moves with it.
+    // name. The sheet may correct such a line — quantity, price, person — it
+    // may not make it vanish, nor (next guard) move it to another item or
+    // unit. Removing it for real is a store adjustment, on the store's own
+    // screen, where the stock moves with it.
     if (deletes.length) {
       const floorRows: any[] = await db.consumptionEntry.findMany({
         where: { id: { in: deletes }, batchKey, source: LINE_SOURCE.floor },
@@ -97,20 +101,55 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // NOR MAY A FLOOR LINE BE MOVED TO ANOTHER ITEM OR UNIT, for the same stock
+    // reason, and this is checked here — before the transaction, like the
+    // delete guard — not left to the browser's read-only boxes. The edited rows
+    // are read once with the stock row each is linked to; the rows that are the
+    // floor's are held to that stock row's name and to their own unit
+    // (floorEditProblem). What each existing row IS also decides, below, which
+    // columns its edit may rewrite at all.
+    const existing = new Map<string, { itemName: string; unit: string; fromFloor: boolean; stockName: string | null }>();
+    const editIds = edits.filter(isUpdate).map((e) => e.id);
+    if (editIds.length) {
+      const rows: any[] = await db.consumptionEntry.findMany({
+        where: { id: { in: editIds }, batchKey },
+        select: { id: true, itemName: true, unit: true, source: true, inventoryStock: { select: { itemName: true } } },
+      });
+      for (const r of rows) {
+        existing.set(String(r.id), {
+          itemName: String(r.itemName ?? ""), unit: String(r.unit ?? ""),
+          fromFloor: r.source === LINE_SOURCE.floor,
+          stockName: r.inventoryStock?.itemName == null ? null : String(r.inventoryStock.itemName),
+        });
+      }
+      for (const e of edits) {
+        if (!isUpdate(e)) continue;
+        const row = existing.get(e.id);
+        if (!row?.fromFloor) continue;
+        const bad = floorEditProblem(row, e);
+        if (bad) return Response.json({ error: bad }, { status: 400 });
+      }
+    }
+
     // Departments are upserted by name, exactly as the floor panel does it —
     // the eight seeded names already exist, so this is a read in practice.
     const depts = new Map<string, string>();
-    for (const station of new Set(edits.map((e) => e.station))) {
+    for (const station of new Set(edits.map((e) => e.station).filter((s): s is string => typeof s === "string"))) {
       const name = MODEL_DEPT[station] ?? "Production";
       if (!depts.has(name)) {
         const d = await db.consumableDepartment.upsert({ where: { name }, update: {}, create: { name } });
         depts.set(name, d.id);
       }
     }
-    const stocks: any[] = await db.inventoryStock.findMany({ select: { id: true, itemName: true } });
+    const departmentFor = (station: string) => depts.get(MODEL_DEPT[station] ?? "Production")!;
+    // The same list the sheet's dropdown shows (SHEET_ITEM_WHERE): a line typed
+    // against resin or grit saves unlinked rather than linking to a stock row
+    // the floor panel deliberately never offers.
+    const stocks: any[] = await db.inventoryStock.findMany({ where: SHEET_ITEM_WHERE, select: { id: true, itemName: true } });
     const byName = new Map<string, { id: string; itemName: string }>(
       stocks.map((s) => [String(s.itemName).toLowerCase(), { id: String(s.id), itemName: String(s.itemName) }]),
     );
+    const stockFor = (itemName: string) => byName.get(itemName.trim().toLowerCase());
     // When the batch actually ran — the date a line entered here is filed
     // under. Read from the press, which every batch passes; null on a batch
     // with no press rows, and then the save's own time is the honest answer.
@@ -130,42 +169,39 @@ export async function POST(req: NextRequest) {
       }
       const at = new Date();
       for (const e of edits) {
-        const itemName = String(e.itemName).trim();
-        const unit = String(e.unit ?? "").trim() || "PCS";
-        const quantity = Number(e.quantity);
-        const stock = byName.get(itemName.toLowerCase());
-        const stockId = stock?.id ?? null;
-        // THE ITEM'S NAME IS THE STOCK ROW'S NAME whenever the line is linked
-        // to one. Typing "gloves" against the "Gloves" row used to save the
-        // typed spelling while linking to the row, so every dashboard that
-        // groups by itemName showed two items that were one.
-        const name = stock?.itemName ?? itemName;
-        // ABSENT PRICE = LEAVE IT ALONE. The sheet sends `unitPrice` only for a
-        // line whose price box was touched, so one verifier saving a new line
-        // can no longer blank the price another typed — nor re-stamp their name
-        // on it. pricePatch returns null for "not carried"; see batchUsageRules.
-        const priced = pricePatch(e, me.name, at);
-
-        if (e.id) {
+        if (isUpdate(e)) {
+          // ONLY THE COLUMNS THE EDIT CARRIES ARE WRITTEN — updatePatch keys
+          // every column on the field being present, so a stale sheet that
+          // changed one box cannot put a colleague's other boxes back. On a
+          // floor row it never emits item or unit, whatever was sent.
+          const data = updatePatch(e, {
+            fromFloor: existing.get(e.id)?.fromFloor ?? false,
+            stockFor, departmentFor, by: me.name, at,
+          });
+          if (Object.keys(data).length === 0) continue;
           // Scoped to the batch: an id from another batch cannot be edited
           // through this batch's sheet.
-          const r = await tx.consumptionEntry.updateMany({
-            where: { id: e.id, batchKey },
-            data: {
-              itemName: name, quantity, unit, inventoryStockId: stockId,
-              // The department follows the station, or a line moved between
-              // stations would keep reporting under the old one.
-              departmentId: depts.get(MODEL_DEPT[e.station] ?? "Production")!,
-              station: e.station, operatorName: e.operatorName ?? null,
-              ...(priced ?? {}),
-            },
-          });
+          const r = await tx.consumptionEntry.updateMany({ where: { id: e.id, batchKey }, data });
           saved += r.count;
         } else {
+          const itemName = String(e.itemName).trim();
+          const stock = stockFor(itemName);
+          // ABSENT PRICE = LEAVE IT ALONE. The sheet sends `unitPrice` only
+          // for a line whose price box was touched, so one verifier saving a
+          // new line can no longer blank the price another typed — nor
+          // re-stamp their name on it. pricePatch returns null for "not
+          // carried"; see batchUsageRules.
+          const priced = pricePatch(e, me.name, at);
           await tx.consumptionEntry.create({
             data: {
-              departmentId: depts.get(MODEL_DEPT[e.station] ?? "Production")!,
-              itemName: name, quantity, unit, inventoryStockId: stockId,
+              departmentId: departmentFor(e.station),
+              // THE ITEM'S NAME IS THE STOCK ROW'S NAME whenever the line is
+              // linked to one — "gloves" typed against the "Gloves" row must
+              // not become a second item on the dashboards.
+              itemName: stock?.itemName ?? itemName,
+              quantity: Number(e.quantity),
+              unit: String(e.unit ?? "").trim() || "PCS",
+              inventoryStockId: stock?.id ?? null,
               batchKey, station: e.station,
               operatorName: e.operatorName ?? null,
               enteredBy: me.name,

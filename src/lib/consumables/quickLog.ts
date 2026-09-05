@@ -11,9 +11,11 @@
 // since renamed, and a replayed request can carry any string. Either used to
 // save an UNLINKED line — no stock row, no decrement — which the sign-off sheet
 // then badged "from the floor" and refused to delete, because floor lines are
-// the ones that took stock. This one had not. So a name that is not in
-// inventory_stock is refused here with a sentence, before anything is written,
-// and a name that is in it is saved under the stock row's own spelling.
+// the ones that took stock. This one had not. So a name that is not on the
+// store's consumables list — not in inventory_stock, OR in it as a
+// DIRECT_MATERIAL such as resin or grit, which no machine draws — is refused
+// here with a sentence, before anything is written, and a name that is on it
+// is saved under the stock row's own spelling.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
 import { canUseEntryModel } from "@/lib/stationAccess";
@@ -23,6 +25,11 @@ import { MODEL_DEPT } from "./dept";
 import { LINE_SOURCE } from "./batchUsageRules.ts";
 
 const db = prisma as any;
+
+/** The ItemCategory the machine forms may never draw from (schema.prisma
+ *  `enum ItemCategory`). Spelled here rather than imported from @prisma/client
+ *  so the refusal can be run under `node --test`, which has no generated client. */
+const DIRECT_MATERIAL = "DIRECT_MATERIAL";
 
 export interface QuickLine { itemName: string; quantity: number; unit: string }
 
@@ -59,9 +66,21 @@ export async function logConsumables(model: string, lines: QuickLine[], ctx: Qui
     const dept = await db.consumableDepartment.upsert({
       where: { name: MODEL_DEPT[model] }, update: {}, create: { name: MODEL_DEPT[model] },
     });
-    const stocks: any[] = await db.inventoryStock.findMany({ select: { id: true, itemName: true, unit: true } });
+    const stocks: any[] = await db.inventoryStock.findMany({ select: { id: true, itemName: true, unit: true, category: true } });
+    // "THE STORE'S LIST" IS THE CONSUMABLES, NOT EVERY STOCK ROW. Resin, grit,
+    // filler, catalyst and cobalt are DIRECT_MATERIAL: received against
+    // invoices and weighed by the mixer, never drawn from a shelf at a machine.
+    // The two entry pages already leave them out of the dropdown (category:
+    // { not: 'DIRECT_MATERIAL' }), but a dropdown is a browser rule and a
+    // replayed request can name any string — and until 2026-09-05 this lookup
+    // took EVERY row, so a request naming "Resin : Orson" passed the check
+    // below and ran the GREATEST(0, currentStock - qty) decrement against the
+    // resin row. Excluded HERE, in the same map the check reads, so a direct
+    // material gets the same sentence as a name the store never set up.
     const byName = new Map<string, { id: string; itemName: string; unit: string }>(
-      stocks.map((s: any) => [String(s.itemName).toLowerCase(), { id: String(s.id), itemName: String(s.itemName), unit: String(s.unit) }]),
+      stocks
+        .filter((s: any) => String(s.category) !== DIRECT_MATERIAL)
+        .map((s: any) => [String(s.itemName).toLowerCase(), { id: String(s.id), itemName: String(s.itemName), unit: String(s.unit) }]),
     );
     // EVERY LINE IS CHECKED BEFORE ANY LINE IS WRITTEN — the same rule the
     // sign-off route follows. A name the store has not set up is refused by

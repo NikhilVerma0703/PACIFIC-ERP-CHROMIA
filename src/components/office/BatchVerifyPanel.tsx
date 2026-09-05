@@ -11,9 +11,10 @@
 // nothing more.
 //
 // The verifiers also ENTER the batch here now (owner, 2026-08-19): supplier
-// splits, prices, doses — on a flat table built for them (SimpleMaterialsEntry,
-// with the admin's full materials panel one toggle away), rendered below the
-// picker for anyone who can sign. The entry came to them rather than them to
+// splits, prices, doses — on the same full materials panel the admin has
+// (BatchRatesPanel; the flat SimpleMaterialsEntry stood here 2026-08-23 to
+// 2026-09-05, see the note at its old mount), rendered below the picker and
+// the consumables sheet for anyone who can sign. The entry came to them rather than them to
 // /office/costing, because that page carries the computed sheet and the whole
 // cost base and stays admin-only. And a mark is
 // REFUSED until the batch is fully entered — every price resolving, every dose
@@ -159,28 +160,21 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
         </div>
       )}
 
-      {/* The verifiers' flat table — one row per material the mixer used,
-          supplier and price beside the mixer's figure — talking to the same
-          batch-rates and grit-assignment APIs the admin's panel does (which
-          admit the two verifiers; the routes are the gate). The admin's own
-          materials panel is still reachable from the table's "Open the full
-          panel" toggle, unchanged, for anything the table does not cover. The
-          verifiers had been handed that panel directly and reported it "not
-          very intuitive to understand and put weights / percentages and costs".
-
-          GATED ON sign, NOT can, and that is load-bearing: it is what decides
-          who can TYPE a price here, not merely read one. Admin used to fail
-          this test - signableSides returned [] for ADMIN - so an admin opening
-          this page saw neither the pricing panel nor the grit panel below and
-          had no way to tell why. Admin signs as of 2026-08-21, so both appear.
-
-          Saving re-reads the detail below, because an edit can lapse a mark and
-          always moves the completeness answer the buttons obey. */}
       {/* What the batch CONSUMED at each station, and what it cost — the sheet
           the owner asked for on 2026-09-04 so Satya and the store incharge can
           see "what was used where" and price it. Same gate as the materials
-          panel above (sign.length): filling this in is part of signing the
-          batch off, so exactly the people who may mark it may write here. */}
+          panel BELOW it (sign.length): filling this in is part of signing the
+          batch off, so exactly the people who may mark it may write here.
+
+          GATED ON sign, NOT can, and that is load-bearing for both panels: it
+          is what decides who can TYPE a price here, not merely read one. Admin
+          used to fail this test - signableSides returned [] for ADMIN - so an
+          admin opening this page saw no entry panel at all and had no way to
+          tell why. Admin signs as of 2026-08-21, so both appear.
+
+          Saving re-reads the detail, because an edit can lapse a mark and
+          always moves the completeness answer the sign-off card's buttons
+          obey. */}
       {detail && sign.length > 0 && (
         <BatchConsumablesTable
           key={detail.batchKey}
@@ -211,7 +205,8 @@ export function BatchVerifyPanel({ can, sign }: { can: Side[]; sign: Side[] }) {
           what /office/costing has been rendering all along, and take the same
           four props. A `git checkout` of this file's parent version was the
           other option and would have dropped two later fixes — the loadSeq
-          race guard above and the consumables sheet below.
+          race guard above and the consumables sheet mounted just above this
+          panel.
 
           SimpleMaterialsEntry is left in the tree, unmounted: it is the
           verifiers' own answer to a real complaint about this panel, and

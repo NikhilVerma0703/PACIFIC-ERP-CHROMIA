@@ -29,18 +29,26 @@ import { canonPerson } from "@/lib/shiftScoreMath";
 import { MODEL_DEPT } from "./dept";
 // The vocabulary and the validation live in a database-free module so tests can
 // reach them; re-exported here so every existing caller keeps one import.
-import { BATCH_STATIONS, toLine, type UsageLine, type StationUsage } from "./batchUsageRules.ts";
+import { BATCH_STATIONS, SHEET_ITEM_WHERE, toLine, type UsageLine, type StationUsage } from "./batchUsageRules.ts";
 
-export { BATCH_STATIONS, editProblem, pricePatch, draftChanged, toLine, LINE_SOURCE } from "./batchUsageRules.ts";
-export type { UsageLine, StationUsage, UsageEdit, SaveResult, DraftShape } from "./batchUsageRules.ts";
+export {
+  BATCH_STATIONS, editProblem, floorEditProblem, updatePatch, wireEdit, isUpdate, pricePatch, draftChanged,
+  saverName, toLine, LINE_SOURCE, SHEET_ITEM_WHERE,
+} from "./batchUsageRules.ts";
+export type {
+  UsageLine, StationUsage, UsageEdit, UsageCreate, UsageUpdate, PatchContext, SaveResult, DraftShape,
+} from "./batchUsageRules.ts";
 
 const db = prisma as any;
 
 export interface BatchUsage {
   batchKey: string;
   stations: StationUsage[];
-  /** Items the plant knows, for the sheet's own dropdown — the same list the
-   *  floor panel offers, so the two cannot name one item two ways. */
+  /** Items the sheet's own dropdown offers — the store's consumables, minus
+   *  DIRECT_MATERIAL (SHEET_ITEM_WHERE), which is the same filter the machine
+   *  forms apply, so the two screens that write one batch's lines offer one
+   *  list. It was unfiltered until 2026-09-05 while the comment claimed
+   *  otherwise: the sheet offered resin and grit the floor panel hides. */
   items: { itemName: string; unit: string }[];
   /** Lines whose station is not one of the eight (or is blank). They are shown
    *  rather than dropped: a line nobody can place is still a consumption
@@ -68,7 +76,7 @@ export async function batchUsage(rawBatch: string): Promise<BatchUsage> {
         pricedBy: true, pricedAt: true, operatorName: true, enteredBy: true, station: true, date: true, source: true,
       },
     }).catch(() => [] as any[]),
-    db.inventoryStock.findMany({ select: { itemName: true, unit: true }, orderBy: { itemName: "asc" } }).catch(() => [] as any[]),
+    db.inventoryStock.findMany({ where: SHEET_ITEM_WHERE, select: { itemName: true, unit: true }, orderBy: { itemName: "asc" } }).catch(() => [] as any[]),
     ...BATCH_STATIONS.map((s) =>
       db[s.delegate].findMany({ where: { batchKey }, select: { [s.person]: true }, take: 2000 })
         // A failed read is LOGGED, not swallowed: silently returning [] would

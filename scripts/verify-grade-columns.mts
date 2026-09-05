@@ -179,6 +179,63 @@ const nextPool = nextTier == null ? null : numOf(nextTier, "pool.next.pool");
 ok("every plant / pool / projection / outstanding field this script prints exists and is a number",
    badFields.length === 0, badFields.join("; ") || `${fieldsRead} fields read by name, all present`);
 
+// ---- slowClaimed: the 2x mark, RE-DERIVED FROM MIS AND QC, then decomposed --
+// slowClaimed counts every CLAIMED slab of the row that came from an hour with a
+// standard of 10/hr or less - waiting and graded alike, good and rejected alike.
+// It can never exceed the row's claimed. And it decomposes into three figures
+// that three different pieces of code produce:
+//
+//     slow waiting  (each row's `slow`, the incentive's stage walk)
+//   + slow GOOD     (plant.slowSlabs - the scorer's `doubled`, which counts a
+//                    slab only when mult > 1 AND cr > 0, so a rejected slab in a
+//                    slow hour is NOT in it: it earned no doubling)
+//   + slow C        (rejects from slow hours - claimed, slow, graded, worth 0)
+//   = slowClaimed
+//
+// The first draft of this check asserted slowClaimed = waiting + slowSlabs and
+// FAILED by 74 on August 2026: the 74 were exactly the slow-hour C (Reject)
+// slabs the scorer rightly leaves out of `doubled`. So the whole figure is
+// re-derived here from MIS ranges and QC grades - a second implementation that
+// shares no code with incentiveMonth - and the three parts are read off it.
+// 1,361 + 74 + 249 = 1,684 on 2026-09-05; all four move as QC files.
+{
+  const lo = shiftRange(inc.from, "A").start, hi = shiftRange(inc.to, "C").end;
+  const slowRows: { g: string; n: number }[] = await prisma.$queryRawUnsafe(`
+    with slow as (
+      select generate_series(starting_slab_number::int, ending_slab_number::int) sn
+        from mis
+       where date_and_time >= $1 and date_and_time < $2
+         and slabs_per_hour_std between 1 and 10
+         and starting_slab_number > 0 and ending_slab_number >= starting_slab_number
+         and ending_slab_number - starting_slab_number < 60
+         and hour is not null and btrim(hour) <> '')
+    select coalesce(q.quality_grade, '(none)') g, count(*)::int n
+      from (select distinct sn from slow) s left join polish_qc q on q.slab_number = s.sn
+     group by 1`, lo, hi);
+  const sqlTotal = slowRows.reduce((a, x) => a + x.n, 0);
+  const sqlGood = slowRows.filter((x) => ["A", "A2", "B"].includes(x.g)).reduce((a, x) => a + x.n, 0);
+  const sqlC = slowRows.filter((x) => x.g === "C (Reject)").reduce((a, x) => a + x.n, 0);
+  const sqlWaiting = sqlTotal - sqlGood - sqlC;
+
+  let scOver = 0;
+  for (const x of gr) if (x.slowClaimed > x.claimed) scOver++;
+  eq("slowClaimed never exceeds claimed, on any row", scOver, 0);
+  const slowWaiting = gr.reduce((a, x) => a + x.slow, 0);
+  const slowClaimedSum = gr.reduce((a, x) => a + x.slowClaimed, 0);
+  eq("slowClaimed, summed over the rows, equals the SQL re-derivation of slow-hour claimed slabs",
+     slowClaimedSum, sqlTotal, "two implementations, no shared code");
+  eq("slow GOOD slabs: the scorer's plant.slowSlabs equals SQL's A/A2/B in slow hours",
+     inc.plant.slowSlabs, sqlGood);
+  eq("slow WAITING slabs: the rows' `slow` equals SQL's not-yet-graded in slow hours",
+     slowWaiting, sqlWaiting);
+  eq("and the three parts add back to slowClaimed",
+     slowWaiting + inc.plant.slowSlabs + sqlC, slowClaimedSum,
+     `${slowWaiting} waiting + ${inc.plant.slowSlabs} good + ${sqlC} rejected`);
+  const wholly = gr.filter((x) => x.slowClaimed > 0 && x.slowClaimed === x.claimed).length;
+  const mixed = gr.filter((x) => x.slowClaimed > 0 && x.slowClaimed < x.claimed).length;
+  console.log(`  2x marks: ${wholly} rows wholly slow, ${mixed} mixed (proportion shown inline), ${gr.length - wholly - mixed} unmarked`);
+}
+
 const rowsWaiting = gr.filter((x) => Object.values(x.stages).some((v) => (v as number) > 0)).length;
 console.log(`\n  design+batch rows: ${gr.length} claimed, ${rowsWaiting} with something waiting`);
 console.log(`  outstanding ${outTotal}  real ${outReal}  unreconciled ${outUnreconciled}`);

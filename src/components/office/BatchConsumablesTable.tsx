@@ -23,7 +23,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Card, Empty } from "@/components/ui";
 import { readJson } from "@/lib/readJson";
-import { draftChanged, type DraftShape } from "@/lib/consumables/batchUsageRules.ts";
+import { draftChanged, wireEdit, type DraftShape } from "@/lib/consumables/batchUsageRules.ts";
 
 const API = "/api/office/batch-consumables";
 
@@ -67,6 +67,10 @@ interface Draft {
 }
 
 const inp = "w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
+/** A floor line's item and unit boxes: still boxes, so the columns line up,
+ *  but plainly not for typing in. */
+const lockedInp = "cursor-not-allowed !bg-gray-50 text-gray-600";
+const LOCK_TITLE = "Logged at the machine — its stock has already moved under this item and unit, so neither can be changed here. Correct the quantity, or add the right item as a new line.";
 let seq = 0;
 const nextKey = () => `new-${++seq}`;
 
@@ -163,24 +167,17 @@ export function BatchConsumablesTable({ batchKey, batchLabel, onSaved }: {
     // A line with no item name is the empty row nobody filled in — dropped, not
     // refused, because refusing it would make the pre-filled sheet a trap.
     //
-    // ONLY WHAT CHANGED IS SENT. An untouched line is left entirely alone by
-    // the save, so two people working the same batch cannot undo each other,
-    // and `unitPrice` is omitted rather than sent as null for a price box
-    // nobody touched — which is what stops a colleague's figure and their name
-    // being wiped. See pricePatch in batchUsageRules.
+    // ONLY WHAT CHANGED IS SENT — PER FIELD, NOT PER LINE. An untouched line is
+    // left entirely alone, and on a touched line only the boxes this person
+    // changed since the sheet loaded are carried (wireEdit): a field that is
+    // absent is one the server leaves as it is. Sending the whole line whenever
+    // one box changed meant a verifier fixing only the Person box on a
+    // ten-minute-old sheet put a colleague's corrected quantity back. See
+    // wireEdit / updatePatch in batchUsageRules.
     const edits = drafts
       .filter((d) => d.itemName.trim() && d.station)
       .filter((d) => !d.id || draftChanged(shapeOf(d), baseline.get(d.key) ?? shapeOf(d)))
-      .map((d) => {
-        const before = baseline.get(d.key);
-        const priceTouched = !d.id || !before || before.unitPrice.trim() !== d.unitPrice.trim();
-        return {
-          id: d.id, station: d.station, itemName: d.itemName.trim(),
-          quantity: Number(d.quantity || 0), unit: d.unit.trim() || "PCS",
-          operatorName: d.operatorName.trim() || null,
-          ...(priceTouched ? { unitPrice: d.unitPrice.trim() === "" ? null : Number(d.unitPrice) } : {}),
-        };
-      });
+      .map((d) => wireEdit({ ...shapeOf(d), id: d.id }, baseline.get(d.key)));
     if (edits.length === 0 && removed.length === 0) {
       setBusy(false);
       setNote({ ok: false, text: drafts.some((d) => d.itemName.trim()) ? "Nothing has changed since this sheet was opened." : "Nothing to save yet — type an item on a line." });
@@ -269,7 +266,7 @@ export function BatchConsumablesTable({ batchKey, batchLabel, onSaved }: {
                     </th>
                   </tr>
 
-                  {rows.map((d) => (
+                  {rows.map((d) => { const locked = d.fromFloor && !!d.id; return (
                     <tr key={d.key} className="border-t border-gray-100 align-top">
                       <td className="px-3 py-1.5">
                         {/* ONE INPUT, NEVER SWAPPED MID-KEYSTROKE. The
@@ -282,9 +279,22 @@ export function BatchConsumablesTable({ batchKey, batchLabel, onSaved }: {
                             the stock row's own spelling either way, so
                             "gloves" and "Gloves" cannot become two items on
                             the dashboards. */}
-                        <input list="consumable-items" value={d.itemName}
-                          onChange={(e) => upd(d.key, { itemName: e.target.value })}
-                          placeholder="Item name" className={`${inp} min-w-[150px]`} />
+                        {/* A FLOOR LINE'S ITEM AND UNIT ARE READ-ONLY. Its
+                            quantity is already out of that item's stock, in
+                            that unit; renaming it here would leave the old
+                            stock short against no line and the new one
+                            untouched under a line that says it was used.
+                            The server refuses the same edit (floorEditProblem)
+                            — this is the box telling the truth about it.
+                            Quantity, price and person stay editable. */}
+                        {locked ? (
+                          <input value={d.itemName} readOnly title={LOCK_TITLE}
+                            className={`${inp} min-w-[150px] ${lockedInp}`} />
+                        ) : (
+                          <input list="consumable-items" value={d.itemName}
+                            onChange={(e) => upd(d.key, { itemName: e.target.value })}
+                            placeholder="Item name" className={`${inp} min-w-[150px]`} />
+                        )}
                         {d.fromFloor && (
                           <span className="mt-1 inline-block rounded bg-emerald-50 px-1 py-0.5 text-[10px] font-medium text-emerald-700">from the floor</span>
                         )}
@@ -294,8 +304,12 @@ export function BatchConsumablesTable({ batchKey, batchLabel, onSaved }: {
                           onChange={(e) => upd(d.key, { quantity: e.target.value })} className={inp} />
                       </td>
                       <td className="px-3 py-1.5">
-                        <input value={d.unit} onChange={(e) => upd(d.key, { unit: e.target.value })}
-                          placeholder="KG" className={inp} />
+                        {locked ? (
+                          <input value={d.unit} readOnly title={LOCK_TITLE} className={`${inp} ${lockedInp}`} />
+                        ) : (
+                          <input value={d.unit} onChange={(e) => upd(d.key, { unit: e.target.value })}
+                            placeholder="KG" className={inp} />
+                        )}
                       </td>
                       <td className="px-3 py-1.5">
                         <input type="number" step="any" min="0" value={d.unitPrice}
@@ -315,7 +329,7 @@ export function BatchConsumablesTable({ batchKey, batchLabel, onSaved }: {
                             quantity is already out of the store's stock,
                             and deleting the row would leave that decrement
                             standing against nothing. Correct it instead. */}
-                        {d.fromFloor && d.id ? (
+                        {locked ? (
                           <span title="Logged at the machine — correct the quantity rather than removing it"
                             className="cursor-default text-xs text-gray-300">✕</span>
                         ) : (
@@ -325,7 +339,7 @@ export function BatchConsumablesTable({ batchKey, batchLabel, onSaved }: {
                         )}
                       </td>
                     </tr>
-                  ))}
+                  ); })}
 
                   <tr className="border-t border-gray-100">
                     <td colSpan={6} className="px-3 py-1.5">

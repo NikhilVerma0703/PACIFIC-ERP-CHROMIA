@@ -712,18 +712,40 @@ export default async function IncentiveMonthPage({ searchParams }: { searchParam
                         <td className="py-1.5 pr-3 font-medium text-gray-900">
                           {g.design}
                           {/* A SLOW DESIGN, MARKED WHERE THE DESIGN IS NAMED
-                              (owner, 2026-09-05). The hour's STANDARD is what
-                              doubles a slab, and the standard belongs to the
-                              MIS hour rather than to the design — so a row run
-                              across two shifts at two standards is part
-                              doubled, and the mark says how many rather than
-                              claiming the whole design was slow. */}
+                              (owner, 2026-09-05: a 2x "for the ones which are
+                              less than or equal to 10 slab per hr"). The hour's
+                              STANDARD is what doubles a slab, and the standard
+                              belongs to the MIS hour rather than to the design
+                              — so a row run across two shifts at two standards
+                              is PART doubled.
+                              THE MARK IS NOT BINARY, BECAUSE THE ROWS ARE NOT.
+                              It fired on slowClaimed > 0 and put the proportion
+                              in a hover title only, so on live August 2026
+                              (measured 2026-09-05) TIFFINY / D1432 read "2×"
+                              although 13 of its 126 claimed slabs doubled — its
+                              hours ran at std 12 for 91 of them — and Aureate /
+                              D1423 read the same at 216 of 301. A reader takes
+                              "TIFFINY 2×" as the batch doubling; a title is
+                              invisible on the floor's touch screens and in
+                              print. So: a bare 2× ONLY where every claimed slab
+                              doubled (slowClaimed === claimed — the 19 rows the
+                              owner meant), and on a mixed row the fraction
+                              inline in the same small type, 2× 13/126. The
+                              title stays for the sentence. Not a column: the
+                              table is 15 wide already. The mixed set moves only
+                              when an MIS hour is retyped, never as QC grades —
+                              slowClaimed is paired with `claimed`, not with
+                              what has graded. */}
                           {g.slowClaimed > 0 && (
-                            <sup className="ml-0.5 text-[9px] font-semibold text-brand"
+                            <sup className="ml-0.5 whitespace-nowrap text-[9px] font-semibold text-brand"
                               title={g.slowClaimed === g.claimed
                                 ? `Standard ${SLOW_STD_MAX}/hr or less — every one of these ${fmt(g.claimed)} slabs counts twice`
-                                : `${fmt(g.slowClaimed)} of these ${fmt(g.claimed)} slabs came from an hour with a standard of ${SLOW_STD_MAX}/hr or less and count twice`}>
-                              2×
+                                : `${fmt(g.slowClaimed)} of these ${fmt(g.claimed)} slabs came from an hour with a standard of ${SLOW_STD_MAX}/hr or less and count twice; the other ${fmt(g.claimed - g.slowClaimed)} count once`}>
+                              {/* `!==`, not `<`: slowClaimed > claimed cannot
+                                  happen (0 of 41 rows, and the loop pairs the
+                                  two), but if it ever did, "2× 130/126" is a
+                                  fault a reader can see and a bare 2× is not. */}
+                              2×{g.slowClaimed !== g.claimed && <span className="ml-0.5 font-normal text-gray-500">{fmt(g.slowClaimed)}/{fmt(g.claimed)}</span>}
                             </sup>
                           )}
                         </td>

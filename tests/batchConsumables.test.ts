@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   editProblem, pricePatch, draftChanged, toLine, LINE_SOURCE, BATCH_STATIONS,
+  floorEditProblem, updatePatch, wireEdit, isUpdate, saverName, SHEET_ITEM_WHERE,
+  type DraftShape, type UsageEdit, type UsageUpdate,
 } from "../src/lib/consumables/batchUsageRules.ts";
 import { MODEL_DEPT } from "../src/lib/consumables/dept.ts";
 
@@ -217,9 +219,10 @@ test("the floor panel refuses a line with no batch", () => {
   );
 });
 
-test("the sheet sends only what changed", () => {
+test("the sheet sends only what changed, and builds each edit through wireEdit", () => {
   assert.ok(table.includes("draftChanged("), "the sheet must diff drafts against what it loaded");
-  assert.ok(table.includes("priceTouched"), "an untouched price box must not be sent at all");
+  assert.ok(/\.map\(\(d\) => wireEdit\(/.test(table), "every edit must be built by wireEdit — the per-field rule lives there, not in the component");
+  assert.ok(!table.includes("priceTouched"), "the old per-line builder (only the price was per-field) must be gone");
 });
 
 // ---------------------------------------------------------------------------
@@ -257,4 +260,97 @@ test("the machine-form picker leaves direct materials out", () => {
     const src = readFileSync(new URL(p, import.meta.url), "utf8");
     assert.ok(/category: \{ not: "DIRECT_MATERIAL" \}/.test(src), `${p} must not offer resin and grit from a machine form`);
   }
+});
+
+// ─── THE FIVE HELPERS THAT CLOSED THE SIGN-OFF SHEET'S REVIEW FINDINGS ────────
+// These were added to the import line above by an agent that died before writing
+// a test that called any of them. So the rules that stop a floor line being
+// renamed, a stale sheet reverting a colleague, a price of ₹0 arriving as "",
+// and a blank author on a rupee figure were guarded by nothing. Each is pure,
+// so each is RUN here rather than matched as text.
+
+const stations = new Set(["Press", "Oven"]);
+// This file reads its three sources individually (lines ~80-82) and has no
+// shared reader; the first draft of the last test below called one anyway.
+const read = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8");
+const draft = (o: Partial<DraftShape> = {}): DraftShape =>
+  ({ itemName: "Gloves", quantity: "5", unit: "PCS", unitPrice: "", operatorName: "Ravi", station: "Press", ...o });
+
+test("a floor line may not be renamed or change unit — its stock already moved under that item", () => {
+  const row = { itemName: "Gloves", unit: "PCS", stockName: "Gloves" };
+  assert.ok(floorEditProblem(row, { itemName: "Emery" }), "renaming a floor line must be refused");
+  assert.ok(floorEditProblem(row, { unit: "KG" }), "changing a floor line's unit must be refused");
+  assert.equal(floorEditProblem(row, { itemName: " gloves " }), null, "the same name in another case is not a change");
+  assert.equal(floorEditProblem(row, { unit: "pcs" }), null, "the same unit in another case is not a change");
+  assert.equal(floorEditProblem(row, {}), null, "an edit that carries neither field is fine");
+  // held to the linked stock row's spelling, not the line's own
+  assert.equal(floorEditProblem({ itemName: "gloves", unit: "PCS", stockName: "Gloves" }, { itemName: "GLOVES" }), null);
+  // an unlinked floor row is held to its own name
+  assert.ok(floorEditProblem({ itemName: "Gloves", unit: "PCS", stockName: null }, { itemName: "Emery" }));
+});
+
+test("updatePatch writes ONLY the fields the edit carried — an absent field leaves the column alone", () => {
+  const ctx = { fromFloor: false, stockFor: (n: string) => (n.toLowerCase() === "gloves" ? { id: "s1", itemName: "Gloves" } : undefined),
+                departmentFor: () => "d1", by: "Thiru", at: new Date("2026-09-05T10:00:00Z") };
+  // only the person changed: nothing else may be in the patch
+  assert.deepEqual(updatePatch({ id: "x", operatorName: "Satya" }, ctx), { operatorName: "Satya" });
+  // only quantity changed: price columns untouched (no unitPrice key at all)
+  const q = updatePatch({ id: "x", quantity: 7 }, ctx);
+  assert.deepEqual(q, { quantity: 7 });
+  assert.ok(!("unitPrice" in q) && !("pricedBy" in q), "a quantity edit must not touch the price or its author");
+  // a set price is signed; a cleared price is unsigned
+  assert.deepEqual(updatePatch({ id: "x", unitPrice: 40 }, ctx), { unitPrice: 40, pricedBy: "Thiru", pricedAt: ctx.at });
+  assert.deepEqual(updatePatch({ id: "x", unitPrice: null }, ctx), { unitPrice: null, pricedBy: null, pricedAt: null });
+  // an item typed in another case saves under the stock row's own spelling
+  assert.deepEqual(updatePatch({ id: "x", itemName: "gloves" }, ctx), { itemName: "Gloves", inventoryStockId: "s1" });
+  // a floor row: item and unit are never rewritten even when carried
+  const floor = { ...ctx, fromFloor: true };
+  assert.deepEqual(updatePatch({ id: "x", itemName: "Gloves", unit: "PCS", quantity: 9 }, floor), { quantity: 9 });
+});
+
+test("wireEdit sends an existing row as id plus ONLY what moved", () => {
+  const before = draft();
+  assert.deepEqual(wireEdit({ id: "x", ...draft({ operatorName: "Satya" }) }, before), { id: "x", operatorName: "Satya" },
+    "editing the Person box alone must not re-send quantity, item, unit or price");
+  assert.deepEqual(wireEdit({ id: "x", ...draft() }, before), { id: "x" }, "nothing moved, nothing sent");
+  assert.deepEqual(wireEdit({ id: "x", ...draft({ unitPrice: "40" }) }, before), { id: "x", unitPrice: 40 });
+  assert.deepEqual(wireEdit({ id: "x", ...draft({ unitPrice: " 40 " }) }, draft({ unitPrice: "40" })), { id: "x" },
+    "whitespace around an unchanged value is not a change");
+  // a row the baseline never saw sends everything — the safe direction
+  const all = wireEdit({ id: "x", ...draft() }, undefined);
+  assert.ok("quantity" in all && "itemName" in all && "unit" in all && "operatorName" in all);
+  // a new row (no id) is sent whole
+  const fresh = wireEdit(draft(), undefined);
+  assert.ok(!("id" in fresh) && fresh.itemName === "Gloves" && fresh.quantity === 5 && fresh.unitPrice === null);
+});
+
+test("a price must ARRIVE as a number — '' is not ₹0 and true is not ₹1", () => {
+  for (const bad of ["", "40", true, false, "abc", NaN, Infinity, -1, {} as unknown]) {
+    const r = editProblem({ id: "x", itemName: "Gloves", unitPrice: bad as never }, stations);
+    assert.ok(r, `unitPrice ${JSON.stringify(bad)} must be refused, got null`);
+  }
+  assert.equal(editProblem({ id: "x", unitPrice: 40 }, stations), null, "a real number passes");
+  assert.equal(editProblem({ id: "x", unitPrice: 0 }, stations), null, "zero is a real price");
+  assert.equal(editProblem({ id: "x", unitPrice: null }, stations), null, "null clears the price and is allowed");
+});
+
+test("a price is never signed by a blank name", () => {
+  assert.equal(saverName("Thiru", "t@x.com"), "Thiru");
+  assert.equal(saverName("  Thiru  ", "t@x.com"), "Thiru");
+  assert.equal(saverName("", "t@x.com"), "t@x.com", "an empty-string name falls back to the email, not to ''");
+  assert.equal(saverName("   ", "t@x.com"), "t@x.com");
+  assert.equal(saverName(null, "t@x.com"), "t@x.com");
+  assert.equal(saverName("", ""), "unknown");
+  assert.equal(saverName(undefined, undefined), "unknown");
+  assert.notEqual(saverName("", null), "", "never the empty string");
+});
+
+test("the sheet and the floor panel offer the SAME items — resin and grit are on neither", () => {
+  assert.deepEqual(SHEET_ITEM_WHERE, { category: { not: "DIRECT_MATERIAL" } });
+  const usage = read("../src/lib/consumables/batchUsage.ts");
+  const route = read("../src/app/api/office/batch-consumables/route.ts");
+  assert.ok(usage.includes("SHEET_ITEM_WHERE"), "the sheet's datalist must use the shared filter");
+  assert.ok(route.includes("where: SHEET_ITEM_WHERE"), "the route's stock lookup must use the shared filter");
+  for (const p of ["../src/app/entry/mixer/page.tsx", "../src/app/entry/slab/[model]/page.tsx"])
+    assert.ok(read(p).includes("DIRECT_MATERIAL"), `${p} must still filter direct materials from the picker`);
 });
