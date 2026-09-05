@@ -174,8 +174,6 @@ type MachineEntry = { programName: string; toolName: string; liquidName: string;
 const emptyEntry = (): MachineEntry => ({ programName: "", toolName: "", liquidName: "", powderName: "", rollerHeight: "", targetCycleTime: "" });
 
 const emptySlab = () => ({ serialNumber: "", slabNumber: "", productionDate: "", thickness: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" });
-const emptyDelayForm = () => ({ selectedCodeId: "", machineNames: [] as string[], startTime: "", endTime: "", remarks: "" });
-
 /** Toggle a machine name in a delay's set — add it if absent, drop it if
  *  present. Order is kept so the first stays first (that is what machineId
  *  resolves from). */
@@ -212,6 +210,149 @@ function MachinePicker({ machines, selected, onToggle }: {
           </button>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * The delay-code picker for one delay row — the same searchable box that used to
+ * live in the "+ Add" form, now self-contained so it can sit on every row. Type
+ * to filter, pick a code, or add a brand-new code without leaving the slab (the
+ * created code is handed back up via onCreated so every row's list has it). Its
+ * search / open / new-code state is entirely local, so several rows each carry
+ * their own picker without interfering.
+ */
+function DelayCodePicker({ value, codes, onSelect, onCreated }: {
+  value: string;
+  codes: DelayCode[];
+  onSelect: (id: string) => void;
+  onCreated: (code: DelayCode) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [open, setOpen] = useState(false);
+  const [newForm, setNewForm] = useState({ open: false, code: "", description: "", category: "GENERAL", isRobotSpecific: true });
+  const [newError, setNewError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  const selected = codes.find((c) => c.id === value) ?? null;
+  const q = search.trim().toLowerCase();
+  const filtered = q
+    ? codes.filter((c) => c.code.toLowerCase().includes(q) || c.description.toLowerCase().includes(q) || c.category.toLowerCase().includes(q))
+    : codes;
+  const typed = search.trim();
+  const canAdd = typed.length > 0 && !codes.some((c) => c.code.toLowerCase() === typed.toLowerCase());
+
+  const startNew = (t: string) => {
+    const code = t.trim().toUpperCase();
+    const category = guessCategory(code);
+    setNewForm({ open: true, code, description: "", category, isRobotSpecific: defaultRobotSpecific(category) });
+    setNewError("");
+    setOpen(false);
+  };
+  const saveNew = async () => {
+    const code = newForm.code.trim().toUpperCase();
+    const description = newForm.description.trim();
+    setNewError("");
+    if (!code) { setNewError("Enter a delay code."); return; }
+    if (!description) { setNewError("Enter a short description for this delay code."); return; }
+    if (codes.some((c) => c.code.toLowerCase() === code.toLowerCase())) { setNewError(`${code} already exists — pick it from the list instead.`); return; }
+    setSaving(true);
+    try {
+      const res = await fetch("/api/robo/delay-codes", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, description, category: newForm.category, isRobotSpecific: newForm.isRobotSpecific }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) { setNewError((data as { error?: string } | null)?.error || "Could not save the delay code."); return; }
+      const created = data as DelayCode;
+      onCreated(created);
+      onSelect(created.id);
+      setSearch("");
+      setNewForm((p) => ({ ...p, open: false }));
+    } catch {
+      setNewError("Could not save the delay code. Check the connection and try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (selected) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm">
+          <span className="shrink-0 text-sm font-bold text-gray-800">{selected.code}</span>
+          <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${CATEGORY_COLOR[selected.category] || "bg-gray-100 text-gray-600"}`}>{selected.category}</span>
+          <span className="min-w-0 flex-1 truncate text-xs text-gray-500">{selected.description}</span>
+        </div>
+        <button type="button" aria-label="Change code" onClick={() => { onSelect(""); setSearch(""); }}
+          className="shrink-0 rounded-md px-1.5 py-1 text-xs text-gray-400 hover:bg-gray-100 hover:text-red-500">✕</button>
+      </div>
+    );
+  }
+  if (newForm.open) {
+    return (
+      <div className="space-y-3 rounded-lg border border-amber-300 bg-white p-3">
+        <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">New delay code</p>
+        {newError && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{newError}</div>}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div>
+            <span className={label}>Code <span className="text-red-500">*</span></span>
+            <input value={newForm.code} onChange={(e) => setNewForm((p) => ({ ...p, code: e.target.value.toUpperCase() }))} placeholder="e.g. M16" className={inp} autoComplete="off" />
+          </div>
+          <div>
+            <span className={label}>Category <span className="text-red-500">*</span></span>
+            <select value={newForm.category} onChange={(e) => setNewForm((p) => ({ ...p, category: e.target.value, isRobotSpecific: defaultRobotSpecific(e.target.value) }))} className={inp}>
+              {CATEGORY_META.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+            </select>
+          </div>
+        </div>
+        <div>
+          <span className={label}>Description <span className="text-red-500">*</span></span>
+          <input value={newForm.description} onChange={(e) => setNewForm((p) => ({ ...p, description: e.target.value }))} placeholder="What the delay was, in a few words" className={inp} autoComplete="off" />
+        </div>
+        <label className="flex items-center gap-2 text-xs text-gray-600">
+          <input type="checkbox" checked={newForm.isRobotSpecific} onChange={(e) => setNewForm((p) => ({ ...p, isRobotSpecific: e.target.checked }))} className="h-4 w-4 rounded border-gray-300 text-brand focus:ring-brand/30" />
+          Belongs to one robot (asks which machine when logging the delay)
+        </label>
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <button type="button" onClick={saveNew} disabled={saving} className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-amber-700 disabled:opacity-60">{saving ? "Saving…" : "Save & use"}</button>
+          <button type="button" onClick={() => { setNewForm((p) => ({ ...p, open: false })); setNewError(""); }} className={btnGhost}>Cancel</button>
+          <span className="text-xs text-gray-400">Also added to Master Lists → Delay Codes</span>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div ref={ref} className="relative">
+      <input value={search} onChange={(e) => { setSearch(e.target.value); setOpen(true); }} onFocus={() => setOpen(true)} placeholder="Search a code, or type a new one…" className={inp} autoComplete="off" />
+      {open && (
+        <div className="absolute z-20 mt-1 max-h-52 w-full overflow-y-auto overscroll-contain rounded-lg border border-gray-200 bg-white shadow-lg">
+          {filtered.map((dc) => (
+            <button key={dc.id} type="button" onClick={() => { onSelect(dc.id); setSearch(""); setOpen(false); }}
+              className="flex w-full items-center gap-2 border-b border-gray-50 px-3 py-2 text-left transition last:border-0 hover:bg-brand/5">
+              <span className="w-12 shrink-0 text-sm font-bold text-gray-800">{dc.code}</span>
+              <span className="min-w-0 flex-1 truncate text-sm text-gray-600">{dc.description}</span>
+              <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${CATEGORY_COLOR[dc.category] || "bg-gray-100 text-gray-600"}`}>{dc.category}</span>
+            </button>
+          ))}
+          {canAdd ? (
+            <button type="button" onClick={() => startNew(typed)}
+              className="sticky bottom-0 flex w-full items-center gap-2 border-t border-amber-200 bg-amber-50 px-3 py-3 text-left transition hover:bg-amber-100">
+              <span className="shrink-0 text-base font-bold text-amber-700">+</span>
+              <span className="min-w-0 flex-1 truncate text-sm text-amber-800">Add &ldquo;{typed.toUpperCase()}&rdquo; as a new delay code</span>
+            </button>
+          ) : filtered.length === 0 ? (
+            <div className="px-3 py-2 text-xs text-gray-400">No matching delay codes.</div>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
@@ -347,46 +488,24 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
   const [delayRows, setDelayRows] = useState<DelayRow[]>([]);
   const delayKeySeq = useRef(0);
   const nextDelayKey = () => `new-${++delayKeySeq.current}`;
+  const blankDelayRow = (): DelayRow => ({ key: nextDelayKey(), delayCodeId: "", machineNames: [], startTime: "", endTime: "", remarks: "" });
+  const rowIsBlank = (r: DelayRow) => !r.delayCodeId && !r.startTime && !r.endTime && !r.remarks && r.machineNames.length === 0;
   const updateDelayRow = (key: string, patch: Partial<DelayRow>) =>
     setDelayRows((rows) => rows.map((r) => (r.key === key ? { ...r, ...patch } : r)));
   const removeDelayRow = (key: string) =>
     setDelayRows((rows) => rows.filter((r) => r.key !== key));
-  const [delayForm, setDelayForm] = useState(emptyDelayForm);
-  const [delayError, setDelayError] = useState("");
-  const [codeSearch, setCodeSearch] = useState("");
-  const [codeOpen, setCodeOpen] = useState(false);
-  const codeRef = useRef<HTMLDivElement>(null);
-  /** Inline "new delay code" panel, opened from the dropdown when what the
-   *  operator typed is not in the catalogue yet. */
-  const [newCode, setNewCode] = useState({ open: false, code: "", description: "", category: "GENERAL", isRobotSpecific: true });
-  const [newCodeError, setNewCodeError] = useState("");
-  const [savingCode, setSavingCode] = useState(false);
-
-  /**
-   * Empty the delay-entry panel: the picked code, the search box, the machine,
-   * the times, the remark, the inline "new code" form and any error.
-   *
-   * Everything here except `delays` itself, which each caller decides about —
-   * saving a slab sends the pending delays with it, cancelling an edit throws
-   * them away, and both then want the panel blank.
-   *
-   * WHY. `+ Add` cleared this, so an operator who logs delays the ordinary way
-   * never saw a problem — which is why only one of them reported it and it
-   * could not be reproduced. Pick a code and then save the slab WITHOUT
-   * pressing Add and it survived: `delays` was emptied on save, the picker was
-   * not, so the next slab opened with the previous slab's code sitting
-   * selected. Nothing wrong was ever written — the code was only staged, not
-   * attached — but the operator is reading a screen that says the next slab
-   * already has a delay on it, and the next `+ Add` would have used it.
-   */
-  const resetDelayEntry = () => {
-    setDelayForm(emptyDelayForm());
-    setCodeSearch("");
-    setCodeOpen(false);
-    setDelayError("");
-    setNewCode((p) => ({ ...p, open: false }));
-    setNewCodeError("");
-  };
+  // Keep exactly one empty row at the end, so a delay is entered simply by
+  // filling that row in — no "+ Add" to remember. The moment the last row gains
+  // a code (or anything), a fresh blank row appears beneath it for the next
+  // delay. Empty rows are dropped on save. Returning the same array when nothing
+  // needs adding stops this from looping.
+  useEffect(() => {
+    setDelayRows((rows) => {
+      const last = rows[rows.length - 1];
+      return last && rowIsBlank(last) ? rows : [...rows, blankDelayRow()];
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [delayRows]);
 
   const refetchShift = async () => {
     const s = await getJson<ActiveShift | null>("/api/robo/shifts/active", null);
@@ -441,7 +560,6 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
       endTime: d.endTime ?? "",
       remarks: d.remarks ?? "",
     })));
-    resetDelayEntry();
     setEditLoading(false);
     return rec;
   };
@@ -479,13 +597,6 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
       setLoading(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // close the delay-code dropdown on outside click
-  useEffect(() => {
-    const h = (e: MouseEvent) => { if (codeRef.current && !codeRef.current.contains(e.target as Node)) setCodeOpen(false); };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
   }, []);
 
   const latestBatch = shift?.batchRecipes?.[shift.batchRecipes.length - 1] ?? null;
@@ -701,17 +812,6 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
   // difference in what the slab records.
   const hasRoymix = activeMachineNames.includes("Roymix");
 
-  const selectedCode = useMemo(() => delayCodes.find((d) => d.id === delayForm.selectedCodeId) ?? null, [delayCodes, delayForm.selectedCodeId]);
-  const filteredCodes = useMemo(() => {
-    const q = codeSearch.trim().toLowerCase();
-    if (!q) return delayCodes;
-    return delayCodes.filter((d) => d.code.toLowerCase().includes(q) || d.description.toLowerCase().includes(q) || d.category.toLowerCase().includes(q));
-  }, [delayCodes, codeSearch]);
-  /* Text typed into the delay-code box that matches no code in the catalogue.
-     The operator can save it as a new delay type without leaving this form. */
-  const typedCode = codeSearch.trim();
-  const canAddTypedCode = typedCode.length > 0 && !delayCodes.some((d) => d.code.toLowerCase() === typedCode.toLowerCase());
-  const delayDuration = useMemo(() => calcDuration(delayForm.startTime, delayForm.endTime), [delayForm.startTime, delayForm.endTime]);
   // A delay row's duration in whole minutes, rounded up like the stored value —
   // derived from the (editable) times, and the single source for the badge, the
   // running total and the save.
@@ -956,75 +1056,6 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     return data.available;
   };
 
-  // ---- delays ----
-  const addDelay = () => {
-    setDelayError("");
-    if (!selectedCode) { setDelayError("Select a delay code."); return; }
-    if (!delayForm.startTime || !delayForm.endTime) { setDelayError("Start and end time are required."); return; }
-    if (!isValidTime(delayForm.startTime) || !isValidTime(delayForm.endTime)) { setDelayError("Enter times as HH:MM in 24-hour format, for example 09:30."); return; }
-    const dur = calcDuration(delayForm.startTime, delayForm.endTime);
-    if (!dur) { setDelayError("Invalid time range — check the start/end times (delays over 12h aren't accepted)."); return; }
-    if (selectedCode.isRobotSpecific && delayForm.machineNames.length === 0) { setDelayError("This code needs at least one machine."); return; }
-    setDelayRows((prev) => [...prev, {
-      key: nextDelayKey(),
-      delayCodeId: selectedCode.id,
-      machineNames: selectedCode.isRobotSpecific ? delayForm.machineNames : [],
-      startTime: delayForm.startTime, endTime: delayForm.endTime, remarks: delayForm.remarks,
-    }]);
-    resetDelayEntry();
-  };
-
-  /** Open the inline panel pre-filled with whatever the operator typed. */
-  const startNewDelayCode = (typed: string) => {
-    const code = typed.trim().toUpperCase();
-    const category = guessCategory(code);
-    setNewCode({ open: true, code, description: "", category, isRobotSpecific: defaultRobotSpecific(category) });
-    setNewCodeError("");
-    setCodeOpen(false);
-  };
-  /* Changing the group resets the robot flag to that group's norm; the
-     operator can still tick it back either way before saving. */
-  const setNewCodeCategory = (category: string) => {
-    setNewCode((p) => ({ ...p, category, isRobotSpecific: defaultRobotSpecific(category) }));
-  };
-  /**
-   * Saves the typed code to the shared Delay Codes master list and selects it
-   * straight away, so the delay can be logged in the same breath. Without this
-   * the operator has to abandon a half-entered slab, walk to Master Lists, add
-   * the code and start the slab again — which in practice means the delay goes
-   * unlogged. The API rejects a duplicate with 409, surfaced here as-is.
-   */
-  const saveNewDelayCode = async () => {
-    const code = newCode.code.trim().toUpperCase();
-    const description = newCode.description.trim();
-    setNewCodeError("");
-    if (!code) { setNewCodeError("Enter a delay code."); return; }
-    if (!description) { setNewCodeError("Enter a short description for this delay code."); return; }
-    if (delayCodes.some((d) => d.code.toLowerCase() === code.toLowerCase())) {
-      setNewCodeError(`${code} already exists — pick it from the list instead.`);
-      return;
-    }
-    setSavingCode(true);
-    try {
-      const res = await fetch("/api/robo/delay-codes", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, description, category: newCode.category, isRobotSpecific: newCode.isRobotSpecific }),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) { setNewCodeError(data?.error || "Could not save the delay code."); return; }
-      const created = data as DelayCode;
-      setDelayCodes((prev) => sortDelayCodes([...prev, created]));
-      setDelayForm((p) => ({ ...p, selectedCodeId: created.id }));
-      setCodeSearch("");
-      setNewCode((p) => ({ ...p, open: false }));
-      setDelayError("");
-    } catch {
-      setNewCodeError("Could not save the delay code. Check the connection and try again.");
-    } finally {
-      setSavingCode(false);
-    }
-  };
-
   /** Load a slab from the Recent table back into the form (finish it, or fix it). */
   const editRecordFromTable = async (r: ProdRecord) => {
     setEditingId(r.id);
@@ -1036,7 +1067,6 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     setEditingId(null);
     setEditRecord(null);
     setDelayRows([]);
-    resetDelayEntry();
     setSlabTaken(false);
     // Back to a blank NEW slab, on the day the operator is logging under — not
     // the edited slab's own date, and not empty.
@@ -1188,10 +1218,6 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     setEditingId(null);
     setEditRecord(null);
     setDelayRows([]);
-    // The delay picker goes with them. It used to be left as it was, so a code
-    // chosen but never added with + Add stayed selected on the next slab — see
-    // resetDelayEntry.
-    resetDelayEntry();
     setSlabTaken(false);
 
     /*
@@ -1689,7 +1715,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
             <div className="rounded-xl border border-amber-200/70 bg-amber-50/40 p-4">
               <div className="mb-3 flex items-center gap-2">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-amber-800">Delays this slab</h3>
-                {delayRows.length > 0 && <Badge tone="amber">{delayRows.length} · {totalDelay} min</Badge>}
+                {delayRows.some((r) => r.delayCodeId) && <Badge tone="amber">{delayRows.filter((r) => r.delayCodeId).length} · {totalDelay} min</Badge>}
               </div>
 
               {/* Every delay on this slab, existing and new, fully editable —
@@ -1708,10 +1734,9 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                         <div className="grid grid-cols-2 gap-2 sm:grid-cols-12">
                           <div className="col-span-2 sm:col-span-4">
                             <span className={label}>Delay code</span>
-                            <select value={row.delayCodeId} onChange={(e) => updateDelayRow(row.key, { delayCodeId: e.target.value })} className={inp}>
-                              <option value="">Select code…</option>
-                              {delayCodes.map((c) => <option key={c.id} value={c.id}>{c.code} — {c.description}</option>)}
-                            </select>
+                            <DelayCodePicker value={row.delayCodeId} codes={delayCodes}
+                              onSelect={(id) => updateDelayRow(row.key, { delayCodeId: id })}
+                              onCreated={(c) => setDelayCodes((prev) => sortDelayCodes([...prev, c]))} />
                           </div>
                           <div className="col-span-1 sm:col-span-2">
                             <span className={label}>Start</span>
@@ -1731,8 +1756,10 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                             </div>
                           </div>
                           <div className="col-span-1 flex items-end justify-end sm:col-span-2">
-                            <button type="button" onClick={() => removeDelayRow(row.key)} aria-label="Remove delay"
-                              className="rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-500 transition hover:border-red-300 hover:bg-red-50 hover:text-red-600">✕ Remove</button>
+                            {!rowIsBlank(row) && (
+                              <button type="button" onClick={() => removeDelayRow(row.key)} aria-label="Remove delay"
+                                className="rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-500 transition hover:border-red-300 hover:bg-red-50 hover:text-red-600">✕ Remove</button>
+                            )}
                           </div>
                           {code?.isRobotSpecific && (
                             <div className="col-span-2 sm:col-span-6">
@@ -1752,119 +1779,10 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                 </div>
               )}
 
-              {delayError && <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{delayError}</div>}
-
-              {/* Below lg the code takes a row to itself, the three times share
-                  the next one and the remark and + Add have the last — a delay
-                  is read code-first, and the code is the widest thing here. The
-                  desktop row is the same six columns it always was; only the
-                  breakpoint moved, off iPad-portrait width. */}
-              <div className="grid grid-cols-6 gap-3">
-                <div ref={codeRef} className="relative col-span-6 lg:col-span-3">
-                  <span className={label}>Delay code</span>
-                  {selectedCode ? (
-                    <div className="flex items-center gap-1.5">
-                      <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm">
-                        <span className="shrink-0 text-sm font-bold text-gray-800">{selectedCode.code}</span>
-                        <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${CATEGORY_COLOR[selectedCode.category] || "bg-gray-100 text-gray-600"}`}>{selectedCode.category}</span>
-                        <span className="min-w-0 flex-1 truncate text-xs text-gray-500">{selectedCode.description}</span>
-                      </div>
-                      <button type="button" aria-label="Clear code" onClick={() => { setDelayForm((p) => ({ ...p, selectedCodeId: "", machineNames: [] })); setCodeSearch(""); }}
-                        className="shrink-0 rounded-md px-1.5 py-1 text-xs text-gray-400 hover:bg-gray-100 hover:text-red-500">✕</button>
-                    </div>
-                  ) : newCode.open ? (
-                    <div className="space-y-3 rounded-lg border border-amber-300 bg-white p-3">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">New delay code</p>
-                      {newCodeError && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{newCodeError}</div>}
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <div>
-                          <span className={label}>Code <span className="text-red-500">*</span></span>
-                          <input value={newCode.code} onChange={(e) => setNewCode((p) => ({ ...p, code: e.target.value.toUpperCase() }))}
-                            placeholder="e.g. M16" className={inp} autoComplete="off" />
-                        </div>
-                        <div>
-                          <span className={label}>Category <span className="text-red-500">*</span></span>
-                          <select value={newCode.category} onChange={(e) => setNewCodeCategory(e.target.value)} className={inp}>
-                            {CATEGORY_META.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
-                          </select>
-                        </div>
-                      </div>
-                      <div>
-                        <span className={label}>Description <span className="text-red-500">*</span></span>
-                        <input value={newCode.description} onChange={(e) => setNewCode((p) => ({ ...p, description: e.target.value }))}
-                          placeholder="What the delay was, in a few words" className={inp} autoComplete="off" />
-                      </div>
-                      <label className="flex items-center gap-2 text-xs text-gray-600">
-                        <input type="checkbox" checked={newCode.isRobotSpecific} onChange={(e) => setNewCode((p) => ({ ...p, isRobotSpecific: e.target.checked }))}
-                          className="h-4 w-4 rounded border-gray-300 text-brand focus:ring-brand/30" />
-                        Belongs to one robot (asks which machine when logging the delay)
-                      </label>
-                      <div className="flex flex-wrap items-center gap-2 pt-1">
-                        <button type="button" onClick={saveNewDelayCode} disabled={savingCode}
-                          className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-amber-700 disabled:opacity-60">
-                          {savingCode ? "Saving…" : "Save & use"}
-                        </button>
-                        <button type="button" onClick={() => { setNewCode((p) => ({ ...p, open: false })); setNewCodeError(""); }} className={btnGhost}>Cancel</button>
-                        <span className="text-xs text-gray-400">Also added to Master Lists → Delay Codes</span>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <input value={codeSearch} onChange={(e) => { setCodeSearch(e.target.value); setCodeOpen(true); }} onFocus={() => setCodeOpen(true)}
-                        placeholder="Search a code, or type a new one…" className={inp} autoComplete="off" />
-                      {codeOpen && (
-                        <div className="absolute z-20 mt-1 max-h-52 w-full overflow-y-auto overscroll-contain rounded-lg border border-gray-200 bg-white shadow-lg">
-                          {filteredCodes.map((dc) => (
-                            <button key={dc.id} type="button" onClick={() => { setDelayForm((p) => ({ ...p, selectedCodeId: dc.id })); setCodeSearch(""); setCodeOpen(false); }}
-                              className="flex w-full items-center gap-2 border-b border-gray-50 px-3 py-2 text-left transition last:border-0 hover:bg-brand/5">
-                              <span className="w-12 shrink-0 text-sm font-bold text-gray-800">{dc.code}</span>
-                              <span className="min-w-0 flex-1 truncate text-sm text-gray-600">{dc.description}</span>
-                              <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${CATEGORY_COLOR[dc.category] || "bg-gray-100 text-gray-600"}`}>{dc.category}</span>
-                            </button>
-                          ))}
-                          {canAddTypedCode ? (
-                            <button type="button" onClick={() => startNewDelayCode(typedCode)}
-                              className="sticky bottom-0 flex w-full items-center gap-2 border-t border-amber-200 bg-amber-50 px-3 py-3 text-left transition hover:bg-amber-100">
-                              <span className="shrink-0 text-base font-bold text-amber-700">+</span>
-                              <span className="min-w-0 flex-1 truncate text-sm text-amber-800">Add &ldquo;{typedCode.toUpperCase()}&rdquo; as a new delay code</span>
-                            </button>
-                          ) : filteredCodes.length === 0 ? (
-                            <div className="px-3 py-2 text-xs text-gray-400">No matching delay codes.</div>
-                          ) : null}
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-                {selectedCode?.isRobotSpecific && (
-                  <div className="col-span-6 lg:col-span-3">
-                    <span className={label}>Machine(s) — pick one or more</span>
-                    <MachinePicker machines={machines} selected={delayForm.machineNames}
-                      onToggle={(name) => setDelayForm((p) => ({ ...p, machineNames: toggleMachineName(p.machineNames, name) }))} />
-                  </div>
-                )}
-                <div className="col-span-2 lg:col-span-1">
-                  <span className={label}>Start <span className="text-red-500">*</span></span>
-                  <TimeInput value={delayForm.startTime} onChange={(v) => setDelayForm((p) => ({ ...p, startTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("delay")} />
-                </div>
-                <div className="col-span-2 lg:col-span-1">
-                  <span className={label}>End <span className="text-red-500">*</span></span>
-                  <TimeInput value={delayForm.endTime} onChange={(v) => setDelayForm((p) => ({ ...p, endTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("delay")} />
-                </div>
-                <div className="col-span-2 lg:col-span-1">
-                  <span className={label}>Duration</span>
-                  <div className={`w-full rounded-lg border px-3 py-2 text-sm ${
-                    delayDuration ? "border-green-200 bg-green-50 font-semibold text-green-800"
-                      : delayForm.startTime && delayForm.endTime ? "border-red-200 bg-red-50 text-red-600"
-                      : "border-gray-200 bg-gray-50 text-gray-400"}`}>
-                    {delayDuration ? fmtDuration(delayDuration) : delayForm.startTime && delayForm.endTime ? "Invalid" : "Auto"}
-                  </div>
-                </div>
-                <div className="col-span-6 flex items-end gap-2 lg:col-span-3">
-                  <input value={delayForm.remarks} onChange={(e) => setDelayForm((p) => ({ ...p, remarks: e.target.value }))} placeholder="Delay remarks (optional)" className={inp} {...advanceProps("delay")} />
-                  <button type="button" onClick={addDelay} className="shrink-0 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-amber-700">+ Add</button>
-                </div>
-              </div>
+              {/* No "+ Add": each delay is a row above, entered by filling it in.
+                  The blank row at the bottom is the next delay; typing into it
+                  makes a fresh blank appear, so many delays go in without a
+                  single button. Empty rows are dropped on save. */}
             </div>
 
             <div className="flex items-center justify-end gap-3">
