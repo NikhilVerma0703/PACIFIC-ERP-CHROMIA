@@ -24,6 +24,7 @@ const I = {
   sink:        "M5 9V5h14v4M2 9h20v2a5 5 0 01-5 5H7a5 5 0 01-5-5V9z",
   fabrication: "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z",
   packaging:   "M21 16V8l-9-5-9 5v8l9 5 9-5z",
+  commercial:  "M3 3h18v4H3zM3 7v13h18V7M9 12h6",
 };
 
 const SHOP_PATHS = ["/", "/live", "/batch", "/slab", "/tables", "/report", "/office", "/silo", "/resin", "/store"];
@@ -269,6 +270,34 @@ export function Nav({
     { href: "/chromia/import",                 icon: I.entry,    label: "Import" },
   ];
 
+  // Commercial module — enquiry → internal sales order → stock hold → PI →
+  // packing list → dispatch check → invoice. Declared once and used three
+  // times: as the whole nav for Role.COMMERCIAL, and as a section for admins
+  // on both the office and the shop-floor nav (an admin's nav follows the
+  // login card, so the row has to exist on both). EVERY href here is under
+  // /office/commercial, which the module block in middleware.ts admits for
+  // COMMERCIAL and ADMIN; the module's own layout gate re-checks.
+  //
+  // "exact" on the overview: every other row is a sub-path of it, and the
+  // default prefix rule would light Overview alongside whichever is open.
+  const commercialItems = [
+    { href: "/office/commercial",               icon: I.overview,   label: "Overview", exact: true },
+    { href: "/office/commercial/enquiries",     icon: I.entry,      label: "Enquiries" },
+    { href: "/office/commercial/orders",        icon: I.commercial, label: "Orders" },
+    { href: "/office/commercial/clients",       icon: I.users,      label: "Clients" },
+    { href: "/office/commercial/packing-lists", icon: I.packaging,  label: "Packing Lists" },
+    { href: "/office/commercial/invoices",      icon: I.report,     label: "Invoices" },
+    { href: "/office/commercial/challans",      icon: I.tables,     label: "Delivery Challans" },
+    { href: "/office/commercial/production-planning", icon: I.planning, label: "Production Queue" },
+  ];
+  // Admin-only rows: the dispatch check is the dispatch team's screen (and the
+  // admin's), settings hold the numbering counters and the company master.
+  const commercialAdminItems = [
+    ...commercialItems,
+    { href: "/office/commercial/dispatch-check", icon: I.live,     label: "Dispatch Check" },
+    { href: "/office/commercial/settings",       icon: I.spanner,  label: "Settings" },
+  ];
+
   if (role === "STORE")
     // Batch Sign-off is the ONE office path this role reaches (middleware caps
     // the rest of /office away). It was granted there and linked nowhere — the
@@ -282,15 +311,31 @@ export function Nav({
         <Section label="Overview" items={STORE_TABS.filter(t => t.href === "/live")} path={path} />
         <Section label="Raw Material" items={STORE_TABS.filter(t => t.href.startsWith("/store") || t.href === "/tables")} path={path} />
         <Section label="Consumables" items={STORE_TABS.filter(t => t.href === "/consumables")} path={path} />
-        {batchVerify && <Section label="Verification" items={[{ href: "/office/batch-verify", icon: I.report, label: "Batch Sign-off" }]} path={path} />}
+        {/* Dispatch Check is the Commercial module's packing-list verification —
+            the store incharge stands in for the dispatch team until that team
+            has a role of its own (lib/commercial/access-rules.ts). Always shown
+            for STORE: the cap in routeCaps.storeMayVisit admits it by role. */}
+        <Section label="Verification" items={[
+          ...(batchVerify ? [{ href: "/office/batch-verify", icon: I.report, label: "Batch Sign-off" }] : []),
+          { href: "/office/commercial/dispatch-check", icon: I.live, label: "Dispatch Check" },
+        ]} path={path} />
       </nav>
     );
   if (role === "COMMERCIAL")
+    // The module first, then the two things this role had before it existed:
+    // the finished-goods slab table and the read-only production lookups.
     return (
-      <nav className="flex flex-col gap-1">
-        <NavLink href="/inventory" icon={I.box} label="Finished Goods" path={path} />
-        {/* Office-branch Commercial also gets the read-only production lookups. */}
-        {office && <NavLink href="/office" icon={I.factory} label="Shop Floor" path={path} office />}
+      <nav className="flex flex-col">
+        <Section label="Commercial" items={commercialItems} path={path} />
+        <Section label="Inventory" items={[{ href: "/inventory", icon: I.box, label: "Finished Goods" }]} path={path} />
+        {office && (
+          <div className="mt-4">
+            <p className="mb-1 px-3 text-[10px] font-bold uppercase tracking-[0.12em] text-gray-400">Office</p>
+            <div className="flex flex-col gap-0.5">
+              <NavLink href="/office" icon={I.factory} label="Shop Floor" path={path} office />
+            </div>
+          </div>
+        )}
       </nav>
     );
   if (role === "SALES")
@@ -380,6 +425,10 @@ export function Nav({
           // Admins see the intake form where the stock it feeds lives.
           ...(slabIntake ? [{ href: "/slab-intake", icon: I.entry, label: "Slab Intake" }] : []),
         ]} path={path} />}
+        {/* Office -> Commercial. Admins only here: the COMMERCIAL role gets the
+            whole-nav takeover above, and no other office role may open the
+            module (the block in middleware.ts refuses FINANCE and ACCOUNTS). */}
+        {isAdmin && <Section label="Commercial" items={commercialAdminItems} path={path} />}
         {showAdmin && <Section label="Admin" items={[{ href: "/admin/users", icon: I.users, label: "Users & Roles" }]} path={path} />}
       </nav>
     );
@@ -481,6 +530,8 @@ export function Nav({
           above: the SAMPLING role gets the whole-nav takeover, and the only
           other login middleware admits to these pages is an admin. */}
       {isAdmin && <Section label="Sampling" items={samplingItems} path={path} />}
+      {/* Shop Floor -> Commercial. Admins only, same reasoning as Sampling. */}
+      {isAdmin && <Section label="Commercial" items={commercialAdminItems} path={path} />}
       {(inventory || (slabIntake && isAdmin)) && <Section label="Inventory" items={[
         ...(inventory ? [{ href: "/inventory", icon: I.box, label: "Finished Goods" }] : []),
         // Admins only here: a named intake person on the shop floor already

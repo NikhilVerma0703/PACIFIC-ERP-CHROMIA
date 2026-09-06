@@ -45,7 +45,7 @@ test("office and capped commercial roles do not land on the shop floor", () => {
   assert.equal(homeFor("ACCOUNTS", "OFFICE"), "/office");
   // SALES and COMMERCIAL are capped to /inventory by their own blocks.
   assert.equal(homeFor("SALES", "SHOP_FLOOR"), "/inventory");
-  assert.equal(homeFor("COMMERCIAL", "SHOP_FLOOR"), "/inventory");
+  assert.equal(homeFor("COMMERCIAL", "SHOP_FLOOR"), "/office/commercial");
   assert.equal(homeFor("ROBO", "SHOP_FLOOR"), "/robo");
 });
 
@@ -81,7 +81,9 @@ test("a role home is always a page that role can actually open", () => {
   // "Go to my start page" button on the refusal page led back to the refusal
   // page, for the one role least able to work around it.
   assert.equal(homeFor("SALES", "OFFICE"), "/inventory");
-  assert.equal(homeFor("COMMERCIAL", "OFFICE"), "/inventory");
+  // COMMERCIAL lands on its own module since 2026-09-06 (scripts/0076); its
+  // cap allows /office/** so the page is reachable from either branch.
+  assert.equal(homeFor("COMMERCIAL", "OFFICE"), "/office/commercial");
   assert.equal(homeFor("SALES", "SHOP_FLOOR"), "/inventory");
   // ...but the INTERNATIONAL_SALES BRANCH still wins over the role, because
   // middleware routes that branch by its own block and returns before the role
@@ -162,7 +164,7 @@ test("every role/branch pair that EXISTS lands on a page it can open", () => {
   const REAL: [string, string, string][] = [
     ["ADMIN", "SHOP_FLOOR", "/"],
     ["CHROMIA", "SHOP_FLOOR", "/chromia"],
-    ["COMMERCIAL", "OFFICE", "/inventory"],
+    ["COMMERCIAL", "OFFICE", "/office/commercial"],   // its own module since 2026-09-06
     ["FINANCE", "OFFICE", "/office"],
     ["INCHARGE", "SHOP_FLOOR", "/"],
     ["INCHARGE", "FABRICATION", "/fab/supervisor/slabs"],

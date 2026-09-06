@@ -120,6 +120,8 @@ test("a nested nav row still lights its parent unless the parent says exact", ()
                          // Floor against SHOP_PATHS instead. Also wrong, and in
                          // the other direction: that arm is a raw startsWith, so
                          // /slab-intake lights Shop Floor via "/slab".
+    "/office/commercial", // exact — the Commercial module's Overview row sits
+                         // above eight /office/commercial/* rows (scripts/0076).
     "/report",           // exact
     "/robo",             // exact
     "/sales",            // special-cased alongside "/" in NavLink: matched exactly

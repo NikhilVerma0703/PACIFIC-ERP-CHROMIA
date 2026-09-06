@@ -79,7 +79,15 @@ export function storeMayVisit(p: string): boolean {
     p.startsWith("/tables") ||
     p.startsWith("/consumables") ||
     p === "/office/batch-verify" ||
-    p.startsWith("/office/batch-verify/")
+    p.startsWith("/office/batch-verify/") ||
+    // The Commercial module's dispatch check: the store incharge stands in for
+    // the dispatch team until that team has a role of its own (owner, 2026-09-05:
+    // a separate team physically checks each slab is fit to go). Exact-or-subpath
+    // like batch-verify above; the rest of /office/commercial stays closed to
+    // this role, and lib/commercial/access-rules.ts is the rule both edge gates
+    // and the route gate share.
+    p === "/office/commercial/dispatch-check" ||
+    p.startsWith("/office/commercial/dispatch-check/")
   );
 }
 
@@ -217,7 +225,11 @@ export function homeFor(role: string, branch: string): string {
   // but only on the OFFICE branch (mw refuses /inventory to any other), which
   // is why SALES/COMMERCIAL on the shop floor has no reachable page at all.
   // That is a configuration with nowhere to land, not a wrong answer here.
-  if (role === "SALES" || role === "COMMERCIAL") return "/inventory";
+  if (role === "SALES") return "/inventory";
+  // COMMERCIAL's home moved from Finished Goods to its own module on 2026-09-06
+  // (scripts/0076). Its cap allows /office/** and /api/**, so this is a page it
+  // can open on every branch; the module's layout gate decides the rest.
+  if (role === "COMMERCIAL") return "/office/commercial";
   // Before branch OFFICE: this role's cap allows "/" and refuses /office, so
   // letting the branch answer would hand it a page it cannot open. MAINTENANCE
   // is SHOP_FLOOR today - this is here so a mis-set branch in Users & Roles is

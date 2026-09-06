@@ -28,7 +28,9 @@ export async function authenticate(
       // bounce it to /inventory means the router never initiated that hop, so the client
       // still reports "/" as the path — which is what highlighted the wrong nav tab on
       // the Finished Goods page. Land them on the real route in the first place.
-      redirectTo = "/inventory";
+      // Since 2026-09-06 the Commercial module (/office/commercial) is their
+      // start page, and Finished Goods is one row in its nav.
+      redirectTo = "/office/commercial";
     }
   } catch { /* non-critical */ }
   try {

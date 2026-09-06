@@ -14,7 +14,14 @@ const ICON = {
   tables: "M4 5h16v14H4zM4 10h16M10 5v14",
   report: "M7 3h7l5 5v13H7zM14 3v5h5M9 13h6M9 17h6",
   slab: "M4 7l8-4 8 4-8 4-8-4zm0 5l8 4 8-4M4 17l8 4 8-4",
+  commercial: "M3 3h18v4H3zM3 7v13h18V7M9 12h6",
 };
+
+// The Commercial module. One card, added to whichever list the role sees —
+// COMMERCIAL and ADMIN only, because the module's block in middleware.ts
+// refuses every other office role and a card that leads to /no-access is a
+// promise the app does not keep.
+const COMMERCIAL_CARD = { href: "/office/commercial", label: "Commercial", desc: "Enquiries, orders, stock holds, PI, packing, dispatch check, invoices", icon: ICON.commercial };
 
 const CARDS = [
   { href: "/", label: "Overview", desc: "Production summary — batches, slabs, discrepancies", icon: ICON.overview },
@@ -42,7 +49,10 @@ const COMMERCIAL_CARDS = [
 
 export default async function OfficeShopFloor() {
   if ((await currentBranchName()) !== "OFFICE") redirect("/");
-  const cards = (await currentRole()) === "COMMERCIAL" ? COMMERCIAL_CARDS : CARDS;
+  const role = await currentRole();
+  const cards = role === "COMMERCIAL" ? [COMMERCIAL_CARD, ...COMMERCIAL_CARDS]
+    : role === "ADMIN" ? [COMMERCIAL_CARD, ...CARDS]
+    : CARDS;
   return (
     <Shell>
       <div className="mb-6">

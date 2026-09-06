@@ -18,6 +18,13 @@ import { ROLE_CONTEXT_COOKIE, activeContextOf, type GrantedContexts } from "./li
 // the SAME rule the page gate runs — the carve-out below and the gate cannot
 // drift apart.
 import { canUseSlabIntake } from "./lib/inventory/intakeAccess.ts";
+// The Commercial module's audience — pure and import-free like the two above,
+// so it is edge-safe, and the SAME rule the route gate runs (lib/commercial/
+// access.ts imports it). This block is what keeps the uncapped office roles
+// (FINANCE, ACCOUNTS) and the shop-floor INCHARGE/LINE_MANAGER out of
+// /office/commercial: middleware caps work by exception, and without an
+// explicit block a path nobody named is a path everybody reaches.
+import { maySeeCommercialModule } from "./lib/commercial/access-rules.ts";
 
 // Edge-safe middleware (Prisma-free config). IMPORTANT: with the auth(fn)
 // wrapper form, Auth.js does NOT auto-redirect — ALL gating is explicit here.
@@ -247,6 +254,22 @@ export default auth((req) => {
   if (p.startsWith("/office/finance") || p.startsWith("/api/office/finance")) {
     const finOk = isAdmin || (branch === "OFFICE" && (role === "FINANCE" || role === "ACCOUNTS"));
     if (!finOk) {
+      return denied(p, nextUrl, role ?? "", branch ?? "");
+    }
+  }
+
+  // ---- Commercial module: enquiries, internal sales orders, stock holds,
+  // production requests, proforma invoices, packing lists, the dispatch check,
+  // invoices and delivery challans. Role.COMMERCIAL and admins reach all of it;
+  // the dispatch team (STORE / LINE_MANAGER until it has a role of its own)
+  // reaches ONLY the dispatch-check paths, exact-or-subpath. Before the branch
+  // blocks for the same reason as the finance block: Commercial's own `/office`
+  // allowance would otherwise be the only thing deciding, and it says nothing
+  // about FINANCE, ACCOUNTS, INCHARGE or LINE_MANAGER, who are uncapped and
+  // would fall straight through. This is the coarse gate; WHICH ACTION a
+  // request is allowed is decided in the route by commercialGate(action). ----
+  if (p.startsWith("/office/commercial") || p.startsWith("/api/office/commercial")) {
+    if (!maySeeCommercialModule({ role, branch }, p)) {
       return denied(p, nextUrl, role ?? "", branch ?? "");
     }
   }

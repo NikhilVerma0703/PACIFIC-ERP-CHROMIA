@@ -3362,6 +3362,13 @@ model SalesClient {
   proformaInvoices ProformaInvoice[]
   orders           SalesOrder[]
 
+  /// Commercial module (scripts/0076): the customer master is shared by FK.
+  /// Relation fields only — nothing here changes the sales_clients table.
+  commercialExt       CommercialClientExt?
+  commercialEnquiries CommercialEnquiry[]
+  commercialOrders    CommercialOrder[]
+  commercialChallans  CommercialDeliveryChallan[]
+
   @@map("sales_clients")
 }
 
@@ -6162,4 +6169,671 @@ model SamplingDispatchLine {
   /// The size_id foreign key, for the same reason as on sampling_intake.
   @@index([sizeId])
   @@map("sampling_dispatch_line")
+}
+
+// ============================================================================
+// COMMERCIAL MODULE — enquiry → internal sales order → 5-day stock hold →
+// production request → proforma → packing list → dispatch check → invoice /
+// delivery challan / export document set. Built as its own module (owner,
+// 2026-09-05) because the ported International Sales module matched no stage
+// exactly; only the client master (sales_clients) is shared. Money and
+// quantities are NUMERIC; slab_number is Float to match fg_finished_slab and is
+// a snapshot, not a foreign key. Attribution columns are plain users.id.
+// Applied to Neon via scripts/0076-commercial-module.sql (NOT db push).
+// Hand-maintained; NOT touched by gen-schema.py.
+// ============================================================================
+
+enum CommercialEnquiryStatus {
+  NEW
+  QUOTED
+  ORDERED
+  LOST
+  CLOSED
+
+  @@map("commercial_enquiry_status")
+}
+
+enum CommercialOrderKind {
+  DOMESTIC
+  EXPORT
+
+  @@map("commercial_order_kind")
+}
+
+/// A pipeline with a timestamp per stage and NO gate between stages: the order
+/// of steps is deliberately undecided (see lib/commercial/stages.ts).
+enum CommercialOrderStatus {
+  DRAFT
+  CONFIRMED
+  STOCK_CHECKED
+  PI_ISSUED
+  PACKING
+  DISPATCH_CHECK
+  READY
+  INVOICED
+  DISPATCHED
+  CLOSED
+  CANCELLED
+
+  @@map("commercial_order_status")
+}
+
+enum CommercialPoEvidence {
+  PO
+  PI_ACKNOWLEDGED
+  EMAIL
+
+  @@map("commercial_po_evidence")
+}
+
+enum CommercialHoldStatus {
+  ACTIVE
+  RELEASED
+  EXPIRED
+  CONSUMED
+
+  @@map("commercial_hold_status")
+}
+
+enum CommercialProductionStatus {
+  QUEUED
+  SCHEDULED
+  IN_PRODUCTION
+  PRODUCED
+  CANCELLED
+
+  @@map("commercial_production_status")
+}
+
+enum CommercialProformaStatus {
+  DRAFT
+  ISSUED
+  ACCEPTED
+  SUPERSEDED
+  CANCELLED
+
+  @@map("commercial_proforma_status")
+}
+
+enum CommercialPackingStatus {
+  DRAFT
+  SUBMITTED
+  VERIFIED
+  REJECTED
+  FINAL
+  DISPATCHED
+
+  @@map("commercial_packing_status")
+}
+
+enum CommercialFitStatus {
+  PENDING
+  FIT
+  UNFIT
+
+  @@map("commercial_fit_status")
+}
+
+enum CommercialInvoiceKind {
+  DTA
+  EXPORT
+
+  @@map("commercial_invoice_kind")
+}
+
+enum CommercialDocStatus {
+  DRAFT
+  ISSUED
+  CANCELLED
+
+  @@map("commercial_doc_status")
+}
+
+/// Race-safe document counters — one row per key, advanced with
+/// INSERT … ON CONFLICT DO UPDATE … RETURNING (lib/commercial/sequence.ts).
+model CommercialSequence {
+  key       String   @id
+  nextValue BigInt   @default(1) @map("next_value")
+  updatedAt DateTime @default(now()) @map("updated_at")
+
+  @@map("commercial_sequence")
+}
+
+/// One JSON row ('global') of overrides over lib/commercial/settings-defaults.ts.
+model CommercialSetting {
+  id          String   @id @default("global")
+  data        Json     @default("{}")
+  updatedById String?  @map("updated_by_id") // -> users.id (no hard FK)
+  updatedAt   DateTime @default(now()) @map("updated_at")
+
+  @@map("commercial_setting")
+}
+
+/// What a tax invoice and the export workbook need about a customer that
+/// sales_clients does not carry: GSTIN, PAN, state code, customer code and
+/// the printed address blocks.
+model CommercialClientExt {
+  clientId        String      @id @map("client_id")
+  client          SalesClient @relation(fields: [clientId], references: [id])
+  customerCode    String?     @map("customer_code")
+  gstin           String?
+  pan             String?
+  stateCode       String?     @map("state_code")
+  billingAddress  Json?       @map("billing_address")
+  shippingAddress Json?       @map("shipping_address")
+  notifyParty     Json?       @map("notify_party")
+  defaultIncoterm String?     @map("default_incoterm")
+  defaultCurrency String?     @map("default_currency")
+  notes           String?
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+
+  @@map("commercial_client_ext")
+}
+
+/// An enquiry, logged by Commercial from the email that brought it.
+model CommercialEnquiry {
+  id           String                  @id @default(cuid())
+  number       String                  @unique
+  clientId     String?                 @map("client_id")
+  client       SalesClient?            @relation(fields: [clientId], references: [id])
+  prospectName String?                 @map("prospect_name")
+  contactName  String?                 @map("contact_name")
+  contactEmail String?                 @map("contact_email")
+  contactPhone String?                 @map("contact_phone")
+  receivedAt   DateTime                @map("received_at")
+  source       String                  @default("EMAIL")
+  subject      String?
+  body         String?
+  status       CommercialEnquiryStatus @default(NEW)
+  assignedToId String?                 @map("assigned_to_id") // -> users.id (no hard FK)
+  /// The order this became, once converted (plain id; the order also carries enquiryId).
+  orderId      String?                 @map("order_id")
+  lostReason   String?                 @map("lost_reason")
+  createdById  String?                 @map("created_by_id") // -> users.id (no hard FK)
+  createdAt    DateTime                @default(now()) @map("created_at")
+  updatedAt    DateTime                @updatedAt @map("updated_at")
+
+  items              CommercialEnquiryItem[]
+  orders             CommercialOrder[]
+  holds              CommercialStockHold[]
+  productionRequests CommercialProductionRequest[]
+
+  /// The enquiries list: open first, newest first.
+  @@index([status, receivedAt])
+  /// Every enquiry from this client.
+  @@index([clientId])
+  @@map("commercial_enquiry")
+}
+
+model CommercialEnquiryItem {
+  id          String            @id @default(cuid())
+  enquiryId   String            @map("enquiry_id")
+  enquiry     CommercialEnquiry @relation(fields: [enquiryId], references: [id], onDelete: Cascade)
+  lineNo      Int               @default(1) @map("line_no")
+  design      String?
+  customerSku String?           @map("customer_sku")
+  thickness   String?
+  finish      String?
+  qtySlabs    Int?              @map("qty_slabs")
+  qtySqft     Decimal?          @map("qty_sqft") @db.Decimal(12, 3)
+  notes       String?
+  createdAt   DateTime          @default(now()) @map("created_at")
+
+  @@index([enquiryId])
+  @@map("commercial_enquiry_item")
+}
+
+/// The internal sales order. The PI is its printed form; its number is the
+/// order number (SAL-ORD/26-27/01642 by default, overridable).
+model CommercialOrder {
+  id                    String                 @id @default(cuid())
+  number                String                 @unique
+  kind                  CommercialOrderKind
+  status                CommercialOrderStatus  @default(DRAFT)
+  clientId              String                 @map("client_id")
+  client                SalesClient            @relation(fields: [clientId], references: [id])
+  enquiryId             String?                @map("enquiry_id")
+  enquiry               CommercialEnquiry?     @relation(fields: [enquiryId], references: [id])
+  customerPoNumber      String?                @map("customer_po_number")
+  customerPoDate        DateTime?              @map("customer_po_date") @db.Date
+  poEvidence            CommercialPoEvidence?  @map("po_evidence")
+  currency              String                 @default("USD")
+  exchangeRate          Decimal?               @map("exchange_rate") @db.Decimal(12, 4)
+  incoterm              String?
+  deliveryTerms         String?                @map("delivery_terms")
+  paymentTerms          String?                @map("payment_terms")
+  paymentMode           String?                @map("payment_mode")
+  billTo                Json?                  @map("bill_to")
+  consignee             Json?
+  notifyParty           Json?                  @map("notify_party")
+  buyerIfNotConsignee   Json?                  @map("buyer_if_not_consignee")
+  preCarriageBy         String?                @map("pre_carriage_by")
+  placeOfReceipt        String?                @map("place_of_receipt")
+  portOfLoading         String?                @map("port_of_loading")
+  portOfDischarge       String?                @map("port_of_discharge")
+  finalDestination      String?                @map("final_destination")
+  countryOfOrigin       String                 @default("India") @map("country_of_origin")
+  countryOfDestination  String?                @map("country_of_destination")
+  deliverySchedule      String?                @map("delivery_schedule")
+  specialPacking        String?                @map("special_packing")
+  forwarderDetails      String?                @map("forwarder_details")
+  receiverDetails       String?                @map("receiver_details")
+  customerContact       String?                @map("customer_contact")
+  /// The SOP sheet's points: [{ key, no, label, value, ok }] (lib/commercial/checklist.ts).
+  checklist             Json                   @default("[]")
+  checkedById           String?                @map("checked_by_id") // -> users.id (no hard FK)
+  checkedByName         String?                @map("checked_by_name")
+  checkedAt             DateTime?              @map("checked_at")
+  approvedById          String?                @map("approved_by_id") // -> users.id (no hard FK)
+  approvedByName        String?                @map("approved_by_name")
+  approvedAt            DateTime?              @map("approved_at")
+  notes                 String?
+  confirmedAt           DateTime?              @map("confirmed_at")
+  stockCheckedAt        DateTime?              @map("stock_checked_at")
+  piIssuedAt            DateTime?              @map("pi_issued_at")
+  packingAt             DateTime?              @map("packing_at")
+  dispatchCheckedAt     DateTime?              @map("dispatch_checked_at")
+  readyAt               DateTime?              @map("ready_at")
+  invoicedAt            DateTime?              @map("invoiced_at")
+  dispatchedAt          DateTime?              @map("dispatched_at")
+  closedAt              DateTime?              @map("closed_at")
+  cancelledAt           DateTime?              @map("cancelled_at")
+  cancelReason          String?                @map("cancel_reason")
+  createdById           String?                @map("created_by_id") // -> users.id (no hard FK)
+  createdByName         String?                @map("created_by_name")
+  createdAt             DateTime               @default(now()) @map("created_at")
+  updatedAt             DateTime               @updatedAt @map("updated_at")
+
+  items              CommercialOrderItem[]
+  events             CommercialOrderEvent[]
+  holds              CommercialStockHold[]
+  productionRequests CommercialProductionRequest[]
+  proformas          CommercialProforma[]
+  packingLists       CommercialPackingList[]
+  invoices           CommercialInvoice[]
+  challans           CommercialDeliveryChallan[]
+
+  /// The orders board: by stage, newest first.
+  @@index([status, createdAt])
+  /// Every order of this client.
+  @@index([clientId])
+  @@map("commercial_order")
+}
+
+model CommercialOrderItem {
+  id          String          @id @default(cuid())
+  orderId     String          @map("order_id")
+  order       CommercialOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  lineNo      Int             @default(1) @map("line_no")
+  /// Our design name (canonical finished-goods name).
+  design      String?
+  /// The customer's code, e.g. VGWT10301A.
+  customerSku String?         @map("customer_sku")
+  description String?
+  /// Canonical '2 cm' / '3 cm' (lib/thickness.ts canonThickness).
+  thickness   String?
+  finish      String?
+  sizeLabel   String?         @map("size_label")
+  gradeLabel  String?         @map("grade_label")
+  qtySlabs    Int?            @map("qty_slabs")
+  qty         Decimal?        @db.Decimal(14, 3)
+  uom         String          @default("SQFT")
+  rate        Decimal?        @db.Decimal(14, 4)
+  amount      Decimal?        @db.Decimal(16, 3)
+  hsn         String          @default("68101990")
+  isSample    Boolean         @default(false) @map("is_sample")
+  notes       String?
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+
+  @@index([orderId])
+  @@map("commercial_order_item")
+}
+
+/// The order's log: every stage move, hold, request, PI, packing list, invoice.
+model CommercialOrderEvent {
+  id      String          @id @default(cuid())
+  orderId String          @map("order_id")
+  order   CommercialOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  kind    String
+  note    String?
+  payload Json?
+  byId    String?         @map("by_id") // -> users.id (no hard FK)
+  byName  String?         @map("by_name")
+  at      DateTime        @default(now())
+
+  @@index([orderId, at])
+  @@map("commercial_order_event")
+}
+
+/// The module's record of a hold. The hold itself is fg_finished_slab.status
+/// RESERVED with reserved_for_pi = reference; this row says who placed it,
+/// against what, until when, and which slabs — and survives their release.
+model CommercialStockHold {
+  id            String               @id @default(cuid())
+  orderId       String?              @map("order_id")
+  order         CommercialOrder?     @relation(fields: [orderId], references: [id])
+  enquiryId     String?              @map("enquiry_id")
+  enquiry       CommercialEnquiry?   @relation(fields: [enquiryId], references: [id])
+  /// What is stamped on the slabs (order / PI / enquiry number).
+  reference     String
+  customer      String?
+  status        CommercialHoldStatus @default(ACTIVE)
+  placedById    String?              @map("placed_by_id") // -> users.id (no hard FK)
+  placedByName  String?              @map("placed_by_name")
+  placedAt      DateTime             @default(now()) @map("placed_at")
+  expiresAt     DateTime             @map("expires_at")
+  releasedAt    DateTime?            @map("released_at")
+  releasedById  String?              @map("released_by_id") // -> users.id (no hard FK)
+  releaseReason String?              @map("release_reason")
+  notes         String?
+  createdAt     DateTime             @default(now()) @map("created_at")
+  updatedAt     DateTime             @updatedAt @map("updated_at")
+
+  slabs CommercialStockHoldSlab[]
+
+  /// "What expires soon" on the dashboard.
+  @@index([status, expiresAt])
+  @@index([orderId])
+  @@index([reference])
+  @@map("commercial_stock_hold")
+}
+
+model CommercialStockHoldSlab {
+  id          String              @id @default(cuid())
+  holdId      String              @map("hold_id")
+  hold        CommercialStockHold @relation(fields: [holdId], references: [id], onDelete: Cascade)
+  /// = fg_finished_slab.slab_number — a snapshot, not a foreign key.
+  slabNumber  Float               @map("slab_number")
+  design      String?
+  thickness   String?
+  batchKey    String?             @map("batch_key")
+  batchNumber String?             @map("batch_number")
+  grade       String?
+  lengthIn    Float?              @map("length_in")
+  widthIn     Float?              @map("width_in")
+  sqft        Decimal?            @db.Decimal(10, 3)
+  releasedAt  DateTime?           @map("released_at")
+  packedAt    DateTime?           @map("packed_at")
+  createdAt   DateTime            @default(now()) @map("created_at")
+
+  @@unique([holdId, slabNumber])
+  /// Which hold is this slab on, from the slab side.
+  @@index([slabNumber])
+  @@map("commercial_stock_hold_slab")
+}
+
+/// One (design, thickness) shortfall in the production planning queue.
+/// priority is the order the planner drags; lower runs first.
+model CommercialProductionRequest {
+  id                String                     @id @default(cuid())
+  orderId           String?                    @map("order_id")
+  order             CommercialOrder?           @relation(fields: [orderId], references: [id])
+  orderItemId       String?                    @map("order_item_id")
+  enquiryId         String?                    @map("enquiry_id")
+  enquiry           CommercialEnquiry?         @relation(fields: [enquiryId], references: [id])
+  design            String
+  thickness         String
+  finish            String?
+  qtyRequired       Int                        @map("qty_required")
+  qtyAvailable      Int                        @default(0) @map("qty_available")
+  qtyShort          Int                        @map("qty_short")
+  priority          Int
+  status            CommercialProductionStatus @default(QUEUED)
+  cleaningNote      String?                    @map("cleaning_note")
+  plannedBatch      String?                    @map("planned_batch")
+  notes             String?
+  raisedById        String?                    @map("raised_by_id") // -> users.id (no hard FK)
+  raisedByName      String?                    @map("raised_by_name")
+  raisedAt          DateTime                   @default(now()) @map("raised_at")
+  scheduledAt       DateTime?                  @map("scheduled_at")
+  startedAt         DateTime?                  @map("started_at")
+  producedAt        DateTime?                  @map("produced_at")
+  producedById      String?                    @map("produced_by_id") // -> users.id (no hard FK)
+  producedBatchKeys String[]                   @default([]) @map("produced_batch_keys")
+  notifiedAt        DateTime?                  @map("notified_at")
+  notifiedVia       String?                    @map("notified_via")
+  cancelledAt       DateTime?                  @map("cancelled_at")
+  createdAt         DateTime                   @default(now()) @map("created_at")
+  updatedAt         DateTime                   @updatedAt @map("updated_at")
+
+  /// The planning queue itself.
+  @@index([status, priority])
+  @@index([orderId])
+  @@map("commercial_production_request")
+}
+
+/// A revision-stamped snapshot of the order at the moment the PI was issued.
+/// The PDF renders from snapshot, never from the live order.
+model CommercialProforma {
+  id           String                   @id @default(cuid())
+  orderId      String                   @map("order_id")
+  order        CommercialOrder          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  number       String
+  revision     Int                      @default(0)
+  status       CommercialProformaStatus @default(DRAFT)
+  issuedAt     DateTime?                @map("issued_at")
+  validUntil   DateTime?                @map("valid_until") @db.Date
+  acceptedAt   DateTime?                @map("accepted_at")
+  supersededAt DateTime?                @map("superseded_at")
+  /// A cancellation is an audit fact; it used to be appended to `notes`, the
+  /// column a human types remarks into. Added by scripts/0077.
+  cancelledAt  DateTime?                @map("cancelled_at")
+  cancelReason String?                  @map("cancel_reason")
+  /// lib/commercial/types.ts ProformaSnapshot.
+  snapshot     Json
+  currency     String                   @default("USD")
+  totalAmount  Decimal?                 @map("total_amount") @db.Decimal(16, 3)
+  notes        String?
+  createdById  String?                  @map("created_by_id") // -> users.id (no hard FK)
+  createdAt    DateTime                 @default(now()) @map("created_at")
+  updatedAt    DateTime                 @updatedAt @map("updated_at")
+
+  @@unique([number, revision])
+  @@index([orderId])
+  @@map("commercial_proforma")
+}
+
+model CommercialPackingList {
+  id               String                  @id @default(cuid())
+  orderId          String                  @map("order_id")
+  order            CommercialOrder         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  number           String                  @unique
+  status           CommercialPackingStatus @default(DRAFT)
+  containerNo      String?                 @map("container_no")
+  sealNo           String?                 @map("seal_no")
+  linerOtlNo       String?                 @map("liner_otl_no")
+  vehicleNo        String?                 @map("vehicle_no")
+  /// Issued by the shipping line and by customs AFTER the container leaves, so
+  /// they are typed in later; the packing list prints a box for each and could
+  /// only ever print them blank. Added by scripts/0077.
+  blNo             String?                 @map("bl_no")
+  sbNo             String?                 @map("sb_no")
+  grossWeightKg    Decimal?                @map("gross_weight_kg") @db.Decimal(12, 2)
+  netWeightKg      Decimal?                @map("net_weight_kg") @db.Decimal(12, 2)
+  /// e.g. "07 Wooden Crate(S) + 08 Sample Box".
+  packagesSummary  String?                 @map("packages_summary")
+  notes            String?
+  createdById      String?                 @map("created_by_id") // -> users.id (no hard FK)
+  createdByName    String?                 @map("created_by_name")
+  submittedAt      DateTime?               @map("submitted_at")
+  submittedById    String?                 @map("submitted_by_id") // -> users.id (no hard FK)
+  verifiedAt       DateTime?               @map("verified_at")
+  verifiedById     String?                 @map("verified_by_id") // -> users.id (no hard FK)
+  verifiedByName   String?                 @map("verified_by_name")
+  verificationNote String?                 @map("verification_note")
+  finalisedAt      DateTime?               @map("finalised_at")
+  dispatchedAt     DateTime?               @map("dispatched_at")
+  createdAt        DateTime                @default(now()) @map("created_at")
+  updatedAt        DateTime                @updatedAt @map("updated_at")
+
+  crates   CommercialCrate[]
+  slabs    CommercialPackedSlab[]
+  invoices CommercialInvoice[]
+
+  @@index([orderId])
+  /// The dispatch team's queue: SUBMITTED, oldest first.
+  @@index([status, submittedAt])
+  @@map("commercial_packing_list")
+}
+
+model CommercialCrate {
+  id            String                @id @default(cuid())
+  packingListId String                @map("packing_list_id")
+  packingList   CommercialPackingList @relation(fields: [packingListId], references: [id], onDelete: Cascade)
+  crateNo       Int                   @map("crate_no")
+  /// Wooden Crate / Sample Box / Bundle.
+  kind          String                @default("Wooden Crate")
+  grossKg       Decimal?              @map("gross_kg") @db.Decimal(10, 2)
+  netKg         Decimal?              @map("net_kg") @db.Decimal(10, 2)
+  lengthCm      Decimal?              @map("length_cm") @db.Decimal(8, 1)
+  widthCm       Decimal?              @map("width_cm") @db.Decimal(8, 1)
+  heightCm      Decimal?              @map("height_cm") @db.Decimal(8, 1)
+  remarks       String?
+  createdAt     DateTime              @default(now()) @map("created_at")
+
+  slabs CommercialPackedSlab[]
+
+  @@unique([packingListId, crateNo])
+  @@map("commercial_crate")
+}
+
+/// One slab on a packing list: our record and, when the customer wants their
+/// own numbering, theirs beside it.
+model CommercialPackedSlab {
+  id              String                @id @default(cuid())
+  packingListId   String                @map("packing_list_id")
+  packingList     CommercialPackingList @relation(fields: [packingListId], references: [id], onDelete: Cascade)
+  crateId         String?               @map("crate_id")
+  crate           CommercialCrate?      @relation(fields: [crateId], references: [id])
+  /// Ours (= fg_finished_slab.slab_number; snapshot, no FK).
+  slabNumber      Float                 @map("slab_number")
+  customerSlabNo  String?               @map("customer_slab_no")
+  customerBatchNo String?               @map("customer_batch_no")
+  design          String?
+  customerSku     String?               @map("customer_sku")
+  thickness       String?
+  batchKey        String?               @map("batch_key")
+  batchNumber     String?               @map("batch_number")
+  grade           String?
+  lengthCm        Decimal?              @map("length_cm") @db.Decimal(8, 1)
+  widthCm         Decimal?              @map("width_cm") @db.Decimal(8, 1)
+  sqm             Decimal?              @db.Decimal(10, 4)
+  sqft            Decimal?              @db.Decimal(10, 3)
+  fit             CommercialFitStatus   @default(PENDING)
+  unfitReason     String?               @map("unfit_reason")
+  checkedById     String?               @map("checked_by_id") // -> users.id (no hard FK)
+  checkedAt       DateTime?             @map("checked_at")
+  sortOrder       Int                   @default(0) @map("sort_order")
+  createdAt       DateTime              @default(now()) @map("created_at")
+  updatedAt       DateTime              @updatedAt @map("updated_at")
+
+  @@unique([packingListId, slabNumber])
+  @@index([slabNumber])
+  @@index([crateId])
+  @@map("commercial_packed_slab")
+}
+
+/// A DTA (domestic, GST) or export invoice, rendered from its snapshot.
+model CommercialInvoice {
+  id            String                 @id @default(cuid())
+  orderId       String                 @map("order_id")
+  order         CommercialOrder        @relation(fields: [orderId], references: [id])
+  packingListId String?                @map("packing_list_id")
+  packingList   CommercialPackingList? @relation(fields: [packingListId], references: [id])
+  kind          CommercialInvoiceKind
+  /// PESPL/2780 (export) · PESPL/0137/26-27 (DTA).
+  number        String                 @unique
+  invoiceDate   DateTime               @map("invoice_date") @db.Date
+  status        CommercialDocStatus    @default(DRAFT)
+  currency      String
+  exchangeRate  Decimal?               @map("exchange_rate") @db.Decimal(12, 4)
+  /// lib/commercial/types.ts InvoiceSnapshot.
+  snapshot      Json
+  subtotal      Decimal?               @db.Decimal(16, 3)
+  /// IGST / CGST_SGST / NONE.
+  taxType       String?                @map("tax_type")
+  taxRate       Decimal?               @map("tax_rate") @db.Decimal(6, 2)
+  igst          Decimal?               @db.Decimal(16, 2)
+  cgst          Decimal?               @db.Decimal(16, 2)
+  sgst          Decimal?               @db.Decimal(16, 2)
+  roundOff      Decimal?               @map("round_off") @db.Decimal(8, 2)
+  /// THREE decimals, like subtotal: the reference PI's own figure is USD
+  /// 17,324.657, and at scale 2 the register read .66 while the PDF and the
+  /// words said .657 — two figures for one document. Widened by scripts/0077.
+  grandTotal    Decimal?               @map("grand_total") @db.Decimal(16, 3)
+  amountInWords String?                @map("amount_in_words")
+  vehicleNo     String?                @map("vehicle_no")
+  transporter   String?
+  lrNo          String?                @map("lr_no")
+  containerNo   String?                @map("container_no")
+  sealNo        String?                @map("seal_no")
+  ewayBillNo    String?                @map("eway_bill_no")
+  notes         String?
+  createdById   String?                @map("created_by_id") // -> users.id (no hard FK)
+  issuedAt      DateTime?              @map("issued_at")
+  cancelledAt   DateTime?              @map("cancelled_at")
+  cancelReason  String?                @map("cancel_reason")
+  createdAt     DateTime               @default(now()) @map("created_at")
+  updatedAt     DateTime               @updatedAt @map("updated_at")
+
+  exportDocSet CommercialExportDocSet?
+
+  @@index([orderId])
+  /// The invoice register: by kind and date.
+  @@index([kind, invoiceDate])
+  @@map("commercial_invoice")
+}
+
+/// Samples, display stands, goods to the sister company: a movement, not a sale.
+model CommercialDeliveryChallan {
+  id                String              @id @default(cuid())
+  /// PESPL/DC/20/26.
+  number            String              @unique
+  challanDate       DateTime            @map("challan_date") @db.Date
+  orderId           String?             @map("order_id")
+  order             CommercialOrder?    @relation(fields: [orderId], references: [id])
+  consigneeClientId String?             @map("consignee_client_id")
+  consigneeClient   SalesClient?        @relation(fields: [consigneeClientId], references: [id])
+  consigneeName     String              @map("consignee_name")
+  consigneeAddress  String?             @map("consignee_address")
+  consigneeGstin    String?             @map("consignee_gstin")
+  /// 'Verbal' is a real value here.
+  poRef             String?             @map("po_ref")
+  commodity         String?
+  purpose           String?
+  /// [{ description, qty, unit, sqft, rate, amount, hsn }] (lib/commercial/types.ts ChallanItem).
+  items             Json                @default("[]")
+  totalAmount       Decimal?            @map("total_amount") @db.Decimal(14, 2)
+  amountInWords     String?             @map("amount_in_words")
+  lorryNo           String?             @map("lorry_no")
+  notes             String?
+  status            CommercialDocStatus @default(DRAFT)
+  createdById       String?             @map("created_by_id") // -> users.id (no hard FK)
+  issuedAt          DateTime?           @map("issued_at")
+  cancelledAt       DateTime?           @map("cancelled_at")
+  /// Beside cancelledAt for the same reason the invoice has one. scripts/0077.
+  cancelReason      String?             @map("cancel_reason")
+  createdAt         DateTime            @default(now()) @map("created_at")
+  updatedAt         DateTime            @updatedAt @map("updated_at")
+
+  @@index([challanDate])
+  @@map("commercial_delivery_challan")
+}
+
+/// The root variables the export workbook is generated from, so it can be
+/// regenerated and edited later.
+model CommercialExportDocSet {
+  id              String            @id @default(cuid())
+  invoiceId       String            @unique @map("invoice_id")
+  invoice         CommercialInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  rootVariables   Json              @map("root_variables")
+  templateVersion String?           @map("template_version")
+  generatedAt     DateTime?         @map("generated_at")
+  generatedById   String?           @map("generated_by_id") // -> users.id (no hard FK)
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  @@map("commercial_export_doc_set")
 }
