@@ -3,6 +3,10 @@ import { prisma } from "@/lib/prisma";
 import { delayProductionDateOf, productionDateOf } from "@/lib/robo/productionDate";
 import { roboGate } from "@/lib/rbac";
 
+// Live aggregation, never cached — always computed fresh per request.
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 function pad(n: number): string { return String(n).padStart(2, "0"); }
 
 function toMins(t: string): number {

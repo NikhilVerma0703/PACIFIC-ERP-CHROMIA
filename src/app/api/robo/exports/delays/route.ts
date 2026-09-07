@@ -5,6 +5,7 @@ import { resolveBatchRecipeIds } from "@/lib/robo/batchFilter";
 import { fmtDurationLong, machineLabel } from "@/lib/robo/utils";
 import { delayGrandTotal, delayTotalsByDate } from "@/lib/robo/delayTotals";
 import { delayProductionDateOf, delayProductionDateSelectWhere } from "@/lib/robo/productionDate";
+import { roboThicknessOf } from "@/lib/robo/thickness";
 import { exportScopeTag } from "@/lib/robo/exportScope";
 import { styleRoboSheet } from "@/lib/robo/exportStyle";
 import { byDateRowRole, delayRowRole } from "@/lib/robo/exportRowRoles";
@@ -95,7 +96,7 @@ export async function GET(req: NextRequest) {
       "S.No.":           i + 1,
       "Production Date": String(dash(delayProductionDateOf(d))),
       "Design Name":     String(dash(d.productionRecord?.batchRecipe?.designName)),
-      "Thickness (cm)":  String(dash(d.productionRecord?.batchRecipe?.thickness)),
+      "Thickness (cm)":  String(dash(roboThicknessOf(d.productionRecord))),
       "Batch No.":       String(dash(d.productionRecord?.batchRecipe?.batchNo)),
       "Slab No.":        String(dash(d.productionRecord?.slabNumber)),
       "Delay Code":      d.delayCode.code,

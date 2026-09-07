@@ -23,6 +23,8 @@ import { findDesignPreset, presetFieldsFor } from "@/lib/robo/design-presets";
 import { nextSlabNumber } from "@/lib/robo/nextNumbers";
 import { SETUP_EDIT_WINDOW_DAYS, daysBetween, describeAge, isSetupStale } from "@/lib/robo/setupAge";
 import { productionDateOf } from "@/lib/robo/productionDate";
+import { roboThicknessOf } from "@/lib/robo/thickness";
+import { splitMachineNames, joinMachineNames, firstMachineName } from "@/lib/robo/delayMachines";
 import { SLAB_IN_PROCESSING, formatSlabRemarks, slabStatusClass, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
 
 const MACHINE_ORDER = ["Roycut-1", "Roymix", "Roycut-2", "Roycut-3"];
@@ -47,8 +49,14 @@ interface BatchEntry {
 interface BatchRecipe { id: string; productionDate: string | null; batchNo: string | null; designName: string; thickness: number | null; targetSlabs: number | null; notes: string | null; entries: BatchEntry[] }
 interface ProdRecord {
   id: string; serialNumber: number | null; slabNumber: string;
+  /** Which batch setup this slab was logged against — so Close Batch can count
+   *  a batch's own still-open slabs. Nullable: a slab may have no batch. */
+  batchRecipeId?: string | null;
   /** The slab's own production date, when it has one (a batch past midnight). */
   productionDate?: string | null;
+  /** The slab's own thickness, when it has one (a batch that changed thickness
+   *  mid-run). Falls back to the batch setup — see roboThicknessOf. */
+  thickness?: number | null;
   inTime: string | null; outTime: string | null; roymixCycleTime: number | null;
   roymixBodyWeight: number | null; status: string; remarks: string | null; createdAt: string;
   /** The delays logged against this slab. Present so the Recent slabs table
@@ -59,9 +67,11 @@ interface ActiveShift {
   id: string; shiftNumber: number; date: string; operatorName: string;
   batchRecipes: BatchRecipe[]; productionRecords: ProdRecord[];
 }
-/** A delay already saved against the record being edited — shown read-only. */
+/** A delay already saved against the record being edited. Loaded into an
+ *  editable DelayRow so it can be corrected or removed — delayCodeId drives the
+ *  code picker, machineName may name one Robo or several. */
 interface SavedDelay {
-  id: string; durationMinutes: number;
+  id: string; delayCodeId: string; durationMinutes: number;
   startTime: string | null; endTime: string | null;
   machineName: string | null; remarks: string | null;
   delayCode: { code: string; description: string; category: string } | null;
@@ -73,10 +83,18 @@ interface FullRecord extends ProdRecord {
   batchRecipe: BatchRecipe | null;
   delayLogs: SavedDelay[];
 }
-interface PendingDelay {
-  tempId: number; delayCodeId: string; code: string; description: string; category: string;
-  machineId: string; machineName: string; durationMinutes: number;
-  startTime: string; endTime: string; remarks: string;
+/** One editable delay row. Existing delays carry their DB `id` (so a save
+ *  updates them in place, never duplicates them); a newly added one has none and
+ *  is created. `machineNames` is the set of canonical machine names, because a
+ *  single delay can name more than one Robo. */
+interface DelayRow {
+  key: string;
+  id?: string;
+  delayCodeId: string;
+  machineNames: string[];
+  startTime: string;
+  endTime: string;
+  remarks: string;
 }
 
 /**
@@ -158,8 +176,189 @@ const btnGhost = "rounded-lg border border-gray-300 px-4 py-2 text-sm font-mediu
 type MachineEntry = { programName: string; toolName: string; liquidName: string; powderName: string; rollerHeight: string; targetCycleTime: string };
 const emptyEntry = (): MachineEntry => ({ programName: "", toolName: "", liquidName: "", powderName: "", rollerHeight: "", targetCycleTime: "" });
 
-const emptySlab = () => ({ serialNumber: "", slabNumber: "", productionDate: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" });
-const emptyDelayForm = () => ({ selectedCodeId: "", machineId: "", machineName: "", startTime: "", endTime: "", remarks: "" });
+const emptySlab = () => ({ serialNumber: "", slabNumber: "", productionDate: "", thickness: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" });
+/** Toggle a machine name in a delay's set — add it if absent, drop it if
+ *  present. Order is kept so the first stays first (that is what machineId
+ *  resolves from). */
+const toggleMachineName = (names: string[], name: string): string[] =>
+  names.includes(name) ? names.filter((n) => n !== name) : [...names, name];
+
+/**
+ * The Robo picker for a delay — one delay can name several. Multi-select toggle
+ * buttons over the shift's machines (the same four Robos), highlighted when on.
+ * Shown only for a delay code that is robot-specific; a general delay has none.
+ */
+function MachinePicker({ machines, selected, onToggle }: {
+  machines: { id: string; name: string }[];
+  selected: string[];
+  onToggle: (name: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {machines.map((m) => {
+        const on = selected.includes(m.name);
+        return (
+          <button
+            key={m.id}
+            type="button"
+            aria-pressed={on}
+            onClick={() => onToggle(m.name)}
+            className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
+              on
+                ? "border-amber-500 bg-amber-100 text-amber-800"
+                : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"
+            }`}
+          >
+            {machineLabel(m.name)}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * The delay-code picker for one delay row — the same searchable box that used to
+ * live in the "+ Add" form, now self-contained so it can sit on every row. Type
+ * to filter, pick a code, or add a brand-new code without leaving the slab (the
+ * created code is handed back up via onCreated so every row's list has it). Its
+ * search / open / new-code state is entirely local, so several rows each carry
+ * their own picker without interfering.
+ */
+function DelayCodePicker({ value, codes, onSelect, onCreated }: {
+  value: string;
+  codes: DelayCode[];
+  onSelect: (id: string) => void;
+  onCreated: (code: DelayCode) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [open, setOpen] = useState(false);
+  const [newForm, setNewForm] = useState({ open: false, code: "", description: "", category: "GENERAL", isRobotSpecific: true });
+  const [newError, setNewError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  const selected = codes.find((c) => c.id === value) ?? null;
+  const q = search.trim().toLowerCase();
+  const filtered = q
+    ? codes.filter((c) => c.code.toLowerCase().includes(q) || c.description.toLowerCase().includes(q) || c.category.toLowerCase().includes(q))
+    : codes;
+  const typed = search.trim();
+  const canAdd = typed.length > 0 && !codes.some((c) => c.code.toLowerCase() === typed.toLowerCase());
+
+  const startNew = (t: string) => {
+    const code = t.trim().toUpperCase();
+    const category = guessCategory(code);
+    setNewForm({ open: true, code, description: "", category, isRobotSpecific: defaultRobotSpecific(category) });
+    setNewError("");
+    setOpen(false);
+  };
+  const saveNew = async () => {
+    const code = newForm.code.trim().toUpperCase();
+    const description = newForm.description.trim();
+    setNewError("");
+    if (!code) { setNewError("Enter a delay code."); return; }
+    if (!description) { setNewError("Enter a short description for this delay code."); return; }
+    if (codes.some((c) => c.code.toLowerCase() === code.toLowerCase())) { setNewError(`${code} already exists — pick it from the list instead.`); return; }
+    setSaving(true);
+    try {
+      const res = await fetch("/api/robo/delay-codes", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, description, category: newForm.category, isRobotSpecific: newForm.isRobotSpecific }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) { setNewError((data as { error?: string } | null)?.error || "Could not save the delay code."); return; }
+      const created = data as DelayCode;
+      onCreated(created);
+      onSelect(created.id);
+      setSearch("");
+      setNewForm((p) => ({ ...p, open: false }));
+    } catch {
+      setNewError("Could not save the delay code. Check the connection and try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (selected) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm">
+          <span className="shrink-0 text-sm font-bold text-gray-800">{selected.code}</span>
+          <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${CATEGORY_COLOR[selected.category] || "bg-gray-100 text-gray-600"}`}>{selected.category}</span>
+          <span className="min-w-0 flex-1 truncate text-xs text-gray-500">{selected.description}</span>
+        </div>
+        <button type="button" aria-label="Change code" onClick={() => { onSelect(""); setSearch(""); }}
+          className="tap-area shrink-0 rounded-md px-1.5 py-1 text-xs text-gray-400 hover:bg-gray-100 hover:text-red-500">✕</button>
+      </div>
+    );
+  }
+  if (newForm.open) {
+    return (
+      <div className="space-y-3 rounded-lg border border-amber-300 bg-white p-3">
+        <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">New delay code</p>
+        {newError && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{newError}</div>}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div>
+            <span className={label}>Code <span className="text-red-500">*</span></span>
+            <input value={newForm.code} onChange={(e) => setNewForm((p) => ({ ...p, code: e.target.value.toUpperCase() }))} placeholder="e.g. M16" className={inp} autoComplete="off" />
+          </div>
+          <div>
+            <span className={label}>Category <span className="text-red-500">*</span></span>
+            <select value={newForm.category} onChange={(e) => setNewForm((p) => ({ ...p, category: e.target.value, isRobotSpecific: defaultRobotSpecific(e.target.value) }))} className={inp}>
+              {CATEGORY_META.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+            </select>
+          </div>
+        </div>
+        <div>
+          <span className={label}>Description <span className="text-red-500">*</span></span>
+          <input value={newForm.description} onChange={(e) => setNewForm((p) => ({ ...p, description: e.target.value }))} placeholder="What the delay was, in a few words" className={inp} autoComplete="off" />
+        </div>
+        <label className="flex items-center gap-2 text-xs text-gray-600">
+          <input type="checkbox" checked={newForm.isRobotSpecific} onChange={(e) => setNewForm((p) => ({ ...p, isRobotSpecific: e.target.checked }))} className="h-4 w-4 rounded border-gray-300 text-brand focus:ring-brand/30" />
+          Belongs to one robot (asks which machine when logging the delay)
+        </label>
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <button type="button" onClick={saveNew} disabled={saving} className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-amber-700 disabled:opacity-60">{saving ? "Saving…" : "Save & use"}</button>
+          <button type="button" onClick={() => { setNewForm((p) => ({ ...p, open: false })); setNewError(""); }} className={btnGhost}>Cancel</button>
+          <span className="text-xs text-gray-400">Also added to Master Lists → Delay Codes</span>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div ref={ref} className="relative">
+      <input value={search} onChange={(e) => { setSearch(e.target.value); setOpen(true); }} onFocus={() => setOpen(true)} placeholder="Search a code, or type a new one…" className={inp} autoComplete="off" />
+      {open && (
+        <div className="absolute z-20 mt-1 max-h-52 w-full overflow-y-auto overscroll-contain rounded-lg border border-gray-200 bg-white shadow-lg">
+          {filtered.map((dc) => (
+            <button key={dc.id} type="button" onClick={() => { onSelect(dc.id); setSearch(""); setOpen(false); }}
+              className="flex w-full items-center gap-2 border-b border-gray-50 px-3 py-2 text-left transition last:border-0 hover:bg-brand/5">
+              <span className="w-12 shrink-0 text-sm font-bold text-gray-800">{dc.code}</span>
+              <span className="min-w-0 flex-1 truncate text-sm text-gray-600">{dc.description}</span>
+              <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${CATEGORY_COLOR[dc.category] || "bg-gray-100 text-gray-600"}`}>{dc.category}</span>
+            </button>
+          ))}
+          {canAdd ? (
+            <button type="button" onClick={() => startNew(typed)}
+              className="sticky bottom-0 flex w-full items-center gap-2 border-t border-amber-200 bg-amber-50 px-3 py-3 text-left transition hover:bg-amber-100">
+              <span className="shrink-0 text-base font-bold text-amber-700">+</span>
+              <span className="min-w-0 flex-1 truncate text-sm text-amber-800">Add &ldquo;{typed.toUpperCase()}&rdquo; as a new delay code</span>
+            </button>
+          ) : filtered.length === 0 ? (
+            <div className="px-3 py-2 text-xs text-gray-400">No matching delay codes.</div>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** What the Recent slabs table prints under Remarks: the slab's own note AND
  *  its delays, through the same formatter Slabs Records uses, with this
@@ -239,6 +438,10 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
 
   // ---- batch setup ----
   const [batchOpen, setBatchOpen] = useState(false);
+  // "Close Batch" (Robo Entry): drop the running batch to none for this session
+  // without touching the record. Cleared when the next batch is saved; a refresh
+  // clears it too, which is the accepted trade-off for a no-DB-change close.
+  const [batchClosed, setBatchClosed] = useState(false);
   const [batchError, setBatchError] = useState("");
   const [batchSaving, setBatchSaving] = useState(false);
   const [batch, setBatch] = useState({ productionDate: localDate(), batchNo: "", designName: "", targetSlabs: "", thickness: "", notes: "" });
@@ -255,6 +458,17 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
   const [slabError, setSlabError] = useState("");
   const [slabSaving, setSlabSaving] = useState(false);
   const [slabTaken, setSlabTaken] = useState(false);
+  /** Edit-only: carry the Production Date / Thickness change forward across the
+   *  batch — this slab and every following one that shares its value, up to the
+   *  next change. Off by default, so an ordinary correction touches one slab.
+   *  Reset whenever a different slab is loaded, or the edit is left. */
+  const [applyDateForward, setApplyDateForward] = useState(false);
+  const [applyThicknessForward, setApplyThicknessForward] = useState(false);
+  /** The slab's Production Date / Thickness as loaded, so a save only writes a
+   *  per-slab override when the operator actually changed the value (or ticked
+   *  "apply forward"). An untouched field is left off the request, so the slab
+   *  keeps falling back to the batch instead of getting a copy pinned onto it. */
+  const loaded = useRef<{ productionDate: string; thickness: string }>({ productionDate: "", thickness: "" });
   /** Bumped when the form needs the server to restate where the register ends:
    *  a slab deleted, a correction saved, a save refused as a duplicate, or a
    *  save this form could not count on from itself. An ordinary save does NOT
@@ -278,43 +492,27 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
   const [actionError, setActionError] = useState("");
 
   // ---- delays inside the slab entry ----
-  const [delays, setDelays] = useState<PendingDelay[]>([]);
-  const [delayForm, setDelayForm] = useState(emptyDelayForm);
-  const [delayError, setDelayError] = useState("");
-  const [codeSearch, setCodeSearch] = useState("");
-  const [codeOpen, setCodeOpen] = useState(false);
-  const codeRef = useRef<HTMLDivElement>(null);
-  /** Inline "new delay code" panel, opened from the dropdown when what the
-   *  operator typed is not in the catalogue yet. */
-  const [newCode, setNewCode] = useState({ open: false, code: "", description: "", category: "GENERAL", isRobotSpecific: true });
-  const [newCodeError, setNewCodeError] = useState("");
-  const [savingCode, setSavingCode] = useState(false);
-
-  /**
-   * Empty the delay-entry panel: the picked code, the search box, the machine,
-   * the times, the remark, the inline "new code" form and any error.
-   *
-   * Everything here except `delays` itself, which each caller decides about —
-   * saving a slab sends the pending delays with it, cancelling an edit throws
-   * them away, and both then want the panel blank.
-   *
-   * WHY. `+ Add` cleared this, so an operator who logs delays the ordinary way
-   * never saw a problem — which is why only one of them reported it and it
-   * could not be reproduced. Pick a code and then save the slab WITHOUT
-   * pressing Add and it survived: `delays` was emptied on save, the picker was
-   * not, so the next slab opened with the previous slab's code sitting
-   * selected. Nothing wrong was ever written — the code was only staged, not
-   * attached — but the operator is reading a screen that says the next slab
-   * already has a delay on it, and the next `+ Add` would have used it.
-   */
-  const resetDelayEntry = () => {
-    setDelayForm(emptyDelayForm());
-    setCodeSearch("");
-    setCodeOpen(false);
-    setDelayError("");
-    setNewCode((p) => ({ ...p, open: false }));
-    setNewCodeError("");
-  };
+  const [delayRows, setDelayRows] = useState<DelayRow[]>([]);
+  const delayKeySeq = useRef(0);
+  const nextDelayKey = () => `new-${++delayKeySeq.current}`;
+  const blankDelayRow = (): DelayRow => ({ key: nextDelayKey(), delayCodeId: "", machineNames: [], startTime: "", endTime: "", remarks: "" });
+  const rowIsBlank = (r: DelayRow) => !r.delayCodeId && !r.startTime && !r.endTime && !r.remarks && r.machineNames.length === 0;
+  const updateDelayRow = (key: string, patch: Partial<DelayRow>) =>
+    setDelayRows((rows) => rows.map((r) => (r.key === key ? { ...r, ...patch } : r)));
+  const removeDelayRow = (key: string) =>
+    setDelayRows((rows) => rows.filter((r) => r.key !== key));
+  // Keep exactly one empty row at the end, so a delay is entered simply by
+  // filling that row in — no "+ Add" to remember. The moment the last row gains
+  // a code (or anything), a fresh blank row appears beneath it for the next
+  // delay. Empty rows are dropped on save. Returning the same array when nothing
+  // needs adding stops this from looping.
+  useEffect(() => {
+    setDelayRows((rows) => {
+      const last = rows[rows.length - 1];
+      return last && rowIsBlank(last) ? rows : [...rows, blankDelayRow()];
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [delayRows]);
 
   const refetchShift = async () => {
     const s = await getJson<ActiveShift | null>("/api/robo/shifts/active", null);
@@ -332,21 +530,43 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
       setSlab({
         serialNumber: rec.serialNumber != null ? String(rec.serialNumber) : "",
         slabNumber: rec.slabNumber ?? "",
-        // The slab's effective production date, editable — its own if it has
-        // one, else the setup's, else the shift's. Correcting it here changes
-        // only this slab, never the batch or its other slabs.
+        // The slab's effective production date and thickness, editable — its own
+        // if it has one, else the setup's (thickness) or the setup/shift's
+        // (date). With the "apply forward" toggle off, correcting either changes
+        // only this slab; on, it carries across the batch — see saveSlab.
         productionDate: productionDateOf(rec),
+        thickness: roboThicknessOf(rec) != null ? String(roboThicknessOf(rec)) : "",
         inTime: rec.inTime ?? "",
         outTime: rec.outTime ?? "",
         roymixCycleTime: rec.roymixCycleTime != null ? String(rec.roymixCycleTime) : "",
         roymixBodyWeight: rec.roymixBodyWeight != null ? String(rec.roymixBodyWeight) : "",
         remarks: rec.remarks ?? "",
       });
+      // Remember what was loaded, so the save can tell an untouched Date /
+      // Thickness (leave it alone) from a real correction (write it).
+      loaded.current = {
+        productionDate: productionDateOf(rec),
+        thickness: roboThicknessOf(rec) != null ? String(roboThicknessOf(rec)) : "",
+      };
     }
     setSlabError("");
     setSlabTaken(false);
-    setDelays([]);
-    resetDelayEntry();
+    // A freshly loaded slab starts with the range toggles off, so opening a slab
+    // to fix one thing can never carry a stale forward-apply into the save.
+    setApplyDateForward(false);
+    setApplyThicknessForward(false);
+    // The slab's existing delays load as editable rows — each keeps its DB id so
+    // a save corrects it in place, and its machine set is unpacked from the
+    // (possibly multi-Robo) machineName. Add / edit / remove all happen here.
+    setDelayRows((rec?.delayLogs ?? []).map((d) => ({
+      key: d.id,
+      id: d.id,
+      delayCodeId: d.delayCodeId ?? "",
+      machineNames: splitMachineNames(d.machineName),
+      startTime: d.startTime ?? "",
+      endTime: d.endTime ?? "",
+      remarks: d.remarks ?? "",
+    })));
     setEditLoading(false);
     return rec;
   };
@@ -386,14 +606,12 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // close the delay-code dropdown on outside click
-  useEffect(() => {
-    const h = (e: MouseEvent) => { if (codeRef.current && !codeRef.current.contains(e.target as Node)) setCodeOpen(false); };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, []);
-
   const latestBatch = shift?.batchRecipes?.[shift.batchRecipes.length - 1] ?? null;
+  // The batch currently being logged to. "Close Batch" sets batchClosed, which
+  // drops this to null so the page reads "No batch running" and the slab form
+  // stops accepting entries — the batch record itself is untouched. The next
+  // New batch (its save) clears batchClosed; so does a refresh, by design.
+  const runningBatch = batchClosed ? null : latestBatch;
   const records = shift?.productionRecords ?? [];
 
   /**
@@ -505,6 +723,34 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     setEditingBatchId(null);
     setBatchOpen(false);
   };
+  /**
+   * "Close Batch" — end the running batch for this session. No DB write: the
+   * batch record and every slab on it are left exactly as they are; the entry
+   * page simply drops to "No batch running" so nothing more is logged to it
+   * until the operator starts the next run with New batch. A page refresh clears
+   * this (the batch is still the shift's most recent), the trade-off for keeping
+   * the action free of any database change.
+   *
+   * Slabs still In-Processing don't block the close — they stay fully editable in
+   * Slabs Records, exactly as a closed shift already allows — but the operator is
+   * warned first, because closing mid-slab is more often a mis-tap than a choice.
+   */
+  const closeBatch = () => {
+    if (!latestBatch) return;
+    const openSlabs = (shift?.productionRecords ?? []).filter(
+      (r) => r.batchRecipeId === latestBatch.id && r.status === SLAB_IN_PROCESSING,
+    ).length;
+    const name = latestBatch.designName?.trim() || latestBatch.batchNo?.trim() || "this batch";
+    const message =
+      openSlabs > 0
+        ? `${openSlabs} slab${openSlabs > 1 ? "s" : ""} in ${name} ${openSlabs > 1 ? "are" : "is"} still In-Processing (no Out time). They stay editable in Slabs Records. Close the batch anyway?`
+        : `Close ${name}? You’ll start the next run with New batch. Nothing is deleted — the batch and its slabs stay in the records.`;
+    if (!confirm(message)) return;
+    setBatchError("");
+    setEditingBatchId(null);
+    setBatchOpen(false);
+    setBatchClosed(true);
+  };
 
   /**
    * Suggest the next S.No. and slab number — but never while an existing slab
@@ -591,7 +837,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
      not the shift's latest. A slab logged under the morning's design must keep
      showing that design's machines even after a new batch was started, or the
      In/Out labels name robots that were not running when it was made. */
-  const activeBatch: BatchRecipe | null = editingId ? editRecord?.batchRecipe ?? null : latestBatch;
+  const activeBatch: BatchRecipe | null = editingId ? editRecord?.batchRecipe ?? null : runningBatch;
 
   const activeMachineNames = activeBatch
     ? activeBatch.entries
@@ -606,19 +852,14 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
   // difference in what the slab records.
   const hasRoymix = activeMachineNames.includes("Roymix");
 
-  const selectedCode = useMemo(() => delayCodes.find((d) => d.id === delayForm.selectedCodeId) ?? null, [delayCodes, delayForm.selectedCodeId]);
-  const filteredCodes = useMemo(() => {
-    const q = codeSearch.trim().toLowerCase();
-    if (!q) return delayCodes;
-    return delayCodes.filter((d) => d.code.toLowerCase().includes(q) || d.description.toLowerCase().includes(q) || d.category.toLowerCase().includes(q));
-  }, [delayCodes, codeSearch]);
-  /* Text typed into the delay-code box that matches no code in the catalogue.
-     The operator can save it as a new delay type without leaving this form. */
-  const typedCode = codeSearch.trim();
-  const canAddTypedCode = typedCode.length > 0 && !delayCodes.some((d) => d.code.toLowerCase() === typedCode.toLowerCase());
-  const delayDuration = useMemo(() => calcDuration(delayForm.startTime, delayForm.endTime), [delayForm.startTime, delayForm.endTime]);
-  const savedDelays = editingId ? editRecord?.delayLogs ?? [] : [];
-  const totalDelay = delays.reduce((s, d) => s + d.durationMinutes, 0) + savedDelays.reduce((s, d) => s + d.durationMinutes, 0);
+  // A delay row's duration in whole minutes, rounded up like the stored value —
+  // derived from the (editable) times, and the single source for the badge, the
+  // running total and the save.
+  const rowMinutes = (r: { startTime: string; endTime: string }) => {
+    const d = calcDuration(r.startTime, r.endTime);
+    return d ? d.minutes + (d.seconds > 0 ? 1 : 0) : 0;
+  };
+  const totalDelay = delayRows.reduce((s, r) => s + rowMinutes(r), 0);
 
   const say = (msg: string) => { setFlash(msg); window.setTimeout(() => setFlash(""), 4000); };
 
@@ -825,6 +1066,9 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
       await refetchShift();
       setEditingBatchId(null);
       setBatchOpen(false);
+      // The newly saved batch is now the running one — clear any Close Batch
+      // state from before it so the page shows it as running, not closed.
+      setBatchClosed(false);
       say(isEdit
         ? `Setup updated — ${batch.designName.trim()}. The slabs already logged this shift stay on it.`
         : `Batch saved — ${batch.designName.trim()}.`);
@@ -855,76 +1099,6 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     return data.available;
   };
 
-  // ---- delays ----
-  const addDelay = () => {
-    setDelayError("");
-    if (!selectedCode) { setDelayError("Select a delay code."); return; }
-    if (!delayForm.startTime || !delayForm.endTime) { setDelayError("Start and end time are required."); return; }
-    if (!isValidTime(delayForm.startTime) || !isValidTime(delayForm.endTime)) { setDelayError("Enter times as HH:MM in 24-hour format, for example 09:30."); return; }
-    const dur = calcDuration(delayForm.startTime, delayForm.endTime);
-    if (!dur) { setDelayError("Invalid time range — check the start/end times (delays over 12h aren't accepted)."); return; }
-    if (selectedCode.isRobotSpecific && !delayForm.machineId) { setDelayError("This code needs a machine."); return; }
-    setDelays((prev) => [...prev, {
-      tempId: prev.length ? Math.max(...prev.map((d) => d.tempId)) + 1 : 1,
-      delayCodeId: selectedCode.id, code: selectedCode.code, description: selectedCode.description, category: selectedCode.category,
-      machineId: delayForm.machineId, machineName: delayForm.machineName,
-      durationMinutes: dur.minutes + (dur.seconds > 0 ? 1 : 0),
-      startTime: delayForm.startTime, endTime: delayForm.endTime, remarks: delayForm.remarks,
-    }]);
-    resetDelayEntry();
-  };
-
-  /** Open the inline panel pre-filled with whatever the operator typed. */
-  const startNewDelayCode = (typed: string) => {
-    const code = typed.trim().toUpperCase();
-    const category = guessCategory(code);
-    setNewCode({ open: true, code, description: "", category, isRobotSpecific: defaultRobotSpecific(category) });
-    setNewCodeError("");
-    setCodeOpen(false);
-  };
-  /* Changing the group resets the robot flag to that group's norm; the
-     operator can still tick it back either way before saving. */
-  const setNewCodeCategory = (category: string) => {
-    setNewCode((p) => ({ ...p, category, isRobotSpecific: defaultRobotSpecific(category) }));
-  };
-  /**
-   * Saves the typed code to the shared Delay Codes master list and selects it
-   * straight away, so the delay can be logged in the same breath. Without this
-   * the operator has to abandon a half-entered slab, walk to Master Lists, add
-   * the code and start the slab again — which in practice means the delay goes
-   * unlogged. The API rejects a duplicate with 409, surfaced here as-is.
-   */
-  const saveNewDelayCode = async () => {
-    const code = newCode.code.trim().toUpperCase();
-    const description = newCode.description.trim();
-    setNewCodeError("");
-    if (!code) { setNewCodeError("Enter a delay code."); return; }
-    if (!description) { setNewCodeError("Enter a short description for this delay code."); return; }
-    if (delayCodes.some((d) => d.code.toLowerCase() === code.toLowerCase())) {
-      setNewCodeError(`${code} already exists — pick it from the list instead.`);
-      return;
-    }
-    setSavingCode(true);
-    try {
-      const res = await fetch("/api/robo/delay-codes", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, description, category: newCode.category, isRobotSpecific: newCode.isRobotSpecific }),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) { setNewCodeError(data?.error || "Could not save the delay code."); return; }
-      const created = data as DelayCode;
-      setDelayCodes((prev) => sortDelayCodes([...prev, created]));
-      setDelayForm((p) => ({ ...p, selectedCodeId: created.id }));
-      setCodeSearch("");
-      setNewCode((p) => ({ ...p, open: false }));
-      setDelayError("");
-    } catch {
-      setNewCodeError("Could not save the delay code. Check the connection and try again.");
-    } finally {
-      setSavingCode(false);
-    }
-  };
-
   /** Load a slab from the Recent table back into the form (finish it, or fix it). */
   const editRecordFromTable = async (r: ProdRecord) => {
     setEditingId(r.id);
@@ -935,8 +1109,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     if (isPageEdit && recordId) { router.push(`/robo/slabs/${recordId}`); return; }
     setEditingId(null);
     setEditRecord(null);
-    setDelays([]);
-    resetDelayEntry();
+    setDelayRows([]);
     setSlabTaken(false);
     // Back to a blank NEW slab, on the day the operator is logging under — not
     // the edited slab's own date, and not empty.
@@ -978,26 +1151,70 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     if (slab.inTime && !isValidTime(slab.inTime)) { setSlabError("In time must be HH:MM in 24-hour format, for example 09:30."); return; }
     if (slab.outTime && !isValidTime(slab.outTime)) { setSlabError("Out time must be HH:MM in 24-hour format, for example 09:30."); return; }
     setSlabSaving(true);
-    const delayPayload = delays.map((d) => ({
-      delayCodeId: d.delayCodeId, machineId: d.machineId || null, machineName: d.machineName || null,
-      durationMinutes: d.durationMinutes, startTime: d.startTime || null, endTime: d.endTime || null, remarks: d.remarks || null,
-    }));
+    // Validate every delay row, then build the payload the server reconciles
+    // against. A row's machine set applies only when its code is robot-specific;
+    // its duration is derived from the (editable) times. A row with no code is an
+    // empty one the operator never filled — dropped, so it neither blocks the
+    // save nor is stored blank.
+    for (const r of delayRows) {
+      if (!r.delayCodeId) continue;
+      const code = delayCodes.find((c) => c.id === r.delayCodeId);
+      if (!r.startTime || !r.endTime || !isValidTime(r.startTime) || !isValidTime(r.endTime) || !calcDuration(r.startTime, r.endTime)) {
+        setSlabError(`Delay ${code?.code ?? ""} needs a valid Start and End time.`); setSlabSaving(false); return;
+      }
+      if (code?.isRobotSpecific && r.machineNames.length === 0) {
+        setSlabError(`Delay ${code.code} needs at least one machine.`); setSlabSaving(false); return;
+      }
+    }
+    const delayPayload = delayRows
+      .filter((r) => r.delayCodeId)
+      .map((r) => {
+        const code = delayCodes.find((c) => c.id === r.delayCodeId);
+        const names = code?.isRobotSpecific ? r.machineNames : [];
+        return {
+          id: r.id,                                   // undefined for a new row → created
+          delayCodeId: r.delayCodeId,
+          machineName: joinMachineNames(names) || null,
+          machineId: names.length ? (machines.find((m) => m.name === firstMachineName(names))?.id ?? null) : null,
+          durationMinutes: rowMinutes(r),
+          startTime: r.startTime || null,
+          endTime: r.endTime || null,
+          remarks: r.remarks || null,
+        };
+      });
     // No status sent: the server derives it from Out time, so a slab still in
     // the line saves as In-Processing and can be finished from the table below.
+    //
+    // Production Date and Thickness go on the request ONLY when the operator
+    // actually changed them, or ticked "apply forward" — an untouched field is
+    // omitted, so the slab keeps reading the batch's value rather than having a
+    // copy pinned onto it by an edit to something else. When present with the
+    // forward flag, the server carries the value across the batch (the PATCH
+    // handler's forwardRunIds).
+    const dateChanged = slab.productionDate.trim() !== loaded.current.productionDate.trim();
+    const thicknessChanged = slab.thickness.trim() !== loaded.current.thickness.trim();
+    const patchBody: Record<string, unknown> = {
+      serialNumber: slab.serialNumber ? Number(slab.serialNumber) : null,
+      slabNumber: slab.slabNumber.trim(),
+      inTime: slab.inTime || null,
+      outTime: slab.outTime || null,
+      roymixCycleTime: slab.roymixCycleTime ? Number(slab.roymixCycleTime) : null,
+      roymixBodyWeight: slab.roymixBodyWeight ? Number(slab.roymixBodyWeight) : null,
+      remarks: slab.remarks || null,
+      delays: delayPayload,
+    };
+    if (dateChanged || applyDateForward) {
+      patchBody.productionDate = slab.productionDate.trim() || null;
+      patchBody.applyProductionDateToRange = applyDateForward;
+    }
+    if (thicknessChanged || applyThicknessForward) {
+      patchBody.thickness = slab.thickness.trim() || null;
+      patchBody.applyThicknessToRange = applyThicknessForward;
+    }
     const res = await (editingId
       ? fetch(`/api/robo/production/${editingId}`, {
           method: "PATCH", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            serialNumber: slab.serialNumber ? Number(slab.serialNumber) : null,
-            slabNumber: slab.slabNumber.trim(),
-            productionDate: slab.productionDate.trim() || null,
-            inTime: slab.inTime || null,
-            outTime: slab.outTime || null,
-            roymixCycleTime: slab.roymixCycleTime ? Number(slab.roymixCycleTime) : null,
-            roymixBodyWeight: slab.roymixBodyWeight ? Number(slab.roymixBodyWeight) : null,
-            remarks: slab.remarks || null,
-            delays: delayPayload,
-          }),
+          body: JSON.stringify(patchBody),
         })
       : fetch("/api/robo/production", {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -1038,16 +1255,15 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     const wasEdit = Boolean(editingId);
     const finished = Boolean(slab.outTime);
     setSlabSaving(false);
-    // A page-level edit ends by going back to the slab it was about; the
-    // in-page paths stay put so the operator can log the next slab.
-    if (isPageEdit && recordId) { router.push(`/robo/slabs/${recordId}`); router.refresh(); return; }
+    // A page-level edit ends by going back to Slab Records — the filtered list
+    // it was opened from, restored from the filters this tab kept (see
+    // SlabsBrowser) — so the operator can open the next slab, edit and save
+    // without retyping the filter. The in-page paths stay put so the operator
+    // can log the next slab.
+    if (isPageEdit && recordId) { router.push(`/robo/slabs`); router.refresh(); return; }
     setEditingId(null);
     setEditRecord(null);
-    setDelays([]);
-    // The delay picker goes with them. It used to be left as it was, so a code
-    // chosen but never added with + Add stayed selected on the next slab — see
-    // resetDelayEntry.
-    resetDelayEntry();
+    setDelayRows([]);
     setSlabTaken(false);
 
     /*
@@ -1162,7 +1378,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
         </Card>
       ) : (
         <Card className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          {latestBatch ? (
+          {runningBatch ? (
             <>
               <Badge tone="green">Batch running</Badge>
               {/* The design, and nothing else. The machine chain, the thickness
@@ -1171,12 +1387,14 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                   below, and the chain in particular restated itself whenever a
                   robot was ticked. */}
               <span className="flex min-w-0 items-center gap-2 text-sm text-gray-600">
-                <span className="font-medium text-gray-900">{latestBatch.designName}</span>
+                <span className="font-medium text-gray-900">{runningBatch.designName}</span>
               </span>
-              {/* Two distinct acts, kept as two buttons. "Edit setup" corrects
-                  the run in progress; "New batch" starts another one. Offering
-                  only the second is what made operators start a duplicate setup
-                  to fix a typo. */}
+              {/* Three distinct acts. "Edit setup" corrects the run in progress;
+                  "Close Batch" ends it for this session so nothing more is logged
+                  to it (no DB change — see closeBatch); "New batch" starts the
+                  next run. Offering only New batch is what made operators start a
+                  duplicate setup to fix a typo, or keep logging to a run that was
+                  really over. */}
               <div className="ml-auto flex items-center gap-2">
                 {batchOpen ? (
                   <button type="button" className={btnGhost} onClick={closeBatchForm}>
@@ -1185,6 +1403,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                 ) : (
                   <>
                     <button type="button" className={btnGhost} onClick={startEditBatch}>Edit setup</button>
+                    <button type="button" className={btnGhost} onClick={closeBatch}>Close Batch</button>
                     <button type="button" className={btnGhost} onClick={startNewBatch}>New batch</button>
                   </>
                 )}
@@ -1193,7 +1412,19 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
           ) : (
             <>
               <Badge tone="amber">No batch running</Badge>
-              <span className="text-sm text-gray-500">Robo doesn’t run in every production — set up a batch below when it does.</span>
+              <span className="text-sm text-gray-500">
+                {batchClosed
+                  ? "Batch closed. Start the next run with New batch when Robo is ready."
+                  : "Robo doesn’t run in every production — set up a batch below when it does."}
+              </span>
+              {/* After Close Batch the setup form is collapsed and the shift
+                  already has batches, so it will not reopen on its own — offer
+                  New batch here so the operator can start the next run. On a
+                  fresh shift the form is already open below, so this stays
+                  hidden. */}
+              {!batchOpen && (
+                <button type="button" className={`${btnGhost} ml-auto`} onClick={startNewBatch}>New batch</button>
+              )}
             </>
           )}
         </Card>
@@ -1425,11 +1656,56 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
               </div>
             )}
 
-            {/* Two up on a tablet, four across on the desktop. The four-across
-                row itself is unchanged; it starts at lg now rather than md,
-                which put S.No., Slab number, In time and Out time into ~95px
-                cells on the iPad the operator actually types this on. */}
-            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            {/* The Robo Entry slab layout, two-up on a tablet or desktop and
+                stacked on a phone. The order is deliberate: Production Date (and
+                Thickness, when correcting) lead at the top, then the numbers, the
+                times, the Roymix pair, and Remarks last. */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              {/* Row 1 — Production Date. Defaults to the batch's day and carries
+                  forward slab after slab; the operator changes it only when a run
+                  crosses midnight, and from then on every new slab in the batch
+                  takes the new day. On an edit it can also carry the change across
+                  the rest of the batch (the box below). It spans the row on new
+                  entry, where Thickness is not shown, so the numbers start clean
+                  on the next row. */}
+              <div className={editingId ? "" : "sm:col-span-2"}>
+                <span className={label}>Production Date</span>
+                <input type="date" value={slab.productionDate}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setSlab((p) => ({ ...p, productionDate: v }));
+                    // A new slab moves the working day for the ones after it; an
+                    // edit changes only the slab being corrected — unless the box
+                    // below is ticked to carry it forward.
+                    if (!editingId) workingDate.current = v;
+                  }}
+                  className={inp} />
+                {editingId && (
+                  <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs">
+                    <input type="checkbox" checked={applyDateForward} onChange={(e) => setApplyDateForward(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300" />
+                    <span className="text-gray-600">Apply to <span className="font-medium text-gray-800">this slab and every following one</span> in the batch, up to the next change.</span>
+                  </label>
+                )}
+              </div>
+
+              {/* Thickness — only when correcting a slab. New production still
+                  takes one thickness from the batch setup; this is how a batch
+                  that changed thickness partway through gets fixed, forward from
+                  the slab where it changed. */}
+              {editingId && (
+                <div>
+                  <span className={label}>Thickness (cm)</span>
+                  <input type="number" step="0.1" value={slab.thickness}
+                    onChange={(e) => setSlab((p) => ({ ...p, thickness: e.target.value }))}
+                    placeholder="e.g. 2" className={inp} />
+                  <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs">
+                    <input type="checkbox" checked={applyThicknessForward} onChange={(e) => setApplyThicknessForward(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300" />
+                    <span className="text-gray-600">Apply to <span className="font-medium text-gray-800">this slab and every following one</span> in the batch, up to the next change.</span>
+                  </label>
+                </div>
+              )}
+
+              {/* Row 2 — S.No. and Slab number. */}
               <div>
                 <span className={label}>S.No.</span>
                 <input type="number" value={slab.serialNumber} onChange={(e) => setSlab((p) => ({ ...p, serialNumber: e.target.value }))} className={inp} {...advanceProps("slab")} />
@@ -1442,28 +1718,11 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                   placeholder="e.g. 140748" className={inp} required {...advanceProps("slab")} />
                 {slabTaken && <p className="mt-1 text-xs font-medium text-red-600">Duplicate Slab No. — this slab number already exists.</p>}
               </div>
+
+              {/* Row 3 — In / Out time. Plain labels; the machine the clock was
+                  read off moved to the setup, so the column no longer renames
+                  itself between runs. */}
               <div>
-                {/* The slab's own production date. Defaults to the batch's day
-                    and carries forward slab after slab; the operator changes it
-                    only when a run crosses midnight, and from then on every new
-                    slab in the batch takes the new day. Changing it here never
-                    touches slabs already saved. */}
-                <span className={label}>Production Date</span>
-                <input type="date" value={slab.productionDate}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setSlab((p) => ({ ...p, productionDate: v }));
-                    // A new slab moves the working day for the ones after it; an
-                    // edit changes only the slab being corrected.
-                    if (!editingId) workingDate.current = v;
-                  }}
-                  className={inp} />
-              </div>
-              <div>
-                {/* Plain "In time" / "Out time". The machine names used to be
-                    appended (In time (Robo3)) to say which robot the clock was
-                    read off; the line knows that, and the suffix moved with the
-                    setup, so the same column changed its label between runs. */}
                 <span className={label}>In time</span>
                 <TimeInput value={slab.inTime} onChange={(v) => setSlab((p) => ({ ...p, inTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("slab")} />
               </div>
@@ -1471,6 +1730,8 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                 <span className={label}>Out time</span>
                 <TimeInput value={slab.outTime} onChange={(v) => setSlab((p) => ({ ...p, outTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("slab")} />
               </div>
+
+              {/* Row 4 — the Roymix pair, only when the running setup includes it. */}
               {hasRoymix && (
                 <>
                   <div>
@@ -1483,25 +1744,28 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                   </div>
                 </>
               )}
-              <div className={hasRoymix ? "col-span-2" : "col-span-2 lg:col-span-4"}>
+
+              {/* Last row — Remarks, full width. */}
+              <div className="sm:col-span-2">
                 <span className={label}>Remarks</span>
                 <input value={slab.remarks} onChange={(e) => setSlab((p) => ({ ...p, remarks: e.target.value }))} placeholder="Optional notes for this slab" className={inp} {...advanceProps("slab")} />
               </div>
             </div>
 
             {/* Delay summary in the register's own wording, copyable straight
-                into the Remark field. Recomputed from start/end so the seconds
-                show — the stored durationMinutes is rounded up. */}
-            {delays.length > 0 && (
+                into the Remark field. Shown for newly added delays, recomputed
+                from start/end so the seconds show. */}
+            {delayRows.some((r) => !r.id && r.delayCodeId) && (
               <div className="space-y-1">
                 <span className={label}>Delay summary</span>
-                {delays.map((d) => {
-                  const dur = calcDuration(d.startTime, d.endTime);
-                  const mins = dur ? dur.minutes : d.durationMinutes;
+                {delayRows.filter((r) => !r.id && r.delayCodeId).map((r) => {
+                  const dur = calcDuration(r.startTime, r.endTime);
+                  const mins = dur ? dur.minutes : 0;
                   const secs = dur ? dur.seconds : 0;
+                  const code = delayCodes.find((c) => c.id === r.delayCodeId);
                   return (
-                    <p key={d.tempId} className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-sm text-amber-800">
-                      {d.code}-{mins} minutes{secs > 0 ? ` ${secs} seconds` : ""}[{d.startTime}-{d.endTime}]
+                    <p key={r.key} className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-sm text-amber-800">
+                      {code?.code ?? ""}-{mins} minutes{secs > 0 ? ` ${secs} seconds` : ""}[{r.startTime}-{r.endTime}]
                     </p>
                   );
                 })}
@@ -1512,165 +1776,74 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
             <div className="rounded-xl border border-amber-200/70 bg-amber-50/40 p-4">
               <div className="mb-3 flex items-center gap-2">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-amber-800">Delays this slab</h3>
-                {(delays.length > 0 || savedDelays.length > 0) && <Badge tone="amber">{delays.length + savedDelays.length} · {totalDelay} min</Badge>}
+                {delayRows.some((r) => r.delayCodeId) && <Badge tone="amber">{delayRows.filter((r) => r.delayCodeId).length} · {totalDelay} min</Badge>}
               </div>
 
-              {/* Already saved against this slab — read-only. A PATCH only ever
-                  appends, so showing these stops the same delay being logged
-                  twice by someone who cannot see what is already there. */}
-              {savedDelays.length > 0 && (
-                <div className="mb-3 space-y-1.5">
-                  <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Already logged</p>
-                  {savedDelays.map((d) => (
-                    <div key={d.id} className="flex items-center gap-3 rounded-lg bg-gray-50 px-3 py-2">
-                      <span className="w-10 shrink-0 text-xs font-bold text-gray-600">{d.delayCode?.code ?? ""}</span>
-                      {d.delayCode && <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${CATEGORY_COLOR[d.delayCode.category] || "bg-gray-100 text-gray-600"}`}>{d.delayCode.category}</span>}
-                      {d.machineName && <span className="shrink-0 text-xs text-gray-500">{machineLabel(d.machineName)}</span>}
-                      <span className="min-w-0 flex-1 truncate text-sm text-gray-700">{d.delayCode?.description ?? ""}</span>
-                      {d.startTime && d.endTime && <span className="shrink-0 text-xs text-gray-400">{d.startTime}–{d.endTime}</span>}
-                      <span className="shrink-0 text-xs font-medium text-gray-600">{d.durationMinutes}m</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {delays.length > 0 && (
-                <div className="mb-3 space-y-1.5">
-                  {delays.map((d) => {
-                    const dur = calcDuration(d.startTime, d.endTime);
+              {/* Every delay on this slab, existing and new, fully editable —
+                  change the code, the machine(s), the times or the remark on any
+                  row, or remove it with ✕. Existing rows keep their DB id so a
+                  save corrects them in place (never a duplicate); a save persists
+                  the whole set, and a slab can be saved with no delays at all. */}
+              {delayRows.length > 0 && (
+                <div className="mb-3 space-y-2">
+                  {delayRows.map((row) => {
+                    const code = delayCodes.find((c) => c.id === row.delayCodeId) ?? null;
+                    const dur = calcDuration(row.startTime, row.endTime);
+                    const badTimes = Boolean(row.startTime && row.endTime && !dur);
                     return (
-                      <div key={d.tempId} className="flex items-center gap-3 rounded-lg bg-white px-3 py-2 shadow-sm">
-                        <span className="w-10 shrink-0 text-xs font-bold text-gray-800">{d.code}</span>
-                        <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${CATEGORY_COLOR[d.category] || "bg-gray-100 text-gray-600"}`}>{d.category}</span>
-                        {d.machineName && <span className="shrink-0 text-xs text-gray-500">{machineLabel(d.machineName)}</span>}
-                        <span className="min-w-0 flex-1 truncate text-sm text-gray-700">{d.description}</span>
-                        <span className="shrink-0 text-xs text-gray-400">{d.startTime}–{d.endTime}</span>
-                        <span className="shrink-0 text-xs font-medium text-amber-700">{dur ? fmtDuration(dur) : `${d.durationMinutes}m`}</span>
-                        <button type="button" onClick={() => setDelays((prev) => prev.filter((x) => x.tempId !== d.tempId))}
-                          className="shrink-0 text-xs text-gray-300 hover:text-red-500">✕</button>
+                      <div key={row.key} className="rounded-lg border border-amber-200 bg-white p-3 shadow-sm">
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-12">
+                          <div className="col-span-2 sm:col-span-4">
+                            <span className={label}>Delay code</span>
+                            <DelayCodePicker value={row.delayCodeId} codes={delayCodes}
+                              onSelect={(id) => updateDelayRow(row.key, { delayCodeId: id })}
+                              onCreated={(c) => setDelayCodes((prev) => sortDelayCodes([...prev, c]))} />
+                          </div>
+                          <div className="col-span-1 sm:col-span-2">
+                            <span className={label}>Start</span>
+                            <TimeInput value={row.startTime} onChange={(v) => updateDelayRow(row.key, { startTime: v })} className={inp} />
+                          </div>
+                          <div className="col-span-1 sm:col-span-2">
+                            <span className={label}>End</span>
+                            <TimeInput value={row.endTime} onChange={(v) => updateDelayRow(row.key, { endTime: v })} className={inp} />
+                          </div>
+                          <div className="col-span-1 sm:col-span-2">
+                            <span className={label}>Duration</span>
+                            <div className={`w-full rounded-lg border px-3 py-2 text-sm ${
+                              dur ? "border-green-200 bg-green-50 font-semibold text-green-800"
+                                : badTimes ? "border-red-200 bg-red-50 text-red-600"
+                                : "border-gray-200 bg-gray-50 text-gray-400"}`}>
+                              {dur ? fmtDuration(dur) : badTimes ? "Invalid" : "—"}
+                            </div>
+                          </div>
+                          <div className="col-span-1 flex items-end justify-end sm:col-span-2">
+                            {!rowIsBlank(row) && (
+                              <button type="button" onClick={() => removeDelayRow(row.key)} aria-label="Remove delay"
+                                className="rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-500 transition hover:border-red-300 hover:bg-red-50 hover:text-red-600">✕ Remove</button>
+                            )}
+                          </div>
+                          {code?.isRobotSpecific && (
+                            <div className="col-span-2 sm:col-span-6">
+                              <span className={label}>Machine(s)</span>
+                              <MachinePicker machines={machines} selected={row.machineNames}
+                                onToggle={(name) => updateDelayRow(row.key, { machineNames: toggleMachineName(row.machineNames, name) })} />
+                            </div>
+                          )}
+                          <div className={code?.isRobotSpecific ? "col-span-2 sm:col-span-6" : "col-span-2 sm:col-span-12"}>
+                            <span className={label}>Remarks</span>
+                            <input value={row.remarks} onChange={(e) => updateDelayRow(row.key, { remarks: e.target.value })} placeholder="Optional" className={inp} />
+                          </div>
+                        </div>
                       </div>
                     );
                   })}
                 </div>
               )}
 
-              {delayError && <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{delayError}</div>}
-
-              {/* Below lg the code takes a row to itself, the three times share
-                  the next one and the remark and + Add have the last — a delay
-                  is read code-first, and the code is the widest thing here. The
-                  desktop row is the same six columns it always was; only the
-                  breakpoint moved, off iPad-portrait width. */}
-              <div className="grid grid-cols-6 gap-3">
-                <div ref={codeRef} className="relative col-span-6 lg:col-span-3">
-                  <span className={label}>Delay code</span>
-                  {selectedCode ? (
-                    <div className="flex items-center gap-1.5">
-                      <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm">
-                        <span className="shrink-0 text-sm font-bold text-gray-800">{selectedCode.code}</span>
-                        <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${CATEGORY_COLOR[selectedCode.category] || "bg-gray-100 text-gray-600"}`}>{selectedCode.category}</span>
-                        <span className="min-w-0 flex-1 truncate text-xs text-gray-500">{selectedCode.description}</span>
-                      </div>
-                      <button type="button" aria-label="Clear code" onClick={() => { setDelayForm((p) => ({ ...p, selectedCodeId: "", machineId: "", machineName: "" })); setCodeSearch(""); }}
-                        className="tap-area shrink-0 rounded-md px-1.5 py-1 text-xs text-gray-400 hover:bg-gray-100 hover:text-red-500">✕</button>
-                    </div>
-                  ) : newCode.open ? (
-                    <div className="space-y-3 rounded-lg border border-amber-300 bg-white p-3">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">New delay code</p>
-                      {newCodeError && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{newCodeError}</div>}
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <div>
-                          <span className={label}>Code <span className="text-red-500">*</span></span>
-                          <input value={newCode.code} onChange={(e) => setNewCode((p) => ({ ...p, code: e.target.value.toUpperCase() }))}
-                            placeholder="e.g. M16" className={inp} autoComplete="off" />
-                        </div>
-                        <div>
-                          <span className={label}>Category <span className="text-red-500">*</span></span>
-                          <select value={newCode.category} onChange={(e) => setNewCodeCategory(e.target.value)} className={inp}>
-                            {CATEGORY_META.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
-                          </select>
-                        </div>
-                      </div>
-                      <div>
-                        <span className={label}>Description <span className="text-red-500">*</span></span>
-                        <input value={newCode.description} onChange={(e) => setNewCode((p) => ({ ...p, description: e.target.value }))}
-                          placeholder="What the delay was, in a few words" className={inp} autoComplete="off" />
-                      </div>
-                      <label className="flex items-center gap-2 text-xs text-gray-600">
-                        <input type="checkbox" checked={newCode.isRobotSpecific} onChange={(e) => setNewCode((p) => ({ ...p, isRobotSpecific: e.target.checked }))}
-                          className="h-4 w-4 rounded border-gray-300 text-brand focus:ring-brand/30" />
-                        Belongs to one robot (asks which machine when logging the delay)
-                      </label>
-                      <div className="flex flex-wrap items-center gap-2 pt-1">
-                        <button type="button" onClick={saveNewDelayCode} disabled={savingCode}
-                          className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-amber-700 disabled:opacity-60">
-                          {savingCode ? "Saving…" : "Save & use"}
-                        </button>
-                        <button type="button" onClick={() => { setNewCode((p) => ({ ...p, open: false })); setNewCodeError(""); }} className={btnGhost}>Cancel</button>
-                        <span className="text-xs text-gray-400">Also added to Master Lists → Delay Codes</span>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <input value={codeSearch} onChange={(e) => { setCodeSearch(e.target.value); setCodeOpen(true); }} onFocus={() => setCodeOpen(true)}
-                        placeholder="Search a code, or type a new one…" className={inp} autoComplete="off" />
-                      {codeOpen && (
-                        <div className="absolute z-20 mt-1 max-h-52 w-full overflow-y-auto overscroll-contain rounded-lg border border-gray-200 bg-white shadow-lg">
-                          {filteredCodes.map((dc) => (
-                            <button key={dc.id} type="button" onClick={() => { setDelayForm((p) => ({ ...p, selectedCodeId: dc.id })); setCodeSearch(""); setCodeOpen(false); }}
-                              className="flex w-full items-center gap-2 border-b border-gray-50 px-3 py-2 text-left transition last:border-0 hover:bg-brand/5">
-                              <span className="w-12 shrink-0 text-sm font-bold text-gray-800">{dc.code}</span>
-                              <span className="min-w-0 flex-1 truncate text-sm text-gray-600">{dc.description}</span>
-                              <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${CATEGORY_COLOR[dc.category] || "bg-gray-100 text-gray-600"}`}>{dc.category}</span>
-                            </button>
-                          ))}
-                          {canAddTypedCode ? (
-                            <button type="button" onClick={() => startNewDelayCode(typedCode)}
-                              className="sticky bottom-0 flex w-full items-center gap-2 border-t border-amber-200 bg-amber-50 px-3 py-3 text-left transition hover:bg-amber-100">
-                              <span className="shrink-0 text-base font-bold text-amber-700">+</span>
-                              <span className="min-w-0 flex-1 truncate text-sm text-amber-800">Add &ldquo;{typedCode.toUpperCase()}&rdquo; as a new delay code</span>
-                            </button>
-                          ) : filteredCodes.length === 0 ? (
-                            <div className="px-3 py-2 text-xs text-gray-400">No matching delay codes.</div>
-                          ) : null}
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-                {selectedCode?.isRobotSpecific && (
-                  <div className="col-span-6 lg:col-span-3">
-                    <span className={label}>Machine</span>
-                    <select value={delayForm.machineId}
-                      onChange={(e) => { const m = machines.find((x) => x.id === e.target.value); setDelayForm((p) => ({ ...p, machineId: e.target.value, machineName: m?.name || "" })); }}
-                      className={inp}>
-                      <option value="">Select machine</option>
-                      {machines.map((m) => <option key={m.id} value={m.id}>{machineLabel(m.name)}</option>)}
-                    </select>
-                  </div>
-                )}
-                <div className="col-span-2 lg:col-span-1">
-                  <span className={label}>Start <span className="text-red-500">*</span></span>
-                  <TimeInput value={delayForm.startTime} onChange={(v) => setDelayForm((p) => ({ ...p, startTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("delay")} />
-                </div>
-                <div className="col-span-2 lg:col-span-1">
-                  <span className={label}>End <span className="text-red-500">*</span></span>
-                  <TimeInput value={delayForm.endTime} onChange={(v) => setDelayForm((p) => ({ ...p, endTime: v }))} onComplete={advanceOnComplete} className={inp} {...advanceProps("delay")} />
-                </div>
-                <div className="col-span-2 lg:col-span-1">
-                  <span className={label}>Duration</span>
-                  <div className={`w-full rounded-lg border px-3 py-2 text-sm ${
-                    delayDuration ? "border-green-200 bg-green-50 font-semibold text-green-800"
-                      : delayForm.startTime && delayForm.endTime ? "border-red-200 bg-red-50 text-red-600"
-                      : "border-gray-200 bg-gray-50 text-gray-400"}`}>
-                    {delayDuration ? fmtDuration(delayDuration) : delayForm.startTime && delayForm.endTime ? "Invalid" : "Auto"}
-                  </div>
-                </div>
-                <div className="col-span-6 flex items-end gap-2 lg:col-span-3">
-                  <input value={delayForm.remarks} onChange={(e) => setDelayForm((p) => ({ ...p, remarks: e.target.value }))} placeholder="Delay remarks (optional)" className={inp} {...advanceProps("delay")} />
-                  <button type="button" onClick={addDelay} className="shrink-0 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-amber-700">+ Add</button>
-                </div>
-              </div>
+              {/* No "+ Add": each delay is a row above, entered by filling it in.
+                  The blank row at the bottom is the next delay; typing into it
+                  makes a fresh blank appear, so many delays go in without a
+                  single button. Empty rows are dropped on save. */}
             </div>
 
             <div className="flex items-center justify-end gap-3">

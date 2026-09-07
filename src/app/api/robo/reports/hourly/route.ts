@@ -4,6 +4,11 @@ import { resolveBatchRecipeIds } from "@/lib/robo/batchFilter";
 import { productionDateOf } from "@/lib/robo/productionDate";
 import { hourlyProduction } from "@/lib/robo/hourlyProduction";
 
+// Live aggregation, never cached — a stale hourly series is how the same batch's
+// chart would read differently at different times. Always computed fresh.
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 /**
  * GET /api/robo/reports/hourly?batch=<batch number>
  *
@@ -25,9 +30,15 @@ export async function GET(req: NextRequest) {
 
   const slabs = await prisma.roboProductionRecord.findMany({
     where: { batchRecipeId: { in: batchIds } },
+    // Register order — the production sequence hourlyProduction reconstructs the
+    // timeline from, so a batch that crossed midnight without its later slabs
+    // being re-dated is still placed on the right day.
+    orderBy: [{ serialNumber: "asc" }, { createdAt: "asc" }],
     select: {
       inTime: true,
       outTime: true,
+      serialNumber: true,
+      createdAt: true,
       // Everything productionDateOf needs to resolve the slab's effective day —
       // its own per-slab date first (a batch past midnight), else the setup's,
       // else the shift's.
@@ -38,7 +49,13 @@ export async function GET(req: NextRequest) {
   });
 
   const series = hourlyProduction(
-    slabs.map((s) => ({ productionDate: productionDateOf(s), inTime: s.inTime, outTime: s.outTime })),
+    slabs.map((s) => ({
+      productionDate: productionDateOf(s),
+      inTime: s.inTime,
+      outTime: s.outTime,
+      serialNumber: s.serialNumber,
+      createdAt: s.createdAt,
+    })),
   );
 
   return NextResponse.json({ series });

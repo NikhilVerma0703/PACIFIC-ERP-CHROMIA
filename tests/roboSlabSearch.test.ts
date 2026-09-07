@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { slabSearchWhere } from "../src/lib/robo/slabSearch.ts";
+import {
+  slabSearchWhere,
+  slabListTake,
+  SLAB_LIST_MAX_TAKE,
+  SLAB_LIST_DEFAULT_TAKE,
+} from "../src/lib/robo/slabSearch.ts";
 import { productionDateWhere } from "../src/lib/robo/productionDate.ts";
 
 /* The "Find a Slab" filter. Production Date, Batch No., Slab Number and Design
@@ -100,4 +105,37 @@ test("the date is the one the operator entered, not the shift's own", () => {
 test("string values are trimmed, so a pasted space does not miss every row", () => {
   assert.deepEqual(slabSearchWhere({ slabNumber: "  140748  " }).where, { slabNumber: { contains: "140748" } });
   assert.deepEqual(slabSearchWhere({ designName: "  BANYAN  " }).where, { batchRecipe: { designName: { contains: "BANYAN" } } });
+});
+
+/* How many rows the list returns — the regression behind "batch 1423 shows 200
+   on Slabs Records but 301 in Reports and Downloads". A filtered search must
+   return EVERY match (undefined = no Prisma limit), or a batch past 200 slabs is
+   silently truncated and the operator cannot tell 200-of-301 from all of them. */
+
+test("slabListTake: a FILTERED search is uncapped — the whole batch, not 200", () => {
+  // undefined means no `take`, so Prisma returns every matching row — this is
+  // the fix. A 301-slab batch now comes back whole, like Reports/Downloads.
+  assert.equal(slabListTake(0, true), undefined);
+  assert.equal(slabListTake(NaN, true), undefined);
+});
+
+test("slabListTake: NO filter stays capped at the latest 25 (register is unbounded)", () => {
+  assert.equal(slabListTake(0, false), SLAB_LIST_DEFAULT_TAKE);
+  assert.equal(slabListTake(0, false), 25);
+});
+
+test("slabListTake: an explicit ?limit= wins, and is capped at 500", () => {
+  assert.equal(slabListTake(100, false), 100);
+  assert.equal(slabListTake(100, true), 100);       // explicit beats the uncapped default too
+  assert.equal(slabListTake(9999, true), SLAB_LIST_MAX_TAKE);
+  assert.equal(slabListTake(9999, false), 500);
+  assert.equal(slabListTake(50.9, true), 50);       // truncated to a whole row count
+});
+
+test("slabListTake: a zero or negative limit is ignored, not treated as a real cap", () => {
+  // Number("") === 0 and a stray "-5" must fall through to the real rule, never
+  // pin the list to zero rows.
+  assert.equal(slabListTake(0, true), undefined);
+  assert.equal(slabListTake(-5, true), undefined);
+  assert.equal(slabListTake(-5, false), SLAB_LIST_DEFAULT_TAKE);
 });

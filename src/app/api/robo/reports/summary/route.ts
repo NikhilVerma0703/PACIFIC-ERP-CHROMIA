@@ -2,24 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { resolveBatchRecipeIds } from "@/lib/robo/batchFilter";
-import { delayProductionDateSelectWhere, productionDateSelectWhere } from "@/lib/robo/productionDate";
+import { delayProductionDateSelectWhere, productionDateOf, productionDateSelectWhere } from "@/lib/robo/productionDate";
+import { productionSpanMinutes, avgSlabsPerHour } from "@/lib/robo/productionSpan";
+import { delayTypesByCode } from "@/lib/robo/delayTypes";
 import { roboGate } from "@/lib/rbac";
 
-function toMins(t: string): number {
-  const [h, m] = (t || "").split(":").map(Number);
-  return (h || 0) * 60 + (m || 0);
-}
-
-/** Minutes a shift ran; open shifts count up to now, and midnight roll-over is handled. */
-function shiftMinutes(startTime: string, endTime: string | null, status: string, nowMins: number): number {
-  if (!startTime) return 0;
-  const start = toMins(startTime);
-  const end = endTime ? toMins(endTime) : status === "ACTIVE" ? nowMins : null;
-  if (end === null) return 0;
-  let diff = end - start;
-  if (diff < 0) diff += 24 * 60;
-  return diff;
-}
+// Never served from a cache: this is a live aggregation of production data, and
+// a stale response is exactly how "the same report shows different numbers later"
+// happens. Always computed fresh, per request, from the current rows.
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 /**
  * GET /api/robo/reports/summary?date=&from=&to=&batch=
@@ -50,8 +42,6 @@ export async function GET(req: NextRequest) {
   const date = sp.get("date")?.trim() || "";
   const from = sp.get("from")?.trim() || "";
   const to = sp.get("to")?.trim() || "";
-  const now = new Date();
-  const nowMins = now.getHours() * 60 + now.getMinutes();
 
   const batchIds = await resolveBatchRecipeIds(sp.get("batch"));
   // A null is "no batch filter"; an array (even empty) narrows — the delay
@@ -72,33 +62,6 @@ export async function GET(req: NextRequest) {
 
   const totalSlabs = await prisma.roboProductionRecord.count({ where: recordWhere });
 
-  /* Line minutes still come from the shift rows, because that is what a shift
-     genuinely records: when the tablet opened and closed. What changed is
-     WHICH shifts — the ones the matched slabs were logged in, rather than the
-     ones whose own date happens to equal the filter. Otherwise slabs/hour
-     would divide this date's slab count by another date's minutes.
-
-     A shift is counted once however many of its slabs matched; a distinct
-     select over the matched records gives exactly that set. Restricted whenever
-     ANY filter is applied — a date, a range, or a batch — so the minutes always
-     match the slabs they are divided into. */
-  const anyFilter = Boolean(date || from || to || batchIds !== null);
-  const shiftIds = anyFilter
-    ? (await prisma.roboProductionRecord.findMany({
-        where: recordWhere,
-        select: { shiftId: true },
-        distinct: ["shiftId"],
-      })).map((r) => r.shiftId)
-    : null;
-
-  const shifts = await prisma.roboShift.findMany({
-    where: shiftIds ? { id: { in: shiftIds } } : {},
-    select: { startTime: true, endTime: true, status: true },
-  });
-  const productionMinutes = shifts.reduce(
-    (s, sh) => s + shiftMinutes(sh.startTime, sh.endTime, sh.status, nowMins), 0
-  );
-
   const delays = await prisma.roboDelayLog.findMany({
     where: delayWhere,
     select: {
@@ -109,25 +72,53 @@ export async function GET(req: NextRequest) {
 
   const totalDelayMins = delays.reduce((s, d) => s + d.durationMinutes, 0);
 
+  /* Total Production Time — the last completed slab's Out Time minus the first
+     slab's In Time, over EXACTLY the filtered slabs (recordWhere, the same set
+     Total Slabs counts). This one span drives two KPIs: the Total Production Time
+     card, and the Avg Slabs/hour below it.
+
+     Each slab's In/Out is paired with its production date (productionDateOf, the
+     per-slab-then-setup-then-shift rule the whole module shows) so a run past
+     midnight or a multi-day filter measures a real distance, not a min/max over
+     bare clock strings. It is built ONLY from recorded times — no wall clock —
+     so both KPIs are deterministic: the same filtered data always gives the same
+     numbers. productionSpanMinutes returns null when nothing has completed or no
+     In Time exists, and both KPIs then read "—". */
+  const spanRecords = await prisma.roboProductionRecord.findMany({
+    where: recordWhere,
+    select: {
+      inTime: true,
+      outTime: true,
+      productionDate: true,
+      batchRecipe: { select: { productionDate: true } },
+      shift: { select: { date: true } },
+    },
+  });
+  const productionTimeMinutes = productionSpanMinutes(
+    spanRecords.map((r) => ({ productionDate: productionDateOf(r), inTime: r.inTime, outTime: r.outTime })),
+  );
+
+  /* Avg Slabs/hour — Total Slabs ÷ that elapsed batch duration in hours, DELAYS
+     LEFT IN (not subtracted): the operator's own definition. 46 slabs across a
+     14:10 → 21:50 run (7h 40m) is 46 ÷ 7.6667 ≈ 6.0. It replaces the old figure
+     that divided by shift open-time measured up to the current clock, which
+     drifted while a shift stayed open and diluted a batch filter with the whole
+     shift's hours; this divides the SAME filtered slabs by their OWN span, so it
+     is stable and filter-correct. "—" when there is no completed span. */
+  const avg = avgSlabsPerHour(totalSlabs, productionTimeMinutes);
+
   // EVERY delay type by total duration, highest first — the Delay Analysis bar
-  // chart and its table show the whole list, not a Top 5. Percentages are the
-  // client's job (against totalDelayMins), so the shape carries only the totals.
-  const byCode: Record<string, { code: string; description: string; category: string; minutes: number; events: number }> = {};
-  for (const d of delays) {
-    const key = d.delayCode.code;
-    if (!byCode[key]) {
-      byCode[key] = { code: key, description: d.delayCode.description, category: d.delayCode.category, minutes: 0, events: 0 };
-    }
-    byCode[key].minutes += d.durationMinutes;
-    byCode[key].events += 1;
-  }
-  const delayTypes = Object.values(byCode).sort((a, b) => b.minutes - a.minutes);
+  // chart and its table show the whole list, not a Top 5. The grouping is a pure,
+  // tested helper (delayTypesByCode) so the chart provably matches the Delay Log
+  // rows: one row = one event even for a multi-Robo delay, no clock, no drift.
+  // Percentages are the client's job (against totalDelayMins).
+  const delayTypes = delayTypesByCode(delays);
 
   return NextResponse.json({
     date: date || null,
     totalSlabs,
-    productionMinutes,
-    slabsPerHour: productionMinutes > 0 ? Math.round((totalSlabs / (productionMinutes / 60)) * 10) / 10 : null,
+    productionTimeMinutes,
+    avgSlabsPerHour: avg,
     totalDelayMins,
     delayEvents: delays.length,
     delayTypes,

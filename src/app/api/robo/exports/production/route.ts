@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { resolveBatchRecipeIds } from "@/lib/robo/batchFilter";
 import { formatSlabRemarks, machineLabel } from "@/lib/robo/utils";
 import { productionDateOf, productionDateSelectWhere, setupProductionDate } from "@/lib/robo/productionDate";
+import { roboThicknessOf } from "@/lib/robo/thickness";
 import { exportScopeTag } from "@/lib/robo/exportScope";
 import { assembleByBatch, assembleContinuous, type ExportRecord } from "@/lib/robo/productionGrouping";
 import { PRODUCTION_RECORD_COLUMNS, PRODUCTION_RECORD_WIDTHS } from "@/lib/robo/productionExport";
@@ -74,7 +75,10 @@ export async function GET(req: NextRequest) {
     serialNumber:     r.serialNumber,
     productionDate:   productionDateOf(r),
     designName:       r.batchRecipe?.designName ?? null,
-    thickness:        r.batchRecipe?.thickness ?? null,
+    // The slab's own thickness when it has one (a batch that changed thickness
+    // mid-run), else the setup's — roboThicknessOf. Existing rows are null there
+    // and read the setup exactly as before.
+    thickness:        roboThicknessOf(r),
     batchNo:          r.batchRecipe?.batchNo ?? null,
     slabNumber:       r.slabNumber,
     roymixBodyWeight: r.roymixBodyWeight,

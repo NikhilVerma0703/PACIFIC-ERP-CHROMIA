@@ -7,6 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { canEditRoboSetup } from "@/lib/rbac";
 import { slabStatusClass, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
 import { productionDateOf } from "@/lib/robo/productionDate";
+import { roboThicknessOf } from "@/lib/robo/thickness";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Slab Details | Pacific ERP" };
@@ -130,7 +131,9 @@ export default async function SlabCompleteDetailsPage({ params }: { params: Prom
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Production Info</h3>
               <div className="grid grid-cols-1 gap-x-8 md:grid-cols-2">
                 <Field label="Design Name" value={dash(setup?.designName)} />
-                <Field label="Slab Thickness (cm)" value={setup?.thickness ? String(setup.thickness) : "-"} />
+                {/* The slab's own thickness when it carries one (a batch that
+                    changed thickness mid-run), else the setup's — roboThicknessOf. */}
+                <Field label="Slab Thickness (cm)" value={dash(roboThicknessOf(record))} />
               </div>
             </div>
 
