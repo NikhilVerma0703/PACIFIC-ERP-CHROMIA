@@ -262,6 +262,37 @@ const PERSON_ALIAS: Record<string, string> = {
   // lower-cased variant -> canonical spelling
   sundhar: "Sundar",
 
+  // ---- Capitals the title-case rule below would otherwise flatten ----------
+  // These two MERGE NOBODY. The fallback at the foot of canonPerson title-cases
+  // every word so "SURESH" and "suresh" land on one display name, and that rule
+  // also rewrites a name whose capitals are load-bearing: "MA Raju" became "Ma
+  // Raju" and "SivaPrakash" became "Sivaprakash" on the board that pays them.
+  // Both names were set by the owner on 2026-09-06 in the spelling given here.
+  "ma raju": "MA Raju",
+  sivaprakash: "SivaPrakash",
+
+  // ---- Appalaraju IS MA Raju: one man, renamed 2026-09-06 -----------------
+  // The rename went through the data too (scripts/0078 rewrote 852 rows), so
+  // this entry looks redundant. It is not, and the hour after that script ran
+  // proved it: MIS row cmtpwxksm0006ik045cix63mv, filed 14:34 UTC for hour
+  // 19-20, came back saying "Appalaraju" in BOTH columns. Two reasons, and
+  // neither is fixed by rewriting rows again:
+  //
+  //   * The form's PROD_INCHARGE roster is a datalist, not a closed list — the
+  //     field "stays typeable" on purpose (MisShiftSheet.tsx) — so the old
+  //     spelling can always be typed, and until this deploys the roster still
+  //     OFFERS it.
+  //   * submitted_by is stamped from the session (stampOperator, OPERATOR_FIELDS
+  //     in app/tables/actions.ts), and the jwt callback revalidates
+  //     sessionVersion without re-reading users.name. His token carries
+  //     "Appalaraju" until it expires — up to 8 hours after the rename.
+  //
+  // A backfill is a moment in time; an alias is the rule. With this line the
+  // scoreboard cannot rank him twice however his name arrives, and the 363
+  // hours behind him stay behind him. It merges nobody: "Appalaraju" has only
+  // ever been this one man (users.email appalaraju@gmail.com, unchanged).
+  appalaraju: "MA Raju",
+
   // ---- Maintenance in-charges: one person, several names ------------------
   // Confirmed by the owner on 2026-09-02, with the LEADING name the one that
   // shows. Counts are MIS rows in the 120 days to that date, so the scale of

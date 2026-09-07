@@ -29,12 +29,26 @@ const ALL_HOURS = [...SHIFT_HOURS.A, ...SHIFT_HOURS.B, ...SHIFT_HOURS.C];
 const AREAS = ["Silos", "Mixer", "Distributor", "Kreos", "Chessboard", "Robot", "Press", "Oven", "Rubber Line", "Cooling Tower", "Jot"];
 // Fixed incharge rosters — multi-select (a shift can have more than one person).
 const ELEC_INCHARGE = ["Guna", "Sundar", "Kumar", "Ramarasan"];
-const MECH_INCHARGE = ["Mohan", "Manikya", "Narayanan", "Joseph", "Arun"];
+// "Manikya" became "SivaPrakash" on 2026-09-06 (owner). THE HISTORY IS NOT
+// TOUCHED, on the owner's instruction: the 68 MIS rows already naming Manikya
+// keep saying Manikya, and only rows written from now on say SivaPrakash. That
+// is deliberately unlike the Appalaraju -> MA Raju change made the same day,
+// which WAS backfilled — see scripts/0078.
+//
+// SIVAPRAKASH IS A DIFFERENT MAN, not a renaming of the one the board scores as
+// "Manikya" — asked and answered by the owner on 2026-09-06, because the answer
+// decides a payout. So NOTHING was done to PERSON_ALIAS for him: "Joseph" stays
+// on this roster and keeps folding into "Manikya" (404 of that man's 486 rows
+// are filed as Joseph, owner-confirmed 2026-09-02), and SivaPrakash starts with
+// no hours behind him. Were he the same man, leaving both on the roster would
+// double-credit a shift filed as "Joseph, SivaPrakash"; he is not, so it does
+// not. tests/shiftScore.test.ts pins the two as separate.
+const MECH_INCHARGE = ["Mohan", "SivaPrakash", "Narayanan", "Joseph", "Arun"];
 // Production incharge stays typeable — a new man must be enterable on the night
 // he starts — but the roster is offered as suggestions so the usual four land on
 // ONE spelling. The scoreboard pays this name, and "SURESH" beside "Suresh" was
 // two people with two scores until the scorer started folding case.
-const PROD_INCHARGE = ["Suresh", "Pradhap", "Appalaraju", "Sivaiha"];
+const PROD_INCHARGE = ["Suresh", "Pradhap", "MA Raju", "Sivaiha"];
 const DELAYS = [
   ["processDelayDurationMinutes", "Operational"],
   ["cleaningDelayDurationMinutes", "Cleaning"],

@@ -88,6 +88,25 @@ test("canonPerson folds case and the known one-person-two-spellings pairs", () =
   for (const v of ["Kumar", "kumar", "Ram", "Ramarasan", "ramarasan"]) {
     assert.equal(canonPerson(v), "Kumar", `${v} is Kumar`);
   }
+  // APPALARAJU IS MA RAJU, renamed by the owner 2026-09-06. scripts/0078
+  // rewrote his 852 rows, but a backfill is a moment and the old spelling keeps
+  // arriving: the production-incharge field is typeable, and submitted_by is
+  // stamped from a session token that caches users.name for up to 8 hours. One
+  // such row was filed within the hour after that script ran. The alias is what
+  // makes the rename hold, so the board cannot rank him twice.
+  for (const v of ["Appalaraju", "appalaraju", "APPALARAJU", " Appalaraju ", "MA Raju", "ma raju", "MA RAJU"]) {
+    assert.equal(canonPerson(v), "MA Raju", `${v} is MA Raju`);
+  }
+  // ...and his capitals survive the title-case fallback, as SivaPrakash's do.
+  // Neither entry merges anybody: both map a spelling of one man onto itself.
+  assert.equal(canonPerson("SivaPrakash"), "SivaPrakash");
+  assert.equal(canonPerson("sivaprakash"), "SivaPrakash");
+  // The mechanic's fold is UNCHANGED by either rename — "Joseph" still scores
+  // as "Manikya", which is why a SivaPrakash who turns out to be that same man
+  // needs a decision here rather than a new roster entry.
+  assert.equal(canonPerson("Joseph"), "Manikya");
+  assert.notEqual(canonPerson("SivaPrakash"), canonPerson("Manikya"));
+
   // And the long production names that CONTAIN "Kumar" are untouched by it:
   // they are keyed whole and never reach the stand-alone entry.
   assert.equal(canonPerson("Satish Kumar"), "Satish");

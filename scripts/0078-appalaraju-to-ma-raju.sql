@@ -1,0 +1,65 @@
+-- 0078: one man, one name — "Appalaraju" becomes "MA Raju" everywhere his name
+--       is written, history included.
+--
+-- Owner, 2026-09-06: "change production incharge name Appalaraju change to MA
+-- Raju (in history as well, just name change email remains the same)."
+--
+-- THE EMAIL DOES NOT MOVE. users.email stays appalaraju@gmail.com; only the
+-- display name changes. Nothing authenticates on the name, so no login breaks.
+--
+-- WHY THE HISTORY IS REWRITTEN HERE AND NOT LEFT ALONE. The shift scoreboard
+-- pays on this string (lib/shiftScoreMath.ts canonPerson folds case, then the
+-- name IS the person). Renaming the roster without the rows would have ranked
+-- one man as two from tomorrow — "Appalaraju" with 363 hours behind him and
+-- "MA Raju" with none — and split his share of the pool. That is the exact
+-- defect PERSON_ALIAS exists to undo for Joseph/Manikya, and the owner asked
+-- for the rename to reach the history precisely so it never starts.
+--
+-- MEASURED BEFORE WRITING (live Neon, 2026-09-06). Every text column in the
+-- public schema whose name suggests a person (224 of them) was scanned for the
+-- string; these four are all of them:
+--
+--     mis.production_incharge_name   363 rows   the field the owner named
+--     mis.submitted_by              487 rows   the form's "Filled by:" line
+--     press.operator                  1 row    one press hour he ran
+--     users.name                      1 row    the login itself
+--
+-- "Manikya" was found in 68 further MIS rows and is deliberately NOT touched:
+-- the owner asked for that roster entry to change to SivaPrakash from now on
+-- with the history left as it stands. Two renames, two different rules, on
+-- purpose.
+--
+-- Applied 2026-09-06: 852 rows changed (363 + 487 + 1 + 1), verified before and
+-- after; the 68 Manikya rows were confirmed untouched.
+--
+-- RE-RUNNING IS NOT A NO-OP UNTIL THE CODE SHIPS, and that is not a flaw in this
+-- script. Within the hour after it ran, production filed MIS row
+-- cmtpwxksm0006ik045cix63mv saying "Appalaraju" in both columns again: the form
+-- still offers the old spelling until the deploy, the field is typeable anyway,
+-- and submitted_by is stamped from a session token that caches users.name for
+-- up to 8 hours. Run this again after the deploy to sweep whatever landed in
+-- between. The SCORING is already safe without it — PERSON_ALIAS in
+-- lib/shiftScoreMath.ts maps appalaraju -> MA Raju, so a straggler row is a
+-- cosmetic string in the form header, not a second man on the board.
+--
+-- To re-run:
+--   npx prisma db execute --schema prisma/schema.prisma --file scripts/0078-appalaraju-to-ma-raju.sql
+-- (NOT `prisma db push` — it drops undeclared columns; see CLAUDE.md and
+-- scripts/NEON-PRODUCTION-RUNBOOK.md.) No `prisma generate` needed: no schema
+-- change, data only.
+--
+-- IDEMPOTENT: each UPDATE is keyed on the old exact value, so a second run
+-- matches nothing. Exact-match, not ILIKE — there is no other spelling of the
+-- name in any of the four columns, and a fuzzy match here would be a rename
+-- nobody asked for.
+--
+-- Read-only check before and after:
+--   SELECT 'mis.production_incharge_name' c, production_incharge_name v, count(*) FROM mis WHERE production_incharge_name IN ('Appalaraju','MA Raju') GROUP BY 1,2
+--   UNION ALL SELECT 'mis.submitted_by', submitted_by, count(*) FROM mis WHERE submitted_by IN ('Appalaraju','MA Raju') GROUP BY 1,2
+--   UNION ALL SELECT 'press.operator', operator, count(*) FROM press WHERE operator IN ('Appalaraju','MA Raju') GROUP BY 1,2
+--   UNION ALL SELECT 'users.name', name, count(*) FROM users WHERE name IN ('Appalaraju','MA Raju') GROUP BY 1,2;
+
+UPDATE mis   SET production_incharge_name = 'MA Raju' WHERE production_incharge_name = 'Appalaraju';
+UPDATE mis   SET submitted_by             = 'MA Raju' WHERE submitted_by             = 'Appalaraju';
+UPDATE press SET operator                 = 'MA Raju' WHERE operator                 = 'Appalaraju';
+UPDATE users SET name                     = 'MA Raju' WHERE name                     = 'Appalaraju';
