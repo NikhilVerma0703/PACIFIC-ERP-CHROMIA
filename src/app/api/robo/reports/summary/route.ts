@@ -89,13 +89,29 @@ export async function GET(req: NextRequest) {
     select: {
       inTime: true,
       outTime: true,
+      // Register order and the run each slab belongs to: the span places slabs
+      // by the same sequence rule as the hourly chart, per batch, so the KPI
+      // and the chart under it describe the same run.
+      serialNumber: true,
+      createdAt: true,
+      batchRecipeId: true,
+      shiftId: true,
       productionDate: true,
       batchRecipe: { select: { productionDate: true } },
       shift: { select: { date: true } },
     },
   });
   const productionTimeMinutes = productionSpanMinutes(
-    spanRecords.map((r) => ({ productionDate: productionDateOf(r), inTime: r.inTime, outTime: r.outTime })),
+    spanRecords.map((r) => ({
+      productionDate: productionDateOf(r),
+      inTime: r.inTime,
+      outTime: r.outTime,
+      serialNumber: r.serialNumber,
+      createdAt: r.createdAt,
+      // A slab with no setup is its shift's run: serials restart per batch, so
+      // slabs of different runs must never be walked as one sequence.
+      runKey: r.batchRecipeId ?? `shift:${r.shiftId}`,
+    })),
   );
 
   /* Avg Slabs/hour — Total Slabs ÷ that elapsed batch duration in hours, DELAYS

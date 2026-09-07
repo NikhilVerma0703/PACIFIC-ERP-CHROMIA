@@ -107,35 +107,72 @@ test("string values are trimmed, so a pasted space does not miss every row", () 
   assert.deepEqual(slabSearchWhere({ designName: "  BANYAN  " }).where, { batchRecipe: { designName: { contains: "BANYAN" } } });
 });
 
-/* How many rows the list returns — the regression behind "batch 1423 shows 200
-   on Slabs Records but 301 in Reports and Downloads". A filtered search must
-   return EVERY match (undefined = no Prisma limit), or a batch past 200 slabs is
-   silently truncated and the operator cannot tell 200-of-301 from all of them. */
+/* Which filters BOUND the result. A batch resolves to a finite set of setups, a
+   date is a day, a shift is a shift. Slab Number and Design Name are substring
+   `contains` matches, so alone they bound nothing — "1" is most of the register. */
 
-test("slabListTake: a FILTERED search is uncapped — the whole batch, not 200", () => {
+test("bounded: batch ids, a date or a shift each bound the search", () => {
+  assert.equal(slabSearchWhere({ batchRecipeIds: ["r1"] }).bounded, true);
+  assert.equal(slabSearchWhere({ batchRecipeIds: [] }).bounded, true);   // a real filter that matches nothing
+  assert.equal(slabSearchWhere({ date: "2026-08-18" }).bounded, true);
+  assert.equal(slabSearchWhere({ shiftId: "shift_1" }).bounded, true);
+});
+
+test("bounded: substring filters alone do not, and no filter does not", () => {
+  assert.equal(slabSearchWhere({}).bounded, false);
+  assert.equal(slabSearchWhere({ slabNumber: "1" }).bounded, false);
+  assert.equal(slabSearchWhere({ designName: "B" }).bounded, false);
+  const both = slabSearchWhere({ slabNumber: "1", designName: "B" });
+  assert.equal(both.hasFilters, true);
+  assert.equal(both.bounded, false);
+});
+
+test("bounded: a substring filter combined with a bounded one is bounded", () => {
+  assert.equal(slabSearchWhere({ slabNumber: "1", batchRecipeIds: ["r1"] }).bounded, true);
+  assert.equal(slabSearchWhere({ designName: "B", date: "2026-08-18" }).bounded, true);
+});
+
+/* How many rows the list returns — the regression behind "batch 1423 shows 200
+   on Slabs Records but 301 in Reports and Downloads". A BOUNDED search must
+   return EVERY match (undefined = no Prisma limit), or a batch past 200 slabs is
+   silently truncated and the operator cannot tell 200-of-301 from all of them.
+   A substring-only search is the opposite hazard — one typed character fetching
+   the whole register with three includes — so it keeps a cap. */
+
+test("slabListTake: a BOUNDED search is uncapped — the whole batch, not 200", () => {
   // undefined means no `take`, so Prisma returns every matching row — this is
   // the fix. A 301-slab batch now comes back whole, like Reports/Downloads.
-  assert.equal(slabListTake(0, true), undefined);
-  assert.equal(slabListTake(NaN, true), undefined);
+  assert.equal(slabListTake(0, true, true), undefined);
+  assert.equal(slabListTake(NaN, true, true), undefined);
+});
+
+test("slabListTake: a substring-only search is capped at 500, not the whole register", () => {
+  // Slab Number "1" or Design Name "B" alone: a real filter, but one that
+  // matches most of the register. Capped like an explicit ?limit=, never open.
+  assert.equal(slabListTake(0, true, false), SLAB_LIST_MAX_TAKE);
+  assert.equal(slabListTake(0, true, false), 500);
+  assert.equal(slabListTake(NaN, true, false), SLAB_LIST_MAX_TAKE);
 });
 
 test("slabListTake: NO filter stays capped at the latest 25 (register is unbounded)", () => {
-  assert.equal(slabListTake(0, false), SLAB_LIST_DEFAULT_TAKE);
-  assert.equal(slabListTake(0, false), 25);
+  assert.equal(slabListTake(0, false, false), SLAB_LIST_DEFAULT_TAKE);
+  assert.equal(slabListTake(0, false, false), 25);
 });
 
 test("slabListTake: an explicit ?limit= wins, and is capped at 500", () => {
-  assert.equal(slabListTake(100, false), 100);
-  assert.equal(slabListTake(100, true), 100);       // explicit beats the uncapped default too
-  assert.equal(slabListTake(9999, true), SLAB_LIST_MAX_TAKE);
-  assert.equal(slabListTake(9999, false), 500);
-  assert.equal(slabListTake(50.9, true), 50);       // truncated to a whole row count
+  assert.equal(slabListTake(100, false, false), 100);
+  assert.equal(slabListTake(100, true, true), 100);       // explicit beats the uncapped default too
+  assert.equal(slabListTake(100, true, false), 100);      // and the substring cap
+  assert.equal(slabListTake(9999, true, true), SLAB_LIST_MAX_TAKE);
+  assert.equal(slabListTake(9999, false, false), 500);
+  assert.equal(slabListTake(50.9, true, true), 50);       // truncated to a whole row count
 });
 
 test("slabListTake: a zero or negative limit is ignored, not treated as a real cap", () => {
   // Number("") === 0 and a stray "-5" must fall through to the real rule, never
   // pin the list to zero rows.
-  assert.equal(slabListTake(0, true), undefined);
-  assert.equal(slabListTake(-5, true), undefined);
-  assert.equal(slabListTake(-5, false), SLAB_LIST_DEFAULT_TAKE);
+  assert.equal(slabListTake(0, true, true), undefined);
+  assert.equal(slabListTake(-5, true, true), undefined);
+  assert.equal(slabListTake(-5, true, false), SLAB_LIST_MAX_TAKE);
+  assert.equal(slabListTake(-5, false, false), SLAB_LIST_DEFAULT_TAKE);
 });

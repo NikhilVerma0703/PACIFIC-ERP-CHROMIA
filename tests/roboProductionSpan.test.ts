@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { productionSpanMinutes, avgSlabsPerHour, type SpanSlab } from "../src/lib/robo/productionSpan.ts";
+import { hourlyProduction } from "../src/lib/robo/hourlyProduction.ts";
 
 /* Total Production Time = last Out Time − first In Time across the filtered
    slabs. Wall-clock "HH:MM" with no day of its own, so the span is date-aware:
@@ -115,4 +116,72 @@ test("avgSlabsPerHour: no span (nothing completed) or a zero/negative span → n
 
 test("avgSlabsPerHour: zero slabs over a span is a clean 0, not a divide error", () => {
   assert.equal(avgSlabsPerHour(0, 460), 0);
+});
+
+/* One placement rule, shared with the hourly chart (slabPlacement.ts): a slab's
+   Out before its In is the next day, and a forward stored date is only trusted
+   when the clock went backwards against the run. */
+
+test("a last slab whose Out clock precedes its In clock ends the span the NEXT day", () => {
+  // 20:00 → 00:10 next morning = 250 minutes, not 120 (Out stamped on the same
+  // day as In fell before the earlier slabs' Outs and was ignored).
+  const slabs = [
+    slab("2026-09-01", "20:00", "21:00"),
+    slab("2026-09-01", "21:00", "22:00"),
+    slab("2026-09-01", "23:30", "00:10"),
+  ];
+  assert.equal(productionSpanMinutes(slabs), 250);
+  assert.equal(avgSlabsPerHour(3, 250), 0.7);
+});
+
+test("a lone slab crossing midnight by itself has a span, not '—'", () => {
+  assert.equal(productionSpanMinutes([slab("2026-09-01", "23:30", "00:10")]), 40);
+});
+
+test("BATCH 1432 — the span ends where the chart ends: two mis-dated last slabs add no day", () => {
+  // 31 Aug 11:20 → 22:50; slabs 7 and 8 wrongly carry 01 Sep. The chart keeps
+  // them in 22:00–23:00 on 31 Aug (see roboHourlyProduction), so the KPI must
+  // read 11h 30m — not "35 hours 30 minutes" over an 11:00–23:00 chart.
+  const rows = [
+    { serialNumber: 1, productionDate: "2026-08-31", inTime: "11:20", outTime: "12:00" },
+    { serialNumber: 2, productionDate: "2026-08-31", inTime: "20:00", outTime: "21:30" },
+    { serialNumber: 3, productionDate: "2026-08-31", inTime: "21:35", outTime: "22:05" },
+    { serialNumber: 4, productionDate: "2026-08-31", inTime: "22:05", outTime: "22:20" },
+    { serialNumber: 5, productionDate: "2026-08-31", inTime: "22:20", outTime: "22:30" },
+    { serialNumber: 6, productionDate: "2026-08-31", inTime: "22:30", outTime: "22:40" },
+    { serialNumber: 7, productionDate: "2026-09-01", inTime: "22:40", outTime: "22:45" },
+    { serialNumber: 8, productionDate: "2026-09-01", inTime: "22:45", outTime: "22:50" },
+  ];
+  const span = productionSpanMinutes(rows);
+  assert.equal(span, 11 * 60 + 30); // 690
+  const chart = hourlyProduction(rows);
+  // First In (11:20) falls in the chart's first bucket; first In + span (22:50)
+  // falls in its last bucket, on the same date the chart ends on.
+  const firstIn = 11 * 60 + 20;
+  assert.equal(Math.floor(firstIn / 60), chart[0].hour);
+  assert.equal(Math.floor((firstIn + (span as number)) / 60), chart[chart.length - 1].hour);
+  assert.equal(chart[chart.length - 1].date, "2026-08-31");
+  assert.equal(Math.floor((span as number) / 60), chart.length - 1);
+});
+
+test("register order, not array order, decides which slab is the run's last", () => {
+  const shuffled = [
+    { serialNumber: 3, productionDate: "2026-09-01", inTime: "23:30", outTime: "00:10" },
+    { serialNumber: 1, productionDate: "2026-09-01", inTime: "20:00", outTime: "21:00" },
+    { serialNumber: 2, productionDate: "2026-09-01", inTime: "21:00", outTime: "22:00" },
+  ];
+  assert.equal(productionSpanMinutes(shuffled), 250);
+});
+
+test("a filter over two batches places each batch as its own run (runKey)", () => {
+  // Batch A ran the 24th 10:00–20:00, batch B the 25th evening 21:00–23:00.
+  // Walked as one sequence B's 21:00 would sit at/after A's run and its date be
+  // ignored (a 13h span); as two runs B anchors on its own date → 37h.
+  const slabs = [
+    { runKey: "A", serialNumber: 1, productionDate: DAY, inTime: "10:00", outTime: "15:00" },
+    { runKey: "A", serialNumber: 2, productionDate: DAY, inTime: "15:00", outTime: "20:00" },
+    { runKey: "B", serialNumber: 1, productionDate: NEXT, inTime: "21:00", outTime: "22:00" },
+    { runKey: "B", serialNumber: 2, productionDate: NEXT, inTime: "22:00", outTime: "23:00" },
+  ];
+  assert.equal(productionSpanMinutes(slabs), 37 * 60);
 });

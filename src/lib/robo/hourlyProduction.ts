@@ -15,44 +15,23 @@
  * 23:00–00:00 is immediately followed by 00:00–01:00 of the next date.
  *
  * ── WHICH DAY EACH HOUR IS ON ──────────────────────────────────────────────
- * In/Out are bare HH:MM with no day of their own. The day is taken from the
- * production SEQUENCE, not from trusting each slab's stored date:
+ * In/Out are bare HH:MM with no day of their own. Where each slab sits on the
+ * absolute timeline is decided by slabPlacement.ts — the SAME rule the Total
+ * Production Time KPI uses, so the KPI and this chart can never disagree about
+ * one batch. In short: the first slab anchors the day; a later slab's forward
+ * date is trusted only when its clock went backwards against the run (an
+ * overnight pause), never when the time barely moved (batch 1432's mis-dated
+ * last slabs); and a clock more than 12h behind the run has wrapped past
+ * midnight whether or not the slab was re-dated.
  *
- *   • The FIRST slab in register order — the batch's start — anchors the start
- *     day.
- *
- *   • The day then advances ONLY when the times wrap past midnight: walking the
- *     slabs in register order (serialNumber, then createdAt), a slab whose time
- *     falls far BEFORE the run so far (more than 12h) has crossed into the next
- *     day. This fires for a real crossing whether or not the post-midnight slabs
- *     were re-dated, so a cross-midnight batch never loses its second half.
- *
- * A later slab's own stored date is deliberately NOT allowed to advance the day.
- * A date that jumps forward mid-run while the time barely moved — a late slab
- * wrongly carrying tomorrow's date — is a data-entry slip, and trusting it is
- * exactly what threw a batch's last slabs ~24h ahead and drew an empty extra day
- * (batch 1432: six 22:xx slabs, two of them shifted a day forward). Anchoring on
- * the start and advancing only on a real time wrap keeps every slab in the hour
- * it was actually produced, exactly once.
- *
- * Only a large backward jump counts as a crossing, so slabs logged a little out
- * of order never trip it. No wall clock is ever read — the timeline is built
- * entirely from the stored In/Out and the sequence — so the same records always
- * produce the same chart, and a historical hour never changes because time
- * passed.
+ * No wall clock is ever read — the timeline is built entirely from the stored
+ * In/Out and the sequence — so the same records always produce the same chart,
+ * and a historical hour never changes because time passed.
  */
 
-export interface HourlySlab {
-  /** yyyy-mm-dd — the slab's effective production date (productionDateOf). */
-  productionDate: string | null;
-  inTime: string | null; // HH:MM
-  outTime: string | null; // HH:MM
-  /** Register order — the production sequence, used to reconstruct a continuous
-   *  timeline across midnight. Optional: with neither hint present the caller's
-   *  array order is taken as the sequence (a stable sort preserves it). */
-  serialNumber?: number | null;
-  createdAt?: string | number | Date | null;
-}
+import { type PlaceableSlab, dateFromDayNum, placeSlabs, registerOrder, MAX_RUN_HOURS } from "./slabPlacement.ts";
+
+export type HourlySlab = PlaceableSlab;
 
 export interface HourBucket {
   /** "11:00–12:00", "23:00–00:00" — the interval, 24-hour. */
@@ -66,39 +45,6 @@ export interface HourBucket {
   date: string | null;
 }
 
-/** Minutes since midnight for an HH:MM string, or null if unusable. */
-function toMins(t: string | null | undefined): number | null {
-  if (!t) return null;
-  const [h, m] = t.split(":").map(Number);
-  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
-  return h * 60 + m;
-}
-
-/** Whole days since the epoch for a yyyy-mm-dd string, or null. UTC, so no
- *  timezone shifts the day. */
-function dayNum(d: string | null | undefined): number | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((d ?? "").trim());
-  if (!m) return null;
-  return Math.floor(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86_400_000);
-}
-
-/** The yyyy-mm-dd for a whole-days-since-epoch number — the inverse of dayNum,
- *  in UTC, so the date a bucket is labelled with never drifts with a timezone. */
-function dateFromDayNum(dn: number): string | null {
-  if (!Number.isFinite(dn)) return null;
-  return new Date(dn * 86_400_000).toISOString().slice(0, 10);
-}
-
-/** A comparable number for a createdAt (Date, epoch ms, or ISO string); 0 when
- *  absent or unparseable, so it never reorders ahead of a real timestamp. */
-function createdAtValue(v: string | number | Date | null | undefined): number {
-  if (v == null) return 0;
-  if (typeof v === "number") return v;
-  if (v instanceof Date) return v.getTime();
-  const t = Date.parse(v);
-  return Number.isNaN(t) ? 0 : t;
-}
-
 const pad = (n: number) => String(n).padStart(2, "0");
 
 /** "HH:00–HH:00" for an absolute hour index, wrapping the labels at midnight. */
@@ -108,75 +54,22 @@ function hourLabel(absHour: number): string {
   return `${pad(a)}:00–${pad(b)}:00`;
 }
 
-/** A time jumping back more than this against the run so far is a midnight
- *  crossing, not a slab logged slightly out of order. */
-const WRAP_GUARD_MIN = 12 * 60;
-
 /** A run this long is a data error (a stray date), not a real batch — cap the
  *  timeline so one bad row can't ask for thousands of empty hours. */
-const MAX_HOURS = 48;
+const MAX_HOURS = MAX_RUN_HOURS;
 
 export function hourlyProduction(slabs: readonly HourlySlab[]): HourBucket[] {
-  // Register order = production order. Stable, so with no serial/createdAt hints
-  // the caller's own order stands as the sequence.
-  const ordered = slabs
-    .map((slab, i) => ({ slab, i }))
-    .sort((a, b) => {
-      const sa = a.slab.serialNumber, sb = b.slab.serialNumber;
-      if (sa != null && sb != null && sa !== sb) return sa - sb;
-      if (sa != null && sb == null) return -1;
-      if (sa == null && sb != null) return 1;
-      const ca = createdAtValue(a.slab.createdAt), cb = createdAtValue(b.slab.createdAt);
-      if (ca !== cb) return ca - cb;
-      return a.i - b.i;
-    });
-
-  let dayBase: number | null = null; // absolute minute of the current day's midnight
-  let prevRef = -Infinity;           // the previous slab's last placed minute
   let winStart = Infinity;           // absolute minute the batch first started
   let winEnd = -Infinity;            // absolute minute of its last completion
   const completions: number[] = [];  // absolute minute of each Out Time
 
-  for (const { slab } of ordered) {
-    const inM = toMins(slab.inTime);
-    const outM = toMins(slab.outTime);
-    const startM = inM ?? outM;
-    if (startM === null) continue; // no time at all → cannot place it
-
-    // The date anchors the START day, once, from the first dated slab (register
-    // order → the batch's first slab). It never advances the day again: a later
-    // slab's date that jumps forward is the mis-dating that shifted a batch's
-    // last slabs ~24h ahead (batch 1432). The day advances only on a real time
-    // wrap, below — so a genuine crossing is still caught, from the times.
-    const day = dayNum(slab.productionDate);
-    if (day !== null && dayBase === null) dayBase = day * 1440;
-    if (dayBase === null) continue; // no date yet → nothing to place it on
-
-    let inAbs = inM !== null ? dayBase + inM : null;
-    let outAbs = outM !== null ? dayBase + outM : null;
-    // A slab whose own Out precedes its In crossed midnight by itself.
-    if (inAbs !== null && outAbs !== null && (outM as number) < (inM as number)) outAbs += 1440;
-
-    // Signal 2 — the sequence. If this slab starts far before the previous slab
-    // ended, the run crossed midnight without the date catching it: push it (and
-    // the day cursor) forward a day at a time until it sits after the run so far.
-    let refAbs = inAbs ?? (outAbs as number);
-    let guard = 0;
-    while (prevRef !== -Infinity && refAbs + WRAP_GUARD_MIN < prevRef && guard < MAX_HOURS) {
-      dayBase += 1440;
-      if (inAbs !== null) inAbs += 1440;
-      if (outAbs !== null) outAbs += 1440;
-      refAbs += 1440;
-      guard++;
-    }
-
+  for (const { inAbs, outAbs } of placeSlabs(registerOrder(slabs))) {
     const startAbs = inAbs ?? (outAbs as number);
     winStart = Math.min(winStart, startAbs);
     if (outAbs !== null) {
       winEnd = Math.max(winEnd, outAbs);
       completions.push(outAbs);
     }
-    prevRef = outAbs ?? startAbs;
   }
 
   if (!Number.isFinite(winStart) && !Number.isFinite(winEnd)) return [];

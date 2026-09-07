@@ -62,6 +62,13 @@ export interface SlabSearchWhere {
     OR?: NonNullable<ReturnType<typeof productionDateWhere>>["OR"];
   };
   hasFilters: boolean;
+  /**
+   * Whether a filter names a FINITE set — a batch (resolved setup ids), a date
+   * or a shift. Slab Number and Design Name are substring `contains` matches,
+   * so alone they bound nothing: a one-character slab number is the whole
+   * register. slabListTake uncaps only a bounded search.
+   */
+  bounded: boolean;
 }
 
 const clean = (v: string | null | undefined): string => (v ?? "").trim();
@@ -91,11 +98,12 @@ export function slabSearchWhere(input: SlabSearchInput): SlabSearchWhere {
   return {
     where,
     hasFilters: Boolean(shiftId || date || slabNumber || designName || batchRecipeIds !== null),
+    bounded: Boolean(shiftId || date || batchRecipeIds !== null),
   };
 }
 
-/** The most a caller may pull in one page, even by asking — a guard on the
- *  explicit `?limit=`, not on a filtered search. */
+/** The most a caller may pull in one page, even by asking — the guard on the
+ *  explicit `?limit=`, and on a search whose only filters are substrings. */
 export const SLAB_LIST_MAX_TAKE = 500;
 /** The window for browsing the whole register with no filter: the latest few,
  *  because that set is unbounded and no one wants every slab ever made at once. */
@@ -105,7 +113,7 @@ export const SLAB_LIST_DEFAULT_TAKE = 25;
  * How many rows GET /api/robo/production returns — as a `take` for Prisma, where
  * `undefined` means NO limit (every matching row).
  *
- * A FILTERED search returns every match: pick a batch and you get the whole
+ * A BOUNDED search returns every match: pick a batch and you get the whole
  * batch, not its newest 200. This is the bug behind "batch 1423 shows 200 but
  * Reports and Downloads show all 301" — those screens run the same filter with
  * no cap (see exports/production and reports/*), and this brings Slabs Records
@@ -117,10 +125,15 @@ export const SLAB_LIST_DEFAULT_TAKE = 25;
  * Unfiltered browsing of the whole register stays capped at the latest 25,
  * because that set has no bound. An explicit `?limit=` still wins for a caller
  * that wants a set size, capped at 500 so one request can't pull the register.
+ *
+ * A search whose ONLY filters are the substring ones (Slab Number, Design Name)
+ * is capped at that same 500: "contains 1" matches most of the register, and
+ * uncapped that fetched every slab with three includes into one table.
  */
-export function slabListTake(limitParam: number, hasFilters: boolean): number | undefined {
+export function slabListTake(limitParam: number, hasFilters: boolean, bounded: boolean): number | undefined {
   if (Number.isFinite(limitParam) && limitParam > 0) {
     return Math.min(Math.trunc(limitParam), SLAB_LIST_MAX_TAKE);
   }
-  return hasFilters ? undefined : SLAB_LIST_DEFAULT_TAKE;
+  if (!hasFilters) return SLAB_LIST_DEFAULT_TAKE;
+  return bounded ? undefined : SLAB_LIST_MAX_TAKE;
 }

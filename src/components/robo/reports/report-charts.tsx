@@ -51,7 +51,13 @@ const HP_HOUR_PX = 52;   // readable width per hour before horizontal scroll kic
  */
 export function HourlyProductionLine({ data }: { data: HourBucket[] }) {
   const { max: yMax, ticks } = hourlyYAxis(data.reduce((m, b) => Math.max(m, b.slabs), 0));
-  const boundaries = data.filter((b, i) => i > 0 && b.date && b.date !== data[i - 1].date);
+  // The X-axis is keyed by position, not by the hour label: past 24 buckets a
+  // label repeats ("06:00–07:00" on both days), and Recharts then swaps the
+  // category domain for indices — the midnight ReferenceLine positioned by
+  // label silently vanished, and two midnights gave duplicate React keys.
+  const points = data.map((b, i) => ({ ...b, x: i }));
+  const hourLabel = (x: number) => data[x]?.label ?? "";
+  const boundaries = points.filter((b, i) => i > 0 && b.date && b.date !== data[i - 1].date);
   const plotWidth = data.length * HP_HOUR_PX;
 
   return (
@@ -63,20 +69,21 @@ export function HourlyProductionLine({ data }: { data: HourBucket[] }) {
       <div className="overflow-x-auto">
         <div style={{ minWidth: plotWidth }}>
           <ResponsiveContainer width="100%" height={HP_HEIGHT}>
-            <LineChart data={data} margin={{ top: HP_TOP, right: 24, left: 0, bottom: 0 }}>
+            <LineChart data={points} margin={{ top: HP_TOP, right: 24, left: 0, bottom: 0 }}>
               <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
               {/* Left padding keeps the first hour's angled label clear of the
                   pinned Y-axis instead of tucked behind it. */}
-              <XAxis dataKey="label" height={HP_XAXIS_H} interval={0} angle={-45} textAnchor="end"
+              <XAxis dataKey="x" tickFormatter={hourLabel} height={HP_XAXIS_H} interval={0} angle={-45} textAnchor="end"
                 padding={{ left: 30, right: 20 }}
                 tick={{ fontSize: 11, fill: MUTED }} axisLine={{ stroke: AXIS }} tickLine={false} />
               <YAxis width={HP_AXIS_W} domain={[0, yMax]} ticks={ticks} allowDecimals={false}
                 tick={{ fontSize: 12, fill: MUTED }} axisLine={false} tickLine={false} />
               <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ stroke: AXIS, strokeDasharray: "3 3" }}
+                labelFormatter={(x: number) => hourLabel(x)}
                 formatter={(v: number) => [`${v} slab${v === 1 ? "" : "s"}`, "Completed"]} />
               {/* Date markers at each midnight the run crossed — drawn behind the line. */}
               {boundaries.map((b) => (
-                <ReferenceLine key={b.label} x={b.label} stroke={AXIS} strokeDasharray="4 3"
+                <ReferenceLine key={b.x} x={b.x} stroke={AXIS} strokeDasharray="4 3"
                   label={{ value: shortDate(b.date), position: "top", fontSize: 11, fontWeight: 600, fill: MUTED }} />
               ))}
               <Line type="monotone" dataKey="slabs" stroke={PRODUCTION_HUE} strokeWidth={2.5}
@@ -96,8 +103,8 @@ export function HourlyProductionLine({ data }: { data: HourBucket[] }) {
         style={{ width: HP_AXIS_W, height: HP_HEIGHT }}>
         <div style={{ width: 200, height: HP_HEIGHT }}>
           <ResponsiveContainer width="100%" height={HP_HEIGHT}>
-            <LineChart data={data} margin={{ top: HP_TOP, right: 24, left: 0, bottom: 0 }}>
-              <XAxis dataKey="label" height={HP_XAXIS_H} tick={false} axisLine={false} tickLine={false} />
+            <LineChart data={points} margin={{ top: HP_TOP, right: 24, left: 0, bottom: 0 }}>
+              <XAxis dataKey="x" height={HP_XAXIS_H} tick={false} axisLine={false} tickLine={false} />
               <YAxis width={HP_AXIS_W} domain={[0, yMax]} ticks={ticks} allowDecimals={false}
                 tick={{ fontSize: 12, fill: MUTED }} axisLine={false} tickLine={false} />
             </LineChart>

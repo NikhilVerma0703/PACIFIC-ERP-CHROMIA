@@ -240,3 +240,29 @@ test("a single forward-mis-dated slab mid-run does not open a second day", () =>
   assert.ok(s.every((b) => b.date === "2026-08-31"));
   assert.equal(s.reduce((a, b) => a + b.slabs, 0), 3);
 });
+
+test("a batch paused overnight and resumed next morning charts the resumption on day 2", () => {
+  // The later slabs carry the next day's date as the per-slab date is designed
+  // for, but their clock (08:30) is not >12h behind the run (20:00). The date is
+  // still trusted because 08:30 same-day would land BEFORE the run so far — it
+  // cannot be a same-day continuation. The wrong answer put every bucket on the
+  // 21st, from 08:00, before the batch had even started.
+  const s = hourlyProduction([
+    { serialNumber: 1, productionDate: "2026-08-21", inTime: "14:00", outTime: "15:00" },
+    { serialNumber: 2, productionDate: "2026-08-21", inTime: "19:00", outTime: "20:00" },
+    { serialNumber: 3, productionDate: "2026-08-22", inTime: "08:30", outTime: "09:30" },
+    { serialNumber: 4, productionDate: "2026-08-22", inTime: "11:00", outTime: "12:00" },
+  ]);
+  assert.equal(s.length, 23); // 21 Aug 14:00 … 22 Aug 12:00
+  assert.equal(s[0].hour, 14);
+  assert.equal(s[0].date, "2026-08-21");
+  assert.equal(s[s.length - 1].hour, 12);
+  assert.equal(s[s.length - 1].date, "2026-08-22");
+  const i23 = s.findIndex((b) => b.hour === 23);
+  assert.equal(s[i23 + 1].hour, 0);
+  assert.ok(s.slice(0, i23 + 1).every((b) => b.date === "2026-08-21"));
+  assert.ok(s.slice(i23 + 1).every((b) => b.date === "2026-08-22"));
+  const hit = s.filter((b) => b.slabs > 0).map((b) => `${b.date} ${b.hour}`);
+  assert.deepEqual(hit, ["2026-08-21 15", "2026-08-21 20", "2026-08-22 9", "2026-08-22 12"]);
+  assert.equal(sum(s), 4);
+});

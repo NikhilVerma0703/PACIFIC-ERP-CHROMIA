@@ -6,6 +6,7 @@ import { SLAB_COMPLETED, SLAB_IN_PROCESSING } from "@/lib/robo/utils";
 import { forwardRunIds } from "@/lib/robo/rangeUpdate";
 import { productionDateOf } from "@/lib/robo/productionDate";
 import { roboThicknessKey } from "@/lib/robo/thickness";
+import { planDelayReconcile, type DelayPayloadItem } from "@/lib/robo/delayReconcile";
 
 export async function GET(_: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const refused = await roboGate();
@@ -234,12 +235,22 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     //    machineId is the first, kept for the optional relation. The client has
     //    already computed both and the duration, so the stored shape and every
     //    delay calculation are unchanged.
+    //
+    //    Every id the payload carries is checked against THIS slab's rows, read
+    //    here inside the transaction. An id the slab does not own — another
+    //    slab's delay, or one a second tab already removed — is treated as a new
+    //    row: written through it would overwrite the other slab's delay, and
+    //    updated once gone it throws P2025 and rolls the whole save back. See
+    //    planDelayReconcile for the rule.
     if (Array.isArray(body.delays)) {
-      const items = body.delays as Array<{
-        id?: string; delayCodeId: string; machineId?: string | null; machineName?: string | null;
-        durationMinutes?: number; startTime?: string | null; endTime?: string | null; remarks?: string | null;
-      }>;
-      const keepIds = items.map((d) => d.id).filter((x): x is string => typeof x === "string" && x.length > 0);
+      const owned = await tx.roboDelayLog.findMany({
+        where: { productionRecordId: id },
+        select: { id: true },
+      });
+      const { keepIds, updates, creates } = planDelayReconcile(
+        body.delays as DelayPayloadItem[],
+        owned.map((o) => o.id),
+      );
 
       // Remove the delays that are gone from the payload. With nothing kept, this
       // clears them all — which is how a slab saves with no delay at all.
@@ -249,22 +260,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
       // Update the ones kept, create the new ones. Anything with no delay code is
       // an empty row the operator never filled — skipped, not saved as a blank.
-      for (const d of items) {
-        if (!d.delayCodeId) continue;
-        const fields = {
-          machineId:       d.machineId || null,
-          machineName:     d.machineName || null,
-          delayCodeId:     d.delayCodeId,
-          durationMinutes: Number(d.durationMinutes) || 0,
-          startTime:       d.startTime || null,
-          endTime:         d.endTime || null,
-          remarks:         d.remarks || null,
-        };
-        if (d.id) {
-          await tx.roboDelayLog.update({ where: { id: d.id }, data: fields });
-        } else {
-          await tx.roboDelayLog.create({ data: { shiftId: start.shiftId, productionRecordId: id, ...fields } });
-        }
+      for (const u of updates) {
+        await tx.roboDelayLog.update({ where: { id: u.id, productionRecordId: id }, data: u.fields });
+      }
+      for (const fields of creates) {
+        await tx.roboDelayLog.create({ data: { shiftId: start.shiftId, productionRecordId: id, ...fields } });
       }
     }
 

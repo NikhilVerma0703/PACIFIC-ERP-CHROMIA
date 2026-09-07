@@ -1790,6 +1790,10 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                     const code = delayCodes.find((c) => c.id === row.delayCodeId) ?? null;
                     const dur = calcDuration(row.startTime, row.endTime);
                     const badTimes = Boolean(row.startTime && row.endTime && !dur);
+                    // One advance group per row: on a tablet, Enter/Next in a delay
+                    // field must step to the next box of THIS delay, not submit the
+                    // form (saving a half-entered slab) and not jump into the row below.
+                    const advance = advanceProps(`delay-${row.key}`);
                     return (
                       <div key={row.key} className="rounded-lg border border-amber-200 bg-white p-3 shadow-sm">
                         <div className="grid grid-cols-2 gap-2 sm:grid-cols-12">
@@ -1801,11 +1805,11 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                           </div>
                           <div className="col-span-1 sm:col-span-2">
                             <span className={label}>Start</span>
-                            <TimeInput value={row.startTime} onChange={(v) => updateDelayRow(row.key, { startTime: v })} className={inp} />
+                            <TimeInput value={row.startTime} onChange={(v) => updateDelayRow(row.key, { startTime: v })} onComplete={advanceOnComplete} className={inp} {...advance} />
                           </div>
                           <div className="col-span-1 sm:col-span-2">
                             <span className={label}>End</span>
-                            <TimeInput value={row.endTime} onChange={(v) => updateDelayRow(row.key, { endTime: v })} className={inp} />
+                            <TimeInput value={row.endTime} onChange={(v) => updateDelayRow(row.key, { endTime: v })} onComplete={advanceOnComplete} className={inp} {...advance} />
                           </div>
                           <div className="col-span-1 sm:col-span-2">
                             <span className={label}>Duration</span>
@@ -1831,7 +1835,7 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                           )}
                           <div className={code?.isRobotSpecific ? "col-span-2 sm:col-span-6" : "col-span-2 sm:col-span-12"}>
                             <span className={label}>Remarks</span>
-                            <input value={row.remarks} onChange={(e) => updateDelayRow(row.key, { remarks: e.target.value })} placeholder="Optional" className={inp} />
+                            <input value={row.remarks} onChange={(e) => updateDelayRow(row.key, { remarks: e.target.value })} placeholder="Optional" className={inp} {...advance} />
                           </div>
                         </div>
                       </div>
