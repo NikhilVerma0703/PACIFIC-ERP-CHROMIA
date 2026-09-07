@@ -132,6 +132,11 @@ interface BoardSlabRow {
    *  other half of what this row is worth. NULL = nobody has marked the edges,
    *  which is NOT the same as "no edges finished". */
   finishedEdges: string | null;
+  /** RECTANGLE / CIRCLE / OVAL. Null is a rectangle. Decides whether the picker
+   *  offers four sides or one ring, and which perimeter the feet run along. */
+  shapeType: string | null;
+  /** TOP / BOTTOM / BOTH. Null is TOP; BOTH doubles the feet. */
+  edgeFaces: string | null;
   allocatedQuantity: number;
 }
 interface BoardSlab {
@@ -360,7 +365,7 @@ function SinkSummary({ rows }: { rows: SinkBoardRow[] }) {
 function SlabCard({
   slab, outstanding, projectId, busy,
   onAddRow, onChangeRow, onRemoveRow, onSend, onRemoveSlab,
-  onFinishedEdgesChange, isSample,
+  onFinishedEdgesChange, isSample, cutterView,
   samplingLists, onSampleOpen, onSampleSaved,
 }: {
   slab: BoardSlab;
@@ -384,6 +389,17 @@ function SlabCard({
   samplingLists: SamplingPickLists;
   onSampleOpen: () => void;
   onSampleSaved: (message: string) => void;
+  /** THE CUTTER IS LOOKING AT THIS BOARD.
+   *
+   *  The owner put it in his hands — "that need to be included to the cutter as
+   *  well" — and the same card must not offer him every decision on it. Hand
+   *  edge polish is "chosen and done by supervisor, or else the one manager who
+   *  uploads the PO", and its route still gates on SUPERVISOR, so step 4 is
+   *  ABSENT for him rather than present and refusing. A control that 403s reads
+   *  as broken software; a line saying whose decision it is reads as a shop.
+   *
+   *  Drawing only. Every route gates itself — see /api/fab/whoami. */
+  cutterView: boolean;
 }) {
   const [pickedId, setPickedId] = useState("");
   const [qty, setQty] = useState("");
@@ -458,6 +474,8 @@ function SlabCard({
         sinkQuantity: row.sinkQuantity,
         finishedEdges: row.finishedEdges,
         thicknessMm: slab.thicknessMm,
+        shapeType: row.shapeType,
+        edgeFaces: row.edgeFaces,
       });
     }
     return [...byRequirement.values()];
@@ -558,7 +576,16 @@ function SlabCard({
           which is about the PO work this slab would then not be doing.
           Deliberately NOT a numbered step: the four-step flow below is
           unchanged, and this is an alternative to it rather than a fifth thing
-          to do. Nothing here creates a cutting job or touches an allocation. */}
+          to do. Nothing here creates a cutting job or touches an allocation.
+
+          AND THE CUTTER GETS IT TOO, since the owner asked for it: "I need
+          space in cutter to add some extra pieces as well, need to select from
+          which slab, so it will be added in the sample inventory as well."
+          isFabStockContributor now admits a fab OPERATOR, so this no longer
+          answers 403 for him — he is the one holding the stone and the only one
+          who knows the offcut exists. (Hand edge polish in step 4 stayed the
+          supervisor's; the owner drew those two lines in different places, and
+          this board follows him rather than being tidy about it.) */}
       {offersReason("SPECIAL_CUT", slab) && (
         <div className="px-5 pb-3">
           <SampleCutControl
@@ -746,20 +773,60 @@ function SlabCard({
           order settled. It does not block the send — a row with no edge decision
           is reported unpriced, not free. */}
       {isSample ? (
-        /* THE TWO MISSING STEPS, NAMED. "No sink and fabri in the samples" — so
-           there is no sink count to show and no edge charge to make, because
-           edge work IS fabrication work. Saying so is the difference between a
-           board that is deliberately shorter and one that looks broken. */
+        /* THE MISSING STEP, NAMED. "No sink and fabri in the samples" — a sample
+           is a flat swatch, so there is no sink count to show and nobody hand
+           polishes an 11 × 11 piece. Saying so is the difference between a board
+           that is deliberately shorter and one that looks broken.
+
+           (This used to read "edge work IS fabrication work", which was the old
+           rule — hand edge polish is its own job now and any PO row can carry
+           it. What is true of a SAMPLE row is simply that nobody asks for it.) */
         <div className="border-t border-gray-100 px-5 py-3">
           <p className="text-[11px] text-violet-700 bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
-            <strong>Sample order.</strong> No sinks and no fabrication on these pieces — they are
-            cut, polished and packed. Packing one puts it on the sample shelf.
+            <strong>Sample order.</strong> No sinks and no hand polish on these pieces — they are
+            cut, machine polished and packed. Packing one puts it on the sample shelf.
+          </p>
+        </div>
+      ) : cutterView ? (
+        /* NOT THE CUTTER'S DECISION, and said out loud rather than greyed out.
+           The owner: hand edge polish "is chosen and done by supervisor, or else
+           the one manager who uploads the PO." The route agrees — it still gates
+           on SUPERVISOR — so showing him the picker would show him four buttons
+           that answer 403. He is told what the row already says instead, because
+           he does need to KNOW: the pieces he is about to cut go to the hand
+           bench afterwards, and that is his business even though the decision is
+           not. */
+        <div className="border-t border-gray-100 px-5 py-3">
+          <p className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+            <strong>Hand edge polish</strong> is set by the supervisor or by the manager on the
+            purchase order — not here.{" "}
+            {(() => {
+              const marked = edgeRows.filter(r => (r.finishedEdges ?? "") !== "");
+              const unchosen = edgeRows.filter(r => r.finishedEdges === null);
+              if (marked.length === 0 && unchosen.length === 0) {
+                return "No row on this slab is marked for it.";
+              }
+              return (
+                <>
+                  {marked.length > 0 && (
+                    <>{marked.length} row{marked.length === 1 ? "" : "s"} on this slab
+                      {marked.length === 1 ? " goes" : " go"} to the hand bench after cutting
+                      ({marked.map(r => r.pieceLabel ?? "?").join(", ")}).{" "}</>
+                  )}
+                  {unchosen.length > 0 && (
+                    <span className="text-amber-700">
+                      {unchosen.length} not decided yet — it can still be marked while you cut.
+                    </span>
+                  )}
+                </>
+              );
+            })()}
           </p>
         </div>
       ) : (
         <div className="border-t border-gray-100 px-5 py-3">
           <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2">
-            Step 4 &middot; Finished edges &mdash; click the sides that get polished
+            Step 4 &middot; Hand edge polish &mdash; click the sides that get polished
           </h3>
           <EdgeBoard rows={edgeRows} busy={busy} onChange={onFinishedEdgesChange} />
         </div>
@@ -769,12 +836,22 @@ function SlabCard({
       {!slab.sent && (
         <div className="border-t border-gray-100 px-5 py-3 flex items-center justify-between gap-3 flex-wrap">
           <div className="min-w-0">
+            {/* THE LAST STEP IS NOT A HANDOVER WHEN THE CUTTER DOES IT HIMSELF.
+                The owner, on samples: "hereafter no need of send to cutter — it
+                queued to cutter where he choose a slab and starts working." The
+                step did not disappear; it stopped being a send. The same button
+                creates the same job either way — it just lands on the bench he
+                is already standing at, so calling it "Send to Cutter" would have
+                him looking round for somebody to send it to. */}
             <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-400">
-              Step {isSample ? 3 : 5} &middot; Send to cutting
+              Step {isSample ? (cutterView ? 2 : 3) : cutterView ? 4 : 5} &middot;{" "}
+              {cutterView ? "Put it on the saw" : "Send to cutting"}
             </h3>
             <p className="text-[11px] text-gray-400 mt-0.5">
               {send.ok
-                ? "Pieces and sinks are decided — this creates the cutting job and records the slab's used area and wastage."
+                ? cutterView
+                  ? "This puts the slab in your cutting queue and records its used area and wastage. Start it from the Cutting screen."
+                  : "Pieces and sinks are decided — this creates the cutting job and records the slab's used area and wastage."
                 : slab.rows.length > 0
                   // The over-commitment banner at the top of the card is already
                   // saying it in full; repeating it here reads as two problems.
@@ -785,9 +862,11 @@ function SlabCard({
           <button
             onClick={() => onSend(slab)}
             disabled={busy || !send.ok}
-            title={send.ok ? "Create the cutting job for this slab" : send.error}
+            title={send.ok
+              ? cutterView ? "Put this slab in your own cutting queue" : "Create the cutting job for this slab"
+              : send.error}
             className="shrink-0 text-xs font-bold bg-gray-900 hover:bg-gray-700 disabled:opacity-40 text-white px-4 py-1.5 rounded-lg transition">
-            Send to Cutter
+            {cutterView ? "Add to my queue" : "Send to Cutter"}
           </button>
         </div>
       )}
@@ -801,7 +880,13 @@ function SlabCard({
           It replaces nothing: step 4 has already gone from this card by the time
           this appears (the block above renders only while !slab.sent), so the
           four steps still read 1, 2, 3, 4 in order and this is what the card
-          says afterwards. */}
+          says afterwards.
+
+          AND THIS IS THE ONE THE CUTTER NEEDS MOST. The offcuts exist because
+          of the cut he has just made, and he is the only person who can see
+          them. The old note here said his exclusion was "an argument for
+          sampling widening its rule" — the owner made that argument, and
+          isFabStockContributor now admits him. */}
       {offersReason("OFFCUT", slab) && (
         <div className="border-t border-gray-100 px-5 py-3">
           <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2">
@@ -829,6 +914,42 @@ export default function FabSlabAssignmentPage() {
   // they are absent — a greyed-out sink board on a sample order invites somebody
   // to wonder what is wrong with it.
   const isSample = isSampleProject(projects.find(p => p.id === projectId)?.kind);
+
+  /* -- WHO IS LOOKING ------------------------------------------------------
+   *
+   * The owner put this board in the cutter's hands as well as the supervisor's:
+   * "we have slab allocation page made for supervisor, that need to be included
+   * to the cutter as well — but the flow is click +slab and enter the rows and
+   * quantity and cut, and rest is same as now."
+   *
+   * The board is the same board. What differs is one step that is not his (hand
+   * edge polish — see the note on SlabCard's cutterView) and the words on the
+   * last one, which is not a handover when he is the one it would be handed to.
+   *
+   * STARTS FALSE, so the first paint is the supervisor's board and the cutter's
+   * step 4 appears and then vanishes rather than the reverse. Nothing is lost by
+   * that: the picker it briefly shows refuses him anyway, and a control that
+   * flickers IN is worse than one that flickers out — he might click it.
+   *
+   * DRAWING ONLY. Every route this page calls gates itself; see
+   * /api/fab/whoami for why that separation is the whole point.
+   */
+  const [cutterView, setCutterView] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/fab/whoami");
+        if (!res.ok) return;                       // stays the supervisor's board
+        const data = await res.json().catch(() => null);
+        if (alive && data?.tier === "EMPLOYEE") setCutterView(true);
+      } catch {
+        // Offline or refused. The board still works; it just draws the fuller
+        // version, and the routes go on refusing what is not his.
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
 
   const [requirements, setRequirements] = useState<BoardRequirement[]>([]);
   const [slabs, setSlabs] = useState<BoardSlab[]>([]);
@@ -945,9 +1066,17 @@ export default function FabSlabAssignmentPage() {
     <div className="max-w-5xl">
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Slab &amp; Sink Assignment</h1>
+          {/* THE SAME BOARD, NAMED FOR WHOEVER IS AT IT. The cutter is not
+              assigning sinks — the order settled those and this screen only
+              shows them — so calling it "Slab & Sink Assignment" to him names
+              the one thing on it he cannot change. */}
+          <h1 className="text-2xl font-bold text-gray-900">
+            {cutterView ? "Pick a slab & cut" : "Slab & Sink Assignment"}
+          </h1>
           <p className="text-sm text-gray-400 mt-0.5">
-            Pick a slab, fill it from what is outstanding, mark the sinks, then send it to the cutter
+            {cutterView
+              ? "Choose the project, add the slab you are standing at, put rows on it, then add it to your cutting queue"
+              : "Pick a slab, fill it from what is outstanding, mark the sinks, then send it to the cutter"}
           </p>
         </div>
         <button onClick={load} disabled={loading || busy}
@@ -1033,6 +1162,7 @@ export default function FabSlabAssignmentPage() {
                   busy={busy}
                   onFinishedEdgesChange={onFinishedEdgesChange}
                   isSample={isSample}
+                  cutterView={cutterView}
                   samplingLists={samplingLists}
                   onSampleOpen={onSampleOpen}
                   // The board is NOT reloaded after a sample intake: nothing on

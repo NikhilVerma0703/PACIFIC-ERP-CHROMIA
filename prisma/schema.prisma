@@ -118,7 +118,13 @@ model User {
   updatedAt          DateTime            @updatedAt
   cuttingEntries     CuttingEntry[]
   fabMachineSessions FabMachineSession[]
-  fabSlabJobs        FabSlabJob[]
+  /// Slabs this login CUT. Named now that a second relation to FabSlabJob
+  /// exists — Prisma cannot tell two links to one model apart without it.
+  fabSlabJobs        FabSlabJob[]        @relation("FabSlabJobOperator")
+  /// Slabs this login SENT TO CUTTING. scripts/0064. A different act from the
+  /// one above, usually by a different person: the supervisor (or the cutter
+  /// himself) puts the slab up, and whoever is at the saw cuts it.
+  fabSlabJobsReleased FabSlabJob[]       @relation("FabSlabJobReleasedBy")
   fabOperations      FabOperation[]
   fabWorkersCreated  FabWorker[]
 
@@ -2418,8 +2424,20 @@ enum FabShapeType {
   RECTANGLE
   L_SHAPE
   CURVE
+  /// The original spelling of a circle, kept because live rows hold it.
+  /// lib/fab/shape.ts reads ROUND and CIRCLE as the same thing, so a row
+  /// written before scripts/0063 is still priced on a circumference rather
+  /// than quietly becoming a rectangle.
   ROUND
   CUSTOM
+  /// scripts/0063. `length` holds the DIAMETER; `width` is written equal to it,
+  /// so the bounding box the slab actually loses falls out of the existing
+  /// maths with no special case anywhere else.
+  CIRCLE
+  /// scripts/0063. `length` is a (the long axis), `width` is b (the short one)
+  /// — the owner: "if it's oval enter a, b, long length and long width".
+  /// Perimeter by Ramanujan II; see lib/fab/shape.ts.
+  OVAL
 }
 
 model FabMachine {
@@ -2468,6 +2486,10 @@ model FabMachineSession {
   loginTime  DateTime   @default(now()) @map("login_time")
   logoutTime DateTime?  @map("logout_time")
   isActive   Boolean    @default(true) @map("is_active")
+  /// Slabs released to cutting from this session. scripts/0064 — this is the
+  /// half that names the human, because the login above is shared by the whole
+  /// floor and `worker` is not.
+  releasedSlabJobs FabSlabJob[]
 
   @@index([machineId, isActive])
   @@map("fab_machine_session")
@@ -2569,10 +2591,33 @@ model FabSlabJob {
   slab            FabSlab                 @relation(fields: [slabId], references: [id])
   machineId       String?                 @map("machine_id")
   machine         FabMachine?             @relation(fields: [machineId], references: [id])
+  /// Who is CUTTING this slab — written when the job STARTS, not when it is
+  /// created. The cutting board compares it (and machineId) to tell one
+  /// station's work from another's. For who RELEASED the slab, see
+  /// releasedById / releasedBySessionId below; they are two different acts, by
+  /// two different people more often than not.
   operatorId      String?                 @map("operator_id")
-  operator        User?                   @relation(fields: [operatorId], references: [id])
+  operator        User?                   @relation("FabSlabJobOperator", fields: [operatorId], references: [id])
   workerId        String?                 @map("worker_id")
   worker          FabWorker?              @relation(fields: [workerId], references: [id])
+
+  /// WHO SENT THIS SLAB TO CUTTING — the authenticated login. scripts/0064.
+  ///
+  /// A real name for a supervisor or manager, who each have their own login.
+  /// The SHARED operator account for a floor release, which names nobody — see
+  /// releasedBySessionId, which is the half that does. NULL on every job
+  /// created before 0064; those were all supervisor releases, and a guessed id
+  /// is indistinguishable from a recorded one the moment it is written.
+  releasedById        String?             @map("released_by_id")
+  releasedBy          User?               @relation("FabSlabJobReleasedBy", fields: [releasedById], references: [id])
+  /// The process session the release was made from — its worker names the
+  /// person, and it carries the machine and the shift with him. NULL for a desk
+  /// release with no station session open, which is the ordinary supervisor
+  /// case. The route REQUIRES it for an EMPLOYEE release: without it the record
+  /// would be empty for exactly the person it exists for.
+  releasedBySessionId String?             @map("released_by_session_id")
+  releasedBySession   FabMachineSession?  @relation(fields: [releasedBySessionId], references: [id])
+
   status          FabSlabProductionStatus @default(READY)
   startTime       DateTime?               @map("start_time")
   endTime         DateTime?               @map("end_time")
@@ -2661,6 +2706,22 @@ model FabRequirement {
   /// column times the row's dimensions and quantity is the whole edge charge.
   /// See lib/fab/pricing.ts, which owns the arithmetic and the rate card.
   finishedEdges       String?                    @map("finished_edges")
+  /// WHICH FACE(S) of the chosen edges get hand polish: TOP / BOTTOM / BOTH.
+  /// scripts/0065.
+  ///
+  /// The owner: "hand edge polish have like not only 4 direction N E S W, also
+  /// whether this on top or bottom or both as well." An edge is a band with two
+  /// arrises, and doing both is the same line walked TWICE — so this MULTIPLIES
+  /// the running feet rather than adding a fee. A 60-piece row at 505 ft is
+  /// 1,010 ft and ₹15,150 at 2 cm, against ₹7,575.
+  ///
+  /// NULL MEANS TOP, and that is deliberately different from finishedEdges,
+  /// where NULL is a real unanswered question. Every row that existed before
+  /// this column was charged as one face; if NULL were "not chosen" it would
+  /// take every one of them off the invoice the day the script ran. So NULL
+  /// keeps charging exactly what it charged yesterday, and BOTH must be
+  /// chosen — the expensive direction is never fallen into.
+  edgeFaces           String?                    @map("edge_faces")
   description         String?
   slabCode            String                     @map("slab_code")
   length              Float?
@@ -2742,6 +2803,18 @@ model FabPiece {
   width                Float?
   remarks              String?
   hasSink              Boolean             @default(false) @map("has_sink")
+  /// HAND edge polish — the outsourced running-foot job, not the machine polish
+  /// the operator does, and not the sink polish (which is implied by the sink
+  /// cut and priced inside the per-piece sink rate).
+  ///
+  /// INDEPENDENT OF hasSink since scripts/0063. The owner: "any pieces can be
+  /// assigned the edge hand polish or not — this is chosen and done by
+  /// supervisor, or else the one manager who uploads the PO." A plain piece can
+  /// have it and a sink piece can go without.
+  ///
+  /// Stamped at release from the row's finished_edges, which under the group
+  /// rule applies to every piece of the row. Not backfilled — see 0063.
+  hasEdgePolish        Boolean             @default(false) @map("has_edge_polish")
   polishRequired       Boolean             @default(false) @map("polish_required")
   fabricationRequired  Boolean             @default(false) @map("fabrication_required")
   polishingCompleted   Boolean             @default(false) @map("polishing_completed")

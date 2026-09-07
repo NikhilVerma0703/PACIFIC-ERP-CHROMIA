@@ -51,9 +51,55 @@ export async function GET(
     },
   });
 
+  // HAND EDGE POLISH AND SHAPE — read raw, and the same way the CEO route and
+  // the supervisor board read them.
+  //
+  // The owner put this decision beside the sink: "we choose the sink, there
+  // itself we need to choose the edge polish." Both columns arrived after the
+  // Prisma client this deploy may be running (0055 and 0063), so a typed read
+  // would take the whole order screen down over two fields that only feed a
+  // price. A missing column means "not chosen" and "rectangle", which is what
+  // an unmigrated database honestly holds.
+  //
+  // THE THICKNESS COMES WITH THEM, from whatever slab the row is on. The rate
+  // card is keyed on the STONE (2 cm ₹15/ft, 3 cm ₹20/ft), and a row not yet
+  // given a slab has no thickness and therefore no rate — the board shows the
+  // feet and says the rate follows, rather than guessing at one. MAX rather
+  // than an arbitrary pick, so the answer is stable across refreshes.
+  const edges = new Map<string, {
+    finishedEdges: string | null; shapeType: string | null; edgeFaces: string | null; thicknessMm: number | null;
+  }>();
+  if (rows.length) {
+    try {
+      const ids = rows.map(r => r.id);
+      const raw = await prisma.$queryRaw<Array<{
+        id: string; finished_edges: string | null; shape_type: string | null; edge_faces: string | null; thickness: number | null;
+      }>>`
+        SELECT r.id, r.finished_edges, r.shape_type::text AS shape_type, r.edge_faces,
+               MAX(s.thickness) AS thickness
+        FROM   fab_requirement r
+        LEFT   JOIN fab_requirement_allocation ra ON ra.requirement_id = r.id
+        LEFT   JOIN fab_slab s ON s.id = ra.slab_id
+        WHERE  r.id = ANY(${ids}::text[])
+        GROUP  BY r.id
+      `;
+      for (const r of raw) {
+        edges.set(r.id, {
+          finishedEdges: r.finished_edges ?? null,
+          shapeType: r.shape_type ?? null,
+          edgeFaces: r.edge_faces ?? null,
+          thicknessMm: r.thickness == null ? null : Number(r.thickness),
+        });
+      }
+    } catch {
+      // 0055 / 0063 not applied yet.
+    }
+  }
+
   return Response.json({
     rows: rows.map(r => {
       const allocatedQty = r.allocations.reduce((s, a) => s + a.allocatedQuantity, 0);
+      const edge = edges.get(r.id);
       return {
         id: r.id,
         pieceLabel: r.pieceLabel,
@@ -69,6 +115,20 @@ export async function GET(
         sinkQuantity: r.sinkQuantity,
         totalSqft: r.totalSqft,
         notes: r.notes,
+        /** fab_requirement.finished_edges — which edges get HAND polish, the
+         *  running-foot job. NULL = nobody has marked them, which is NOT the
+         *  same as "no edges" and is drawn differently. Independent of the sink
+         *  since scripts/0063. */
+        finishedEdges: edge?.finishedEdges ?? null,
+        /** RECTANGLE / CIRCLE / OVAL. Null is a rectangle. A CIRCLE keeps its
+         *  DIAMETER in `length`; an OVAL keeps a in `length`, b in `width`. */
+        shapeType: edge?.shapeType ?? null,
+        /** TOP / BOTTOM / BOTH. NULL means TOP — see scripts/0065. BOTH doubles
+         *  the running feet, because it is the same line walked twice. */
+        edgeFaces: edge?.edgeFaces ?? null,
+        /** MILLIMETRES of the stone this row is on, or null before it has one.
+         *  Decides the edge rate; null means the feet show and the charge waits. */
+        thicknessMm: edge?.thicknessMm ?? null,
         allocatedQty,
         pieceCount: r._count.pieces,
         locked: r._count.pieces > 0,

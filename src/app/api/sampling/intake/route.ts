@@ -50,7 +50,7 @@
 // a read-then-write, so two tablets adding to the same shelf both land.
 
 import { NextRequest } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { prisma, type TxClient } from "@/lib/prisma";
 import { samplingGate } from "@/lib/sampling/access";
 import { parseSampleSize, sampleSizeLabel } from "@/lib/sampling/size";
 import { checkIntake } from "@/lib/sampling/lifecycle";
@@ -288,7 +288,7 @@ export async function POST(req: NextRequest) {
   const createdById = (g.user as { id?: string })?.id ?? null;
   const stockKey = { colourFinishId_sizeId: { colourFinishId, sizeId } };
 
-  const result = await prisma.$transaction(async (tx: typeof prisma) => {
+  const result = await prisma.$transaction(async (tx: TxClient) => {
     let stock: { id: string; quantity: number } | null = null;
     try {
       stock = await tx.samplingStock.upsert({

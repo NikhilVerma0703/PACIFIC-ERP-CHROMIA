@@ -23,6 +23,12 @@ declare module "next-auth" {
   }
 
   interface User {
+    /** next-auth's own `User` in this version declares no id, so `user.id` in
+     *  the two jwt callbacks did not compile once those parameters were given
+     *  real types. It is not an invention: authorize() in auth.ts returns the
+     *  row's id as the first field, and Session["user"] above already promises
+     *  the same string. Declaring it lines the two halves up. */
+    id: string;
     role: Role;
     station?: string | null;
     branch?: string | null;
@@ -34,6 +40,12 @@ declare module "next-auth" {
 declare module "next-auth/jwt" {
   interface JWT {
     uid: string;
+    /** SESSION VERSION. fabSignOut bumps users.session_version, and the jwt
+     *  callback in auth.ts rejects any token holding an older one — that is how
+     *  "sign out everywhere" works. It has always ridden in the token; this
+     *  declaration was simply missing, which was invisible while the callback
+     *  parameters were implicitly `any`. */
+    sv?: number;
     role: Role;
     station?: string | null;
     branch?: string | null;

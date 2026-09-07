@@ -14,11 +14,13 @@
 // stock behind it is a sample nobody can find; stock with no packed piece behind
 // it is a count nobody can explain. Neither is allowed to exist on its own.
 
-import { prisma } from "@/lib/prisma";
+import { prisma, type TxClient } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
 import { requireProcessSession } from "@/lib/fab/processSessionServer";
 import { stampOperationWorker } from "@/lib/fab/stampWorker";
 import { isSampleProject, planSampleCredit } from "@/lib/fab/sampleOrder";
+import { parseEdges } from "@/lib/fab/pricing";
+import { rowShares, pieceCharge, mayFreeze, type RowShares } from "@/lib/fab/pieceCharge";
 
 // Declared before use. They were below the handler, which works only because
 // the handler runs after module evaluation — a detail nobody should have to
@@ -50,7 +52,7 @@ interface SampleCredit {
  * not forty round trips.
  */
 async function creditSampleStock(
-  tx: typeof prisma,
+  tx: TxClient,
   pieceIds: string[],
 ): Promise<SampleCredit> {
   const pieces = await tx.fabPiece.findMany({
@@ -122,6 +124,136 @@ async function creditSampleStock(
   }
 
   return out;
+}
+
+/**
+ * FREEZE WHAT THESE PIECES JUST EARNED.
+ *
+ * ─────────────────── WHY, AND WHY HERE ──────────────────────────────────────
+ * The period report re-prices from the LIVE ordered row every time it is
+ * opened, so editing a row in September changed what July earned — set
+ * edge_faces to BOTH and a closed month silently doubles. Nothing was re-done
+ * and nothing was re-billed; the number just moved. See scripts/0066.
+ *
+ * PACKING IS WHEN A PIECE EARNS — it is already the moment the report counts
+ * the money — so this is the moment to write the figure down.
+ *
+ * ─────────────────── OUTSIDE THE TRANSACTION, AND BEST EFFORT ───────────────
+ * DELIBERATELY. Packing a trolley of forty pieces is floor work that must not
+ * fail because a reporting column is missing, so this runs AFTER the package is
+ * committed and every path out of it is swallowed by the caller. A deploy
+ * running ahead of scripts/0066 packs pieces exactly as it does today and
+ * simply does not stamp them; the report then live-prices those pieces, which
+ * is the behaviour that shipped before this existed.
+ *
+ * The cost of that choice is a piece that is packed and unstamped if this
+ * throws. That is recoverable and visible — the last query in scripts/0066
+ * lists them — where a failed pack in the middle of a shift is neither.
+ *
+ * ─────────────────── WRITTEN ONCE, EVER ─────────────────────────────────────
+ * `AND charged_at IS NULL` in the UPDATE. A retried request, a re-scanned
+ * trolley or a re-run of this function cannot move a figure that has already
+ * been frozen — the same rule sampling_intake_id enforces for sample stock a
+ * few lines above.
+ */
+async function stampPieceCharges(pieceIds: string[]): Promise<void> {
+  const pieces = await prisma.fabPiece.findMany({
+    where: { id: { in: pieceIds } },
+    // hasSink decides the SINK share, and it is per PIECE — half a row can have
+    // one. The EDGE share is per ROW, because a row is homogeneous, so it is
+    // read from the requirement below rather than from the piece.
+    select: { id: true, hasSink: true, requirementId: true },
+  });
+  if (!pieces.length) return;
+
+  const reqIds = [...new Set(
+    pieces.map((p) => p.requirementId).filter((id): id is string => !!id),
+  )];
+
+  // Raw, and the same statement the CEO route prices from, so the stamp written
+  // here and the fallback computed there cannot disagree. edge_faces and
+  // shape_type arrive in scripts/0065 and 0063; if they are absent this throws
+  // and the caller logs it, which is the correct outcome — a charge frozen
+  // without the face multiplier would be half an invoice, permanently.
+  const shares = new Map<string, RowShares>();
+  if (reqIds.length) {
+    const priceInputs = await prisma.$queryRaw<Array<{
+      id: string; length: number | null; width: number | null; quantity: number;
+      sink_quantity: number | null; finished_edges: string | null;
+      thickness: number | null; shape_type: string | null; edge_faces: string | null;
+    }>>`
+      SELECT r.id, r.length, r.width, r.quantity, r.sink_quantity,
+             r.finished_edges, r.edge_faces,
+             r.shape_type::text AS shape_type,
+             -- The thickness of any slab this row is cut from. MAX rather than
+             -- an arbitrary pick, so the answer is stable.
+             MAX(s.thickness) AS thickness
+      FROM   fab_requirement r
+      LEFT   JOIN fab_requirement_allocation ra ON ra.requirement_id = r.id
+      LEFT   JOIN fab_slab s ON s.id = ra.slab_id
+      WHERE  r.id = ANY(${reqIds}::text[])
+      GROUP  BY r.id
+    `;
+    for (const r of priceInputs) {
+      shares.set(r.id, rowShares({
+        lengthIn: r.length == null ? null : Number(r.length),
+        widthIn: r.width == null ? null : Number(r.width),
+        quantity: Number(r.quantity ?? 0),
+        sinkQuantity: r.sink_quantity == null ? null : Number(r.sink_quantity),
+        thicknessMm: r.thickness == null ? null : Number(r.thickness),
+        edges: parseEdges(r.finished_edges),
+        shape: r.shape_type,
+        edgeFace: r.edge_faces,
+      }));
+    }
+  }
+
+  // GROUPED BY THE FIGURE, not one UPDATE per piece. A package is usually one
+  // or two ordered rows, so forty pieces are one or two statements.
+  //
+  // ONLY ROWS THAT PRICED CLEANLY ARE FROZEN — see mayFreeze. A row with a blank
+  // width, an off-card thickness or an L-shaped outline prices to 0 with
+  // `unpriced: true`, and stamping that 0 would make it PERMANENT: the UPDATE
+  // below writes once and never rewrites, so the manager filling in the width
+  // next week could never reach it. scripts/0061 is the precedent — slab
+  // thicknesses of 120 and 70 mm were stored and repaired later, and a trolley
+  // packed in between would have been frozen at ₹0 for good.
+  //
+  // An unfrozen piece is not a lost piece: charged_at stays NULL and the report
+  // live-prices it, which is exactly the behaviour that shipped before any of
+  // this existed. The figure simply keeps correcting itself until the row is
+  // fixed and a later package freezes a real one.
+  const groups = new Map<string, { edge: number; sink: number; ids: string[] }>();
+  let skipped = 0;
+  for (const p of pieces) {
+    const rowShare = p.requirementId ? shares.get(p.requirementId) : null;
+    if (!mayFreeze(rowShare)) { skipped++; continue; }
+    const c = pieceCharge(rowShare, p.hasSink === true);
+    const key = `${c.edge}::${c.sink}`;
+    const g = groups.get(key) ?? { edge: c.edge, sink: c.sink, ids: [] };
+    g.ids.push(p.id);
+    groups.set(key, g);
+  }
+  if (skipped > 0) {
+    // Said out loud rather than swallowed: these pieces ARE packed and they DO
+    // still earn, they are just still being priced live. The last query in
+    // scripts/0066 lists them.
+    console.warn(
+      `[fab/packaging] ${skipped} piece(s) packed without a frozen charge — ` +
+      `their row could not be priced in full (blank size, off-card thickness, ` +
+      `or an outline with no perimeter). The report will live-price them.`,
+    );
+  }
+
+  for (const g of groups.values()) {
+    await prisma.$executeRaw`
+      UPDATE fab_piece
+         SET charged_edge = ${g.edge},
+             charged_sink = ${g.sink},
+             charged_at   = now()
+       WHERE id = ANY(${g.ids}::text[])
+         AND charged_at IS NULL`;
+  }
 }
 
 export async function POST(req: Request) {
@@ -224,6 +356,20 @@ export async function POST(req: Request) {
     return Response.json({ error: `Package code "${code}" is already used — choose another` }, { status: 409 });
 
   const { pkg, sampleCredit } = result;
+
+  // ---- AND WHAT THEY EARNED IS NOW A FACT, NOT A CALCULATION -------------
+  //
+  // After the commit and never blocking it — see stampPieceCharges. The pieces
+  // are packed whatever happens here; the only thing at stake is whether the
+  // report reads a frozen figure or re-computes one from the live row.
+  await stampPieceCharges(pieceIds).catch((e: unknown) => {
+    console.error(
+      "[fab/packaging] charge stamp failed — the pieces ARE packed; the period " +
+      "report will live-price them, which is the pre-scripts/0066 behaviour",
+      e,
+    );
+  });
+
   return Response.json({
     success: true,
     packageCode: pkg.packageCode,

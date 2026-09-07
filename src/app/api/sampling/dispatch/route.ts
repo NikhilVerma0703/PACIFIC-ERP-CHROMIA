@@ -41,7 +41,7 @@
 // one-word change in actions.ts.
 
 import { NextRequest } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { prisma, type TxClient } from "@/lib/prisma";
 import { samplingGate } from "@/lib/sampling/access";
 import { sampleSizeLabel } from "@/lib/sampling/size";
 import { checkTransition, planRelease, STATE_STAMP, type StockRelease } from "@/lib/sampling/lifecycle";
@@ -241,7 +241,7 @@ export async function POST(req: NextRequest) {
 
   const releasedById = (g.user as { id?: string })?.id ?? null;
 
-  const outcome = await prisma.$transaction(async (tx: typeof prisma) => {
+  const outcome = await prisma.$transaction(async (tx: TxClient) => {
     const checks: StockRelease[] = [];
     const shelves: Array<{ line: IncomingLine; stockId: string | null; label: string }> = [];
 

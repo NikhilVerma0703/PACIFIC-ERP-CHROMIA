@@ -9,8 +9,11 @@ import { workersForPieceOps, workersForSessions, workersForSlabJobs } from "@/li
 import { pieceStages, summarizeStages } from "@/lib/fab/pieceStages";
 import { downtimeLabel } from "@/lib/fab/downtimeReasons";
 import { FAB_PROCESS_LABEL, type FabProcessType } from "@/lib/fab/processSession";
-import { priceRow, parseEdges } from "@/lib/fab/pricing";
-import { perPieceCharge } from "@/lib/fab/periodReport";
+import { parseEdges } from "@/lib/fab/pricing";
+// The per-piece rule lives in ONE module now — the same one the packaging route
+// stamps from — so a charge frozen at packing and a charge computed here for an
+// older piece cannot be two different arithmetics. See lib/fab/pieceCharge.ts.
+import { rowShares, pieceCharge, frozenCharge, type RowShares } from "@/lib/fab/pieceCharge";
 
 const IDLE_MS = 30 * 60 * 1000;
 
@@ -400,6 +403,12 @@ export async function GET(req: Request) {
     projectCode: string; rowLetter: string | null; pieceLabel: string | null;
     lengthIn: number | null; widthIn: number | null; quantity: number;
     sinkQuantity: number | null; thicknessMm: number | null; finishedEdges: string | null;
+    /** TOP / BOTTOM / BOTH. Null is TOP; BOTH doubles the running feet. */
+    edgeFaces: string | null;
+    /** RECTANGLE / CIRCLE / OVAL — how the two dimension columns are read, and
+     *  which perimeter the edge charge runs along. Null means rectangle, which
+     *  is every row written before shapes existed. */
+    shapeType: string | null;
   }> = [];
   try {
     const raw = await prisma.$queryRaw<Array<{
@@ -407,11 +416,16 @@ export async function GET(req: Request) {
       project_code: string; row_letter: string | null; piece_label: string | null;
       length: number | null; width: number | null; quantity: number;
       sink_quantity: number | null; thickness: number | null; finished_edges: string | null;
+      shape_type: string | null; edge_faces: string | null;
     }>>`
       SELECT r.id AS requirement_id,
              p.project_code, r.row_letter, r.piece_label,
              r.length, r.width, r.quantity, r.sink_quantity,
-             r.finished_edges,
+             r.finished_edges, r.edge_faces,
+             -- ::text so this reads the same whether shape_type is a Postgres
+             -- enum or a plain column, and so an unknown future value arrives
+             -- as a word this code can fall back on rather than as a crash.
+             r.shape_type::text AS shape_type,
              -- The thickness of any slab this row is allocated to. A row split
              -- across slabs of one thickness (the normal case) resolves to it;
              -- MAX rather than an arbitrary pick so the answer is stable.
@@ -422,7 +436,8 @@ export async function GET(req: Request) {
       LEFT   JOIN fab_slab s ON s.id = ra.slab_id
       WHERE  p.status <> 'COMPLETED'
       GROUP  BY p.project_code, r.id, r.row_letter, r.piece_label,
-               r.length, r.width, r.quantity, r.sink_quantity, r.finished_edges
+               r.length, r.width, r.quantity, r.sink_quantity, r.finished_edges,
+               r.edge_faces, r.shape_type
       ORDER  BY p.project_code, r.row_letter NULLS LAST, r.created_at
     `;
     pricingRows = raw.map(x => ({
@@ -436,6 +451,8 @@ export async function GET(req: Request) {
       sinkQuantity: x.sink_quantity == null ? null : Number(x.sink_quantity),
       thicknessMm: x.thickness == null ? null : Number(x.thickness),
       finishedEdges: x.finished_edges ?? null,
+      edgeFaces: x.edge_faces ?? null,
+      shapeType: x.shape_type ?? null,
     }));
   } catch {
     pricingRows = [];   // scripts/0054 / 0055 not applied yet
@@ -881,11 +898,26 @@ export async function GET(req: Request) {
         isCompleted: true,
         completedAt: { gte: rangeStart, lte: rangeEnd },
       },
-      // has_sink is selected because it decides whether this piece EARNS —
-      // see the charge loop below. Not reading it there was the bug this fixes.
+      // has_sink is selected because it decides whether this piece earns the
+      // SINK share — see the charge loop below. Not reading it there was the
+      // bug this fixes.
+      //
+      // has_edge_polish is deliberately NOT selected. Whether a piece carries
+      // hand edge polish is a fact about its ROW (a row is homogeneous — see
+      // pricing.ts), so it is read from finished_edges below, which every
+      // database already has. Selecting a column added by scripts/0063 here
+      // would throw P2022 on a deploy running ahead of the migration and this
+      // whole block falls back to an empty money card — a silent zero on the
+      // CEO's landing page, which is the failure this file works hardest to
+      // avoid.
+      //
+      // charged_edge / charged_sink / charged_at are NOT selected here either,
+      // and for exactly the same reason — they arrive in scripts/0066. They are
+      // read below in their own wrapped query, so a database without them falls
+      // back to live pricing instead of taking the card down.
       select: {
         completedAt: true,
-        piece: { select: { requirementId: true, hasSink: true } },
+        piece: { select: { id: true, requirementId: true, hasSink: true } },
       },
     });
 
@@ -904,13 +936,18 @@ export async function GET(req: Request) {
     const reqIds = [...new Set(
       packed.map((op) => op.piece?.requirementId).filter((id): id is string => !!id)
     )];
-    const perPiece = new Map<string, { edge: number; sink: number }>();
+    const perPiece = new Map<string, RowShares>();
     if (reqIds.length) {
       const priceInputs = await prisma.$queryRaw<Array<{
         id: string; length: number | null; width: number | null; quantity: number;
         sink_quantity: number | null; finished_edges: string | null; thickness: number | null;
+        shape_type: string | null; edge_faces: string | null;
       }>>`
-        SELECT r.id, r.length, r.width, r.quantity, r.sink_quantity, r.finished_edges,
+        SELECT r.id, r.length, r.width, r.quantity, r.sink_quantity, r.finished_edges, r.edge_faces,
+               -- Circle and oval are charged on their perimeter, not on a
+               -- rectangle's. Cast to text so this reads the same whether
+               -- shape_type is an enum or a plain column.
+               r.shape_type::text AS shape_type,
                -- The thickness of any slab this row is cut from. MAX rather than
                -- an arbitrary pick, so the answer is stable across refreshes.
                MAX(s.thickness) AS thickness
@@ -920,19 +957,64 @@ export async function GET(req: Request) {
         WHERE  r.id = ANY(${reqIds}::text[])
         GROUP  BY r.id
       `;
-      // Priced once per ROW, not once per piece: priceRow is the only thing that
-      // knows the rate card, and calling it per piece is the same answer computed
-      // a thousand times.
+      // Priced once per ROW, not once per piece: the rate card is a row-level
+      // question, and asking it per piece is the same answer computed a thousand
+      // times.
+      //
+      // TWO DIVISORS. Edge money spreads over the pieces that carry hand edge
+      // polish — the whole row, under the group rule — and sink money over the
+      // sink pieces. Dividing both by one count was right only while the two
+      // sets were identical, which they stopped being when the owner separated
+      // the jobs. rowShares() is that rule, and the packaging route stamps from
+      // the same function.
       for (const r of priceInputs) {
-        const priced = priceRow({
+        perPiece.set(r.id, rowShares({
           lengthIn: r.length == null ? null : Number(r.length),
           widthIn: r.width == null ? null : Number(r.width),
           quantity: Number(r.quantity ?? 0),
           sinkQuantity: r.sink_quantity == null ? null : Number(r.sink_quantity),
           thicknessMm: r.thickness == null ? null : Number(r.thickness),
           edges: parseEdges(r.finished_edges),
-        });
-        perPiece.set(r.id, perPieceCharge(priced.edgeCost, priced.sinkCost, priced.fabricationPieces));
+          shape: r.shape_type,
+          edgeFace: r.edge_faces,
+        }));
+      }
+    }
+
+    // ── WHAT WAS ALREADY WRITTEN DOWN ────────────────────────────────────────
+    //
+    // A piece packed since scripts/0066 carries the figure it earned on the day
+    // it earned it. That figure WINS over anything computed above, and that is
+    // the whole point: the report re-priced from the live ordered row, so
+    // setting edge_faces to BOTH in September doubled what July said it earned.
+    // Nothing had been re-done and nothing re-billed — a closed month simply
+    // read differently than it had.
+    //
+    // RAW AND WRAPPED, exactly like the slab_mark block above. On a database
+    // without scripts/0066 this leaves the map empty and every piece falls back
+    // to live pricing, which is precisely the behaviour that shipped before the
+    // column existed. Nothing to apply, nothing broken.
+    const frozen = new Map<string, { edge: number; sink: number }>();
+    const packedIds = [...new Set(
+      packed.map((op) => op.piece?.id).filter((id): id is string => !!id),
+    )];
+    if (packedIds.length) {
+      try {
+        const stamps = await prisma.$queryRaw<Array<{
+          id: string; charged_edge: number | null; charged_sink: number | null;
+          charged_at: Date | null;
+        }>>`
+          SELECT id, charged_edge, charged_sink, charged_at
+          FROM   fab_piece
+          WHERE  id = ANY(${packedIds}::text[])
+            AND  charged_at IS NOT NULL
+        `;
+        for (const s of stamps) {
+          const c = frozenCharge(s);
+          if (c) frozen.set(s.id, c);
+        }
+      } catch {
+        // scripts/0066 not applied yet. Live pricing below covers it.
       }
     }
 
@@ -944,31 +1026,51 @@ export async function GET(req: Request) {
       if (!op.completedAt) continue;
       const reqId = op.piece?.requirementId ?? null;
 
-      // ONLY A FABRICATION PIECE EARNS — the owner's rule, and the one this
-      // loop used to break: "this part is only for the sink cut pieces bro, the
-      // fabrication piece only which can come to fabrication."
+      // WHAT THIS PIECE EARNS, ASKED ONCE PER JOB.
       //
-      // perPieceCharge spreads the ROW's whole charge over its sink pieces, so
-      // adding that share to every packed piece of a mixed row billed it twice.
-      // A row of 60 with 30 sinks came out at exactly 2x. The two halves are
-      // the same size and thickness and differ only here, so the error was
-      // invisible on the screen and exact in the ledger — the worst combination.
+      // The rule this loop used to enforce was "only a sink piece earns", from
+      // the owner's "this part is only for the sink cut pieces bro". That was
+      // right while edge work was the hand-polish that came WITH a sink cutout.
+      // He then separated them — hand edge polish is chosen independently, on
+      // sink rows and plain rows alike — so the question is now asked twice:
       //
-      // A plain piece and a sample piece are still PACKED and still counted
-      // below; they simply earn nothing, which is what they are worth on this
-      // card. A piece with no requirement cannot be priced at all, and a guessed
-      // rate would be worse than a zero.
-      const earns = op.piece?.hasSink === true;
-      const charge = earns && reqId ? perPiece.get(reqId) : undefined;
+      //   SINK share   this piece has a sink. Per piece, and half a row can.
+      //   EDGE share   this piece's ROW carries hand edge polish. A row is
+      //                homogeneous (a row where only some pieces want it is
+      //                split instead), so the row's answer is the piece's.
+      //
+      // Read from the row rather than from fab_piece.has_edge_polish on purpose:
+      // that column arrives in scripts/0063 and selecting it here would take the
+      // whole money card down on a deploy that runs ahead of the migration.
+      //
+      // The old bug is still guarded. rowShares divides each charge by the
+      // pieces that earn IT — edge by the edge pieces, sink by the sink ones —
+      // so adding a share to a piece that does not earn it can no longer double
+      // a mixed row. That error was invisible on the screen and exact in the
+      // ledger, which is the worst combination.
+      //
+      // A piece with no requirement cannot be priced at all, and a guessed rate
+      // would be worse than a zero. It is still counted as packed below.
+      //
+      // THE STAMP WINS. A piece packed since scripts/0066 already has its answer
+      // and nothing recomputes it — that is what stops a September edit moving
+      // July's total. A piece packed before it has no stamp and is priced live
+      // from its row, which is the only honest thing left to do for it.
+      const stamp = op.piece?.id ? frozen.get(op.piece.id) : undefined;
+      const live = pieceCharge(
+        reqId ? perPiece.get(reqId) : null,
+        op.piece?.hasSink === true,
+      );
+      const { edge: edgeShare, sink: sinkShare } = stamp ?? live;
 
       const dayKey = dayKeyOf(op.completedAt);
       const k = `${dayKey}::${reqId ?? "-"}`;
       const row = byKey.get(k)
         ?? { dayKey, edgeCost: 0, sinkCost: 0, piecesPacked: 0, piecesCharged: 0 };
-      row.edgeCost += charge?.edge ?? 0;
-      row.sinkCost += charge?.sink ?? 0;
+      row.edgeCost += edgeShare;
+      row.sinkCost += sinkShare;
       row.piecesPacked += 1;
-      if (charge) row.piecesCharged += 1;
+      if (edgeShare > 0 || sinkShare > 0) row.piecesCharged += 1;
       byKey.set(k, row);
     }
     periodMoney = [...byKey.values()];

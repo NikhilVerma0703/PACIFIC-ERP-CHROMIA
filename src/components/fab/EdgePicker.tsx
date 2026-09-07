@@ -4,9 +4,9 @@
 //
 // The owner asked for exactly this: "we show them a graphical piece, they
 // choose sides, and feet is calculated and paid." So the control IS the piece —
-// a rectangle drawn to the row's proportions with four clickable edges — and
-// not four checkboxes labelled front/back/left/right. A fabricator points at a
-// side; he does not read a list and translate.
+// drawn to the row's proportions with clickable edges — and not four checkboxes
+// labelled front/back/left/right. A fabricator points at a side; he does not
+// read a list and translate.
 //
 //        ┌──── back ────┐        front and back run the LENGTH
 //   left │   28 × 22.5  │ right  left and right run the WIDTH
@@ -16,24 +16,39 @@
 // row A is the same size and gets the same treatment; a picker per piece would
 // be sixty identical decisions.
 //
-// ─────────────────────── AND ONLY ON ROWS THAT REACH FABRICATION ────────────
-// The owner: "this part is only for the sink cut pieces — the fabrication,
-// pieces only which can come to fabrication."
+// ─────────────────────── THIS IS HAND EDGE POLISH, ON ITS OWN ───────────────
+// AND THAT REVERSES WHAT THIS FILE USED TO SAY, deliberately.
 //
-// Edge work IS fabrication work, and requirement-derive.ts has always encoded
-// it: `fabricationRequired = sinkRequired`, because "fabrication here means the
-// outsourced hand-polish of the sink cutout, so it never applies to a piece
-// without a sink". A row with no sinks never reaches the fabricator, so this
-// board does not offer it a decision — showing one would invite a supervisor to
-// mark edges that nobody will polish and nobody will pay for.
+// It used to refuse any row without a sink, on the rule
+// `fabricationRequired = sinkRequired` — edge work was read as the hand-polish
+// that came WITH a sink cutout, so a plain row was never offered a decision.
 //
-// The feet follow the same rule: priceRow counts them over the SINK pieces, so
-// a row of 60 with 30 sinks is 30 pieces' worth of edge, not 60. The picker
-// prints that count beside the figure, because "252.5 ft" on a row of sixty
-// only makes sense once you can see it is thirty pieces.
+// The owner: "we choose the sink, there itself we need to choose the edge
+// polish, which is NOT the polish of the operator. This edge polish is by hand,
+// where we need the running foot length and charge by thickness." And: "any
+// pieces can be assigned the edge hand polish or not — this is chosen and done
+// by supervisor, or else the one manager who uploads the PO."
 //
-// SET THE SINKS FIRST. Step 3 is above this one for that reason: until a row
-// has a sink count it is not a fabrication row and there is nothing to price.
+// So EVERY row gets a picker now. There are two hand jobs and only one of them
+// is chosen here:
+//
+//   SINK POLISH   implied by the sink cut, priced inside the per-piece sink
+//                 rate. Nobody chooses it and this control never mentions it.
+//   EDGE POLISH   chosen here, on any row, sink or plain. Running feet at the
+//                 thickness rate.
+//
+// The old refusal was not a safety rail, it was a leak: a plain row whose front
+// edge the customer wanted polished could not be marked at all, and the shop
+// did the work unpaid.
+//
+// ─────────────────────────────── CIRCLES AND OVALS ──────────────────────────
+// "Regarding the cost, now it's like polish side only for a squares or rect,
+// need to include circle, oval as well. Default is rect shape fine."
+//
+// A round piece has ONE edge. There are no sides to choose between, so the four
+// bands become a single ring: polished or not. The drawing changes with it —
+// showing a rectangle for a circle would invite somebody to pick "front" on a
+// shape that has no front.
 //
 // EVERY NUMBER COMES FROM lib/fab/pricing.ts. Nothing is computed in this file
 // — same rule as CeoOverviewBoard — so the feet the supervisor sees while
@@ -49,10 +64,12 @@
 
 import { useCallback, useMemo, useState } from "react";
 import {
-  EDGES, ALL_EDGES, parseEdges, serializeEdges, describeEdges, edgeCount,
+  EDGES, ALL_EDGES, ROUND_ALL, allEdgesFor, parseEdges, serializeEdges,
+  describeEdges, edgeCount, edgeCapacity,
   priceRow, runningFeet, formatRupees, thicknessLabel,
   type Edge, type EdgeSelection,
 } from "@/lib/fab/pricing";
+import { isRound, parseShape, describeShapeSize, ROUND_EDGE } from "@/lib/fab/shape";
 
 export interface EdgePickerRow {
   requirementId: string;
@@ -60,10 +77,11 @@ export interface EdgePickerRow {
   pieceLabel: string | null;
   lengthIn: number | null;
   widthIn: number | null;
-  /** Pieces ORDERED on this row. The charge is the whole row's, not this
-   *  slab's share — the edges get polished once, wherever the pieces are cut. */
+  /** Pieces ORDERED on this row. THE COUNT THE FEET ARE MEASURED OVER, since
+   *  hand edge polish stopped following the sink: a row is homogeneous, so if
+   *  its edges are marked, every piece of it is hand polished. */
   orderedQuantity: number;
-  /** fab_requirement.sink_quantity, so the row's total reads in full. */
+  /** fab_requirement.sink_quantity — shown for context, no longer a gate. */
   sinkQuantity: number | null;
   /** fab_requirement.finished_edges. NULL = not chosen yet. */
   finishedEdges: string | null;
@@ -71,6 +89,17 @@ export interface EdgePickerRow {
    *  ₹15/ft, 3 cm is ₹20/ft, anything else is not on the card and is reported
    *  unpriced rather than charged at a neighbour's rate. */
   thicknessMm: number | null;
+  /** RECTANGLE / CIRCLE / OVAL. Null is a rectangle — every row written before
+   *  shapes existed, which is nearly all of them. */
+  shapeType?: string | null;
+  /** TOP / BOTTOM / BOTH. Null is TOP; BOTH is the same line walked twice and
+   *  DOUBLES the feet.
+   *
+   *  THIS WAS MISSING AND THIS CARD QUOTED HALF. The manager's PO card passed
+   *  the face and this one did not, so one row read Rs15,150 there and Rs7,575
+   *  here — against the whole rule that the two screens cannot hold different
+   *  answers for one row. The board route has always sent it. */
+  edgeFaces?: string | null;
 }
 
 async function postJson(url: string, body: unknown): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; error: string }> {
@@ -148,6 +177,63 @@ function PieceDiagram({
   );
 }
 
+/**
+ * THE ROUND PIECE — one edge, one click.
+ *
+ * A circle has no sides, so this is not four bands with three disabled: it is a
+ * ring that is polished or is not. Drawn as an ellipse to the row's own axes so
+ * an oval reads as an oval, and its ring IS the button — the same "point at the
+ * thing" gesture the rectangle asks for.
+ */
+function RoundDiagram({
+  shape, lengthIn, widthIn, on, onToggle, disabled,
+}: {
+  shape: string;
+  lengthIn: number | null;
+  widthIn: number | null;
+  on: boolean;
+  onToggle: () => void;
+  disabled: boolean;
+}) {
+  const circle = parseShape(shape) === "CIRCLE";
+  const a = Number(lengthIn) > 0 ? Number(lengthIn) : 1;
+  // A circle's width is its diameter, whatever the column happens to hold.
+  const b = circle ? a : (Number(widthIn) > 0 ? Number(widthIn) : 1);
+  const ratio = Math.min(2, Math.max(0.5, b / a));
+  const boxW = 168;
+  const boxH = Math.round(boxW * ratio);
+
+  const label = on
+    ? "Whole edge polished — click to remove"
+    : "Edge not polished — click to polish the whole edge";
+
+  return (
+    <button
+      type="button" onClick={onToggle} disabled={disabled}
+      aria-label={label} aria-pressed={on} title={label}
+      className="relative shrink-0 disabled:opacity-50 disabled:cursor-not-allowed group"
+      style={{ width: boxW, height: boxH }}
+    >
+      <svg viewBox={`0 0 ${boxW} ${boxH}`} width={boxW} height={boxH} className="overflow-visible">
+        <ellipse
+          cx={boxW / 2} cy={boxH / 2}
+          rx={boxW / 2 - 6} ry={boxH / 2 - 6}
+          className={on
+            ? "fill-slate-50 stroke-indigo-500 group-hover:stroke-indigo-600"
+            : "fill-slate-50 stroke-slate-300 group-hover:stroke-slate-400"}
+          strokeWidth={on ? 8 : 5}
+        />
+      </svg>
+      <span className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+        <span className="text-[11px] font-semibold text-slate-600 tabular-nums">
+          {describeShapeSize(shape, { lengthIn, widthIn })}
+        </span>
+        <span className="text-[9px] text-slate-400">{circle ? "circle" : "oval"}</span>
+      </span>
+    </button>
+  );
+}
+
 /* -- one row --------------------------------------------------------------- */
 
 export function EdgePicker({
@@ -164,6 +250,10 @@ export function EdgePicker({
   const [saving, setSaving] = useState(false);
   const busy = parentBusy || saving;
 
+  const shape = row.shapeType ?? "RECTANGLE";
+  const round = isRound(shape);
+  const capacity = edgeCapacity(shape);
+
   const chosen = row.finishedEdges !== null;
   const edges = useMemo(() => parseEdges(row.finishedEdges), [row.finishedEdges]);
 
@@ -174,15 +264,16 @@ export function EdgePicker({
     sinkQuantity: row.sinkQuantity,
     thicknessMm: row.thicknessMm,
     edges,
-  }), [row.lengthIn, row.widthIn, row.orderedQuantity, row.sinkQuantity, row.thicknessMm, edges]);
+    shape,
+    edgeFace: row.edgeFaces,
+  }), [row.lengthIn, row.widthIn, row.orderedQuantity, row.sinkQuantity, row.thicknessMm, edges, shape, row.edgeFaces]);
 
-  /** All four edges on the same FABRICATION pieces — what this row would come
-   *  to at most. Measured over priced.fabricationPieces, not the ordered
-   *  quantity, or the comparison would be against a number nobody will ever be
-   *  charged. */
-  const feetAllFour = useMemo(
-    () => runningFeet(row.lengthIn, row.widthIn, priced.fabricationPieces, ALL_EDGES),
-    [row.lengthIn, row.widthIn, priced.fabricationPieces],
+  /** Every edge on the whole row — what this row would come to at most.
+   *  Measured over the ORDERED quantity, because that is what it would actually
+   *  be: hand edge polish applies to the whole row or none of it. */
+  const feetAll = useMemo(
+    () => runningFeet(row.lengthIn, row.widthIn, row.orderedQuantity, allEdgesFor(shape), shape, row.edgeFaces),
+    [row.lengthIn, row.widthIn, row.orderedQuantity, shape, row.edgeFaces],
   );
 
   const save = useCallback(async (next: EdgeSelection | null) => {
@@ -194,9 +285,19 @@ export function EdgePicker({
     setSaving(true);
     onChange(row.requirementId, nextStored);          // optimistic
 
+    // The wire form is a list of edge names — the four side names for a
+    // rectangle, or the single word "round". The route validates against the
+    // ROW'S shape and refuses the other vocabulary, so a stale screen cannot
+    // write "front" onto a circle.
+    const wire = next === null
+      ? null
+      : round
+        ? (next.round ? [ROUND_EDGE] : [])
+        : EDGES.filter((e) => next[e]);
+
     const res = await postJson("/api/fab/supervisor/finished-edges", {
       requirementId: row.requirementId,
-      edges: next === null ? null : EDGES.filter((e) => next[e]),
+      edges: wire,
     });
 
     if (!res.ok) {
@@ -213,7 +314,7 @@ export function EdgePicker({
       : nextStored;
     onChange(row.requirementId, saved);
     setSaving(false);
-  }, [row.requirementId, row.finishedEdges, onChange]);
+  }, [row.requirementId, row.finishedEdges, round, onChange]);
 
   const toggle = useCallback((e: Edge) => {
     // A first click on an untouched row starts from nothing, not from all four:
@@ -222,15 +323,27 @@ export function EdgePicker({
     save({ ...edges, [e]: !edges[e] });
   }, [edges, save]);
 
-  const n = edgeCount(edges);
+  const toggleRound = useCallback(() => {
+    save(edges.round ? {} : { ...ROUND_ALL });
+  }, [edges, save]);
+
+  const n = edgeCount(edges, shape);
+  const description = describeEdges(edges, shape);
 
   return (
     <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
       <div className="flex items-start gap-4 flex-wrap">
-        <PieceDiagram
-          lengthIn={row.lengthIn} widthIn={row.widthIn}
-          edges={edges} onToggle={toggle} disabled={busy}
-        />
+        {round ? (
+          <RoundDiagram
+            shape={shape} lengthIn={row.lengthIn} widthIn={row.widthIn}
+            on={!!edges.round} onToggle={toggleRound} disabled={busy}
+          />
+        ) : (
+          <PieceDiagram
+            lengthIn={row.lengthIn} widthIn={row.widthIn}
+            edges={edges} onToggle={toggle} disabled={busy}
+          />
+        )}
 
         <div className="min-w-[13rem] flex-1">
           <div className="flex items-center gap-2 flex-wrap">
@@ -238,10 +351,12 @@ export function EdgePicker({
               {row.pieceLabel ?? "Row"}
             </span>
             <span className="text-[11px] text-slate-400">
-              {/* BOTH counts, always. "252.5 ft" on a row of sixty is only
-                  readable once you can see it is the thirty sink pieces. */}
-              {priced.fabricationPieces} of {row.orderedQuantity} pc{row.orderedQuantity === 1 ? "" : "s"} to
-              fabrication &middot; {thicknessLabel(row.thicknessMm)}
+              {/* THE WHOLE ROW is hand polished when its edges are marked — a
+                  row is homogeneous. The sink count sits beside it as context,
+                  not as a gate, because the two jobs are independent now. */}
+              {row.orderedQuantity} pc{row.orderedQuantity === 1 ? "" : "s"}
+              {priced.sinkPieces > 0 && ` · ${priced.sinkPieces} with a sink`}
+              {" · "}{thicknessLabel(row.thicknessMm)}
             </span>
             {!chosen && (
               <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
@@ -251,9 +366,9 @@ export function EdgePicker({
           </div>
 
           <p className="text-[11px] text-slate-500 mt-1">
-            {chosen ? describeEdges(edges) : "Nobody has marked this row's edges"}
-            {chosen && n > 0 && n < EDGES.length && (
-              <span className="text-slate-400"> &middot; {n} of 4</span>
+            {chosen ? description : "Nobody has marked this row's edges"}
+            {chosen && n > 0 && n < capacity && (
+              <span className="text-slate-400"> &middot; {n} of {capacity}</span>
             )}
           </p>
 
@@ -263,25 +378,55 @@ export function EdgePicker({
               <span className="text-slate-500">Running feet</span>
               <span className="font-semibold text-slate-800">
                 {priced.runningFeet} ft
-                {n > 0 && n < EDGES.length && (
-                  <span className="text-slate-400 font-normal"> of {feetAllFour} all round</span>
+                {n > 0 && n < capacity && (
+                  <span className="text-slate-400 font-normal"> of {feetAll} all round</span>
                 )}
               </span>
             </div>
             <div className="text-[10px] text-slate-400 mt-0.5">
-              {describeEdges(edges) === "None" ? "no edges" : describeEdges(edges).toLowerCase()} on{" "}
-              {priced.fabricationPieces} piece{priced.fabricationPieces === 1 ? "" : "s"}
+              {description === "None" ? "no edges" : description.toLowerCase()} on{" "}
+              {priced.edgePieces} piece{priced.edgePieces === 1 ? "" : "s"}
+              {/* NAMED, because 1,010 ft on a row of 505 ft of edge is otherwise
+                  an arithmetic error to anybody reading it. */}
+              {priced.edgeFace === "BOTH" && (
+                <span className="text-amber-700 font-semibold"> &middot; both faces, walked twice</span>
+              )}
+              {priced.edgeFace === "BOTTOM" && <span> &middot; bottom face</span>}
             </div>
             {priced.unpriced ? (
-              <p className="mt-1 text-[11px] text-amber-700">
-                {thicknessLabel(row.thicknessMm)} is not on the rate card (2 cm and 3 cm are) —
-                the feet are right, the charge has to be agreed.
-              </p>
+              // THREE DIFFERENT HOLES, and one amber line for all of them sent
+              // everyone to argue about the rate card when the real problem was a
+              // blank width. Each line names the person who can fix it.
+              priced.unpricedReason === "EDGES" ? (
+                <p className="mt-1 text-[11px] text-amber-700">
+                  This row names edges the shape does not have — a circle has one
+                  ring, a rectangle has four sides. Re-pick the edges for the shape
+                  above and the charge appears.
+                </p>
+              ) : priced.unpricedReason === "SHAPE" ? (
+                <p className="mt-1 text-[11px] text-amber-700">
+                  This row is an L, a curve or a custom outline. There is no perimeter
+                  formula for it here, so the hand polish has to be quoted by hand —
+                  the sink, if any, is charged as usual.
+                </p>
+              ) : priced.unpricedReason === "DIMENSIONS" ? (
+                <p className="mt-1 text-[11px] text-amber-700">
+                  {round
+                    ? `This row has no ${parseShape(shape) === "CIRCLE" ? "diameter" : "axes"} on the order, so there is no perimeter to charge.`
+                    : "The edges marked here run along a dimension the order does not give."}
+                  {" "}Enter the size on the purchase-order row and the charge appears.
+                </p>
+              ) : (
+                <p className="mt-1 text-[11px] text-amber-700">
+                  {thicknessLabel(row.thicknessMm)} is not on the rate card (2 cm and 3 cm are) —
+                  the feet are right, the charge has to be agreed.
+                </p>
+              )
             ) : (
               <>
                 <div className="flex justify-between gap-4 mt-0.5">
                   <span className="text-slate-500">
-                    Edge work &middot; {formatRupees(priced.rate!.edgePerFoot)}/ft
+                    Hand edge polish &middot; {formatRupees(priced.rate!.edgePerFoot)}/ft
                   </span>
                   <span className="font-semibold text-slate-800">{formatRupees(priced.edgeCost)}</span>
                 </div>
@@ -302,10 +447,10 @@ export function EdgePicker({
           </div>
 
           <div className="mt-2 flex items-center gap-2 flex-wrap">
-            <button type="button" disabled={busy || n === EDGES.length}
-              onClick={() => save(ALL_EDGES)}
+            <button type="button" disabled={busy || n === capacity}
+              onClick={() => save(allEdgesFor(shape))}
               className="text-[11px] font-semibold px-2 py-1 rounded border border-indigo-200 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-40 disabled:cursor-not-allowed transition">
-              All four
+              {round ? "Whole edge" : "All four"}
             </button>
             <button type="button" disabled={busy || (chosen && n === 0)}
               onClick={() => save({})}
@@ -344,48 +489,37 @@ export function EdgeBoard({
   busy?: boolean;
   onChange: (requirementId: string, finishedEdges: string | null) => void;
 }) {
-  // ONLY THE ROWS THAT REACH FABRICATION. fabricationRequired = sinkRequired,
-  // so a row with no sink count is not shown a picker at all — see the note at
-  // the top of the file. The plain rows are COUNTED and named below rather than
-  // silently dropped: a supervisor looking for row C needs to be told why it is
-  // not here, or he will think the board is broken.
-  const fabRows = rows.filter((r) => (r.sinkQuantity ?? 0) > 0);
-  const plainRows = rows.filter((r) => (r.sinkQuantity ?? 0) <= 0);
-  const unchosen = fabRows.filter((r) => r.finishedEdges === null).length;
+  // EVERY ROW, NOT JUST THE SINK ONES.
+  //
+  // This board used to filter to `sinkQuantity > 0` and print a line explaining
+  // why the rest were missing. That filter was the old rule made visible — edge
+  // work followed the sink — and it hid exactly the rows the owner wanted
+  // marked: "any pieces can be assigned the edge hand polish or not."
+  //
+  // A plain row whose front edge the customer wants polished is now here, and
+  // it is worth money.
+  const unchosen = rows.filter((r) => r.finishedEdges === null).length;
 
   if (rows.length === 0) {
     return <p className="text-[11px] text-slate-400">Put pieces on this slab first — edges are marked per ordered row.</p>;
   }
 
-  if (fabRows.length === 0) {
-    return (
-      <p className="text-[11px] text-slate-500">
-        No row on this slab goes to fabrication yet. Edge work is the hand-polish that
-        comes with a sink cutout, so a row is only asked about its edges once it has a
-        sink count — set those in step 3 above.
-      </p>
-    );
-  }
-
   return (
     <div className="space-y-2">
+      <p className="text-[11px] text-slate-500">
+        HAND edge polish — the outsourced running-foot job, not the machine polish at the
+        polishing station. Any row can have it, with or without a sink. The sink&rsquo;s own
+        polish is part of the sink and is not chosen here.
+      </p>
       {unchosen > 0 && (
         <p className="text-[11px] text-amber-700">
-          {unchosen} fabrication row{unchosen === 1 ? " has" : "s have"} no edge decision yet —
+          {unchosen} row{unchosen === 1 ? " has" : "s have"} no edge decision yet —
           reported as unpriced, not as free.
         </p>
       )}
-      {fabRows.map((r) => (
+      {rows.map((r) => (
         <EdgePicker key={r.requirementId} row={r} busy={busy} onChange={onChange} />
       ))}
-      {plainRows.length > 0 && (
-        <p className="text-[11px] text-slate-400">
-          {plainRows.length} row{plainRows.length === 1 ? "" : "s"} not shown
-          {" "}({plainRows.map((r) => r.pieceLabel ?? "?").join(", ")}) — no sinks, so
-          {plainRows.length === 1 ? " it does" : " they do"} not go to fabrication and
-          {plainRows.length === 1 ? " carries" : " carry"} no edge charge.
-        </p>
-      )}
     </div>
   );
 }

@@ -17,6 +17,22 @@
 // EVERY VIEW RETURNS AN ARRAY. getJson() in lib/fab/postJson.ts hands back
 // `Array.isArray(j) ? j : []`, so an object body would arrive at the screen as
 // a successful empty list — the exact failure mode that helper exists to stop.
+//
+// ─────────────────────────── AND THE CUTTER READS IT TOO ────────────────────
+// The owner: "we have slab allocation page made for supervisor, that need to be
+// included to the cutter as well — but the flow is click +slab and enter the
+// rows and quantity and cut, and rest is same as now."
+//
+// So the gate is EMPLOYEE, not SUPERVISOR. Everyone this admits is already
+// inside the FABRICATION branch — fabTierOf returns null for anybody who is not
+// (lib/fab/access.ts), so "EMPLOYEE" here means a fabrication operator standing
+// at a saw, not the public. What he is being shown is which rows of which
+// project are still waiting for stone, which is the question he now answers
+// himself instead of waiting to be told.
+//
+// A READ, and the writes were widened with it — slab-assignment and
+// approve-slab. Widening only this one would have shown him the work and
+// refused every action on it.
 
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
@@ -34,7 +50,7 @@ const PLANNING_STATUSES = ["PLANNING", "ALLOCATED"] as const;
 const SENT_STATUSES = ["READY", "IN_PROGRESS", "COMPLETED"] as const;
 
 export async function GET(req: NextRequest) {
-  const g = await fabGate("SUPERVISOR");
+  const g = await fabGate("EMPLOYEE");
   if (!g.ok) {
     return Response.json(
       { error: g.status === 401 ? "Your session has ended — sign in again." : "Not authorized" },
@@ -213,14 +229,26 @@ export async function GET(req: NextRequest) {
       slabs.flatMap(s => s.requirementAllocations.map(a => a.requirement.id))
     )];
     const edgesByRequirement = new Map<string, string | null>();
+    // SHAPE TRAVELS WITH THE EDGES, because it decides what the edges MEAN: a
+    // circle has one edge and a rectangle has four, and the picker must not
+    // offer sides to a shape that has none.
+    const shapeByRequirement = new Map<string, string | null>();
+    /** TOP / BOTTOM / BOTH — the other half of the edge charge (scripts/0065). */
+    const faceByRequirement = new Map<string, string | null>();
     if (edgeIds.length) {
       try {
-        const edgeRows = await prisma.$queryRaw<Array<{ id: string; finished_edges: string | null }>>`
-          SELECT id, finished_edges FROM fab_requirement WHERE id = ANY(${edgeIds}::text[])
+        const edgeRows = await prisma.$queryRaw<Array<{ id: string; finished_edges: string | null; shape_type: string | null; edge_faces: string | null }>>`
+          SELECT id, finished_edges, shape_type::text AS shape_type, edge_faces
+          FROM   fab_requirement WHERE id = ANY(${edgeIds}::text[])
         `;
-        for (const r of edgeRows) edgesByRequirement.set(r.id, r.finished_edges ?? null);
+        for (const r of edgeRows) {
+          edgesByRequirement.set(r.id, r.finished_edges ?? null);
+          shapeByRequirement.set(r.id, r.shape_type ?? null);
+          faceByRequirement.set(r.id, r.edge_faces ?? null);
+        }
       } catch {
-        // scripts/0055 not applied. Every row reads as not chosen.
+        // scripts/0055 not applied. Every row reads as not chosen, and as a
+        // rectangle — which is what every row written before shapes really is.
       }
     }
 
@@ -263,6 +291,12 @@ export async function GET(req: NextRequest) {
              *  nobody has marked this row's edges. NULL is not "no edges": one
              *  is an unanswered question and the other is an answer. */
             finishedEdges: edgesByRequirement.get(a.requirement.id) ?? null,
+            /** RECTANGLE / CIRCLE / OVAL. Null is a rectangle. A CIRCLE keeps
+             *  its DIAMETER in lengthIn; an OVAL keeps a in lengthIn and b in
+             *  widthIn — see lib/fab/shape.ts. */
+            shapeType: shapeByRequirement.get(a.requirement.id) ?? null,
+            /** TOP / BOTTOM / BOTH. Null is TOP. BOTH doubles the feet. */
+            edgeFaces: faceByRequirement.get(a.requirement.id) ?? null,
             allocatedQuantity: a.allocatedQuantity,
           })),
         };

@@ -124,6 +124,12 @@ interface PricingRowDto {
   projectCode: string; rowLetter: string | null; pieceLabel: string | null;
   lengthIn: number | null; widthIn: number | null; quantity: number;
   sinkQuantity: number | null; thicknessMm: number | null; finishedEdges: string | null;
+  /** RECTANGLE / CIRCLE / OVAL — decides which perimeter the edge charge runs
+   *  along. Null is a rectangle, which is every row written before shapes. */
+  shapeType?: string | null;
+  /** TOP / BOTTOM / BOTH. Null is TOP; BOTH doubles the feet. Dropping this
+   *  from the DTO is what made the board disagree with the period report. */
+  edgeFaces?: string | null;
 }
 /** Date-wise, stage-wise completions. `rows` always covers every calendar day
  *  in [from, to] — a day nothing happened on is a row of zeros, not a gap.

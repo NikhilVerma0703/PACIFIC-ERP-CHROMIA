@@ -1,10 +1,45 @@
 // POST /api/fab/approve-slab
 // Body: { slabId: string }
-// Supervisor sends a slab to the cutter. This is the moment planning becomes
-// physical work, and it does three things in one transaction: create the
-// fab_piece rows for the slab's allocations with their route sheets, create the
-// FabSlabJob (status READY) that puts the slab in the cutting queue, and freeze
-// the slab's loss figures onto that job.
+// A slab goes to the cutter. This is the moment planning becomes physical work,
+// and it does three things in one transaction: create the fab_piece rows for the
+// slab's allocations with their route sheets, create the FabSlabJob (status
+// READY) that puts the slab in the cutting queue, and freeze the slab's loss
+// figures onto that job.
+//
+// ─────────────────────────── THE CUTTER MAY DO THIS HIMSELF ─────────────────
+// It used to say "supervisor sends a slab to the cutter", and the gate said
+// SUPERVISOR. The owner: "we have slab allocation page made for supervisor,
+// that need to be included to the cutter as well — the flow is click +slab and
+// enter the rows and quantity and cut." And on samples: "hereafter no need of
+// send to cutter — it queued to cutter where he choose a slab and starts
+// working."
+//
+// So the gate is EMPLOYEE. Everyone that admits is inside the FABRICATION
+// branch already (fabTierOf returns null otherwise), and when the cutter does it
+// the "send" is not a handover at all — the job lands in the queue he is already
+// standing at. There is no second step to skip because he performed the only one.
+//
+// WHAT DID NOT CHANGE: every refusal below. The over-commitment check, the
+// advisory latch, piecesAlreadyPresent, the active-job check that stops a slab
+// being sent twice. Those were doing the work; the tier was not.
+//
+// AND IT IS RECORDED — scripts/0064, released_by_id + released_by_session_id.
+//
+// NOT operator_id, which is written when cutting STARTS and means "who is
+// cutting this": the cutting board uses it to tell one station's work from
+// another's, and writing it here would make every READY job look claimed and
+// break that lock. Releasing and cutting are two acts by, often, two people.
+//
+// TWO COLUMNS, because on the floor one cannot answer. Everybody signs in on
+// the same shared operator account, so a user id alone records "operator@…" for
+// every cutter-released slab — the lesson this codebase already learnt about
+// operatorId, written down in fab/cutting/page.tsx. The process session is what
+// names the human: worker, machine and shift, re-read from the database on
+// every request rather than claimed by the browser.
+//
+// SO AN OPERATOR IS REFUSED WITHOUT A SESSION, in the same words start-job and
+// complete-job use — both of which already require one, so it is earlier notice
+// rather than a new demand. A supervisor is not asked: his login is his name.
 //
 // WHY THE PIECES ARE CREATED HERE. They used to be created by
 // /api/fab/supervisor/release-project, whose only caller was the requirement-first
@@ -81,6 +116,9 @@ import {
 import { deriveRoutingFlags } from "@/lib/fab/requirement-derive";
 import { planPieceOperations } from "@/lib/fab/pieceOperations";
 import { assignRowLetters, formatPieceCode, nextPieceNumberInRow } from "@/lib/fab/pieceNaming";
+import { parseEdges } from "@/lib/fab/pricing";
+import { hasEdgeWork } from "@/lib/fab/shape";
+import { readProcessSession } from "@/lib/fab/processSessionServer";
 
 /** Pieces per write chunk — the same ceiling release-project writes under, so a
  *  freak slab carrying hundreds of rows cannot overrun Postgres' 65,535
@@ -118,8 +156,51 @@ function chunk<T>(rows: T[], size: number): T[][] {
 }
 
 export async function POST(req: NextRequest) {
-  const g = await fabGate("SUPERVISOR");
+  // EMPLOYEE, not SUPERVISOR — the cutter releases his own slab now. See the
+  // note at the top of the file on what was widened and what was not.
+  const g = await fabGate("EMPLOYEE");
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
+
+  /* -- WHO IS RELEASING THIS SLAB, RESOLVED BEFORE ANYTHING IS WRITTEN -------
+   *
+   * scripts/0064 added released_by_id and released_by_session_id, and the pair
+   * exists because neither can answer alone:
+   *
+   *   released_by_id          the authenticated login. A named person at a
+   *                           desk; the SHARED operator account on the floor.
+   *   released_by_session_id  the process session, which carries the worker who
+   *                           is actually standing at the saw, plus his machine
+   *                           and his shift.
+   *
+   * ─────────── AND AN OPERATOR MUST HAVE A SESSION TO RELEASE ───────────────
+   * Without one, an EMPLOYEE release records "operator@…" and nothing else —
+   * the audit hole this change exists to close, reopened at exactly the point
+   * it matters. So it is refused, in the same words and with the same 409 that
+   * start-job and complete-job have always used.
+   *
+   * IT COSTS HIM NOTHING. Both of those already require a CUTTING session, so
+   * he needs one two clicks after this; being asked now rather than then is
+   * strictly earlier notice.
+   *
+   * A SUPERVISOR OR MANAGER IS NOT ASKED. His login IS the identity — he has
+   * his own, not the shared one — and he releases from a desk where no station
+   * session exists to open. His session is recorded anyway on the rare occasion
+   * he has one.
+   */
+  const session = await readProcessSession("CUTTING");
+  if (g.tier === "EMPLOYEE" && !session) {
+    return Response.json(
+      {
+        error:
+          "Start a Cutting session (your name and shift) before putting a slab on the saw — " +
+          "otherwise there is no record of who released it. The same session is needed to " +
+          "start and finish the cut.",
+      },
+      { status: 409 },
+    );
+  }
+  const releasedById = String((g.user as { id?: string })?.id ?? "") || null;
+  const releasedBySessionId = session?.id ?? null;
 
   const { slabId } = await req.json() as { slabId?: string };
   if (!slabId) return Response.json({ error: "slabId required" }, { status: 400 });
@@ -184,6 +265,10 @@ export async function POST(req: NextRequest) {
               select: {
                 id: true, projectId: true, drawingId: true,
                 quantity: true, sinkQuantity: true,
+                // The row's hand edge polish decision. Under the group rule it
+                // applies to every piece of the row, so it is read once here and
+                // stamped on all of them — see the routing map below.
+                finishedEdges: true,
                 length: true, width: true, shapeType: true,
                 pieceLabel: true, description: true,
                 // The piece code's letter, and the tie-break the pre-0054
@@ -400,21 +485,34 @@ export async function POST(req: NextRequest) {
           // deriveRoutingFlags so the rule stays written down in one place.
           const routing = new Map<string, {
             polishRequired: boolean;
+            /** Hand edge polish, from the ROW's finished_edges. A row is
+             *  homogeneous — one where only some pieces want it is split — so
+             *  this is every piece of the row's answer. */
+            hasEdgePolish: boolean;
             sinkOps: ReturnType<typeof planPieceOperations>;
             plainOps: ReturnType<typeof planPieceOperations>;
+            /** Cut, machine polish, HAND polish, pack — the row that reaches the
+             *  fabricator's bench for its edges with no sink to cut. Impossible
+             *  under the old `fabricationRequired = sinkRequired` rule, and
+             *  ordinary since the owner separated the two jobs. */
+            edgeOps: ReturnType<typeof planPieceOperations>;
           }>();
           for (const [requirementId, r] of rows) {
             const { polishRequired } = deriveRoutingFlags(r.requirement);
+            const hasEdgePolish = hasEdgeWork(r.requirement.shapeType, parseEdges(r.requirement.finishedEdges));
             routing.set(requirementId, {
               polishRequired,
-              sinkOps: planPieceOperations({ polishRequired, sinkRequired: true, fabricationRequired: true }),
+              hasEdgePolish,
+              sinkOps:  planPieceOperations({ polishRequired, sinkRequired: true,  fabricationRequired: true }),
               plainOps: planPieceOperations({ polishRequired, sinkRequired: false, fabricationRequired: false }),
+              edgeOps:  planPieceOperations({ polishRequired, sinkRequired: false, fabricationRequired: true }),
             });
           }
 
           for (const batch of chunk(planned, PIECE_CHUNK)) {
             const data: Prisma.FabPieceCreateManyInput[] = batch.map(p => {
               const r = rows.get(p.requirementId)!.requirement;
+              const sheet = routing.get(p.requirementId)!;
               return {
                 pieceCode: formatPieceCode(project.projectCode, p.rowLetter, p.n),
                 projectId: r.projectId,
@@ -425,10 +523,11 @@ export async function POST(req: NextRequest) {
                 width: r.width,
                 shapeType: r.shapeType ?? "RECTANGLE",
                 hasSink: p.hasSink,
-                polishRequired: routing.get(p.requirementId)!.polishRequired,
-                // Fabrication is the hand-polish of the sink cutout, so it
-                // follows the sink piece by piece.
-                fabricationRequired: p.hasSink,
+                polishRequired: sheet.polishRequired,
+                // A piece reaches the fabricator's bench for EITHER hand job —
+                // the sink cutout's polish, or the edges. has_edge_polish itself
+                // is stamped after the insert; see the note there.
+                fabricationRequired: p.hasSink || sheet.hasEdgePolish,
               };
             });
 
@@ -454,7 +553,8 @@ export async function POST(req: NextRequest) {
               // for good — it joins through this table, not through the column.
               slabAllocations.push({ pieceId, slabId });
               const sheet = routing.get(p.requirementId)!;
-              for (const op of p.hasSink ? sheet.sinkOps : sheet.plainOps) {
+              const route = p.hasSink ? sheet.sinkOps : sheet.hasEdgePolish ? sheet.edgeOps : sheet.plainOps;
+              for (const op of route) {
                 operations.push({
                   pieceId, operationType: op.operationType, sequence: op.sequence, isRequired: true,
                 });
@@ -464,6 +564,24 @@ export async function POST(req: NextRequest) {
             await tx.fabSlabAllocation.createMany({ data: slabAllocations });
             for (const opBatch of chunk(operations, OPERATION_CHUNK)) {
               await tx.fabPieceOperation.createMany({ data: opBatch });
+            }
+
+            // ---- THE HAND EDGE POLISH STAMP ------------------------------
+            //
+            // Raw, and after the insert. has_edge_polish arrives in
+            // scripts/0063, and putting it in the typed createMany above would
+            // throw P2022 on a deploy running ahead of the migration — taking
+            // the whole slab approval with it. Inside the transaction, so a
+            // piece cannot exist without its stamp: one that did would sit in
+            // no hand-bench queue and turn up at packing.
+            const edgeCodes = batch
+              .filter(p => routing.get(p.requirementId)!.hasEdgePolish)
+              .map(p => formatPieceCode(project.projectCode, p.rowLetter, p.n));
+            if (edgeCodes.length) {
+              await tx.$executeRaw`
+                UPDATE fab_piece SET has_edge_polish = true
+                WHERE  piece_code = ANY(${edgeCodes}::text[])
+              `;
             }
           }
         }
@@ -483,6 +601,33 @@ export async function POST(req: NextRequest) {
           },
           select: { id: true, status: true },
         });
+
+        /* -- WHO PUT IT THERE ----------------------------------------------
+         *
+         * Raw and after the create, for the reason the has_edge_polish stamp
+         * gives: these columns arrive in scripts/0064 and a typed write would
+         * throw P2022 on a deploy running ahead of the migration — taking the
+         * whole slab approval with it.
+         *
+         * INSIDE the transaction, so a job cannot exist without its record.
+         * The whole point is that "who released this" is answerable, and a
+         * best-effort write that quietly failed would leave exactly the holes
+         * the column was added to close.
+         *
+         * TWO COLUMNS BECAUSE ONE CANNOT ANSWER IT. On the floor everybody
+         * signs in on the same shared operator account, so released_by_id says
+         * "operator@…" and names nobody — the lesson cutting/page.tsx already
+         * records about operatorId. releasedBySessionId is what names the
+         * human: fab_machine_session carries the worker, the machine and the
+         * shift, all re-read from the database on every request rather than
+         * claimed by the browser (processSessionServer.ts).
+         */
+        await tx.$executeRaw`
+          UPDATE fab_slab_job
+          SET    released_by_id         = ${releasedById},
+                 released_by_session_id = ${releasedBySessionId}
+          WHERE  id = ${job.id}
+        `;
 
         /* -- And only then, maybe, the project ------------------------------ */
         // NOT on the first slab. /api/fab/supervisor/board?view=projects lists

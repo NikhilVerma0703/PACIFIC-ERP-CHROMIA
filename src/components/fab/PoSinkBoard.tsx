@@ -52,6 +52,29 @@
 // underneath it, and the board says out loud when it has restored one — a
 // silent restore is how somebody saves a decision they made last Tuesday and
 // have entirely forgotten about.
+//
+// ─────────────────────────── AND HAND EDGE POLISH, BESIDE IT ────────────────
+// The owner: "we choose the sink, THERE ITSELF we need to choose the edge
+// polish, which is not the polish of the operator. This edge polish is by hand,
+// where we need the running foot length and charge by thickness." And on who:
+// "this is chosen and done by supervisor, or else the one manager who uploads
+// the PO."
+//
+// So the edge decision sits on the card, next to the sink one. Two jobs, one
+// group, one place to settle both.
+//
+//   SINK POLISH   implied by the sink cut and priced inside the per-piece rate.
+//                 Nobody chooses it and it appears nowhere on this board.
+//   EDGE POLISH   chosen here, on any card — sink or plain. Per running foot.
+//
+// EDGES ARE WRITTEN ON CLICK; SINKS ARE NOT. That asymmetry is deliberate, and
+// it is the reason the draft exists: a sink SPLIT CREATES A ROW, so a manager
+// working out a breakdown would leave litter behind every time he changed his
+// mind. An edge selection creates nothing — it is one nullable column on a row
+// that already exists, and it is reversible with one more click. Holding it in
+// the draft would buy nothing and would mean the supervisor's board (which has
+// always written edges on click) and this one disagreed about when a decision
+// counts. The board says which is which rather than hiding the difference.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FabAlerts } from "@/components/fab/FabAlerts";
@@ -61,6 +84,31 @@ import {
   draftCards, draftChanges, draftShape, draftValue, planSinkMerge, sideOf,
   type DraftCard, type SinkSide,
 } from "@/lib/fab/sinkSplit";
+import {
+  EDGES, allEdgesFor, describeEdges, edgeCount, edgeCapacity, parseEdges,
+  priceRow, serializeEdges, formatRupees,
+  type Edge, type EdgeSelection,
+} from "@/lib/fab/pricing";
+import {
+  isRound, describeShapeSize, ROUND_EDGE,
+  PIECE_SHAPES, EDGE_FACES, parseShape, parseEdgeFace, dimensionLabels,
+  type PieceShape, type EdgeFace,
+} from "@/lib/fab/shape";
+
+/** How each shape reads on a button. The enum values are for the database. */
+const SHAPE_LABEL: Record<PieceShape, string> = {
+  RECTANGLE: "Rect / Square",
+  CIRCLE: "Circle",
+  OVAL: "Oval",
+};
+
+/** TOP / BOTTOM / BOTH, in the words a fabricator uses. BOTH says out loud that
+ *  it is twice the work, because that is the whole reason the control exists. */
+const FACE_LABEL: Record<EdgeFace, string> = {
+  TOP: "Top",
+  BOTTOM: "Bottom",
+  BOTH: "Both ×2",
+};
 
 export interface PoSinkRow {
   id: string;
@@ -71,6 +119,17 @@ export interface PoSinkRow {
   quantity: number;
   /** NULL = nobody has decided. After a saved split this is 0 or the quantity. */
   sinkQuantity: number | null;
+  /** fab_requirement.finished_edges — the HAND edge polish decision. NULL =
+   *  nobody has marked it, which is not the same as "no edges". */
+  finishedEdges?: string | null;
+  /** RECTANGLE / CIRCLE / OVAL. Null is a rectangle. */
+  shapeType?: string | null;
+  /** TOP / BOTTOM / BOTH — how many times each chosen edge is walked. NULL is
+   *  TOP. BOTH doubles the running feet; see scripts/0065. */
+  edgeFaces?: string | null;
+  /** MILLIMETRES, when the row is already on a slab — the rate depends on it.
+   *  Null on an order not yet given stone, and the feet still show. */
+  thicknessMm?: number | null;
   allocatedQty: number;
   pieceCount: number;
   /** Already sent to cutting — shown, never moved. */
@@ -133,14 +192,258 @@ function whenText(ms: number): string {
 }
 
 function dims(r: PoSinkRow): string {
-  if (r.length == null || r.width == null) return "—";
-  return `${r.length} × ${r.width} in`;
+  // Shape-aware: "⌀ 24 in" for a circle, "36 × 24 in oval" for an oval. Printing
+  // 24 × 24 for a circle reads as a square and makes its running feet — which
+  // are π·24, not 4·24 — look like an arithmetic error.
+  if (r.length == null) return "—";
+  return describeShapeSize(r.shapeType, { lengthIn: r.length, widthIn: r.width });
+}
+
+/* -- HAND EDGE POLISH, on the card ----------------------------------------- *
+ *
+ * Small on purpose. The full graphical piece lives on the supervisor's slab
+ * card (components/fab/EdgePicker.tsx) where there is room for it; here the
+ * manager is going down forty rows and needs the decision and the number, not a
+ * diagram per row.
+ *
+ * THE SAME ROUTE, THE SAME COLUMN, THE SAME CANONICAL STRING as that picker —
+ * so the two screens cannot come to hold different answers for one row.
+ */
+function EdgeChoice({
+  row, busy, onSaved, onShape, onFace, onError,
+}: {
+  row: PoSinkRow;
+  busy: boolean;
+  onSaved: (rowId: string, finishedEdges: string | null) => void;
+  onShape: (rowId: string, shape: string, clearedEdges: boolean) => void;
+  onFace: (rowId: string, face: string) => void;
+  onError: (message: string) => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const disabled = busy || saving;
+
+  const shape = row.shapeType ?? "RECTANGLE";
+  const round = isRound(shape);
+  const face = parseEdgeFace(row.edgeFaces);
+  const edges = useMemo(() => parseEdges(row.finishedEdges ?? null), [row.finishedEdges]);
+  const chosen = (row.finishedEdges ?? null) !== null;
+  const n = edgeCount(edges, shape);
+  const capacity = edgeCapacity(shape);
+  const labels = dimensionLabels(shape);
+
+  // THE WHOLE ROW, ALWAYS. Hand edge polish is a group decision — a row where
+  // only some pieces want it is SPLIT — so the feet run over the ordered
+  // quantity, not over the sink count. That is the reversal this build is
+  // about; see lib/fab/pricing.ts.
+  const priced = useMemo(() => priceRow({
+    lengthIn: row.length, widthIn: row.width, quantity: row.quantity,
+    sinkQuantity: row.sinkQuantity, thicknessMm: row.thicknessMm ?? null,
+    edges, shape, edgeFace: face,
+  }), [row.length, row.width, row.quantity, row.sinkQuantity, row.thicknessMm, edges, shape, face]);
+
+  const save = useCallback(async (next: EdgeSelection | null) => {
+    const previous = row.finishedEdges ?? null;
+    const nextStored = next === null ? null : serializeEdges(next);
+    if (previous === nextStored) return;
+
+    setSaving(true);
+    onSaved(row.id, nextStored);                       // optimistic
+    const wire = next === null
+      ? null
+      : round ? (next.round ? [ROUND_EDGE] : []) : EDGES.filter(e => next[e]);
+    const res = await postJson("/api/fab/supervisor/finished-edges", {
+      requirementId: row.id,
+      edges: wire,
+    });
+    setSaving(false);
+    if (!res.ok) {
+      // Back exactly where it was. A card left showing an edge the database does
+      // not have is an invoice nobody agreed to.
+      onSaved(row.id, previous);
+      onError(res.error ?? "The edge change was not saved.");
+      return;
+    }
+    const data = res.data as { finishedEdges?: string | null };
+    onSaved(row.id, typeof data?.finishedEdges === "string" || data?.finishedEdges === null
+      ? data.finishedEdges ?? null
+      : nextStored);
+  }, [row.id, row.finishedEdges, round, onSaved, onError]);
+
+  const toggle = (e: Edge) => save({ ...edges, [e]: !edges[e] });
+
+  /** Shape and face go through the SAME route as the edges — one card, one
+   *  decision, one place it is written. The route validates the edge selection
+   *  against the shape, so sending them separately is what stops a stale screen
+   *  writing "front" onto a circle. */
+  const post = useCallback(async (patch: Record<string, unknown>, after: () => void) => {
+    setSaving(true);
+    const res = await postJson("/api/fab/supervisor/finished-edges", { requirementId: row.id, ...patch });
+    setSaving(false);
+    if (!res.ok) { onError(res.error ?? "That change was not saved."); return; }
+    after();
+  }, [row.id, onError]);
+
+  const setShape = (next: string) => {
+    if (parseShape(next) === parseShape(shape)) return;
+    void post({ shape: next }, () => {
+      // CROSSING BETWEEN ROUND AND CORNERED CLEARS THE EDGES, server-side —
+      // "front" is not a smaller answer on a circle, it is an answer about a
+      // shape that no longer exists. The card follows rather than keeping a
+      // selection the database has just dropped.
+      const cleared = isRound(next) !== isRound(shape);
+      onShape(row.id, next, cleared);
+    });
+  };
+
+  const setFace = (next: string) => {
+    if (next === face) return;
+    void post({ edgeFaces: next }, () => onFace(row.id, next));
+  };
+
+  return (
+    <div className="px-4 pb-3 pt-2 border-t border-slate-50">
+      {/* ── SHAPE ── the question the two below depend on. A rectangle has four
+          named sides; a circle has one ring and reads its DIAMETER out of the
+          length column. Asking it first is why the edge buttons underneath can
+          be trusted. */}
+      <div className="flex items-center gap-2 flex-wrap mb-2">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Shape</span>
+        <div className="flex items-center gap-1 flex-wrap">
+          {PIECE_SHAPES.map(s => (
+            <button key={s} type="button" disabled={disabled} onClick={() => setShape(s)}
+              aria-pressed={parseShape(shape) === s}
+              className={`text-[11px] font-semibold px-2 py-1 rounded border transition disabled:opacity-40 ${
+                parseShape(shape) === s
+                  ? "border-slate-400 bg-slate-100 text-slate-800"
+                  : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}>
+              {SHAPE_LABEL[s]}
+            </button>
+          ))}
+        </div>
+        {/* The dimension columns do not move; what they MEAN does. A circle's
+            diameter lives in the length column, so the card says so rather than
+            leaving somebody to read 24 × 24 as a square. */}
+        {parseShape(shape) !== "RECTANGLE" && (
+          <span className="text-[11px] text-slate-400">
+            {labels.length} = {row.length ?? "?"}
+            {labels.width && <> · {labels.width} = {row.width ?? "?"}</>}
+          </span>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+          Hand edge polish
+        </span>
+        {!chosen && (
+          <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+            not chosen
+          </span>
+        )}
+        {saving && <span className="text-[10px] text-slate-400">saving…</span>}
+      </div>
+
+      <div className="mt-1 flex items-center gap-1 flex-wrap">
+        {round ? (
+          // ONE EDGE, ONE BUTTON. A circle has no sides, so offering four with
+          // three greyed out would invite somebody to look for the missing ones.
+          <button type="button" disabled={disabled}
+            onClick={() => save(edges.round ? {} : allEdgesFor(shape))}
+            aria-pressed={!!edges.round}
+            className={`text-[11px] font-semibold px-2 py-1 rounded border transition disabled:opacity-40 ${
+              edges.round
+                ? "border-indigo-300 bg-indigo-50 text-indigo-700"
+                : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}>
+            Whole edge
+          </button>
+        ) : (
+          EDGES.map(e => (
+            <button key={e} type="button" disabled={disabled} onClick={() => toggle(e)}
+              aria-pressed={!!edges[e]}
+              title={`${e} edge — ${e === "front" || e === "back" ? "runs the length" : "runs the width"}`}
+              className={`text-[11px] font-semibold px-2 py-1 rounded border capitalize transition disabled:opacity-40 ${
+                edges[e]
+                  ? "border-indigo-300 bg-indigo-50 text-indigo-700"
+                  : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}>
+              {e}
+            </button>
+          ))
+        )}
+        {!round && (
+          <button type="button" disabled={disabled || n === capacity}
+            onClick={() => save(allEdgesFor(shape))}
+            className="text-[11px] font-semibold px-2 py-1 rounded border border-indigo-200 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-40 transition">
+            All four
+          </button>
+        )}
+        <button type="button" disabled={disabled || (chosen && n === 0)}
+          onClick={() => save({})}
+          className="text-[11px] font-semibold px-2 py-1 rounded border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-40 transition">
+          None
+        </button>
+        {chosen && (
+          // Back to "nobody has chosen". Not the same as "no edges", and the
+          // only way to undo having looked at a row by mistake.
+          <button type="button" disabled={disabled} onClick={() => save(null)}
+            title="Put this row back to 'not chosen' — different from 'no edges'"
+            className="text-[11px] px-2 py-1 rounded text-slate-400 hover:text-slate-600 disabled:opacity-40 transition">
+            Clear
+          </button>
+        )}
+      </div>
+
+      {/* ── FACE ── only once there is edge work to have a face.
+          The owner: "also whether this on top or bottom or both as well." An
+          edge is a band with two arrises and doing both is the same line walked
+          twice — so BOTH multiplies the feet, and the button says ×2 rather
+          than making somebody discover it in the total. */}
+      {n > 0 && (
+        <div className="mt-2 flex items-center gap-2 flex-wrap">
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Face</span>
+          <div className="flex items-center gap-1">
+            {EDGE_FACES.map(f => (
+              <button key={f} type="button" disabled={disabled} onClick={() => setFace(f)}
+                aria-pressed={face === f}
+                title={f === "BOTH"
+                  ? "Top and bottom — the same edge walked twice, so twice the running feet"
+                  : `${f === "TOP" ? "Top" : "Bottom"} face only`}
+                className={`text-[11px] font-semibold px-2 py-1 rounded border transition disabled:opacity-40 ${
+                  face === f
+                    ? f === "BOTH"
+                      ? "border-amber-400 bg-amber-50 text-amber-800"
+                      : "border-indigo-300 bg-indigo-50 text-indigo-700"
+                    : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}>
+                {FACE_LABEL[f]}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {n > 0 && (
+        <p className="mt-1 text-[11px] text-slate-500 tabular-nums">
+          {describeEdges(edges, shape)} on all {row.quantity} pc{row.quantity === 1 ? "" : "s"}
+          {face === "BOTH" && <span className="text-amber-700 font-semibold"> · both faces</span>}
+          {" · "}<strong className="text-slate-700">{priced.runningFeet} ft</strong>
+          {priced.unpriced
+            ? priced.unpricedReason === "EDGES"
+              ? <span className="text-amber-700"> · edges do not match the shape — re-pick them</span>
+              : priced.unpricedReason === "SHAPE"
+              ? <span className="text-amber-700"> · L / curve / custom outline — quote the hand polish by hand</span>
+              : priced.unpricedReason === "DIMENSIONS"
+                ? <span className="text-amber-700"> · no size on this row, so nothing to charge yet</span>
+                : <span className="text-slate-400"> · rate once it is on 2 cm or 3 cm stone</span>
+            : <> · <strong className="text-indigo-700">{formatRupees(priced.edgeCost)}</strong></>}
+        </p>
+      )}
+    </div>
+  );
 }
 
 /* -- One card -------------------------------------------------------------- */
 
 function Card({
-  card, row, busy, onSet, onMerge, mergeInto,
+  card, row, busy, onSet, onMerge, mergeInto, onEdges, onShape, onFace, onError,
 }: {
   card: DraftCard;
   row: PoSinkRow;
@@ -150,6 +453,14 @@ function Card({
   onMerge: (fromId: string, intoId: string) => void;
   /** A SAVED sibling of identical size this card could be folded back into. */
   mergeInto: PoSinkRow | null;
+  /** An edge selection that HAS been written. Not part of the draft — see the
+   *  note at the top of the file on why the two behave differently. */
+  onEdges: (rowId: string, finishedEdges: string | null) => void;
+  /** A shape change. `clearedEdges` is true when it crossed between round and
+   *  cornered, which the route clears server-side — the card must follow. */
+  onShape: (rowId: string, shape: string, clearedEdges: boolean) => void;
+  onFace: (rowId: string, face: string) => void;
+  onError: (message: string) => void;
 }) {
   const [partial, setPartial] = useState("");
 
@@ -164,6 +475,14 @@ function Card({
           {dims(row)} &middot; {card.quantity} pc{card.quantity === 1 ? "" : "s"} &middot; its pieces
           already carry this row&apos;s code
         </span>
+        {/* THE EDGES ARE STILL CHANGEABLE ON A LOCKED ROW, and the sink is not.
+            The difference is what each one costs to change: a sink count moves
+            pieces between two different route sheets that are already cut, so it
+            is frozen once the row is on the floor. Hand edge polish is a job
+            that happens AFTER cutting and polishing, so a customer ringing up to
+            ask for a polished front edge on Thursday is an ordinary thing to say
+            yes to. The route re-stamps the pieces that have not been packed. */}
+        <EdgeChoice row={row} busy={busy} onSaved={onEdges} onShape={onShape} onFace={onFace} onError={onError} />
       </li>
     );
   }
@@ -280,6 +599,21 @@ function Card({
           </button>
         )}
       </div>
+
+      {/* ON THE SAVED CARD ONLY.
+          A row drawn as two cards is still ONE fab_requirement until the split
+          is saved, so both halves share one finished_edges column. Offering the
+          control twice would be two switches wired to one lamp — click either
+          and both move. The provisional half says so instead, and gets its own
+          control the moment it becomes a real row. */}
+      {card.isNew ? (
+        <p className="px-4 pb-3 text-[11px] text-indigo-600">
+          Hand edge polish follows {card.label} until you save this split — then this row gets
+          its own letter and its own edge decision.
+        </p>
+      ) : (
+        <EdgeChoice row={row} busy={busy} onSaved={onEdges} onShape={onShape} onFace={onFace} onError={onError} />
+      )}
     </li>
   );
 }
@@ -287,7 +621,7 @@ function Card({
 /* -- The board ------------------------------------------------------------- */
 
 export function PoSinkBoard({
-  poId, rows, busy: parentBusy = false, onChanged,
+  poId, rows: incomingRows, busy: parentBusy = false, onChanged,
 }: {
   poId: string;
   rows: PoSinkRow[];
@@ -308,6 +642,82 @@ export function PoSinkBoard({
   /** Each entry is one reversible step: the row and what its draft held before. */
   const [history, setHistory] = useState<Array<{ id: string; previous: number | undefined }>>([]);
   const busy = parentBusy || saving;
+
+  /* -- WHAT HAS ALREADY BEEN WRITTEN, held over the props -------------------
+   *
+   * NOT THE DRAFT. These three have been saved to fab_requirement; this map
+   * only carries the answer between the click and the next reload of `rows`,
+   * which the parent owns. Without it a click would flip back the instant React
+   * re-rendered from the untouched prop, and the manager would be told his
+   * change had failed when it had not.
+   *
+   * ONE MAP FOR ALL THREE, because they interact: choosing a circle clears the
+   * edge selection server-side, and the card has to show both halves of that in
+   * the same render or it flickers through an impossible state — a circle with
+   * "Front + Left" still lit.
+   *
+   * Cleared per field whenever the parent hands over a row that already agrees
+   * — see the effect below — so a reload is always believed over a stale local
+   * answer, field by field rather than all or nothing.
+   */
+  interface RowOverride {
+    finishedEdges?: string | null;
+    shapeType?: string | null;
+    edgeFaces?: string | null;
+  }
+  const [overrides, setOverrides] = useState<Map<string, RowOverride>>(new Map());
+
+  const rows = useMemo(
+    () => incomingRows.map(r => {
+      const o = overrides.get(r.id);
+      return o ? { ...r, ...o } : r;
+    }),
+    [incomingRows, overrides],
+  );
+
+  useEffect(() => {
+    setOverrides(m => {
+      if (m.size === 0) return m;
+      let changed = false;
+      const next = new Map(m);
+      for (const r of incomingRows) {
+        const o = next.get(r.id);
+        if (!o) continue;
+        // Field by field: the server may have caught up on the shape while the
+        // face is still in flight, and dropping the whole entry would flip the
+        // face back for one render.
+        const settled: RowOverride = { ...o };
+        if ("finishedEdges" in settled && (r.finishedEdges ?? null) === (settled.finishedEdges ?? null)) delete settled.finishedEdges;
+        if ("shapeType" in settled && (r.shapeType ?? null) === (settled.shapeType ?? null)) delete settled.shapeType;
+        if ("edgeFaces" in settled && (r.edgeFaces ?? null) === (settled.edgeFaces ?? null)) delete settled.edgeFaces;
+        if (Object.keys(settled).length === 0) { next.delete(r.id); changed = true; }
+        else if (Object.keys(settled).length !== Object.keys(o).length) { next.set(r.id, settled); changed = true; }
+      }
+      for (const id of next.keys()) {
+        if (!incomingRows.some(r => r.id === id)) { next.delete(id); changed = true; }
+      }
+      return changed ? next : m;
+    });
+  }, [incomingRows]);
+
+  const patchRow = useCallback((rowId: string, patch: RowOverride) => {
+    setOverrides(m => new Map(m).set(rowId, { ...(m.get(rowId) ?? {}), ...patch }));
+  }, []);
+
+  const setEdges = useCallback((rowId: string, finishedEdges: string | null) => {
+    patchRow(rowId, { finishedEdges });
+  }, [patchRow]);
+
+  const setShape = useCallback((rowId: string, shapeType: string, clearedEdges: boolean) => {
+    // The route clears finished_edges when the shape crosses between round and
+    // cornered. Mirroring it here is what stops the card showing "Front + Left"
+    // on a circle for the one render before the parent reloads.
+    patchRow(rowId, clearedEdges ? { shapeType, finishedEdges: null } : { shapeType });
+  }, [patchRow]);
+
+  const setFace = useCallback((rowId: string, edgeFaces: string) => {
+    patchRow(rowId, { edgeFaces });
+  }, [patchRow]);
 
   const shaped = useMemo(() => rows.map(r => ({
     id: r.id,
@@ -520,12 +930,20 @@ export function PoSinkBoard({
     <div className="mb-4">
       <div className="flex items-start justify-between gap-3 flex-wrap mb-2">
         <div className="min-w-0">
-          <h3 className="text-sm font-bold text-slate-800">Sinks</h3>
+          <h3 className="text-sm font-bold text-slate-800">Sinks &amp; hand edge polish</h3>
           <p className="text-[11px] text-slate-400 mt-0.5">
             Click or drag a row to give its pieces a sink; type a number to split it.
             <strong className="text-slate-500"> Nothing is written until you save</strong> — move
             things around as much as you like, and a split you change your mind about simply
             disappears. Your unsaved work is kept if you reload.
+          </p>
+          {/* SAYING WHICH IS WHICH, rather than leaving a manager to discover
+              that half this board saves on click and half does not. */}
+          <p className="text-[11px] text-slate-400 mt-0.5">
+            Hand edge polish is the separate running-foot job — not the machine polish, and not
+            the sink&rsquo;s own polish, which comes with the sink.
+            <strong className="text-slate-500"> Edge clicks save straight away</strong>, because
+            they change one column and create no rows.
           </p>
         </div>
         <div className="shrink-0 flex items-center gap-2 flex-wrap">
@@ -630,7 +1048,9 @@ export function PoSinkBoard({
                 const row = byId.get(c.sourceId);
                 if (!row) return null;
                 return <Card key={c.key} card={c} row={row} busy={busy} onSet={set}
-                  onMerge={merge} mergeInto={mergeTargetFor(row)} />;
+                  onMerge={merge} mergeInto={mergeTargetFor(row)}
+                  onEdges={setEdges} onShape={setShape} onFace={setFace}
+                  onError={setActionError} />;
               })}
             </ul>
           )}
@@ -655,7 +1075,9 @@ export function PoSinkBoard({
                 const row = byId.get(c.sourceId);
                 if (!row) return null;
                 return <Card key={c.key} card={c} row={row} busy={busy} onSet={set}
-                  onMerge={merge} mergeInto={mergeTargetFor(row)} />;
+                  onMerge={merge} mergeInto={mergeTargetFor(row)}
+                  onEdges={setEdges} onShape={setShape} onFace={setFace}
+                  onError={setActionError} />;
               })}
             </ul>
           </section>

@@ -27,6 +27,7 @@ import {
   priceRow, sumPricing, parseEdges, describeEdges, thicknessLabel, formatRupees,
   type RowPricing,
 } from "@/lib/fab/pricing";
+import { describeShapeSize } from "@/lib/fab/shape";
 // GRADE AND MARK ARE TWO CHIPS — see components/fab/SlabChips.tsx.
 //
 // This file used to draw its own chip, colouring by first letter. 'CTS' — which
@@ -48,6 +49,16 @@ export interface PricingRow {
   sinkQuantity: number | null;
   thicknessMm: number | null;
   finishedEdges: string | null;
+  /** RECTANGLE / CIRCLE / OVAL. Null is a rectangle — every row written before
+   *  shapes existed, which is nearly all of them. */
+  shapeType?: string | null;
+  /** TOP / BOTTOM / BOTH. Null is TOP.
+   *
+   *  THIS FIELD WAS MISSING AND THE BOARD HALVED EVERY BOTH ROW. The route has
+   *  always sent it (ceo/route.ts); this type dropped it, so priceRow below
+   *  defaulted to one face while the period report on the SAME PAGE passed it
+   *  and charged two. One dashboard, two numbers 2x apart for one row. */
+  edgeFaces?: string | null;
 }
 
 type Priced = PricingRow & { priced: RowPricing };
@@ -181,10 +192,13 @@ function ProjectRow({ project, rows }: { project: OverviewProject; rows: Priced[
                       <th className="text-left font-medium py-1">Row</th>
                       <th className="text-left font-medium py-1">Size</th>
                       <th className="text-right font-medium py-1">Qty</th>
-                      {/* The pieces that actually reach fabrication — the count
-                          the running feet are measured over. Without it, "252.5
-                          ft" beside a Qty of 60 reads as an arithmetic error. */}
-                      <th className="text-right font-medium py-1" title="Pieces that go to fabrication — the sink ones. The running feet are counted over these, not the ordered quantity.">Fab</th>
+                      {/* TWO COUNTS, NOT ONE. Hand edge polish and sink cutting
+                          are separate jobs on separate pieces since the owner
+                          split them, so one "Fab" column could only ever be
+                          right about one of them. The running feet are measured
+                          over Edge pc; the sink charge over Sink pc. */}
+                      <th className="text-right font-medium py-1" title="Pieces carrying HAND EDGE POLISH. A row is homogeneous, so this is the whole row or none of it — and it is the count the running feet are measured over.">Edge pc</th>
+                      <th className="text-right font-medium py-1" title="Pieces with a sink cutout. Charged per piece; the sink polish is included in that rate.">Sink pc</th>
                       <th className="text-left font-medium py-1 pl-3">Thk</th>
                       <th className="text-left font-medium py-1">Edges</th>
                       <th className="text-right font-medium py-1">Run ft</th>
@@ -199,19 +213,28 @@ function ProjectRow({ project, rows }: { project: OverviewProject; rows: Priced[
                       return (
                         <tr key={i} className={p.unpriced ? "bg-amber-50/60" : ""}>
                           <td className="py-1.5 font-mono font-bold text-slate-800">{r.rowLetter ?? r.pieceLabel ?? "—"}</td>
-                          <td className="py-1.5 text-slate-500 tabular-nums">{r.lengthIn ?? "?"} × {r.widthIn ?? "?"}</td>
+                          {/* "⌀ 24 in" for a circle, "36 × 24 in oval" for an
+                              oval. Printing 24 × 24 for a circle would read as a
+                              square and make the running feet look wrong. */}
+                          <td className="py-1.5 text-slate-500 tabular-nums">
+                            {describeShapeSize(r.shapeType, { lengthIn: r.lengthIn, widthIn: r.widthIn })}
+                          </td>
                           <td className="py-1.5 text-right tabular-nums text-slate-700">{r.quantity}</td>
-                          <td className={`py-1.5 text-right tabular-nums ${p.fabricationPieces > 0 ? "text-slate-700 font-semibold" : "text-slate-300"}`}>
-                            {p.fabricationPieces > 0 ? p.fabricationPieces : "—"}
+                          <td className={`py-1.5 text-right tabular-nums ${p.edgePieces > 0 ? "text-slate-700 font-semibold" : "text-slate-300"}`}>
+                            {p.edgePieces > 0 ? p.edgePieces : "—"}
+                          </td>
+                          <td className={`py-1.5 text-right tabular-nums ${p.sinkPieces > 0 ? "text-slate-700 font-semibold" : "text-slate-300"}`}>
+                            {p.sinkPieces > 0 ? p.sinkPieces : "—"}
                           </td>
                           <td className="py-1.5 pl-3 text-slate-500">{thicknessLabel(r.thicknessMm)}</td>
                           <td className="py-1.5 text-slate-500">
-                            {/* A row with no sinks is not a fabrication row, so its
-                                edges are not a charge — saying "All four" there
-                                would look like ₹0 was a mistake. */}
-                            {p.fabricationPieces > 0
-                              ? describeEdges(parseEdges(r.finishedEdges))
-                              : <span className="text-slate-300" title="No sinks, so this row does not go to fabrication">no fab</span>}
+                            {/* A row nobody has been asked about is not the same
+                                as one answered "no edges" — the first is a
+                                question, the second an answer, and both cost ₹0
+                                until somebody looks. */}
+                            {r.finishedEdges === null
+                              ? <span className="text-amber-600" title="Nobody has marked this row's edges yet — reported as unpriced, not as free">not chosen</span>
+                              : describeEdges(parseEdges(r.finishedEdges), r.shapeType)}
                           </td>
                           <td className="py-1.5 text-right tabular-nums text-slate-600">{p.runningFeet}</td>
                           <td className="py-1.5 text-right tabular-nums text-slate-600">{p.unpriced ? "—" : formatRupees(p.edgeCost)}</td>
@@ -220,7 +243,19 @@ function ProjectRow({ project, rows }: { project: OverviewProject; rows: Priced[
                           </td>
                           <td className="py-1.5 text-right tabular-nums font-bold text-slate-800">
                             {p.unpriced
-                              ? <span className="text-amber-600 font-medium" title="No rate for this thickness — the card covers 2 cm and 3 cm">not priced</span>
+                              ? <span
+                                  className="text-amber-600 font-medium"
+                                  title={p.unpricedReason === "EDGES"
+                                    ? "This row names edges the shape does not have — a circle has one ring, a rectangle four sides"
+                                    : p.unpricedReason === "SHAPE"
+                                    ? "An L, a curve or a custom outline — there is no perimeter formula for it, so the hand polish is quoted by hand"
+                                    : p.unpricedReason === "DIMENSIONS"
+                                      ? "Edges are marked but the length or width they run along is missing — enter the size on the PO row"
+                                      : "No rate for this thickness — the card covers 2 cm and 3 cm"}>
+                                  {p.unpricedReason === "EDGES" ? "edges"
+                                    : p.unpricedReason === "SHAPE" ? "shape"
+                                    : p.unpricedReason === "DIMENSIONS" ? "no size" : "not priced"}
+                                </span>
                               : formatRupees(p.total)}
                           </td>
                         </tr>
@@ -229,7 +264,10 @@ function ProjectRow({ project, rows }: { project: OverviewProject; rows: Priced[
                   </tbody>
                   <tfoot className="border-t-2 border-slate-200 font-bold text-slate-800">
                     <tr>
-                      <td className="pt-2" colSpan={6}>Total</td>
+                      <td className="pt-2" colSpan={3}>Total</td>
+                      <td className="pt-2 text-right tabular-nums">{money.edgePieces || "—"}</td>
+                      <td className="pt-2 text-right tabular-nums">{money.sinkPieces || "—"}</td>
+                      <td className="pt-2" colSpan={2} />
                       <td className="pt-2 text-right tabular-nums">{money.runningFeet}</td>
                       <td className="pt-2 text-right tabular-nums">{formatRupees(money.edgeCost)}</td>
                       <td className="pt-2 text-right tabular-nums">{formatRupees(money.sinkCost)}</td>
@@ -238,10 +276,36 @@ function ProjectRow({ project, rows }: { project: OverviewProject; rows: Priced[
                   </tfoot>
                 </table>
               </div>
-              {money.unpricedRows > 0 && (
+              {/* SPLIT BY CAUSE, because they are fixed by different people and
+                  one amber line saying "not priced" sent everybody to argue
+                  about the rate card when the real problem was a blank width. */}
+              {money.unpricedThickness > 0 && (
                 <p className="mt-1.5 text-[11px] text-amber-700">
-                  {money.unpricedRows} row{money.unpricedRows !== 1 ? "s are" : " is"} not in the total —
+                  {money.unpricedThickness} row{money.unpricedThickness !== 1 ? "s are" : " is"} not in the total —
                   the rate card covers 2 cm and 3 cm, and these are cut from something else.
+                </p>
+              )}
+              {money.unpricedDimensions > 0 && (
+                <p className="mt-1.5 text-[11px] text-amber-700">
+                  {money.unpricedDimensions} row{money.unpricedDimensions !== 1 ? "s have" : " has"} edges marked
+                  with no size to measure them along — the length or width is blank on the order,
+                  so the hand polish on {money.unpricedDimensions !== 1 ? "them" : "it"} cannot be charged yet.
+                </p>
+              )}
+              {money.unpricedEdges > 0 && (
+                <p className="mt-1.5 text-[11px] text-amber-700">
+                  {money.unpricedEdges} row{money.unpricedEdges !== 1 ? "s name" : " names"} edges
+                  its shape does not have — a circle has one ring and a rectangle four sides, so
+                  the two halves of {money.unpricedEdges !== 1 ? "those rows" : "that row"} contradict
+                  each other. Re-pick the edges on the purchase-order row.
+                </p>
+              )}
+              {money.unpricedShape > 0 && (
+                <p className="mt-1.5 text-[11px] text-amber-700">
+                  {money.unpricedShape} row{money.unpricedShape !== 1 ? "s are" : " is"} an L, a curve or a
+                  custom outline. There is no perimeter formula for {money.unpricedShape !== 1 ? "those" : "that"} here,
+                  so the hand polish is quoted by hand — {money.unpricedShape !== 1 ? "their" : "its"} sink,
+                  if any, is already in the total above.
                 </p>
               )}
             </div>
@@ -269,6 +333,8 @@ export function CeoOverviewBoard({
         lengthIn: r.lengthIn, widthIn: r.widthIn, quantity: r.quantity,
         sinkQuantity: r.sinkQuantity, thicknessMm: r.thicknessMm,
         edges: parseEdges(r.finishedEdges),
+        shape: r.shapeType,
+        edgeFace: r.edgeFaces,
       });
       const list = map.get(r.projectCode) ?? [];
       list.push({ ...r, priced });

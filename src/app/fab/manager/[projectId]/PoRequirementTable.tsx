@@ -17,6 +17,18 @@ interface Row {
   /** fab_requirement.sink_quantity. NULL = nobody has decided yet, which is a
    *  different fact from 0 and is shown as such. */
   sinkQuantity: number | null;
+  /** fab_requirement.finished_edges — the HAND edge polish decision, settled on
+   *  the board above beside the sink. NULL = nobody has marked it, which is not
+   *  the same as "no edges". */
+  finishedEdges: string | null;
+  /** RECTANGLE / CIRCLE / OVAL. Null is a rectangle. */
+  shapeType: string | null;
+  /** TOP / BOTTOM / BOTH — how many times each chosen edge is walked. Null is
+   *  TOP; BOTH doubles the running feet. scripts/0065. */
+  edgeFaces: string | null;
+  /** MILLIMETRES of the stone this row is on, or null before it has one — the
+   *  edge rate is keyed on the thickness, so the charge waits for it. */
+  thicknessMm: number | null;
   totalSqft: number | null;
   notes: string | null;
   allocatedQty: number;

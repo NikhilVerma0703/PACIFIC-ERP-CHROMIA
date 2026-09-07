@@ -1,4 +1,6 @@
-import type { NextAuthConfig } from "next-auth";
+import type { NextAuthConfig, Session, User } from "next-auth";
+import type { JWT } from "next-auth/jwt";
+import type { NextRequest } from "next/server";
 import { storeMayVisit, operatorMayVisit, STORE_HOME, OPERATOR_HOME } from "./lib/routeCaps.ts";
 // The active role context. Pure and import-free, exactly like routeCaps above —
 // it must be, because this file is edge-safe and Prisma-free.
@@ -33,7 +35,12 @@ export const authConfig = {
   pages: { signIn: "/login" },
   providers: [],
   callbacks: {
-    authorized({ auth, request }) {
+    // TYPED EXPLICITLY, and `satisfies NextAuthConfig` at the foot of this
+    // object is not enough to do it: next-auth's own callback signatures do not
+    // reach these parameters, so all three destructures were implicitly `any`
+    // and `next build` refused the file under noImplicitAny. Type-only — every
+    // body below is untouched.
+    authorized({ auth, request }: { auth: Session | null; request: NextRequest }) {
       const { nextUrl } = request;
       const isLoggedIn = !!auth?.user;
       const isPublic =
@@ -125,7 +132,7 @@ export const authConfig = {
       if (role === "OPERATOR" && !operatorMayVisit(p)) return refuse(p, nextUrl, OPERATOR_HOME);
       return true;
     },
-    jwt({ token, user }) {
+    jwt({ token, user }: { token: JWT; user?: User | null }) {
       if (user) {
         token.role = (user as { role: Role }).role;
         token.uid = user.id as string;
@@ -137,7 +144,7 @@ export const authConfig = {
       }
       return token;
     },
-    session({ session, token }) {
+    session({ session, token }: { session: Session; token: JWT }) {
       if (session.user) {
         session.user.id = token.uid as string;
         session.user.role = token.role as Role;

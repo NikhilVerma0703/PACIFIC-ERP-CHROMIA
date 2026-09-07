@@ -79,3 +79,6 @@ __probe_*.ts
 # Business documents dropped in the working folder. They are not code and the
 # repo is not where they belong.
 /*.docx
+
+# Claude drop-folder leftovers — safe to delete
+_to_delete/
