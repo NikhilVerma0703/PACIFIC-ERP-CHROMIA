@@ -19,6 +19,7 @@ import { DEFAULT_SETTINGS, mergeSettings } from "../src/lib/commercial/settings-
 // ───────────────────────────── access ────────────────────────────────────────
 const admin = { role: "ADMIN", branch: "SHOP_FLOOR" };
 const commercial = { role: "COMMERCIAL", branch: "OFFICE" };
+const manager = { role: "COMMERCIAL_MANAGER", branch: "OFFICE" };
 const store = { role: "STORE", branch: "SHOP_FLOOR" };
 const lineManager = { role: "LINE_MANAGER", branch: "SHOP_FLOOR" };
 const finance = { role: "FINANCE", branch: "OFFICE" };
@@ -33,8 +34,9 @@ test("actors: admin, commercial, dispatch checker (store / line manager); nobody
   for (const u of [finance, sales, operator, null, undefined, {}]) assert.equal(commercialActorOf(u), null, JSON.stringify(u));
 });
 
-test("the action table: commercial writes but does not plan or administer; the checker only verifies", () => {
-  assert.deepEqual(commercialActionsFor(admin), ["view", "write", "verify", "plan", "admin"]);
+test("the action table: commercial writes but does not plan, approve, cancel or administer; the manager does all but administer; the checker only verifies", () => {
+  assert.deepEqual(commercialActionsFor(admin), ["view", "write", "verify", "plan", "approve", "cancel", "admin"]);
+  assert.deepEqual(commercialActionsFor(manager), ["view", "write", "verify", "plan", "approve", "cancel"]);
   assert.deepEqual(commercialActionsFor(commercial), ["view", "write", "verify"]);
   assert.deepEqual(commercialActionsFor(store), ["verify"]);
   assert.deepEqual(commercialActionsFor(finance), []);
@@ -76,11 +78,15 @@ test("financial year label starts 1 April", () => {
 
 test("the real document formats come out of the templates", () => {
   const d = new Date(2026, 8, 6);
-  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.order, d, 1404), "SAL-ORD/26-27/01404");
-  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.exportInvoice, d, 2780), "PESPL/2780");
-  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.dtaInvoice, d, 137), "PESPL/0137/26-27");
-  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.challan, d, 20), "PESPL/DC/20/26");
-  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.enquiry, d, 7), "ENQ/26-27/0007");
+  // Answer 8: every series carries an N and no zero padding — N1, N2 … — so
+  // the new ERP's numbers are "definitively different" from Tally's. Answer
+  // 24 gives the PI its own counter (SAL-ORD), separate from the order (ORD).
+  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.order, d, 1404), "ORD/26-27/N1404");
+  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.proforma, d, 1404), "SAL-ORD/26-27/N1404");
+  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.exportInvoice, d, 2780), "PESPL/N2780");
+  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.dtaInvoice, d, 137), "PESPL/N137/26-27");
+  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.challan, d, 20), "PESPL/DC/N20/26");
+  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.enquiry, d, 7), "ENQ/26-27/N7");
   // a pad never truncates
   assert.equal(formatNumber("X/{seq:2}", { fy: "", yy: "", seq: 12345 }), "X/12345");
   // a typo'd placeholder stays visible rather than vanishing
@@ -89,7 +95,11 @@ test("the real document formats come out of the templates", () => {
 
 test("per-FY counters get the FY in their key; continuous ones do not", () => {
   const d = new Date(2026, 8, 6);
-  assert.equal(sequenceKey(DEFAULT_SETTINGS.numbering.order, d), "SAL-ORD");
+  // Answers 5, 6: the PI (and the order) reset each financial year; the export
+  // invoice runs on across years, so its key never carries one.
+  assert.equal(sequenceKey(DEFAULT_SETTINGS.numbering.order, d), "ORD:26-27");
+  assert.equal(sequenceKey(DEFAULT_SETTINGS.numbering.proforma, d), "SAL-ORD:26-27");
+  assert.equal(sequenceKey(DEFAULT_SETTINGS.numbering.exportInvoice, d), "PESPL-EXP");
   assert.equal(sequenceKey(DEFAULT_SETTINGS.numbering.dtaInvoice, d), "PESPL-DTA:26-27");
   assert.equal(sequenceKey(DEFAULT_SETTINGS.numbering.dtaInvoice, new Date(2027, 3, 2)), "PESPL-DTA:27-28");
 });
@@ -256,7 +266,7 @@ test("settings merge: overrides win by type, arrays replace, junk is ignored", (
   });
   assert.equal(merged.holdDays, 7);
   assert.equal(merged.numbering.order.template, "SO/{fy}/{seq:5}");
-  assert.equal(merged.numbering.order.key, "SAL-ORD", "untouched keys keep their default");
+  assert.equal(merged.numbering.order.key, "ORD", "untouched keys keep their default");
   assert.deepEqual(merged.company.addressLines, ["Line 1"]);
   assert.equal(merged.company.gstin, DEFAULT_SETTINGS.company.gstin, "a number is not a GSTIN");
   assert.equal(merged.tax.igstRate, 18, "a string is not a rate");

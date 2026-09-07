@@ -1,6 +1,6 @@
 // Station-scoped data entry: an operator only sees and uses the form(s) of
 // the machine they are appointed to. Incharge and above see everything.
-import { currentUser, rankOf, ROLE_RANK } from "@/lib/rbac";
+import { currentUser, rankOf, ROLE_RANK, isCommercialRole } from "@/lib/rbac";
 import { OFFICE_MODELS } from "@/lib/branch";
 
 export const STATION_MODELS: Record<string, string[]> = {
@@ -33,7 +33,7 @@ function accessOf(user: unknown): EntryAccess {
   const branch: "SHOP_FLOOR" | "OFFICE" = u.branch === "OFFICE" ? "OFFICE" : "SHOP_FLOOR";
   // Office branch: finance/dispatch forms only — except Sales, who is
   // summary-only and gets no entry forms at all.
-  if (branch === "OFFICE") return { models: role === "SALES" || role === "COMMERCIAL" ? [] : [...OFFICE_MODELS], station, branch };
+  if (branch === "OFFICE") return { models: role === "SALES" || isCommercialRole(role) ? [] : [...OFFICE_MODELS], station, branch };
   if (rankOf(role) >= ROLE_RANK.INCHARGE) return { models: null, station, branch };
   return { models: STATION_MODELS[String(station ?? "")] ?? [], station, branch };
 }

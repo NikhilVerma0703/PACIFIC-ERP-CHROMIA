@@ -11,7 +11,7 @@
 // module's nodemailer transport (lib/sales/mailer.ts), which returns
 // { sent:false } when unconfigured — never throws.
 import { prisma } from "@/lib/prisma";
-import { sendTelegram, esc } from "@/lib/telegram";
+import { sendTelegram, sendTelegramTo, esc } from "@/lib/telegram";
 import { loadSettings } from "./settings";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -27,6 +27,10 @@ export interface ShortageNotice {
   orderNumber: string | null;
   customer: string | null;
   raisedBy: string | null;
+  /** users.id of the login raising it. Answer 13 wants the mail "from
+   *  Santosh's ID": with mailFromCommercialLogin on, sendMail uses this login's
+   *  own SMTP row when it has one and the global SMTP otherwise. */
+  fromUserId?: string | null;
 }
 
 /** Tell whoever the settings say about a stock shortfall. Returns the
@@ -39,12 +43,25 @@ export async function notifyShortage(n: ShortageNotice): Promise<string[]> {
     + (n.orderNumber ? `Order ${esc(n.orderNumber)}${n.customer ? ` · ${esc(n.customer)}` : ""}\n` : "")
     + (n.raisedBy ? `Raised by ${esc(n.raisedBy)}` : "");
   if (s.notify.telegram) {
-    try { if (await sendTelegram(text)) sent.push("telegram"); } catch (e) { console.error("[commercial] telegram failed:", (e as Error).message); }
+    // Answer 13: "a telegram message to Varun Mundra privately" — one chat id
+    // from the environment, not the plant's MIS group. Falls back to the group
+    // only when private is OFF; a missing private id sends nowhere rather than
+    // broadcasting a stock shortfall to the whole floor by accident.
+    const privateId = (process.env.TELEGRAM_COMMERCIAL_CHAT_ID ?? "").trim();
+    try {
+      if (s.notify.telegramPrivate) {
+        if (privateId && await sendTelegramTo(privateId, text)) sent.push("telegram");
+      } else if (await sendTelegram(text)) {
+        sent.push("telegram");
+      }
+    } catch (e) { console.error("[commercial] telegram failed:", (e as Error).message); }
   }
   if (s.notify.mail && s.notify.mailTo.length) {
     try {
       const { sendMail } = await import("@/lib/sales/mailer");
-      const r = await sendMail({ spId: "commercial", to: s.notify.mailTo, subject: `Stock short: ${n.design} ${n.thickness} (${n.qtyShort} slabs)`, html: `<pre style="font-family:Arial">${text.replace(/<\/?b>/g, "")}</pre>` });
+      // sendMail resolves spId → that user's smtp_* row, else the global SMTP env.
+      const spId = s.notify.mailFromCommercialLogin && n.fromUserId ? n.fromUserId : "commercial";
+      const r = await sendMail({ spId, to: s.notify.mailTo, subject: `Stock short: ${n.design} ${n.thickness} (${n.qtyShort} slabs)`, html: `<pre style="font-family:Arial">${text.replace(/<\/?b>/g, "")}</pre>` });
       if (r.sent) sent.push("mail");
     } catch (e) { console.error("[commercial] mail failed:", (e as Error).message); }
   }

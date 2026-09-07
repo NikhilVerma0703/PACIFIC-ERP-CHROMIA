@@ -38,10 +38,15 @@
 import { rankOf, ROLE_RANK } from "../roles.ts";
 
 /** Everything a signed-in user can be asked to do in this module. */
-export type CommercialAction = "view" | "write" | "verify" | "plan" | "admin";
-export const COMMERCIAL_ACTIONS: CommercialAction[] = ["view", "write", "verify", "plan", "admin"];
+export type CommercialAction = "view" | "write" | "verify" | "plan" | "approve" | "cancel" | "admin";
+export const COMMERCIAL_ACTIONS: CommercialAction[] = ["view", "write", "verify", "plan", "approve", "cancel", "admin"];
 
-export type CommercialActor = "ADMIN" | "COMMERCIAL" | "DISPATCH_CHECKER";
+/** The four kinds of login, plus the Commercial Manager the owner added on
+ *  2026-09-07 (answer 9: "a commercial manager role"). Answers 10 and 24 say
+ *  what the manager does that a Commercial user does not: approve the
+ *  checklist, cancel a PI. The per-task roles the owner also asked for wait
+ *  for the task sets. */
+export type CommercialActor = "ADMIN" | "COMMERCIAL_MANAGER" | "COMMERCIAL" | "DISPATCH_CHECKER";
 
 /**
  * Who may perform each action.
@@ -62,11 +67,18 @@ export type CommercialActor = "ADMIN" | "COMMERCIAL" | "DISPATCH_CHECKER";
  * team has its own logins.
  */
 export const COMMERCIAL_ACTORS: Record<CommercialAction, readonly CommercialActor[]> = {
-  view:   ["ADMIN", "COMMERCIAL"],
-  write:  ["ADMIN", "COMMERCIAL"],
-  verify: ["ADMIN", "COMMERCIAL", "DISPATCH_CHECKER"],
-  plan:   ["ADMIN"],
-  admin:  ["ADMIN"],
+  view:    ["ADMIN", "COMMERCIAL_MANAGER", "COMMERCIAL"],
+  write:   ["ADMIN", "COMMERCIAL_MANAGER", "COMMERCIAL"],
+  verify:  ["ADMIN", "COMMERCIAL_MANAGER", "COMMERCIAL", "DISPATCH_CHECKER"],
+  /** The production queue: reorder, edit the planned hours and slabs, mark
+   *  produced. Answer 13 says "only for admin"; the manager is admitted as the
+   *  office-side admin of this module. */
+  plan:    ["ADMIN", "COMMERCIAL_MANAGER"],
+  /** Approve the internal sales order checklist (answer 10: "approved by Murali"). */
+  approve: ["ADMIN", "COMMERCIAL_MANAGER"],
+  /** Cancel a PI (answer 24: "only by admin or commercial manager"). */
+  cancel:  ["ADMIN", "COMMERCIAL_MANAGER"],
+  admin:   ["ADMIN"],
 };
 
 /** Roles that stand in for the dispatch team until it has a role of its own. */
@@ -99,6 +111,7 @@ export function commercialActorOf(user: unknown): CommercialActor | null {
   const u = user as { role?: string | null; branch?: string | null };
   const role = String(u.role ?? "");
   if (rankOf(role) >= ROLE_RANK.ADMIN) return "ADMIN";
+  if (role === "COMMERCIAL_MANAGER") return "COMMERCIAL_MANAGER";
   if (role === "COMMERCIAL") return "COMMERCIAL";
   if (DISPATCH_CHECKER_ROLES.includes(role) && !BRANCHES_WITH_OWN_BLOCK.includes(String(u.branch ?? ""))) return "DISPATCH_CHECKER";
   return null;

@@ -1,7 +1,7 @@
 // Two ERP branches: Shop Floor (production) and Office (finance/dispatch).
 // A user belongs to one branch; ADMIN may sign into either. The effective
 // branch for a session is set at login and carried in the JWT.
-import { currentUser, rankOf, ROLE_RANK } from "@/lib/rbac";
+import { currentUser, rankOf, ROLE_RANK, isCommercialRole } from "@/lib/rbac";
 
 // The branch NAMES live in lib/branchNames.ts (import-free) so a client
 // component can read the label table without this module's rbac -> auth chain
@@ -56,7 +56,7 @@ export async function canWriteModel(model: string): Promise<boolean> {
   // Store Incharge: RM tables are view-only in the grid — writes go through /store.
   if (role === "STORE") return false;
   // Sales/Commercial: read-only everywhere outside their inventory scope.
-  if (role === "SALES" || role === "COMMERCIAL") return false;
+  if (role === "SALES" || isCommercialRole(role)) return false;
   // ADMIN can edit everything — including store-incharge tables that are
   // read-only for everyone else (UnassignedRm etc.).
   if ((READONLY_TABLES.has(model) || ADMIN_ONLY_TABLES.has(model)) && rankOf(role) < ROLE_RANK.ADMIN) return false;
@@ -71,7 +71,7 @@ export async function canSeeModel(model: string): Promise<boolean> {
   const u = await currentUser();
   const role = roleOf(u);
   if (role === "STORE") return STORE_MODELS.has(model); // Store Incharge: RM tables only
-  if (role === "SALES" || role === "COMMERCIAL") return false; // Sales/Commercial: no table access at all
+  if (role === "SALES" || isCommercialRole(role)) return false; // Sales/Commercial: no table access at all
   if (ADMIN_ONLY_TABLES.has(model) && rankOf(role) < ROLE_RANK.ADMIN) return false;
   return branchOf(u) === "OFFICE" ? true : !OFFICE_MODELS.has(model);
 }

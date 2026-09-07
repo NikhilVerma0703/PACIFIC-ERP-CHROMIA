@@ -38,6 +38,7 @@ import { buildInventoryWhere, getUnapprovedSlabNumbers } from "@/lib/inventory/s
 import { canonThickness } from "@/lib/thickness";
 import { displayBatch } from "@/lib/batchDisplay";
 import { sqftFromIn } from "./measure";
+import { logOrderEvent } from "./events";
 import {
   slabMarkOf, isFullSlab, notFullSlabReason, missingSlabNumbers, foreignHoldReason,
   holdStatusAfterReconcile, approvalFilterApplies, canonicalFromMap,
@@ -431,6 +432,36 @@ export async function reconcileHold(holdId: string): Promise<ReconcileCounts> {
   if (hold.status === "ACTIVE" && counts.stillHeld === 0) {
     const status = holdStatusAfterReconcile(counts, hold.expiresAt as Date, now);
     await db.commercialStockHold.update({ where: { id: holdId }, data: { status, releasedAt: hold.releasedAt ?? now } });
+    if (status === "EXPIRED" && hold.orderId) await regressExpiredOrder(hold.orderId, hold.reference, now);
   }
   return counts;
+}
+
+/**
+ * Answer 11 (owner, 2026-09-07): "no extension. On expiry they go back to the
+ * hold step again." An order whose LAST live hold has lapsed is no longer
+ * stock-checked, so it returns to CONFIRMED and the stock check is done over
+ * — a fresh hold, a fresh five days. Only the two stages the hold carried it
+ * through come back: STOCK_CHECKED and PI_ISSUED. An order that is already
+ * packing has PACKED slabs, and a hold with packed slabs is CONSUMED, never
+ * EXPIRED, so this is unreachable there by construction; the status test is
+ * belt and braces for a hold released by hand after packing began. The
+ * stamps stay (stockCheckedAt is history); only the status moves, which is
+ * why this writes the row directly rather than through moveOrder, whose
+ * stagePatch would re-stamp confirmedAt as if the order were confirmed today.
+ */
+async function regressExpiredOrder(orderId: string, reference: string, now: Date): Promise<void> {
+  const order = await db.commercialOrder.findUnique({ where: { id: orderId }, select: { status: true, number: true } });
+  if (!order || (order.status !== "STOCK_CHECKED" && order.status !== "PI_ISSUED")) return;
+  const others = await db.commercialStockHold.count({ where: { orderId, status: "ACTIVE" } });
+  if (others > 0) return;
+  await db.commercialOrder.update({ where: { id: orderId }, data: { status: "CONFIRMED" } });
+  await logOrderEvent(orderId, "hold_expired", {
+    note: `Hold ${reference} expired with nothing packed — back to the stock check (${stageLabel(order.status)} → Confirmed)`,
+    payload: { from: order.status, to: "CONFIRMED", reference, at: now.toISOString() },
+  });
+}
+
+function stageLabel(status: string): string {
+  return status === "STOCK_CHECKED" ? "Stock checked" : status === "PI_ISSUED" ? "PI issued" : status;
 }

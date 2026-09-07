@@ -163,7 +163,11 @@ test("dates: stored YYYY-MM-DD, printed DD-MM-YYYY, blank stays blank", () => {
 test("validUntilFor: the issue day plus the settings' validity, in whole days", () => {
   const issued = new Date("2026-07-10T09:30:00.000Z");
   assert.equal(validUntilFor(issued, 30), "2026-08-09");
-  assert.equal(validUntilFor(issued, S.piValidityDays), "2026-08-09", "the default is 30 days (OPEN-QUESTIONS §24)");
+  // Answer 24: a PI is valid forever, so the default validity is 0 and the
+  // issue route stamps NO validUntil at all; the helper itself still answers
+  // for the day the owner sets a number of days.
+  assert.equal(S.piValidityDays, 0, "the default is forever (DECISIONS.md 24)");
+  assert.equal(validUntilFor(issued, S.piValidityDays), "2026-07-10");
   assert.equal(validUntilFor(issued, 0), "2026-07-10");
   assert.equal(validUntilFor(new Date("2026-02-27T00:00:00.000Z"), 3), "2026-03-02", "no leap day in 2026");
 });

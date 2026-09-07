@@ -1,4 +1,5 @@
 "use client";
+import { isCommercialRole } from "@/lib/roles";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -290,6 +291,13 @@ export function Nav({
     { href: "/office/commercial/challans",      icon: I.tables,     label: "Delivery Challans" },
     { href: "/office/commercial/production-planning", icon: I.planning, label: "Production Queue" },
   ];
+  // The manager's nav: everything Commercial has, plus the dispatch check —
+  // the manager is on the module's verify line (lib/commercial/access-rules.ts).
+  // Settings stay admin-only.
+  const commercialManagerItems = [
+    ...commercialItems,
+    { href: "/office/commercial/dispatch-check", icon: I.live,     label: "Dispatch Check" },
+  ];
   // Admin-only rows: the dispatch check is the dispatch team's screen (and the
   // admin's), settings hold the numbering counters and the company master.
   const commercialAdminItems = [
@@ -321,12 +329,12 @@ export function Nav({
         ]} path={path} />
       </nav>
     );
-  if (role === "COMMERCIAL")
+  if (isCommercialRole(role))
     // The module first, then the two things this role had before it existed:
     // the finished-goods slab table and the read-only production lookups.
     return (
       <nav className="flex flex-col">
-        <Section label="Commercial" items={commercialItems} path={path} />
+        <Section label="Commercial" items={role === "COMMERCIAL_MANAGER" ? commercialManagerItems : commercialItems} path={path} />
         <Section label="Inventory" items={[{ href: "/inventory", icon: I.box, label: "Finished Goods" }]} path={path} />
         {office && (
           <div className="mt-4">
@@ -425,7 +433,7 @@ export function Nav({
           // Admins see the intake form where the stock it feeds lives.
           ...(slabIntake ? [{ href: "/slab-intake", icon: I.entry, label: "Slab Intake" }] : []),
         ]} path={path} />}
-        {/* Office -> Commercial. Admins only here: the COMMERCIAL role gets the
+        {/* Office -> Commercial. Admins only here: the COMMERCIAL roles get the
             whole-nav takeover above, and no other office role may open the
             module (the block in middleware.ts refuses FINANCE and ACCOUNTS). */}
         {isAdmin && <Section label="Commercial" items={commercialAdminItems} path={path} />}

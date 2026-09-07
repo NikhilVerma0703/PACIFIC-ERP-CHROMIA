@@ -452,11 +452,13 @@ export function renumberLines<T extends { id: string; lineNo: number }>(items: T
   return out;
 }
 
-/** Who may stamp "Approved by" on the checklist. The SOP shows a manager
- *  approving; until the owner names one (open question 10), any Commercial
- *  login and any admin may — the dispatch checker never. */
+/** Who may stamp "Approved by" on the checklist. Owner, 2026-09-07 (answer
+ *  10): "approved by Murali" — the Commercial Manager. Commercial prepares,
+ *  the manager or an admin approves, the dispatch checker never. The same
+ *  line as COMMERCIAL_ACTORS.approve in access-rules.ts, restated on the
+ *  actor string so the workspace can ask without the user object. */
 export function canApprove(actor: string | null | undefined): boolean {
-  return actor === "ADMIN" || actor === "COMMERCIAL";
+  return actor === "ADMIN" || actor === "COMMERCIAL_MANAGER";
 }
 
 // ───────────────────────── the workspace's own state ─────────────────────────

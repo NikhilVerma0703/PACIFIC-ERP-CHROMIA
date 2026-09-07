@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { Shell } from "@/components/Shell";
 import { Card } from "@/components/ui";
 import { currentBranchName } from "@/lib/branch";
-import { currentRole } from "@/lib/rbac";
+import { currentRole, isCommercialRole } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
 
@@ -50,7 +50,7 @@ const COMMERCIAL_CARDS = [
 export default async function OfficeShopFloor() {
   if ((await currentBranchName()) !== "OFFICE") redirect("/");
   const role = await currentRole();
-  const cards = role === "COMMERCIAL" ? [COMMERCIAL_CARD, ...COMMERCIAL_CARDS]
+  const cards = isCommercialRole(role) ? [COMMERCIAL_CARD, ...COMMERCIAL_CARDS]
     : role === "ADMIN" ? [COMMERCIAL_CARD, ...CARDS]
     : CARDS;
   return (

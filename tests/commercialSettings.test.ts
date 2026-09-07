@@ -72,12 +72,35 @@ test("holdDays is a whole number of 1..60 days", () => {
   assert.equal(errorAt(validateOverrides({ holdDays: 0 }), "holdDays"), "Hold days must be between 1 and 60");
 });
 
-test("piValidityDays is a whole number of 1..365 days", () => {
+test("piValidityDays is a whole number of 0..365 days, 0 being forever (answer 24)", () => {
   assert.equal(leafIssue("piValidityDays", 30), null);
   assert.equal(leafIssue("piValidityDays", 365), null);
-  assert.equal(leafIssue("piValidityDays", 366), "PI validity must be between 1 and 365");
-  assert.equal(leafIssue("piValidityDays", 0), "PI validity must be between 1 and 365");
+  assert.equal(leafIssue("piValidityDays", 0), null, "0 = the PI never expires, the shipped default");
+  assert.equal(leafIssue("piValidityDays", 366), "PI validity must be between 0 and 365");
+  assert.equal(leafIssue("piValidityDays", -1), "PI validity must be between 0 and 365");
   assert.equal(leafIssue("piValidityDays", 30.5), "PI validity must be a whole number");
+});
+
+test("the new leaves: the unit, the cleaning hours and the alternate GSTIN lines", () => {
+  assert.equal(leafIssue("measurementUnitDefault", "cm"), null);
+  assert.equal(leafIssue("measurementUnitDefault", "in"), null);
+  assert.equal(leafIssue("measurementUnitDefault", "mm"), "The unit is cm or in");
+  assert.equal(leafIssue("planning.cleaningHoursDefault", 3), null);
+  assert.equal(leafIssue("planning.cleaningHoursAbrupt", 6), null);
+  assert.equal(leafIssue("planning.cleaningHoursAbrupt", 49), "Cleaning hours must be between 0 and 48");
+  assert.equal(leafIssue("company.alternateGstins", ["Pacific Granites (India) Pvt Ltd | 33AAFCP5374A1ZQ"]), null);
+  assert.equal(leafIssue("company.alternateGstins", ["33AAFCP5374A1ZQ"]), null, "a bare GSTIN is a line too");
+  const bad = leafIssue("company.alternateGstins", ["Sister company | not a gstin"]);
+  assert.ok(bad && bad.includes("Sister company"), bad ?? "expected the bad line named");
+  // and the whole shipped shape passes through its own validator
+  const v = validateOverrides(JSON.parse(JSON.stringify(DEFAULT_SETTINGS)));
+  assert.equal(v.ok, true, JSON.stringify(v.errors));
+  assert.deepEqual(pruneDefaults(v.cleaned), {}, "nothing in the defaults differs from the defaults");
+  // a shorter dark-to-light cleaning than the ordinary one is a warning, not a refusal
+  const w = validateOverrides({ planning: { cleaningHoursAbrupt: 2 } });
+  assert.equal(w.ok, true);
+  assert.equal(w.warnings.length, 1);
+  assert.equal(w.warnings[0].path, "planning.cleaningHoursAbrupt");
 });
 
 // ───────────────────────── numbering ─────────────────────────────────────────
@@ -206,10 +229,11 @@ test("mail recipients are email addresses, and mail cannot be on with nobody to 
   const bad = validateOverrides({ notify: { mailTo: ["ops@pacific-surfaces.com", "murali at pacific"] } });
   assert.equal(bad.ok, false);
   assert.ok((errorAt(bad, "notify.mailTo") ?? "").includes("murali at pacific"));
-  const empty = validateOverrides({ notify: { mail: true } });
+  // mail ships ON with the owner as recipient (answer 13), so "nobody" has to be said
+  const empty = validateOverrides({ notify: { mail: true, mailTo: [] } });
   assert.equal(empty.ok, false);
   assert.ok((errorAt(empty, "notify.mailTo") ?? "").includes("nobody"));
-  assert.equal(validateOverrides({ notify: { mail: false, mailTo: [] } }).ok, true, "off with nobody is the shipped state");
+  assert.equal(validateOverrides({ notify: { mail: false, mailTo: [] } }).ok, true, "off with nobody is fine");
 });
 
 // ───────────────────────── what gets stored ──────────────────────────────────
@@ -251,7 +275,9 @@ test("the loose diff is what the screen marks: a typed '5' is not a change, a ty
   assert.deepEqual(diffFromDefaults(draft, DEFAULT_SETTINGS, true), []);
   assert.deepEqual(diffFromDefaults(draft), ["holdDays"], "and the strict form still sees the type change");
   assert.deepEqual(diffFromDefaults(setAt(draft, "holdDays", "6"), DEFAULT_SETTINGS, true), ["holdDays"]);
-  assert.deepEqual(diffFromDefaults(setAt(draft, "notify.telegram", "on"), DEFAULT_SETTINGS, true), ["notify.telegram"]);
+  // telegram ships ON (answer 13), so "on" is no change and "off" is one
+  assert.deepEqual(diffFromDefaults(setAt(draft, "notify.telegram", "on"), DEFAULT_SETTINGS, true), []);
+  assert.deepEqual(diffFromDefaults(setAt(draft, "notify.telegram", "off"), DEFAULT_SETTINGS, true), ["notify.telegram"]);
   // pressing Enter in the address textarea leaves a blank line the walk drops
   const typing = setAt(draft, "company.addressLines", [...DEFAULT_SETTINGS.company.addressLines, ""]);
   assert.deepEqual(diffFromDefaults(typing, DEFAULT_SETTINGS, true), []);
@@ -260,7 +286,8 @@ test("the loose diff is what the screen marks: a typed '5' is not a change, a ty
 
 test("every leaf of the settings shape has a path, including the ones inside numbering and banks", () => {
   const paths = leafPaths();
-  for (const p of ["holdDays", "piValidityDays", "numbering.order.template", "numbering.challan.perFy", "company.addressLines",
+  for (const p of ["holdDays", "piValidityDays", "numbering.order.template", "numbering.proforma.key", "numbering.challan.perFy", "company.addressLines",
+    "company.alternateGstins", "measurementUnitDefault", "planning.cleaningHoursDefault", "planning.cleaningHoursAbrupt", "tax.alwaysIgst", "notify.telegramPrivate", "notify.mailFromCommercialLogin",
     "company.lutText", "banks.export.routingSwift", "banks.domestic.accountNo", "defaults.portOfLoading",
     "texts.piDeclaration", "tax.supplierStateCode", "notify.telegram", "notify.mailTo"]) {
     assert.ok(paths.includes(p), `missing ${p}`);
@@ -391,12 +418,13 @@ test("pageArgs: page 1 and 50 a page unless asked, junk falls back, the cap hold
 test("previewCounters shows what each kind would issue today, per-FY counters under their own key", () => {
   const at = new Date(2026, 8, 6);                       // 6 September 2026 → FY 26-27
   const p = previewCounters(DEFAULT_SETTINGS, [{ key: "PESPL-EXP", nextValue: 2781 }, { key: "PESPL-DC:26-27", nextValue: 21 }], at);
-  assert.deepEqual(p.exportInvoice, { key: "PESPL-EXP", next: 2781, preview: "PESPL/2781" });
-  assert.deepEqual(p.challan, { key: "PESPL-DC:26-27", next: 21, preview: "PESPL/DC/21/26" });
-  assert.deepEqual(p.order, { key: "SAL-ORD", next: 1, preview: "SAL-ORD/26-27/00001" }, "a counter with no row is at 1 — the state the module ships in");
+  assert.deepEqual(p.exportInvoice, { key: "PESPL-EXP", next: 2781, preview: "PESPL/N2781" });
+  assert.deepEqual(p.challan, { key: "PESPL-DC:26-27", next: 21, preview: "PESPL/DC/N21/26" });
+  assert.deepEqual(p.order, { key: "ORD:26-27", next: 1, preview: "ORD/26-27/N1" }, "a counter with no row is at 1 — the state the module ships in");
+  assert.deepEqual(p.proforma, { key: "SAL-ORD:26-27", next: 1, preview: "SAL-ORD/26-27/N1" }, "the PI has its own counter (answer 24)");
   assert.equal(p.dtaInvoice.key, "PESPL-DTA:26-27");
-  assert.equal(p.enquiry.preview, "ENQ/26-27/0001");
-  assert.equal(p.packingList.preview, "PL/26-27/0001");
+  assert.equal(p.enquiry.preview, "ENQ/26-27/N1");
+  assert.equal(p.packingList.preview, "PL/26-27/N1");
 });
 
 test("previewCounters follows an edited template and key, which is what makes the preview live", () => {
@@ -406,5 +434,5 @@ test("previewCounters follows an edited template and key, which is what makes th
   assert.deepEqual(p.challan, { key: "DC", next: 7, preview: "DC-0007/26-27" });
   const across = previewCounters(DEFAULT_SETTINGS, [{ key: "PESPL-DC:25-26", nextValue: 21 }], new Date(2026, 2, 31));
   assert.equal(across.challan.key, "PESPL-DC:25-26", "31 March is still the old financial year");
-  assert.equal(across.challan.preview, "PESPL/DC/21/26");
+  assert.equal(across.challan.preview, "PESPL/DC/N21/26");
 });

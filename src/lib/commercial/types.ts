@@ -253,6 +253,58 @@ export interface ProductionRequestDto {
   producedBatchKeys: string[];
   notifiedAt: string | null;
   notifiedVia: string | null;
+  /** The plan's own figures (answer 13; scripts/0079). plannedSlabs starts
+   *  equal to qtyShort; cleaningHours is 3, or 6 after a DARK → LIGHT jump;
+   *  shade is the design master's LIGHT / MEDIUM / DARK, null when unknown. */
+  plannedSlabs: number | null;
+  plannedHours: number | null;
+  cleaningHours: number | null;
+  shade: string | null;
+  /** Every edit to those figures, newest first. */
+  changes: PlanChangeDto[];
+}
+
+/** One row of commercial_production_plan_change: what was planned and then
+ *  changed, so a reduction is "never simply gone" (answer 13). */
+export interface PlanChangeDto {
+  id: string;
+  requestId: string;
+  field: "plannedSlabs" | "plannedHours" | "cleaningHours";
+  fromValue: number | null;
+  toValue: number | null;
+  delta: number;
+  reason: string | null;
+  status: "OPEN" | "ADDED_BACK" | "REMOVED";
+  changedByName: string | null;
+  changedAt: string;
+  resolvedAt: string | null;
+}
+
+/** One row of commercial_design_code (answer 20): the customer-facing item
+ *  code the owner supplies per design, and the shade the queue orders by. */
+export interface DesignCodeDto {
+  design: string;
+  code: string | null;
+  shade: "LIGHT" | "MEDIUM" | "DARK" | null;
+  shadeConfirmed: boolean;
+  notes: string | null;
+  updatedAt: string;
+}
+
+/** Money received against an order (answer 29). The first ADVANCE is the
+ *  one fact that lets a truck leave (answer 2, stages.canEnter). */
+export interface ReceiptDto {
+  id: string;
+  orderId: string;
+  kind: "ADVANCE" | "CAD" | "BALANCE" | "OTHER";
+  amount: number;
+  currency: string;
+  receivedAt: string;
+  mode: string | null;
+  reference: string | null;
+  notes: string | null;
+  recordedByName: string | null;
+  createdAt: string;
 }
 
 export interface ProformaDto {
@@ -318,6 +370,9 @@ export interface PackingListDto {
   grossWeightKg: number | null;
   netWeightKg: number | null;
   packagesSummary: string | null;
+  /** The unit the packing and measurement lists print in (answer 17):
+   *  "cm" (the default, 347 × 201) or "in" (137 × 79). */
+  measurementUnit: "cm" | "in";
   notes: string | null;
   createdByName: string | null;
   submittedAt: string | null;
@@ -453,6 +508,10 @@ export interface OrderDetail {
   items: OrderItemDto[];
   holds: HoldDto[];
   productionRequests: ProductionRequestDto[];
+  /** Newest first. */
+  receipts: ReceiptDto[];
+  /** Derived: at least one ADVANCE receipt is recorded — the dispatch gate. */
+  advanceReceived: boolean;
   proformas: ProformaDto[];
   packingLists: PackingListDto[];
   invoices: InvoiceDto[];
@@ -463,7 +522,8 @@ export interface OrderDetail {
 /** Props every order tab receives from the order workspace. */
 export interface OrderTabProps {
   order: OrderDetail;
-  /** The signed-in user's Commercial actions: view / write / verify / plan / admin. */
+  /** The signed-in user's Commercial actions: view / write / verify / plan /
+   *  approve / cancel / admin (lib/commercial/access-rules.ts). */
   actions: string[];
   /** Re-fetch the order after a write. */
   refresh: () => void;

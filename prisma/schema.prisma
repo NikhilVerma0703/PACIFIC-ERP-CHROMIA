@@ -31,6 +31,7 @@ enum Role {
   MAINTENANCE
   ROBO
   CHROMIA // Chromia line tablet role — capped to /chromia + /api/chromia, exactly like ROBO
+  COMMERCIAL_MANAGER // Commercial Manager — everything COMMERCIAL does plus approve, cancel and plan (owner, 2026-09-07, answer 9). Added by scripts/0079.
   SAMPLING // Sampling Incharge — capped to /sampling + /api/sampling, exactly like ROBO and CHROMIA. A ROLE, not a Branch: see the SAMPLING MODULE banner at the foot of this file. Added by scripts/0051.
 }
 
@@ -6453,6 +6454,7 @@ model CommercialOrder {
   packingLists       CommercialPackingList[]
   invoices           CommercialInvoice[]
   challans           CommercialDeliveryChallan[]
+  receipts           CommercialReceipt[]
 
   /// The orders board: by stage, newest first.
   @@index([status, createdAt])
@@ -6595,8 +6597,18 @@ model CommercialProductionRequest {
   notifiedAt        DateTime?                  @map("notified_at")
   notifiedVia       String?                    @map("notified_via")
   cancelledAt       DateTime?                  @map("cancelled_at")
+  /// The plan's own figures (answer 13). plannedSlabs starts equal to qtyShort;
+  /// cleaningHours is 3, or 6 after an abrupt dark → light change. Editable by
+  /// ADMIN / COMMERCIAL_MANAGER; every reduction is a CommercialProductionPlanChange.
+  plannedSlabs      Int?                       @map("planned_slabs")
+  plannedHours      Decimal?                   @map("planned_hours") @db.Decimal(6, 1)
+  cleaningHours     Decimal?                   @map("cleaning_hours") @db.Decimal(4, 1)
+  /// LIGHT / MEDIUM / DARK, copied from the design master when raised.
+  shade             String?
   createdAt         DateTime                   @default(now()) @map("created_at")
   updatedAt         DateTime                   @updatedAt @map("updated_at")
+
+  changes CommercialProductionPlanChange[]
 
   /// The planning queue itself.
   @@index([status, priority])
@@ -6650,6 +6662,8 @@ model CommercialPackingList {
   /// only ever print them blank. Added by scripts/0077.
   blNo             String?                 @map("bl_no")
   sbNo             String?                 @map("sb_no")
+  /// cm or in — the unit the packing and measurement lists print (answer 17).
+  measurementUnit  String                  @default("cm") @map("measurement_unit")
   grossWeightKg    Decimal?                @map("gross_weight_kg") @db.Decimal(12, 2)
   netWeightKg      Decimal?                @map("net_weight_kg") @db.Decimal(12, 2)
   /// e.g. "07 Wooden Crate(S) + 08 Sample Box".
@@ -6836,4 +6850,84 @@ model CommercialExportDocSet {
   updatedAt       DateTime          @updatedAt @map("updated_at")
 
   @@map("commercial_export_doc_set")
+}
+
+enum CommercialReceiptKind {
+  ADVANCE
+  CAD
+  BALANCE
+  OTHER
+
+  @@map("commercial_receipt_kind")
+}
+
+enum CommercialPlanChangeStatus {
+  OPEN
+  ADDED_BACK
+  REMOVED
+
+  @@map("commercial_plan_change_status")
+}
+
+/// Money received against an order (answer 29). The first ADVANCE is what
+/// lets a truck leave (answer 2). scripts/0079.
+model CommercialReceipt {
+  id             String                @id @default(cuid())
+  orderId        String                @map("order_id")
+  order          CommercialOrder       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  kind           CommercialReceiptKind
+  amount         Decimal               @db.Decimal(16, 2)
+  currency       String
+  receivedAt     DateTime              @map("received_at") @db.Date
+  mode           String?
+  reference      String?
+  notes          String?
+  recordedById   String?               @map("recorded_by_id") // -> users.id (no hard FK)
+  recordedByName String?               @map("recorded_by_name")
+  createdAt      DateTime              @default(now()) @map("created_at")
+  updatedAt      DateTime              @updatedAt @map("updated_at")
+
+  @@index([orderId])
+  @@map("commercial_receipt")
+}
+
+/// One row per canonical design: the owner's item code (answer 20) and the
+/// shade the planning queue sequences by (answer 13). scripts/0079.
+model CommercialDesignCode {
+  design         String   @id
+  code           String?  @unique
+  /// LIGHT / MEDIUM / DARK. A first guess from the name until confirmed.
+  shade          String?
+  shadeConfirmed Boolean  @default(false) @map("shade_confirmed")
+  notes          String?
+  updatedById    String?  @map("updated_by_id") // -> users.id (no hard FK)
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("commercial_design_code")
+}
+
+/// What was planned and then taken away, kept so it is never simply gone
+/// (answer 13: "put it on another table … with add back or remove").
+model CommercialProductionPlanChange {
+  id            String                      @id @default(cuid())
+  requestId     String                      @map("request_id")
+  request       CommercialProductionRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  /// plannedSlabs / plannedHours / cleaningHours
+  field         String
+  fromValue     Decimal?                    @map("from_value") @db.Decimal(10, 1)
+  toValue       Decimal?                    @map("to_value") @db.Decimal(10, 1)
+  /// to − from; negative is a reduction.
+  delta         Decimal                     @db.Decimal(10, 1)
+  reason        String?
+  status        CommercialPlanChangeStatus  @default(OPEN)
+  changedById   String?                     @map("changed_by_id") // -> users.id (no hard FK)
+  changedByName String?                     @map("changed_by_name")
+  changedAt     DateTime                    @default(now()) @map("changed_at")
+  resolvedAt    DateTime?                   @map("resolved_at")
+  resolvedById  String?                     @map("resolved_by_id") // -> users.id (no hard FK)
+
+  @@index([requestId])
+  /// The "not planned" panel: open reductions, newest first.
+  @@index([status, changedAt])
+  @@map("commercial_production_plan_change")
 }

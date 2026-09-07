@@ -9,9 +9,9 @@ import { readRoleContextCookie } from "@/lib/roleContextServer";
 // Role hierarchy: ROLE_RANK/rankOf moved to lib/roles.ts (a pure, import-free
 // module) so node --test can reach them — imported AND re-exported here so
 // every existing `from "@/lib/rbac"` import keeps working unchanged.
-import { ROLE_RANK, rankOf, STATIONS, STATION_LABEL, ROLE_LABEL, FAB_ROLE_LABEL, roleLabelFor } from "@/lib/roles";
+import { ROLE_RANK, rankOf, STATIONS, STATION_LABEL, ROLE_LABEL, FAB_ROLE_LABEL, roleLabelFor, COMMERCIAL_ROLES, isCommercialRole } from "@/lib/roles";
 import type { RoleName, StationName } from "@/lib/roles";
-export { ROLE_RANK, rankOf, STATIONS, STATION_LABEL, ROLE_LABEL, FAB_ROLE_LABEL, roleLabelFor };
+export { ROLE_RANK, rankOf, STATIONS, STATION_LABEL, ROLE_LABEL, FAB_ROLE_LABEL, roleLabelFor, COMMERCIAL_ROLES, isCommercialRole };
 // Imported as well as re-exported: `export type { RoleName } from ...` alone
 // forwards the name to importers without binding it locally, so creatableRoles
 // below could not see it and the whole app failed to typecheck.
@@ -121,7 +121,10 @@ export async function canManageUsers(): Promise<boolean> {
  * Office: ADMIN creates the flat Finance / Accounts roles; nobody else creates. */
 export function creatableRoles(role?: string | null, branch?: string | null): RoleName[] {
   const r = rankOf(role);
-  if (branch === "OFFICE") return r >= ROLE_RANK.ADMIN ? (["FINANCE", "ACCOUNTS", "SALES", "COMMERCIAL"] as RoleName[]) : [];
+  // COMMERCIAL_MANAGER sits BEFORE COMMERCIAL, not after it: UserAdmin defaults
+  // the Role dropdown to the LAST creatable role (see the Shop Floor note
+  // below), and the default for a new office login must stay Commercial.
+  if (branch === "OFFICE") return r >= ROLE_RANK.ADMIN ? (["FINANCE", "ACCOUNTS", "SALES", "COMMERCIAL_MANAGER", "COMMERCIAL"] as RoleName[]) : [];
   if (branch === "FABRICATION") return (["LINE_MANAGER", "INCHARGE", "OPERATOR"] as RoleName[]).filter((x) => ROLE_RANK[x] < r);
   // CHROMIA is a retired department (the module is a role now). Existing logins
   // there stay visible and usable; nothing new may be created on it, and it

@@ -156,3 +156,120 @@ All routes: `export const dynamic = "force-dynamic"; export const runtime = "nod
 * Dates: store `@db.Date` columns via `dateOnly()`; display `toLocaleDateString("en-IN")`; documents print `DD-MM-YYYY` (PI) / `DD/MM/YYYY` (DTA, challan).
 * Tests: put decision logic (snapshot builders, line mapping, workbook cell mapping, verify rules) in import-free modules under `src/lib/commercial/<area>-rules.ts` or similar and RUN them in `tests/commercial<Area>.test.ts`. A test that only matches source text is not a test.
 * Report back: files written, routes added, what you could not finish, and any foundation change you needed.
+
+## 8. The owner's 31 answers (2026-09-07) — what changes, builder by builder
+
+DECISIONS.md is the record; this section is the contract. Everything below
+is ALREADY in the foundation (schema 0079 applied, Prisma models generated,
+pure rules and tests updated, `COMMERCIAL_MANAGER` threaded through roles,
+rbac, routeCaps, middleware, Nav, login). Builders code against it; they do
+not re-decide it.
+
+### Foundation facts every builder relies on
+
+- **Roles.** `Role.COMMERCIAL_MANAGER` exists. `commercialActorOf` maps it to
+  actor `COMMERCIAL_MANAGER`; the action table gives it `plan`, `approve` and
+  `cancel` on top of Commercial's `view / write / verify`; `admin` stays ADMIN.
+  Gate with `commercialGate("approve")`, `commercialGate("cancel")`,
+  `commercialGate("plan")` — never on the role string.
+- **Stages.** `canEnter(from, to, facts)` now refuses three moves when the
+  fact is explicitly false: `PI_ISSUED` without `stockChecked`, `INVOICED`
+  without `approved`, `DISPATCHED` without `advanceReceived`. Every caller of
+  `moveOrder`/`bumpOrder` that can reach one of those stages must pass the
+  facts (order-stage.ts is to be extended to load them: stockCheckedAt set
+  and an ACTIVE hold; approvedAt set; a receipt of kind ADVANCE exists).
+- **Hold expiry.** `reconcileHold` already sends an order whose last live
+  hold lapsed from STOCK_CHECKED / PI_ISSUED back to CONFIRMED with a
+  `hold_expired` event. There is NO extension (answer 11): delete the extend
+  route and its button.
+- **Numbering.** Seven counters. The order is `ORD/{fy}/N{seq}`; the PI has
+  its own `SAL-ORD/{fy}/N{seq}`; export invoice `PESPL/N{seq}` runs on across
+  years; DTA, challan, enquiry, packing list reset per FY. All carry an N and
+  no padding (answer 8). Nothing aligns with Tally (answer 4).
+- **Settings.** `piValidityDays` 0 = forever (default); `measurementUnitDefault`
+  cm/in; `planning.cleaningHoursDefault` 3 / `cleaningHoursAbrupt` 6;
+  `tax.alwaysIgst` true; `company.alternateGstins` are "Label | GSTIN" lines
+  parsed by `gstinChoices(company)`; `notify.telegramPrivate` /
+  `mailFromCommercialLogin` on.
+- **DTOs.** `ReceiptDto`, `DesignCodeDto`, `PlanChangeDto` in types.ts;
+  `ProductionRequestDto` carries `plannedSlabs / plannedHours / cleaningHours /
+  shade / changes`; `PackingListDto.measurementUnit`; `OrderDetail.receipts`
+  and `OrderDetail.advanceReceived`.
+- **Events.** New kinds: `pi_revised`, `receipt_recorded`, `receipt_deleted`,
+  `plan_changed`, `slab_swapped`.
+
+### orders (+ receipts, approval)
+
+- Receipts: `GET/POST /api/office/commercial/orders/[id]/receipts`,
+  `DELETE …/receipts/[receiptId]` (write; delete is admin or manager). A
+  Receipts card on the order page: kind, amount, currency, date, mode,
+  reference. The order loader fills `receipts` and `advanceReceived`.
+- Approval (answer 10): the checklist's "Approved by" is `commercialGate("approve")`
+  — the manager or an admin. Commercial still fills and checks. Prepared-by
+  defaults to the signed-in name; the screen labels the two roles.
+- The stage strip shows why a move is refused (canEnter's reason) instead of
+  hiding the button.
+- Cancel an order: `commercialGate("cancel")`.
+
+### stock + production planning
+
+- No enquiry holds (answer 12): the hold routes refuse `enquiryId` without an
+  order; the enquiry page loses its hold button.
+- No extension (answer 11): remove `holds/[id]/extend`; the hold card says
+  "expires <date>; on expiry the order returns to the stock check".
+- Design master (answer 20): `commercial_design_code` — an admin/manager
+  editor under settings (design, code, shade LIGHT/MEDIUM/DARK, confirmed).
+  Seed rows for every distinct FG design name with `shade_confirmed=false`
+  and a first-guess shade from the name (white/bianco/carrara/calacatta/
+  ivory/cream = LIGHT; black/nero/grey/charcoal/dark/brown = DARK; else
+  MEDIUM). The queue reads the shade from here.
+- Planning figures (answer 13): a request gets `plannedSlabs` (= qtyShort at
+  creation), `plannedHours`, `cleaningHours` (3, or 6 when the previous row
+  in queue order is DARK and this one LIGHT — recomputed on reorder). Edit
+  hours / slabs is `commercialGate("plan")`. A REDUCTION writes a
+  `commercial_production_plan_change` row (OPEN); the planning page shows
+  "Planned but not scheduled" with Add back / Remove per row.
+- Sequencing hint: the queue shows the shade per row and warns on an abrupt
+  DARK → LIGHT.
+- Delete + edit a request by hand (answer 15): `PATCH` and `DELETE` on
+  `production-requests/[id]` (write).
+
+### proforma
+
+- Own counter `numbering.proforma`. A revision (answer 24) issues a NEW
+  number and cancels the old PI (status CANCELLED, `pi_revised` on the
+  order); nothing is re-numbered. Cancel is `commercialGate("cancel")`.
+- No validity when `piValidityDays` is 0: `validUntil` null, nothing printed.
+- Bank dropdown (answer 23): the PI carries the chosen bank key (export =
+  Kotak, domestic = ICICI by default) in its snapshot; editable before issue.
+- Issue is gated on the stock check (`canEnter(..., "PI_ISSUED", { stockChecked })`).
+
+### packing + dispatch check
+
+- One packing list per order (answer 18): creating a second is refused while
+  one exists that is not REJECTED/cancelled.
+- Unit toggle (answer 17): `measurementUnit` on the list, default from
+  settings; the screen shows cm or in and lets the clerk edit sizes.
+- Swap on FINAL (answer 30): `POST packing-lists/[plId]/slabs/swap` replaces
+  a refused slab with another of the same design/thickness (bridge: release
+  one, pack the other); `slab_swapped` event.
+- Nothing ships until the list is corrected (answer 31): dispatch refuses a
+  list with any unfit slab; the dispatch move also needs `advanceReceived`.
+
+### invoices + challans + export workbook
+
+- One invoice per order (answer 18) — a second is refused while one is not
+  cancelled; the final invoice needs `approvedAt` (answer 10).
+- GSTIN dropdown (answer 21) from `gstinChoices(settings.company)`; bank
+  dropdown (answer 23); both stored in the invoice snapshot.
+- Always IGST on domestic (answer 22): pass `alwaysIgst` into `computeTax`.
+- Design codes on export lines (answer 20) from `commercial_design_code`.
+- The date prints under the number on the invoice and the register
+  (answer 6); export invoices show the FY beside the continuous number.
+
+### settings
+
+- Screen fields for every new leaf (proforma numbering, unit default,
+  cleaning hours, alwaysIgst, alternate GSTIN lines, telegramPrivate,
+  mailFromCommercialLogin); the design-code editor lives here too.
+- The PI validity hint reads "0 = valid forever".

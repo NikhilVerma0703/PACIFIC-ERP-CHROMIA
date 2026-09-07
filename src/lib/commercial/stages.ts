@@ -54,15 +54,40 @@ export function stageIndex(status: string): number {
   return ORDER_STAGES.filter((s) => s.step).findIndex((s) => s.status === status);
 }
 
+/** What an order has actually done, for the three gates below. Every field is
+ *  optional so a caller that does not know can still ask about the moves that
+ *  need nothing. */
+export interface StageFacts {
+  /** A hold has been placed (stockCheckedAt set) and is still current. */
+  stockChecked?: boolean;
+  /** At least one ADVANCE receipt is recorded on the order. */
+  advanceReceived?: boolean;
+  /** The checklist has been approved (approvedAt set). */
+  approved?: boolean;
+}
+
 /**
- * May an order in `from` be moved to `to`? Today: anything except leaving a
- * terminal state, and except moving to the same state. THIS IS THE ONE PLACE a
- * gate goes when the owner decides the order of steps.
+ * May an order in `from` be moved to `to`?
+ *
+ * THE GATES, decided by the owner on 2026-09-07 (DECISIONS.md 1, 2, 10):
+ *
+ *   PI_ISSUED   needs the stock check — "stock check before PI"
+ *   INVOICED    needs the approval — "after PI, in the final invoice, the
+ *               approval must happen"
+ *   DISPATCHED  needs an ADVANCE receipt — "packing and loading are possible
+ *               before the advance, but the truck is not dispatched"
+ *
+ * Nothing else is gated: packing, the dispatch check and readiness can all
+ * happen before the money. A terminal order never moves, and a move to the
+ * same stage is refused as a no-op. Every refusal names the missing thing.
  */
-export function canEnter(from: string, to: string): { ok: true } | { ok: false; reason: string } {
+export function canEnter(from: string, to: string, facts: StageFacts = {}): { ok: true } | { ok: false; reason: string } {
   if (!isOrderStatus(to)) return { ok: false, reason: `Unknown stage ${to}` };
   if (from === to) return { ok: false, reason: `Already ${stageOf(to)?.label ?? to}` };
   if (isTerminal(from)) return { ok: false, reason: `A ${stageOf(from)?.label.toLowerCase() ?? from} order cannot move` };
+  if (to === "PI_ISSUED" && facts.stockChecked === false) return { ok: false, reason: "Stock check first: place a hold before issuing the PI" };
+  if (to === "INVOICED" && facts.approved === false) return { ok: false, reason: "The checklist must be approved before the final invoice" };
+  if (to === "DISPATCHED" && facts.advanceReceived === false) return { ok: false, reason: "The advance has not been received: the truck does not leave before it" };
   return { ok: true };
 }
 

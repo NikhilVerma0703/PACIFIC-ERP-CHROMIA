@@ -26,6 +26,7 @@
 // Paths are dotted ("company.gstin", "numbering.order.template"); arrays are
 // leaves (an address is edited as a block).
 import { DEFAULT_SETTINGS, mergeSettings, NUMBERING_KINDS, type CommercialSettings, type NumberingKind } from "./settings-defaults.ts";
+import { parseGstinLine } from "./settings-defaults.ts";
 import { documentNumber, sequenceKey } from "./numbering.ts";
 import { looksLikeGstin } from "./tax.ts";
 
@@ -47,7 +48,8 @@ const isPlain = (v: unknown): v is Plain => typeof v === "object" && v !== null 
 const join = (path: string, k: string): string => (path ? `${path}.${k}` : k);
 
 export const NUMBERING_LABELS: Record<NumberingKind, string> = {
-  order: "Internal sales order / PI",
+  order: "Internal sales order",
+  proforma: "Proforma invoice (PI)",
   enquiry: "Enquiry",
   exportInvoice: "Export invoice",
   dtaInvoice: "DTA invoice",
@@ -124,7 +126,15 @@ function numberIn(n: number, lo: number, hi: number, what: string): string | nul
 export function leafIssue(path: string, v: string | number | boolean | string[]): string | null {
   switch (path) {
     case "holdDays": return wholeIn(v as number, 1, 60, "Hold days");
-    case "piValidityDays": return wholeIn(v as number, 1, 365, "PI validity");
+    // 0 is "valid forever" (answer 24), which is the default.
+    case "piValidityDays": return wholeIn(v as number, 0, 365, "PI validity");
+    case "measurementUnitDefault": return v === "cm" || v === "in" ? null : "The unit is cm or in";
+    case "planning.cleaningHoursDefault":
+    case "planning.cleaningHoursAbrupt": return numberIn(v as number, 0, 48, "Cleaning hours");
+    case "company.alternateGstins": {
+      const bad = (v as string[]).filter((x) => !parseGstinLine(x));
+      return bad.length ? `Not "Label | GSTIN" lines: ${bad.join("; ")}` : null;
+    }
     case "tax.igstRate": return numberIn(v as number, 0, 100, "IGST rate");
     case "tax.cgstRate": return numberIn(v as number, 0, 100, "CGST rate");
     case "tax.sgstRate": return numberIn(v as number, 0, 100, "SGST rate");
@@ -181,6 +191,9 @@ function crossIssues(merged: CommercialSettings, errors: SettingsIssue[], warnin
       const others = kinds.filter((x) => x !== k).map((x) => NUMBERING_LABELS[x]).join(", ");
       errors.push({ path: `numbering.${k}.key`, message: `Counter key "${key}" is also used by ${others} — two document kinds would share one counter` });
     }
+  }
+  if (merged.planning.cleaningHoursAbrupt < merged.planning.cleaningHoursDefault) {
+    warnings.push({ path: "planning.cleaningHoursAbrupt", message: `The dark-to-light cleaning (${merged.planning.cleaningHoursAbrupt} h) is shorter than the ordinary cleaning (${merged.planning.cleaningHoursDefault} h)` });
   }
   const half = Math.round((merged.tax.cgstRate + merged.tax.sgstRate) * 100) / 100;
   if (half !== merged.tax.igstRate) {

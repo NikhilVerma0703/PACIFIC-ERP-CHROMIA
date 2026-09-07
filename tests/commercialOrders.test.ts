@@ -330,9 +330,10 @@ test("renumberLines: 1..n after a delete, and only the rows that move", () => {
 
 // ───────────────────────────── approval and log text ─────────────────────────
 
-test("canApprove: Commercial and admins; never the dispatch checker", () => {
+test("canApprove: the Commercial Manager and admins (answer 10); never Commercial or the dispatch checker", () => {
   assert.equal(canApprove("ADMIN"), true);
-  assert.equal(canApprove("COMMERCIAL"), true);
+  assert.equal(canApprove("COMMERCIAL_MANAGER"), true);
+  assert.equal(canApprove("COMMERCIAL"), false, "Commercial prepares the checklist; the manager approves it");
   assert.equal(canApprove("DISPATCH_CHECKER"), false);
   assert.equal(canApprove(null), false);
   assert.equal(canApprove(undefined), false);

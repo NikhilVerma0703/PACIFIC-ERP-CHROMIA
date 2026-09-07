@@ -36,21 +36,36 @@ export interface CompanyMaster {
   lutText: string;
   hsnQuartz: string;
   hsnStand: string;
+  /** Other registrations the export documents may be issued under, chosen
+   *  from a dropdown that defaults to `gstin` (answer 21). One line each,
+   *  "Label | GSTIN", because the settings screen and its validator handle
+   *  lists of lines and nothing richer; gstinChoices() below parses them. */
+  alternateGstins: string[];
   email: string;
   phone: string;
 }
 
 export interface CommercialSettings {
   holdDays: number;
+  /** 0 = a PI never expires (answer 24). Kept for the day that changes. */
   piValidityDays: number;
   numbering: {
+    /** The order's own, internal number. */
     order: NumberingSpec;
+    /** The customer-facing PI number — its OWN counter since answer 24: a
+     *  revision is a new number and the old one is cancelled, so it cannot be
+     *  the order number any more. */
+    proforma: NumberingSpec;
     enquiry: NumberingSpec;
     exportInvoice: NumberingSpec;
     dtaInvoice: NumberingSpec;
     challan: NumberingSpec;
     packingList: NumberingSpec;
   };
+  /** The unit a new packing list prints in (answer 17). */
+  measurementUnitDefault: "cm" | "in";
+  /** Cleaning between production runs (answer 13). */
+  planning: { cleaningHoursDefault: number; cleaningHoursAbrupt: number };
   company: CompanyMaster;
   banks: { export: BankDetails; domestic: BankDetails };
   defaults: {
@@ -71,21 +86,34 @@ export interface CommercialSettings {
     challanNote: string;
     challanApprox: string;
   };
-  tax: { igstRate: number; cgstRate: number; sgstRate: number; supplierStateCode: string };
-  notify: { telegram: boolean; mail: boolean; mailTo: string[] };
+  /** alwaysIgst (answer 22): domestic is IGST whatever the buyer's state. */
+  tax: { igstRate: number; cgstRate: number; sgstRate: number; supplierStateCode: string; alwaysIgst: boolean };
+  /** telegramPrivate: send to TELEGRAM_COMMERCIAL_CHAT_ID (one person) rather
+   *  than the plant group. mailFromCommercialLogin: send as the Commercial
+   *  login's own SMTP when it has one. Both answer 13. */
+  notify: { telegram: boolean; telegramPrivate: boolean; mail: boolean; mailFromCommercialLogin: boolean; mailTo: string[] };
 }
 
 export const DEFAULT_SETTINGS: CommercialSettings = {
   holdDays: 5,                        // owner, 2026-09-05
-  piValidityDays: 30,                 // open question 22
+  piValidityDays: 0,                  // answer 24: valid forever
+  // EVERY series carries an N (answer 8: "N1, N2 … definitively different and
+  // identifiable" from the old Tally numbers), written as the owner wrote it,
+  // without zero padding. Counters start at 1 by design; nothing is aligned
+  // with Tally (answer 4). The PI resets each financial year (answer 5); the
+  // export invoice runs on across years (answer 6); DTA, challan, enquiry and
+  // packing list reset (answers 6, 7).
   numbering: {
-    order:         { key: "SAL-ORD",   template: "SAL-ORD/{fy}/{seq:5}", perFy: false },
-    enquiry:       { key: "ENQ",       template: "ENQ/{fy}/{seq:4}",     perFy: true },
-    exportInvoice: { key: "PESPL-EXP", template: "PESPL/{seq:4}",        perFy: false },
-    dtaInvoice:    { key: "PESPL-DTA", template: "PESPL/{seq:4}/{fy}",   perFy: true },
-    challan:       { key: "PESPL-DC",  template: "PESPL/DC/{seq}/{yy}",  perFy: true },
-    packingList:   { key: "PL",        template: "PL/{fy}/{seq:4}",      perFy: true },
+    order:         { key: "ORD",       template: "ORD/{fy}/N{seq}",       perFy: true },
+    proforma:      { key: "SAL-ORD",   template: "SAL-ORD/{fy}/N{seq}",   perFy: true },
+    enquiry:       { key: "ENQ",       template: "ENQ/{fy}/N{seq}",       perFy: true },
+    exportInvoice: { key: "PESPL-EXP", template: "PESPL/N{seq}",          perFy: false },
+    dtaInvoice:    { key: "PESPL-DTA", template: "PESPL/N{seq}/{fy}",     perFy: true },
+    challan:       { key: "PESPL-DC",  template: "PESPL/DC/N{seq}/{yy}",  perFy: true },
+    packingList:   { key: "PL",        template: "PL/{fy}/N{seq}",        perFy: true },
   },
+  measurementUnitDefault: "cm",       // answer 17, reading recorded in DECISIONS.md
+  planning: { cleaningHoursDefault: 3, cleaningHoursAbrupt: 6 },   // answer 13
   company: {
     legalName: "Pacific Engineered Surfaces Private Limited",
     shortName: "Pacific Engineered Surfaces Pvt Ltd",
@@ -108,6 +136,9 @@ export const DEFAULT_SETTINGS: CommercialSettings = {
     lutText: "\"Supply Meant For Export Under LUT\", No AD330326017058D/2026-27 dated 06/03/2026 Vide File No. LUT Furnished Under Rule 96A Of CGST Rules, 2017 For Export Of Goods Without Payment Of IGST.",
     hsnQuartz: "68101990",
     hsnStand: "73089050",
+    // The sister company's registration, which the old export template carried
+    // under the PESPL name. Offered in the dropdown; never the default.
+    alternateGstins: ["Pacific Granites (India) Pvt Ltd | 33AAFCP5374A1ZQ"],
     email: "customs@pacific-surfaces.com",
     phone: "+91 8870008798",
   },
@@ -150,9 +181,41 @@ export const DEFAULT_SETTINGS: CommercialSettings = {
     challanNote: "Note: Please note that these items are for display purposes only and not for sale",
     challanApprox: "Amount Declared is approximate value of the goods",
   },
-  tax: { igstRate: 18, cgstRate: 9, sgstRate: 9, supplierStateCode: "33" },
-  notify: { telegram: false, mail: false, mailTo: [] },
+  tax: { igstRate: 18, cgstRate: 9, sgstRate: 9, supplierStateCode: "33", alwaysIgst: true },   // answer 22
+  // Answer 13: a mail from Santosh's ID to vmundra, and a private Telegram to
+  // Varun Mundra. Both switched ON here; both need credentials that are not in
+  // the repo (the Commercial login's SMTP, TELEGRAM_COMMERCIAL_CHAT_ID). Until
+  // those exist the sends degrade silently and the request row records
+  // notifiedVia = planning-page, exactly as before.
+  notify: { telegram: true, telegramPrivate: true, mail: true, mailFromCommercialLogin: true, mailTo: ["vmundra@thepacific.group"] },
 };
+
+/** One registration the documents may be issued under. */
+export interface GstinChoice { label: string; gstin: string }
+
+/** "Label | GSTIN" → a choice; a bare GSTIN is labelled by itself. Null when
+ *  the line carries nothing shaped like a GSTIN, which the settings validator
+ *  refuses (leafIssue) so the dropdown never offers a typo. */
+export function parseGstinLine(line: unknown): GstinChoice | null {
+  const s = String(line ?? "").trim();
+  if (!s) return null;
+  const bar = s.lastIndexOf("|");
+  const label = (bar === -1 ? "" : s.slice(0, bar)).trim();
+  const gstin = (bar === -1 ? s : s.slice(bar + 1)).trim().toUpperCase();
+  if (!/^\d{2}[A-Z0-9]{13}$/.test(gstin)) return null;
+  return { label: label || gstin, gstin };
+}
+
+/** The GSTIN dropdown (answer 21): the company's own registration first and
+ *  by default, then every well-formed alternate line, duplicates dropped. */
+export function gstinChoices(company: Pick<CompanyMaster, "legalName" | "gstin" | "alternateGstins">): GstinChoice[] {
+  const out: GstinChoice[] = [{ label: company.legalName, gstin: company.gstin }];
+  for (const line of company.alternateGstins ?? []) {
+    const c = parseGstinLine(line);
+    if (c && !out.some((x) => x.gstin === c.gstin)) out.push(c);
+  }
+  return out;
+}
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -181,4 +244,4 @@ export function mergeSettings(base: CommercialSettings, overrides: unknown): Com
 }
 
 export type NumberingKind = keyof CommercialSettings["numbering"];
-export const NUMBERING_KINDS: NumberingKind[] = ["order", "enquiry", "exportInvoice", "dtaInvoice", "challan", "packingList"];
+export const NUMBERING_KINDS: NumberingKind[] = ["order", "proforma", "enquiry", "exportInvoice", "dtaInvoice", "challan", "packingList"];

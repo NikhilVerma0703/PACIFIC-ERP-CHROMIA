@@ -46,6 +46,7 @@ test("office and capped commercial roles do not land on the shop floor", () => {
   // SALES and COMMERCIAL are capped to /inventory by their own blocks.
   assert.equal(homeFor("SALES", "SHOP_FLOOR"), "/inventory");
   assert.equal(homeFor("COMMERCIAL", "SHOP_FLOOR"), "/office/commercial");
+  assert.equal(homeFor("COMMERCIAL_MANAGER", "SHOP_FLOOR"), "/office/commercial");
   assert.equal(homeFor("ROBO", "SHOP_FLOOR"), "/robo");
 });
 
@@ -62,7 +63,7 @@ test("no home is the refusal page itself", () => {
   // Sending someone from /no-access back to /no-access would be a loop with a
   // button on it.
   const roles = ["ADMIN", "MAINTENANCE", "STORE", "OPERATOR", "ROBO", "SALES",
-                 "COMMERCIAL", "FINANCE", "INCHARGE", "LINE_MANAGER"];
+                 "COMMERCIAL", "COMMERCIAL_MANAGER", "FINANCE", "INCHARGE", "LINE_MANAGER"];
   const branches = ["SHOP_FLOOR", "OFFICE", "FABRICATION", "INTERNATIONAL_SALES", "CHROMIA"];
   for (const r of roles) {
     for (const b of branches) {
@@ -84,6 +85,8 @@ test("a role home is always a page that role can actually open", () => {
   // COMMERCIAL lands on its own module since 2026-09-06 (scripts/0076); its
   // cap allows /office/** so the page is reachable from either branch.
   assert.equal(homeFor("COMMERCIAL", "OFFICE"), "/office/commercial");
+  // The manager (scripts/0079) shares the cap and therefore the home.
+  assert.equal(homeFor("COMMERCIAL_MANAGER", "OFFICE"), "/office/commercial");
   assert.equal(homeFor("SALES", "SHOP_FLOOR"), "/inventory");
   // ...but the INTERNATIONAL_SALES BRANCH still wins over the role, because
   // middleware routes that branch by its own block and returns before the role
@@ -135,7 +138,7 @@ test("a capped ROLE has a home its own cap allows — the loop test", () => {
 
   // A home is never the page the caller was just refused, which is the shape
   // of every loop of this kind.
-  for (const role of ["CHROMIA", "ROBO", "STORE", "OPERATOR", "SALES", "COMMERCIAL"]) {
+  for (const role of ["CHROMIA", "ROBO", "STORE", "OPERATOR", "SALES", "COMMERCIAL", "COMMERCIAL_MANAGER"]) {
     assert.notEqual(homeFor(role, "SHOP_FLOOR"), "/",
       `${role} is capped away from "/" and must not be sent there`);
   }
@@ -165,6 +168,7 @@ test("every role/branch pair that EXISTS lands on a page it can open", () => {
     ["ADMIN", "SHOP_FLOOR", "/"],
     ["CHROMIA", "SHOP_FLOOR", "/chromia"],
     ["COMMERCIAL", "OFFICE", "/office/commercial"],   // its own module since 2026-09-06
+    ["COMMERCIAL_MANAGER", "OFFICE", "/office/commercial"],   // scripts/0079, 2026-09-07
     ["FINANCE", "OFFICE", "/office"],
     ["INCHARGE", "SHOP_FLOOR", "/"],
     ["INCHARGE", "FABRICATION", "/fab/supervisor/slabs"],
@@ -241,7 +245,7 @@ test("no role/branch pair is sent to a home its own ROLE cap refuses", () => {
   // maintenanceMayVisit says no to and middleware never asks it about.
   const BRANCH_DECIDES = new Set(["CHROMIA", "FABRICATION", "INTERNATIONAL_SALES"]);
   const roles = ["ADMIN", "MAINTENANCE", "STORE", "OPERATOR", "ROBO", "SALES",
-                 "COMMERCIAL", "FINANCE", "ACCOUNTS", "INCHARGE", "LINE_MANAGER", "CHROMIA"];
+                 "COMMERCIAL", "COMMERCIAL_MANAGER", "FINANCE", "ACCOUNTS", "INCHARGE", "LINE_MANAGER", "CHROMIA"];
   const branches = ["SHOP_FLOOR", "OFFICE", "FABRICATION", "INTERNATIONAL_SALES", "CHROMIA", ""];
   const CAPS: Record<string, (p: string) => boolean> = {
     STORE: storeMayVisit, OPERATOR: operatorMayVisit, MAINTENANCE: maintenanceMayVisit,

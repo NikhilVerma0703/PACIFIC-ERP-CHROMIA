@@ -1,6 +1,7 @@
 "use server";
 import { AuthError } from "next-auth";
 import { signIn, LoginThrottled } from "@/auth";
+import { isCommercialRole } from "@/lib/roles";
 import { prisma } from "@/lib/prisma";
 
 export async function authenticate(
@@ -23,7 +24,7 @@ export async function authenticate(
       // before any queue was reachable. One operator login now covers all five
       // stations, so they land on the first queue; /fab/session is still there
       // (sidebar: "Select Machine") for shift + machine attribution.
-    } else if (user && String(user.role) === "COMMERCIAL") {
+    } else if (user && isCommercialRole(String(user.role))) {
       // Commercial's home is Finished Goods. Sending them to "/" only for middleware to
       // bounce it to /inventory means the router never initiated that hop, so the client
       // still reports "/" as the path — which is what highlighted the wrong nav tab on

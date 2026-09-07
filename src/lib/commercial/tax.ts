@@ -29,6 +29,10 @@ export interface TaxInput {
   sgstRate: number;                     // 9
   /** DTA invoices round to a whole rupee; export invoices keep their decimals. */
   roundToWhole?: boolean;
+  /** Owner, 2026-09-07 (answer 22): "domestic tax is always IGST 18%". When
+   *  true the buyer's state is not consulted and no warning is raised. The
+   *  CGST + SGST path stays behind this switch for the day it is needed. */
+  alwaysIgst?: boolean;
 }
 
 export interface TaxResult {
@@ -51,9 +55,13 @@ export function computeTax(input: TaxInput): TaxResult {
   let taxType: TaxType = "NONE";
   let warning: string | null = null;
   if (input.kind === "DOMESTIC") {
-    const buyer = (input.buyerStateCode ?? "").trim();
-    if (!buyer) { taxType = "IGST"; warning = "Buyer state code missing — IGST assumed"; }
-    else taxType = buyer === input.supplierStateCode.trim() ? "CGST_SGST" : "IGST";
+    if (input.alwaysIgst) {
+      taxType = "IGST";
+    } else {
+      const buyer = (input.buyerStateCode ?? "").trim();
+      if (!buyer) { taxType = "IGST"; warning = "Buyer state code missing — IGST assumed"; }
+      else taxType = buyer === input.supplierStateCode.trim() ? "CGST_SGST" : "IGST";
+    }
   }
   const igst = taxType === "IGST" ? r2(subtotal * input.igstRate / 100) : 0;
   const cgst = taxType === "CGST_SGST" ? r2(subtotal * input.cgstRate / 100) : 0;
