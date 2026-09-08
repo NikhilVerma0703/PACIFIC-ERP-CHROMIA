@@ -37,7 +37,7 @@ export interface SpanSlab {
  * unparseable, so a slab with no date, or no In (or no Out) time, is simply
  * skipped rather than counted as midnight.
  */
-function stampMinutes(date: string, time: string | null | undefined): number | null {
+export function stampMinutes(date: string, time: string | null | undefined): number | null {
   const d = (date ?? "").trim();
   const t = (time ?? "").trim();
   if (!d || !t) return null;
