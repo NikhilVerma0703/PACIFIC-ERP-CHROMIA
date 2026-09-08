@@ -94,8 +94,25 @@ export const MACHINE_LABEL: Record<string, string> = {
   "Roycut-2": "Robo3",
   "Roycut-3": "Robo4",
 };
-export const machineLabel = (name: string | null | undefined): string =>
-  (name && MACHINE_LABEL[name]) || name || "";
+/**
+ * The shop-floor name for a delay's machine — now comma-aware, because one delay
+ * can name more than one Robo (both were responsible). The machineName column
+ * holds the canonical names comma-joined ("Roycut-1, Roymix"); this labels each
+ * and joins them with " + " ("Robo1 + Robo2"). A single name (every existing
+ * record, and every setup machine) has no comma and is labelled exactly as
+ * before, so this is safe everywhere machineLabel was already used.
+ */
+export const machineLabel = (name: string | null | undefined): string => {
+  if (!name) return "";
+  if (name.includes(",")) {
+    return name
+      .split(",")
+      .map((n) => machineLabel(n.trim()))
+      .filter(Boolean)
+      .join(" + ");
+  }
+  return MACHINE_LABEL[name] || name;
+};
 
 /** Display name back to the stored one — the reverse of machineLabel.
  *

@@ -1,34 +1,37 @@
 /**
- * "Production Rate per Hour" — slabs completed each hour across a batch's own
+ * "Production Rate per Hour" — slabs completed each hour across ONE batch's own
  * run, for the Reports line chart.
  *
  * Pure and alias-free so `node --test` can reach it.
  *
- * ── WHAT IT COUNTS ─────────────────────────────────────────────────────────
- * A slab is counted in the hour its Out Time falls in — the hour it left the
- * line. The timeline runs from the hour the batch STARTED (its first slab's In
- * Time, or Out Time if it has no In Time) to the hour it COMPLETED (its last
- * Out Time), one bucket per hour, and every hour in between shows even when no
- * slab finished in it. Nothing before the start or after the end is shown.
+ * ── THE TIMELINE ───────────────────────────────────────────────────────────
+ * Dynamic, never a fixed 00:00–24:00. It runs from the hour the batch STARTED
+ * (its first slab's In Time, or Out Time if it has none) to the hour it
+ * COMPLETED (its last Out Time), one bucket per hour, every hour in between
+ * shown even when nothing completed in it — nothing before the start or after
+ * the end. A slab is counted in the hour its Out Time falls in. Each bucket
+ * carries the calendar DATE its hour belongs to, so a run that crosses midnight
+ * is marked with both dates on the axis and there is no gap at the boundary:
+ * 23:00–00:00 is immediately followed by 00:00–01:00 of the next date.
  *
- * ── CROSSING MIDNIGHT ──────────────────────────────────────────────────────
- * Times are HH:MM with no date, so a bare "00:30" cannot say which day it is on.
- * The slab's production date does (that is the whole point of the per-slab date
- * — a batch past midnight has its later slabs on the next day). So each slab is
- * placed on an absolute timeline of `productionDate × 24h + time`, and a run
- * that starts at 22:00 and ends at 03:00 the next morning reads
- * 22:00–23:00 → 23:00–00:00 → 00:00–01:00 → … in order, its labels wrapping
- * past midnight. One further guard, independent of the date: a single slab whose
- * Out Time is before its In Time crossed midnight on its own, so its completion
- * is the next day.
+ * ── WHICH DAY EACH HOUR IS ON ──────────────────────────────────────────────
+ * In/Out are bare HH:MM with no day of their own. Where each slab sits on the
+ * absolute timeline is decided by slabPlacement.ts — the SAME rule the Total
+ * Production Time KPI uses, so the KPI and this chart can never disagree about
+ * one batch. In short: the first slab anchors the day; a later slab's forward
+ * date is trusted only when its clock went backwards against the run (an
+ * overnight pause), never when the time barely moved (batch 1432's mis-dated
+ * last slabs); and a clock more than 12h behind the run has wrapped past
+ * midnight whether or not the slab was re-dated.
+ *
+ * No wall clock is ever read — the timeline is built entirely from the stored
+ * In/Out and the sequence — so the same records always produce the same chart,
+ * and a historical hour never changes because time passed.
  */
 
-export interface HourlySlab {
-  /** yyyy-mm-dd — the slab's effective production date (productionDateOf). */
-  productionDate: string | null;
-  inTime: string | null;  // HH:MM
-  outTime: string | null; // HH:MM
-}
+import { type PlaceableSlab, dateFromDayNum, placeSlabs, registerOrder, MAX_RUN_HOURS } from "./slabPlacement.ts";
+
+export type HourlySlab = PlaceableSlab;
 
 export interface HourBucket {
   /** "11:00–12:00", "23:00–00:00" — the interval, 24-hour. */
@@ -37,22 +40,9 @@ export interface HourBucket {
   hour: number;
   /** Slabs whose Out Time fell in this hour. */
   slabs: number;
-}
-
-/** Minutes since midnight for an HH:MM string, or null if unusable. */
-function toMins(t: string | null | undefined): number | null {
-  if (!t) return null;
-  const [h, m] = t.split(":").map(Number);
-  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
-  return h * 60 + m;
-}
-
-/** Whole days since the epoch for a yyyy-mm-dd string, or null. UTC, so no
- *  timezone shifts the day. */
-function dayNum(d: string | null | undefined): number | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((d ?? "").trim());
-  if (!m) return null;
-  return Math.floor(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86_400_000);
+  /** The calendar date (yyyy-mm-dd) this hour belongs to — the X-axis date
+   *  marker. null only when no slab carried a resolvable production date. */
+  date: string | null;
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -66,29 +56,19 @@ function hourLabel(absHour: number): string {
 
 /** A run this long is a data error (a stray date), not a real batch — cap the
  *  timeline so one bad row can't ask for thousands of empty hours. */
-const MAX_HOURS = 48;
+const MAX_HOURS = MAX_RUN_HOURS;
 
 export function hourlyProduction(slabs: readonly HourlySlab[]): HourBucket[] {
-  let winStart = Infinity; // absolute minute the batch first started
-  let winEnd = -Infinity;  // absolute minute of its last completion
-  const completions: number[] = []; // absolute minute of each Out Time
+  let winStart = Infinity;           // absolute minute the batch first started
+  let winEnd = -Infinity;            // absolute minute of its last completion
+  const completions: number[] = [];  // absolute minute of each Out Time
 
-  for (const s of slabs) {
-    const day = dayNum(s.productionDate);
-    if (day === null) continue; // no day → cannot place it on the timeline
-    const base = day * 1440;
-    const inM = toMins(s.inTime);
-    const outM = toMins(s.outTime);
-
-    // The batch's start is the earliest slab activity — In Time, else Out Time.
-    const startBase = inM ?? outM;
-    if (startBase !== null) winStart = Math.min(winStart, base + startBase);
-
-    if (outM !== null) {
-      let endAbs = base + outM;
-      if (inM !== null && outM < inM) endAbs += 1440; // slab crossed midnight itself
-      winEnd = Math.max(winEnd, endAbs);
-      completions.push(endAbs);
+  for (const { inAbs, outAbs } of placeSlabs(registerOrder(slabs))) {
+    const startAbs = inAbs ?? (outAbs as number);
+    winStart = Math.min(winStart, startAbs);
+    if (outAbs !== null) {
+      winEnd = Math.max(winEnd, outAbs);
+      completions.push(outAbs);
     }
   }
 
@@ -108,7 +88,14 @@ export function hourlyProduction(slabs: readonly HourlySlab[]): HourBucket[] {
 
   const out: HourBucket[] = [];
   for (let h = startHour; h <= endHour; h++) {
-    out.push({ label: hourLabel(h), hour: ((h % 24) + 24) % 24, slabs: counts.get(h) ?? 0 });
+    out.push({
+      label: hourLabel(h),
+      hour: ((h % 24) + 24) % 24,
+      slabs: counts.get(h) ?? 0,
+      // The day-number of an absolute hour is floor(h / 24); its calendar date is
+      // the axis marker for this hour.
+      date: dateFromDayNum(Math.floor(h / 24)),
+    });
   }
   return out;
 }

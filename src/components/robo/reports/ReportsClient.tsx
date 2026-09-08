@@ -45,8 +45,13 @@ const HourlyProductionLine = dynamic(
 interface Summary {
   date: string | null;
   totalSlabs: number;
-  productionMinutes: number;
-  slabsPerHour: number | null;
+  /** First In Time → last Out Time across the filtered slabs, in minutes; null
+   *  when nothing has completed. */
+  productionTimeMinutes: number | null;
+  /** Total Slabs ÷ that span in hours (delays included), 1 dp; null when there
+   *  is no completed span. Built only from recorded times — no wall clock — so
+   *  it is stable, unlike the old shift-open-time figure. See the summary route. */
+  avgSlabsPerHour: number | null;
   totalDelayMins: number;
   delayEvents: number;
   /** Every delay type, highest duration first — see the summary route. */
@@ -102,7 +107,9 @@ export function ReportsClient() {
 
   const loadSummary = useCallback(async (qs: string) => {
     setLoadingSummary(true);
-    const res = await fetch(`/api/robo/reports/summary${qs}`);
+    // no-store: the browser must re-ask every time, so the KPIs and Delay
+    // Analysis always reflect the live data, never a cached earlier response.
+    const res = await fetch(`/api/robo/reports/summary${qs}`, { cache: "no-store" });
     setSummary(res.ok ? await res.json() : null);
     setLoadingSummary(false);
   }, []);
@@ -110,7 +117,7 @@ export function ReportsClient() {
   const loadHourly = useCallback(async (b: string) => {
     setLoadingHourly(true);
     const qs = b.trim() ? `?batch=${encodeURIComponent(b.trim())}` : "";
-    const res = await fetch(`/api/robo/reports/hourly${qs}`);
+    const res = await fetch(`/api/robo/reports/hourly${qs}`, { cache: "no-store" });
     const data = res.ok ? await res.json() : { series: [] };
     setHourly(data.series ?? []);
     setLoadingHourly(false);
@@ -118,7 +125,7 @@ export function ReportsClient() {
 
   const loadTrends = useCallback(async (days: number) => {
     setLoadingTrends(true);
-    const res = await fetch(`/api/robo/reports/trends?days=${days}`);
+    const res = await fetch(`/api/robo/reports/trends?days=${days}`, { cache: "no-store" });
     const data = res.ok ? await res.json() : { series: [] };
     setTrends(data.series ?? []);
     setLoadingTrends(false);
@@ -147,6 +154,16 @@ export function ReportsClient() {
   const delayData = summary?.delayTypes ?? [];
   const delayTotal = summary?.totalDelayMins ?? 0;
 
+  // The production date(s) the hourly run spans, from the series itself — one
+  // date for a same-day batch, a "first → last" range for one that crossed
+  // midnight. Shown in the chart subtitle so the actual Production Date is on
+  // the chart, not just the hours.
+  const hourlyDates = hourly.map((h) => h.date).filter((d): d is string => Boolean(d));
+  const hourlyDateScope = hourlyDates.length === 0 ? ""
+    : hourlyDates[0] === hourlyDates[hourlyDates.length - 1]
+      ? formatDate(hourlyDates[0])
+      : `${formatDate(hourlyDates[0])} → ${formatDate(hourlyDates[hourlyDates.length - 1])}`;
+
   const dateScope =
     mode === "ALL" ? "All production records to date"
     : mode === "DATE" ? `Production on ${formatDate(date)}`
@@ -172,8 +189,8 @@ export function ReportsClient() {
       {/* ── KPIs (driven by the date filter) ── */}
       {loadingSummary ? (
         <div className="space-y-5">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            {[0, 1, 2].map(i => (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {[0, 1, 2, 3].map(i => (
               <Card key={i}>
                 <div className="h-3 w-28 animate-pulse rounded bg-slate-100" />
                 <div className="mt-2 h-7 w-20 animate-pulse rounded bg-slate-100" />
@@ -187,10 +204,15 @@ export function ReportsClient() {
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          {/* Order fixed by request: Total Slabs, Total Production Time, Total
+              Delays, Slabs/Hour. Total Production Time uses the same long
+              duration format as Total Delays so the two read alike; "—" when no
+              slab in the selection has completed yet. */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <StatCard label="Total Slabs Produced" value={String(summary?.totalSlabs ?? 0)} />
-            <StatCard label="Slabs / Hour" value={summary?.slabsPerHour != null ? String(summary.slabsPerHour) : "—"} tone="brand" />
+            <StatCard label="Total Production Time" value={summary?.productionTimeMinutes != null ? fmtDurationLong(summary.productionTimeMinutes) : "—"} />
             <StatCard label="Total Delays" value={fmtDurationLong(summary?.totalDelayMins ?? 0)} tone="red" />
+            <StatCard label="Avg Slabs/hour" value={summary?.avgSlabsPerHour != null ? String(summary.avgSlabsPerHour) : "—"} tone="brand" />
           </div>
 
           {/* ── Delay Analysis — every delay type, full width ── */}
@@ -208,7 +230,7 @@ export function ReportsClient() {
       <ChartCard
         title="Production Rate per Hour"
         subtitle={batch.trim()
-          ? `Batch ${batch.trim()} — slabs completed each hour, by Out Time, across the batch's run`
+          ? `Batch ${batch.trim()}${hourlyDateScope ? ` · ${hourlyDateScope}` : ""} — slabs completed each hour, by Out Time, across the batch's run`
           : "Slabs completed each hour, by Out Time"}
       >
         {!batch.trim() ? (

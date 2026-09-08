@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { resolveBatchRecipeIds } from "@/lib/robo/batchFilter";
 import { latestSerialNumber, nextSerialNumber } from "@/lib/robo/nextNumbers";
 import { REGISTER_ORDER } from "@/lib/robo/registerOrderDb";
-import { slabSearchWhere } from "@/lib/robo/slabSearch";
+import { slabSearchWhere, slabListTake } from "@/lib/robo/slabSearch";
 import { SLAB_COMPLETED, SLAB_IN_PROCESSING } from "@/lib/robo/utils";
 import { roboGate } from "@/lib/rbac";
 
@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
   const limitParam = Number(sp.get("limit"));
 
   const batchRecipeIds = await resolveBatchRecipeIds(sp.get("batchNo"));
-  const { where, hasFilters } = slabSearchWhere({
+  const { where, hasFilters, bounded } = slabSearchWhere({
     shiftId: sp.get("shiftId"),
     date: sp.get("date"),
     slabNumber: sp.get("slabNumber"),
@@ -35,7 +35,13 @@ export async function GET(req: NextRequest) {
     batchRecipeIds,
   });
 
-  const take = limitParam > 0 ? Math.min(limitParam, 500) : hasFilters ? 200 : 25;
+  // A bounded search (batch, date, shift) returns EVERY match (take ===
+  // undefined), not a truncated window — the whole batch or day, the same
+  // complete set Reports and Downloads already return. Unfiltered browsing stays
+  // capped at the latest 25, a substring-only search at 500; an explicit ?limit=
+  // wins, capped at 500. See slabListTake for the full rule and the bug it fixes
+  // (batch 1423: 200 shown here vs 301 everywhere else).
+  const take = slabListTake(limitParam, hasFilters, bounded);
 
   const data = await prisma.roboProductionRecord.findMany({
     where,
