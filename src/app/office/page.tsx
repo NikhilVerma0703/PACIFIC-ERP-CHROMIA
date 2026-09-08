@@ -4,6 +4,7 @@ import { Shell } from "@/components/Shell";
 import { Card } from "@/components/ui";
 import { currentBranchName } from "@/lib/branch";
 import { currentRole, isCommercialRole } from "@/lib/rbac";
+import { commercialAreasFor } from "@/lib/commercial/access-rules";
 
 export const dynamic = "force-dynamic";
 
@@ -17,10 +18,12 @@ const ICON = {
   commercial: "M3 3h18v4H3zM3 7v13h18V7M9 12h6",
 };
 
-// The Commercial module. One card, added to whichever list the role sees —
-// COMMERCIAL and ADMIN only, because the module's block in middleware.ts
-// refuses every other office role and a card that leads to /no-access is a
-// promise the app does not keep.
+// The Commercial module. One card, added to whichever list the login sees, and
+// only for a login the AREA TABLE admits to the overview it leads to (round
+// two, answers 1 and 2) — the module's block in middleware.ts refuses every
+// other office role, and a card that leads to /no-access is a promise the app
+// does not keep. That now covers the five commercial desks, whose reach is the
+// table and not the role string.
 const COMMERCIAL_CARD = { href: "/office/commercial", label: "Commercial", desc: "Enquiries, orders, stock holds, PI, packing, dispatch check, invoices", icon: ICON.commercial };
 
 const CARDS = [
@@ -50,8 +53,12 @@ const COMMERCIAL_CARDS = [
 export default async function OfficeShopFloor() {
   if ((await currentBranchName()) !== "OFFICE") redirect("/");
   const role = await currentRole();
-  const cards = isCommercialRole(role) ? [COMMERCIAL_CARD, ...COMMERCIAL_CARDS]
-    : role === "ADMIN" ? [COMMERCIAL_CARD, ...CARDS]
+  // This page has already established the branch is OFFICE above, which is what
+  // the area rule wants to know beside the role.
+  const reachesOverview = commercialAreasFor({ role, branch: "OFFICE" }).overview !== "none";
+  const commercialCard = reachesOverview ? [COMMERCIAL_CARD] : [];
+  const cards = isCommercialRole(role) ? [...commercialCard, ...COMMERCIAL_CARDS]
+    : role === "ADMIN" ? [...commercialCard, ...CARDS]
     : CARDS;
   return (
     <Shell>

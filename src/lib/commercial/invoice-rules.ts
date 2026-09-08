@@ -159,6 +159,165 @@ export function gstinWithLabel(gstin: string | null | undefined, label: string |
   return g && l ? `${g} (${l})` : g;
 }
 
+// ────── how far an alternate registration reaches (round two, answer 19) ─────
+
+/** The one question the screen asks when an alternate registration is chosen.
+ *  Asked once, at the moment of choosing, in the screen's own dialog — the
+ *  answer then rides in the snapshot and the workbook obeys it. */
+export const GSTIN_APPLY_ALL_QUESTION = "Apply this registration to every sheet of the export workbook?";
+export const GSTIN_APPLY_ALL_YES = "Yes — every sheet";
+export const GSTIN_APPLY_ALL_NO = "No — this invoice only";
+
+/**
+ * A registration that is NOT the company's own, i.e. the sister company's.
+ * This is also the predicate for "does choosing it ask the question": the
+ * company's own is what every sheet already prints, so there is nothing to
+ * decide about its reach.
+ *
+ * Takes the company's own registration rather than the settings so a browser
+ * screen can ask it too — the settings are admin-only, but the first entry of
+ * the clerk-readable choices route IS the company's own (gstinChoices).
+ */
+export function isAlternateOf(ownGstin: string | null | undefined, gstin: string | null | undefined): boolean {
+  const g = printable(gstin).toUpperCase();
+  return g !== "" && g !== printable(ownGstin).toUpperCase();
+}
+
+export function isAlternateGstin(settings: CommercialSettings, gstin: string | null | undefined): boolean {
+  return isAlternateOf(settings.company.gstin, gstin);
+}
+
+/**
+ * The scope the snapshot stores for a chosen registration (round two, answer
+ * 19). The company's own is always `true` — the question was never asked and
+ * every sheet carries it anyway, so storing `false` there would describe a
+ * distinction that does not exist. An alternate takes the answer given; with
+ * no answer it takes the NARROW one, because a registration nobody confirmed
+ * for the packing list, the customer copy and Annexure C1 must not spread
+ * itself across three more customs documents on a default.
+ */
+export function gstinApplyAllFor(
+  settings: CommercialSettings,
+  gstin: string | null | undefined,
+  answer: boolean | null | undefined,
+): boolean {
+  if (!isAlternateGstin(settings, gstin)) return true;
+  return answer === true;
+}
+
+/**
+ * Only an EXPORT invoice has an export workbook — a DTA invoice's paperwork is
+ * the one sheet plus the delivery challan. So round two's answer 19, which is
+ * entirely about how far a registration reaches ACROSS THAT WORKBOOK, has
+ * nothing to decide on a DTA: asking "apply this to every sheet of the export
+ * workbook?" there asks about sheets that will never be printed.
+ */
+export function hasExportWorkbook(kind: string | null | undefined): boolean {
+  return printable(kind).toUpperCase() === "EXPORT";
+}
+
+/** Does choosing this registration on this kind of invoice put the question?
+ *  Only an alternate (the company's own reaches everything anyway), and only
+ *  where there is a workbook for it to reach across. */
+export function gstinQuestionApplies(
+  ownGstin: string | null | undefined,
+  gstin: string | null | undefined,
+  kind: string | null | undefined,
+): boolean {
+  return hasExportWorkbook(kind) && isAlternateOf(ownGstin, gstin);
+}
+
+/**
+ * The scope to store when the question is NOT put — the company's own, or a
+ * DTA invoice that has no workbook. The own registration is `true` (every
+ * sheet carries it either way); an unasked alternate takes the NARROW reading,
+ * which is exactly what gstinApplyAllFor gives the server for an answer nobody
+ * supplied — so screen and server agree instead of one of them inventing a
+ * "yes" for sheets nobody confirmed.
+ */
+export function gstinScopeUnasked(ownGstin: string | null | undefined, gstin: string | null | undefined): boolean {
+  return !isAlternateOf(ownGstin, gstin);
+}
+
+/** What the screens say the workbook will do with the chosen registration, or
+ *  null for the company's own — where there is nothing to explain. `kind` is
+ *  the invoice's: a DTA has no workbook, so it gets its own sentence rather
+ *  than a promise about sheets it will never print. */
+export function gstinScopeNote(
+  ownGstin: string | null | undefined,
+  x: { gstin: string; gstinApplyAll: boolean },
+  kind: string | null | undefined = "EXPORT",
+): string | null {
+  if (!isAlternateOf(ownGstin, x.gstin)) return null;
+  if (!hasExportWorkbook(kind)) return "This registration prints on this DTA invoice; there is no export workbook for it to reach.";
+  return x.gstinApplyAll
+    ? "This registration prints on every sheet of the export workbook."
+    : "This registration prints on the invoice only — the packing list, the customer copy and Annexure C1 keep the company's own.";
+}
+
+// ────────────── the invoice's bank follows the PI (round two, answer 20) ─────
+
+/** Why the bank select is refused to everyone below manager level. Shown on
+ *  the disabled field, and the 403 the routes answer with. */
+export const BANK_FOLLOWS_PI = "The invoice follows the PI's bank; the Commercial Manager may change it";
+
+/** A PI the customer holds: issued, and accepted is issued-and-signed. A
+ *  draft is not paper yet and a cancelled one (answer 24) is history, so
+ *  neither lends its bank to an invoice. */
+export const LIVE_PI_STATUSES: readonly string[] = ["ISSUED", "ACCEPTED"];
+
+export interface PiBankSource {
+  status?: string | null;
+  revision?: number | null;
+  snapshot?: { bankKey?: unknown } | null;
+}
+
+export function isLivePi(pi: PiBankSource | null | undefined): boolean {
+  return LIVE_PI_STATUSES.includes(printable(pi?.status).toUpperCase());
+}
+
+/**
+ * The order's live PI. Since answer 24 a revision cancels the one it replaces,
+ * so there is at most one; the highest revision wins if a row from before that
+ * answer left two standing.
+ *
+ * This is the ONLY rule that decides it — the screen runs it over the order's
+ * proformas and invoices/_lib.ts runs it over the rows it selected, so the two
+ * cannot name different PIs as "the live one". On EQUAL revisions the first
+ * row given wins, which makes the caller's ordering the tie-break: the route
+ * hands them highest revision first and, inside one revision, latest issued.
+ */
+export function livePiOf<T extends PiBankSource>(pis: ReadonlyArray<T> | null | undefined): T | null {
+  let best: T | null = null;
+  for (const pi of pis ?? []) {
+    if (!isLivePi(pi)) continue;
+    if (!best || (pi.revision ?? 0) > (best.revision ?? 0)) best = pi;
+  }
+  return best;
+}
+
+/**
+ * The bank a new invoice prints (round two, answer 20): the PI's, so the
+ * customer pays into the account the proforma told him to. Only a live PI
+ * lends one; with none, or with a PI frozen before the bank was stored, the
+ * kind decides as it always did — ICICI domestic, Kotak export (answer 23).
+ */
+export function bankKeyForInvoice(pi: PiBankSource | null | undefined, kind: InvoiceKind): BankKey {
+  if (isLivePi(pi) && isBankKey(pi?.snapshot?.bankKey)) return pi!.snapshot!.bankKey as BankKey;
+  return defaultBankKeyFor(kind);
+}
+
+/** Changing it away from the PI's is the manager's or an admin's — the same
+ *  `cancel` action that cancels a PI or an invoice (answer 24). */
+export function mayChangeInvoiceBank(actions: ReadonlyArray<string> | null | undefined): boolean {
+  return (actions ?? []).includes("cancel");
+}
+
+/** The reason to render on the disabled select, or null when it is allowed. */
+export function bankChangeRefusal(actions: ReadonlyArray<string> | null | undefined): string | null {
+  return mayChangeInvoiceBank(actions) ? null : BANK_FOLLOWS_PI;
+}
+
 // ───────────────────── design codes on the lines (answer 20) ─────────────────
 
 /** design → its code from commercial_design_code; null when the row has none. */
@@ -534,7 +693,11 @@ export interface InvoiceSnapshotOptions {
   notes?: string | null;
   /** The registration to print (answer 21); blank → the company's own. */
   gstin?: string | null;
-  /** The bank to print (answer 23); blank → by kind (defaultBankKeyFor). */
+  /** The answer to the one question an alternate registration asks (round two,
+   *  answer 19). Ignored for the company's own; null → the narrow scope. */
+  gstinApplyAll?: boolean | null;
+  /** The bank to print (answer 23); blank → by kind (defaultBankKeyFor). The
+   *  caller passes the PI's (round two, answer 20, bankKeyForInvoice). */
   bankKey?: BankKey | null;
 }
 
@@ -550,16 +713,24 @@ export interface InvoiceSnapshotExtras {
   gstin: string;
   gstinLabel: string | null;
   bankKey: BankKey;
+  /** Round two, answer 19: how far the chosen registration reaches across the
+   *  export workbook. True puts it in every sheet's GSTIN cell; false puts it
+   *  on this invoice alone and leaves the other sheets on the company's own. */
+  gstinApplyAll: boolean;
 }
 export type InvoiceDocSnapshot = InvoiceSnapshot & InvoiceSnapshotExtras;
 
 /** The extras of a stored snapshot, with the pre-answer defaults for a row
- *  written before they existed: the company's GSTIN, the bank by kind. */
+ *  written before they existed: the company's GSTIN, the bank by kind, and
+ *  the WIDE workbook scope — before the question was asked an alternate
+ *  registration went into every GSTIN cell there is, so `true` is what those
+ *  rows already printed and re-reading one must not quietly change its file. */
 export function snapshotExtras(s: InvoiceSnapshot & Partial<InvoiceSnapshotExtras>): InvoiceSnapshotExtras {
   return {
     gstin: printable(s.gstin) || printable(s.company?.gstin),
     gstinLabel: clean(s.gstinLabel),
     bankKey: isBankKey(s.bankKey) ? s.bankKey : defaultBankKeyFor(s.kind),
+    gstinApplyAll: typeof s.gstinApplyAll === "boolean" ? s.gstinApplyAll : true,
   };
 }
 
@@ -941,6 +1112,8 @@ export function buildInvoiceSnapshot(
     kind,
     gstin: gstinChoice.gstin,
     gstinLabel: gstinLabelFor(settings, gstinChoice),
+    // round two, answer 19: the answer to the one question the screen asked
+    gstinApplyAll: gstinApplyAllFor(settings, gstinChoice.gstin, opts.gstinApplyAll),
     bankKey,
     number: "",                                   // stamped by the route once issueNumber has run
     date: opts.date,
@@ -1068,6 +1241,7 @@ export function applyDraftPatch(snapshot: InvoiceSnapshot & Partial<InvoiceSnaps
     if (!isBankKey(p.bankKey)) rejected.push("bankKey");
     else if (p.bankKey !== next.bankKey) { next.bankKey = p.bankKey; next.bank = bankBlockFor(settings, p.bankKey); changed = true; }
   }
+  let gstinChanged = false;
   if ("gstin" in p) {
     const choice = gstinChoiceFor(settings, printable(p.gstin) || null);
     if (!choice) rejected.push("gstin");
@@ -1077,8 +1251,25 @@ export function applyDraftPatch(snapshot: InvoiceSnapshot & Partial<InvoiceSnaps
       next.company = { ...next.company, gstin: choice.gstin };
       next.exporter = { ...next.exporter, gstin: choice.gstin };
       changed = true;
+      gstinChanged = true;
     }
   }
+  // Round two, answer 19. The scope belongs to the registration in force AFTER
+  // this patch: a switch to a different alternate asks the question again, so
+  // a body that names the new GSTIN without an answer gets the narrow scope
+  // rather than inheriting the last registration's "every sheet"; a body that
+  // re-sends the same GSTIN keeps the answer already stored. A switch back to
+  // the company's own puts it to "every sheet" whatever the body said, because
+  // there the question does not arise.
+  let scopeAnswer: boolean | null;
+  if ("gstinApplyAll" in p) {
+    if (typeof p.gstinApplyAll !== "boolean") { rejected.push("gstinApplyAll"); scopeAnswer = gstinChanged ? null : next.gstinApplyAll; }
+    else scopeAnswer = p.gstinApplyAll;
+  } else {
+    scopeAnswer = gstinChanged ? null : next.gstinApplyAll;
+  }
+  const applyAll = gstinApplyAllFor(settings, next.gstin, scopeAnswer);
+  if (applyAll !== next.gstinApplyAll) { next.gstinApplyAll = applyAll; changed = true; }
 
   for (const f of EDITABLE_TEXT_FIELDS) {
     if (!(f in p)) continue;
@@ -1180,6 +1371,9 @@ export interface RegistrationChange {
   gstin?: Change<string>;
   gstinLabel?: Change<string | null>;
   bankKey?: Change<BankKey>;
+  /** Round two, answer 19 — how far the registration reaches is part of the
+   *  registration decision, so the log carries it beside the GSTIN itself. */
+  gstinApplyAll?: Change<boolean>;
 }
 
 /**
@@ -1198,7 +1392,13 @@ export function registrationChanges(
   if (a.gstin !== b.gstin) out.gstin = { from: b.gstin, to: a.gstin };
   if (a.gstinLabel !== b.gstinLabel) out.gstinLabel = { from: b.gstinLabel, to: a.gstinLabel };
   if (a.bankKey !== b.bankKey) out.bankKey = { from: b.bankKey, to: a.bankKey };
+  if (a.gstinApplyAll !== b.gstinApplyAll) out.gstinApplyAll = { from: b.gstinApplyAll, to: a.gstinApplyAll };
   return Object.keys(out).length ? out : null;
+}
+
+/** How the workbook scope reads in a log line (round two, answer 19). */
+export function gstinScopeWord(applyAll: boolean): string {
+  return applyAll ? "every sheet" : "this invoice only";
 }
 
 /** The log line's tail for a registration change: "GSTIN 33A… → 33B… (label)", "bank export → domestic". */
@@ -1210,6 +1410,7 @@ export function registrationChangeNote(c: RegistrationChange | null | undefined)
     const to = gstinWithLabel(c.gstin?.to ?? null, c.gstinLabel?.to ?? null);
     parts.push(`GSTIN ${from || "—"} → ${to || "—"}`);
   }
+  if (c.gstinApplyAll) parts.push(`workbook ${gstinScopeWord(c.gstinApplyAll.from)} → ${gstinScopeWord(c.gstinApplyAll.to)}`);
   if (c.bankKey) parts.push(`bank ${c.bankKey.from} → ${c.bankKey.to}`);
   return parts.join("; ");
 }
@@ -1226,12 +1427,31 @@ export function registrationChangeNote(c: RegistrationChange | null | undefined)
 export const EXPORT_ROOT_GSTIN_KEY = "exporterGstinText";
 export const EXPORT_ROOT_BANK_KEY = "bankName";
 
+/**
+ * The three GSTIN cells the SCOPE answer governs (round two, answer 19): the
+ * packing list, the customer's copy of it and the Annexure C1 form. They carry
+ * the chosen registration only on a "every sheet" answer; on "this invoice
+ * only" they stay on the company's own. Mirrors export-workbook/mapping.ts's
+ * GSTIN_OTHER_SHEET_ROOT_KEYS — spelled out here for the same reason the two
+ * keys above are, and tests/commercialExportWorkbook.test.ts holds the two
+ * lists to the same three keys.
+ */
+export const EXPORT_ROOT_SHEET_GSTIN_CELLS: ReadonlyArray<{ key: string; sheet: string }> = [
+  { key: "plGstin", sheet: "the packing list" },
+  { key: "custPlGstin", sheet: "the customer's copy" },
+  { key: "c1Gstin", sheet: "Annexure C1" },
+];
+
 export interface ExportRootOverride {
   /** the root cell's key in commercial_export_doc_set.rootVariables */
   key: string;
-  what: "GSTIN" | "bank";
-  /** what the invoice snapshot says (what the form defaulted to) */
-  onInvoice: string;
+  /** the cell in words: "GSTIN", "bank", or "GSTIN on the packing list" */
+  what: string;
+  /** true for the three cells round two's answer 19 decides the content of */
+  sheetGstin: boolean;
+  /** what the invoice's own choice — and, for the three sheets, its SCOPE
+   *  answer — says the cell should hold; i.e. what the form defaulted to */
+  expected: string;
   /** what the saved form holds, and therefore what the workbook prints */
   saved: string;
 }
@@ -1244,12 +1464,21 @@ const alnum = (v: unknown): string => printable(v).toUpperCase().replace(/[^A-Z0
  * off. The form is prefilled from the snapshot, but every root cell is typed
  * over-able and the workbook prints the saved value — so the Documents tab
  * cannot assert "the workbook prints GSTIN X and the Y account" from the
- * snapshot alone. Returns [] when nothing is saved (roots null) or the two
- * cells still match.
+ * snapshot alone. Returns [] when nothing is saved (roots null) or the cells
+ * still match.
+ *
+ * `ownGstin` is the company's own registration — the first entry of the
+ * clerk-readable choices route. It is needed for the three per-sheet cells and
+ * only for them: on a "this invoice only" answer (round two, answer 19) those
+ * sheets are expected to carry the company's own, which the snapshot cannot
+ * supply because buildInvoiceSnapshot overwrites its company block with the
+ * chosen registration. Without it those three are left unchecked rather than
+ * guessed at — a wrong warning about a customs document is worse than none.
  */
 export function exportRootOverrides(
   snapshot: (InvoiceSnapshot & Partial<InvoiceSnapshotExtras>) | null | undefined,
   roots: Record<string, unknown> | null | undefined,
+  ownGstin?: string | null,
 ): ExportRootOverride[] {
   if (!snapshot || !roots || typeof roots !== "object") return [];
   const out: ExportRootOverride[] = [];
@@ -1261,18 +1490,49 @@ export function exportRootOverrides(
   const savedGstin = roots[EXPORT_ROOT_GSTIN_KEY];
   if (x.gstin && savedGstin !== undefined && !alnum(savedGstin).includes(alnum(x.gstin))) {
     out.push({
-      key: EXPORT_ROOT_GSTIN_KEY, what: "GSTIN",
-      onInvoice: gstinWithLabel(x.gstin, x.gstinLabel),
+      key: EXPORT_ROOT_GSTIN_KEY, what: "GSTIN", sheetGstin: false,
+      expected: gstinWithLabel(x.gstin, x.gstinLabel),
       saved: printable(savedGstin),
     });
+  }
+
+  // Round two, answer 19. The scope decides what the OTHER three GSTIN cells
+  // were prefilled with — the chosen registration on "every sheet", the
+  // company's own on "this invoice only" — and a hand that typed over one of
+  // them is exactly the case the tab's scope sentence would otherwise state as
+  // fact. Same containment test as above: label and wording are free.
+  const sheetExpected = x.gstinApplyAll ? x.gstin : printable(ownGstin);
+  const sheetShown = x.gstinApplyAll ? gstinWithLabel(x.gstin, x.gstinLabel) : printable(ownGstin);
+  if (sheetExpected) {
+    for (const cell of EXPORT_ROOT_SHEET_GSTIN_CELLS) {
+      const saved = roots[cell.key];
+      if (saved === undefined || alnum(saved).includes(alnum(sheetExpected))) continue;
+      out.push({
+        key: cell.key, what: `GSTIN on ${cell.sheet}`, sheetGstin: true,
+        expected: sheetShown, saved: printable(saved),
+      });
+    }
   }
 
   const bankOnInvoice = printable(snapshot.bank?.name);
   const savedBank = roots[EXPORT_ROOT_BANK_KEY];
   if (savedBank !== undefined && squashed(savedBank) !== squashed(bankOnInvoice)) {
-    out.push({ key: EXPORT_ROOT_BANK_KEY, what: "bank", onInvoice: bankOnInvoice, saved: printable(savedBank) });
+    out.push({ key: EXPORT_ROOT_BANK_KEY, what: "bank", sheetGstin: false, expected: bankOnInvoice, saved: printable(savedBank) });
   }
   return out;
+}
+
+/**
+ * "the packing list and Annexure C1" — the sheets whose GSTIN cell the saved
+ * form overrides, for the sentence that would otherwise state the scope as
+ * fact. Null when the saved form leaves all three alone.
+ */
+export function overriddenSheetsNote(overrides: ReadonlyArray<ExportRootOverride>): string | null {
+  const sheets = (overrides ?? []).filter((o) => o.sheetGstin)
+    .map((o) => EXPORT_ROOT_SHEET_GSTIN_CELLS.find((c) => c.key === o.key)?.sheet ?? o.what);
+  if (sheets.length === 0) return null;
+  if (sheets.length === 1) return sheets[0];
+  return `${sheets.slice(0, -1).join(", ")} and ${sheets[sheets.length - 1]}`;
 }
 
 /**

@@ -22,7 +22,7 @@ export const maxDuration = 60;
 const db = prisma as any;
 
 export async function GET(_req: Request, { params }: { params: Promise<{ invId: string }> }) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "invoices");
   if (!g.ok) return deny(g);
   try {
     const { invId } = await params;

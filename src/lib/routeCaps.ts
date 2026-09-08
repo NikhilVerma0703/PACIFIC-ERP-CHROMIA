@@ -354,7 +354,7 @@ export function maySeeMaterialTrace(role: string): boolean {
  * department. If a block in middleware.ts changes who reaches /mis, change this
  * with it - the test in tests/misAudience.test.ts pins the caps it can check.
  */
-const MIS_BLIND_ROLES = new Set(["OPERATOR", "STORE", "COMMERCIAL", "COMMERCIAL_MANAGER", "SALES", "ROBO", "CHROMIA", "SAMPLING"]);
+const MIS_BLIND_ROLES = new Set(["OPERATOR", "STORE", "COMMERCIAL", "COMMERCIAL_MANAGER", "COMMERCIAL_EXEC", "COMMERCIAL_DOCS", "COMMERCIAL_LOGISTICS", "SALES", "ROBO", "CHROMIA", "SAMPLING"]);
 const MIS_BLIND_BRANCHES = new Set(["FABRICATION", "INTERNATIONAL_SALES", "CHROMIA"]);
 
 export function maySeeMis(role: string, branch: string): boolean {

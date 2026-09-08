@@ -45,7 +45,7 @@ function header(inv: Record<string, any>) {
 }
 
 export async function GET(_req: Request, { params }: { params: Promise<{ invId: string }> }) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "invoices");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const invId = await invIdOf(params);
@@ -65,7 +65,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ invId: 
 }
 
 export async function PUT(req: Request, { params }: { params: Promise<{ invId: string }> }) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "invoices");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const invId = await invIdOf(params);

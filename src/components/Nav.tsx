@@ -1,5 +1,11 @@
 "use client";
 import { isCommercialRole } from "@/lib/roles";
+// The area table, not the role string, decides which Commercial rows exist
+// (round two, answers 1, 2 and 6). Both modules are pure and edge-safe — no
+// auth, no Prisma — which is what lets this CLIENT component import them.
+import { commercialAreasFor } from "@/lib/commercial/access-rules";
+import { commercialNavRows } from "@/lib/commercial/nav-rules";
+import type { CommercialArea } from "@/lib/commercial/access-rules";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -26,6 +32,18 @@ const I = {
   fabrication: "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z",
   packaging:   "M21 16V8l-9-5-9 5v8l9 5 9-5z",
   commercial:  "M3 3h18v4H3zM3 7v13h18V7M9 12h6",
+};
+
+// The icon for each Commercial row. Keyed by AREA rather than by href so it
+// cannot drift from lib/commercial/nav-rules.ts, which owns the row itself —
+// the label, the path and whether the login gets it at all. Icons live here
+// because they are the sidebar's business and nothing else's.
+const COMMERCIAL_ICON: Record<CommercialArea, string> = {
+  overview: I.overview, enquiries: I.entry, orders: I.commercial, clients: I.users,
+  packing: I.packaging, dispatchCheck: I.live, invoices: I.report, challans: I.tables,
+  designCodes: I.samples, planning: I.planning, settings: I.spanner,
+  // Reached through the Orders row: a tab on the order, not a screen.
+  checklist: I.report, stock: I.box, proforma: I.report,
 };
 
 const SHOP_PATHS = ["/", "/live", "/batch", "/slab", "/tables", "/report", "/office", "/silo", "/resin", "/store"];
@@ -272,42 +290,22 @@ export function Nav({
   ];
 
   // Commercial module — enquiry → internal sales order → stock hold → PI →
-  // packing list → dispatch check → invoice. Declared once and used three
-  // times: as the whole nav for Role.COMMERCIAL, and as a section for admins
-  // on both the office and the shop-floor nav (an admin's nav follows the
-  // login card, so the row has to exist on both). EVERY href here is under
-  // /office/commercial, which the module block in middleware.ts admits for
-  // COMMERCIAL and ADMIN; the module's own layout gate re-checks.
+  // packing list → dispatch check → invoice. ONE list, built from the area
+  // table for THIS login (round two, answers 1, 2 and 6), and used everywhere
+  // the module appears: as the whole nav for the five Commercial roles, as the
+  // one Verification row a dispatch checker gets, and as a section on both the
+  // office and the shop-floor nav for admins (an admin's nav follows the login
+  // card, so the section has to exist on both).
   //
-  // "exact" on the overview: every other row is a sub-path of it, and the
-  // default prefix rule would light Overview alongside whichever is open.
-  const commercialItems = [
-    { href: "/office/commercial",               icon: I.overview,   label: "Overview", exact: true },
-    { href: "/office/commercial/enquiries",     icon: I.entry,      label: "Enquiries" },
-    { href: "/office/commercial/orders",        icon: I.commercial, label: "Orders" },
-    { href: "/office/commercial/clients",       icon: I.users,      label: "Clients" },
-    { href: "/office/commercial/packing-lists", icon: I.packaging,  label: "Packing Lists" },
-    { href: "/office/commercial/invoices",      icon: I.report,     label: "Invoices" },
-    { href: "/office/commercial/challans",      icon: I.tables,     label: "Delivery Challans" },
-    { href: "/office/commercial/production-planning", icon: I.planning, label: "Production Queue" },
-  ];
-  // The manager's nav: everything Commercial has, plus the dispatch check —
-  // the manager is on the module's verify line (lib/commercial/access-rules.ts)
-  // — and the settings page, which hosts the design-code master the manager
-  // maintains (answer 20). The settings FORM on that page stays admin-only;
-  // the page itself gates on view and shows the manager the design section.
-  const commercialManagerItems = [
-    ...commercialItems,
-    { href: "/office/commercial/dispatch-check", icon: I.live,     label: "Dispatch Check" },
-    { href: "/office/commercial/settings",       icon: I.spanner,  label: "Design codes" },
-  ];
-  // Admin-only rows: the dispatch check is the dispatch team's screen (and the
-  // admin's), settings hold the numbering counters and the company master.
-  const commercialAdminItems = [
-    ...commercialItems,
-    { href: "/office/commercial/dispatch-check", icon: I.live,     label: "Dispatch Check" },
-    { href: "/office/commercial/settings",       icon: I.spanner,  label: "Settings" },
-  ];
+  // THE THREE HAND-KEPT LISTS THIS REPLACES WERE ALREADY WRONG the day the
+  // desk was split: they gave every Commercial login the Production Queue that
+  // answer 16 had just made the admin's alone, and they decided the manager's
+  // extra rows by `role === "COMMERCIAL_MANAGER"`, which says nothing about
+  // Raghav (no enquiries) or Murali (no dispatch check). commercialNavRows
+  // asks the same table middleware asks, so a row can no longer promise a
+  // screen the request will be refused.
+  const commercialItems = commercialNavRows(commercialAreasFor({ role, branch }))
+    .map((r) => ({ href: r.href, icon: COMMERCIAL_ICON[r.area], label: r.label, ...(r.exact ? { exact: true } : {}) }));
 
   if (role === "STORE")
     // Batch Sign-off is the ONE office path this role reaches (middleware caps
@@ -322,13 +320,16 @@ export function Nav({
         <Section label="Overview" items={STORE_TABS.filter(t => t.href === "/live")} path={path} />
         <Section label="Raw Material" items={STORE_TABS.filter(t => t.href.startsWith("/store") || t.href === "/tables")} path={path} />
         <Section label="Consumables" items={STORE_TABS.filter(t => t.href === "/consumables")} path={path} />
-        {/* Dispatch Check is the Commercial module's packing-list verification —
-            the store incharge stands in for the dispatch team until that team
-            has a role of its own (lib/commercial/access-rules.ts). Always shown
-            for STORE: the cap in routeCaps.storeMayVisit admits it by role. */}
+        {/* Dispatch Check is the Commercial module's packing-list verification.
+            Round two, answer 6: the dispatch team gets NO new role — they sign
+            in as they do now, in bay 5, and get this ONE tab. It comes from the
+            same area table as every other Commercial row, which is also what
+            drops it for a STORE login sitting on a branch that has its own
+            middleware block: that login is refused the page, and a row leading
+            to a refusal is worse than no row. */}
         <Section label="Verification" items={[
           ...(batchVerify ? [{ href: "/office/batch-verify", icon: I.report, label: "Batch Sign-off" }] : []),
-          { href: "/office/commercial/dispatch-check", icon: I.live, label: "Dispatch Check" },
+          ...commercialItems,
         ]} path={path} />
       </nav>
     );
@@ -337,7 +338,7 @@ export function Nav({
     // the finished-goods slab table and the read-only production lookups.
     return (
       <nav className="flex flex-col">
-        <Section label="Commercial" items={role === "COMMERCIAL_MANAGER" ? commercialManagerItems : commercialItems} path={path} />
+        <Section label="Commercial" items={commercialItems} path={path} />
         <Section label="Inventory" items={[{ href: "/inventory", icon: I.box, label: "Finished Goods" }]} path={path} />
         {office && (
           <div className="mt-4">
@@ -439,7 +440,7 @@ export function Nav({
         {/* Office -> Commercial. Admins only here: the COMMERCIAL roles get the
             whole-nav takeover above, and no other office role may open the
             module (the block in middleware.ts refuses FINANCE and ACCOUNTS). */}
-        {isAdmin && <Section label="Commercial" items={commercialAdminItems} path={path} />}
+        {isAdmin && <Section label="Commercial" items={commercialItems} path={path} />}
         {showAdmin && <Section label="Admin" items={[{ href: "/admin/users", icon: I.users, label: "Users & Roles" }]} path={path} />}
       </nav>
     );
@@ -541,8 +542,16 @@ export function Nav({
           above: the SAMPLING role gets the whole-nav takeover, and the only
           other login middleware admits to these pages is an admin. */}
       {isAdmin && <Section label="Sampling" items={samplingItems} path={path} />}
-      {/* Shop Floor -> Commercial. Admins only, same reasoning as Sampling. */}
-      {isAdmin && <Section label="Commercial" items={commercialAdminItems} path={path} />}
+      {/* Shop Floor -> Commercial. Admins get the whole section, same reasoning
+          as Sampling. A line manager gets the ONE row the area table gives him
+          — the dispatch check in bay 5 (answer 6) — under the same
+          "Verification" heading the store incharge's arm above uses, so the two
+          logins that stand in for the dispatch team read alike. Every other
+          shop-floor role has no Commercial area at all and Section renders
+          nothing for an empty list. */}
+      {isAdmin
+        ? <Section label="Commercial" items={commercialItems} path={path} />
+        : <Section label="Verification" items={commercialItems} path={path} />}
       {(inventory || (slabIntake && isAdmin)) && <Section label="Inventory" items={[
         ...(inventory ? [{ href: "/inventory", icon: I.box, label: "Finished Goods" }] : []),
         // Admins only here: a named intake person on the shop floor already

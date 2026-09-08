@@ -14,7 +14,7 @@ const one = (v: string | string[] | undefined): string => (Array.isArray(v) ? v[
 export default async function CommercialEnquiriesPage({ searchParams }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "enquiries");
   if (!g.ok) redirect(g.actions.includes("verify") ? "/office/commercial/dispatch-check" : "/no-access?from=/office/commercial/enquiries");
   const sp = await searchParams;
   const status = one(sp.status);

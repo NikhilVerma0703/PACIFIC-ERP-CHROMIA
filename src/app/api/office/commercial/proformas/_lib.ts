@@ -92,6 +92,9 @@ export async function issueFactsOf(orderId: string): Promise<IssueOrderFacts> {
 export const PI_LIST_SELECT = {
   id: true, orderId: true, number: true, revision: true, status: true,
   issuedAt: true, validUntil: true, acceptedAt: true, supersededAt: true, cancelledAt: true, cancelReason: true,
+  // Round two, answer 8: the register prints "replaced by <number>" beside a
+  // cancelled one, and resolves that number from the rows it already has.
+  replacedById: true,
   currency: true, totalAmount: true, notes: true, createdAt: true, updatedAt: true,
 } as const;
 

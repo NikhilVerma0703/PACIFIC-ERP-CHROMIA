@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Invoices | Commercial | Pacific ERP" };
 
 export default async function CommercialInvoicesPage() {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "invoices");
   if (!g.ok) redirect(g.actions.includes("verify") ? "/office/commercial/dispatch-check" : "/no-access?from=/office/commercial/invoices");
   return (
     <>

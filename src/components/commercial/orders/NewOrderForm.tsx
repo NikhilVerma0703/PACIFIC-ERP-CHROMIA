@@ -34,6 +34,7 @@ interface HeaderDraft {
   deliveryTerms: string;
   paymentTerms: string;
   paymentMode: string;
+  advancePct: string;
   preCarriageBy: string;
   placeOfReceipt: string;
   portOfLoading: string;
@@ -52,7 +53,7 @@ interface HeaderDraft {
 
 const blankHeader = (): HeaderDraft => ({
   customerPoNumber: "", customerPoDate: "", poEvidence: "", currency: "", incoterm: "",
-  deliveryTerms: "", paymentTerms: "", paymentMode: "", preCarriageBy: "", placeOfReceipt: "",
+  deliveryTerms: "", paymentTerms: "", paymentMode: "", advancePct: "", preCarriageBy: "", placeOfReceipt: "",
   portOfLoading: "", portOfDischarge: "", finalDestination: "", countryOfOrigin: "", countryOfDestination: "",
   deliverySchedule: "", specialPacking: "", forwarderDetails: "", receiverDetails: "", customerContact: "",
   notes: "", numberOverride: "",
@@ -177,6 +178,14 @@ export function NewOrderForm() {
           <TextField label="Payment mode" value={h.paymentMode} onChange={set("paymentMode")} placeholder="CAD / DP / DA / LC / Clean Credit" />
           <TextField label="Delivery terms" value={h.deliveryTerms} onChange={set("deliveryTerms")} className="md:col-span-1" />
           <TextField label="Payment terms" value={h.paymentTerms} onChange={set("paymentTerms")} placeholder="Immediate / 30 days from BL" className="md:col-span-2" />
+          {/* Round two, answer 11: how much of this order must be in before
+              the truck leaves. Left blank it takes the settings default for
+              the kind — 100% domestic, 30% export as shipped — which is
+              why the box is not prefilled with a number of its own. */}
+          <TextField label="Advance required (%)" value={h.advancePct} onChange={set("advancePct")}
+            placeholder={isExport ? "30" : "100"}
+            hint="Blank takes the settings default for this kind. 0 asks for no advance at all."
+            className="md:col-span-1" />
         </div>
       </Card>
 

@@ -1,7 +1,7 @@
 // POST /api/office/commercial/challans/[id]/cancel — { reason }
 //
 // Cancellation is an admin's or the Commercial Manager's act, as for every
-// numbered document the module issues (commercialGate("cancel")). The challan
+// numbered document the module issues (commercialGate("cancel", "challans")). The challan
 // is kept, not deleted: the number came from the counter and the book has to
 // account for it. The reason goes into notes (the row has no cancel_reason
 // column) and onto the order's log when there is an order.
@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const g = await commercialGate("cancel");
+  const g = await commercialGate("cancel", "challans");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await challanIdOf(params);

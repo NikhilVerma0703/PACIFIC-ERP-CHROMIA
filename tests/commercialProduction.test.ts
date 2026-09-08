@@ -287,7 +287,11 @@ test("answer 13: a LIGHT row queued behind a DARK row IN_PRODUCTION gets 6 h, no
     { id: "next", status: "QUEUED", priority: 2, shade: "LIGHT", cleaningHours: 3, design: "Carrara Royale" },
   ];
   assert.deepEqual(recomputeCleaning(rows, planning).patches, [{ id: "next", from: 3, cleaningHours: 6 }]);
-  assert.deepEqual(abruptJumps(rows), [{ id: "next", afterId: "run", design: "Carrara Royale", afterDesign: "Midnight Black" }]);
+  assert.deepEqual(abruptJumps(rows), [{
+    id: "next", afterId: "run", design: "Carrara Royale", afterDesign: "Midnight Black",
+    // no reading on either design: the labels answer, and the reason says so
+    labL: null, afterLabL: null, reason: "Midnight Black (dark) → Carrara Royale (light)",
+  }]);
   // and the same at creation: with nothing queued, a LIGHT request raised
   // while that DARK row is on the machine is BORN with 6 — before the fix
   // lastInChain saw an empty chain and gave it the ordinary 3
@@ -342,10 +346,80 @@ test("recomputeCleaning: a row with an OPEN cleaningHours reduction is held, not
 
 test("abruptJumps: every DARK → LIGHT changeover in the chain, naming both rows", () => {
   assert.deepEqual(abruptJumps(queue), [
-    { id: "b", afterId: "a", design: "Carrara Royale", afterDesign: "Midnight Black" },
-    { id: "d", afterId: "c", design: "Bianco", afterDesign: "Nero" },
+    { id: "b", afterId: "a", design: "Carrara Royale", afterDesign: "Midnight Black", labL: null, afterLabL: null, reason: "Midnight Black (dark) → Carrara Royale (light)" },
+    { id: "d", afterId: "c", design: "Bianco", afterDesign: "Nero", labL: null, afterLabL: null, reason: "Nero (dark) → Bianco (light)" },
   ], "a → b counts: a is running, so it is what b comes off");
   const calm = queue.map((r) => r.id === "c" ? { ...r, shade: "MEDIUM" } : r.id === "a" ? { ...r, shade: "MEDIUM" } : r);
   assert.deepEqual(abruptJumps(calm), []);
   assert.deepEqual(abruptJumps([]), []);
+});
+
+// ───────── the L* path (round two, answer 14) ─────────
+//
+// The queue rows carry the design master's measured lightness, joined on when
+// the chain is loaded. Where a design has one it decides; where it has none
+// the LIGHT / MEDIUM / DARK label stands in, and the two kinds mix freely
+// down one chain.
+
+const measured = { cleaningHoursDefault: 3, cleaningHoursAbrupt: 6, darkMaxL: 30, lightMinL: 75 };
+
+const lab = [
+  { id: "noir", status: "IN_PRODUCTION", priority: 1, shade: "MEDIUM", labL: 12, cleaningHours: 3, design: "Alabaster Noir" },
+  { id: "white", status: "QUEUED", priority: 2, shade: "MEDIUM", labL: 92, cleaningHours: 3, design: "Super White" },
+  { id: "mid", status: "QUEUED", priority: 3, shade: "MEDIUM", labL: 55, cleaningHours: 3, design: "Cappuccino" },
+];
+
+test("answer 14: the readings decide, not the labels — L* 12 then L* 92 is the abrupt clean", () => {
+  // every row is labelled MEDIUM, so the old shade rule saw nothing at all
+  assert.deepEqual(recomputeCleaning(lab, measured).patches, [{ id: "white", from: 3, cleaningHours: 6 }]);
+  assert.deepEqual(abruptJumps(lab, measured), [{
+    id: "white", afterId: "noir", design: "Super White", afterDesign: "Alabaster Noir",
+    labL: 92, afterLabL: 12,
+    reason: "Alabaster Noir L* 12 → Super White L* 92",
+  }], "the warning names both designs and both readings — the owner's own example");
+  // mid follows white: light to medium is the ordinary clean
+  assert.equal(recomputeCleaning(lab, measured).patches.some((p) => p.id === "mid"), false);
+
+  // the thresholds are the settings': narrow the light floor past 92 and the
+  // same queue is calm
+  assert.deepEqual(abruptJumps(lab, { ...measured, lightMinL: 95 }), []);
+  assert.deepEqual(recomputeCleaning(lab, { ...measured, lightMinL: 95 }).patches, []);
+
+  // a new request raised behind the running Alabaster Noir is BORN with 6
+  const running = lab.filter((r) => r.status === "IN_PRODUCTION");
+  assert.equal(initialPlan(10, { design: "Super White", labL: 92 }, lastInChain(running), measured).cleaningHours, 6);
+  assert.equal(initialPlan(10, { design: "Cappuccino", labL: 55 }, lastInChain(running), measured).cleaningHours, 3);
+  // and it stores the LABEL, not the reading: the reading lives on the master
+  assert.equal(initialPlan(10, { design: "Super White", labL: 92, shade: "LIGHT" }, null, measured).shade, "LIGHT");
+  assert.equal(initialPlan(10, { design: "Super White", labL: 92 }, null, measured).shade, null, "no label on the master is stored as none");
+});
+
+test("answer 14: a measured design and a labelled one mix down one chain", () => {
+  const mixed = [
+    // measured dark, then a design nobody measured but everybody calls light
+    { id: "noir", status: "IN_PRODUCTION", priority: 1, labL: 12, shade: null, cleaningHours: 3, design: "Alabaster Noir" },
+    { id: "carrara", status: "QUEUED", priority: 2, labL: null, shade: "LIGHT", cleaningHours: 3, design: "Carrara Royale" },
+    // then a design with neither: MEDIUM, no claim either way
+    { id: "unknown", status: "QUEUED", priority: 3, labL: null, shade: null, cleaningHours: 6, design: "Arva Trial" },
+  ];
+  assert.deepEqual(recomputeCleaning(mixed, measured).patches, [
+    { id: "carrara", from: 3, cleaningHours: 6 },
+    { id: "unknown", from: 6, cleaningHours: 3 },
+  ]);
+  assert.deepEqual(abruptJumps(mixed, measured).map((j) => j.reason), ["Alabaster Noir L* 12 → Carrara Royale (light)"]);
+
+  // a reading BEATS a label that disagrees: a design labelled DARK years ago
+  // and measured at L* 92 since is light, and the changeover after it is not
+  // abrupt
+  const corrected = [
+    { id: "wasDark", status: "IN_PRODUCTION", priority: 1, labL: 92, shade: "DARK", cleaningHours: 3, design: "Repaired Master" },
+    { id: "light", status: "QUEUED", priority: 2, labL: 90, shade: "LIGHT", cleaningHours: 6, design: "Super White" },
+  ];
+  assert.deepEqual(abruptJumps(corrected, measured), []);
+  assert.deepEqual(recomputeCleaning(corrected, measured).patches, [{ id: "light", from: 6, cleaningHours: 3 }]);
+});
+
+test("answer 14: with no thresholds passed, the owner's 30 / 75 still apply", () => {
+  assert.deepEqual(abruptJumps(lab).map((j) => j.id), ["white"], "a queue judged with no settings still reads the L*");
+  assert.deepEqual(recomputeCleaning(lab).patches, [{ id: "white", from: 3, cleaningHours: 6 }]);
 });

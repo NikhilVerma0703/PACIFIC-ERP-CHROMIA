@@ -465,16 +465,24 @@ export function canApprove(actor: string | null | undefined): boolean {
 
 // ───────────────────────────── the pipeline's facts ──────────────────────────
 
-/** The order fields the three stage gates read (answers 1, 2, 10). Holds and
- *  receipts may arrive as the full lists the detail carries or as the one-row
- *  probes order-stage loads; `advanceReceived` may already be derived. */
+/** The order fields the three stage gates read (answers 1, 2, 10). Holds may
+ *  arrive as the full list the detail carries or as the one-row probe
+ *  order-stage loads.
+ *
+ *  The advance is NOT derived from the receipt list here. Round two, answer 11
+ *  turned that gate from "is there an ADVANCE receipt" into arithmetic over
+ *  the order total, the percentage asked and the currency of each receipt —
+ *  advanceStatus in receipts-rules. A list of receipts alone can no longer
+ *  answer it, so this asks for the answer (`advance.satisfied`, or the plain
+ *  `advanceReceived` boolean) and fails closed without one. */
 export interface StageFactSource {
   stockCheckedAt?: unknown;
   approvedAt?: unknown;
   /** `expiresAt` (Date or ISO string) is read when present; a probe that did
    *  not select it has already filtered on it server-side. */
   holds?: ReadonlyArray<{ status: string; expiresAt?: unknown }> | null;
-  receipts?: ReadonlyArray<{ kind: string }> | null;
+  /** The order detail's derived advance (satisfied covers a waiver, answer 12). */
+  advance?: { satisfied?: boolean | null } | null;
   advanceReceived?: boolean | null;
 }
 
@@ -511,11 +519,13 @@ export interface StageFactsShape {
  *                    hold sends the order back to the stock check (answer
  *                    11), so the stamp alone is history, not a fact
  *   approved         approvedAt is stamped (answer 10)
- *   advanceReceived  an ADVANCE receipt exists (answers 2, 29)
+ *   advanceReceived  the advance the order asks for has arrived, or was
+ *                    waived (answers 2, 29; round two, answers 11 and 12) —
+ *                    computed by advanceStatus and handed in, never guessed
  */
 export function stageFactsOf(o: StageFactSource, now: Date = new Date()): StageFactsShape {
   const activeHold = Boolean(o.holds?.some((h) => isLiveHold(h, now)));
-  const advance = typeof o.advanceReceived === "boolean" ? o.advanceReceived : Boolean(o.receipts?.some((r) => r.kind === "ADVANCE"));
+  const advance = typeof o.advanceReceived === "boolean" ? o.advanceReceived : Boolean(o.advance?.satisfied);
   return {
     stockChecked: o.stockCheckedAt != null && o.stockCheckedAt !== "" && activeHold,
     approved: o.approvedAt != null && o.approvedAt !== "",

@@ -18,6 +18,7 @@ import { amountInWords, inrWords } from "./words.ts";
 import { canonThickness } from "../thickness.ts";
 import { canEnter } from "./stages.ts";
 import { gstinChoices, type BankDetails, type CommercialSettings, type GstinChoice } from "./settings-defaults.ts";
+import type { AreaAccess } from "./access-rules.ts";
 import type { DocLine, Party, ProformaSnapshot } from "./types.ts";
 
 // ───────────────────────────── the PI's own choices ──────────────────────────
@@ -432,14 +433,50 @@ export interface PiChoices {
   gstins: GstinChoice[];
   /** 0 = valid forever (answer 24); the tab says so beside the issue button. */
   piValidityDays: number;
+  /**
+   * What THIS login may do in the proforma area — the same `areaAccessFor`
+   * answer commercialGate("write", "proforma") will give the PI routes.
+   *
+   * Round two, answers 1 and 2 split the desk: Raghav and Murali hold the
+   * write ACTION for their own screens and only READ proformas. The order
+   * workspace hands its tabs `actions` alone (OrderTabProps), which cannot
+   * tell those two apart from Setumani — so the tab reads the area's own
+   * answer off this payload and disables Issue / Accept / Revise / Create
+   * draft WITH THE REASON, rather than offering writes the route will 403.
+   */
+  access: AreaAccess;
 }
 
-export function piChoices(settings: CommercialSettings): PiChoices {
+export function piChoices(settings: CommercialSettings, access: AreaAccess): PiChoices {
   return {
     banks: BANK_KEYS.map((key) => ({ key, label: `${settings.banks[key].name} (${key})` })),
     gstins: gstinChoices(settings.company),
     piValidityDays: Math.max(0, Math.round(Number(settings.piValidityDays)) || 0),
+    access,
   };
+}
+
+/** What the tab says beside a PI write it cannot offer (answers 1, 2). */
+export const PI_NO_WRITE_ACTION_HINT = "Your login can read this order but not write to it";
+export const PI_READ_ONLY_HINT = "Your login reads proforma invoices — the Commercial Executive or Manager builds and issues them";
+
+/**
+ * Why the PI tab must refuse every write on it, or null when it may offer
+ * them. DESIGN.md §9: a refused action is DISABLED WITH ITS REASON, never
+ * hidden, so this returns the sentence the button carries rather than a
+ * boolean.
+ *
+ * Two questions, the same two commercialGate("write", "proforma") asks: does
+ * this login write at all, and does it write HERE (answers 1 and 2 split the
+ * desk, so the second is now the one that usually decides). `access` is null
+ * while GET /proformas/choices is still in flight or after it failed: the tab
+ * offers the buttons then and the route is the authority — a control that
+ * greys itself on a network hiccup is the hiding this rule exists to stop.
+ */
+export function piWriteRefusal(actions: readonly string[], access: AreaAccess | null | undefined): string | null {
+  if (!actions.includes("write")) return PI_NO_WRITE_ACTION_HINT;
+  if (access === "view" || access === "none") return PI_READ_ONLY_HINT;
+  return null;
 }
 
 /**
@@ -646,6 +683,19 @@ export function canCancel(status: string): boolean { return status === "DRAFT" |
  *  A draft is simply edited; a cancelled one is history. */
 export function canRevise(status: string): boolean { return status === "ISSUED" || status === "ACCEPTED"; }
 
+/**
+ * Why a cancellation is refused, or null when it may go ahead. Round two,
+ * answer 8: cancelling asks for a reason, because the register keeps the
+ * number and prints that reason beside it — a blank one would leave a struck
+ * -through number nobody can account for years later. Status first, so a
+ * cancelled PI is told it is cancelled rather than asked for a reason.
+ */
+export function refuseCancel(pi: { status: string }, reason: string | null | undefined): string | null {
+  if (!canCancel(pi.status)) return `A ${pi.status.toLowerCase()} PI cannot be cancelled`;
+  if (!printable(reason)) return "Cancelling a PI needs a reason — the register prints it beside the cancelled number";
+  return null;
+}
+
 /** Why a transition is refused, or null when it may go ahead. */
 export function refuseIssue(pi: { status: string; snapshot: { lines: unknown[] } | null | undefined }): string | null {
   if (!canIssue(pi.status)) return `Only a draft can be issued (this PI is ${pi.status.toLowerCase()})`;
@@ -802,6 +852,65 @@ export function carriedIntoRevision(old: PiSnapshot): Record<string, unknown> {
     bankKey: old.bankKey,
     gstinKey: old.gstinKey,
   };
+}
+
+// ─────────────── the register: a cancelled PI stays, it does not vanish ────
+
+/** The slice of a PI row the register reads to place a row and label it. */
+export interface RegisterRow {
+  id: string;
+  number: string;
+  revision: number;
+  status: string;
+  /** The PI issued in this one's place, written when the replacement is
+   *  issued (round two, answer 8; column since scripts/0080). */
+  replacedById?: string | null;
+}
+
+/**
+ * The PI issued in `row`'s place, or null. The link is a column on the
+ * cancelled row and the replacement is a sibling of the same order, so the
+ * number the register prints is resolved from the list the screen already
+ * holds — no second read, and a link pointing at a PI outside the list simply
+ * resolves to nothing rather than printing a raw id.
+ */
+export function replacementOf<T extends RegisterRow>(all: T[], row: { id?: string; replacedById?: string | null }): T | null {
+  const id = printable(row.replacedById);
+  if (!id || id === row.id) return null;
+  return all.find((p) => p.id === id) ?? null;
+}
+
+/**
+ * The register's order: newest ordinal first, EXCEPT that a cancelled PI sits
+ * directly under the PI that replaced it, however far apart their ordinals sit
+ * (round two, answer 8 — the retired number is read beside the number that
+ * retired it, not hunted for further down the page). A chain of revisions
+ * unwinds newest to oldest under its live head. A link pointing outside the
+ * list, or round a cycle, leaves the row in its ordinal place: every row is
+ * listed exactly once, whatever the data says.
+ */
+export function registerOrder<T extends RegisterRow>(all: T[]): T[] {
+  const rows = [...all].sort((a, b) => b.revision - a.revision);
+  const under = new Map<string, T[]>();
+  const follower = new Set<string>();
+  for (const row of rows) {
+    const target = replacementOf(rows, row);
+    if (!target) continue;
+    follower.add(row.id);
+    under.set(target.id, [...(under.get(target.id) ?? []), row]);
+  }
+  const out: T[] = [];
+  const seen = new Set<string>();
+  const emit = (row: T): void => {
+    if (seen.has(row.id)) return;
+    seen.add(row.id);
+    out.push(row);
+    for (const child of under.get(row.id) ?? []) emit(child);
+  };
+  for (const row of rows) if (!follower.has(row.id)) emit(row);
+  // A cycle of replacedById has no head to hang off; those rows still list.
+  for (const row of rows) emit(row);
+  return out;
 }
 
 /** Badge tone per status, shared by the tab and any list. */

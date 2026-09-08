@@ -77,6 +77,23 @@ export function SelectField({ label, value, onChange, options, hint, disabled = 
   );
 }
 
+/** One figure with its name over it — the advance's asked / received / short
+ *  trio, and anything else that is a NUMBER rather than a tick (round two,
+ *  answer 11: the advance is money, and the screen says how much). */
+export function StatBox({ label, value, hint, tone = "plain" }: {
+  label: string; value: string; hint?: string; tone?: "plain" | "good" | "warn";
+}) {
+  const ring = tone === "good" ? "border-green-200 bg-green-50/60" : tone === "warn" ? "border-amber-200 bg-amber-50/60" : "border-gray-200";
+  const text = tone === "warn" ? "text-amber-800" : "text-gray-900";
+  return (
+    <div className={`rounded-lg border px-3 py-2 ${ring}`}>
+      <span className="block text-xs uppercase tracking-wide text-gray-400">{label}</span>
+      <span className={`block text-sm font-semibold ${text}`}>{value}</span>
+      {hint && <span className="mt-0.5 block text-xs text-gray-400">{hint}</span>}
+    </div>
+  );
+}
+
 // ───────────────────────────── party blocks ──────────────────────────────────
 
 export const emptyPartyDraft = (): PartyDraft => ({ name: "", lines: "", country: "", tel: "", email: "", gstin: "", stateCode: "", code: "" });

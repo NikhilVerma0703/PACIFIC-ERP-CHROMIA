@@ -19,7 +19,7 @@ export const runtime = "nodejs";
 type Ctx = { params: Promise<{ piId: string }> };
 
 export async function GET(_req: Request, { params }: Ctx) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "proforma");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const piId = await piIdOf(params);
@@ -28,7 +28,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "proforma");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const piId = await piIdOf(params);

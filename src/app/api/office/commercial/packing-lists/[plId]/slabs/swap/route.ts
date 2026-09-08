@@ -69,7 +69,7 @@ function refusedOn(list: Awaited<ReturnType<typeof loadList>>, slabId: string) {
 }
 
 export async function GET(req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "packing");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const plId = await paramPl(params);
@@ -108,7 +108,7 @@ export async function GET(req: Request, { params }: Ctx) {
 }
 
 export async function POST(req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "packing");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const plId = await paramPl(params);

@@ -14,74 +14,161 @@
 // The Commercial module lives at /office/commercial + /api/office/commercial.
 // It is NOT the ported "International Sales" module (/sales, salesGate), which
 // has its own duty strings — one of them also spelled "COMMERCIAL". That one
-// is users.sales_role; this one is Role.COMMERCIAL, the OFFICE-branch role the
-// one live Commercial login carries. Do not conflate them.
+// is users.sales_role; these are Role.*, the OFFICE-branch roles the commercial
+// desk carries. Do not conflate them.
 //
 // --------------------------------------------------------------- ACTORS ---
-// FOUR KINDS OF LOGIN REACH THIS MODULE:
+// The owner named the desk person by person on 2026-09-08 (DECISIONS-2.md 1
+// and 2: "new roles for each set of tasks... one role that sees only its
+// screens"). One role per set of tasks:
 //
-//   ADMIN            (rank >= ADMIN)  everything
-//   COMMERCIAL       (Role.COMMERCIAL) view, write, verify-view; NOT plan/admin
-//   DISPATCH_CHECKER (Role.STORE)     verify ONLY — the packing-list check
-//   PLANT_MANAGER    (LINE_MANAGER)   verify ONLY, same as the store incharge
+//   ADMIN                everything. One admin login spans Office, the
+//                        International Sales branch and the shop floor.
+//   COMMERCIAL_MANAGER   Santosh Thapa — "all access", except the production
+//                        planner, which answer 16 keeps admin-only.
+//   COMMERCIAL_EXEC      Setumani — everything Raghav does, plus the stock
+//                        check, the PI, packing and the dispatch marking.
+//   COMMERCIAL_DOCS      Raghav — the invoice, the checklist and the export
+//                        documents. Most of his day (BL draft, COO, CEFA, the
+//                        Daltile portal, fumigation) is outside this module.
+//   COMMERCIAL_LOGISTICS Murali — container booking and the freight side, so
+//                        here: enquiries, orders, challans, and the checklist
+//                        APPROVAL the owner gave him on 2026-09-07.
+//   COMMERCIAL           the one live Commercial login that predates the
+//                        split. Kept exactly as it was so nobody is locked out
+//                        the day this deploys; retire it once the four people
+//                        above have their own.
+//   DISPATCH_CHECKER     the dispatch team in bay 5. Answer 6: no new role —
+//                        they sign in as they do now and get ONE tab.
 //
-// The dispatch team is "another team in our factory which physically sees the
-// condition of slabs and lets us know if they are fit to go" (owner,
-// 2026-09-05). Which ERP role they hold is UNDECIDED — the candidates are the
-// existing STORE role (3 shop-floor logins, 1 active) or a new DISPATCH role.
-// Until decided, STORE and LINE_MANAGER are admitted to the verification
-// screen and nothing else; a new role is one line in dispatchCheckerOf below.
+// ------------------------------------- GATE ON THE ACTION AND ON THE AREA ---
+// TWO questions, because "may Raghav write?" and "may Raghav write a packing
+// list?" are different questions and the second is the one the owner answered.
 //
-// ---------------------------------------------------- GATE ON THE ACTION ---
-// A table of actions, not a minimum rank: "the store incharge may verify a
-// packing list but may not see an enquiry" is not a ladder.
+//   the ACTION table   what KIND of thing a login may do at all
+//   the AREA table     WHICH screens it may do it on
+//
+// Middleware asks the area question for every path in the module, so a screen
+// nobody granted is refused even if its route forgets to name its area. A
+// route may name its area as well (commercialGate("write", "packing")), and
+// should wherever one login writes there and another only reads.
 import { rankOf, ROLE_RANK } from "../roles.ts";
 
 /** Everything a signed-in user can be asked to do in this module. */
 export type CommercialAction = "view" | "write" | "verify" | "plan" | "approve" | "cancel" | "admin";
 export const COMMERCIAL_ACTIONS: CommercialAction[] = ["view", "write", "verify", "plan", "approve", "cancel", "admin"];
 
-/** The four kinds of login, plus the Commercial Manager the owner added on
- *  2026-09-07 (answer 9: "a commercial manager role"). Answers 10 and 24 say
- *  what the manager does that a Commercial user does not: approve the
- *  checklist, cancel a PI. The per-task roles the owner also asked for wait
- *  for the task sets. */
-export type CommercialActor = "ADMIN" | "COMMERCIAL_MANAGER" | "COMMERCIAL" | "DISPATCH_CHECKER";
+/** The screens, as the owner divided the work. */
+export type CommercialArea =
+  | "overview" | "enquiries" | "clients" | "orders" | "checklist"
+  | "stock" | "planning" | "designCodes" | "proforma" | "packing"
+  | "dispatchCheck" | "invoices" | "challans" | "settings";
+
+export const COMMERCIAL_AREAS: CommercialArea[] = [
+  "overview", "enquiries", "clients", "orders", "checklist",
+  "stock", "planning", "designCodes", "proforma", "packing",
+  "dispatchCheck", "invoices", "challans", "settings",
+];
+
+export const AREA_LABEL: Record<CommercialArea, string> = {
+  overview: "Overview", enquiries: "Enquiries", clients: "Clients", orders: "Orders",
+  checklist: "Order checklist", stock: "Stock check and holds", planning: "Production queue",
+  designCodes: "Design codes and colours", proforma: "Proforma invoices", packing: "Packing lists",
+  dispatchCheck: "Dispatch check", invoices: "Invoices", challans: "Delivery challans", settings: "Settings",
+};
+
+export type CommercialActor =
+  | "ADMIN" | "COMMERCIAL_MANAGER" | "COMMERCIAL_EXEC" | "COMMERCIAL_DOCS"
+  | "COMMERCIAL_LOGISTICS" | "COMMERCIAL" | "DISPATCH_CHECKER";
 
 /**
- * Who may perform each action.
+ * Who may perform each KIND of action.
  *
- *   view    read enquiries, orders, holds, PIs, packing lists, invoices, queue
- *   write   create/edit all of the above, place holds, raise requests, issue
- *           documents
- *   verify  the dispatch check: mark packed slabs fit/unfit, verify or reject
- *           a submitted packing list
- *   plan    the production planning queue: reorder, schedule, mark produced
- *   admin   settings — numbering, hold days, company master, banks
- *
- * ADMIN is on every line rather than special-cased, so "admins span every
- * department" is readable in the table. COMMERCIAL may verify too: the owner
- * has one Commercial login and the dispatch team has no login yet, and a
- * module that cannot be exercised end to end by the person building it with
- * us is a module nobody can test. Take it off this line when the dispatch
- * team has its own logins.
+ *   view    read the screens this login's area table admits
+ *   write   create and edit on those screens, issue their documents
+ *   verify  the dispatch check: mark packed slabs fit or unfit, verify or
+ *           reject a submitted packing list
+ *   plan    the production queue: reorder, edit the planned hours and slabs,
+ *           mark produced. ADMIN ALONE (answer 16: "no, only admin" — and the
+ *           Commercial Manager does not see the planner either, as of now)
+ *   approve stamp "Approved by" on the order checklist. Murali approves
+ *           (2026-09-07 answer 10) and so does the manager
+ *   cancel   cancel a PI, an invoice, a challan or an order — and waive the
+ *           advance so a truck may leave without it (answer 12)
+ *   admin   settings: numbering, hold days, the company master, the banks
  */
 export const COMMERCIAL_ACTORS: Record<CommercialAction, readonly CommercialActor[]> = {
-  view:    ["ADMIN", "COMMERCIAL_MANAGER", "COMMERCIAL"],
-  write:   ["ADMIN", "COMMERCIAL_MANAGER", "COMMERCIAL"],
-  verify:  ["ADMIN", "COMMERCIAL_MANAGER", "COMMERCIAL", "DISPATCH_CHECKER"],
-  /** The production queue: reorder, edit the planned hours and slabs, mark
-   *  produced. Answer 13 says "only for admin"; the manager is admitted as the
-   *  office-side admin of this module. */
-  plan:    ["ADMIN", "COMMERCIAL_MANAGER"],
-  /** Approve the internal sales order checklist (answer 10: "approved by Murali"). */
-  approve: ["ADMIN", "COMMERCIAL_MANAGER"],
-  /** Cancel a PI (answer 24: "only by admin or commercial manager"). */
+  view:    ["ADMIN", "COMMERCIAL_MANAGER", "COMMERCIAL_EXEC", "COMMERCIAL_DOCS", "COMMERCIAL_LOGISTICS", "COMMERCIAL"],
+  write:   ["ADMIN", "COMMERCIAL_MANAGER", "COMMERCIAL_EXEC", "COMMERCIAL_DOCS", "COMMERCIAL_LOGISTICS", "COMMERCIAL"],
+  verify:  ["ADMIN", "COMMERCIAL_MANAGER", "COMMERCIAL_EXEC", "COMMERCIAL", "DISPATCH_CHECKER"],
+  plan:    ["ADMIN"],
+  approve: ["ADMIN", "COMMERCIAL_MANAGER", "COMMERCIAL_LOGISTICS"],
   cancel:  ["ADMIN", "COMMERCIAL_MANAGER"],
   admin:   ["ADMIN"],
 };
 
-/** Roles that stand in for the dispatch team until it has a role of its own. */
+/** none = the screen does not exist for this login and middleware refuses the
+ *  path; view = read it; write = act on it (subject to the action table). */
+export type AreaAccess = "none" | "view" | "write";
+
+const W: AreaAccess = "write", V: AreaAccess = "view", N: AreaAccess = "none";
+
+/**
+ * WHICH screens each login reaches. Read a row as "this person's desk".
+ *
+ * The two rows worth explaining:
+ *
+ * COMMERCIAL_DOCS (Raghav) gets `checklist` write while `orders` stays view.
+ * He fills the checklist on an order he does not otherwise edit — the owner
+ * listed "Invoice, Checklist" as his part of this module and nothing else.
+ *
+ * `planning` is ADMIN alone, and `settings` too. The design master is its own
+ * area rather than a section of settings for exactly that reason: the manager
+ * maintains the codes and the colours (answer 15) without being handed the
+ * numbering counters or the company master.
+ */
+export const COMMERCIAL_AREA_ACCESS: Record<CommercialActor, Record<CommercialArea, AreaAccess>> = {
+  ADMIN: {
+    overview: W, enquiries: W, clients: W, orders: W, checklist: W, stock: W, planning: W,
+    designCodes: W, proforma: W, packing: W, dispatchCheck: W, invoices: W, challans: W, settings: W,
+  },
+  // "All access" (answer 1), minus the planner (answer 16) and the settings
+  // form, which stays with the one admin login.
+  COMMERCIAL_MANAGER: {
+    overview: W, enquiries: W, clients: W, orders: W, checklist: W, stock: W, planning: N,
+    designCodes: W, proforma: W, packing: W, dispatchCheck: W, invoices: W, challans: W, settings: N,
+  },
+  // Setumani: everything Raghav does, plus the stock check, the PI, packing
+  // and the dispatch marking.
+  COMMERCIAL_EXEC: {
+    overview: V, enquiries: V, clients: V, orders: W, checklist: W, stock: W, planning: N,
+    designCodes: V, proforma: W, packing: W, dispatchCheck: W, invoices: W, challans: W, settings: N,
+  },
+  // Raghav: the invoice, the checklist, the challans that travel with it.
+  COMMERCIAL_DOCS: {
+    overview: V, enquiries: N, clients: V, orders: V, checklist: W, stock: N, planning: N,
+    designCodes: N, proforma: V, packing: V, dispatchCheck: N, invoices: W, challans: W, settings: N,
+  },
+  // Murali: the enquiry and the order come in through him, the freight side
+  // goes out through him, and he approves the checklist.
+  COMMERCIAL_LOGISTICS: {
+    overview: V, enquiries: W, clients: W, orders: W, checklist: W, stock: V, planning: N,
+    designCodes: V, proforma: V, packing: V, dispatchCheck: N, invoices: V, challans: W, settings: N,
+  },
+  // The one live Commercial login, unchanged by the split.
+  COMMERCIAL: {
+    overview: W, enquiries: W, clients: W, orders: W, checklist: W, stock: W, planning: N,
+    designCodes: V, proforma: W, packing: W, dispatchCheck: W, invoices: W, challans: W, settings: N,
+  },
+  // Bay 5: one tab and nothing else (answer 6).
+  DISPATCH_CHECKER: {
+    overview: N, enquiries: N, clients: N, orders: N, checklist: N, stock: N, planning: N,
+    designCodes: N, proforma: N, packing: N, dispatchCheck: W, invoices: N, challans: N, settings: N,
+  },
+};
+
+/** Roles that stand in for the dispatch team. Answer 6: no new role for them —
+ *  they sign in as they do now and reach the one tab. */
 export const DISPATCH_CHECKER_ROLES: readonly string[] = ["STORE", "LINE_MANAGER"];
 
 /**
@@ -104,31 +191,114 @@ const BRANCHES_WITH_OWN_BLOCK: readonly string[] = ["FABRICATION", "INTERNATIONA
 
 /** Which kind of login this is, or null for everybody else. ADMIN first, then
  *  the role: a login can only be one of these and the order is the precedence.
- *  Role COMMERCIAL is answered WITHOUT looking at the branch, as roboGate does
- *  for capped roles. */
+ *  The Commercial roles are answered WITHOUT looking at the branch, as roboGate
+ *  does for capped roles. */
 export function commercialActorOf(user: unknown): CommercialActor | null {
   if (!user) return null;
   const u = user as { role?: string | null; branch?: string | null };
   const role = String(u.role ?? "");
   if (rankOf(role) >= ROLE_RANK.ADMIN) return "ADMIN";
   if (role === "COMMERCIAL_MANAGER") return "COMMERCIAL_MANAGER";
+  if (role === "COMMERCIAL_EXEC") return "COMMERCIAL_EXEC";
+  if (role === "COMMERCIAL_DOCS") return "COMMERCIAL_DOCS";
+  if (role === "COMMERCIAL_LOGISTICS") return "COMMERCIAL_LOGISTICS";
   if (role === "COMMERCIAL") return "COMMERCIAL";
   if (DISPATCH_CHECKER_ROLES.includes(role) && !BRANCHES_WITH_OWN_BLOCK.includes(String(u.branch ?? ""))) return "DISPATCH_CHECKER";
   return null;
 }
 
-/** May this user do this? The whole access rule, in one call. */
-export function commercialCan(user: unknown, action: CommercialAction): boolean {
+/** What this login may do on one screen. Unknown actor or unknown area fails
+ *  closed, so a screen added without a row here is refused rather than open. */
+export function areaAccessFor(actor: CommercialActor | null, area: CommercialArea): AreaAccess {
+  if (!actor) return "none";
+  return COMMERCIAL_AREA_ACCESS[actor]?.[area] ?? "none";
+}
+
+/**
+ * May this user do this — and, when an area is named, do it THERE?
+ *
+ * Without an area this is the action question alone, which is what every route
+ * asked before the desk was split; middleware still refuses the path, so those
+ * routes are covered. With an area it is both questions: "view" needs the
+ * screen readable, everything else needs it writable.
+ */
+export function commercialCan(user: unknown, action: CommercialAction, area?: CommercialArea): boolean {
   if (!COMMERCIAL_ACTIONS.includes(action)) return false;   // unknown action fails closed
   const actor = commercialActorOf(user);
   if (!actor) return false;
-  return COMMERCIAL_ACTORS[action].includes(actor);
+  if (!COMMERCIAL_ACTORS[action].includes(actor)) return false;
+  if (!area) return true;
+  const access = areaAccessFor(actor, area);
+  return action === "view" ? access !== "none" : access === "write";
 }
 
 /** Everything this user may do — for a nav, a page's capability payload, or
  *  the layout's "may this login be here at all". */
 export function commercialActionsFor(user: unknown): CommercialAction[] {
   return COMMERCIAL_ACTIONS.filter((a) => commercialCan(user, a));
+}
+
+/** Every screen this login reaches, with what it may do there. The nav and the
+ *  overview build themselves from this rather than from the role. */
+export function commercialAreasFor(user: unknown): Record<CommercialArea, AreaAccess> {
+  const actor = commercialActorOf(user);
+  const out = {} as Record<CommercialArea, AreaAccess>;
+  for (const a of COMMERCIAL_AREAS) out[a] = areaAccessFor(actor, a);
+  return out;
+}
+
+/**
+ * The area a path belongs to, or null when the path is not this module's.
+ *
+ * Both halves map the same way: /office/commercial/invoices and
+ * /api/office/commercial/invoices are one screen and one area. A path nested
+ * under an order (/api/office/commercial/orders/<id>/packing-lists) belongs to
+ * the area of the THING, not of the order — otherwise Raghav, who may read an
+ * order, would reach the packing lists hanging off it.
+ */
+const PAGE_PREFIX = "/office/commercial";
+const API_PREFIX = "/api/office/commercial";
+
+const SEGMENT_AREA: Record<string, CommercialArea> = {
+  "": "overview",
+  dashboard: "overview",
+  enquiries: "enquiries",
+  clients: "clients",
+  orders: "orders",
+  checklist: "checklist",
+  receipts: "orders",
+  items: "orders",
+  events: "orders",
+  stage: "orders",
+  holds: "stock",
+  stock: "stock",
+  "production-requests": "planning",
+  "production-planning": "planning",
+  "design-codes": "designCodes",
+  proformas: "proforma",
+  "packing-lists": "packing",
+  "dispatch-check": "dispatchCheck",
+  invoices: "invoices",
+  challans: "challans",
+  settings: "settings",
+};
+
+export function areaOfPath(p: string): CommercialArea | null {
+  const q = p.indexOf("?");
+  const path = q === -1 ? p : p.slice(0, q);
+  const base = path.startsWith(API_PREFIX) ? API_PREFIX : path.startsWith(PAGE_PREFIX) ? PAGE_PREFIX : null;
+  if (!base) return null;
+  if (path !== base && !path.startsWith(base + "/")) return null;   // /office/commercial-something-else
+  const rest = path.slice(base.length).replace(/^\/+/, "").replace(/\/+$/, "");
+  const seg = rest ? rest.split("/") : [""];
+  const first = SEGMENT_AREA[seg[0]];
+  if (first === undefined) return null;
+  // Nested under an order: orders/<id>/<thing> belongs to <thing>'s own area.
+  if (first === "orders" && seg.length >= 3) {
+    const nested = SEGMENT_AREA[seg[2]];
+    if (nested !== undefined) return nested;
+  }
+  return first;
 }
 
 /**
@@ -148,17 +318,30 @@ export function isDispatchCheckPath(p: string): boolean {
 
 /**
  * May this login reach this Commercial-module PATH at all? The coarse gate
- * middleware asks. A login that may view or write reaches every module path; a
- * verify-only login reaches the dispatch-check paths and nothing else; anyone
- * else is refused. Which ACTION a request is allowed is decided in the route by
- * commercialGate(action).
+ * middleware asks, and now the only gate that covers EVERY path in the module:
+ * the area table decides, so a screen this login was not given is refused
+ * whether or not its route remembers to name its area. WHICH action a request
+ * is then allowed is decided in the route by commercialGate(action, area).
+ *
+ * A path this module does not own is not this rule's business — it answers
+ * false, and middleware only asks about paths under the two prefixes.
  */
 export function maySeeCommercialModule(user: unknown, p: string): boolean {
-  const actions = commercialActionsFor(user);
-  if (actions.length === 0) return false;
-  if (actions.includes("view")) return true;
-  return actions.includes("verify") && isDispatchCheckPath(p);
+  const actor = commercialActorOf(user);
+  if (!actor) return false;
+  const area = areaOfPath(p);
+  if (!area) return false;
+  return areaAccessFor(actor, area) !== "none";
 }
 
 /** Where a Commercial-module login lands. */
 export const COMMERCIAL_HOME = "/office/commercial";
+
+/** ...unless it has no overview: the dispatch team lands on its one tab. */
+export function commercialHomeFor(user: unknown): string {
+  const actor = commercialActorOf(user);
+  if (actor && areaAccessFor(actor, "overview") === "none" && areaAccessFor(actor, "dispatchCheck") !== "none") {
+    return "/office/commercial/dispatch-check";
+  }
+  return COMMERCIAL_HOME;
+}

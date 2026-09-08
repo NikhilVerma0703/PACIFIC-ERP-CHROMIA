@@ -35,13 +35,13 @@ type Ctx = { params: Promise<{ id: string }> };
 const has = (b: Record<string, unknown>, k: string) => Object.prototype.hasOwnProperty.call(b, k);
 
 export async function GET(_req: Request, { params }: Ctx) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "planning");
   if (!g.ok) return deny(g);
   return handle(async () => json(plain(await loadRequest(await paramId(params)))));
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "planning");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await paramId(params);
@@ -126,7 +126,7 @@ export async function PATCH(req: Request, { params }: Ctx) {
  *  not acted on; IN_PRODUCTION / PRODUCED need plan (canDeleteRequest). The
  *  plan-change rows go with it (cascade); the order's log keeps the fact. */
 export async function DELETE(_req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "planning");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await paramId(params);

@@ -18,11 +18,13 @@ import {
   statusTone, canEditInvoice, canIssueInvoice, canCancelInvoice,
   unpricedWarning, lineNeedsPrice, isDerivedAmount, rateDp, displayGrandTotal, displaySubtotal,
   refuseIssueUnapproved, fyBadge, snapshotExtras, gstinWithLabel, printedItemCode, lineLacksCode,
+  bankChangeRefusal,
   type InvoiceSnapshotExtras,
 } from "@/lib/commercial/invoice-rules";
 import type { DocLine, InvoiceSnapshot, Party } from "@/lib/commercial/types";
 import { inp, lbl, btnPrimary, btnGhost, btnDanger, th, thead, errorBox, noteBox, money, qty, dmy, dateValue } from "./ui";
 import { DocNumber } from "./DocNumber";
+import { GstinField } from "./GstinField";
 import { useInvoiceChoices } from "./useInvoiceChoices";
 
 interface Invoice {
@@ -107,7 +109,7 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState<Record<string, string>>({});
   const [prices, setPrices] = useState<PriceRow[]>([]);
-  const [regForm, setRegForm] = useState<{ gstin: string; bankKey: string }>({ gstin: "", bankKey: "" });
+  const [regForm, setRegForm] = useState<{ gstin: string; bankKey: string; gstinApplyAll: boolean }>({ gstin: "", bankKey: "", gstinApplyAll: true });
   const [cancelReason, setCancelReason] = useState("");
   const [cancelling, setCancelling] = useState(false);
   const mayWrite = actions.includes("write");
@@ -130,7 +132,7 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
     setPrices(priceRows(d.snapshot?.lines ?? []));
     // a row frozen before the dropdowns existed reads with the defaults it would have had
     const x = d.snapshot ? snapshotExtras(d.snapshot) : null;
-    setRegForm({ gstin: x?.gstin ?? "", bankKey: x?.bankKey ?? "" });
+    setRegForm({ gstin: x?.gstin ?? "", bankKey: x?.bankKey ?? "", gstinApplyAll: x?.gstinApplyAll ?? true });
   }, [invoiceId]);
 
   useEffect(() => { void load(); }, [load]);
@@ -147,7 +149,10 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
   const uncoded = inv.kind === "EXPORT" ? s.lines.filter(lineLacksCode) : [];
   // answer 22: with alwaysIgst on there is no state code to fill in, so nothing to warn about
   const stateWarning = Boolean(choices && !choices.alwaysIgst && s.taxType === "IGST" && inv.kind === "DTA" && !s.buyer?.stateCode);
-  const regDirty = regForm.gstin.toUpperCase() !== x.gstin.toUpperCase() || regForm.bankKey !== x.bankKey;
+  const regDirty = regForm.gstin.toUpperCase() !== x.gstin.toUpperCase() || regForm.bankKey !== x.bankKey || regForm.gstinApplyAll !== x.gstinApplyAll;
+  // round two, answer 20: the bank follows the PI, and only the manager or an
+  // admin may move it off that. Refused is disabled WITH the reason, not hidden.
+  const bankRefusal = bankChangeRefusal(actions);
 
   const saveLines = async () => {
     setBusy(true); setError(null); setNotice(null);
@@ -176,7 +181,13 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
   };
   const saveRegistration = async () => {
     setBusy(true); setError(null); setNotice(null);
-    const res = await patchJson(`/api/office/commercial/invoices/${inv.id}`, { gstin: regForm.gstin, bankKey: regForm.bankKey });
+    // The bank goes back only when this login may change it; sending the
+    // unchanged value would still be refused where the reason applies.
+    const res = await patchJson(`/api/office/commercial/invoices/${inv.id}`, {
+      gstin: regForm.gstin,
+      gstinApplyAll: regForm.gstinApplyAll,
+      ...(bankRefusal ? {} : { bankKey: regForm.bankKey }),
+    });
     setBusy(false);
     if (!res.ok) { setError(res.error); return; }
     setNotice("Registration and bank saved — the PDF prints them.");
@@ -280,30 +291,40 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
       <Card>
         <H2>Registration and bank</H2>
         <p className="mb-3 text-sm text-gray-500">
-          The GSTIN the invoice is issued under and the bank it prints. ICICI on a domestic invoice, Kotak on an export one, PESPL&apos;s own registration — unless changed here while it is a draft.
+          The GSTIN the invoice is issued under and the bank it prints. The bank follows the one the PI named; PESPL&apos;s own registration is the default
+          {/* round two, answer 19: the question is the export workbook's, so a
+              DTA invoice — which has none — is not promised it */}
+          {inv.kind === "EXPORT" ? ", and choosing another asks how far it should reach across the export workbook." : "; this DTA invoice has no export workbook, so nothing further is asked."}
         </p>
         {choicesError && <div className={`${errorBox} mb-3`}>{choicesError}</div>}
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           <div>
-            <label className={lbl} htmlFor="f-gstin">Issued under GSTIN</label>
-            <select id="f-gstin" className={inp} disabled={!editable || !choices} value={regForm.gstin} onChange={(e) => setRegForm((f) => ({ ...f, gstin: e.target.value }))}>
-              {(choices?.gstins ?? [{ gstin: x.gstin, label: x.gstinLabel ?? s.company.legalName }]).map((c) => <option key={c.gstin} value={c.gstin}>{c.gstin} — {c.label}</option>)}
-              {choices && !choices.gstins.some((c) => c.gstin === x.gstin) && <option value={x.gstin}>{gstinWithLabel(x.gstin, x.gstinLabel)} (no longer in Settings)</option>}
-            </select>
+            <GstinField
+              id="f-gstin"
+              kind={inv.kind}
+              choices={choices ? choices.gstins : null}
+              value={regForm.gstin}
+              applyAll={regForm.gstinApplyAll}
+              disabled={!editable}
+              extra={{ gstin: x.gstin, label: x.gstinLabel }}
+              onChange={(gstin, gstinApplyAll) => setRegForm((f) => ({ ...f, gstin, gstinApplyAll }))}
+            />
             <p className="mt-1 text-xs text-gray-400">Prints as GSTIN {gstinWithLabel(x.gstin, x.gstinLabel) || "—"}</p>
           </div>
           <div>
             <label className={lbl} htmlFor="f-bank">Bank printed</label>
-            <select id="f-bank" className={inp} disabled={!editable || !choices} value={regForm.bankKey} onChange={(e) => setRegForm((f) => ({ ...f, bankKey: e.target.value }))}>
+            <select id="f-bank" className={inp} disabled={!editable || !choices || Boolean(bankRefusal)} title={bankRefusal ?? undefined} value={regForm.bankKey} onChange={(e) => setRegForm((f) => ({ ...f, bankKey: e.target.value }))}>
               {(choices?.banks ?? [{ key: x.bankKey, name: s.bank.name, label: s.bank.name }]).map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
             </select>
+            {/* round two, answer 20: refused, and the field says why rather than vanishing */}
+            {bankRefusal && <p className="mt-1 text-xs text-amber-700">{bankRefusal}.</p>}
             <p className="mt-1 text-xs text-gray-400">{s.bank.name} · A/C {s.bank.accountNo} · IFSC {s.bank.ifsc}{s.bank.swift ? ` · Swift ${s.bank.swift}` : ""}{s.bank.adCode ? ` · AD code ${s.bank.adCode}` : ""}</p>
           </div>
         </div>
         {editable && (
           <div className="mt-3 flex gap-2">
             <button type="button" className={btnPrimary} disabled={busy || !regDirty} onClick={() => void saveRegistration()}>Save registration and bank</button>
-            <button type="button" className={btnGhost} disabled={busy || !regDirty} onClick={() => setRegForm({ gstin: x.gstin, bankKey: x.bankKey })}>Reset</button>
+            <button type="button" className={btnGhost} disabled={busy || !regDirty} onClick={() => setRegForm({ gstin: x.gstin, bankKey: x.bankKey, gstinApplyAll: x.gstinApplyAll })}>Reset</button>
           </div>
         )}
       </Card>

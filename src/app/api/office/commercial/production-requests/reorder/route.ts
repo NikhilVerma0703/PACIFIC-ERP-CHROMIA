@@ -25,7 +25,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function PATCH(req: Request) {
-  const g = await commercialGate("plan");
+  const g = await commercialGate("plan", "planning");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const body = await readBody<{ ids?: unknown }>(req);

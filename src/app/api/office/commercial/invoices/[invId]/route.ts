@@ -6,6 +6,11 @@
 // prints (answer 23) — changed; the totals, the tax and the amount in words
 // are re-derived from the lines on every edit, so the row and the PDF can
 // never drift apart. The number is NOT editable — it was taken from the counter.
+//
+// Round two: the bank is the manager's to change (answer 20) because it
+// follows the PI, and an alternate registration carries `gstinApplyAll` — how
+// far it reaches across the export workbook (answer 19). Both land in the
+// invoice_edited event by value.
 import { commercialGate } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain, str, num, dateOnly } from "@/lib/commercial/http";
 import { loadSettings } from "@/lib/commercial/settings";
@@ -13,6 +18,7 @@ import { logOrderEvent } from "@/lib/commercial/events";
 import {
   canEditInvoice, applyDraftPatch, isoDate, TRANSPORT_COLUMNS,
   patchedInvoiceFields, registrationChanges, registrationChangeNote,
+  snapshotExtras, isBankKey, mayChangeInvoiceBank, BANK_FOLLOWS_PI,
 } from "@/lib/commercial/invoice-rules";
 import { db, INVOICE_INCLUDE, invoiceIdOf, loadInvoice, snapshotOf, rowPatchFor } from "../_lib";
 
@@ -20,7 +26,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(_req: Request, { params }: { params: Promise<{ invId: string }> }) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "invoices");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await invoiceIdOf(params);
@@ -31,7 +37,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ invId: 
 const has = (b: Record<string, unknown>, k: string): boolean => Object.prototype.hasOwnProperty.call(b, k);
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ invId: string }> }) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "invoices");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await invoiceIdOf(params);
@@ -62,6 +68,16 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ invId:
     }
 
     const before = snapshotOf(row);
+    // Round two, answer 20: the invoice follows the PI's bank, and moving it
+    // off that is the Commercial Manager's or an admin's (`cancel`, the same
+    // action that cancels the invoice). Everyone else may still edit every
+    // other field of the draft, so this refuses the one key rather than the
+    // whole PATCH — and only when the body actually asks for a DIFFERENT bank.
+    if (has(body, "bankKey")) {
+      const wanted = body.bankKey;
+      const now = snapshotExtras(before).bankKey;
+      if (isBankKey(wanted) && wanted !== now && !mayChangeInvoiceBank(g.actions)) fail(403, BANK_FOLLOWS_PI);
+    }
     const { snapshot, changed, rejected } = applyDraftPatch(before, snapshotPatch, settings);
     // A field the body NAMED and applyDraftPatch threw away is an edit the user
     // typed and would otherwise lose behind a 200 — a malformed date, a blank

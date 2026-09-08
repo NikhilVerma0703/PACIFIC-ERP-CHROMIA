@@ -19,7 +19,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(req: Request) {
-  const g = await commercialGate("verify");
+  const g = await commercialGate("verify", "dispatchCheck");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const u = new URL(req.url);

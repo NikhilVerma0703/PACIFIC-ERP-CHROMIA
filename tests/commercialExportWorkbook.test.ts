@@ -19,13 +19,14 @@ import {
   printThickness, mtText, kgFromMt, labelled, fyOf, buyerPoRefText, isoDate,
   INVOICE_R_MIRRORS, INVOICE_R_LINKS, INVOICE_R_CLEARED, PARKED_ADDRESS_BLOCK,
   isCountUnit, SQFT_PER_SQM,
+  GSTIN_INVOICE_ROOT_KEY, GSTIN_OTHER_SHEET_ROOT_KEYS,
   type SlabRow, type CrateRow,
 } from "../src/lib/commercial/export-workbook/mapping.ts";
 import {
   buildExportWorkbookWithLayout, loadTemplate, workbookFileName, crateGroups, slabWeightKg,
   TEMPLATE_RELATIVE_PATH,
 } from "../src/lib/commercial/export-workbook/build.ts";
-import { EXPORT_ROOT_GSTIN_KEY, EXPORT_ROOT_BANK_KEY } from "../src/lib/commercial/invoice-rules.ts";
+import { EXPORT_ROOT_GSTIN_KEY, EXPORT_ROOT_BANK_KEY, EXPORT_ROOT_SHEET_GSTIN_CELLS } from "../src/lib/commercial/invoice-rules.ts";
 
 const TEMPLATE = path.join(process.cwd(), TEMPLATE_RELATIVE_PATH);
 
@@ -409,8 +410,8 @@ test("every ROOT_CELLS entry names a real sheet and a cell that is NOT a formula
   assert.ok(ROOT_CELLS.length >= 130, `only ${ROOT_CELLS.length} root cells mapped`);
 });
 
-test("the two registration cells the order screen watches are still on the map", () => {
-  // invoice-rules.exportRootOverrides names these two keys as text (the order
+test("the registration cells the order screen watches are still on the map", () => {
+  // invoice-rules.exportRootOverrides names these keys as text (the order
   // screen must not import 1,500 lines of cell map into the browser bundle) and
   // tells the clerk which of them the SAVED form overrode. Rename a key here
   // and that warning would go quietly silent, so it is pinned from both ends.
@@ -418,6 +419,16 @@ test("the two registration cells the order screen watches are still on the map",
   assert.equal(rootCell(EXPORT_ROOT_BANK_KEY)?.cell, "G27", "the bank name the invoice's chosen account lands on");
   assert.ok(ROOT_KEYS.includes(EXPORT_ROOT_GSTIN_KEY));
   assert.ok(ROOT_KEYS.includes(EXPORT_ROOT_BANK_KEY));
+  // Round two, answer 19: the three cells the SCOPE decides are watched too —
+  // a saved form that types over one of them is what the workbook prints, so
+  // the tab's "applied to every sheet" sentence is checked against them. The
+  // screen's list and the map's must stay the same three keys.
+  assert.equal(EXPORT_ROOT_GSTIN_KEY, GSTIN_INVOICE_ROOT_KEY);
+  assert.deepEqual(EXPORT_ROOT_SHEET_GSTIN_CELLS.map((c) => c.key), [...GSTIN_OTHER_SHEET_ROOT_KEYS]);
+  for (const c of EXPORT_ROOT_SHEET_GSTIN_CELLS) {
+    assert.ok(rootCell(c.key), `${c.key} is not a root cell`);
+    assert.ok(c.sheet.trim().length > 0, `${c.key} has no name to show the clerk`);
+  }
 });
 
 test("root keys are unique, and so is every (sheet, cell) pair", () => {
@@ -605,7 +616,9 @@ test("DEFAULT_ROOTS prints the GSTIN the invoice chose (answer 21), labelled whe
   assert.equal(own.custPlGstin, "GSTIN NO: 33AALCP2750N1Z3");
   assert.equal(own.c1Gstin, "33AALCP2750N1Z3");
 
-  // The sister company's, chosen on the invoice: every GSTIN heading carries
+  // The sister company's, chosen on the invoice, on a snapshot with no answer
+  // to round two's question 19 — i.e. one frozen before it was asked, which is
+  // the reading snapshotExtras gives such a row: every GSTIN heading carries
   // it WITH its label, where the old sheets carried PGI's name; the Annexure
   // C1 form field takes the bare registration.
   const pgi = DEFAULT_ROOTS({ ...SNAPSHOT, gstin: "33AAFCP5374A1ZQ", gstinLabel: "Pacific Granites (India) Pvt Ltd" }, PACKING, ORDER, SETTINGS);
@@ -1482,4 +1495,122 @@ test("a saved root value overrides the derived one, including blanking a cell", 
   assert.equal(inv.getCell("H4").value, "PESPL/9999");
   assert.equal(inv.getCell("C49").value, null, "a blanked root must clear its cell");
   assert.equal(inv.getCell("B63").value, "31.20 MT");
+});
+
+// ── round two, answer 19: how far an alternate registration reaches ──────────
+//
+// "Prompt, then apply. Yes applies it to every sheet; no applies it to that
+// document alone." The document the choice is made ON is the export commercial
+// invoice, so Invoice!J8 always carries the choice; the three cells a hand
+// re-typed elsewhere in the workbook — the packing list, the customer's copy of
+// it and the Annexure C1 form — follow only on a yes. This is the mapping
+// decision the workbook is built from, pinned here.
+
+const PGI = { gstin: "33AAFCP5374A1ZQ", gstinLabel: "Pacific Granites (India) Pvt Ltd" };
+const PGI_HEADING = "GSTIN NO: 33AAFCP5374A1ZQ (Pacific Granites (India) Pvt Ltd)";
+const OWN_HEADING = "GSTIN NO: 33AALCP2750N1Z3";
+
+test("answer 19: the GSTIN cells split into the invoice's own and the other sheets'", () => {
+  // The split is enumerated, not guessed by name, and every key in it is a
+  // real root cell — a GSTIN cell added to another sheet has to be classified.
+  assert.equal(GSTIN_INVOICE_ROOT_KEY, "exporterGstinText");
+  assert.deepEqual([...GSTIN_OTHER_SHEET_ROOT_KEYS], ["plGstin", "custPlGstin", "c1Gstin"]);
+  for (const key of [GSTIN_INVOICE_ROOT_KEY, ...GSTIN_OTHER_SHEET_ROOT_KEYS]) {
+    assert.ok(rootCell(key), `${key} is not a root cell`);
+  }
+  // and between them they are ALL the GSTIN cells the map knows
+  const named = ROOT_CELLS.filter((rc) => /gstin/i.test(rc.key)).map((rc) => rc.key).sort();
+  assert.deepEqual(named, [GSTIN_INVOICE_ROOT_KEY, ...GSTIN_OTHER_SHEET_ROOT_KEYS].sort());
+  // they really are on four different sheets — that is what "every sheet" means
+  const sheets = named.map((k) => rootCell(k)!.sheet);
+  assert.deepEqual([...new Set(sheets)].sort(), ["ANNEXURE –C1", "Cust-PL", "Invoice", "Packing List"]);
+});
+
+test("answer 19 = YES: the chosen registration lands in every sheet's GSTIN cell", () => {
+  const roots = DEFAULT_ROOTS({ ...SNAPSHOT, ...PGI, gstinApplyAll: true }, PACKING, ORDER, SETTINGS);
+  assert.equal(roots.exporterGstinText, PGI_HEADING);
+  assert.equal(roots.plGstin, PGI_HEADING);
+  assert.equal(roots.custPlGstin, PGI_HEADING);
+  assert.equal(roots.c1Gstin, "33AAFCP5374A1ZQ", "the C1 form field is the bare registration, label and all headings aside");
+});
+
+test("answer 19 = NO: the choice stays on the invoice and the other sheets keep the company's own", () => {
+  const roots = DEFAULT_ROOTS({ ...SNAPSHOT, ...PGI, gstinApplyAll: false }, PACKING, ORDER, SETTINGS);
+  assert.equal(roots.exporterGstinText, PGI_HEADING, "the invoice IS the document the choice was made for");
+  assert.equal(roots.plGstin, OWN_HEADING);
+  assert.equal(roots.custPlGstin, OWN_HEADING);
+  assert.equal(roots.c1Gstin, "33AALCP2750N1Z3");
+  assert.equal(roots.exporterName, "Pacific Engineered Surfaces Private Limited", "and nothing else about the exporter moves");
+});
+
+test("answer 19: the company's own registration reads the same whatever the answer", () => {
+  // The question is only asked for an alternate, so a stored false on the
+  // company's own must not blank or split anything.
+  const yes = DEFAULT_ROOTS({ ...SNAPSHOT, gstinApplyAll: true }, PACKING, ORDER, SETTINGS);
+  const no = DEFAULT_ROOTS({ ...SNAPSHOT, gstinApplyAll: false }, PACKING, ORDER, SETTINGS);
+  for (const key of [GSTIN_INVOICE_ROOT_KEY, ...GSTIN_OTHER_SHEET_ROOT_KEYS]) {
+    assert.equal(yes[key], no[key], `${key} differs on a company-own registration`);
+  }
+  assert.equal(no.plGstin, OWN_HEADING);
+  assert.equal(no.c1Gstin, "33AALCP2750N1Z3");
+
+  // The company's own is read from SETTINGS, never from the snapshot's company
+  // block: buildInvoiceSnapshot overwrites that block's GSTIN with the CHOSEN
+  // one, so reading it there would put the alternate on every sheet and make
+  // the answer do nothing at all.
+  const withStamped = DEFAULT_ROOTS(
+    { ...SNAPSHOT, ...PGI, gstinApplyAll: false, company: { gstin: "33AAFCP5374A1ZQ" } },
+    PACKING, ORDER, SETTINGS,
+  );
+  assert.equal(withStamped.exporterGstinText, PGI_HEADING);
+  assert.equal(withStamped.plGstin, OWN_HEADING, "the stamped company block must not leak the alternate onto the packing list");
+});
+
+test("answer 19: the built workbook carries the split in the actual cells", async () => {
+  const slabs = makeSlabs(2, 3);
+  const crateRows = crateRowsFor(slabs, { netWeightTotalKg: 3000 });
+  const roots = DEFAULT_ROOTS({ ...SNAPSHOT, ...PGI, gstinApplyAll: false }, PACKING, ORDER, SETTINGS);
+  const { buffer } = await buildExportWorkbookWithLayout({ roots, slabs, crateRows });
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buffer as unknown as ArrayBuffer);
+
+  const at = (key: string) => {
+    const rc = rootCell(key)!;
+    return wb.getWorksheet(rc.sheet)!.getCell(rc.cell).value;
+  };
+  assert.equal(at(GSTIN_INVOICE_ROOT_KEY), PGI_HEADING);
+  assert.equal(at("plGstin"), OWN_HEADING);
+  assert.equal(at("custPlGstin"), OWN_HEADING);
+  assert.equal(at("c1Gstin"), "33AALCP2750N1Z3");
+
+  // and on a yes, the same four cells all carry the alternate
+  const wide = DEFAULT_ROOTS({ ...SNAPSHOT, ...PGI, gstinApplyAll: true }, PACKING, ORDER, SETTINGS);
+  const out2 = await buildExportWorkbookWithLayout({ roots: wide, slabs, crateRows });
+  const wb2 = new ExcelJS.Workbook();
+  await wb2.xlsx.load(out2.buffer as unknown as ArrayBuffer);
+  const at2 = (key: string) => {
+    const rc = rootCell(key)!;
+    return wb2.getWorksheet(rc.sheet)!.getCell(rc.cell).value;
+  };
+  assert.equal(at2(GSTIN_INVOICE_ROOT_KEY), PGI_HEADING);
+  assert.equal(at2("plGstin"), PGI_HEADING);
+  assert.equal(at2("custPlGstin"), PGI_HEADING);
+  assert.equal(at2("c1Gstin"), "33AAFCP5374A1ZQ");
+});
+
+test("answer 19: the answer is prefill, and a saved form still overrides the cell", async () => {
+  // The scope decides what the FORM is prefilled with; the saved form is what
+  // the file carries (invoice-rules exportRootOverrides says so on the screen).
+  const slabs = makeSlabs(1, 2);
+  const roots = {
+    ...DEFAULT_ROOTS({ ...SNAPSHOT, ...PGI, gstinApplyAll: false }, PACKING, ORDER, SETTINGS),
+    plGstin: "GSTIN NO: 33AAFCP5374A1ZQ",
+  };
+  const { buffer } = await buildExportWorkbookWithLayout({
+    roots, slabs, crateRows: crateRowsFor(slabs, { netWeightTotalKg: 1000 }),
+  });
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buffer as unknown as ArrayBuffer);
+  const rc = rootCell("plGstin")!;
+  assert.equal(wb.getWorksheet(rc.sheet)!.getCell(rc.cell).value, "GSTIN NO: 33AAFCP5374A1ZQ");
 });

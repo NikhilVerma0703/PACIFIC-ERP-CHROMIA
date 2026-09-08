@@ -6,7 +6,7 @@ import { fail } from "@/lib/commercial/http";
 import { loadSettings } from "@/lib/commercial/settings";
 import { logOrderEvent } from "@/lib/commercial/events";
 import type { CommercialUser } from "@/lib/commercial/access";
-import { findDesignRow, parseShade, type PlanningSettingsLike } from "@/lib/commercial/design-rules";
+import { findDesignRow, parseShade, type PlanningSettingsLike, type DesignColourLike } from "@/lib/commercial/design-rules";
 import { recomputeCleaning, abruptJumps, type ChainRowLike } from "@/lib/commercial/production-rules";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -42,12 +42,48 @@ export async function loadPlanning(): Promise<PlanningSettingsLike> {
   return s.planning;
 }
 
-/** The design master's shade for a design (answer 13), null when the master
- *  has no row or no shade for it — the queue then treats it as MEDIUM. */
-export async function shadeForDesign(design: string): Promise<string | null> {
-  const rows: Array<{ design: string; shade: string | null }> = await db.commercialDesignCode.findMany({ select: { design: true, shade: true } });
-  const hit = findDesignRow(rows, design);
-  return hit ? parseShade(hit.shade) : null;
+/** The colour columns every reader of the master needs: the label the queue
+ *  stores, the reading that decides an abrupt changeover (round two, answer
+ *  14) and the swatch the board draws. */
+const COLOUR_SELECT = { design: true, shade: true, labL: true, colourName: true, hex: true } as const;
+
+export interface DesignColourRow extends DesignColourLike {
+  design: string;
+  shade: string | null;
+  labL: number | null;
+  colourName: string | null;
+  hex: string | null;
+}
+
+const colourRow = (r: Record<string, unknown> | null | undefined, design: string): DesignColourRow => ({
+  design: String(r?.design ?? design),
+  shade: parseShade(r?.shade),
+  // Prisma hands back a Decimal; the rule takes a number and plain() would
+  // have done the same on the way out.
+  labL: r?.labL === null || r?.labL === undefined ? null : Number(r.labL),
+  colourName: (r?.colourName as string | null) ?? null,
+  hex: (r?.hex as string | null) ?? null,
+});
+
+/** The design master's colour for a design (answers 13 and 15), matched
+ *  case-blind; every field null when the master has no row for it — the queue
+ *  then treats the design as MEDIUM. */
+export async function colourForDesign(design: string): Promise<DesignColourRow> {
+  const rows: Array<Record<string, unknown> & { design: string }> = await db.commercialDesignCode.findMany({ select: COLOUR_SELECT });
+  return colourRow(findDesignRow(rows, design), design);
+}
+
+/**
+ * Every design's colour, keyed by the design name lower-cased and trimmed —
+ * the key every reader of the master matches on. The queue sends this beside
+ * its rows so the board can draw the swatch and judge an optimistic re-order
+ * by the same L* the server used, without one request per design.
+ */
+export async function loadColourMap(): Promise<Record<string, DesignColourRow>> {
+  const rows: Array<Record<string, unknown> & { design: string }> = await db.commercialDesignCode.findMany({ select: COLOUR_SELECT });
+  const out: Record<string, DesignColourRow> = {};
+  for (const r of rows) out[String(r.design).trim().toLowerCase()] = colourRow(r, String(r.design));
+  return out;
 }
 
 /**
@@ -61,6 +97,13 @@ export async function shadeForDesign(design: string): Promise<string | null> {
  *
  * Each row also says whether it carries an OPEN cleaningHours reduction, so
  * the recompute can leave that hand-set figure alone (cleaningHeld).
+ *
+ * The design master's COLOUR is joined on by name (round two, answer 14): the
+ * request row stores only the shade label it was raised with, and the L* that
+ * decides an abrupt changeover lives on the master, where a correction has to
+ * reach every row that reads it. There is no foreign key — the request carries
+ * the design as stock spells it — so the join is the same case-blind match
+ * every other reader of the master makes.
  */
 export async function loadChainRows(): Promise<Array<ChainRowLike & { orderId: string | null }>> {
   const select = {
@@ -80,16 +123,25 @@ export async function loadChainRows(): Promise<Array<ChainRowLike & { orderId: s
     }),
   ]);
   const rows = lastProduced ? [...open, lastProduced] : open;
-  return rows.map((r) => ({
-    id: String(r.id), status: String(r.status), priority: Number(r.priority),
-    shade: (r.shade as string | null) ?? null, cleaningHours: r.cleaningHours, design: String(r.design ?? ""),
-    orderId: (r.orderId as string | null) ?? null,
-    producedAt: (r.producedAt as Date | null) ?? null,
-    cleaningHeld: Array.isArray(r.changes) && r.changes.length > 0,
-  }));
+  const colours = await loadColourMap();
+  return rows.map((r) => {
+    const design = String(r.design ?? "");
+    const colour = colours[design.trim().toLowerCase()];
+    return {
+      id: String(r.id), status: String(r.status), priority: Number(r.priority),
+      shade: (r.shade as string | null) ?? null, cleaningHours: r.cleaningHours, design,
+      labL: colour?.labL ?? null, hex: colour?.hex ?? null, colourName: colour?.colourName ?? null,
+      orderId: (r.orderId as string | null) ?? null,
+      producedAt: (r.producedAt as Date | null) ?? null,
+      cleaningHeld: Array.isArray(r.changes) && r.changes.length > 0,
+    };
+  });
 }
 
-export interface AbruptWarning { kind: "abrupt"; id: string; afterId: string; design: string; afterDesign: string; message: string }
+export interface AbruptWarning {
+  kind: "abrupt"; id: string; afterId: string; design: string; afterDesign: string;
+  labL: number | null; afterLabL: number | null; reason: string; message: string;
+}
 /** A hand-set cleaning figure the recompute kept because its OPEN reduction
  *  is still on the "planned but not scheduled" panel. */
 export interface HeldWarning { kind: "held"; id: string; design: string; kept: number | null; rule: number; message: string }
@@ -126,9 +178,12 @@ export async function recomputeQueue(by: CommercialUser | null, why: string): Pr
     }
   }
   const warnings: QueueWarning[] = [
-    ...abruptJumps(rows).map((j): AbruptWarning => ({
+    // The message names both designs AND the lightnesses the rule read (round
+    // two, answer 14), because "abrupt" is now a distance and the planner has
+    // to be able to see the two numbers that made it one.
+    ...abruptJumps(rows, planning).map((j): AbruptWarning => ({
       kind: "abrupt", ...j,
-      message: `${j.design} (light) runs straight after ${j.afterDesign} (dark) — ${planning.cleaningHoursAbrupt} h of cleaning instead of ${planning.cleaningHoursDefault}`,
+      message: `${j.reason} — ${planning.cleaningHoursAbrupt} h of cleaning instead of ${planning.cleaningHoursDefault}`,
     })),
     ...held.map((h): HeldWarning => ({
       kind: "held", ...h,

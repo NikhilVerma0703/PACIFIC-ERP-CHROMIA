@@ -24,7 +24,7 @@ export const runtime = "nodejs";
 type Ctx = { params: Promise<{ plId: string; slabId: string }> };
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  const g = await commercialGate("verify");
+  const g = await commercialGate("verify", "dispatchCheck");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const [plId, slabId] = await paramTwo(params as Promise<Record<string, string>>, "plId", "slabId");

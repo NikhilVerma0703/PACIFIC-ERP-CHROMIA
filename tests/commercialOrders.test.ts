@@ -15,6 +15,7 @@ import {
   type SettingsLike, type ClientLike, type ClientExtLike,
 } from "../src/lib/commercial/orders-rules.ts";
 import { canEnter } from "../src/lib/commercial/stages.ts";
+import { advanceStatus, effectiveAdvancePct, advancePctChange } from "../src/lib/commercial/receipts-rules.ts";
 import { prefillChecklist, parseChecklist, outstandingPoints, CHECKLIST_POINTS } from "../src/lib/commercial/checklist.ts";
 import { DEFAULT_SETTINGS } from "../src/lib/commercial/settings-defaults.ts";
 
@@ -396,24 +397,32 @@ test("isLiveHold / stageFactsOf: an ACTIVE hold past its expiry is not a live st
   // and through stageFactsOf, which is what canEnter's PI gate reads (answers 1, 11)
   assert.equal(stageFactsOf({ stockCheckedAt: stamped, holds: [{ status: "ACTIVE", expiresAt: "2026-09-07T00:00:00.000Z" }] }, now).stockChecked, false, "the stamp plus a lapsed-but-unswept hold is history");
   assert.equal(stageFactsOf({ stockCheckedAt: stamped, holds: [{ status: "ACTIVE", expiresAt: "2026-09-07T00:00:00.000Z" }, { status: "ACTIVE", expiresAt: "2026-09-20T00:00:00.000Z" }] }, now).stockChecked, true, "one live hold among lapsed ones is enough");
-  const lapsed = stageFactsOf({ stockCheckedAt: stamped, approvedAt: stamped, holds: [{ status: "ACTIVE", expiresAt: "2026-09-07T00:00:00.000Z" }], receipts: [] }, now);
+  const lapsed = stageFactsOf({ stockCheckedAt: stamped, approvedAt: stamped, holds: [{ status: "ACTIVE", expiresAt: "2026-09-07T00:00:00.000Z" }], advance: { satisfied: false } }, now);
   const pi = canEnter("CONFIRMED", "PI_ISSUED", lapsed);
   assert.equal(pi.ok, false, "the PI gate shuts on a lapsed hold");
   assert.match((pi as { reason: string }).reason, /Stock check first/);
 });
 
-test("stageFactsOf: approved is the approval stamp (answer 10); advanceReceived is an ADVANCE receipt (answers 2, 29)", () => {
+test("stageFactsOf: approved is the approval stamp (answer 10); the advance is handed in, never guessed (round two, answer 11)", () => {
   assert.equal(stageFactsOf({ approvedAt: "2026-09-02T00:00:00.000Z" }).approved, true);
   assert.equal(stageFactsOf({ approvedAt: null }).approved, false);
-  assert.equal(stageFactsOf({ receipts: [{ kind: "CAD" }] }).advanceReceived, false);
-  assert.equal(stageFactsOf({ receipts: [{ kind: "CAD" }, { kind: "ADVANCE" }] }).advanceReceived, true);
-  // the detail already carries the derived flag; it wins over re-deriving from the list
-  assert.equal(stageFactsOf({ advanceReceived: true, receipts: [] }).advanceReceived, true);
-  assert.equal(stageFactsOf({ advanceReceived: false, receipts: [{ kind: "ADVANCE" }] }).advanceReceived, false);
+  // the order detail carries advanceStatus's answer; the strip reads it
+  assert.equal(stageFactsOf({ advance: { satisfied: true } }).advanceReceived, true);
+  assert.equal(stageFactsOf({ advance: { satisfied: false } }).advanceReceived, false);
+  // and the explicit boolean, when a caller has already reduced it
+  assert.equal(stageFactsOf({ advanceReceived: true, advance: { satisfied: false } }).advanceReceived, true);
+  assert.equal(stageFactsOf({ advanceReceived: false, advance: { satisfied: true } }).advanceReceived, false);
+  // ROUND TWO CHANGED THIS: a bare ADVANCE receipt of any size used to open
+  // dispatch. It no longer can — the gate is arithmetic over the order
+  // total (advanceStatus), so a source that says nothing about the advance
+  // fails closed rather than guessing from a list of receipts.
+  assert.equal(stageFactsOf({ approvedAt: null }).advanceReceived, false);
+  assert.equal(stageFactsOf({ advance: null }).advanceReceived, false);
+  assert.equal(stageFactsOf({ advance: { satisfied: null } }).advanceReceived, false);
 });
 
 test("the strip's reasons: the three gates refuse with a named reason, and nothing else is gated", () => {
-  const bare = stageFactsOf({ stockCheckedAt: null, approvedAt: null, holds: [], receipts: [] });
+  const bare = stageFactsOf({ stockCheckedAt: null, approvedAt: null, holds: [], advance: { satisfied: false } });
   const pi = canEnter("CONFIRMED", "PI_ISSUED", bare);
   assert.equal(pi.ok, false);
   assert.match((pi as { reason: string }).reason, /Stock check first/);
@@ -427,12 +436,79 @@ test("the strip's reasons: the three gates refuse with a named reason, and nothi
   for (const to of ["CONFIRMED", "STOCK_CHECKED", "PACKING", "DISPATCH_CHECK", "READY", "CLOSED"]) {
     assert.equal(canEnter("DRAFT", to, bare).ok, true, `${to} is not gated`);
   }
-  const full = stageFactsOf({ stockCheckedAt: "2026-09-01T00:00:00.000Z", approvedAt: "2026-09-02T00:00:00.000Z", holds: [{ status: "ACTIVE" }], receipts: [{ kind: "ADVANCE" }] });
+  const full = stageFactsOf({ stockCheckedAt: "2026-09-01T00:00:00.000Z", approvedAt: "2026-09-02T00:00:00.000Z", holds: [{ status: "ACTIVE" }], advance: { satisfied: true } });
   assert.equal(canEnter("CONFIRMED", "PI_ISSUED", full).ok, true);
   assert.equal(canEnter("READY", "INVOICED", full).ok, true);
   assert.equal(canEnter("INVOICED", "DISPATCHED", full).ok, true);
   // cancelling is never gated on a fact — only on who asks (answer 24, the route's commercialGate("cancel"))
   assert.equal(canEnter("PACKING", "CANCELLED", bare).ok, true);
+});
+
+// ───────────────────────── the advance gate's own total ──────────────────────
+// There is no total column on an order: the figure the advance percentage is
+// taken of is orderTotals(items).amount, and BOTH sides must use it — the
+// server (loadStageFacts, the order detail, the dispatch route) and the card.
+// This test is here rather than in the receipts file because it is the join
+// between the two modules that can silently drift.
+
+test("the advance is a share of orderTotals(items).amount, and the two modules agree on that figure (round two, answer 11)", () => {
+  const items = [
+    { qtySlabs: 20, qty: 1200, uom: "SQFT", amount: 24000, isSample: false },
+    { qtySlabs: 5, qty: 300, uom: "SQFT", amount: 6000, isSample: false },
+    { qtySlabs: 1, qty: 1, uom: "NOS", amount: null, isSample: true },   // a free sample prices nothing
+  ];
+  const total = orderTotals(items).amount;
+  assert.equal(total, 30000);
+
+  const pct = effectiveAdvancePct(null, "EXPORT", { domestic: 100, export: 30 });
+  const short = advanceStatus({ receipts: [{ kind: "ADVANCE", amount: 3000, currency: "USD" }], orderTotal: total, currency: "USD", advancePct: pct });
+  assert.equal(short.required, 9000, "30% of the summed line amounts");
+  assert.equal(short.satisfied, false);
+  assert.match(short.reason ?? "", /USD 30,000\.00/, "the refusal names the same total the items tab shows");
+
+  // an order with lines but no prices is not a priced order, and the gate says so
+  const unpriced = orderTotals([{ qtySlabs: 20, qty: 1200, uom: "SQFT", amount: null, isSample: false }]).amount;
+  assert.equal(unpriced, 0);
+  assert.equal(advanceStatus({ receipts: [], orderTotal: unpriced, currency: "USD", advancePct: pct }).satisfied, false);
+
+  // a DOMESTIC order asks for the whole of it (the terms on file read "100% Advance Payment")
+  const dom = effectiveAdvancePct(null, "DOMESTIC", { domestic: 100, export: 30 });
+  const paid = advanceStatus({ receipts: [{ kind: "ADVANCE", amount: 30000, currency: "INR" }], orderTotal: total, currency: "INR", advancePct: dom });
+  assert.equal(paid.required, 30000);
+  assert.equal(paid.satisfied, true);
+});
+
+test("the header edit that lowers the advance is the same act as a waiver, and PATCH asks the same desk (answers 11, 12)", () => {
+  // The join: changedFields decides that advancePct moved, advancePctChange
+  // decides whether a write-level login may move it that way, and advanceStatus
+  // shows what the move would have done to the truck. PATCH …/orders/[id]
+  // composes exactly these three, so they are checked together here.
+  const d = { domestic: 100, export: 30 };
+  const order = { kind: "EXPORT", advancePct: 30, currency: "USD" };
+  const items = [{ qtySlabs: 20, qty: 1200, uom: "SQFT", amount: 30000, isSample: false }];
+  const total = orderTotals(items).amount;
+  const receipts = [{ kind: "ADVANCE", amount: 0, currency: "USD" }];
+
+  const before = advanceStatus({ receipts, orderTotal: total, currency: "USD", advancePct: effectiveAdvancePct(order.advancePct, order.kind, d) });
+  assert.equal(before.satisfied, false, "USD 9,000 is asked and nothing has arrived");
+
+  // what the clerk typed: 0 in the header box. It is a change …
+  assert.deepEqual(changedFields(order, { advancePct: 0 }), ["advancePct"]);
+  // … and it is the change that takes the manager
+  const move = advancePctChange(
+    effectiveAdvancePct(order.advancePct, order.kind, d),
+    effectiveAdvancePct(0, order.kind, d),
+  );
+  assert.equal(move.ok, false, "a write-level login gets this sentence as a 403");
+  // because had it landed, the gate would have opened with no money in
+  const after = advanceStatus({ receipts, orderTotal: total, currency: "USD", advancePct: effectiveAdvancePct(0, order.kind, d) });
+  assert.equal(after.satisfied, true);
+  assert.equal(after.receivedAdvance, 0, "and not one rupee more would have arrived");
+
+  // raising it is an ordinary edit and stays one
+  assert.deepEqual(advancePctChange(effectiveAdvancePct(order.advancePct, order.kind, d), effectiveAdvancePct(50, order.kind, d)), { ok: true });
+  // a PATCH that does not name advancePct at all never reaches the question
+  assert.deepEqual(changedFields(order, { incoterm: "FOB" }), ["incoterm"]);
 });
 
 // ───────────────────────── the workspace's own state ─────────────────────────

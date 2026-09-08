@@ -9,15 +9,23 @@
 import { useState } from "react";
 import type { OrderTabProps } from "@/lib/commercial/types";
 import { Card, Badge, Empty } from "@/components/ui";
-import { lineLacksCode, printedItemCode, snapshotExtras, gstinWithLabel, exportRootOverrides } from "@/lib/commercial/invoice-rules";
+import { lineLacksCode, printedItemCode, snapshotExtras, gstinWithLabel, exportRootOverrides, overriddenSheetsNote } from "@/lib/commercial/invoice-rules";
 import { noteBox } from "@/components/commercial/invoices/ui";
 import { ExportDocsPanel } from "@/components/commercial/export-docs/ExportDocsPanel";
+import { useInvoiceChoices } from "@/components/commercial/invoices/useInvoiceChoices";
 
 export default function DocumentsTab({ order, actions }: OrderTabProps) {
   const exportInvoices = (order.invoices ?? []).filter((i) => i.kind === "EXPORT");
   const dtaInvoices = (order.invoices ?? []).filter((i) => i.kind === "DTA");
   const canWrite = actions.includes("write");
   const [selected, setSelected] = useState<string>(exportInvoices[0]?.id ?? "");
+  // The company's OWN registration — the first entry of the clerk-readable
+  // choices route (gstinChoices puts it there). Round two, answer 19: on a
+  // "this invoice only" invoice it is what the packing list, the customer copy
+  // and Annexure C1 are supposed to carry, and the snapshot cannot say what it
+  // is, so the check below needs it from here.
+  const { choices } = useInvoiceChoices();
+  const ownGstin = choices?.gstins[0]?.gstin ?? null;
 
   if (!exportInvoices.length) {
     return (
@@ -48,14 +56,42 @@ export default function DocumentsTab({ order, actions }: OrderTabProps) {
   // form BELOW is prefilled from them — but every root cell of that form is
   // typed over-able and the workbook prints what the form holds. So this line
   // may only claim the default; where a saved set disagrees, say so by value
-  // rather than promising a GSTIN the file will not carry.
-  const overrides = exportRootOverrides(current.snapshot, current.exportDocSet?.rootVariables ?? null);
+  // rather than promising a GSTIN the file will not carry. Round two, answer
+  // 19: that goes for the three per-sheet GSTIN cells too, which is what the
+  // scope sentence below is about — so it is checked before the sentence
+  // states it as fact.
+  const overrides = exportRootOverrides(current.snapshot, current.exportDocSet?.rootVariables ?? null, ownGstin);
+  const overriddenSheets = overriddenSheetsNote(overrides);
+  // A "this invoice only" scope expects the company's OWN registration on the
+  // three other sheets, so a saved form can only be checked against it once
+  // the choices have arrived. Until then the sentence says it is still
+  // checking rather than asserting what the file carries.
+  const scopeChecked = !current.exportDocSet || (extras?.gstinApplyAll ?? true) || Boolean(ownGstin);
 
   return (
     <div className="space-y-4">
       {extras && (
         <p className="text-sm text-gray-600">
           The invoice is issued under GSTIN <span className="font-medium text-gray-900">{gstinWithLabel(extras.gstin, extras.gstinLabel) || "—"}</span> and the {current.snapshot.bank?.name ?? "—"} account — change either on the invoice while it is a draft. The export form&apos;s GSTIN and bank cells default to these and can be overridden there.
+          {/* round two, answer 19: the answer given when the registration was
+              chosen is what the sheets below were prefilled from, so say it
+              here — this is the screen the workbook is downloaded from */}
+          {extras.gstinLabel && (
+            <>
+              {" "}
+              <span className="font-medium text-gray-900">
+                {extras.gstinApplyAll
+                  ? "It was applied to every sheet of the workbook."
+                  : "It was applied to this invoice only — the packing list, the customer copy and Annexure C1 carry the company's own registration."}
+              </span>
+              {/* …unless a hand typed over those cells in the saved form, which
+                  is what the file will actually print. Say so here rather than
+                  let the sentence above stand as fact. */}
+              {overriddenSheets
+                ? <span className="font-medium text-amber-800"> Not on {overriddenSheets}, though — the saved export form overrides the GSTIN there.</span>
+                : !scopeChecked && <span className="text-gray-500"> (still checking what the saved export form holds on those three sheets)</span>}
+            </>
+          )}
         </p>
       )}
       {overrides.length > 0 && (
@@ -64,7 +100,7 @@ export default function DocumentsTab({ order, actions }: OrderTabProps) {
           <ul className="mt-1 list-disc space-y-0.5 pl-5">
             {overrides.map((o) => (
               <li key={o.key}>
-                {o.what}: <span className="font-medium">{o.saved || "(blank — the sheet prints nothing)"}</span>, where the invoice is issued under {o.onInvoice || "—"}.
+                {o.what}: <span className="font-medium">{o.saved || "(blank — the sheet prints nothing)"}</span>, where the invoice&apos;s choice gives {o.expected || "—"}.
               </li>
             ))}
           </ul>

@@ -275,9 +275,10 @@ test("the loose diff is what the screen marks: a typed '5' is not a change, a ty
   assert.deepEqual(diffFromDefaults(draft, DEFAULT_SETTINGS, true), []);
   assert.deepEqual(diffFromDefaults(draft), ["holdDays"], "and the strict form still sees the type change");
   assert.deepEqual(diffFromDefaults(setAt(draft, "holdDays", "6"), DEFAULT_SETTINGS, true), ["holdDays"]);
-  // telegram ships ON (answer 13), so "on" is no change and "off" is one
-  assert.deepEqual(diffFromDefaults(setAt(draft, "notify.telegram", "on"), DEFAULT_SETTINGS, true), []);
-  assert.deepEqual(diffFromDefaults(setAt(draft, "notify.telegram", "off"), DEFAULT_SETTINGS, true), ["notify.telegram"]);
+  // Telegram ships OFF (round two, answer 5: "let's leave Telegram for now"),
+  // so "off" is no change and switching it on is one.
+  assert.deepEqual(diffFromDefaults(setAt(draft, "notify.telegram", "off"), DEFAULT_SETTINGS, true), []);
+  assert.deepEqual(diffFromDefaults(setAt(draft, "notify.telegram", "on"), DEFAULT_SETTINGS, true), ["notify.telegram"]);
   // pressing Enter in the address textarea leaves a blank line the walk drops
   const typing = setAt(draft, "company.addressLines", [...DEFAULT_SETTINGS.company.addressLines, ""]);
   assert.deepEqual(diffFromDefaults(typing, DEFAULT_SETTINGS, true), []);
@@ -425,12 +426,12 @@ test("previewCounters shows what each kind would issue today, per-FY counters un
   const at = new Date(2026, 8, 6);                       // 6 September 2026 → FY 26-27
   const p = previewCounters(DEFAULT_SETTINGS, [{ key: "PESPL-EXP", nextValue: 2781 }, { key: "PESPL-DC:26-27", nextValue: 21 }], at);
   assert.deepEqual(p.exportInvoice, { key: "PESPL-EXP", next: 2781, preview: "PESPL/N2781" });
-  assert.deepEqual(p.challan, { key: "PESPL-DC:26-27", next: 21, preview: "PESPL/DC/N21/26" });
-  assert.deepEqual(p.order, { key: "ORD:26-27", next: 1, preview: "ORD/26-27/N1" }, "a counter with no row is at 1 — the state the module ships in");
-  assert.deepEqual(p.proforma, { key: "SAL-ORD:26-27", next: 1, preview: "SAL-ORD/26-27/N1" }, "the PI has its own counter (answer 24)");
+  assert.deepEqual(p.challan, { key: "PESPL-DC:26-27", next: 21, preview: "PESPL/DC/N0021/26" });
+  assert.deepEqual(p.order, { key: "ORD:26-27", next: 1, preview: "ORD/26-27/N0001" }, "a counter with no row is at 1 — the state the module ships in");
+  assert.deepEqual(p.proforma, { key: "SAL-ORD:26-27", next: 1, preview: "SAL-ORD/26-27/N0001" }, "the PI has its own counter (answer 24)");
   assert.equal(p.dtaInvoice.key, "PESPL-DTA:26-27");
-  assert.equal(p.enquiry.preview, "ENQ/26-27/N1");
-  assert.equal(p.packingList.preview, "PL/26-27/N1");
+  assert.equal(p.enquiry.preview, "ENQ/26-27/N0001");
+  assert.equal(p.packingList.preview, "PL/26-27/N0001");
 });
 
 test("previewCounters follows an edited template and key, which is what makes the preview live", () => {
@@ -440,7 +441,7 @@ test("previewCounters follows an edited template and key, which is what makes th
   assert.deepEqual(p.challan, { key: "DC", next: 7, preview: "DC-0007/26-27" });
   const across = previewCounters(DEFAULT_SETTINGS, [{ key: "PESPL-DC:25-26", nextValue: 21 }], new Date(2026, 2, 31));
   assert.equal(across.challan.key, "PESPL-DC:25-26", "31 March is still the old financial year");
-  assert.equal(across.challan.preview, "PESPL/DC/N21/26");
+  assert.equal(across.challan.preview, "PESPL/DC/N0021/26");
 });
 
 // ───────────────────────── what the settings SCREEN posts ────────────────────
@@ -532,6 +533,33 @@ test("the counters table lists every kind including the PI, under the label the 
   assert.equal(rows.length, 7);
   const pi = rows.find((r) => r.label === "Proforma invoice (PI)");
   assert.ok(pi, "the PI has its own row");
-  assert.deepEqual(pi, { label: "Proforma invoice (PI)", key: "SAL-ORD:26-27", next: 1, preview: "SAL-ORD/26-27/N1" });
+  assert.deepEqual(pi, { label: "Proforma invoice (PI)", key: "SAL-ORD:26-27", next: 1, preview: "SAL-ORD/26-27/N0001" });
   assert.equal(new Set(rows.map((r) => r.key)).size, 7, "no two kinds draw from one counter");
+});
+
+test("the dispatch advance percentages are editable and land as numbers (answer 11)", () => {
+  // What the screen ships with: 100% domestic, 30% export. Until the Dispatch
+  // section existed these two had no field at all, so the shipped figures were
+  // the only figures the module could ever ask for.
+  assert.equal(DEFAULT_SETTINGS.dispatch.advancePctDomestic, 100);
+  assert.equal(DEFAULT_SETTINGS.dispatch.advancePctExport, 30);
+
+  // the shape the number boxes post: strings, both leaves, every save
+  const v = validateOverrides({ dispatch: { advancePctDomestic: "100", advancePctExport: "50" } });
+  assert.equal(v.ok, true, JSON.stringify(v.errors));
+  assert.deepEqual(v.cleaned, { dispatch: { advancePctDomestic: 100, advancePctExport: 50 } });
+  assert.deepEqual(pruneDefaults(v.cleaned), { dispatch: { advancePctExport: 50 } }, "the untouched one keeps following the default");
+  assert.equal(mergeSettings(DEFAULT_SETTINGS, v.cleaned).dispatch.advancePctExport, 50);
+
+  // 0 is a real answer here — an order kind that asks for nothing up front
+  assert.equal(validateOverrides({ dispatch: { advancePctExport: "0" } }).ok, true);
+  // and a typo is refused rather than clamped, the same range pctOf keeps
+  assert.equal(errorAt(validateOverrides({ dispatch: { advancePctDomestic: "140" } }), "dispatch.advancePctDomestic"), "Advance percentage must be between 0 and 100");
+  assert.equal(errorAt(validateOverrides({ dispatch: { advancePctExport: "-5" } }), "dispatch.advancePctExport"), "Advance percentage must be between 0 and 100");
+  assert.equal(errorAt(validateOverrides({ dispatch: { advancePctExport: "half" } }), "dispatch.advancePctExport"), "Must be a number");
+
+  // the loose diff is what lights the screen's "differs from default" dot
+  const draft = JSON.parse(JSON.stringify(DEFAULT_SETTINGS)) as Record<string, unknown>;
+  assert.deepEqual(diffFromDefaults(setAt(draft, "dispatch.advancePctExport", "30"), DEFAULT_SETTINGS, true), [], "a typed '30' is the default typed back");
+  assert.deepEqual(diffFromDefaults(setAt(draft, "dispatch.advancePctExport", "40"), DEFAULT_SETTINGS, true), ["dispatch.advancePctExport"]);
 });

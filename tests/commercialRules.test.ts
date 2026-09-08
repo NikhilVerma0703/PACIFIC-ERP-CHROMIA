@@ -6,6 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   commercialActorOf, commercialCan, commercialActionsFor, maySeeCommercialModule, isDispatchCheckPath, COMMERCIAL_ACTORS, COMMERCIAL_HOME,
+  areaOfPath, areaAccessFor, commercialAreasFor, commercialHomeFor, COMMERCIAL_AREAS, COMMERCIAL_AREA_ACCESS,
 } from "../src/lib/commercial/access-rules.ts";
 import { fyLabel, yy, sequenceKey, formatNumber, documentNumber, cleanOverride } from "../src/lib/commercial/numbering.ts";
 import { ORDER_STAGES, canEnter, stagePatch, impliedStage, stageIndex, isTerminal } from "../src/lib/commercial/stages.ts";
@@ -20,6 +21,9 @@ import { DEFAULT_SETTINGS, mergeSettings } from "../src/lib/commercial/settings-
 const admin = { role: "ADMIN", branch: "SHOP_FLOOR" };
 const commercial = { role: "COMMERCIAL", branch: "OFFICE" };
 const manager = { role: "COMMERCIAL_MANAGER", branch: "OFFICE" };
+const exec = { role: "COMMERCIAL_EXEC", branch: "OFFICE" };
+const docs = { role: "COMMERCIAL_DOCS", branch: "OFFICE" };
+const logistics = { role: "COMMERCIAL_LOGISTICS", branch: "OFFICE" };
 const store = { role: "STORE", branch: "SHOP_FLOOR" };
 const lineManager = { role: "LINE_MANAGER", branch: "SHOP_FLOOR" };
 const finance = { role: "FINANCE", branch: "OFFICE" };
@@ -34,12 +38,18 @@ test("actors: admin, commercial, dispatch checker (store / line manager); nobody
   for (const u of [finance, sales, operator, null, undefined, {}]) assert.equal(commercialActorOf(u), null, JSON.stringify(u));
 });
 
-test("the action table: commercial writes but does not plan, approve, cancel or administer; the manager does all but administer; the checker only verifies", () => {
+test("the action table: the planner is admin-only; Murali approves; only the manager and an admin cancel; the checker only verifies", () => {
   assert.deepEqual(commercialActionsFor(admin), ["view", "write", "verify", "plan", "approve", "cancel", "admin"]);
-  assert.deepEqual(commercialActionsFor(manager), ["view", "write", "verify", "plan", "approve", "cancel"]);
+  // Answer 16: "no, only admin" - and the manager does not see the planner either.
+  assert.deepEqual(commercialActionsFor(manager), ["view", "write", "verify", "approve", "cancel"]);
+  assert.deepEqual(commercialActionsFor(exec), ["view", "write", "verify"]);
+  assert.deepEqual(commercialActionsFor(docs), ["view", "write"]);
+  // Murali approves the checklist (2026-09-07 answer 10).
+  assert.deepEqual(commercialActionsFor(logistics), ["view", "write", "approve"]);
   assert.deepEqual(commercialActionsFor(commercial), ["view", "write", "verify"]);
   assert.deepEqual(commercialActionsFor(store), ["verify"]);
   assert.deepEqual(commercialActionsFor(finance), []);
+  assert.equal(commercialCan(manager, "plan"), false, "answer 16: the planner is the admin's alone");
   assert.equal(commercialCan(commercial, "plan"), false);
   assert.equal(commercialCan(commercial, "admin"), false);
   assert.equal(commercialCan(store, "view"), false);
@@ -60,11 +70,73 @@ test("path gate: a checker reaches only the dispatch-check paths; commercial and
   assert.equal(maySeeCommercialModule(store, "/api/office/commercial/dispatch-check/x"), true);
   assert.equal(maySeeCommercialModule(store, "/office/commercial"), false);
   assert.equal(maySeeCommercialModule(store, "/api/office/commercial/orders"), false);
-  assert.equal(maySeeCommercialModule(commercial, "/office/commercial/settings"), true, "path gate is coarse; the route refuses the action");
-  assert.equal(maySeeCommercialModule(admin, "/api/office/commercial/anything"), true);
+  // The path gate is no longer coarse: it asks the AREA table, so a screen this
+  // login was never given is refused even where its route forgets to say so.
+  assert.equal(maySeeCommercialModule(commercial, "/office/commercial/settings"), false, "settings belong to the one admin login");
+  assert.equal(maySeeCommercialModule(admin, "/api/office/commercial/anything"), false, "a path in no area is not a path this module owns");
+  assert.equal(maySeeCommercialModule(admin, "/api/office/commercial/invoices/x"), true);
   assert.equal(maySeeCommercialModule(finance, "/office/commercial"), false, "uncapped office roles are refused by name");
   assert.equal(maySeeCommercialModule(null, "/office/commercial"), false);
   assert.equal(COMMERCIAL_HOME, "/office/commercial");
+  assert.equal(commercialHomeFor(store), "/office/commercial/dispatch-check", "bay 5 lands on its one tab");
+  assert.equal(commercialHomeFor(manager), "/office/commercial");
+});
+
+test("the area table: one role per set of tasks, and the path gate agrees with it", () => {
+  // Answers 1 and 2, person by person.
+  assert.equal(areaAccessFor("COMMERCIAL_DOCS", "invoices"), "write", "Raghav does the invoice");
+  assert.equal(areaAccessFor("COMMERCIAL_DOCS", "checklist"), "write", "...and the checklist");
+  assert.equal(areaAccessFor("COMMERCIAL_DOCS", "orders"), "view", "...on an order he does not otherwise edit");
+  assert.equal(areaAccessFor("COMMERCIAL_DOCS", "stock"), "none");
+  assert.equal(areaAccessFor("COMMERCIAL_DOCS", "packing"), "view");
+  assert.equal(areaAccessFor("COMMERCIAL_EXEC", "stock"), "write", "Setumani adds the stock check");
+  assert.equal(areaAccessFor("COMMERCIAL_EXEC", "proforma"), "write");
+  assert.equal(areaAccessFor("COMMERCIAL_EXEC", "packing"), "write");
+  assert.equal(areaAccessFor("COMMERCIAL_EXEC", "dispatchCheck"), "write");
+  assert.equal(areaAccessFor("COMMERCIAL_LOGISTICS", "enquiries"), "write", "Murali takes the enquiry and the order");
+  assert.equal(areaAccessFor("COMMERCIAL_LOGISTICS", "challans"), "write");
+  assert.equal(areaAccessFor("COMMERCIAL_MANAGER", "planning"), "none", "answer 16");
+  assert.equal(areaAccessFor("COMMERCIAL_MANAGER", "settings"), "none");
+  assert.equal(areaAccessFor("COMMERCIAL_MANAGER", "designCodes"), "write", "the colour master is his, without the counters");
+  assert.equal(areaAccessFor("DISPATCH_CHECKER", "dispatchCheck"), "write");
+  for (const a of COMMERCIAL_AREAS) {
+    assert.equal(areaAccessFor("ADMIN", a), "write", `admin spans ${a}`);
+    if (a !== "dispatchCheck") assert.equal(areaAccessFor("DISPATCH_CHECKER", a), "none", `bay 5 sees only its tab, not ${a}`);
+  }
+  // every actor has a row for every area - a screen with no row fails closed
+  for (const actor of Object.keys(COMMERCIAL_AREA_ACCESS) as Array<keyof typeof COMMERCIAL_AREA_ACCESS>) {
+    for (const a of COMMERCIAL_AREAS) assert.ok(COMMERCIAL_AREA_ACCESS[actor][a], `${actor} has no rule for ${a}`);
+  }
+  assert.equal(commercialAreasFor(docs).invoices, "write");
+  assert.equal(commercialAreasFor(null).invoices, "none");
+});
+
+test("areaOfPath: page and API map to the same area, and a nested thing keeps its own", () => {
+  assert.equal(areaOfPath("/office/commercial"), "overview");
+  assert.equal(areaOfPath("/office/commercial/"), "overview");
+  assert.equal(areaOfPath("/api/office/commercial/dashboard"), "overview");
+  assert.equal(areaOfPath("/office/commercial/invoices/abc"), "invoices");
+  assert.equal(areaOfPath("/api/office/commercial/invoices/abc/issue"), "invoices");
+  assert.equal(areaOfPath("/office/commercial/production-planning"), "planning");
+  assert.equal(areaOfPath("/api/office/commercial/production-requests/x/changes/y"), "planning");
+  assert.equal(areaOfPath("/api/office/commercial/design-codes/seed"), "designCodes");
+  // the thing hanging off an order belongs to the thing, not to the order
+  assert.equal(areaOfPath("/api/office/commercial/orders/abc/packing-lists"), "packing");
+  assert.equal(areaOfPath("/api/office/commercial/orders/abc/holds"), "stock");
+  assert.equal(areaOfPath("/api/office/commercial/orders/abc/proformas"), "proforma");
+  assert.equal(areaOfPath("/api/office/commercial/orders/abc/invoices"), "invoices");
+  assert.equal(areaOfPath("/api/office/commercial/orders/abc/checklist"), "checklist");
+  assert.equal(areaOfPath("/api/office/commercial/orders/abc/receipts/r1"), "orders");
+  assert.equal(areaOfPath("/api/office/commercial/orders/abc"), "orders");
+  // not this module, or a segment nobody granted
+  assert.equal(areaOfPath("/office/commercial-something"), null);
+  assert.equal(areaOfPath("/office/other"), null);
+  assert.equal(areaOfPath("/api/office/commercial/made-up"), null, "an ungranted segment fails closed");
+  // Raghav reads an order and its packing list, but stock is not his
+  assert.equal(maySeeCommercialModule(docs, "/api/office/commercial/orders/abc"), true);
+  assert.equal(maySeeCommercialModule(docs, "/api/office/commercial/orders/abc/packing-lists"), true);
+  assert.equal(maySeeCommercialModule(docs, "/api/office/commercial/orders/abc/holds"), false);
+  assert.equal(maySeeCommercialModule(logistics, "/office/commercial/dispatch-check"), false);
 });
 
 // ───────────────────────────── numbering ─────────────────────────────────────
@@ -78,15 +150,17 @@ test("financial year label starts 1 April", () => {
 
 test("the real document formats come out of the templates", () => {
   const d = new Date(2026, 8, 6);
-  // Answer 8: every series carries an N and no zero padding — N1, N2 … — so
-  // the new ERP's numbers are "definitively different" from Tally's. Answer
-  // 24 gives the PI its own counter (SAL-ORD), separate from the order (ORD).
+  // Every series carries an N (2026-09-07 answer 8) and four digits of zero
+  // padding: the owner chose N0001 over N1 in round two (answer 7). A number
+  // longer than the pad is never truncated - N1404 stays N1404.
   assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.order, d, 1404), "ORD/26-27/N1404");
+  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.order, d, 1), "ORD/26-27/N0001");
   assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.proforma, d, 1404), "SAL-ORD/26-27/N1404");
+  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.proforma, d, 1), "SAL-ORD/26-27/N0001");
   assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.exportInvoice, d, 2780), "PESPL/N2780");
-  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.dtaInvoice, d, 137), "PESPL/N137/26-27");
-  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.challan, d, 20), "PESPL/DC/N20/26");
-  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.enquiry, d, 7), "ENQ/26-27/N7");
+  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.dtaInvoice, d, 137), "PESPL/N0137/26-27");
+  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.challan, d, 20), "PESPL/DC/N0020/26");
+  assert.equal(documentNumber(DEFAULT_SETTINGS.numbering.enquiry, d, 7), "ENQ/26-27/N0007");
   // a pad never truncates
   assert.equal(formatNumber("X/{seq:2}", { fy: "", yy: "", seq: 12345 }), "X/12345");
   // a typo'd placeholder stays visible rather than vanishing

@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Packing list | Commercial | Pacific ERP" };
 
 export default async function PackingListPage({ params }: { params: Promise<{ plId: string }> }) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "packing");
   if (!g.ok) redirect(g.actions.includes("verify") ? "/office/commercial/dispatch-check" : "/no-access?from=/office/commercial/packing-lists");
   const { plId } = await params;
   return (

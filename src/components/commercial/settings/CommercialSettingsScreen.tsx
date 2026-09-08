@@ -17,15 +17,14 @@
 // through PATCH …/settings/sequences, which refuses a decrease without an
 // explicit confirmation.
 //
-// WHO SEES WHAT. The page gates "view" and passes the actions down. The form
-// above needs "admin" — its API refuses anyone else, and a form that loads
-// into a 403 is worse than no form. The design-code master (answer 20) is
-// editable with "plan" (an admin or the Commercial Manager) and read-only for
-// everyone else, so a Commercial login can look a code up without being able
-// to change the shade the plant sequences by.
+// WHO SEES WHAT. Nobody but an admin: the page gates "admin" and this screen is
+// the form and nothing else. The design-code master used to ride along here so
+// the Commercial Manager could reach it without the counters — it has its own
+// screen for that now (/office/commercial/design-codes, round two answer 15),
+// which is why this screen no longer takes an `actions` prop to decide what to
+// draw.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Card, Empty, Badge } from "@/components/ui";
-import DesignCodesEditor from "@/components/commercial/settings/DesignCodesEditor";
 import { readJson } from "@/lib/readJson";
 import { patchJson } from "@/lib/fab/postJson";
 import { NUMBERING_KINDS, type CommercialSettings, type NumberingKind } from "@/lib/commercial/settings-defaults";
@@ -69,6 +68,8 @@ const LABELS: Record<string, string> = {
   measurementUnitDefault: "Packing list unit",
   "planning.cleaningHoursDefault": "Cleaning between runs (hours)",
   "planning.cleaningHoursAbrupt": "Cleaning after dark → light (hours)",
+  "dispatch.advancePctDomestic": "Advance before dispatch — domestic (%)",
+  "dispatch.advancePctExport": "Advance before dispatch — export (%)",
   "company.legalName": "Legal name (proforma / export)",
   "company.shortName": "Short name (DTA invoice / challan)",
   "company.addressLines": "Address — one line per line",
@@ -183,45 +184,13 @@ const errorMap = (list: SettingsIssue[] | undefined): Record<string, string> => 
 };
 
 // ───────────────────────────── the screen ────────────────────────────────────
-export function CommercialSettingsScreen({ actions }: { actions: string[] }) {
-  // The design-code master is a SIBLING of the form, never its child: the form
-  // returns early while loading and on a load error, and an admin whose
-  // settings read failed must not lose the code master with it — that is the
-  // moment they would be on this page to look something up. The form's fixed
-  // save bar needs the bottom padding, so the wrapper carries it whenever the
-  // form is present.
-  const admin = actions.includes("admin");
+export function CommercialSettingsScreen() {
+  // The form's fixed save bar sits over the foot of the page, so the wrapper
+  // keeps the bottom padding that stops it covering the last field.
   return (
-    <div className={`flex flex-col gap-6 ${admin ? "pb-28" : ""}`}>
-      {admin && <SettingsForm />}
-      <DesignCodesSection editable={actions.includes("plan")} />
+    <div className="flex flex-col gap-6 pb-28">
+      <SettingsForm />
     </div>
-  );
-}
-
-/** The design-code master (answer 20). Read-only is the editor's own prop,
- *  not a `<fieldset disabled>` around it: a disabled fieldset inerts EVERY
- *  control inside, including the Find box and the shade filter, so a login
- *  without "plan" could not look a code up — the one thing it is here to do.
- *  With `readOnly` the editor keeps its search and hides only the writes. */
-function DesignCodesSection({ editable }: { editable: boolean }) {
-  return (
-    <Card>
-      <div className="mb-4">
-        <h2 className="text-sm font-semibold text-gray-900">Design codes and shades</h2>
-        <p className="mt-0.5 text-xs text-gray-500">
-          One row per design: the owner's item code (answer 20), printed on order lines and export documents, and the shade
-          (light / medium / dark) the production queue sequences by (answer 13). A shade guessed from the name stays
-          unconfirmed until somebody confirms it.
-        </p>
-        {!editable && (
-          <p className="mt-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
-            Read-only for this login. Codes and shades are changed by an admin or the Commercial Manager.
-          </p>
-        )}
-      </div>
-      <DesignCodesEditor readOnly={!editable} />
-    </Card>
   );
 }
 
@@ -490,6 +459,17 @@ function SettingsForm() {
           {field("measurementUnitDefault", { kind: "select", options: UNIT_OPTIONS, hint: "Each packing list can be switched to the other unit on its own screen; the finished-goods record stays in inches." })}
           {field("planning.cleaningHoursDefault", { hint: "Between any two consecutive runs in the queue." })}
           {field("planning.cleaningHoursAbrupt", { hint: "When the run before is dark and this one is light — the abrupt change the owner named." })}
+        </div>
+      ))}
+
+      {/* Round two, answer 11: the advance is a percentage, and these two are
+          the percentages every new order starts from. They shipped at 100 and
+          30 and there was nowhere to change them — which made the shipped
+          figures the only figures. */}
+      {section("Dispatch", "How much of an order must be received before the truck leaves (answer 11). An order may carry its own percentage; these are what a blank one falls back to.", (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {field("dispatch.advancePctDomestic", { hint: "0 to 100. Applied to the order total (Σ of the priced lines) — the money must be in, in the order's own currency, before dispatch is allowed." })}
+          {field("dispatch.advancePctExport", { hint: "0 to 100. The export default the owner named — the balance follows on CAD or LC terms." })}
         </div>
       ))}
 

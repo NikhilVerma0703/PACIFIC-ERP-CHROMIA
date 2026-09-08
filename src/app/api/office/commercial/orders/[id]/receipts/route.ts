@@ -1,17 +1,19 @@
 // GET  /api/office/commercial/orders/[id]/receipts — money received against
-//      this order, newest first, with `advanceReceived`
+//      this order, newest first, with the advance gate's figures
 // POST /api/office/commercial/orders/[id]/receipts — record one
 //      { kind, amount, currency?, receivedAt, mode?, reference?, notes? }
 //
-// Answer 29: advance and CAD receipts are recorded here. Answer 2: the first
-// ADVANCE is the one fact that lets a packing list dispatch, which is why the
-// body goes through receipts-rules before it touches the row — the shape is
-// what the pipeline gates on. A terminal order (CLOSED / CANCELLED) 409s.
+// Answer 29: advance and CAD receipts are recorded here. Answer 2 and round
+// two answer 11: the ADVANCE money in the ORDER's currency, measured against
+// the percentage the order asks for, is what lets a packing list dispatch —
+// which is why the body goes through receipts-rules before it touches the row.
+// The amount and the currency are the figures the gate does arithmetic on. A
+// terminal order (CLOSED / CANCELLED) 409s.
 import { commercialGate, actorStamp } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain, paramId, dateOnly } from "@/lib/commercial/http";
 import { logOrderEvent } from "@/lib/commercial/events";
-import { parseReceipt, advanceReceived, receiptNote, todayIst, canRecordReceipt } from "@/lib/commercial/receipts-rules";
-import { db, loadOrderWithItems } from "../../_lib";
+import { parseReceipt, receiptNote, todayIst, canRecordReceipt } from "@/lib/commercial/receipts-rules";
+import { advanceOf, db, loadOrderWithItems } from "../../_lib";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -21,18 +23,18 @@ type Ctx = { params: Promise<{ id: string }> };
 const RECEIPTS_ORDER = [{ receivedAt: "desc" }, { createdAt: "desc" }] as const;
 
 export async function GET(_req: Request, { params }: Ctx) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "orders");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await paramId(params);
-    await loadOrderWithItems(id);
+    const order = await loadOrderWithItems(id);
     const items = await db.commercialReceipt.findMany({ where: { orderId: id }, orderBy: RECEIPTS_ORDER });
-    return json(plain({ items, advanceReceived: advanceReceived(items) }));
+    return json(plain({ items, advance: await advanceOf(order, order.items, items) }));
   });
 }
 
 export async function POST(req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "orders");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await paramId(params);
@@ -62,6 +64,6 @@ export async function POST(req: Request, { params }: Ctx) {
       payload: { receiptId: row.id, kind: r.kind, amount: r.amount, currency: r.currency, receivedAt: r.receivedAt, mode: r.mode, reference: r.reference },
     });
     const items = await db.commercialReceipt.findMany({ where: { orderId: id }, orderBy: RECEIPTS_ORDER });
-    return json(plain({ receipt: row, items, advanceReceived: advanceReceived(items) }), 201);
+    return json(plain({ receipt: row, items, advance: await advanceOf(order, order.items, items) }), 201);
   });
 }

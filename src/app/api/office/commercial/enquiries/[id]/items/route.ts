@@ -14,7 +14,7 @@ export const runtime = "nodejs";
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function POST(req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "enquiries");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const { id } = await params;

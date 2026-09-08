@@ -58,8 +58,12 @@
 //    Granites (India), while the invoice prints PESPL's 33AALCP2750N1Z3. The
 //    owner settled it (answer 21): ONE registration per invoice, chosen from a
 //    dropdown that defaults to PESPL's and stored in the invoice snapshot.
-//    Every GSTIN cell here prints that one; an alternate prints with its
-//    label beside it, where the old sheets carried the sister company's name.
+//    The invoice sheet prints that one; an alternate prints with its label
+//    beside it, where the old sheets carried the sister company's name. How
+//    far an alternate reaches is round two's answer 19: chosen once, with one
+//    question, and the answer rides in the snapshot as gstinApplyAll — yes puts
+//    it in every GSTIN cell (GSTIN_OTHER_SHEET_ROOT_KEYS below), no leaves the
+//    packing list, the customer copy and Annexure C1 on the company's own.
 //    The cells stay root cells, so the form can still override them.
 //
 // 6. The item code on every sheet is the design master's (answer 20,
@@ -290,6 +294,21 @@ export const ROOT_CELLS: RootCell[] = [
 
 /** Every key, in table order. */
 export const ROOT_KEYS: string[] = ROOT_CELLS.map((r) => r.key);
+
+/**
+ * The GSTIN cells, split the way round two's answer 19 splits them.
+ *
+ * `GSTIN_INVOICE_ROOT_KEY` is the document the choice is made ON — the export
+ * commercial invoice, Invoice!J8 — and it always carries the chosen
+ * registration. `GSTIN_OTHER_SHEET_ROOT_KEYS` are the three cells elsewhere in
+ * the workbook that a hand re-typed: the packing list, the customer's copy of
+ * it and the Annexure C1 form. Those carry the choice only when the answer to
+ * "apply this registration to every sheet?" was yes; otherwise they keep the
+ * company's own. Enumerated here rather than found by name so a GSTIN cell
+ * added to a fourteenth sheet has to be classified deliberately.
+ */
+export const GSTIN_INVOICE_ROOT_KEY = "exporterGstinText";
+export const GSTIN_OTHER_SHEET_ROOT_KEYS: readonly string[] = ["plGstin", "custPlGstin", "c1Gstin"];
 
 const ROOT_BY_KEY: Record<string, RootCell> = (() => {
   const m: Record<string, RootCell> = {};
@@ -811,6 +830,10 @@ export interface InvoiceSnapshotLike {
   gstin?: string | null;
   gstinLabel?: string | null;
   bankKey?: string | null;
+  /** Round two, answer 19: how far the chosen registration reaches. Absent on
+   *  a snapshot frozen before the question — those printed it everywhere, so
+   *  absent reads as true (invoice-rules snapshotExtras says the same). */
+  gstinApplyAll?: boolean | null;
 }
 
 export interface PackingListLike {
@@ -1031,6 +1054,18 @@ export function DEFAULT_ROOTS(
   const gstin = s(inv.gstin) || s((inv.company ?? {})["gstin"]) || s(company.gstin);
   const gstinLabel = s(inv.gstinLabel);
   const gstinPrinted = gstin && gstinLabel ? `${gstin} (${gstinLabel})` : gstin;
+  // Round two, answer 19. The invoice sheet always carries the chosen
+  // registration — it IS the document the choice was made for. The other three
+  // GSTIN cells (packing list, customer copy, Annexure C1) carry it only when
+  // the clerk answered "every sheet"; otherwise they stay on the company's own
+  // registration, which is what those sheets said before anyone chose. The
+  // company's own is read from SETTINGS and not from the snapshot's `company`
+  // block, because buildInvoiceSnapshot overwrites that block's GSTIN with the
+  // chosen one — reading it there would apply the alternate everywhere and
+  // make the answer do nothing.
+  const ownGstin = s(company.gstin) || gstin;
+  const applyAll = inv.gstinApplyAll !== false;
+  const otherSheetGstin = applyAll ? gstinPrinted : ownGstin;
   const texts = (set.texts ?? {}) as Record<string, unknown>;
 
   const exporter = inv.exporter ?? null;
@@ -1165,10 +1200,11 @@ export function DEFAULT_ROOTS(
     plCstNo: "",
     // Answer 21: the invoice's chosen registration, labelled when it is an
     // alternate — the packing sheets are where the old template carried PGI's.
-    plGstin: gstinPrinted ? `GSTIN NO: ${gstinPrinted}` : "",
+    // Round two, answer 19: only when the choice was applied to every sheet.
+    plGstin: otherSheetGstin ? `GSTIN NO: ${otherSheetGstin}` : "",
     custPlTinNo: "",
     custPlCstNo: "",
-    custPlGstin: gstinPrinted ? `GSTIN NO: ${gstinPrinted}` : "",
+    custPlGstin: otherSheetGstin ? `GSTIN NO: ${otherSheetGstin}` : "",
 
     // PL-852
     // The sheet's two colour names: what the customer calls it, and our code —
@@ -1181,8 +1217,9 @@ export function DEFAULT_ROOTS(
     // Annexure C1
     c1CompanyName: legalName,
     c1Iec: s(company.iec) ? `IEC ${s(company.iec)}` : "",
-    // A form field, not a heading: the bare registration, no label.
-    c1Gstin: gstin,
+    // A form field, not a heading: the bare registration, no label — and, on a
+    // "this invoice only" answer (round two, answer 19), the company's own.
+    c1Gstin: applyAll ? gstin : ownGstin,
     c1FactoryLine1: s(factory[0]),
     c1FactoryLine2: s(factory[1]),
     c1FactoryLine3: s(factory[2]),

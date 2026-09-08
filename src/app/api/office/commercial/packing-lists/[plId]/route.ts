@@ -20,13 +20,13 @@ const TEXT_FIELDS = ["containerNo", "sealNo", "linerOtlNo", "vehicleNo", "packag
 const NUM_FIELDS = ["grossWeightKg", "netWeightKg"] as const;
 
 export async function GET(_req: Request, { params }: Ctx) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "packing");
   if (!g.ok) return deny(g);
   return handle(async () => json(plain(await loadList(await paramPl(params)))));
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "packing");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const plId = await paramPl(params);

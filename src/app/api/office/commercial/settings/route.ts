@@ -23,7 +23,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET() {
-  const g = await commercialGate("admin");
+  const g = await commercialGate("admin", "settings");
   if (!g.ok) return deny(g);
   return handle(async () => {
     return json(plain(await settingsView()));
@@ -31,7 +31,7 @@ export async function GET() {
 }
 
 export async function PUT(req: Request) {
-  const g = await commercialGate("admin");
+  const g = await commercialGate("admin", "settings");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const body = await readBody<{ overrides?: unknown }>(req);

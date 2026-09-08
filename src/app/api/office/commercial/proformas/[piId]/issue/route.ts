@@ -35,7 +35,7 @@ export const runtime = "nodejs";
 type Ctx = { params: Promise<{ piId: string }> };
 
 export async function POST(req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "proforma");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const piId = await piIdOf(params);
@@ -80,7 +80,7 @@ export async function POST(req: Request, { params }: Ctx) {
     if (toRetire.length) {
       writes.push(db.commercialProforma.updateMany({
         where: { id: { in: toRetire }, status: { in: ["ISSUED", "ACCEPTED"] } },
-        data: { status: "CANCELLED", cancelledAt: now, cancelReason: revisionReason(pi.number) },
+        data: { status: "CANCELLED", cancelledAt: now, cancelReason: revisionReason(pi.number), replacedById: piId },
       }));
     }
     await db.$transaction(writes);

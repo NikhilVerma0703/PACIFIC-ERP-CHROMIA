@@ -19,6 +19,7 @@ import { patchJson } from "@/lib/fab/postJson";
 import { readJson } from "@/lib/readJson";
 import type { OrderTabProps, Party } from "@/lib/commercial/types";
 import { partiesFromClient, clientDefaults, type ClientLike } from "@/lib/commercial/orders-rules";
+import { advanceBadge, fmtPct } from "@/lib/commercial/receipts-rules";
 import { ClientPicker, type ClientRow } from "../orders/ClientPicker";
 import { ReceiptsCard } from "../orders/ReceiptsCard";
 import {
@@ -38,6 +39,7 @@ interface HeaderDraft {
   deliveryTerms: string;
   paymentTerms: string;
   paymentMode: string;
+  advancePct: string;
   preCarriageBy: string;
   placeOfReceipt: string;
   portOfLoading: string;
@@ -67,6 +69,9 @@ function draftOf(o: OrderTabProps["order"]): HeaderDraft {
     deliveryTerms: t(o.deliveryTerms),
     paymentTerms: t(o.paymentTerms),
     paymentMode: t(o.paymentMode),
+    // Blank is a real answer: it hands the order back to the settings default
+    // for its kind (round two, answer 11).
+    advancePct: o.advancePct === null || o.advancePct === undefined ? "" : String(o.advancePct),
     preCarriageBy: t(o.preCarriageBy),
     placeOfReceipt: t(o.placeOfReceipt),
     portOfLoading: t(o.portOfLoading),
@@ -155,6 +160,7 @@ export default function OverviewTab({ order, actions, refresh }: OrderTabProps) 
     // clears the column, which is what clearing a box means. Currency and
     // country of origin are NOT NULL; the route ignores a blank for those.
     body.exchangeRate = h.exchangeRate.trim() === "" ? null : h.exchangeRate.trim();
+    body.advancePct = h.advancePct.trim() === "" ? null : h.advancePct.trim();
     body.billTo = draftToParty(p.billTo);
     body.consignee = draftToParty(p.consignee);
     body.notifyParty = draftToParty(p.notifyParty);
@@ -229,7 +235,31 @@ export default function OverviewTab({ order, actions, refresh }: OrderTabProps) 
           <TextField label="Delivery terms" value={h.deliveryTerms} onChange={set("deliveryTerms")} disabled={!mayWrite} />
           <TextField label="Payment terms" value={h.paymentTerms} onChange={set("paymentTerms")} hint="Checklist point 15." disabled={!mayWrite} />
           <TextField label="Payment mode" value={h.paymentMode} onChange={set("paymentMode")} hint="Checklist point 16 — CAD / DP / DA / LC / Clean Credit." disabled={!mayWrite} />
+          {/* Round two, answer 11: the share of the order that must be in
+              before the truck leaves. Blank is not "none" — it is the
+              settings default for this kind, and the hint names THAT default
+              (advanceDefaultPct, resolved by the server) rather than the
+              percentage in force: on an order that overrides the default, the
+              effective figure is the order's own and calling it "the default"
+              was simply wrong.
+              Answer 12: 0, and any lowering, is the waiver's desk — the box
+              says so rather than letting the save come back a 403. */}
+          <TextField
+            label="Advance required (%)"
+            value={h.advancePct}
+            onChange={set("advancePct")}
+            placeholder={fmtPct(order.advanceDefaultPct).replace("%", "")}
+            hint={h.advancePct.trim() === ""
+              ? `Blank asks for the settings default for a ${order.kind === "EXPORT" ? "export" : "domestic"} order — ${fmtPct(order.advanceDefaultPct)} today. Lowering the advance below the ${fmtPct(order.advance.pct)} in force, or setting 0, is the Commercial Manager's, like a waiver.`
+              : `0 to 100. Blank goes back to the settings default for this kind (${fmtPct(order.advanceDefaultPct)} today). Lowering it below the ${fmtPct(order.advance.pct)} in force, or setting 0, is the Commercial Manager's, like a waiver.`}
+            disabled={!mayWrite}
+          />
         </div>
+        {/* The gate as a figure, beside the terms that set it (answer 11). */}
+        <p className={`mt-4 rounded-lg border px-3 py-2 text-sm ${order.advance.satisfied ? "border-green-200 bg-green-50/60 text-green-800" : "border-amber-200 bg-amber-50/60 text-amber-800"}`}>
+          {advanceBadge(order.advance, order.currency)}
+          {order.advance.reason ? <span className="text-gray-600"> · {order.advance.reason}</span> : null}
+        </p>
       </Card>
 
       <Card>

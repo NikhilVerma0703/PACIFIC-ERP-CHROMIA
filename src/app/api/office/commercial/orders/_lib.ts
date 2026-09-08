@@ -5,11 +5,12 @@
 import { prisma } from "@/lib/prisma";
 import { fail, str, num, dateOnly } from "@/lib/commercial/http";
 import { parseChecklist, prefillChecklist, type ChecklistItem, type ChecklistSource } from "@/lib/commercial/checklist";
-import { advanceReceived } from "@/lib/commercial/receipts-rules";
+import { loadSettings } from "@/lib/commercial/settings";
+import { advanceStatus, effectiveAdvancePct, pctOf, type AdvanceStatus } from "@/lib/commercial/receipts-rules";
 import {
   HEADER_TEXT_FIELDS, HEADER_PARTY_FIELDS, ORDER_KINDS, PO_EVIDENCE,
-  normalizeParty, checklistSourceFromOrder,
-  type OrderHeaderLike, type ChecklistItemLike,
+  normalizeParty, checklistSourceFromOrder, orderTotals,
+  type OrderHeaderLike, type ChecklistItemLike, type ItemLike,
 } from "@/lib/commercial/orders-rules";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -36,12 +37,61 @@ export const ORDER_DETAIL_INCLUDE = {
   events: { orderBy: { at: "desc" }, take: 100 },
 } as const;
 
-/** The order detail, checklist parsed and `advanceReceived` derived (answer
- *  2: the dispatch gate's fact), or a 404. Pass through plain() before json(). */
+/**
+ * The advance gate for one order row (answer 2; round two, answers 11 and 12).
+ * The percentage is the order's own or the settings default for its kind, the
+ * total is Σ of the line amounts — there is no total column — and only ADVANCE
+ * receipts in the ORDER's currency count. A waiver satisfies it outright.
+ *
+ * Written once here because three readers must agree to the paisa: the order
+ * detail every screen renders, the stage facts canEnter is handed, and the
+ * dispatch route's refusal.
+ */
+export async function advanceOf(
+  order: Record<string, unknown>,
+  items: ReadonlyArray<unknown>,
+  receipts: ReadonlyArray<{ kind: string; amount: unknown; currency: string }>,
+): Promise<AdvanceStatus> {
+  return advanceStatus({
+    receipts,
+    orderTotal: orderTotals(items as ItemLike[]).amount,
+    currency: String(order.currency ?? ""),
+    advancePct: await advancePctOf(order),
+    waived: order.advanceWaivedAt != null,
+  });
+}
+
+/** The two settings defaults behind the advance (answer 11: 100 domestic, 30
+ *  export as shipped), in the shape effectiveAdvancePct reads. loadSettings is
+ *  cached per request, so asking twice in one handler costs one read. */
+export async function advanceDefaults(): Promise<{ domestic: number; export: number }> {
+  const settings = await loadSettings();
+  return { domestic: settings.dispatch.advancePctDomestic, export: settings.dispatch.advancePctExport };
+}
+
+/** The percentage IN FORCE on one order right now: its own when it has one,
+ *  else the settings default for its kind. What the gate measures against, and
+ *  what a header edit is compared to before it is allowed to lower it. */
+export async function advancePctOf(order: Record<string, unknown>): Promise<number> {
+  return effectiveAdvancePct(order.advancePct, String(order.kind ?? ""), await advanceDefaults());
+}
+
+/** The order detail, checklist parsed and the advance derived (the dispatch
+ *  gate's figures), or a 404. Pass through plain() before json(). */
 export async function loadOrderDetail(id: string): Promise<Record<string, unknown>> {
   const row = await db.commercialOrder.findUnique({ where: { id }, include: ORDER_DETAIL_INCLUDE });
   if (!row) fail(404, "Order not found");
-  return { ...row, checklist: parseChecklist(row.checklist), advanceReceived: advanceReceived(row.receipts) };
+  return {
+    ...row,
+    checklist: parseChecklist(row.checklist),
+    advance: await advanceOf(row, row.items, row.receipts),
+    // Round two, answer 11: the settings default for THIS order's kind, sent
+    // whether or not the order overrides it. The overview's hint under a blank
+    // "Advance required" box has to name the DEFAULT the blank falls back to;
+    // with only the effective percentage it printed the order's own figure and
+    // called it the default.
+    advanceDefaultPct: effectiveAdvancePct(null, String(row.kind ?? ""), await advanceDefaults()),
+  };
 }
 
 /** The bare order row with its items (for writes), or a 404. */
@@ -78,6 +128,19 @@ export function headerPatchFromBody(body: Record<string, unknown>, opts: { allow
     const n = num(raw);
     if (raw !== null && raw !== undefined && raw !== "" && n === null) fail(400, "Exchange rate must be a number");
     data.exchangeRate = n;
+  }
+  // Round two, answer 11: the share of the order that must be received before
+  // dispatch. A blank box CLEARS it back to the settings default for the kind,
+  // which is why an empty string is a null here rather than a "leave it" —
+  // unlike currency, this column is nullable and null is a meaningful answer.
+  if (has(body, "advancePct")) {
+    const raw = body.advancePct;
+    if (raw === null || raw === undefined || String(raw).trim() === "") data.advancePct = null;
+    else {
+      const p = pctOf(raw);
+      if (p === null) fail(400, "Advance required must be a percentage between 0 and 100");
+      data.advancePct = p;
+    }
   }
   if (has(body, "currency")) {
     const c = str(body.currency);

@@ -5,8 +5,10 @@
 // The kind is chosen for you — DTA for a domestic order, EXPORT for an export
 // one — because that is what decides the layout, the tax and which counter the
 // number comes from. The registration it is issued under (answer 21) and the
-// bank it prints (answer 23) are dropdowns, defaulted and changeable while
-// the invoice is a draft. Naming a packing list draws the lines from the
+// bank it prints (answer 23) are dropdowns: the bank is DEFAULTED FROM THE PI
+// (round two, answer 20) and only the manager may move it off that, and an
+// alternate registration asks one question about the export workbook before it
+// is accepted (round two, answer 19). Naming a packing list draws the lines from the
 // slabs actually packed (grouped by design and thickness, priced from the
 // order line that matches) instead of from the order's own quantities.
 //
@@ -19,13 +21,17 @@ import { useState } from "react";
 import { Card, Badge, Empty, H2 } from "@/components/ui";
 import { postJson } from "@/lib/fab/postJson";
 import {
-  statusTone, canIssueInvoice, canCancelInvoice, defaultKindFor, defaultBankKeyFor, unpricedLineNos, displayGrandTotal,
+  statusTone, canIssueInvoice, canCancelInvoice, defaultKindFor, unpricedLineNos, displayGrandTotal,
   refuseCreate, refuseIssueUnapproved, fyBadge, lineLacksCode, snapshotExtras, gstinWithLabel,
+  bankKeyForInvoice, livePiOf, bankChangeRefusal, gstinScopeWord,
+  hasExportWorkbook, gstinScopeUnasked,
+  type InvoiceKind,
 } from "@/lib/commercial/invoice-rules";
 import { challanStatusTone } from "@/lib/commercial/challan-rules";
 import type { OrderTabProps } from "@/lib/commercial/types";
 import { inp, lbl, btnPrimary, btnGhost, btnDanger, th, thead, errorBox, noteBox, money, dmy, today } from "@/components/commercial/invoices/ui";
 import { DocNumber } from "@/components/commercial/invoices/DocNumber";
+import { GstinField } from "@/components/commercial/invoices/GstinField";
 import { useInvoiceChoices } from "@/components/commercial/invoices/useInvoiceChoices";
 
 export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
@@ -39,6 +45,15 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
   const [cancelId, setCancelId] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [bankTouched, setBankTouched] = useState(false);
+
+  // Round two, answer 20: the invoice's bank follows the order's live PI, so
+  // the customer pays into the account his proforma named. With no live PI the
+  // kind decides, as before (answer 23). Only the manager or an admin may move
+  // it off that, and the select below says so instead of disappearing.
+  const livePi = livePiOf(order.proformas);
+  const inheritedBank = (kind: string) => bankKeyForInvoice(livePi, (kind === "DTA" ? "DTA" : "EXPORT") as InvoiceKind);
+  const bankRefusal = bankChangeRefusal(actions);
+
   const [form, setForm] = useState({
     kind: defaultKindFor(order.kind) as string,
     packingListId: "",
@@ -50,7 +65,8 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
     ewayBillNo: "",
     exchangeRate: order.exchangeRate === null || order.exchangeRate === undefined ? "" : String(order.exchangeRate),
     gstin: "",                                         // blank = the company's own
-    bankKey: defaultBankKeyFor(defaultKindFor(order.kind)) as string,
+    gstinApplyAll: true,                               // round two, answer 19; only an alternate is ever asked
+    bankKey: bankKeyForInvoice(livePiOf(order.proformas), defaultKindFor(order.kind)) as string,
   });
 
   const packable = order.packingLists.filter((p) => p.status !== "REJECTED");
@@ -59,8 +75,21 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
   const unapproved = refuseIssueUnapproved(order);
 
   const setKind = (kind: string) => {
-    // ICICI on DTA, Kotak on export — unless the clerk already chose a bank.
-    setForm((f) => ({ ...f, kind, bankKey: bankTouched ? f.bankKey : defaultBankKeyFor(kind === "DTA" ? "DTA" : "EXPORT") }));
+    // The PI's bank where there is one, else ICICI on DTA and Kotak on export —
+    // unless the manager has already chosen a bank by hand.
+    //
+    // Round two, answer 19: a DTA has no export workbook, so it cannot carry an
+    // "every sheet" answer — switching to it drops the scope back to the
+    // unasked default, the same one the server gives an alternate nobody
+    // confirmed. Switching back to EXPORT leaves it there rather than restoring
+    // a "yes" the clerk gave for a different kind of document; re-picking the
+    // registration puts the question again.
+    setForm((f) => ({
+      ...f,
+      kind,
+      bankKey: bankTouched ? f.bankKey : inheritedBank(kind),
+      gstinApplyAll: hasExportWorkbook(kind) ? f.gstinApplyAll : gstinScopeUnasked(choices?.gstins[0]?.gstin ?? "", f.gstin),
+    }));
   };
 
   const create = async () => {
@@ -76,7 +105,10 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
       ewayBillNo: form.ewayBillNo || null,
       exchangeRate: form.exchangeRate === "" ? null : Number(form.exchangeRate),
       gstin: form.gstin || null,
-      bankKey: form.bankKey || null,
+      gstinApplyAll: form.gstinApplyAll,
+      // The bank goes back only where this login may set it; otherwise the
+      // server inherits the PI's, which is what the disabled select shows.
+      ...(bankRefusal ? {} : { bankKey: form.bankKey || null }),
     });
     setBusy(false);
     if (!res.ok) { setError(res.error); return; }
@@ -153,17 +185,25 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
                 <input id="ni-override" className={inp} value={form.numberOverride} onChange={(e) => setForm((f) => ({ ...f, numberOverride: e.target.value }))} placeholder={form.kind === "DTA" ? "PESPL/N7/26-27" : "PESPL/N12"} />
               </div>
               <div>
-                <label className={lbl} htmlFor="ni-gstin">Issued under GSTIN</label>
-                <select id="ni-gstin" className={inp} value={form.gstin} onChange={(e) => setForm((f) => ({ ...f, gstin: e.target.value }))} disabled={!choices}>
-                  {(choices?.gstins ?? []).map((c, i) => <option key={c.gstin} value={i === 0 ? "" : c.gstin}>{c.gstin} — {c.label}</option>)}
-                </select>
+                <GstinField
+                  id="ni-gstin"
+                  kind={form.kind}
+                  choices={choices ? choices.gstins : null}
+                  value={form.gstin}
+                  applyAll={form.gstinApplyAll}
+                  onChange={(gstin, gstinApplyAll) => setForm((f) => ({ ...f, gstin, gstinApplyAll }))}
+                />
                 {choicesError && <p className="mt-1 text-xs text-red-600">{choicesError}</p>}
               </div>
               <div>
                 <label className={lbl} htmlFor="ni-bank">Bank printed</label>
-                <select id="ni-bank" className={inp} value={form.bankKey} onChange={(e) => { setBankTouched(true); setForm((f) => ({ ...f, bankKey: e.target.value })); }} disabled={!choices}>
+                <select id="ni-bank" className={inp} value={form.bankKey} onChange={(e) => { setBankTouched(true); setForm((f) => ({ ...f, bankKey: e.target.value })); }} disabled={!choices || Boolean(bankRefusal)} title={bankRefusal ?? undefined}>
                   {(choices?.banks ?? []).map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
                 </select>
+                {/* round two, answer 20: refused is shown disabled with its reason, never hidden */}
+                {bankRefusal
+                  ? <p className="mt-1 text-xs text-amber-700">{bankRefusal}.</p>
+                  : livePi && <p className="mt-1 text-xs text-gray-400">PI {livePi.number} names the {inheritedBank(form.kind)} account.</p>}
               </div>
               <div>
                 <label className={lbl} htmlFor="ni-vehicle">Vehicle no</label>
@@ -235,7 +275,16 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
                     </td>
                     <td className="py-2 pr-4 align-top text-gray-600">{inv.kind}</td>
                     <td className="py-2 pr-4 align-top text-xs text-gray-500">
-                      {x ? <><div>{gstinWithLabel(x.gstin, x.gstinLabel) || "—"}</div><div>{inv.snapshot?.bank?.name ?? "—"}</div></> : "—"}
+                      {x ? (
+                        <>
+                          <div>{gstinWithLabel(x.gstin, x.gstinLabel) || "—"}</div>
+                          {/* round two, answer 19: an alternate says how far it
+                              reaches — on an EXPORT invoice, the only kind with
+                              a workbook to reach across */}
+                          {x.gstinLabel && hasExportWorkbook(inv.kind) && <div className="text-amber-700">workbook: {gstinScopeWord(x.gstinApplyAll)}</div>}
+                          <div>{inv.snapshot?.bank?.name ?? "—"}</div>
+                        </>
+                      ) : "—"}
                     </td>
                     <td className="py-2 pr-4 align-top text-gray-500">{order.packingLists.find((p) => p.id === inv.packingListId)?.number ?? "—"}</td>
                     {/* the snapshot's figure: grand_total is NUMERIC(16,2) and an

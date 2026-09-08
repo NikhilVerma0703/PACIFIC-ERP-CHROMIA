@@ -293,6 +293,13 @@ export interface DesignCodeDto {
   code: string | null;
   shade: "LIGHT" | "MEDIUM" | "DARK" | null;
   shadeConfirmed: boolean;
+  /** The colour the owner reads off the sample (round two, answer 15). L* is
+   *  what the queue sequences on; the hex is the swatch and a typed one wins. */
+  colourName: string | null;
+  hex: string | null;
+  labL: number | null;
+  labA: number | null;
+  labB: number | null;
   notes: string | null;
   updatedAt: string;
 }
@@ -313,6 +320,19 @@ export interface ReceiptDto {
   createdAt: string;
 }
 
+/** The advance gate as a FIGURE, not a tick (round two, answer 11): what the
+ *  order asks for, what has arrived in the order's own currency, and — when
+ *  something stands in the way or qualifies the answer — the one sentence the
+ *  dispatch route refuses with. Built by advanceStatus in receipts-rules. */
+export interface AdvanceStatusDto {
+  required: number;
+  receivedAdvance: number;
+  pct: number;
+  satisfied: boolean;
+  reason: string | null;
+  waived: boolean;
+}
+
 export interface ProformaDto {
   id: string;
   orderId: string;
@@ -320,6 +340,16 @@ export interface ProformaDto {
    *  revision replaced it (answer 24). Columns since scripts/0077. */
   cancelledAt?: string | null;
   cancelReason?: string | null;
+  /** The PI issued in this one's place. Round two, answer 8: the register
+   *  lists a cancelled PI struck through with "replaced by <number>" beside
+   *  it, resolved from the sibling rows. Column since scripts/0080. */
+  replacedById?: string | null;
+  /** That number, resolved by GET /proformas (the cross-order register), where
+   *  the replacement may sit on another page or under another order and so
+   *  cannot be found among the rows on screen. The order's own PI tab has
+   *  every sibling in hand and resolves it with proforma-rules.replacementOf
+   *  instead, so this is absent there. */
+  replacedByNumber?: string | null;
   number: string;
   revision: number;
   status: "DRAFT" | "ISSUED" | "ACCEPTED" | "SUPERSEDED" | "CANCELLED";
@@ -520,8 +550,20 @@ export interface OrderDetail {
   productionRequests: ProductionRequestDto[];
   /** Newest first. */
   receipts: ReceiptDto[];
-  /** Derived: at least one ADVANCE receipt is recorded — the dispatch gate. */
-  advanceReceived: boolean;
+  /** Round two, answer 11: the share of the order total that must be received
+   *  before dispatch. Null takes the settings default for the order's kind. */
+  advancePct: number | null;
+  /** Derived: the settings default for THIS order's kind (dispatch.advancePct*),
+   *  which is what a blank advancePct falls back to. Sent so the header hint can
+   *  name the real default rather than the percentage in force. */
+  advanceDefaultPct: number;
+  /** Round two, answer 12: the manager let this order go without the advance. */
+  advanceWaivedAt: string | null;
+  advanceWaivedById: string | null;
+  advanceWaivedByName: string | null;
+  advanceWaivedReason: string | null;
+  /** Derived: the dispatch gate, with the figures behind it. */
+  advance: AdvanceStatusDto;
   proformas: ProformaDto[];
   packingLists: PackingListDto[];
   invoices: InvoiceDto[];

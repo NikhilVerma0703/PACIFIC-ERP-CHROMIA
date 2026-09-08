@@ -2,10 +2,11 @@
 // → moveOrder; CANCELLED also records cancelReason and is a "cancel" action
 // (answer 24: only an admin or the Commercial Manager). 409 with canEnter's
 // own reason when a gate refuses the move (answers 1, 2, 10), or when the
-// order moved under the caller.
+// order moved under the caller — and, when the gate that refused is the money
+// (round two, answer 11), with the advance figures beside it.
 import { commercialGate } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain, paramId, str } from "@/lib/commercial/http";
-import { moveOrder } from "@/lib/commercial/order-stage";
+import { moveOrder, loadStageFacts } from "@/lib/commercial/order-stage";
 import { isOrderStatus } from "@/lib/commercial/stages";
 import { loadOrderDetail, loadOrderWithItems } from "../../_lib";
 
@@ -15,7 +16,7 @@ export const runtime = "nodejs";
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "orders");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await paramId(params);
@@ -28,7 +29,7 @@ export async function PATCH(req: Request, { params }: Ctx) {
     if (to === "CANCELLED") {
       // The write gate let the caller in; cancelling is the narrower action,
       // and it can only be asked once the body says that is what this is.
-      const c = await commercialGate("cancel");
+      const c = await commercialGate("cancel", "orders");
       if (!c.ok) fail(403, "Only the Commercial Manager or an admin cancels an order");
       if (!reason) fail(400, "Give a reason for cancelling");
     }
@@ -40,7 +41,23 @@ export async function PATCH(req: Request, { params }: Ctx) {
       to === "CANCELLED" ? `Cancelled: ${reason}${note ? ` — ${note}` : ""}` : note,
       to === "CANCELLED" ? { cancelReason: reason } : undefined,
     );
-    if (!res.ok) fail(409, res.reason);
+    if (!res.ok) {
+      // Round two, answer 11: when the money is what refused the move, the
+      // answer carries the figures — what was asked, what arrived, what is
+      // short — the same way the dispatch route answers, instead of canEnter's
+      // one generic line. The screen that asked for the move is then the one
+      // that can say why, without a second round trip.
+      if (to === "DISPATCHED") {
+        const facts = await loadStageFacts(id);
+        if (facts && !facts.advance.satisfied) {
+          return json(plain({
+            error: `${res.reason}. ${facts.advance.reason ?? ""}`.trim(),
+            advance: facts.advance,
+          }), 409);
+        }
+      }
+      fail(409, res.reason);
+    }
     return json(plain({ status: res.status, order: await loadOrderDetail(id) }));
   });
 }

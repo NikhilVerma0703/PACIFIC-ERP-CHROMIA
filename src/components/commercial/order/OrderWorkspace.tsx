@@ -24,6 +24,7 @@ import { readJson } from "@/lib/readJson";
 import { patchJson } from "@/lib/fab/postJson";
 import { ORDER_STAGES, canEnter, isTerminal } from "@/lib/commercial/stages";
 import { orderWorkspaceView, stageFactsOf } from "@/lib/commercial/orders-rules";
+import { advanceBadge } from "@/lib/commercial/receipts-rules";
 import type { OrderDetail, OrderTabProps } from "@/lib/commercial/types";
 import { BTN, BTN_DANGER, INPUT, ErrorNote, STATUS_TONE, dmy, dmyTime } from "../orders/fields";
 import OverviewTab from "./OverviewTab";
@@ -114,6 +115,9 @@ export function OrderWorkspace({ orderId, actions, initialTab = "overview" }: { 
   // The same facts the server hands canEnter (order-stage.loadStageFacts), read
   // off the detail, so a disabled stage carries the reason the route would 409
   // with — and a stage never disappears because a gate is shut (answers 1, 2, 10).
+  // The advance is arithmetic now (answer 11), and the server has already done
+  // it: the strip reads order.advance rather than re-deriving anything, so a
+  // greyed Dispatched carries the reason the route would 409 with.
   const facts = stageFactsOf(order);
   const tabDef = TABS.find((t) => t.key === tab) ?? TABS[0];
   const tabProps: OrderTabProps = { order, actions, refresh: () => { void load(); } };
@@ -167,14 +171,24 @@ export function OrderWorkspace({ orderId, actions, initialTab = "overview" }: { 
         <div className="mb-3 flex flex-wrap gap-2">
           <Badge tone={facts.stockChecked ? "green" : "amber"}>{facts.stockChecked ? "Stock checked · hold active" : "Stock not held"}</Badge>
           <Badge tone={facts.approved ? "green" : "amber"}>{facts.approved ? `Approved by ${order.approvedByName ?? "—"}` : "Not yet approved"}</Badge>
-          <Badge tone={facts.advanceReceived ? "green" : "amber"}>{facts.advanceReceived ? "Advance received" : "No advance yet"}</Badge>
+          {/* Round two, answer 11: a FIGURE, not a tick — how much was asked,
+              how much is in, how much is short. The waiver (answer 12) reads as
+              itself rather than as money that arrived. */}
+          <Badge tone={order.advance.waived ? "brand" : order.advance.satisfied ? "green" : "amber"}>{advanceBadge(order.advance, order.currency)}</Badge>
         </div>
         <div className="flex flex-wrap gap-2">
           {strip.map((s) => {
             const at = s.stamp ? stamps[s.stamp] : null;
             const here = order.status === s.status;
             const gate = here || terminal ? null : canEnter(order.status, s.status, facts);
-            const refused = gate && !gate.ok ? gate.reason : null;
+            const generic = gate && !gate.ok ? gate.reason : null;
+            // canEnter can only say "the advance has not been received" — it
+            // is pure and knows no money. The order already carries the figures
+            // (answer 11), so the Dispatched stage says how much is short
+            // instead, which is the same sentence the dispatch route 409s with.
+            const refused = generic && s.status === "DISPATCHED" && !order.advance.satisfied && order.advance.reason
+              ? order.advance.reason
+              : generic;
             const clickable = mayWrite && !terminal && !here && !refused;
             return (
               <button

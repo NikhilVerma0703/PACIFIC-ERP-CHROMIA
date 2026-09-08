@@ -30,10 +30,14 @@
 //   has checked (a replacement swapped in since) both stop the list; the reason
 //   names them (dispatchBlockers).
 //
-//   answer 2 — THE TRUCK DOES NOT LEAVE BEFORE THE ADVANCE. The one payment
-//   gate in the module: no ADVANCE receipt on the order, no dispatch. Packing,
-//   the check and the finalise are not gated (answer 2 again), so this is the
-//   first and only place the money is asked about.
+//   answer 2, and round two answers 11 and 12 — THE TRUCK DOES NOT LEAVE
+//   BEFORE THE ADVANCE. The one payment gate in the module, and since round
+//   two it is a figure rather than a tick: the ADVANCE receipts recorded in
+//   the ORDER's currency must reach the percentage the order asks for (its
+//   own advancePct, or the settings default for its kind), or the Commercial
+//   Manager must have waived it with a reason. The refusal names the figures.
+//   Packing, the check and the finalise are not gated (answer 2 again), so
+//   this is the first and only place the money is asked about.
 //
 // And the order moves with moveOrder, not bumpOrder: DISPATCHED is one of the
 // three gated stages (stages.canEnter) and the explicit move is the one that
@@ -47,11 +51,14 @@ import {
   canDispatch, dispatchNote, dispatchPlan, dispatchBlockers, bridgeSkips, fmtSlabNo,
   PACKING_STATUS_LABEL, type PackingStatus,
 } from "@/lib/commercial/packing-rules";
+import { loadSettings } from "@/lib/commercial/settings";
+import { advanceStatus, effectiveAdvancePct } from "@/lib/commercial/receipts-rules";
+import { orderTotals, type ItemLike } from "@/lib/commercial/orders-rules";
 import { db, loadList, paramPl, byOf, isAdminOf } from "../../_lib";
 
-/** "The advance has not been received" — the reason the owner's answer 2 sets,
- *  word for word, so the screen and the stage strip say the same thing. */
-const NO_ADVANCE = "The advance has not been received";
+/** The last-resort wording when the rule has no sentence of its own — the
+ *  owner answer 2 phrasing, kept so the screen and the strip never go quiet. */
+const NO_ADVANCE = "The advance has not been received.";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -62,7 +69,7 @@ const nameThem = (skipped: ReadonlyArray<{ slab: number; reason: string }>): str
   skipped.map((s) => `#${fmtSlabNo(s.slab)} (${s.reason})`).join("; ");
 
 export async function POST(req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "packing");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const plId = await paramPl(params);
@@ -81,12 +88,32 @@ export async function POST(req: Request, { params }: Ctx) {
       return json({ error: `${list.number} was not dispatched. ${blockers.reason}`, dispatched: 0, unfit: blockers.unfit, unchecked: blockers.unchecked }, 409);
     }
 
-    // Answer 2: the advance opens the gate. Read off the order's receipts
-    // directly — the fact is a count, and this route must not depend on which
-    // screen recorded it.
-    const advances: number = await db.commercialReceipt.count({ where: { orderId: list.orderId, kind: "ADVANCE" } });
-    if (advances < 1) {
-      return json({ error: `${list.number} was not dispatched. ${NO_ADVANCE}: record the advance receipt on order ${list.order.number} first — the truck does not leave before it.`, dispatched: 0, advanceReceived: false }, 409);
+    // Answer 2 and round two answer 11: the advance opens the gate. Read off
+    // the order's own receipts and lines directly — this route must not depend
+    // on which screen recorded them — and measure them with the same pure rule
+    // the receipts card and the stage strip print.
+    const order = list.order as Record<string, unknown> & { number: string; items: Array<Record<string, unknown>> };
+    const settings = await loadSettings();
+    const advanceReceipts = await db.commercialReceipt.findMany({
+      where: { orderId: list.orderId, kind: "ADVANCE" },
+      select: { kind: true, amount: true, currency: true },
+    });
+    const advance = advanceStatus({
+      receipts: advanceReceipts,
+      orderTotal: orderTotals(order.items as ItemLike[]).amount,
+      currency: String(order.currency ?? ""),
+      advancePct: effectiveAdvancePct(order.advancePct, String(order.kind ?? ""), {
+        domestic: settings.dispatch.advancePctDomestic,
+        export: settings.dispatch.advancePctExport,
+      }),
+      waived: order.advanceWaivedAt != null,
+    });
+    if (!advance.satisfied) {
+      return json({
+        error: `${list.number} was not dispatched. ${advance.reason ?? NO_ADVANCE} Record it against order ${order.number} — the truck does not leave before the advance.`,
+        dispatched: 0,
+        advance,
+      }, 409);
     }
     const isAdmin = isAdminOf(g);
 
@@ -107,7 +134,7 @@ export async function POST(req: Request, { params }: Ctx) {
       }, 409);
     }
 
-    const client = list.order.client as { name?: string } | null;
+    const client = order.client as { name?: string } | null;
     const res = await dispatchSlabs({
       slabNumbers: numbers,
       reference: list.order.number,

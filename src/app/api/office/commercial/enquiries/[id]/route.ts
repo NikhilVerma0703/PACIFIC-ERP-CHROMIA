@@ -19,7 +19,7 @@ type Ctx = { params: Promise<{ id: string }> };
 const has = (b: Record<string, unknown>, k: string): boolean => Object.prototype.hasOwnProperty.call(b, k);
 
 export async function GET(_req: Request, { params }: Ctx) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "enquiries");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const { id } = await params;
@@ -28,7 +28,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "enquiries");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const { id } = await params;

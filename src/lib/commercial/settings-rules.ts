@@ -131,6 +131,10 @@ export function leafIssue(path: string, v: string | number | boolean | string[])
     case "measurementUnitDefault": return v === "cm" || v === "in" ? null : "The unit is cm or in";
     case "planning.cleaningHoursDefault":
     case "planning.cleaningHoursAbrupt": return numberIn(v as number, 0, 48, "Cleaning hours");
+    case "planning.darkMaxL":
+    case "planning.lightMinL": return numberIn(v as number, 0, 100, "Lightness");
+    case "dispatch.advancePctDomestic":
+    case "dispatch.advancePctExport": return numberIn(v as number, 0, 100, "Advance percentage");
     case "company.alternateGstins": {
       const bad = (v as string[]).filter((x) => !parseGstinLine(x));
       return bad.length ? `Not "Label | GSTIN" lines: ${bad.join("; ")}` : null;
@@ -191,6 +195,9 @@ function crossIssues(merged: CommercialSettings, errors: SettingsIssue[], warnin
       const others = kinds.filter((x) => x !== k).map((x) => NUMBERING_LABELS[x]).join(", ");
       errors.push({ path: `numbering.${k}.key`, message: `Counter key "${key}" is also used by ${others} — two document kinds would share one counter` });
     }
+  }
+  if (merged.planning.darkMaxL >= merged.planning.lightMinL) {
+    errors.push({ path: "planning.lightMinL", message: `A design cannot be both dark (up to L* ${merged.planning.darkMaxL}) and light (from L* ${merged.planning.lightMinL}) — the light threshold must be above the dark one` });
   }
   if (merged.planning.cleaningHoursAbrupt < merged.planning.cleaningHoursDefault) {
     warnings.push({ path: "planning.cleaningHoursAbrupt", message: `The dark-to-light cleaning (${merged.planning.cleaningHoursAbrupt} h) is shorter than the ordinary cleaning (${merged.planning.cleaningHoursDefault} h)` });

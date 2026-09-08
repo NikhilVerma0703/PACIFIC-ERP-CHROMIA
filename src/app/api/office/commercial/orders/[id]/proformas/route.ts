@@ -25,7 +25,7 @@ export const runtime = "nodejs";
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(req: Request, { params }: Ctx) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "proforma");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await paramId(params);
@@ -41,7 +41,7 @@ export async function GET(req: Request, { params }: Ctx) {
 }
 
 export async function POST(req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "proforma");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await paramId(params);

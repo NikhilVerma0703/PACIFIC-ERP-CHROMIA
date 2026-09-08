@@ -2,6 +2,7 @@
 import { AuthError } from "next-auth";
 import { signIn, LoginThrottled } from "@/auth";
 import { isCommercialRole } from "@/lib/roles";
+import { commercialHomeFor } from "@/lib/commercial/access-rules";
 import { prisma } from "@/lib/prisma";
 
 export async function authenticate(
@@ -24,14 +25,34 @@ export async function authenticate(
       // before any queue was reachable. One operator login now covers all five
       // stations, so they land on the first queue; /fab/session is still there
       // (sidebar: "Select Machine") for shift + machine attribution.
-    } else if (user && isCommercialRole(String(user.role))) {
+    } else if (user) {
       // Commercial's home is Finished Goods. Sending them to "/" only for middleware to
       // bounce it to /inventory means the router never initiated that hop, so the client
       // still reports "/" as the path — which is what highlighted the wrong nav tab on
       // the Finished Goods page. Land them on the real route in the first place.
       // Since 2026-09-06 the Commercial module (/office/commercial) is their
       // start page, and Finished Goods is one row in its nav.
-      redirectTo = "/office/commercial";
+      //
+      // WHICH page of it is the area table's answer, not a constant (round two,
+      // answer 6: "their landing page is that tab"). A login with no overview —
+      // bay 5 today, and any future desk given one screen — lands on the one
+      // screen it has instead of on an overview it would be bounced off.
+      //
+      // WHY THIS ARM IS NARROWER THAN THE MODULE'S ADMISSION TEST. The dispatch
+      // team signs in as STORE or LINE_MANAGER (answer 6: no new role), so the
+      // module admits them — but those logins are only partly this module's.
+      // The store incharge's own home is /live and a shop-floor line manager's
+      // is "/", each with a department behind it, and this arm cannot tell the
+      // person in bay 5 from the store incharge upstairs: they hold the same
+      // role. Answer 6 gave bay 5 a TAB, not a new front door. So only a
+      // Commercial role is landed by the area table; the dispatch team keeps
+      // the home routeCaps.homeFor gives it, with Dispatch Check in its
+      // sidebar, and commercialHomeFor still catches them if they open the
+      // module overview they cannot read.
+      const who = { role: String(user.role), branch: String(user.branch) };
+      if (isCommercialRole(who.role)) {
+        redirectTo = commercialHomeFor(who);
+      }
     }
   } catch { /* non-critical */ }
   try {

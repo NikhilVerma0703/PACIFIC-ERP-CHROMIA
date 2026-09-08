@@ -12,14 +12,18 @@ import { currentUser } from "@/lib/rbac";
 import {
   commercialActorOf, commercialCan, commercialActionsFor, maySeeCommercialModule,
   isDispatchCheckPath, COMMERCIAL_ACTORS, COMMERCIAL_ACTIONS, COMMERCIAL_HOME,
-  type CommercialActor, type CommercialAction,
+  areaAccessFor, commercialAreasFor, areaOfPath, commercialHomeFor,
+  COMMERCIAL_AREAS, COMMERCIAL_AREA_ACCESS, AREA_LABEL,
+  type CommercialActor, type CommercialAction, type CommercialArea, type AreaAccess,
 } from "./access-rules";
 
 export {
   commercialActorOf, commercialCan, commercialActionsFor, maySeeCommercialModule,
   isDispatchCheckPath, COMMERCIAL_ACTORS, COMMERCIAL_ACTIONS, COMMERCIAL_HOME,
+  areaAccessFor, commercialAreasFor, areaOfPath, commercialHomeFor,
+  COMMERCIAL_AREAS, COMMERCIAL_AREA_ACCESS, AREA_LABEL,
 };
-export type { CommercialActor, CommercialAction };
+export type { CommercialActor, CommercialAction, CommercialArea, AreaAccess };
 
 export interface CommercialUser {
   id: string;
@@ -35,6 +39,9 @@ export interface CommercialGate {
   user: CommercialUser | null;
   actor: CommercialActor | null;
   actions: CommercialAction[];
+  /** Every screen this login reaches, with what it may do there. A route
+   *  that hands its page a capability payload passes this on. */
+  areas: Record<CommercialArea, AreaAccess>;
 }
 
 function shape(u: unknown): CommercialUser {
@@ -48,19 +55,31 @@ function shape(u: unknown): CommercialUser {
   };
 }
 
-/** Server gate. Revalidates the session (active + sessionVersion via
- *  currentUser) and confirms the user may perform this action. Default "view",
- *  the narrowest useful thing: a route that forgets to name its action gets
- *  the read gate, which refuses the dispatch checker rather than handing him
- *  the order book. */
-export async function commercialGate(action: CommercialAction = "view"): Promise<CommercialGate> {
+/**
+ * Server gate. Revalidates the session (active + sessionVersion via
+ * currentUser) and confirms the user may perform this action — and, when an
+ * area is named, may perform it THERE.
+ *
+ * NAME THE AREA on every route where one login writes and another only reads,
+ * which since the desk was split (DECISIONS-2.md 1 and 2) is most of them:
+ * `commercialGate("write", "invoices")` refuses Murali, who holds the write
+ * ACTION for his own screens and only reads invoices. Without an area this is
+ * the action question alone; middleware still refuses the path, so an
+ * unnamed route is covered but coarser than it should be.
+ *
+ * Default "view", the narrowest useful thing: a route that forgets to name its
+ * action gets the read gate, which refuses the dispatch checker rather than
+ * handing him the order book.
+ */
+export async function commercialGate(action: CommercialAction = "view", area?: CommercialArea): Promise<CommercialGate> {
   const raw = await currentUser();
-  if (!raw) return { ok: false, status: 401, user: null, actor: null, actions: [] };
+  if (!raw) return { ok: false, status: 401, user: null, actor: null, actions: [], areas: commercialAreasFor(null) };
   const user = shape(raw);
   const actor = commercialActorOf(user);
   const actions = commercialActionsFor(user);
-  if (!commercialCan(user, action)) return { ok: false, status: 403, user, actor, actions };
-  return { ok: true, status: 200, user, actor, actions };
+  const areas = commercialAreasFor(user);
+  if (!commercialCan(user, action, area)) return { ok: false, status: 403, user, actor, actions, areas };
+  return { ok: true, status: 200, user, actor, actions, areas };
 }
 
 /** "Who did this" for the *_by_id / *_by_name column pairs. */

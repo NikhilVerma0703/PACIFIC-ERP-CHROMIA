@@ -7,6 +7,10 @@
 // 22, settings.tax.alwaysIgst) and the whole thing is frozen into a snapshot
 // the PDF renders from — including which GSTIN and which bank it is issued
 // under (answers 21, 23), both chosen here and editable while a draft.
+//
+// Round two: the bank INHERITS the live PI's (answer 20) and only the manager
+// may move it off that; an alternate registration carries the answer to the
+// one question the screen asked about the export workbook (answer 19).
 import { commercialGate } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain, str, num, dateOnly, paramId } from "@/lib/commercial/http";
 import { loadSettings } from "@/lib/commercial/settings";
@@ -15,6 +19,7 @@ import { logOrderEvent } from "@/lib/commercial/events";
 import {
   INVOICE_KINDS, defaultKindFor, sequenceKindFor, buildInvoiceLines, buildInvoiceSnapshot, sanitiseLine,
   isoDate, istIsoDate, unpricedWarning, pageArgs, refuseCreate, isBankKey, gstinChoiceFor,
+  bankKeyForInvoice, mayChangeInvoiceBank, BANK_FOLLOWS_PI, gstinScopeWord,
   type InvoiceKind,
 } from "@/lib/commercial/invoice-rules";
 import type { DocLine } from "@/lib/commercial/types";
@@ -24,7 +29,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "invoices");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const orderId = await paramId(params);
@@ -40,7 +45,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "invoices");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const orderId = await paramId(params);
@@ -74,6 +79,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (bankKeyRaw && !isBankKey(bankKeyRaw)) fail(400, "bankKey must be export or domestic");
     const gstinRaw = str(body.gstin);
     if (gstinRaw && !gstinChoiceFor(settings, gstinRaw)) fail(400, `GSTIN ${gstinRaw} is not one the company issues under — add it in Settings first`);
+    // Round two, answer 19: the one question an alternate registration asks.
+    if (body.gstinApplyAll !== undefined && body.gstinApplyAll !== null && typeof body.gstinApplyAll !== "boolean") {
+      fail(400, "gstinApplyAll must be true or false");
+    }
+    const gstinApplyAll = typeof body.gstinApplyAll === "boolean" ? body.gstinApplyAll : null;
 
     // No date given → TODAY IN INDIA. The UTC day would date a document raised
     // before 05:30 IST to yesterday, and one raised in that window on 1 April
@@ -106,6 +116,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (lines.length === 0) fail(400, "Nothing to invoice — the order has no line items");
 
     const pi = await livePiFor(orderId);
+    // Round two, answer 20: the invoice's bank follows the PI's, and moving it
+    // off that is the Commercial Manager's or an admin's — the same `cancel`
+    // action that cancels the PI itself. Below that level the field is sent
+    // read-only by the screen; a body that names another bank anyway is
+    // refused with the sentence the disabled select carries.
+    const inheritedBankKey = bankKeyForInvoice(pi, kind);
+    const bankKey = isBankKey(bankKeyRaw) ? bankKeyRaw : inheritedBankKey;
+    if (bankKey !== inheritedBankKey && !mayChangeInvoiceBank(g.actions)) fail(403, BANK_FOLLOWS_PI);
+
     const snapshot = buildInvoiceSnapshot(order as never, settings, kind, lines, {
       date: isoDate(invoiceDate),
       piNumber: pi?.number ?? order.number,
@@ -123,7 +142,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       vessel: str(body.vessel),
       notes: str(body.notes),
       gstin: gstinRaw,
-      bankKey: isBankKey(bankKeyRaw) ? bankKeyRaw : null,
+      gstinApplyAll,
+      bankKey,
     });
 
     // Answer 18, enforced where it counts. The probe above ran on a plain read
@@ -177,13 +197,23 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     // and would be billed at zero. Say so in the log as well as on the screen.
     const unpriced = unpricedWarning(snapshot.lines);
 
+    // The bank and the registration are named in the note, not only in the
+    // payload: a bank that did NOT follow the PI (round two, answer 20) and an
+    // alternate registration spread across the whole workbook (answer 19) are
+    // the two things a reader of the log would otherwise have to open the
+    // snapshot to discover.
+    const bankNote = bankKey === inheritedBankKey
+      ? (pi ? `, on the PI's ${bankKey} bank` : `, on the ${bankKey} bank`)
+      : `, bank changed to ${bankKey} from the PI's ${inheritedBankKey}`;
+    const gstinNote = snapshot.gstinLabel ? `, under ${snapshot.gstin} (${snapshot.gstinLabel}) on ${gstinScopeWord(snapshot.gstinApplyAll)}` : "";
     await logOrderEvent(orderId, "invoice_created", {
-      note: `${kind} invoice ${issued.number} drafted${issued.overridden ? " (number typed by hand)" : ""}${pl ? ` from packing list ${pl.number}` : ""}${unpriced ? ` — ${unpriced}` : ""}`,
+      note: `${kind} invoice ${issued.number} drafted${issued.overridden ? " (number typed by hand)" : ""}${pl ? ` from packing list ${pl.number}` : ""}${bankNote}${gstinNote}${unpriced ? ` — ${unpriced}` : ""}`,
       by: g.user,
       payload: {
         invoiceId: created.id, kind, number: issued.number, packingListId, lines: lines.length,
         grandTotal: snapshot.grandTotal, overridden: issued.overridden, unpriced,
-        gstin: snapshot.gstin, bankKey: snapshot.bankKey,
+        gstin: snapshot.gstin, gstinApplyAll: snapshot.gstinApplyAll,
+        bankKey: snapshot.bankKey, piBankKey: inheritedBankKey, piNumber: pi?.number ?? null,
       },
     });
 

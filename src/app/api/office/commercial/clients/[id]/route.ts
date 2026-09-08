@@ -32,7 +32,7 @@ async function history(clientId: string) {
 }
 
 export async function GET(_req: Request, { params }: Ctx) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "clients");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const { id } = await params;
@@ -42,7 +42,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "clients");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const { id } = await params;

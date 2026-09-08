@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "challans");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await challanIdOf(params);

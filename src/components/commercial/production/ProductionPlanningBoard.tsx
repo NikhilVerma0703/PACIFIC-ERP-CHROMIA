@@ -8,7 +8,11 @@
 // shade of each design, the slabs and hours planned, and the cleaning hours the
 // changeover before it costs (3, or 6 when a light design follows a dark one).
 // A light row straight after a dark one is flagged; the owner wants the
-// sequence to drift slowly from light to dark and back.
+// sequence to drift slowly from light to dark and back. Since round two's
+// answer 14 "light" and "dark" are the design master's MEASURED L* against the
+// two settings thresholds, and the flag names both readings ("Alabaster Noir
+// L* 12 → Super White L* 92"); the stored LIGHT / MEDIUM / DARK label only
+// stands in for a design nobody has measured.
 //
 // Planned slabs / hours / cleaning hours are edited in place by a login with
 // `plan`. A reduction is never simply gone: it appears on the "Planned but not
@@ -72,13 +76,23 @@ interface QueueRow {
   order: { id: string; number: string; status: string; client: { id: string; name: string } | null } | null;
 }
 
-interface ListReply { items: QueueRow[]; total: number; page: number; limit: number }
+interface ListReply {
+  items: QueueRow[]; total: number; page: number; limit: number;
+  /** The design master's colour per design, keyed by the design name lower-
+   *  cased (round two, answer 15), and the two lightness thresholds the server
+   *  judges a changeover by (answer 14). The queue sends both so an optimistic
+   *  drag is flagged by the same numbers the server will use when it answers. */
+  colours?: Record<string, DesignColour>;
+  planning?: { cleaningHoursDefault: number; cleaningHoursAbrupt: number; darkMaxL: number; lightMinL: number };
+}
+
+interface DesignColour { design: string; shade: string | null; labL: number | null; colourName: string | null; hex: string | null }
 
 // What a recompute reports back (production-requests/_lib): an abrupt DARK →
 // LIGHT changeover, or a hand-set cleaning figure the rule was NOT applied to
 // because its reduction is still open on the panel below.
 type Warning =
-  | { kind: "abrupt"; id: string; afterId: string; design: string; afterDesign: string; message: string }
+  | { kind: "abrupt"; id: string; afterId: string; design: string; afterDesign: string; labL: number | null; afterLabL: number | null; reason: string; message: string }
   | { kind: "held"; id: string; design: string; kept: number | null; rule: number; message: string };
 
 /** One OPEN plan change as /production-requests/changes returns it: the row
@@ -123,6 +137,8 @@ export function ProductionPlanningBoard({ actions }: { actions: string[] }) {
   const [serverWarnings, setServerWarnings] = useState<Warning[]>([]);
   const [openChanges, setOpenChanges] = useState<OpenChange[]>([]);
   const [openTotal, setOpenTotal] = useState(0);
+  const [colours, setColours] = useState<Record<string, DesignColour>>({});
+  const [planning, setPlanning] = useState<ListReply["planning"] | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -142,6 +158,8 @@ export function ProductionPlanningBoard({ actions }: { actions: string[] }) {
     if (cuts.ok && cuts.data) { setOpenChanges(cuts.data.items); setOpenTotal(cuts.data.total); }
     if (!queue.ok || !queue.data) { setError(queue.error ?? "Could not read the queue"); return; }
     setError(null);
+    if (queue.data.colours) setColours(queue.data.colours);
+    if (queue.data.planning) setPlanning(queue.data.planning);
     setRows(queue.data.items);
     setOrder(queue.data.items.map((r) => r.id));
     setDrafts(Object.fromEntries(queue.data.items.map((r) => [r.id, draftOf(r)])));
@@ -169,17 +187,24 @@ export function ProductionPlanningBoard({ actions }: { actions: string[] }) {
     return () => { alive = false; };
   }, [rows]);
 
+  /** The design master's colour for a row, matched the way every other reader
+   *  of the master matches: trimmed and case-blind. */
+  const colourOf = useCallback((design: string): DesignColour | null => colours[design.trim().toLowerCase()] ?? null, [colours]);
+
   const byId = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
   const ordered = useMemo(() => order.map((id) => byId.get(id)).filter((r): r is QueueRow => !!r), [order, byId]);
 
   // The abrupt jumps as the screen currently shows the queue — screen position
   // stands in for priority so an optimistic reorder is judged before the
   // server answers.
+  // The measured L* rides along (round two, answer 14), so the row that flags
+  // amber under the cursor is the row the server will flag when it answers.
   const jumps = useMemo(() => {
-    const set = new Set<string>();
-    for (const j of abruptJumps(ordered.map((r, i) => ({ ...r, priority: i + 1 })))) set.add(j.id);
-    return set;
-  }, [ordered]);
+    const m = new Map<string, string>();
+    const chain = ordered.map((r, i) => ({ ...r, priority: i + 1, labL: colourOf(r.design)?.labL ?? null }));
+    for (const j of abruptJumps(chain, planning)) m.set(j.id, j.reason);
+    return m;
+  }, [ordered, colourOf, planning]);
 
   async function commitOrder(ids: string[]) {
     setOrder(ids);                       // optimistic: the list must not jump under the cursor
@@ -305,7 +330,9 @@ export function ProductionPlanningBoard({ actions }: { actions: string[] }) {
             {ordered.map((r, i) => {
               const d = drafts[r.id] ?? draftOf(r);
               const hint = received[r.id];
-              const abrupt = jumps.has(r.id);
+              const abruptReason = jumps.get(r.id) ?? null;
+              const abrupt = abruptReason !== null;
+              const colour = colourOf(r.design);
               const inChain = r.status === "QUEUED" || r.status === "SCHEDULED";
               const del = canDeleteRequest(r.status, actions);
               return (
@@ -335,7 +362,7 @@ export function ProductionPlanningBoard({ actions }: { actions: string[] }) {
                     <div className="min-w-[180px]">
                       <div className="flex items-center gap-2">
                         <span className="font-medium text-gray-900">{r.design}</span>
-                        <ShadeChip shade={r.shade} />
+                        <ShadeChip shade={r.shade} hex={colour?.hex ?? null} colourName={colour?.colourName ?? null} labL={colour?.labL ?? null} />
                       </div>
                       <div className="text-xs text-gray-500">{r.thickness}{r.finish ? ` · ${r.finish}` : ""}</div>
                     </div>
@@ -393,7 +420,7 @@ export function ProductionPlanningBoard({ actions }: { actions: string[] }) {
 
                   {abrupt && inChain && (
                     <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-900">
-                      Abrupt changeover: a light design straight after a dark one — {fig(r.cleaningHours)} h of cleaning. Move a medium design between them to run the ordinary clean.
+                      Abrupt changeover: {abruptReason} — {fig(r.cleaningHours)} h of cleaning. Move a design between them to run the ordinary clean.
                     </div>
                   )}
 
@@ -554,7 +581,9 @@ export function ProductionPlanningBoard({ actions }: { actions: string[] }) {
               <tbody className="divide-y divide-gray-100">
                 {history.map((r) => (
                   <tr key={r.id}>
-                    <td className="px-2 py-2 font-medium text-gray-900">{r.design} <ShadeChip shade={r.shade} /></td>
+                    <td className="px-2 py-2 font-medium text-gray-900">
+                      {r.design} <ShadeChip shade={r.shade} hex={colourOf(r.design)?.hex ?? null} colourName={colourOf(r.design)?.colourName ?? null} labL={colourOf(r.design)?.labL ?? null} />
+                    </td>
                     <td className="px-2 py-2">{r.thickness}</td>
                     <td className="px-2 py-2 text-right">{fmt(r.qtyShort)}</td>
                     <td className="px-2 py-2 text-right text-gray-500">{fig(r.plannedSlabs, 0)}</td>

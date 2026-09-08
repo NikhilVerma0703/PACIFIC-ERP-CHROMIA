@@ -22,7 +22,10 @@ import {
   datedLines, fyOfIso, fyBadge, snapshotExtras,
   patchedSnapshotFields, patchedInvoiceFields, ROW_ONLY_PATCH_FIELDS,
   registrationChanges, registrationChangeNote,
-  exportRootOverrides, EXPORT_ROOT_GSTIN_KEY, EXPORT_ROOT_BANK_KEY,
+  exportRootOverrides, EXPORT_ROOT_GSTIN_KEY, EXPORT_ROOT_BANK_KEY, EXPORT_ROOT_SHEET_GSTIN_CELLS, overriddenSheetsNote,
+  isAlternateOf, isAlternateGstin, gstinApplyAllFor, gstinScopeNote, gstinScopeWord, GSTIN_APPLY_ALL_QUESTION,
+  hasExportWorkbook, gstinQuestionApplies, gstinScopeUnasked,
+  isLivePi, livePiOf, bankKeyForInvoice, mayChangeInvoiceBank, bankChangeRefusal, BANK_FOLLOWS_PI,
 } from "../src/lib/commercial/invoice-rules.ts";
 import { DEFAULT_SETTINGS, gstinChoices } from "../src/lib/commercial/settings-defaults.ts";
 import type { DocLine } from "../src/lib/commercial/types.ts";
@@ -826,12 +829,13 @@ test("the GSTIN (answer 21): the company's own by default, the sister company's 
 test("snapshotExtras reads a row frozen before the answers with the defaults it would have had", () => {
   const lines = buildInvoiceLines(items, null, "DTA", S);
   const snap = buildInvoiceSnapshot(order, S, "DTA", lines, { date: "2026-07-10" });
-  const { gstin, gstinLabel, bankKey, ...old } = snap;
-  void gstin; void gstinLabel; void bankKey;
+  const { gstin, gstinLabel, bankKey, gstinApplyAll, ...old } = snap;
+  void gstin; void gstinLabel; void bankKey; void gstinApplyAll;
   const ex = snapshotExtras(old);
   assert.equal(ex.gstin, "33AALCP2750N1Z3", "from company.gstin");
   assert.equal(ex.gstinLabel, null);
   assert.equal(ex.bankKey, "domestic", "by kind");
+  assert.equal(ex.gstinApplyAll, true, "before the question was asked an alternate went onto every sheet — reading such a row must not change its workbook");
   assert.equal(snapshotExtras({ ...old, kind: "EXPORT" }).bankKey, "export");
   // and such a row can still have its bank switched
   const sw = applyDraftPatch(old, { bankKey: "export" }, S);
@@ -976,9 +980,9 @@ test("exportRootOverrides: the SAVED export form, not the invoice, is what the w
   });
   assert.deepEqual(o.map((x) => x.what), ["GSTIN", "bank"]);
   assert.equal(o[0].key, EXPORT_ROOT_GSTIN_KEY);
-  assert.equal(o[0].onInvoice, "33AALCP2750N1Z3");
+  assert.equal(o[0].expected, "33AALCP2750N1Z3");
   assert.equal(o[0].saved, "GSTIN NO: 33AAFCP5374A1ZQ");
-  assert.equal(o[1].onInvoice, bankName);
+  assert.equal(o[1].expected, bankName);
   assert.equal(o[1].saved, "HDFC Bank Ltd");
 
   // a cell cleared in the form prints blank — the screen must say so rather
@@ -992,5 +996,241 @@ test("exportRootOverrides: the SAVED export form, not the invoice, is what the w
   const pgi = buildInvoiceSnapshot({ ...order, kind: "EXPORT", currency: "USD" }, S, "EXPORT", lines, { date: "2026-08-20", gstin: "33AAFCP5374A1ZQ" });
   const stale = exportRootOverrides(pgi, { [EXPORT_ROOT_GSTIN_KEY]: "GSTIN NO: 33AALCP2750N1Z3" });
   assert.equal(stale.length, 1);
-  assert.equal(stale[0].onInvoice, "33AAFCP5374A1ZQ (Pacific Granites (India) Pvt Ltd)");
+  assert.equal(stale[0].expected, "33AAFCP5374A1ZQ (Pacific Granites (India) Pvt Ltd)");
+  assert.equal(stale[0].sheetGstin, false);
+});
+
+test("exportRootOverrides: the SCOPE is checked cell by cell, on the three sheets it decides (round two, answer 19)", () => {
+  const own = S.company.gstin;                                   // 33AALCP2750N1Z3
+  const pgiGstin = gstinChoices(S.company)[1].gstin;             // 33AAFCP5374A1ZQ
+  const lines = buildInvoiceLines(items, null, "EXPORT", S);
+  const exportOrder = { ...order, kind: "EXPORT", currency: "USD" };
+  const keys = EXPORT_ROOT_SHEET_GSTIN_CELLS.map((c) => c.key);
+  assert.deepEqual(keys, ["plGstin", "custPlGstin", "c1Gstin"], "the same three cells export-workbook/mapping.ts names");
+
+  // "every sheet": all three are expected to carry the CHOSEN registration
+  const wide = buildInvoiceSnapshot(exportOrder, S, "EXPORT", lines, { date: "2026-08-20", gstin: pgiGstin, gstinApplyAll: true });
+  assert.equal(snapshotExtras(wide).gstinApplyAll, true);
+  assert.deepEqual(exportRootOverrides(wide, Object.fromEntries(keys.map((k) => [k, `GSTIN NO: ${pgiGstin}`])), own), [],
+    "the prefill saved back unchanged is not an override");
+  const wideOff = exportRootOverrides(wide, { plGstin: `GSTIN NO: ${own}`, custPlGstin: `GSTIN NO: ${pgiGstin}`, c1Gstin: own }, own);
+  assert.deepEqual(wideOff.map((o) => o.key), ["plGstin", "c1Gstin"], "only the cells actually typed over");
+  assert.equal(wideOff[0].sheetGstin, true);
+  assert.equal(wideOff[0].what, "GSTIN on the packing list");
+  assert.equal(wideOff[0].expected, `${pgiGstin} (Pacific Granites (India) Pvt Ltd)`);
+  assert.equal(wideOff[0].saved, `GSTIN NO: ${own}`);
+  assert.equal(overriddenSheetsNote(wideOff), "the packing list and Annexure C1");
+
+  // "this invoice only": the same three are expected to carry the COMPANY's
+  // own, which the snapshot cannot say — so the own registration is passed in
+  const narrow = buildInvoiceSnapshot(exportOrder, S, "EXPORT", lines, { date: "2026-08-20", gstin: pgiGstin, gstinApplyAll: false });
+  assert.equal(snapshotExtras(narrow).gstinApplyAll, false);
+  assert.deepEqual(exportRootOverrides(narrow, { plGstin: `GSTIN NO: ${own}`, custPlGstin: `GSTIN NO: ${own}`, c1Gstin: own }, own), [],
+    "the three sheets on the company's own is exactly what the answer asked for");
+  const spread = exportRootOverrides(narrow, { plGstin: `GSTIN NO: ${pgiGstin}`, custPlGstin: `GSTIN NO: ${pgiGstin}`, c1Gstin: pgiGstin }, own);
+  assert.deepEqual(spread.map((o) => o.key), keys, "the alternate typed into all three IS the tab's warning");
+  assert.equal(spread[0].expected, own, "no label: the company's own is the expectation");
+  assert.equal(overriddenSheetsNote(spread), "the packing list, the customer's copy and Annexure C1");
+
+  // without the company's own registration the three are left UNCHECKED
+  // rather than guessed at — a wrong warning about a customs document is
+  // worse than none. The invoice's own cell is still checked.
+  assert.deepEqual(exportRootOverrides(narrow, { plGstin: `GSTIN NO: ${pgiGstin}` }), []);
+  assert.deepEqual(exportRootOverrides(narrow, { plGstin: `GSTIN NO: ${pgiGstin}` }, null), []);
+  const stillChecked = exportRootOverrides(narrow, { [EXPORT_ROOT_GSTIN_KEY]: `GSTIN NO: ${own}`, plGstin: `GSTIN NO: ${pgiGstin}` }, null);
+  assert.deepEqual(stillChecked.map((o) => o.key), [EXPORT_ROOT_GSTIN_KEY]);
+  // an "every sheet" answer needs no own registration: the expectation is the
+  // chosen one, which the snapshot carries
+  assert.deepEqual(exportRootOverrides(wide, { plGstin: `GSTIN NO: ${own}` }).map((o) => o.key), ["plGstin"]);
+
+  // a cell cleared in the form prints nothing, and that is an override too
+  const blank = exportRootOverrides(wide, { c1Gstin: "" }, own);
+  assert.equal(blank.length, 1);
+  assert.equal(blank[0].saved, "");
+  assert.equal(overriddenSheetsNote(blank), "Annexure C1");
+  assert.equal(overriddenSheetsNote([]), null, "nothing typed over — the scope sentence may stand as written");
+});
+
+// ───────── round two (2026-09-08): the GSTIN question, the PI's bank ─────────
+
+test("round two, answer 19: only an alternate registration asks, and the answer is what the snapshot stores", () => {
+  const own = S.company.gstin;                                   // 33AALCP2750N1Z3
+  const pgi = gstinChoices(S.company)[1].gstin;                  // 33AAFCP5374A1ZQ
+
+  assert.equal(isAlternateOf(own, own), false, "the company's own is not an alternate");
+  assert.equal(isAlternateOf(own, own.toLowerCase()), false, "case is not a different company");
+  assert.equal(isAlternateOf(own, pgi), true);
+  assert.equal(isAlternateOf(own, ""), false, "a blank is the default, and the default asks nothing");
+  assert.equal(isAlternateGstin(S, pgi), true);
+  assert.equal(isAlternateGstin(S, own), false);
+
+  // the company's own is always "every sheet": the question is never put, and
+  // storing false there would describe a distinction that does not exist
+  assert.equal(gstinApplyAllFor(S, own, false), true);
+  assert.equal(gstinApplyAllFor(S, own, null), true);
+  assert.equal(gstinApplyAllFor(S, "", false), true);
+  // an alternate takes the answer; no answer takes the NARROW reading
+  assert.equal(gstinApplyAllFor(S, pgi, true), true);
+  assert.equal(gstinApplyAllFor(S, pgi, false), false);
+  assert.equal(gstinApplyAllFor(S, pgi, null), false, "nobody confirmed it for the other sheets");
+  assert.equal(gstinApplyAllFor(S, pgi, undefined), false);
+
+  assert.equal(gstinScopeNote(own, { gstin: own, gstinApplyAll: true }), null, "nothing to explain about the company's own");
+  assert.match(String(gstinScopeNote(own, { gstin: pgi, gstinApplyAll: true })), /every sheet/);
+  assert.match(String(gstinScopeNote(own, { gstin: pgi, gstinApplyAll: false })), /invoice only/);
+
+  // ONLY an export invoice has a workbook, so only there is the question worth
+  // putting — a DTA has one sheet and a delivery challan, and asking about
+  // "every sheet of the export workbook" there asks about sheets nobody will
+  // ever print.
+  assert.equal(hasExportWorkbook("EXPORT"), true);
+  assert.equal(hasExportWorkbook("export"), true);
+  assert.equal(hasExportWorkbook("DTA"), false);
+  assert.equal(hasExportWorkbook(null), false, "a kind nobody has chosen yet asks nothing");
+  assert.equal(gstinQuestionApplies(own, pgi, "EXPORT"), true);
+  assert.equal(gstinQuestionApplies(own, pgi, "DTA"), false, "no workbook, no question");
+  assert.equal(gstinQuestionApplies(own, own, "EXPORT"), false, "the company's own reaches everything anyway");
+  assert.equal(gstinQuestionApplies(own, "", "DTA"), false);
+  // what the screen sends when it does NOT ask: the same value the server's
+  // gstinApplyAllFor derives from an answer nobody supplied, so the two agree
+  assert.equal(gstinScopeUnasked(own, own), true);
+  assert.equal(gstinScopeUnasked(own, ""), true, "blank is the default, i.e. the company's own");
+  assert.equal(gstinScopeUnasked(own, pgi), false);
+  assert.equal(gstinScopeUnasked(own, pgi), gstinApplyAllFor(S, pgi, null));
+  assert.equal(gstinScopeUnasked(own, own), gstinApplyAllFor(S, own, null));
+  // and the note under the field is worded for the kind rather than promising
+  // a DTA invoice a workbook
+  assert.match(String(gstinScopeNote(own, { gstin: pgi, gstinApplyAll: false }, "DTA")), /no export workbook/);
+  assert.match(String(gstinScopeNote(own, { gstin: pgi, gstinApplyAll: true }, "DTA")), /no export workbook/);
+  assert.equal(gstinScopeNote(own, { gstin: own, gstinApplyAll: true }, "DTA"), null);
+  assert.match(String(gstinScopeNote(own, { gstin: pgi, gstinApplyAll: true }, "EXPORT")), /every sheet/);
+  assert.equal(gstinScopeWord(true), "every sheet");
+  assert.equal(gstinScopeWord(false), "this invoice only");
+  assert.match(GSTIN_APPLY_ALL_QUESTION, /every sheet of the export workbook/);
+});
+
+test("round two, answer 19: the answer rides in the snapshot and survives a draft edit", () => {
+  const lines = buildInvoiceLines(items, null, "EXPORT", S);
+  const exportOrder = { ...order, kind: "EXPORT", currency: "USD" };
+  const pgi = "33AAFCP5374A1ZQ";
+
+  const wide = buildInvoiceSnapshot(exportOrder, S, "EXPORT", lines, { date: "2026-08-20", gstin: pgi, gstinApplyAll: true });
+  assert.equal(wide.gstin, pgi);
+  assert.equal(wide.gstinApplyAll, true);
+
+  const narrow = buildInvoiceSnapshot(exportOrder, S, "EXPORT", lines, { date: "2026-08-20", gstin: pgi, gstinApplyAll: false });
+  assert.equal(narrow.gstinApplyAll, false);
+
+  const unasked = buildInvoiceSnapshot(exportOrder, S, "EXPORT", lines, { date: "2026-08-20", gstin: pgi });
+  assert.equal(unasked.gstinApplyAll, false, "a caller that never asked does not spread the registration");
+
+  const ownSnap = buildInvoiceSnapshot(exportOrder, S, "EXPORT", lines, { date: "2026-08-20", gstinApplyAll: false });
+  assert.equal(ownSnap.gstinApplyAll, true, "the company's own ignores an answer nobody was asked for");
+
+  // the draft edit: the answer may be changed on its own
+  const a = applyDraftPatch(wide, { gstinApplyAll: false }, S);
+  assert.equal(a.changed, true);
+  assert.equal(a.snapshot.gstinApplyAll, false);
+  assert.equal(a.snapshot.gstin, pgi, "the registration itself did not move");
+
+  // re-sending the SAME registration without an answer keeps the stored one —
+  // the screen sends both together, and a bare re-send must not silently
+  // narrow a workbook the clerk already widened
+  const b = applyDraftPatch(wide, { gstin: pgi }, S);
+  assert.equal(b.snapshot.gstinApplyAll, true);
+  assert.equal(b.changed, false);
+
+  // a CHANGE of registration asks again: without an answer it is the narrow one
+  const own = buildInvoiceSnapshot(exportOrder, S, "EXPORT", lines, { date: "2026-08-20" });
+  const c = applyDraftPatch(own, { gstin: pgi }, S);
+  assert.equal(c.snapshot.gstinApplyAll, false);
+  const d = applyDraftPatch(own, { gstin: pgi, gstinApplyAll: true }, S);
+  assert.equal(d.snapshot.gstinApplyAll, true);
+
+  // back to the company's own and the scope goes back to "every sheet"
+  const e = applyDraftPatch(narrow, { gstin: "" }, S);
+  assert.equal(e.snapshot.gstin, S.company.gstin);
+  assert.equal(e.snapshot.gstinApplyAll, true);
+
+  assert.deepEqual(applyDraftPatch(wide, { gstinApplyAll: "yes" }, S).rejected, ["gstinApplyAll"], "a non-boolean is refused by name, never read as truthy");
+  assert.equal(applyDraftPatch(wide, { gstinApplyAll: "yes" }, S).snapshot.gstinApplyAll, true, "and the stored answer stands");
+});
+
+test("round two, answer 19: the workbook scope is logged by value, beside the registration", () => {
+  const lines = buildInvoiceLines(items, null, "EXPORT", S);
+  const exportOrder = { ...order, kind: "EXPORT", currency: "USD" };
+  const own = buildInvoiceSnapshot(exportOrder, S, "EXPORT", lines, { date: "2026-08-20" });
+  const wide = applyDraftPatch(own, { gstin: "33AAFCP5374A1ZQ", gstinApplyAll: true }, S).snapshot;
+  const narrow = applyDraftPatch(wide, { gstinApplyAll: false }, S).snapshot;
+
+  const c1 = registrationChanges(own, wide);
+  assert.equal(c1?.gstin?.to, "33AAFCP5374A1ZQ");
+  assert.equal(c1?.gstinApplyAll, undefined, "the company's own was already 'every sheet' — nothing moved");
+
+  const c2 = registrationChanges(wide, narrow);
+  assert.deepEqual(c2?.gstinApplyAll, { from: true, to: false });
+  assert.equal(c2?.gstin, undefined);
+  assert.match(registrationChangeNote(c2), /workbook every sheet → this invoice only/);
+  assert.equal(registrationChanges(wide, wide), null);
+  assert.deepEqual(patchedSnapshotFields({ gstinApplyAll: false }, wide, narrow), ["gstinApplyAll"]);
+});
+
+test("round two, answer 20: the invoice's bank follows the live PI's, and the kind decides when there is none", () => {
+  const issued = { status: "ISSUED", revision: 0, snapshot: { bankKey: "domestic" } };
+  const accepted = { status: "ACCEPTED", revision: 1, snapshot: { bankKey: "export" } };
+
+  assert.equal(isLivePi(issued), true);
+  assert.equal(isLivePi(accepted), true, "an accepted PI is an issued one the customer signed");
+  assert.equal(isLivePi({ status: "DRAFT", snapshot: { bankKey: "export" } }), false, "a draft is not paper yet");
+  assert.equal(isLivePi({ status: "CANCELLED", snapshot: { bankKey: "export" } }), false, "a cancelled PI is history (answer 24)");
+  assert.equal(isLivePi({ status: "SUPERSEDED", snapshot: { bankKey: "export" } }), false);
+  assert.equal(isLivePi(null), false);
+
+  // the PI's bank wins over the kind's default, both ways round
+  assert.equal(bankKeyForInvoice(issued, "EXPORT"), "domestic", "an export invoice on the PI's domestic account");
+  assert.equal(bankKeyForInvoice(accepted, "DTA"), "export");
+  // no PI, a draft PI, a PI frozen before the bank was stored → the kind
+  assert.equal(bankKeyForInvoice(null, "DTA"), "domestic");
+  assert.equal(bankKeyForInvoice(null, "EXPORT"), "export");
+  assert.equal(bankKeyForInvoice({ status: "DRAFT", snapshot: { bankKey: "domestic" } }, "EXPORT"), "export");
+  assert.equal(bankKeyForInvoice({ status: "ISSUED", snapshot: null }, "EXPORT"), "export");
+  assert.equal(bankKeyForInvoice({ status: "ISSUED", snapshot: { bankKey: "kotak" } }, "DTA"), "domestic", "a bank key the settings do not know is not inherited");
+
+  // which PI is THE live one: since answer 24 there is at most one, and the
+  // highest revision wins if a pre-answer row left two standing
+  assert.equal(livePiOf([]), null);
+  assert.equal(livePiOf(null), null);
+  assert.equal(livePiOf([{ status: "CANCELLED", revision: 0, snapshot: { bankKey: "export" } }]), null);
+  assert.equal(livePiOf([issued, accepted]), accepted);
+  assert.equal(livePiOf([accepted, issued]), accepted, "the order the rows arrive in does not decide it");
+  assert.equal(bankKeyForInvoice(livePiOf([issued, accepted]), "DTA"), "export");
+
+  // THE TIE-BREAK, pinned: two live PIs of the SAME revision (a pre-answer-24
+  // pair) are separated by the order the caller hands them in — the first
+  // wins. invoices/_lib.ts livePiFor selects them highest revision first and,
+  // inside one revision, latest issued first, and then runs this same rule, so
+  // the server and the order screen cannot name different PIs as the live one.
+  const r2a = { status: "ISSUED", revision: 2, snapshot: { bankKey: "export" } };
+  const r2b = { status: "ISSUED", revision: 2, snapshot: { bankKey: "domestic" } };
+  assert.equal(livePiOf([r2a, r2b]), r2a, "equal revisions: the first row given wins");
+  assert.equal(livePiOf([r2b, r2a]), r2b);
+  // and a later-issued LOWER revision still loses to the higher one, which is
+  // where an issuedAt-first query used to disagree with this rule
+  assert.equal(livePiOf([issued, r2a]), r2a);
+  assert.equal(livePiOf([r2a, issued]), r2a);
+  // a row with no revision at all reads as 0 rather than throwing
+  assert.equal(livePiOf([{ status: "ISSUED", snapshot: null }, r2a]), r2a);
+});
+
+test("round two, answer 20: the bank is the manager's to change, and the refusal says so", () => {
+  assert.equal(mayChangeInvoiceBank(["view", "write"]), false, "Raghav and Setumani read the PI's bank");
+  assert.equal(mayChangeInvoiceBank(["view", "write", "approve"]), false, "Murali approves the checklist; the bank is not his");
+  assert.equal(mayChangeInvoiceBank(["view", "write", "approve", "cancel"]), true, "the Commercial Manager");
+  assert.equal(mayChangeInvoiceBank(["admin", "cancel"]), true);
+  assert.equal(mayChangeInvoiceBank([]), false);
+  assert.equal(mayChangeInvoiceBank(null), false);
+
+  assert.equal(bankChangeRefusal(["cancel"]), null);
+  assert.equal(bankChangeRefusal(["write"]), BANK_FOLLOWS_PI);
+  assert.equal(BANK_FOLLOWS_PI, "The invoice follows the PI's bank; the Commercial Manager may change it");
 });

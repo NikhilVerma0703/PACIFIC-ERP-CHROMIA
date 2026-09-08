@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "challans");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await challanIdOf(params);

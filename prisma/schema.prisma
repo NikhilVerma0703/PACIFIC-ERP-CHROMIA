@@ -33,6 +33,9 @@ enum Role {
   CHROMIA // Chromia line tablet role — capped to /chromia + /api/chromia, exactly like ROBO
   COMMERCIAL_MANAGER // Commercial Manager — everything COMMERCIAL does plus approve, cancel and plan (owner, 2026-09-07, answer 9). Added by scripts/0079.
   SAMPLING // Sampling Incharge — capped to /sampling + /api/sampling, exactly like ROBO and CHROMIA. A ROLE, not a Branch: see the SAMPLING MODULE banner at the foot of this file. Added by scripts/0051.
+  COMMERCIAL_DOCS
+  COMMERCIAL_EXEC
+  COMMERCIAL_LOGISTICS
 }
 
 enum Station {
@@ -6405,6 +6408,14 @@ model CommercialOrder {
   deliveryTerms         String?                @map("delivery_terms")
   paymentTerms          String?                @map("payment_terms")
   paymentMode           String?                @map("payment_mode")
+  /// Answer 11: the share of the PI that must be RECEIVED before dispatch.
+  /// NULL falls back to the settings default; 0 asks for no advance at all.
+  advancePct            Decimal?               @map("advance_pct") @db.Decimal(5, 2)
+  /// Answer 12: the Commercial Manager let this truck go without the advance.
+  advanceWaivedAt       DateTime?              @map("advance_waived_at")
+  advanceWaivedById     String?                @map("advance_waived_by_id") // -> users.id (no hard FK)
+  advanceWaivedByName   String?                @map("advance_waived_by_name")
+  advanceWaivedReason   String?                @map("advance_waived_reason")
   billTo                Json?                  @map("bill_to")
   consignee             Json?
   notifyParty           Json?                  @map("notify_party")
@@ -6633,6 +6644,9 @@ model CommercialProforma {
   /// column a human types remarks into. Added by scripts/0077.
   cancelledAt  DateTime?                @map("cancelled_at")
   cancelReason String?                  @map("cancel_reason")
+  /// Answer 8: the PI issued in its place. Not a relation — the row is in this
+  /// same table and a cascade would delete the history the register prints.
+  replacedById String?                  @map("replaced_by_id")
   /// lib/commercial/types.ts ProformaSnapshot.
   snapshot     Json
   currency     String                   @default("USD")
@@ -6899,6 +6913,13 @@ model CommercialDesignCode {
   /// LIGHT / MEDIUM / DARK. A first guess from the name until confirmed.
   shade          String?
   shadeConfirmed Boolean  @default(false) @map("shade_confirmed")
+  /// Answer 15: the owner reads L*a*b* off the sample and may overrule the hex
+  /// by hand. L* is what decides an abrupt changeover (answer 14).
+  colourName     String?  @map("colour_name")
+  hex            String?
+  labL           Decimal? @map("lab_l") @db.Decimal(6, 2)
+  labA           Decimal? @map("lab_a") @db.Decimal(6, 2)
+  labB           Decimal? @map("lab_b") @db.Decimal(6, 2)
   notes          String?
   updatedById    String?  @map("updated_by_id") // -> users.id (no hard FK)
   updatedAt      DateTime @updatedAt @map("updated_at")

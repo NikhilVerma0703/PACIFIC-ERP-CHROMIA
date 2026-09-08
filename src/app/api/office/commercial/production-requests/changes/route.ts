@@ -34,7 +34,7 @@ const CHANGE_INCLUDE = {
 } as const;
 
 export async function GET(req: Request) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "planning");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const u = new URL(req.url);

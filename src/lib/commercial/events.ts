@@ -18,6 +18,10 @@ export type OrderEventKind =
   | "production_requested" | "production_produced"
   | "pi_drafted" | "pi_edited" | "pi_issued" | "pi_accepted" | "pi_superseded" | "pi_revised" | "pi_cancelled"
   | "receipt_recorded" | "receipt_deleted"
+  // Answer 12: the manager let a truck go without the advance, and lifting it
+  // again is just as much a fact. A kind rather than a note so the log can be
+  // filtered for every order that shipped unpaid.
+  | "advance_waived" | "advance_waiver_lifted"
   | "plan_changed" | "slab_swapped"
   | "packing_created" | "packing_submitted" | "packing_verified" | "packing_rejected" | "packing_final"
   | "invoice_created" | "invoice_edited" | "invoice_issued" | "invoice_cancelled"

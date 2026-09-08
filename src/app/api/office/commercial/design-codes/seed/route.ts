@@ -9,6 +9,11 @@
 // _lib), over EVERY status — a design whose slabs have all been dispatched
 // still needs its code on the next order's paperwork.
 //
+// The seed writes NO COLOUR (round two, answer 15): the colour name, the
+// L*a*b* and the hex are read off a physical sample, and a guessed one would
+// be indistinguishable on screen from a measured one — while being the number
+// that decides the queue's cleaning hours (answer 14).
+//
 // READ UNFILTERED (isAdmin: true), WHOEVER SEEDS. The sales-approval filter
 // exists for the stock PICKER: it hides unapproved slabs from a sales-facing
 // audience so nobody offers a customer stock they may not sell. The design
@@ -18,18 +23,24 @@
 // "plan" gate (ADMIN or the Commercial Manager), so the filter would only make
 // the Commercial Manager's seed silently omit the hidden designs, and the
 // first order for one of them would then find no code and a MEDIUM guess.
+//
+// Gates "write" on the designCodes AREA (_lib.areaRefusal), like the row
+// editor beside it: answer 16 left "plan" with the admin alone, and the master
+// is the manager's to maintain.
 import { commercialGate, actorStamp } from "@/lib/commercial/access";
 import { json, deny, handle, plain } from "@/lib/commercial/http";
 import { seedRows } from "@/lib/commercial/design-rules";
 import { listStockDesigns } from "../../stock/designs/_lib";
-import { db } from "../_lib";
+import { db, areaRefusal } from "../_lib";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function POST() {
-  const g = await commercialGate("plan");
+  const g = await commercialGate("write", "designCodes");
   if (!g.ok) return deny(g);
+  const refused = areaRefusal(g, "write");
+  if (refused) return refused;
   return handle(async () => {
     const [stock, existing] = await Promise.all([
       listStockDesigns({ isAdmin: true, availableOnly: false }),

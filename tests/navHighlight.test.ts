@@ -37,7 +37,13 @@ function routes(dir = "src/app", out: string[] = []): string[] {
 }
 
 const ROUTES = routes();
-const NAV = readFileSync("src/components/Nav.tsx", "utf8");
+// The Commercial rows moved out of Nav.tsx on 2026-09-08: they are built from
+// the area table now (nav-rules.commercialNavRows), so the audit reads both
+// files. Same reason as before: the hrefs are what rot, wherever they sit.
+const NAV = [
+  readFileSync("src/components/Nav.tsx", "utf8"),
+  readFileSync("src/lib/commercial/nav-rules.ts", "utf8"),
+].join("\n");
 
 /** Every href the sidebar can render, with whether its row carries `exact`.
  *  Both spellings appear in Nav.tsx: object items (`{ href: "/x", … }`) and the

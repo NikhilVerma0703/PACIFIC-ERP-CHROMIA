@@ -20,7 +20,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function POST(_req: Request, { params }: { params: Promise<{ invId: string }> }) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "invoices");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await invoiceIdOf(params);

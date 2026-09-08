@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "challans");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await challanIdOf(params);
@@ -26,7 +26,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 const has = (b: Record<string, unknown>, k: string): boolean => Object.prototype.hasOwnProperty.call(b, k);
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "challans");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await challanIdOf(params);

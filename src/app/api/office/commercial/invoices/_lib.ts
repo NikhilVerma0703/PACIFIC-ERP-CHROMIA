@@ -6,7 +6,7 @@
 // route — Next ignores a colocated file that is not route.ts.
 import { prisma } from "@/lib/prisma";
 import { fail } from "@/lib/commercial/http";
-import { rowTotalsFromSnapshot, designCodeLookup, BANK_KEYS, type DesignCodeLookup } from "@/lib/commercial/invoice-rules";
+import { rowTotalsFromSnapshot, designCodeLookup, BANK_KEYS, LIVE_PI_STATUSES, livePiOf, type DesignCodeLookup, type PiBankSource } from "@/lib/commercial/invoice-rules";
 import { gstinChoices, type CommercialSettings, type GstinChoice } from "@/lib/commercial/settings-defaults";
 import type { InvoiceSnapshot } from "@/lib/commercial/types";
 
@@ -46,15 +46,36 @@ export function rowPatchFor(snapshot: InvoiceSnapshot): Record<string, unknown> 
   return { snapshot, ...rowTotalsFromSnapshot(snapshot) };
 }
 
-/** The PI the invoice references: the order's live issued (or accepted) one. */
-export async function livePiFor(orderId: string): Promise<{ number: string; date: string | null } | null> {
-  const pi = await db.commercialProforma.findFirst({
-    where: { orderId, status: { in: ["ISSUED", "ACCEPTED"] } },
-    orderBy: [{ issuedAt: "desc" }, { revision: "desc" }],
-    select: { number: true, issuedAt: true },
+/**
+ * The PI the invoice references: the order's live issued (or accepted) one.
+ * Its snapshot comes back too — round two's answer 20 has the invoice inherit
+ * the PI's bank, so the customer pays into the account his proforma named.
+ *
+ * WHICH one, when a row from before answer 24 left two standing, is decided by
+ * `livePiOf` and by nothing else. This used to be a findFirst ordered by
+ * issuedAt then revision, while the order screen ran the pure livePiOf over
+ * the same PIs and took the HIGHEST REVISION — so an older revision issued
+ * later made the server and the screen name different PIs as "the live one",
+ * and the invoice inherited a bank the tab never showed. The query now only
+ * narrows and orders the candidates (highest revision first, latest issue as
+ * the tie-break inside one revision); the rule picks.
+ */
+export async function livePiFor(orderId: string): Promise<{ number: string; date: string | null; status: string; snapshot: { bankKey?: unknown } | null } | null> {
+  const rows = await db.commercialProforma.findMany({
+    where: { orderId, status: { in: LIVE_PI_STATUSES } },
+    // `nulls: "last"` because an ACCEPTED row saved without an issue date must
+    // not out-rank a PI of the same revision that carries one.
+    orderBy: [{ revision: "desc" }, { issuedAt: { sort: "desc", nulls: "last" } }],
+    select: { number: true, issuedAt: true, status: true, revision: true, snapshot: true },
   });
+  const pi = livePiOf(rows as Array<PiBankSource & { number: string; issuedAt: Date | string | null }>);
   if (!pi) return null;
-  return { number: pi.number, date: pi.issuedAt ? new Date(pi.issuedAt).toISOString().slice(0, 10) : null };
+  return {
+    number: pi.number,
+    date: pi.issuedAt ? new Date(pi.issuedAt).toISOString().slice(0, 10) : null,
+    status: pi.status ?? "",
+    snapshot: (pi.snapshot ?? null) as { bankKey?: unknown } | null,
+  };
 }
 
 /** "01 TO 07" — the marks & nos an export invoice prints for N crates. */

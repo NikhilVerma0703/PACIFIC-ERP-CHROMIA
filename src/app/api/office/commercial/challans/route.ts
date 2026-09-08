@@ -17,7 +17,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(req: Request) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "challans");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const u = new URL(req.url);
@@ -42,7 +42,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "challans");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const body = await readBody<Record<string, unknown>>(req);

@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "New enquiry | Commercial | Pacific ERP" };
 
 export default async function NewEnquiryPage() {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "enquiries");
   if (!g.ok) redirect(g.status === 401 ? "/login" : "/no-access?from=/office/commercial/enquiries/new");
   return (
     <>

@@ -29,7 +29,7 @@ interface Body {
 const APPROVE_REFUSED = "Only the Commercial Manager or an admin approves";
 
 export async function GET(_req: Request, { params }: Ctx) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "checklist");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await paramId(params);
@@ -45,7 +45,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "checklist");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await paramId(params);
@@ -58,7 +58,7 @@ export async function PATCH(req: Request, { params }: Ctx) {
     if (wantApprove) {
       // Filling and checking are write; the approval alone is the narrower
       // action, asked for only once the body says that is what this call is.
-      const a = await commercialGate("approve");
+      const a = await commercialGate("approve", "checklist");
       if (!a.ok || !canApprove(a.actor)) fail(403, APPROVE_REFUSED);
     }
 

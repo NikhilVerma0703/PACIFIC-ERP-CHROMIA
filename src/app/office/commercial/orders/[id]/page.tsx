@@ -17,7 +17,7 @@ export default async function CommercialOrderPage({ params, searchParams }: {
   params: Promise<{ id: string }>;
   searchParams: Promise<{ tab?: string }>;
 }) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "orders");
   if (!g.ok) redirect(g.actions.includes("verify") ? "/office/commercial/dispatch-check" : "/no-access?from=/office/commercial/orders");
   const { id } = await params;
   const { tab } = await searchParams;

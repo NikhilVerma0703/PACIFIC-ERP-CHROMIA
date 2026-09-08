@@ -21,15 +21,18 @@
 // nothing is logged for a move that did not happen.
 //
 // Residual window, accepted: the facts themselves (a live hold, an approval
-// stamp, an ADVANCE receipt) are not part of the condition, so a receipt
-// deleted between the read and the write still lets DISPATCHED through once.
+// stamp, the advance arithmetic of round-two answer 11) are not part of the
+// condition, so a receipt deleted between the read and the write still lets
+// DISPATCHED through once.
 // That deletion is an approve-level action (the Commercial Manager or an
 // admin) and is itself logged with the amount, so the window is narrow, the
 // actor is accountable, and the log shows both sides — cheap enough to leave
 // against the cost of a transaction that holds the order row on every move.
 import { prisma } from "@/lib/prisma";
 import { canEnter, impliedStage, stagePatch, stageOf, type OrderStatus, type StageFacts } from "./stages";
-import { stageFactsOf } from "./orders-rules";
+import { stageFactsOf, orderTotals } from "./orders-rules";
+import { advanceStatus, effectiveAdvancePct, type AdvanceStatus } from "./receipts-rules";
+import { loadSettings } from "./settings";
 import { logOrderEvent } from "./events";
 import type { CommercialUser } from "./access";
 
@@ -47,17 +50,34 @@ const MOVED_MEANWHILE = "The order moved meanwhile — reload and try again";
  *  later, and between the lapse and the sweep the row still says ACTIVE
  *  while the slabs are no longer held. A stock check the PI relies on
  *  (answer 1) has to mean stock that is actually held right now. */
-export async function loadStageFacts(orderId: string, now: Date = new Date()): Promise<{ status: OrderStatus; facts: StageFacts } | null> {
+export async function loadStageFacts(orderId: string, now: Date = new Date()): Promise<{ status: OrderStatus; facts: StageFacts; advance: AdvanceStatus } | null> {
   const order = await db.commercialOrder.findUnique({
     where: { id: orderId },
     select: {
       status: true, stockCheckedAt: true, approvedAt: true,
+      kind: true, currency: true, advancePct: true, advanceWaivedAt: true,
       holds: { where: { status: "ACTIVE", expiresAt: { gt: now } }, select: { status: true, expiresAt: true }, take: 1 },
-      receipts: { where: { kind: "ADVANCE" }, select: { kind: true }, take: 1 },
+      // Round two, answer 11: the gate is arithmetic now, not a count — every
+      // ADVANCE receipt and every line amount, because the question is whether
+      // the agreed SHARE of the order total has arrived.
+      items: { select: { amount: true } },
+      receipts: { where: { kind: "ADVANCE" }, select: { kind: true, amount: true, currency: true } },
     },
   });
   if (!order) return null;
-  return { status: order.status as OrderStatus, facts: stageFactsOf(order, now) };
+  const settings = await loadSettings();
+  const advance = advanceStatus({
+    receipts: order.receipts,
+    orderTotal: orderTotals(order.items).amount,
+    currency: String(order.currency ?? ""),
+    advancePct: effectiveAdvancePct(order.advancePct, String(order.kind ?? ""), {
+      domestic: settings.dispatch.advancePctDomestic,
+      export: settings.dispatch.advancePctExport,
+    }),
+    // Answer 12: the manager's waiver satisfies the gate outright.
+    waived: order.advanceWaivedAt != null,
+  });
+  return { status: order.status as OrderStatus, facts: stageFactsOf({ ...order, advance }, now), advance };
 }
 
 /** The stage patch plus whatever else must land in the SAME write, applied

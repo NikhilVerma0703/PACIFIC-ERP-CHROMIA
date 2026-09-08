@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Production planning | Commercial" };
 
 export default async function ProductionPlanningPage() {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "planning");
   if (!g.ok) redirect(g.actions.includes("verify") ? "/office/commercial/dispatch-check" : "/no-access?from=/office/commercial/production-planning");
   return (
     <>

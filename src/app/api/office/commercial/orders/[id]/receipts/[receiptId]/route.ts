@@ -7,8 +7,8 @@
 import { commercialGate } from "@/lib/commercial/access";
 import { json, deny, fail, handle, plain } from "@/lib/commercial/http";
 import { logOrderEvent } from "@/lib/commercial/events";
-import { advanceReceived, receiptNote } from "@/lib/commercial/receipts-rules";
-import { db, loadOrderWithItems } from "../../../_lib";
+import { receiptNote } from "@/lib/commercial/receipts-rules";
+import { advanceOf, db, loadOrderWithItems } from "../../../_lib";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -16,12 +16,12 @@ export const runtime = "nodejs";
 type Ctx = { params: Promise<{ id: string; receiptId: string }> };
 
 export async function DELETE(_req: Request, { params }: Ctx) {
-  const g = await commercialGate("approve");
+  const g = await commercialGate("approve", "orders");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const { id, receiptId } = await params;
     if (!id || !receiptId) fail(400, "Missing id");
-    await loadOrderWithItems(id);
+    const order = await loadOrderWithItems(id);
     // The row is read first only for the log line (amount, kind). The delete
     // itself is a filtered deleteMany, not delete-by-id: two managers clicking
     // the same row would otherwise have the second throw P2025 (a 500) after
@@ -40,6 +40,6 @@ export async function DELETE(_req: Request, { params }: Ctx) {
       payload: { receiptId, kind: gone.kind, amount: gone.amount, currency: gone.currency, receivedAt: gone.receivedAt, mode: gone.mode, reference: gone.reference },
     });
     const items = await db.commercialReceipt.findMany({ where: { orderId: id }, orderBy: [{ receivedAt: "desc" }, { createdAt: "desc" }] });
-    return json(plain({ ok: true, deleted: receiptId, items, advanceReceived: advanceReceived(items) }));
+    return json(plain({ ok: true, deleted: receiptId, items, advance: await advanceOf(order, order.items, items) }));
   });
 }

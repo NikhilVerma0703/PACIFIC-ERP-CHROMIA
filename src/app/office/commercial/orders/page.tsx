@@ -11,7 +11,7 @@ export const metadata: Metadata = { title: "Orders | Commercial | Pacific ERP" }
 export default async function CommercialOrdersPage({ searchParams }: {
   searchParams: Promise<{ status?: string; kind?: string; q?: string; clientId?: string }>;
 }) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "orders");
   if (!g.ok) redirect(g.actions.includes("verify") ? "/office/commercial/dispatch-check" : "/no-access?from=/office/commercial/orders");
   const sp = await searchParams;
   return (

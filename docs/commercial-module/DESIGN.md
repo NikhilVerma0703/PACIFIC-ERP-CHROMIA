@@ -273,3 +273,82 @@ not re-decide it.
   cleaning hours, alwaysIgst, alternate GSTIN lines, telegramPrivate,
   mailFromCommercialLogin); the design-code editor lives here too.
 - The PI validity hint reads "0 = valid forever".
+
+## 9. Round two (2026-09-08) — what the second set of answers changes
+
+DECISIONS-2.md is the record. The foundation below is ALREADY in place and
+committed; builders code against it and do not re-decide it.
+
+### Foundation facts
+
+- **Roles.** Three more: `COMMERCIAL_DOCS` (Raghav), `COMMERCIAL_EXEC`
+  (Setumani), `COMMERCIAL_LOGISTICS` (Murali), beside `COMMERCIAL_MANAGER`
+  (Santosh Thapa) and the legacy `COMMERCIAL`. All rank 1: their reach is the
+  area table, never the ladder.
+- **Areas.** `access-rules.ts` now carries `CommercialArea`,
+  `COMMERCIAL_AREA_ACCESS`, `areaAccessFor`, `commercialAreasFor` and
+  `areaOfPath`. `maySeeCommercialModule(user, path)` asks the area table, so
+  middleware refuses every ungranted path in the module. `commercialCan(user,
+  action, area?)` takes an optional area: name it in a route wherever one login
+  writes there and another only reads —
+  `commercialGate("write", "packing")`.
+- **The planner is the admin's alone** (`plan` = ADMIN, `planning` = none for
+  everyone else, the manager included).
+- **Murali approves.** `approve` = ADMIN, COMMERCIAL_MANAGER,
+  COMMERCIAL_LOGISTICS.
+- **Numbering** pads to four digits: `N{seq:4}`.
+- **Telegram is off**; mail stays on to a plain recipient.
+- **Settings** gained `planning.darkMaxL` / `planning.lightMinL` (what "abrupt"
+  means) and `dispatch.advancePctDomestic` / `advancePctExport`.
+- **Schema 0080** (applied): the three roles; `advance_pct` and
+  `advance_waived_*` on `commercial_order`; `replaced_by_id` on
+  `commercial_proforma`; `colour_name`, `hex`, `lab_l`, `lab_a`, `lab_b` on
+  `commercial_design_code`.
+
+### orders (advance and the waiver)
+
+- The order carries an advance percentage, editable with the rest of its terms;
+  blank means the settings default for its kind.
+- `advanceReceived` becomes `advanceSatisfied`: the sum of ADVANCE receipts in
+  the order currency reaches `advancePct` of the order total, OR the manager
+  waived it. Keep a pure rule in `receipts-rules.ts` with tests; the order
+  detail carries the numbers so the screen can say "USD 12,000 of USD 30,000
+  (40% of the 30% asked)".
+- `POST /orders/[id]/advance-waiver` (`commercialGate("cancel")`) records
+  who, when and why, logs an event, and `DELETE` lifts it. The strip and the
+  dispatch screen show the waiver by name.
+
+### proforma (the register)
+
+- Cancelling a PI asks for a reason and stores it; the reason shows in the
+  register and on the tab.
+- A revision sets `replacedById` on the PI it replaces. The register lists a
+  cancelled PI struck through, with "replaced by <number>" and the reason
+  beside it, rather than hiding it.
+
+### design codes (their own screen)
+
+- The master moves off the settings page to `/office/commercial/design-codes`
+  so the manager reaches it without the counters. The settings page keeps its
+  own fields only.
+- A colour popup per design: colour name, L\*, a\*, b\*, a derived hex swatch,
+  and a hex the owner may type to overrule it. Pure conversion (L\*a\*b\* → sRGB
+  hex) in `design-rules.ts`, with tests against known values.
+- The queue's cleaning rule reads L\*: abrupt when the previous design is at or
+  below `darkMaxL` and the next at or above `lightMinL`; fall back to the
+  LIGHT/MEDIUM/DARK label when a design has no colour.
+
+### invoices
+
+- Choosing an alternate GSTIN asks once, "apply to every sheet of the export
+  workbook?"; the answer rides in the snapshot as `gstinApplyAll` and the
+  workbook obeys it.
+- An invoice inherits the PI's bank. The field is read-only below manager
+  level; the manager may change it and the change is logged.
+
+### everywhere
+
+- Nav, the overview and every screen build themselves from
+  `commercialAreasFor(user)`, never from the role string.
+- A refused action is shown disabled with its reason, never hidden.
+

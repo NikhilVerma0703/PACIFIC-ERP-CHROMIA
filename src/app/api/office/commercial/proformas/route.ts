@@ -4,6 +4,15 @@
 // carries `date`, the PI's printed date, so the register can show it under
 // the number (answer 6) without shipping the whole snapshot. Cancelled PIs
 // stay in the register, marked (answer 24).
+//
+// A cancelled row also carries `replacedByNumber`, resolved HERE. Round two,
+// answer 8 has the register print "replaced by <number>" beside a struck
+// -through one, and proforma-rules.replacementOf resolves that from the
+// siblings on screen — which works on the order's PI tab, where every PI of
+// the order is in hand, and does NOT work in this cross-order register, where
+// the replacement is a different order's PI or simply on the next page. A
+// number resolved off a short page would leave a bare id on the customer's
+// register, so the number comes off a second read of the ids this page names.
 import { commercialGate } from "@/lib/commercial/access";
 import { json, deny, handle, plain } from "@/lib/commercial/http";
 import { pageArgs, parseProformaStatus, type PiSnapshot } from "@/lib/commercial/proforma-rules";
@@ -13,7 +22,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(req: Request) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "proforma");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const u = new URL(req.url);
@@ -43,11 +52,24 @@ export async function GET(req: Request) {
       }),
       db.commercialProforma.count({ where }),
     ]);
-    const items = (rows as Array<Record<string, unknown> & { snapshot: PiSnapshot | null }>).map(({ snapshot, ...r }) => ({
+    const rowsOnPage = rows as Array<Record<string, unknown> & { snapshot: PiSnapshot | null; replacedById?: string | null }>;
+    // The distinct non-null links this page names — one extra read, however
+    // many cancelled rows point at the same replacement, and none at all when
+    // nothing on the page was replaced.
+    const replacedIds = [...new Set(rowsOnPage.map((r) => r.replacedById).filter((id): id is string => Boolean(id)))];
+    const replacements: Array<{ id: string; number: string }> = replacedIds.length
+      ? await db.commercialProforma.findMany({ where: { id: { in: replacedIds } }, select: { id: true, number: true } })
+      : [];
+    const numberOf = new Map(replacements.map((p) => [p.id, p.number]));
+
+    const items = rowsOnPage.map(({ snapshot, ...r }) => ({
       ...r,
       date: snapshot?.date ?? null,
       bankKey: snapshot?.bankKey ?? null,
       revises: snapshot?.revises ?? null,
+      // null when the link points at a PI that no longer exists — the row
+      // prints as cancelled with its reason, never as a bare id.
+      replacedByNumber: r.replacedById ? numberOf.get(r.replacedById) ?? null : null,
     }));
     return json(plain({ items, total, page, limit }));
   });

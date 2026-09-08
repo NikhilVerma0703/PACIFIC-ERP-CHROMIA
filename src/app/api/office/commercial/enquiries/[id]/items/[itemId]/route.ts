@@ -20,7 +20,7 @@ async function loadItem(enquiryId: string, itemId: string): Promise<Record<strin
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "enquiries");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const { id, itemId } = await params;
@@ -41,7 +41,7 @@ export async function PATCH(req: Request, { params }: Ctx) {
 }
 
 export async function DELETE(_req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "enquiries");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const { id, itemId } = await params;

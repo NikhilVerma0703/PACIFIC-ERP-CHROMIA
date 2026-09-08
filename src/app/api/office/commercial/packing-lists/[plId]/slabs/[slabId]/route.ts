@@ -21,7 +21,7 @@ type Ctx = { params: Promise<{ plId: string; slabId: string }> };
 const has = (b: Record<string, unknown>, k: string) => Object.prototype.hasOwnProperty.call(b, k);
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "packing");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const [plId, slabId] = await paramTwo(params as Promise<Record<string, string>>, "plId", "slabId");
@@ -69,7 +69,7 @@ export async function PATCH(req: Request, { params }: Ctx) {
 }
 
 export async function DELETE(_req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "packing");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const [plId, slabId] = await paramTwo(params as Promise<Record<string, string>>, "plId", "slabId");

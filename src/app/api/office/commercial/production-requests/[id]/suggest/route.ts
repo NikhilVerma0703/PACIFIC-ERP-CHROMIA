@@ -27,7 +27,7 @@ const db = prisma as any;
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(_req: Request, { params }: Ctx) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "planning");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await paramId(params);

@@ -64,8 +64,16 @@ export interface CommercialSettings {
   };
   /** The unit a new packing list prints in (answer 17). */
   measurementUnitDefault: "cm" | "in";
-  /** Cleaning between production runs (answer 13). */
-  planning: { cleaningHoursDefault: number; cleaningHoursAbrupt: number };
+  /** Cleaning between production runs (answer 13). `abruptDropL` is answer
+   *  14 in numbers: a changeover counts as abrupt when the previous design
+   *  is at or below `darkMaxL` and the next is at or above `lightMinL` —
+   *  "sudden very dark like Alabaster Noir, to super white". */
+  planning: { cleaningHoursDefault: number; cleaningHoursAbrupt: number; darkMaxL: number; lightMinL: number };
+  /** Answer 11: the truck leaves when the advance RECEIVED reaches this share
+   *  of the order, unless the order carries its own percentage or the manager
+   *  waives it (answer 12). Two defaults because the two trades differ: the
+   *  domestic terms on file read "100% Advance Payment". */
+  dispatch: { advancePctDomestic: number; advancePctExport: number };
   company: CompanyMaster;
   banks: { export: BankDetails; domestic: BankDetails };
   defaults: {
@@ -97,23 +105,24 @@ export interface CommercialSettings {
 export const DEFAULT_SETTINGS: CommercialSettings = {
   holdDays: 5,                        // owner, 2026-09-05
   piValidityDays: 0,                  // answer 24: valid forever
-  // EVERY series carries an N (answer 8: "N1, N2 … definitively different and
-  // identifiable" from the old Tally numbers), written as the owner wrote it,
-  // without zero padding. Counters start at 1 by design; nothing is aligned
-  // with Tally (answer 4). The PI resets each financial year (answer 5); the
-  // export invoice runs on across years (answer 6); DTA, challan, enquiry and
-  // packing list reset (answers 6, 7).
+  // EVERY series carries an N (2026-09-07 answer 8: "definitively different
+  // and identifiable" from the old Tally numbers) and FOUR digits of zero
+  // padding: the owner chose N0001 over N1 on 2026-09-08 (round two, answer
+  // 7). Counters start at 1 by design; nothing is aligned with Tally (answer
+  // 4). The PI resets each financial year (answer 5); the export invoice runs
+  // on across years and everything else resets (round two, answer 9).
   numbering: {
-    order:         { key: "ORD",       template: "ORD/{fy}/N{seq}",       perFy: true },
-    proforma:      { key: "SAL-ORD",   template: "SAL-ORD/{fy}/N{seq}",   perFy: true },
-    enquiry:       { key: "ENQ",       template: "ENQ/{fy}/N{seq}",       perFy: true },
-    exportInvoice: { key: "PESPL-EXP", template: "PESPL/N{seq}",          perFy: false },
-    dtaInvoice:    { key: "PESPL-DTA", template: "PESPL/N{seq}/{fy}",     perFy: true },
-    challan:       { key: "PESPL-DC",  template: "PESPL/DC/N{seq}/{yy}",  perFy: true },
-    packingList:   { key: "PL",        template: "PL/{fy}/N{seq}",        perFy: true },
+    order:         { key: "ORD",       template: "ORD/{fy}/N{seq:4}",       perFy: true },
+    proforma:      { key: "SAL-ORD",   template: "SAL-ORD/{fy}/N{seq:4}",   perFy: true },
+    enquiry:       { key: "ENQ",       template: "ENQ/{fy}/N{seq:4}",       perFy: true },
+    exportInvoice: { key: "PESPL-EXP", template: "PESPL/N{seq:4}",          perFy: false },
+    dtaInvoice:    { key: "PESPL-DTA", template: "PESPL/N{seq:4}/{fy}",     perFy: true },
+    challan:       { key: "PESPL-DC",  template: "PESPL/DC/N{seq:4}/{yy}",  perFy: true },
+    packingList:   { key: "PL",        template: "PL/{fy}/N{seq:4}",        perFy: true },
   },
   measurementUnitDefault: "cm",       // answer 17, reading recorded in DECISIONS.md
-  planning: { cleaningHoursDefault: 3, cleaningHoursAbrupt: 6 },   // answer 13
+  planning: { cleaningHoursDefault: 3, cleaningHoursAbrupt: 6, darkMaxL: 30, lightMinL: 75 },   // answers 13, 14
+  dispatch: { advancePctDomestic: 100, advancePctExport: 30 },     // answer 11
   company: {
     legalName: "Pacific Engineered Surfaces Private Limited",
     shortName: "Pacific Engineered Surfaces Pvt Ltd",
@@ -182,12 +191,13 @@ export const DEFAULT_SETTINGS: CommercialSettings = {
     challanApprox: "Amount Declared is approximate value of the goods",
   },
   tax: { igstRate: 18, cgstRate: 9, sgstRate: 9, supplierStateCode: "33", alwaysIgst: true },   // answer 22
-  // Answer 13: a mail from Santosh's ID to vmundra, and a private Telegram to
-  // Varun Mundra. Both switched ON here; both need credentials that are not in
-  // the repo (the Commercial login's SMTP, TELEGRAM_COMMERCIAL_CHAT_ID). Until
-  // those exist the sends degrade silently and the request row records
-  // notifiedVia = planning-page, exactly as before.
-  notify: { telegram: true, telegramPrivate: true, mail: true, mailFromCommercialLogin: true, mailTo: ["vmundra@thepacific.group"] },
+  // 2026-09-07 answer 13 asked for a mail from Santosh's ID and a private
+  // Telegram; round two settles both. Telegram is OFF — "let's leave Telegram
+  // for now" (answer 5). Mail is ON to a plain recipient (answer 4) and will
+  // leave from the ERP's own account until Santosh's SMTP is entered on his
+  // user, which the owner is doing at the end (answer 3). Until then the send
+  // degrades silently and the request row records notifiedVia = planning-page.
+  notify: { telegram: false, telegramPrivate: true, mail: true, mailFromCommercialLogin: true, mailTo: ["vmundra@thepacific.group"] },
 };
 
 /** One registration the documents may be issued under. */

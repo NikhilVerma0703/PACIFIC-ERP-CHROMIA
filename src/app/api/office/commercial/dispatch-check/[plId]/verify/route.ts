@@ -19,7 +19,7 @@
 // are deleted, and the rest STAY on the list with the failure written on them.
 //
 // WHAT COMES BACK IS THE FLOOR SCREEN'S SHAPE, NOT THE LOADER'S. This endpoint
-// is reached by a verify-only login that commercialGate("view") refuses; it
+// is reached by a verify-only login that commercialGate("view", "dispatchCheck") refuses; it
 // used to answer with the whole packing list, which carries the order's items
 // with the customer's rates and amounts, the client's GSTIN, PAN and billing
 // address and the order's payment terms. checkerListView is the same whitelist
@@ -45,7 +45,7 @@ type Ctx = { params: Promise<{ plId: string }> };
 const view = async (plId: string) => checkerListView(plain<Record<string, unknown>>(await loadList(plId)));
 
 export async function POST(req: Request, { params }: Ctx) {
-  const g = await commercialGate("verify");
+  const g = await commercialGate("verify", "dispatchCheck");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const plId = await paramPl(params);

@@ -28,8 +28,10 @@ import {
   buildItemCode, buildDescription, buildLine, sanitiseLine, recomputeTotals,
   clientParty, exporterParty, buildProformaSnapshot, applyDraftPatch, piAmountInWords,
   defaultBankKey, parseBankKey, piBank, bankBlock, gstinChoiceFor, piChoices, BANK_KEYS,
+  piWriteRefusal, PI_READ_ONLY_HINT, PI_NO_WRITE_ACTION_HINT,
   nextRevision, canEditDraft, canIssue, canAccept, canCancel, canRevise, refuseIssue,
-  piIssueRefusal, revisionReason, revisedByIssue, carriedIntoRevision,
+  piIssueRefusal, revisionReason, revisedByIssue, carriedIntoRevision, refuseCancel,
+  replacementOf, registerOrder, type RegisterRow,
   revisesAtIssue, refreezeAtIssue, revisionDraftFor, refuseRevise,
   statusTone, pageArgs, parseProformaStatus, partyBlock, piTableHeader, piRow, piTotalRow,
   piPrintFields, orderWarnings,
@@ -435,17 +437,42 @@ test("gstinChoiceFor: the company's own by default, an alternate when it is on t
   assert.equal(gstinChoiceFor(S, OWN_GSTIN).label, S.company.legalName);
 });
 
-test("piChoices: what the PI tab's dropdowns offer, labels only", () => {
-  const c = piChoices(S);
+test("piChoices: what the PI tab's dropdowns offer, labels only — plus the area's own answer", () => {
+  const c = piChoices(S, "write");
   assert.deepEqual(c.banks, [
     { key: "export", label: "Kotak Mahindra Bank Limited (export)" },
     { key: "domestic", label: "ICICI Bank (domestic)" },
   ]);
   assert.deepEqual(c.gstins.map((g) => g.gstin), [OWN_GSTIN, ALT_GSTIN]);
   assert.equal(c.piValidityDays, 0);
-  assert.equal(piChoices({ ...S, piValidityDays: 30 }).piValidityDays, 30);
-  assert.equal(piChoices({ ...S, piValidityDays: -3 }).piValidityDays, 0, "a negative setting reads as forever");
+  assert.equal(piChoices({ ...S, piValidityDays: 30 }, "write").piValidityDays, 30);
+  assert.equal(piChoices({ ...S, piValidityDays: -3 }, "write").piValidityDays, 0, "a negative setting reads as forever");
   assert.equal(JSON.stringify(c).includes(S.banks.export.accountNo), false, "no account number leaves through the choices route");
+  // The tab cannot learn this from the action list the workspace passes down
+  // (answers 1, 2: Raghav and Murali write elsewhere and only read PIs), so
+  // the choices payload carries it.
+  assert.equal(c.access, "write");
+  assert.equal(piChoices(S, "view").access, "view");
+});
+
+test("piWriteRefusal: a PI write this login cannot make is DISABLED with the reason, never hidden", () => {
+  // Setumani / the manager: the write action AND the proforma area.
+  assert.equal(piWriteRefusal(["view", "write", "cancel"], "write"), null);
+  // Raghav and Murali hold "write" for their own screens and only READ PIs —
+  // the whole reason the action list alone is not the question (answers 1, 2).
+  assert.equal(piWriteRefusal(["view", "write"], "view"), PI_READ_ONLY_HINT);
+  assert.equal(piWriteRefusal(["view", "write"], "none"), PI_READ_ONLY_HINT);
+  // No write action at all.
+  assert.equal(piWriteRefusal(["view"], "write"), PI_NO_WRITE_ACTION_HINT);
+  assert.equal(piWriteRefusal([], null), PI_NO_WRITE_ACTION_HINT);
+  // Unknown (the choices call is in flight, or it failed): the buttons stay
+  // live and the route is the authority — a hiccup must not grey the tab out.
+  assert.equal(piWriteRefusal(["view", "write"], null), null);
+  assert.equal(piWriteRefusal(["view", "write"], undefined), null);
+  // Every refusal is a sentence a person can act on, not a bare "no".
+  for (const hint of [PI_READ_ONLY_HINT, PI_NO_WRITE_ACTION_HINT]) {
+    assert.ok(hint.length > 20 && /login/i.test(hint), hint);
+  }
 });
 
 // ───────────────────────────── the snapshot ──────────────────────────────────
@@ -1214,4 +1241,98 @@ test("a settings edit after issue does not reach the paper: the snapshot froze i
   // only a DRAFT edit that names the key re-freezes, and it re-freezes from the settings it is handed
   assert.equal(applyDraftPatch(s, { bankKey: "export" }, later).changed, false, "the same key does not silently pull new account details in");
   assert.equal(applyDraftPatch(s, { bankKey: "domestic" }, later).snapshot.bank.name, "ICICI Bank");
+});
+
+// ── round two, answer 8: a cancelled PI keeps its place in the register ──────
+
+test("refuseCancel: a cancellation without a reason is refused (round two, answer 8)", () => {
+  assert.equal(refuseCancel({ status: "ISSUED" }, "Customer changed the design"), null);
+  assert.equal(refuseCancel({ status: "DRAFT" }, "Built by mistake"), null);
+  assert.equal(refuseCancel({ status: "ACCEPTED" }, "Order withdrawn"), null);
+  for (const blank of [null, undefined, "", "   ", "None", "null"]) {
+    assert.match(
+      refuseCancel({ status: "ISSUED" }, blank) ?? "",
+      /needs a reason/,
+      `${String(blank)} is not a reason`,
+    );
+  }
+  // status is asked first, so a cancelled PI is told it is cancelled rather
+  // than asked for a reason it can no longer use
+  assert.match(refuseCancel({ status: "CANCELLED" }, "" ) ?? "", /cancelled PI cannot be cancelled/);
+  assert.match(refuseCancel({ status: "SUPERSEDED" }, "why not") ?? "", /superseded PI cannot be cancelled/);
+  // and it agrees with canCancel, which the tab still asks to decide the button
+  for (const st of ["DRAFT", "ISSUED", "ACCEPTED", "SUPERSEDED", "CANCELLED"]) {
+    assert.equal(refuseCancel({ status: st }, "a reason") === null, canCancel(st), st);
+  }
+});
+
+test("revisionReason is what the issue transaction writes on the retired PI", () => {
+  assert.equal(revisionReason("SAL-ORD/26-27/N0007"), "Revised as SAL-ORD/26-27/N0007");
+  // and it passes refuseCancel's reason test, so the by-hand rule and the
+  // automatic one write the same kind of row
+  assert.equal(refuseCancel({ status: "ISSUED" }, revisionReason("SAL-ORD/26-27/N0007")), null);
+});
+
+const row = (id: string, number: string, revision: number, status: string, replacedById: string | null = null): RegisterRow =>
+  ({ id, number, revision, status, replacedById });
+
+test("replacementOf: the number beside a struck-through one is resolved from the siblings", () => {
+  const live = row("c", "SAL-ORD/26-27/N0003", 2, "ISSUED");
+  const dead = row("a", "SAL-ORD/26-27/N0001", 0, "CANCELLED", "c");
+  const all = [live, dead];
+  assert.equal(replacementOf(all, dead)?.number, "SAL-ORD/26-27/N0003");
+  assert.equal(replacementOf(all, live), null, "a live PI was replaced by nothing");
+  assert.equal(replacementOf(all, row("z", "N/0", 9, "CANCELLED", "gone")), null, "a link outside the list prints no number");
+  assert.equal(replacementOf(all, row("s", "N/0", 9, "CANCELLED", "s")), null, "a row cannot replace itself");
+  for (const blank of [null, undefined, ""]) {
+    assert.equal(replacementOf(all, { id: "a", replacedById: blank }), null);
+  }
+});
+
+test("registerOrder: a cancelled PI sits with its replacement, not at its own ordinal", () => {
+  const a = row("a", "SAL-ORD/26-27/N0001", 0, "CANCELLED", "c");
+  const b = row("b", "SAL-ORD/26-27/N0002", 1, "DRAFT");
+  const c = row("c", "SAL-ORD/26-27/N0003", 2, "ISSUED");
+  assert.deepEqual(
+    registerOrder([a, b, c]).map((r) => r.id),
+    ["c", "a", "b"],
+    "N0001 is read under N0003 that replaced it, ahead of the unrelated draft N0002",
+  );
+  // the input is not reordered in place
+  assert.deepEqual([a, b, c].map((r) => r.id), ["a", "b", "c"]);
+});
+
+test("registerOrder: a chain of revisions unwinds newest to oldest under the live one", () => {
+  const rows = [
+    row("p1", "SAL-ORD/26-27/N0001", 0, "CANCELLED", "p2"),
+    row("p2", "SAL-ORD/26-27/N0002", 1, "CANCELLED", "p3"),
+    row("p3", "SAL-ORD/26-27/N0003", 2, "ACCEPTED"),
+  ];
+  assert.deepEqual(registerOrder(rows).map((r) => r.id), ["p3", "p2", "p1"]);
+});
+
+test("registerOrder: nothing is dropped and nothing is listed twice, whatever the links say", () => {
+  const dangling = [row("a", "N1", 0, "CANCELLED", "nowhere"), row("b", "N2", 1, "ISSUED")];
+  assert.deepEqual(registerOrder(dangling).map((r) => r.id), ["b", "a"], "a broken link leaves the row at its ordinal");
+
+  // a cycle has no head to hang off; both rows still list, once each
+  const cycle = [row("x", "N1", 0, "CANCELLED", "y"), row("y", "N2", 1, "CANCELLED", "x")];
+  const out = registerOrder(cycle);
+  assert.equal(out.length, 2);
+  assert.deepEqual([...new Set(out.map((r) => r.id))].length, 2);
+
+  assert.deepEqual(registerOrder([]), []);
+  const one = [row("solo", "N1", 0, "ISSUED")];
+  assert.deepEqual(registerOrder(one).map((r) => r.id), ["solo"]);
+});
+
+test("registerOrder: two PIs retired by one issue are both listed under it", () => {
+  // revisedByIssue exists to stop this happening, but a register that hid the
+  // second one would hide the very thing a reader is looking for
+  const rows = [
+    row("old1", "N0001", 0, "CANCELLED", "new"),
+    row("old2", "N0002", 1, "CANCELLED", "new"),
+    row("new", "N0003", 2, "ISSUED"),
+  ];
+  assert.deepEqual(registerOrder(rows).map((r) => r.id), ["new", "old2", "old1"]);
 });

@@ -9,9 +9,13 @@
 // slab thickness ('20mm', '2cm', '2 cm') with the request's canonical '2 cm',
 // and re-stating canonThickness here would let the two drift.
 import { canonThickness } from "../thickness.ts";
-// The shade rule (answer 13) is the design master's; the queue applies it row
-// by row and must not restate it, or the two would drift.
-import { cleaningHoursFor, isAbruptJump, parseShade, type PlanningSettingsLike } from "./design-rules.ts";
+// The shade rule (answer 13, re-read as round two's answer 14) is the design
+// master's; the queue applies it row by row and must not restate it, or the
+// two would drift.
+import {
+  cleaningHoursFor, isAbruptJump, parseShade, shadeOf, colourLabel, labLOf,
+  type PlanningSettingsLike, type ChangeoverSide,
+} from "./design-rules.ts";
 
 export const PRODUCTION_STATUSES = ["QUEUED", "SCHEDULED", "IN_PRODUCTION", "PRODUCED", "CANCELLED"] as const;
 export type ProductionStatus = (typeof PRODUCTION_STATUSES)[number];
@@ -273,16 +277,23 @@ export function canDeleteRequest(status: string, actions: readonly string[]): { 
   return { ok: true };
 }
 
-/** The figures a request is raised with (answer 13): the plan starts as the
- *  shortfall, the shade is the design master's, and the cleaning hours follow
- *  the queue rule against the row that will run before it. */
-export function initialPlan(qtyShort: number, shade: unknown, prevShade: unknown, planning?: Partial<PlanningSettingsLike> | null): {
+/**
+ * The figures a request is raised with (answer 13): the plan starts as the
+ * shortfall, the shade is the design master's, and the cleaning hours follow
+ * the queue rule against the row that will run before it.
+ *
+ * Both sides take the design master's COLOUR row now (round two, answer 14)
+ * so the measured L* decides; a bare shade word still works and still answers
+ * as it did. Only the label is STORED on the request — the reading lives on
+ * the master, where correcting it corrects every row that reads it.
+ */
+export function initialPlan(qtyShort: number, colour: ChangeoverSide, prevColour: ChangeoverSide, planning?: Partial<PlanningSettingsLike> | null): {
   plannedSlabs: number; shade: string | null; cleaningHours: number;
 } {
   return {
     plannedSlabs: Math.max(0, Math.round(Number(qtyShort)) || 0),
-    shade: parseShade(shade),
-    cleaningHours: cleaningHoursFor(prevShade, shade, planning),
+    shade: parseShade(shadeOf(colour)),
+    cleaningHours: cleaningHoursFor(prevColour, colour, planning),
   };
 }
 
@@ -291,6 +302,12 @@ export interface ChainRowLike {
   status: string;
   priority: number;
   shade?: string | null;
+  /** The design master's measured lightness, carried onto the row when the
+   *  chain is loaded (round two, answer 14). Null for a design nobody has
+   *  measured — then `shade` decides. */
+  labL?: unknown;
+  colourName?: string | null;
+  hex?: string | null;
   cleaningHours?: unknown;
   design?: string;
   /** When PRODUCED: so the most recent run can be found. */
@@ -373,30 +390,51 @@ export function recomputeCleaning<T extends ChainRowLike>(rows: readonly T[], pl
   const chain = planChain(rows);
   const patches: CleaningPatch[] = [];
   const held: CleaningHold[] = [];
-  let prev: string | null = predecessorRow(rows)?.shade ?? null;
+  // The WHOLE row goes into the rule, not just its shade word: the measured
+  // L* is what decides now (round two, answer 14) and the label is only the
+  // fallback for a design nobody has measured.
+  let prev: ChainRowLike | null = predecessorRow(rows);
   for (const r of chain) {
-    const want = cleaningHoursFor(prev, r.shade, planning);
+    const want = cleaningHoursFor(prev, r, planning);
     const have = asNum(r.cleaningHours);
     if (have !== want) {
       if (r.cleaningHeld) held.push({ id: r.id, design: r.design ?? "", kept: have, rule: want });
       else patches.push({ id: r.id, from: have, cleaningHours: want });
     }
-    prev = r.shade ?? null;
+    prev = r;
   }
   return { patches, held };
 }
 
-/** Every abrupt DARK → LIGHT changeover in the chain, for the warning the
+export interface AbruptJump {
+  id: string;
+  afterId: string;
+  design: string;
+  afterDesign: string;
+  /** The two lightnesses the rule read, null where the design is classified
+   *  by label alone. */
+  labL: number | null;
+  afterLabL: number | null;
+  /** How the changeover reads: "Alabaster Noir L* 12 → Super White L* 92"
+   *  (round two, answer 14 — the owner's own example). */
+  reason: string;
+}
+
+/** Every abrupt dark → light changeover in the chain, for the warning the
  *  queue shows and the reorder route returns. The first chain row is judged
- *  against predecessorRow too, so a LIGHT row queued straight after a DARK
+ *  against predecessorRow too, so a light row queued straight after a dark
  *  row in production is named. */
-export function abruptJumps<T extends ChainRowLike>(rows: readonly T[]): { id: string; afterId: string; design: string; afterDesign: string }[] {
+export function abruptJumps<T extends ChainRowLike>(rows: readonly T[], planning?: Partial<PlanningSettingsLike> | null): AbruptJump[] {
   const chain = planChain(rows);
-  const out: { id: string; afterId: string; design: string; afterDesign: string }[] = [];
+  const out: AbruptJump[] = [];
   let prev: T | null = predecessorRow(rows);
   for (const r of chain) {
-    if (prev && isAbruptJump(prev.shade, r.shade)) {
-      out.push({ id: r.id, afterId: prev.id, design: r.design ?? "", afterDesign: prev.design ?? "" });
+    if (prev && isAbruptJump(prev, r, planning)) {
+      out.push({
+        id: r.id, afterId: prev.id, design: r.design ?? "", afterDesign: prev.design ?? "",
+        labL: labLOf(r), afterLabL: labLOf(prev),
+        reason: `${colourLabel(prev.design, prev)} → ${colourLabel(r.design, r)}`,
+      });
     }
     prev = r;
   }

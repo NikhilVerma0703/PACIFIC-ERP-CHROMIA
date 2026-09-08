@@ -21,7 +21,7 @@ export const runtime = "nodejs";
 type Ctx = { params: Promise<{ plId: string }> };
 
 export async function GET(_req: Request, { params }: Ctx) {
-  const g = await commercialGate("verify");
+  const g = await commercialGate("verify", "dispatchCheck");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const plId = await paramPl(params);

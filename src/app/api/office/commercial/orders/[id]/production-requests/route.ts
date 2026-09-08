@@ -17,7 +17,7 @@ import { notifyShortage } from "@/lib/commercial/notify";
 import { canonThickness } from "@/lib/thickness";
 import { shortfall, nextPriority, parseStatusFilter, historyOnly, initialPlan, lastInChain } from "@/lib/commercial/production-rules";
 import { pageArgs } from "@/lib/commercial/holds-rules";
-import { db, REQUEST_INCLUDE, loadOrderForRequest, shadeForDesign, loadChainRows, loadPlanning } from "../../../production-requests/_lib";
+import { db, REQUEST_INCLUDE, loadOrderForRequest, colourForDesign, loadChainRows, loadPlanning } from "../../../production-requests/_lib";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -25,7 +25,7 @@ export const runtime = "nodejs";
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(req: Request, { params }: Ctx) {
-  const g = await commercialGate("view");
+  const g = await commercialGate("view", "planning");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await paramId(params);
@@ -46,7 +46,7 @@ export async function GET(req: Request, { params }: Ctx) {
 }
 
 export async function POST(req: Request, { params }: Ctx) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("write", "planning");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await paramId(params);
@@ -84,9 +84,13 @@ export async function POST(req: Request, { params }: Ctx) {
     // production and a LIGHT request raised behind it is the 6-hour clean,
     // so the running row must count as the predecessor even though its own
     // figure is never rewritten (production-rules.lastInChain).
-    const [shade, chain, planning] = await Promise.all([shadeForDesign(design), loadChainRows(), loadPlanning()]);
+    // Both sides of the changeover go in as COLOUR rows, not shade words
+    // (round two, answer 14): the master's measured L* decides, and the label
+    // only stands in for a design nobody has measured. The chain rows already
+    // carry the master's L* (loadChainRows).
+    const [colour, chain, planning] = await Promise.all([colourForDesign(design), loadChainRows(), loadPlanning()]);
     const prev = lastInChain(chain);
-    const plan = initialPlan(qtyShort, shade, prev?.shade ?? null, planning);
+    const plan = initialPlan(qtyShort, colour, prev, planning);
 
     const row = await db.commercialProductionRequest.create({
       data: {

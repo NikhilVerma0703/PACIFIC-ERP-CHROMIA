@@ -17,11 +17,23 @@
 // which the PI routes and the PDF use too and tests/commercialProforma.test.ts
 // runs. The bank and GSTIN options come from GET /proformas/choices (the
 // settings route itself is the admin's, and the clerk issuing a PI is not).
+//
+// NO WRITE ON THIS TAB IS EVER HIDDEN (DESIGN.md §9). Create draft, Issue,
+// Customer accepted and Revise are rendered for every login that can open the
+// order and DISABLED WITH THE REASON when this one may not perform them, the
+// way Cancel has always been. Whether it may is piWriteRefusal(actions,
+// access): the `actions` the workspace passes down AND the proforma AREA's own
+// answer, which arrives on the /proformas/choices payload this tab already
+// fetches. Both are needed since answers 1 and 2 split the desk — Raghav and
+// Murali hold the write action for their own screens and only read PIs, so
+// actions.includes("write") alone would offer them four buttons the routes
+// (commercialGate("write", "proforma")) refuse.
 import { useEffect, useMemo, useState } from "react";
 import { Card, Badge, Empty } from "@/components/ui";
 import { postJson, patchJson } from "@/lib/fab/postJson";
 import { readJson } from "@/lib/readJson";
-import { statusTone, orderWarnings, formatPiDate, defaultBankKey, revisionDraftFor, BANK_KEYS, type BankKey, type PiChoices } from "@/lib/commercial/proforma-rules";
+import { statusTone, orderWarnings, formatPiDate, defaultBankKey, revisionDraftFor, refuseCancel, registerOrder, replacementOf, piWriteRefusal, BANK_KEYS, type BankKey, type PiChoices } from "@/lib/commercial/proforma-rules";
+import type { AreaAccess } from "@/lib/commercial/access-rules";
 import type { GstinChoice } from "@/lib/commercial/settings-defaults";
 import type { OrderTabProps, ProformaDto, ProformaSnapshot } from "@/lib/commercial/types";
 import { isLiveHold } from "@/lib/commercial/orders-rules";
@@ -29,6 +41,10 @@ import {
   BTN, BTN_PRIMARY, BTN_DANGER, ErrorNote, OkNote, TextField, AreaField, SelectField,
   dmy, dateInputValue, money, qty,
 } from "../orders/fields";
+
+// Answer 24 put cancelling behind the "cancel" action; a login without it sees
+// the button disabled with this beside it, never a screen missing a button.
+const CANCEL_HINT = "Only the Commercial Manager or an admin cancels a PI";
 
 interface DraftForm {
   deliveryDate: string;
@@ -55,7 +71,12 @@ function formOf(s: ProformaSnapshot | null | undefined, kind: string, ownGstin: 
 }
 
 export default function PiTab({ order, actions, refresh }: OrderTabProps) {
-  const canWrite = actions.includes("write");
+  // null until GET /proformas/choices lands (or if it never does): unknown is
+  // NOT read-only — the buttons stay live and the route stays the authority,
+  // rather than a network hiccup greying the tab out.
+  const [piAccess, setPiAccess] = useState<AreaAccess | null>(null);
+  const writeRefusal = piWriteRefusal(actions, piAccess);
+  const canWrite = writeRefusal === null;
   const canCancelPi = actions.includes("cancel");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -81,6 +102,7 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
         setBanks(res.data.banks.map((b) => ({ value: b.key, label: b.label })));
         setGstins(res.data.gstins);
         setValidityDays(res.data.piValidityDays);
+        setPiAccess(res.data.access ?? null);
       } catch {
         // the fallbacks above stand
       }
@@ -88,10 +110,10 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
     return () => { alive = false; };
   }, []);
 
-  const proformas = useMemo(
-    () => [...(order.proformas ?? [])].sort((a, b) => b.revision - a.revision),
-    [order.proformas],
-  );
+  // Round two, answer 8: newest first, except that a cancelled PI sits under
+  // the PI that replaced it. registerOrder decides that, so the register page
+  // and this tab read the same way.
+  const proformas = useMemo(() => registerOrder(order.proformas ?? []), [order.proformas]);
   const warnings = useMemo(
     () => orderWarnings({ items: order.items, consignee: order.consignee, client: order.client }),
     [order.items, order.consignee, order.client],
@@ -134,11 +156,15 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
       `A draft revising ${pi.number} is ready under a new number — issue it to retire ${pi.number}.`);
   }
 
+  // Answer 8: the reason is required. The route refuses a blank one; asking
+  // here saves the round trip and says what the reason is for.
   function cancel(pi: ProformaDto) {
-    const reason = window.prompt(`Cancel ${pi.number} — why?`, "");
+    const reason = window.prompt(`Cancel ${pi.number} — why? ${pi.number} stays in the register, struck through, with this reason beside it.`, "");
     if (reason === null) return;
-    void run(`cancel:${pi.id}`, () => postJson(`/api/office/commercial/proformas/${pi.id}/cancel`, { reason }),
-      `${pi.number} cancelled.`);
+    const refusal = refuseCancel({ status: pi.status }, reason);
+    if (refusal) { setDone(null); setError(refusal); return; }
+    void run(`cancel:${pi.id}`, () => postJson(`/api/office/commercial/proformas/${pi.id}/cancel`, { reason: reason.trim() }),
+      `${pi.number} cancelled — the register keeps the number.`);
   }
 
   async function saveDraft(pi: ProformaDto) {
@@ -188,11 +214,13 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
           {validityDays === null ? "" : validityDays > 0 ? ` A PI is valid for ${validityDays} days from issue.` : " A PI does not expire."}
           {live ? ` ${live.number} is live.` : ""}
         </p>
-        {canWrite && (
-          <button className={BTN_PRIMARY} disabled={busy === "create"} onClick={() => void createDraft()}>
+        <div className="flex flex-col items-end gap-1">
+          <button className={BTN_PRIMARY} disabled={!canWrite || busy === "create"}
+            title={writeRefusal ?? undefined} onClick={() => void createDraft()}>
             {busy === "create" ? "Building…" : "Create draft from this order"}
           </button>
-        )}
+          {writeRefusal && <span className="text-xs text-gray-400">{writeRefusal}</span>}
+        </div>
       </div>
 
       {proformas.length === 0 ? (
@@ -205,6 +233,10 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
             const isEditing = editing === pi.id;
             const cancelledAt = pi.cancelledAt ?? null;
             const cancelReason = pi.cancelReason ?? null;
+            const cancelled = pi.status === "CANCELLED";
+            // The number of the PI issued in this one's place, read off the
+            // siblings this screen already holds (answer 8).
+            const replacement = cancelled ? replacementOf(proformas, pi) : null;
             // A draft already revising this PI: the route would refuse a second
             // (409), so the button says so instead of offering one.
             const pendingRevision = (pi.status === "ISSUED" || pi.status === "ACCEPTED") ? revisionDraftFor(proformas, pi.id) : null;
@@ -213,7 +245,7 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-base font-semibold text-gray-900">{pi.number}</span>
+                      <span className={`text-base font-semibold ${cancelled ? "text-gray-400 line-through" : "text-gray-900"}`}>{pi.number}</span>
                       <Badge tone={statusTone(pi.status)}>{pi.status.toLowerCase()}</Badge>
                       {s?.kind && <span className="text-xs uppercase tracking-wide text-gray-400">{s.kind}</span>}
                     </div>
@@ -222,9 +254,16 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
                       Issued {dmy(pi.issuedAt)}
                       {pi.validUntil ? ` · Valid until ${dmy(pi.validUntil)}` : ""}
                       {pi.acceptedAt ? ` · Accepted ${dmy(pi.acceptedAt)}` : ""}
-                      {cancelledAt ? ` · Cancelled ${dmy(cancelledAt)}${cancelReason ? ` (${cancelReason})` : ""}` : ""}
+                      {cancelledAt ? ` · Cancelled ${dmy(cancelledAt)}` : ""}
                       {s?.revises?.number ? ` · Revises ${s.revises.number}` : ""}
                     </div>
+                    {cancelled && (replacement || cancelReason) && (
+                      <div className="mt-1 text-xs text-gray-500">
+                        {replacement && <>Replaced by <span className="font-medium text-gray-700">{replacement.number}</span></>}
+                        {replacement && cancelReason ? " · " : ""}
+                        {cancelReason && <span className="italic">{cancelReason}</span>}
+                      </div>
+                    )}
                   </div>
                   <div className="text-right">
                     <div className="text-lg font-semibold text-gray-900">{money(pi.totalAmount, pi.currency)}</div>
@@ -235,32 +274,47 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
                 <div className="mt-3 flex flex-wrap gap-2">
                   <a className={BTN} href={`/api/office/commercial/proformas/${pi.id}/pdf`} target="_blank" rel="noreferrer">Open PDF</a>
                   <button className={BTN} onClick={() => setOpen(isOpen ? null : pi.id)}>{isOpen ? "Hide detail" : "Show detail"}</button>
-                  {canWrite && pi.status === "DRAFT" && (
+                  {pi.status === "DRAFT" && (
                     <>
-                      <button className={BTN} onClick={() => (isEditing ? setEditing(null) : startEdit(pi))}>
+                      <button className={BTN} disabled={!canWrite} title={writeRefusal ?? undefined}
+                        onClick={() => (isEditing ? setEditing(null) : startEdit(pi))}>
                         {isEditing ? "Stop editing" : "Edit draft"}
                       </button>
-                      <button className={BTN_PRIMARY} disabled={busy === `issue:${pi.id}`} onClick={() => void issue(pi)}>
+                      <button className={BTN_PRIMARY} disabled={!canWrite || busy === `issue:${pi.id}`}
+                        title={writeRefusal ?? undefined} onClick={() => void issue(pi)}>
                         {busy === `issue:${pi.id}` ? "Issuing…" : "Issue"}
                       </button>
                     </>
                   )}
-                  {canWrite && pi.status === "ISSUED" && (
-                    <button className={BTN_PRIMARY} disabled={busy === `accept:${pi.id}`} onClick={() => void accept(pi)}>
+                  {pi.status === "ISSUED" && (
+                    <button className={BTN_PRIMARY} disabled={!canWrite || busy === `accept:${pi.id}`}
+                      title={writeRefusal ?? undefined} onClick={() => void accept(pi)}>
                       {busy === `accept:${pi.id}` ? "Saving…" : "Customer accepted"}
                     </button>
                   )}
-                  {canWrite && (pi.status === "ISSUED" || pi.status === "ACCEPTED") && (
+                  {(pi.status === "ISSUED" || pi.status === "ACCEPTED") && (
                     pendingRevision ? (
                       <span className="self-center text-xs text-gray-500">Revision {pendingRevision.number} in draft — issue it to retire this PI</span>
                     ) : (
-                      <button className={BTN} disabled={busy === `revise:${pi.id}`} onClick={() => revise(pi)}>
+                      <button className={BTN} disabled={!canWrite || busy === `revise:${pi.id}`}
+                        title={writeRefusal ?? undefined} onClick={() => revise(pi)}>
                         {busy === `revise:${pi.id}` ? "Revising…" : "Revise (new number)"}
                       </button>
                     )
                   )}
-                  {canCancelPi && (pi.status === "DRAFT" || pi.status === "ISSUED" || pi.status === "ACCEPTED") && (
-                    <button className={BTN_DANGER} disabled={busy === `cancel:${pi.id}`} onClick={() => cancel(pi)}>Cancel</button>
+                  {/* The same treatment Cancel has always had: the buttons above stay
+                      on screen, greyed, and this says why (DESIGN.md §9). */}
+                  {writeRefusal && (pi.status === "DRAFT" || pi.status === "ISSUED" || pi.status === "ACCEPTED") && (
+                    <span className="self-center text-xs text-gray-400">{writeRefusal}</span>
+                  )}
+                  {(pi.status === "DRAFT" || pi.status === "ISSUED" || pi.status === "ACCEPTED") && (
+                    <button className={BTN_DANGER} disabled={!canCancelPi || busy === `cancel:${pi.id}`}
+                      title={canCancelPi ? undefined : CANCEL_HINT} onClick={() => cancel(pi)}>
+                      Cancel
+                    </button>
+                  )}
+                  {!canCancelPi && (pi.status === "DRAFT" || pi.status === "ISSUED" || pi.status === "ACCEPTED") && (
+                    <span className="self-center text-xs text-gray-400">{CANCEL_HINT}</span>
                   )}
                 </div>
 
