@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { resolveBatchRecipeIds } from "@/lib/robo/batchFilter";
 import { latestSerialNumber, nextSerialNumber } from "@/lib/robo/nextNumbers";
 import { REGISTER_ORDER } from "@/lib/robo/registerOrderDb";
+import { sequenceNumbersById } from "@/lib/robo/slabSequence";
 import { slabSearchWhere, slabListTake } from "@/lib/robo/slabSearch";
 import { SLAB_COMPLETED, SLAB_IN_PROCESSING } from "@/lib/robo/utils";
 
@@ -49,7 +50,27 @@ export async function GET(req: NextRequest) {
     orderBy: { createdAt: "desc" },
     take,
   });
-  return NextResponse.json(data);
+
+  /* S.No. — the slab's 1..N position in its batch by physical slab number, the
+     authoritative order (change #3); the stored serialNumber was mistyped on old
+     runs and is not shown. It is only meaningful over a WHOLE batch, so it is
+     computed when a Batch No. was searched (batchRecipeIds !== null → the query
+     returns every slab of the matched batch, take === undefined). For a
+     date/slab/design search the set can be partial batches, so seqNo stays null
+     and the column shows "-". Grouped by batchRecipeId; slabs without a batch
+     get no in-batch number. */
+  const seqById =
+    batchRecipeIds !== null
+      ? sequenceNumbersById(
+          data
+            .filter((d): d is typeof d & { batchRecipeId: string } => Boolean(d.batchRecipeId))
+            .map((d) => ({ id: d.id, slabNumber: d.slabNumber, createdAtMs: d.createdAt.getTime(), batchRecipeId: d.batchRecipeId })),
+          (s) => s.batchRecipeId,
+        )
+      : null;
+
+  const withSeq = data.map((d) => ({ ...d, seqNo: seqById?.get(d.id) ?? null }));
+  return NextResponse.json(withSeq);
 }
 
 /** Thrown inside the create transaction so the clash rolls the whole thing

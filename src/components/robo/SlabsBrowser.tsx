@@ -9,6 +9,10 @@ import { DESIGN_SUGGESTIONS } from "@/lib/robo/design-presets";
 interface SlabRecord {
   id: string;
   serialNumber: number | null;
+  /** S.No. = the slab's 1..N position in its batch by physical slab number,
+   *  computed server-side (change #3). Present when the list is a whole batch
+   *  (a Batch No. search); null otherwise, since a partial set has no batch rank. */
+  seqNo?: number | null;
   slabNumber: string;
   /** The slab's own production date, when it has one (a batch past midnight).
    *  Highest precedence in productionDateOf — see productionDate.ts. */
@@ -213,7 +217,7 @@ export function SlabsBrowser({ canDelete = false }: {
           <table className="w-full text-sm">
             <thead className="border-b border-gray-200 bg-slate-50">
               <tr>
-                {["Production Date", "Design Name", "Batch No.", "Slab Number", "In Time", "Out Time", "Status", "Remarks", "Action"].map((h, i, arr) => (
+                {["S.No.", "Production Date", "Design Name", "Batch No.", "Slab Number", "In Time", "Out Time", "Status", "Remarks", "Action"].map((h, i, arr) => (
                   <th key={h} className={`whitespace-nowrap px-4 py-3 text-xs font-semibold uppercase tracking-wide text-gray-500 ${i === arr.length - 1 ? "text-right" : "text-left"}`}>{h}</th>
                 ))}
               </tr>
@@ -221,13 +225,17 @@ export function SlabsBrowser({ canDelete = false }: {
             <tbody>
               {!loading && results.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center text-gray-400">
+                  <td colSpan={10} className="px-4 py-12 text-center text-gray-400">
                     {applied ? "No slabs match these filters." : "No production records yet."}
                   </td>
                 </tr>
               )}
               {results.map(r => (
                 <tr key={r.id} className="border-b border-gray-50 transition hover:bg-slate-50">
+                  {/* S.No. — the slab's 1..N position in its batch, computed from
+                      the physical slab-number order (change #3). Shown when a Batch
+                      No. is searched (the whole batch is in view); "-" otherwise. */}
+                  <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-700">{r.seqNo ?? "-"}</td>
                   {/* The date the operator entered on the setup, not the shift's
                       own — that one is the day the tablet was open, so a
                       register caught up on Monday showed Monday for every slab

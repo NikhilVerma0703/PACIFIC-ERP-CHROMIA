@@ -15,11 +15,16 @@
  *    at 1, and the group is closed by blank rows and a "Total: X records" line
  *    before the next batch begins.
  *
- * The S.No. reset is DISPLAY ONLY. The stored serialNumber and the register's
- * running sequence are never touched — the reset is just this sheet numbering
- * the rows it chose to show for one batch.
+ * S.No. is COMPUTED, not read from the stored serialNumber. Within each batch
+ * the slabs are ranked by their physical slab number — the authoritative
+ * production order — and numbered 1…N (see slabSequence.ts). That is what fixes
+ * the old mistyped runs (a batch numbered 1…36 then restarting at 24, appearing
+ * to end far short of its real slab count): the sheet now always shows a clean
+ * 1…N for the batch, in slab-number order. The stored serialNumber is left
+ * untouched in the database — it is simply no longer what the sheet prints.
  */
 import { canonBatchNo } from "./batchNo.ts";
+import { sequencedByBatch } from "./slabSequence.ts";
 import {
   productionRecordRow,
   type ProductionRecordRow,
@@ -50,21 +55,24 @@ function totalRow(label: string, count: number): ProductionRecordRow {
 }
 
 /**
- * Batch mode: one continuous list, stored S.No. preserved, no per-date breaks.
+ * Batch mode: one continuous list for the selected batch. Rows are laid out in
+ * slab-number order and numbered 1…N — the batch's real sequence, whatever the
+ * mistyped stored S.No. said.
  */
 export function assembleContinuous(records: readonly ExportRecord[]): ProductionRecordRow[] {
-  const sorted = [...records].sort(chrono);
-  // fallbackSerial (i+1) is used ONLY when a row carries no stored S.No.; a real
-  // serialNumber wins, so the register's own numbers show through unchanged.
-  const rows: ProductionRecordRow[] = sorted.map((r, i) => productionRecordRow(r, i + 1));
+  const rows: ProductionRecordRow[] = sequencedByBatch(records).map(({ slab, seqNo }) =>
+    productionRecordRow(slab, seqNo),
+  );
   rows.push({});
-  rows.push(totalRow("TOTAL", sorted.length));
+  rows.push(totalRow("TOTAL", records.length));
   return rows;
 }
 
 /**
- * Date mode: group by batch, restart S.No. at 1 per group (display only), and
- * close each group with blank rows + a total before the next.
+ * Date mode: group by batch, number each group 1…N by slab-number order, and
+ * close each group with blank rows + a total before the next. Groups appear in
+ * the order their earliest record was produced; the rows INSIDE a group run in
+ * slab-number order so the S.No. reads 1…N.
  */
 export function assembleByBatch(records: readonly ExportRecord[]): ProductionRecordRow[] {
   const sorted = [...records].sort(chrono);
@@ -86,10 +94,10 @@ export function assembleByBatch(records: readonly ExportRecord[]): ProductionRec
   const groupList = [...groups.values()];
   groupList.forEach((g, gi) => {
     rows.push(batchHeaderRow(g.label, g.design));
-    // S.No. restarts at 1 for the group: drop the stored serial so
-    // productionRecordRow falls back to the group-local position. The stored
-    // value is untouched in the database — this is the sheet's own numbering.
-    g.items.forEach((r, i) => rows.push(productionRecordRow({ ...r, serialNumber: null }, i + 1)));
+    // Number the group 1…N by slab-number order (slabSequence.ts), not by the
+    // stored S.No. and not by row position — so a batch whose operator S.No. was
+    // mistyped still reads a clean 1…N. The stored value is untouched.
+    sequencedByBatch(g.items).forEach(({ slab, seqNo }) => rows.push(productionRecordRow(slab, seqNo)));
     rows.push({}, {}); // 2 blank rows after the batch's records
     rows.push(totalRow("Total", g.items.length));
     if (gi < groupList.length - 1) rows.push({}, {}); // spacing before the next batch
