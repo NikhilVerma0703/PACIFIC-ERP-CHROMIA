@@ -19,9 +19,14 @@ import {
   dispatchPlan, bridgeSkips, restoredSlabs, strandedNote,
   parseCheckerStatus, checkerMaySee, checkerListView, checkerSlabView, CHECKER_STATUSES,
   measurementHeaderRef, vesselFromSnapshot,
+  canRecheck, canCreatePackingList, canSetUnit, dispatchBlockers, swapEligibility, replacementEligibility, holdDaysLeft, swapNote,
+  swapReleaseOutcome, swapRefusalNote, swapFailureNote, type SwapUndoLike,
   PACKING_STATUSES, PACKING_STATUS_LABEL, CRATE_KINDS, UNFIT_REASONS,
   type SlabLike, type CrateLike,
 } from "../src/lib/commercial/packing-rules.ts";
+import {
+  parseMeasurementUnit, cmToIn, cmFromIn, sizeInUnit, sizeToCm, MEASUREMENT_UNITS, inToCm,
+} from "../src/lib/commercial/measure.ts";
 
 // ───────────────────────────── status rules ─────────────────────────────────
 
@@ -615,24 +620,35 @@ test("strandedNote says which slabs stayed on the list", () => {
 
 // ───────────────────── what a verify-only login may see ─────────────────────
 
-test("parseCheckerStatus and checkerMaySee: three statuses, and nothing else", () => {
-  assert.deepEqual([...CHECKER_STATUSES], ["SUBMITTED", "VERIFIED", "REJECTED"]);
+test("parseCheckerStatus and checkerMaySee: four statuses, and nothing else", () => {
+  // FINAL joined the three on 2026-09-07 (answer 30): the loading bay is where
+  // a passed slab is found cracked, and the checker marks it there.
+  assert.deepEqual([...CHECKER_STATUSES], ["SUBMITTED", "VERIFIED", "REJECTED", "FINAL"]);
   assert.equal(parseCheckerStatus("VERIFIED"), "VERIFIED");
   assert.equal(parseCheckerStatus("rejected"), "REJECTED");
+  assert.equal(parseCheckerStatus("final"), "FINAL");
   assert.equal(parseCheckerStatus(null), "SUBMITTED");
   // ?status=DRAFT was listing every list Commercial had open, through the one
   // door the dispatch team has.
   assert.equal(parseCheckerStatus("DRAFT"), "SUBMITTED", "a draft list is not the dispatch team's business");
-  assert.equal(parseCheckerStatus("FINAL"), "SUBMITTED");
-  assert.equal(parseCheckerStatus("DISPATCHED"), "SUBMITTED");
+  assert.equal(parseCheckerStatus("DISPATCHED"), "SUBMITTED", "a dispatched list has gone");
   assert.equal(parseCheckerStatus("nonsense"), "SUBMITTED");
 
   assert.equal(checkerMaySee("SUBMITTED"), true);
   assert.equal(checkerMaySee("VERIFIED"), true);
   assert.equal(checkerMaySee("REJECTED"), true);
+  assert.equal(checkerMaySee("FINAL"), true);
   assert.equal(checkerMaySee("DRAFT"), false, "the detail route 404s a list it may not open");
-  assert.equal(checkerMaySee("FINAL"), false);
   assert.equal(checkerMaySee("DISPATCHED"), false);
+});
+
+test("canRecheck: a late verdict lands on a verified or final list only", () => {
+  assert.equal(canRecheck("VERIFIED"), true);
+  assert.equal(canRecheck("FINAL"), true);
+  assert.equal(canRecheck("SUBMITTED"), false, "that is the ordinary check, canVerify's business");
+  assert.equal(canRecheck("REJECTED"), false);
+  assert.equal(canRecheck("DRAFT"), false);
+  assert.equal(canRecheck("DISPATCHED"), false);
 });
 
 test("checkerListView: the floor screen's shape, not the order book", () => {
@@ -669,6 +685,9 @@ test("checkerListView: the floor screen's shape, not the order book", () => {
   assert.equal(view.slabs[0].customerSlabNo, "CIOT-01");
   assert.deepEqual(view.fit, { total: 1, fit: 0, unfit: 0, pending: 1 });
   assert.equal(view.submittedAt, "2026-09-05T10:00:00.000Z");
+  assert.equal(view.measurementUnit, "cm", "a list with no unit stored reads in centimetres");
+  assert.equal(checkerListView({ ...loaded, measurementUnit: "in" }).measurementUnit, "in");
+  assert.equal(checkerListView({ ...loaded, measurementUnit: "furlongs" }).measurementUnit, "cm");
 
   // and what a store incharge is not being handed with it
   for (const secret of ["1250.5", "58773.5", "33AALCP2750N1Z3", "AALCP2750N", "1 Wall St", "30% advance", "credit hold"]) {
@@ -863,4 +882,236 @@ test("vesselFromSnapshot: the only place the module knows a vessel", () => {
   assert.equal(vesselFromSnapshot({}), null);
   assert.equal(vesselFromSnapshot(null), null, "no invoice yet, no vessel — the box prints empty");
   assert.equal(vesselFromSnapshot("not a snapshot"), null);
+});
+
+// ───────────────────── the owner's answers of 2026-09-07 ────────────────────
+
+test("canCreatePackingList: one PI has one packing list (answer 18)", () => {
+  assert.deepEqual(canCreatePackingList([]), { ok: true });
+  // A rejected list is reopened, not replaced — and it does not block a fresh start.
+  assert.deepEqual(canCreatePackingList([{ number: "PL/26-27/N1", status: "REJECTED" }]), { ok: true });
+  for (const status of ["DRAFT", "SUBMITTED", "VERIFIED", "FINAL", "DISPATCHED"]) {
+    const r = canCreatePackingList([{ number: "PL/26-27/N1", status }]);
+    assert.equal(r.ok, false, `${status} already IS this order's list`);
+    if (!r.ok) {
+      assert.match(r.reason, /PL\/26-27\/N1/, "the refusal names the list that exists");
+      assert.match(r.reason, /one PI has one packing list/);
+    }
+  }
+  // A rejected one beside an open one: the open one blocks.
+  const two = canCreatePackingList([{ number: "PL/26-27/N2", status: "DRAFT" }, { number: "PL/26-27/N1", status: "REJECTED" }]);
+  assert.equal(two.ok, false);
+  if (!two.ok) assert.match(two.reason, /N2 \(draft\)/);
+  // A dispatched list is not offered "reopen it".
+  const gone = canCreatePackingList([{ number: "PL/26-27/N1", status: "DISPATCHED" }]);
+  if (!gone.ok) assert.equal(gone.reason.includes("reopen"), false);
+});
+
+test("canSetUnit follows canEdit: the sheet does not change unit under the checker (answer 17)", () => {
+  assert.equal(canSetUnit("DRAFT"), true);
+  assert.equal(canSetUnit("REJECTED"), true);
+  for (const s of ["SUBMITTED", "VERIFIED", "FINAL", "DISPATCHED"]) assert.equal(canSetUnit(s), false, s);
+});
+
+test("dispatchBlockers: an unfit or unchecked slab stops the whole list (answers 2, 31)", () => {
+  const clean = dispatchBlockers([{ slabNumber: 1, fit: "FIT" }, { slabNumber: 2, fit: "FIT" }]);
+  assert.deepEqual(clean, { ok: true, unfit: [], unchecked: [], reason: "" });
+
+  const mixed = dispatchBlockers([
+    { slabNumber: 150905, fit: "FIT" },
+    { slabNumber: 150903, fit: "UNFIT", unfitReason: "Crack" },
+    { slabNumber: 150910, fit: "PENDING" },
+    { slabNumber: 150901, fit: "UNFIT", unfitReason: "" },
+  ]);
+  assert.equal(mixed.ok, false);
+  assert.deepEqual(mixed.unfit, [150901, 150903], "ascending, so the message reads the way the crate does");
+  assert.deepEqual(mixed.unchecked, [150910]);
+  assert.match(mixed.reason, /^Nothing ships until the list is corrected\./);
+  assert.match(mixed.reason, /#150903 \(Crack\)/, "the reason the checker gave travels with the number");
+  assert.match(mixed.reason, /#150901[^(]/, "no empty parentheses for a missing reason");
+  assert.match(mixed.reason, /not yet checked: #150910/);
+  assert.match(mixed.reason, /same design and thickness/);
+
+  // A verdict the schema does not know is not a pass.
+  const odd = dispatchBlockers([{ slabNumber: 7, fit: "MAYBE" }]);
+  assert.deepEqual(odd.unchecked, [7]);
+  assert.equal(dispatchBlockers([]).ok, true, "an empty list has nothing to block — the route refuses it for having no slabs");
+});
+
+test("swapEligibility: only a refused slab, only on a concluded list (answer 30)", () => {
+  assert.deepEqual(swapEligibility("FINAL", { slabNumber: 1, fit: "UNFIT" }), { ok: true });
+  assert.deepEqual(swapEligibility("VERIFIED", { slabNumber: 1, fit: "UNFIT" }), { ok: true });
+  const fit = swapEligibility("FINAL", { slabNumber: 150903, fit: "FIT" });
+  assert.equal(fit.ok, false);
+  if (!fit.ok) assert.match(fit.reason, /#150903 has not been marked unfit/);
+  const pending = swapEligibility("FINAL", { slabNumber: 1, fit: "PENDING" });
+  assert.equal(pending.ok, false, "a slab nobody has looked at is checked, not swapped");
+  for (const status of ["DRAFT", "REJECTED", "SUBMITTED", "DISPATCHED"]) {
+    const r = swapEligibility(status, { slabNumber: 1, fit: "UNFIT" });
+    assert.equal(r.ok, false, `${status}: edit it the ordinary way, or it has gone`);
+    if (!r.ok) assert.match(r.reason, /verified or final list/);
+  }
+});
+
+test("replacementEligibility: like for like — same design, same thickness, and packable by us", () => {
+  const refused = { slabNumber: 150903, design: "ONYX STORM", thickness: "3 cm" };
+  const refs = ["SAL-ORD/26-27/N1"];
+  const good = { slabNumber: 150950, status: "AVAILABLE", slabMark: "FULL_SLAB", design: "Onyx Storm", thickness: "30mm" };
+  assert.deepEqual(replacementEligibility(refused, good, refs), { ok: true }, "case and '30mm' vs '3 cm' are spellings, not differences");
+
+  const ours = { ...good, status: "RESERVED", reservedForPi: "SAL-ORD/26-27/N1" };
+  assert.deepEqual(replacementEligibility(refused, ours, refs), { ok: true }, "held under this order's own reference");
+  const theirs = { ...good, status: "RESERVED", reservedForPi: "SAL-ORD/26-27/N7" };
+  const t = replacementEligibility(refused, theirs, refs);
+  assert.equal(t.ok, false);
+  if (!t.ok) assert.match(t.reason, /held under SAL-ORD\/26-27\/N7/);
+
+  const itself = replacementEligibility(refused, { ...good, slabNumber: 150903 }, refs);
+  assert.equal(itself.ok, false);
+  if (!itself.ok) assert.match(itself.reason, /refused slab itself/);
+
+  const colour = replacementEligibility(refused, { ...good, design: "CARRARA ROYALE" }, refs);
+  assert.equal(colour.ok, false, "a different colour is a new order line, not a swap");
+  if (!colour.ok) assert.equal(colour.reason, "CARRARA ROYALE, not ONYX STORM");
+
+  // The canonical design wins over the raw one when the row carries both.
+  const aliased = replacementEligibility(refused, { ...good, design: "Onyx Storm Dark", designCanonical: "ONYX STORM" }, refs);
+  assert.equal(aliased.ok, true);
+
+  const thin = replacementEligibility(refused, { ...good, thickness: "2 cm", thicknessCanonical: "2 cm" }, refs);
+  assert.equal(thin.ok, false, "a 2 cm for a 3 cm is a new order line");
+  if (!thin.ok) assert.equal(thin.reason, "2 cm, not 3 cm");
+
+  const cut = replacementEligibility(refused, { ...good, slabMark: "CTS" }, refs);
+  assert.equal(cut.ok, false);
+  if (!cut.ok) assert.match(cut.reason, /not a full slab/);
+  const packed = replacementEligibility(refused, { ...good, status: "PACKED" }, refs);
+  assert.equal(packed.ok, false);
+
+  // A refused slab with no design or thickness recorded cannot demand a match on it.
+  assert.deepEqual(replacementEligibility({ slabNumber: 1, design: null, thickness: null }, good, refs), { ok: true });
+});
+
+test("holdDaysLeft: a re-held slab lapses when the hold does, not five days from the swap", () => {
+  const now = new Date("2026-09-08T10:00:00Z");
+  const left = holdDaysLeft("2026-09-10T10:00:00Z", now);
+  assert.equal(left, 2);
+  const half = holdDaysLeft(new Date("2026-09-08T22:00:00Z"), now);
+  assert.equal(half, 0.5, "fractional days, which changeSlabStatus multiplies straight into milliseconds");
+  assert.equal(holdDaysLeft("2026-09-07T10:00:00Z", now), null, "a lapsed hold is not re-held — the slab goes back to open stock");
+  assert.equal(holdDaysLeft(null, now), null);
+  assert.equal(holdDaysLeft("not a date", now), null);
+});
+
+test("swapNote reads as one sentence with both numbers", () => {
+  const back = swapNote("PL/26-27/N4", 150903, 150950, "Crack", "SAL-ORD/26-27/N1");
+  assert.equal(back, "Packing list PL/26-27/N4: slab #150903 swapped for #150950 (Crack) — #150903 back on hold SAL-ORD/26-27/N1; #150950 awaits the dispatch check");
+  const stock = swapNote("PL/26-27/N4", 150903, 150950, null, null);
+  assert.equal(stock, "Packing list PL/26-27/N4: slab #150903 swapped for #150950 — #150903 back in stock; #150950 awaits the dispatch check");
+});
+
+test("swapReleaseOutcome: the refused slab's release is the swap's precondition", () => {
+  const packed = [{ slabNumber: 150903, status: "PACKED" }];
+  assert.deepEqual(swapReleaseOutcome(150903, packed, 1), { ok: true });
+
+  // The double-swap this exists to stop: two clerks swap the same UNFIT slab,
+  // the second call finds it AVAILABLE already. Reading that as "already
+  // released, nothing to do" let both POSTs succeed and stranded the first
+  // replacement PACKED against nothing, on no list.
+  const gone = swapReleaseOutcome(150903, [{ slabNumber: 150903, status: "AVAILABLE" }], 0);
+  assert.equal(gone.ok, false);
+  assert.equal(gone.ok === false && gone.wasPacked, false, "not packed any more — the caller must unpack the replacement");
+  assert.equal(gone.ok === false && gone.reason, "#150903 is no longer packed — it was already swapped or released");
+
+  // Packed, but the inventory would not confirm the release: still a refusal,
+  // and still an unpack of the replacement — two slabs must never be PACKED
+  // for one crate slot.
+  const stuck = swapReleaseOutcome(150903, packed, 0);
+  assert.equal(stuck.ok, false);
+  assert.equal(stuck.ok === false && stuck.wasPacked, true);
+  assert.equal(stuck.ok === false && stuck.reason, "the inventory did not confirm the release");
+
+  // A row the restore could not read at all is not a release either.
+  const missing = swapReleaseOutcome(150903, [{ slabNumber: 150950, status: "PACKED" }], 0);
+  assert.equal(missing.ok, false);
+  assert.equal(missing.ok === false && missing.wasPacked, false);
+});
+
+test("swapRefusalNote: a reason that names its own slab is not numbered twice", () => {
+  assert.equal(
+    swapRefusalNote([{ slab: 150903, reason: "#150903 is no longer packed — it was already swapped or released" }]),
+    "#150903 is no longer packed — it was already swapped or released",
+  );
+  assert.equal(swapRefusalNote([{ slab: 150950, reason: "marked for cutting" }]), "#150950 (marked for cutting)");
+  assert.equal(
+    swapRefusalNote([{ slab: 150950, reason: "held for someone else" }, { slab: 150903, reason: "#150903 is no longer packed" }]),
+    "#150950 (held for someone else); #150903 is no longer packed",
+  );
+  assert.equal(swapRefusalNote([]), "the inventory did not confirm the move", "a refusal with no reason still says something");
+});
+
+test("swapFailureNote: the inventory moved, the list did not — both slabs are named", () => {
+  const clean: SwapUndoLike = { replacementUnpacked: true, replacementHold: null, refusedState: "packed", refusedHold: null };
+  assert.equal(
+    swapFailureNote("PL/26-27/N4", 150903, 150950, "write conflict", clean),
+    "Packing list PL/26-27/N4: swap of #150903 for #150950 did NOT happen — the inventory moved but the list could not be updated (write conflict); #150950 back in stock; #150903 packed again, as the list still says",
+  );
+
+  // The replacement came off one of the order's holds and went back onto it: a
+  // swap that did not happen must not end a customer's five-day hold either.
+  const held: SwapUndoLike = { replacementUnpacked: true, replacementHold: "SAL-ORD/26-27/N1", refusedState: "packed", refusedHold: null };
+  assert.match(swapFailureNote("PL/26-27/N4", 150903, 150950, "boom", held), /#150950 back on hold SAL-ORD\/26-27\/N1/);
+
+  // Compensation that itself failed is the case the log exists for: the note
+  // has to send somebody to finished goods, because no screen shows this.
+  const bad: SwapUndoLike = { replacementUnpacked: false, replacementHold: null, refusedState: "stock", refusedHold: null };
+  const note = swapFailureNote("PL/26-27/N4", 150903, 150950, "", bad);
+  assert.match(note, /\(unknown error\)/, "a thrown error with no message still reads as a sentence");
+  assert.match(note, /#150950 is still PACKED and on no list/);
+  assert.match(note, /#150903 is in open stock but the list still shows it PACKED/);
+
+  const reheld: SwapUndoLike = { replacementUnpacked: true, replacementHold: null, refusedState: "held", refusedHold: "SAL-ORD/26-27/N1" };
+  assert.match(swapFailureNote("PL/26-27/N4", 150903, 150950, "boom", reheld), /#150903 is on hold SAL-ORD\/26-27\/N1 but the list still shows it PACKED/);
+});
+
+// ───────────────────── the list's own unit (answer 17) ──────────────────────
+
+test("parseMeasurementUnit: cm or in, and nothing else becomes a third unit", () => {
+  assert.deepEqual([...MEASUREMENT_UNITS], ["cm", "in"]);
+  assert.equal(parseMeasurementUnit("cm"), "cm");
+  assert.equal(parseMeasurementUnit(" IN "), "in");
+  assert.equal(parseMeasurementUnit("inches"), null);
+  assert.equal(parseMeasurementUnit(""), null);
+  assert.equal(parseMeasurementUnit(null), null);
+  assert.equal(parseMeasurementUnit(undefined), null);
+});
+
+test("cmToIn / cmFromIn: the owner's two readings of one slab", () => {
+  // Stored 348 × 201 (from the nominal 137 × 79 in) reads 137.0 × 79.1 in.
+  assert.equal(cmToIn(348), 137);
+  assert.equal(cmToIn(201), 79.1);
+  // The CIOT sheet's 347 × 201 measured slab in inches.
+  assert.equal(cmToIn(347), 136.6);
+  // Typed inches come back as centimetres to a tenth, not a whole centimetre:
+  // 136.6 in is 346.96 cm and prints as 347.0, which reads back as 136.6.
+  assert.equal(cmFromIn(136.6), 347);
+  assert.equal(cmToIn(cmFromIn(136.6)), 136.6, "a typed inch figure survives the round trip");
+  assert.equal(cmFromIn(137), 348, "a whole nominal slab converts to what inToCm already stores");
+  assert.equal(inToCm(137), 348);
+});
+
+test("sizeInUnit / sizeToCm: the lens the editor and the sheets look through", () => {
+  assert.equal(sizeInUnit(347, "cm"), 347);
+  assert.equal(sizeInUnit(347, "in"), 136.6);
+  assert.equal(sizeInUnit(null, "in"), null, "a blank stays blank in either unit");
+  assert.equal(sizeInUnit(undefined, "cm"), null);
+  assert.equal(sizeInUnit(Number.NaN, "cm"), null);
+  assert.equal(sizeInUnit(346.96, "cm"), 347, "a centimetre figure shows to a tenth at most");
+
+  assert.equal(sizeToCm(136.6, "in"), 347);
+  assert.equal(sizeToCm(347, "cm"), 347);
+  assert.equal(sizeToCm(347.25, "cm"), 347.3);
+  assert.equal(sizeToCm(null, "in"), null);
+  assert.equal(sizeToCm("79" as unknown as number, "in"), 200.7, "a string from a form field is a number to this function");
+  assert.equal(sizeToCm("" as unknown as number, "in"), null, "an emptied cell is no measurement");
 });

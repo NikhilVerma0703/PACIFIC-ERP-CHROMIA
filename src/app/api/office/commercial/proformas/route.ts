@@ -1,9 +1,12 @@
-// GET /api/office/commercial/proformas — the PI register: every revision of
-// every order, newest first, filtered by ?status=, ?orderId=, ?clientId= and
-// ?q= (the number or the client's name), paged with ?page=&limit=.
+// GET /api/office/commercial/proformas — the PI register: every PI of every
+// order, newest first, filtered by ?status=, ?orderId=, ?clientId= and ?q=
+// (the number or the client's name), paged with ?page=&limit=. Each row
+// carries `date`, the PI's printed date, so the register can show it under
+// the number (answer 6) without shipping the whole snapshot. Cancelled PIs
+// stay in the register, marked (answer 24).
 import { commercialGate } from "@/lib/commercial/access";
 import { json, deny, handle, plain } from "@/lib/commercial/http";
-import { pageArgs, parseProformaStatus } from "@/lib/commercial/proforma-rules";
+import { pageArgs, parseProformaStatus, type PiSnapshot } from "@/lib/commercial/proforma-rules";
 import { db, PI_LIST_SELECT } from "./_lib";
 
 export const dynamic = "force-dynamic";
@@ -31,15 +34,21 @@ export async function GET(req: Request) {
       ];
     }
 
-    const [items, total] = await Promise.all([
+    const [rows, total] = await Promise.all([
       db.commercialProforma.findMany({
         where,
-        select: { ...PI_LIST_SELECT, order: { select: { id: true, number: true, kind: true, status: true, client: { select: { id: true, name: true } } } } },
+        select: { ...PI_LIST_SELECT, snapshot: true, order: { select: { id: true, number: true, kind: true, status: true, client: { select: { id: true, name: true } } } } },
         orderBy: [{ createdAt: "desc" }],
         skip, take: limit,
       }),
       db.commercialProforma.count({ where }),
     ]);
+    const items = (rows as Array<Record<string, unknown> & { snapshot: PiSnapshot | null }>).map(({ snapshot, ...r }) => ({
+      ...r,
+      date: snapshot?.date ?? null,
+      bankKey: snapshot?.bankKey ?? null,
+      revises: snapshot?.revises ?? null,
+    }));
     return json(plain({ items, total, page, limit }));
   });
 }

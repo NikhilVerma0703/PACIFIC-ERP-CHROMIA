@@ -15,6 +15,7 @@ import {
   docDate, quantityUnit, kgToMt, pad2, packagesSummary,
   type SlabLike, type CrateLike, type PartyLike,
 } from "@/lib/commercial/packing-rules";
+import { parseMeasurementUnit, type MeasurementUnit } from "@/lib/commercial/measure";
 
 export interface PackingListPdfInput {
   list: {
@@ -28,6 +29,11 @@ export interface PackingListPdfInput {
     grossWeightKg?: number | null;
     netWeightKg?: number | null;
     packagesSummary?: string | null;
+    /** cm or in (answer 17). This sheet has no size column of its own — the
+     *  sizes are on the Measurement List issued with it — so the unit prints
+     *  as a remark when it is not the centimetre default, and the two sheets
+     *  in the envelope cannot be read in different units. */
+    measurementUnit?: MeasurementUnit | string | null;
     notes?: string | null;
     crates: CrateLike[];
     slabs: SlabLike[];
@@ -167,7 +173,12 @@ export async function generatePackingListPdf(input: PackingListPdfInput): Promis
 
   // The LUT declaration prints on an export sheet only — a domestic packing
   // list has no export under bond to declare.
-  const remarks = [isExport ? company.lutText : "", (list.notes ?? "").trim()].filter(Boolean);
+  const unit = parseMeasurementUnit(list.measurementUnit) ?? "cm";
+  const remarks = [
+    isExport ? company.lutText : "",
+    (list.notes ?? "").trim(),
+    unit === "in" ? "Slab sizes on the Measurement List are in inches." : "",
+  ].filter(Boolean);
   if (!remarks.length) remarks.push("—");
 
   const docDef: any = {

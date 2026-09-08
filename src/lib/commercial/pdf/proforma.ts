@@ -14,11 +14,16 @@
 // so "a blank field prints blank, never None" and "dates are DD-MM-YYYY" are
 // tested properties of the document, not of a rendering nobody can assert on.
 //
+// The bank block is the one the snapshot froze for its bankKey (answer 23:
+// Kotak on export, ICICI on domestic, changeable before issue) and the GSTIN
+// is the registration chosen for it (answer 21) — the PDF prints the paper as
+// issued, never today's settings. A PI with no validUntil (answer 24: valid
+// forever) prints no validity line at all.
+//
 // pdfmake, Roboto (the only font installed), A4 portrait. Do NOT reach for
 // puppeteer: it is not installed and the deployment has no Chrome.
 import { buildPdf } from "@/lib/sales/pdf/common";
-import type { ProformaSnapshot } from "@/lib/commercial/types";
-import { piPrintFields, piRow, piTotalRow, piTableHeader, partyBlock } from "@/lib/commercial/proforma-rules";
+import { piPrintFields, piRow, piTotalRow, piTableHeader, partyBlock, type PiSnapshot } from "@/lib/commercial/proforma-rules";
 
 // ── the reference's type scale ───────────────────────────────────────────────
 const FS = { body: 7.5, label: 7, value: 8, head: 8, title: 12, big: 9 } as const;
@@ -82,7 +87,7 @@ function termLine(label: string, value: string): any {
   };
 }
 
-export async function generateProformaPdf(snapshot: ProformaSnapshot): Promise<Buffer> {
+export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer> {
   const f = piPrintFields(snapshot);
   const header = piTableHeader(snapshot.currency);
   const exporter = partyBlock(snapshot.exporter);
@@ -254,6 +259,8 @@ export async function generateProformaPdf(snapshot: ProformaSnapshot): Promise<B
     layout: gridLayout,
   };
 
+  // Blank validUntil = valid forever (answer 24): no line, rather than a line
+  // that says so — the reference PI carries no validity text either.
   const validity = f.validUntil
     ? [{ text: `This proforma invoice is valid until ${f.validUntil}.`, fontSize: 6.5, color: "#555", margin: [0, 3, 0, 0] }]
     : [];

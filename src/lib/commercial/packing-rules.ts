@@ -20,7 +20,7 @@
 // with the extension, exactly as access-rules.ts imports roles.ts — node --test
 // loads these without Next.
 import { canonThickness } from "../thickness.ts";
-import { sumTo, slabMeasure, sqmFromCm, sqftFromSqm } from "./measure.ts";
+import { sumTo, slabMeasure, sqmFromCm, sqftFromSqm, parseMeasurementUnit, type MeasurementUnit } from "./measure.ts";
 
 export type PackingStatus = "DRAFT" | "SUBMITTED" | "VERIFIED" | "REJECTED" | "FINAL" | "DISPATCHED";
 export type FitStatus = "PENDING" | "FIT" | "UNFIT";
@@ -785,12 +785,30 @@ export function parsePackingStatus(v: unknown): PackingStatus | null {
 // The dispatch team's login reaches this module through /dispatch-check/**
 // alone (access-rules isDispatchCheckPath) and is refused `view`. So the queue
 // and the detail screen are not a window on the packing-list register: a list
-// Commercial is still building, or one that has already been finalised and
-// shipped, is none of the checker's business. Three statuses, and a list in any
-// other one does not exist as far as that segment is concerned.
+// Commercial is still building, or one that has already shipped, is none of
+// the checker's business. Four statuses, and a list in any other one does not
+// exist as far as that segment is concerned.
+//
+// FINAL is the fourth since answer 30. A FINAL list is the one the container is
+// being stuffed from, and the loading bay is where a slab passed a week ago is
+// found cracked; the owner's answer to that is "dispatch refuses, the refused
+// slab is swapped", which needs the dispatch team to be able to mark it unfit
+// on the FINAL list (canRecheck). DISPATCHED stays out: it has gone.
 
 /** The only statuses the dispatch check may list or open. */
-export const CHECKER_STATUSES: readonly PackingStatus[] = ["SUBMITTED", "VERIFIED", "REJECTED"];
+export const CHECKER_STATUSES: readonly PackingStatus[] = ["SUBMITTED", "VERIFIED", "REJECTED", "FINAL"];
+
+/**
+ * May the dispatch check change a verdict on a list it has ALREADY concluded?
+ * VERIFIED and FINAL: a slab found unfit at loading is marked so where the
+ * checker stands, the list keeps its status (nothing is unpacked, the order
+ * does not move), and the dispatch route refuses until Commercial swaps it
+ * (answers 30, 31). Never on SUBMITTED — that is the ordinary check, which
+ * canVerify covers — and never on anything else.
+ */
+export function canRecheck(status: string): boolean {
+  return status === "VERIFIED" || status === "FINAL";
+}
 
 /** The queue's ?status=, clamped. Anything else — DRAFT, FINAL, DISPATCHED, a
  *  typo — falls back to the queue itself rather than widening it. */
@@ -827,6 +845,8 @@ export interface CheckerListView {
   packagesSummary: string | null; grossWeightKg: number | null; netWeightKg: number | null; notes: string | null;
   orderNumber: string; kind: string; customerPoNumber: string | null;
   clientName: string; clientCountry: string | null;
+  /** cm | in — the floor reads sizes in the unit the sheet prints (answer 17). */
+  measurementUnit: MeasurementUnit;
   crates: CheckerCrateView[]; slabs: CheckerSlabView[];
   fit: { total: number; fit: number; unfit: number; pending: number };
 }
@@ -895,6 +915,7 @@ export function checkerListView(list: Record<string, unknown>): CheckerListView 
     customerPoNumber: vStr(order.customerPoNumber),
     clientName: String(client?.name ?? ""),
     clientCountry: vStr(client?.country),
+    measurementUnit: parseMeasurementUnit(list.measurementUnit) ?? "cm",
     crates: crates.map((c) => ({
       id: String(c.id ?? ""),
       crateNo: Number(c.crateNo ?? 0),
@@ -987,4 +1008,210 @@ export function verificationNote(slabs: number, note?: string | null): string {
   const head = `All ${slabs} slab(s) checked fit`;
   const extra = (note ?? "").trim();
   return extra ? `${head}. ${extra}` : head;
+}
+
+// ───────────────────── the owner's answers of 2026-09-07 ────────────────────
+// Answers 2, 17, 18, 30 and 31 as decisions. Each is one function so the
+// route that applies it is a database read on either side of a call the test
+// file runs with plain values.
+
+/**
+ * ONE PACKING LIST PER ORDER (answer 18: "one PI has one packing list, which
+ * may hold several colours, batches, crates and containers"). A second list is
+ * refused while the order has any that is not REJECTED. A REJECTED list does
+ * not block — it is reopened rather than replaced, and the reason says so —
+ * but nor does it stop somebody who wants to start over. Everything else,
+ * DRAFT through DISPATCHED, does: two lists on one order is two shipments on
+ * one PI, which is exactly what the answer rules out.
+ */
+export function canCreatePackingList(
+  existing: ReadonlyArray<{ number: string; status: string }>,
+): { ok: true } | { ok: false; reason: string } {
+  const open = existing.find((l) => String(l.status) !== "REJECTED");
+  if (open) {
+    const label = PACKING_STATUS_LABEL[open.status as PackingStatus]?.toLowerCase() ?? open.status;
+    return { ok: false, reason: `This order already has packing list ${open.number} (${label}) — one PI has one packing list. Add crates and slabs to it${open.status === "DISPATCHED" ? "" : ", or reopen it if it was sent too early"}.` };
+  }
+  return { ok: true };
+}
+
+/** The unit may change only while the list is with Commercial (answer 17):
+ *  once the dispatch team has it, the sheet they are reading must not turn
+ *  into inches underneath them. */
+export function canSetUnit(status: string): boolean {
+  return canEdit(status);
+}
+
+export interface DispatchBlockers {
+  ok: boolean;
+  unfit: number[];
+  unchecked: number[];
+  /** Names every slab, ready for the 409. "" when ok. */
+  reason: string;
+}
+
+/**
+ * NOTHING SHIPS UNTIL THE LIST IS CORRECTED (answers 2 and 31). Every packed
+ * slab must carry a FIT verdict at the moment of dispatch: an UNFIT one is a
+ * slab the dispatch team refused, and a PENDING one is a slab nobody has looked
+ * at — a replacement swapped in after the check, say. Both stop the whole
+ * list, because a packing list cannot be split and a FINAL list's slabs cannot
+ * be edited: the honest answer is "not this list, not yet", with the slabs
+ * named so Commercial knows which to swap or which to send the checker back to.
+ */
+export function dispatchBlockers(slabs: ReadonlyArray<{ slabNumber: number; fit: string; unfitReason?: string | null }>): DispatchBlockers {
+  const unfit = slabs.filter((s) => s.fit === "UNFIT").map((s) => Number(s.slabNumber)).sort((a, b) => a - b);
+  const unchecked = slabs.filter((s) => s.fit !== "UNFIT" && s.fit !== "FIT").map((s) => Number(s.slabNumber)).sort((a, b) => a - b);
+  if (!unfit.length && !unchecked.length) return { ok: true, unfit, unchecked, reason: "" };
+  const parts: string[] = [];
+  if (unfit.length) {
+    const why = new Map(slabs.filter((s) => s.fit === "UNFIT").map((s) => [Number(s.slabNumber), (s.unfitReason ?? "").trim()]));
+    parts.push(`${unfit.length} slab(s) marked unfit by the dispatch check: ${unfit.map((n) => `#${fmtSlabNo(n)}${why.get(n) ? ` (${why.get(n)})` : ""}`).join("; ")} — swap each one for a slab of the same design and thickness`);
+  }
+  if (unchecked.length) {
+    parts.push(`${unchecked.length} slab(s) not yet checked: ${unchecked.map((n) => `#${fmtSlabNo(n)}`).join(", ")} — the dispatch team has to pass them first`);
+  }
+  return { ok: false, unfit, unchecked, reason: `Nothing ships until the list is corrected. ${parts.join(". ")}.` };
+}
+
+/**
+ * MAY THIS SLAB BE SWAPPED (answer 30)? Only on a list the dispatch team has
+ * concluded — VERIFIED, or FINAL — and only a slab they marked UNFIT. A DRAFT
+ * or REJECTED list is edited the ordinary way (remove, add); a SUBMITTED one
+ * is under the checker's hands; a DISPATCHED one has gone. And a FIT slab is
+ * not swapped from here: "it looks nicer" is not a refusal.
+ */
+export function swapEligibility(listStatus: string, slab: { slabNumber: number; fit: string }): { ok: true } | { ok: false; reason: string } {
+  if (!canRecheck(listStatus)) {
+    const label = PACKING_STATUS_LABEL[listStatus as PackingStatus]?.toLowerCase() ?? listStatus;
+    return { ok: false, reason: `A ${label} list has no slab to swap — swapping is for a verified or final list whose slab the dispatch check refused` };
+  }
+  if (slab.fit !== "UNFIT") return { ok: false, reason: `Slab #${fmtSlabNo(slab.slabNumber)} has not been marked unfit — only a refused slab is swapped` };
+  return { ok: true };
+}
+
+export interface ReplacementLike {
+  slabNumber: number;
+  status: string;
+  slabMark?: string | null;
+  reservedForPi?: string | null;
+  design?: string | null;
+  designCanonical?: string | null;
+  thickness?: string | null;
+  thicknessCanonical?: string | null;
+}
+
+const designKey = (r: { design?: string | null; designCanonical?: string | null }): string =>
+  ((r.designCanonical ?? r.design ?? "") || "").trim().toLowerCase();
+
+/**
+ * MAY THIS INVENTORY ROW STAND IN FOR THE REFUSED SLAB (answer 30)? Same
+ * design and the same canonical thickness — a swap is a like-for-like the
+ * customer never sees on the invoice, so a different colour or a 2 cm for a 3
+ * cm is a new order line, not a swap — and, as for any slab going into a
+ * crate, AVAILABLE or held under one of this order's own references, whole,
+ * and not the refused slab itself. The refusal names the mismatch: "3 cm, not
+ * 2 cm" is what the picker needs to say beside a slab it will not take.
+ */
+export function replacementEligibility(
+  refused: { slabNumber: number; design: string | null; thickness: string | null },
+  candidate: ReplacementLike,
+  ownRefs: ReadonlyArray<string>,
+): { ok: true } | { ok: false; reason: string } {
+  if (Number(candidate.slabNumber) === Number(refused.slabNumber)) return { ok: false, reason: "that is the refused slab itself" };
+  const wantDesign = designKey({ design: refused.design });
+  const haveDesign = designKey(candidate);
+  if (wantDesign && haveDesign !== wantDesign) return { ok: false, reason: `${candidate.designCanonical ?? candidate.design ?? "no design"}, not ${refused.design}` };
+  const wantThk = canonThickness(refused.thickness);
+  const haveThk = (candidate.thicknessCanonical || canonThickness(candidate.thickness)) || "";
+  if (wantThk && haveThk !== wantThk) return { ok: false, reason: `${haveThk || "no thickness"}, not ${wantThk}` };
+  return slabEligibility(candidate, ownRefs);
+}
+
+/** How many days a hold has left, as the fraction changeSlabStatus takes for
+ *  `expiryDays` — so a slab put back on its hold lapses when the hold does,
+ *  not five days from the swap. Null when the hold has already lapsed. */
+export function holdDaysLeft(expiresAt: string | Date | null | undefined, now: Date): number | null {
+  if (!expiresAt) return null;
+  const t = typeof expiresAt === "string" ? new Date(expiresAt).getTime() : expiresAt.getTime();
+  if (!Number.isFinite(t)) return null;
+  const days = (t - now.getTime()) / 86400000;
+  return days > 0 ? days : null;
+}
+
+/** The note the slab_swapped event and the verification note carry. */
+export function swapNote(number: string, refused: number, replacement: number, reason: string | null, reheld: string | null): string {
+  const head = `Packing list ${number}: slab #${fmtSlabNo(refused)} swapped for #${fmtSlabNo(replacement)}`;
+  const why = (reason ?? "").trim();
+  const back = reheld ? `#${fmtSlabNo(refused)} back on hold ${reheld}` : `#${fmtSlabNo(refused)} back in stock`;
+  return `${head}${why ? ` (${why})` : ""} — ${back}; #${fmtSlabNo(replacement)} awaits the dispatch check`;
+}
+
+/**
+ * DID THE REFUSED SLAB JUST COME OUT OF THE CRATE (answer 30)? The swap packs
+ * the replacement first and releases the refused slab second, and the release
+ * is a PRECONDITION of the swap, not a courtesy: the swap only holds if the
+ * refused slab went PACKED → AVAILABLE by this call's own hand. The first cut
+ * read "not PACKED any more" as "already released, nothing left to do" — so
+ * two clerks swapping the same UNFIT slab at once BOTH succeeded, the row
+ * ended up naming the second replacement, and the first replacement stayed
+ * PACKED against nothing with no screen saying so. Either refusal here means
+ * the caller must unpack the replacement it has just packed.
+ */
+export function swapReleaseOutcome(
+  refused: number,
+  before: ReadonlyArray<{ slabNumber: number; status: string }>,
+  released: number,
+): { ok: true } | { ok: false; wasPacked: boolean; reason: string } {
+  const wasPacked = before.some((r) => Number(r.slabNumber) === Number(refused) && r.status === "PACKED");
+  if (!wasPacked) return { ok: false, wasPacked: false, reason: `#${fmtSlabNo(refused)} is no longer packed — it was already swapped or released` };
+  if (released !== 1) return { ok: false, wasPacked: true, reason: "the inventory did not confirm the release" };
+  return { ok: true };
+}
+
+/**
+ * Why a swap did not happen, as one sentence for the 409 and the log. A reason
+ * that already names its own slab (swapReleaseOutcome's does, because it has
+ * to read as a sentence wherever it is shown) is NOT prefixed with the number
+ * again — "#150903 (#150903 is no longer packed…)" is how the first cut read.
+ */
+export function swapRefusalNote(skipped: ReadonlyArray<Removal>): string {
+  if (!skipped.length) return "the inventory did not confirm the move";
+  return skipped
+    .map((s) => (s.reason.trim().startsWith("#") ? s.reason.trim() : `#${fmtSlabNo(s.slab)} (${s.reason})`))
+    .join("; ");
+}
+
+/** Where each slab stands after a failed swap was put back (undoSwapPackedSlab). */
+export interface SwapUndoLike {
+  /** The replacement's pack was undone (PACKED → AVAILABLE, or back on its hold). */
+  replacementUnpacked: boolean;
+  /** The hold the replacement went back onto, when it had come off one. */
+  replacementHold?: string | null;
+  /** PACKED again (the row still names it, so this is the consistent state),
+   *  RESERVED under the order's hold, or in open stock — the last two are
+   *  inconsistent with the row and are said so. */
+  refusedState: "packed" | "held" | "stock";
+  refusedHold?: string | null;
+}
+
+/**
+ * The note logged when the inventory moved for a swap but the list did not
+ * (the row / hold / event transaction failed and the bridge put the slabs
+ * back). It names BOTH slabs and where each one is now, so the state is never
+ * silent: the log is the only thing that will tell a clerk why a slab the
+ * screen shows as PACKED is AVAILABLE in finished goods.
+ */
+export function swapFailureNote(number: string, refused: number, replacement: number, cause: string, undo: SwapUndoLike): string {
+  const a = `#${fmtSlabNo(refused)}`;
+  const b = `#${fmtSlabNo(replacement)}`;
+  const repl = undo.replacementUnpacked
+    ? (undo.replacementHold ? `${b} back on hold ${undo.replacementHold}` : `${b} back in stock`)
+    : `${b} is still PACKED and on no list — check it in finished goods`;
+  const ref = undo.refusedState === "packed"
+    ? `${a} packed again, as the list still says`
+    : undo.refusedState === "held"
+      ? `${a} is on hold ${undo.refusedHold ?? ""}`.trim() + ` but the list still shows it PACKED — check it in finished goods`
+      : `${a} is in open stock but the list still shows it PACKED — check it in finished goods`;
+  return `Packing list ${number}: swap of ${a} for ${b} did NOT happen — the inventory moved but the list could not be updated (${cause.trim() || "unknown error"}); ${repl}; ${ref}`;
 }

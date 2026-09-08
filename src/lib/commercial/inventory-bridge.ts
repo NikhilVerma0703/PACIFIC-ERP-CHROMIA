@@ -44,6 +44,9 @@ import {
   holdStatusAfterReconcile, approvalFilterApplies, canonicalFromMap,
   type ReconcileCounts, type BridgeOp,
 } from "./holds-rules";
+// The swap's own decisions (answer 30) are pure and live with the rest of the
+// packing rules, so tests/commercialPacking.test.ts runs them without Prisma.
+import { swapReleaseOutcome, type SwapUndoLike } from "./packing-rules";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
@@ -464,4 +467,150 @@ async function regressExpiredOrder(orderId: string, reference: string, now: Date
 
 function stageLabel(status: string): string {
   return status === "STOCK_CHECKED" ? "Stock checked" : status === "PI_ISSUED" ? "PI issued" : status;
+}
+
+/**
+ * SWAP ONE PACKED SLAB FOR ANOTHER (answer 30): the dispatch check refused a
+ * slab on a FINAL list, and the recovery is by hand — take the refused slab out
+ * of the crate and put a like-for-like in. In finished goods that is two moves
+ * with nothing between them that the yard would recognise as a state:
+ *
+ *   1. the replacement goes PACKED — the ACQUIRING path, so it reads through
+ *      the sales-approval filter (holds-rules.approvalFilterApplies "pack"),
+ *      refuses a cut slab and somebody else's hold exactly as packSlabs does,
+ *      and is done FIRST: if the yard will not give up the replacement, the
+ *      refused slab stays in the crate and the caller is told, and nothing has
+ *      moved;
+ *   2. the refused slab is released (PACKED → AVAILABLE) — a restore, read
+ *      unfiltered for the reason unpackSlabs gives — and, when it came off one
+ *      of this order's holds and that hold still has days to run, put back on
+ *      it (AVAILABLE → RESERVED under the hold's reference, lapsing when the
+ *      hold does) so a five-day hold is not silently ended by a swap.
+ *
+ * STEP 2 IS A PRECONDITION, NOT A COURTESY (swapReleaseOutcome). The swap only
+ * holds if THIS call took the refused slab out of PACKED. A refused slab that
+ * is no longer PACKED was already swapped or released by somebody else, and
+ * reading that as "already done" let two clerks swap the same UNFIT slab at
+ * once: both POSTs succeeded, the row ended up naming the second replacement,
+ * and the FIRST replacement stayed PACKED against nothing, on no list, with no
+ * screen saying so. Either refusal — not packed any more, or the inventory not
+ * confirming the release — unpacks the replacement again so that two slabs are
+ * never PACKED against one crate slot; the caller sees `packed: false`,
+ * `released: false` and the reason, and the list is left as it was. A failure
+ * to re-hold is reported but is not a failure of the swap — the slab is back
+ * in stock either way, which is where the owner said a refused slab goes.
+ */
+export async function swapPackedSlab(opts: {
+  refusedSlabNumber: number;
+  replacementSlabNumber: number;
+  /** What this order may pack under: ownReferences(order). */
+  references: readonly string[];
+  /** The hold the refused slab came off, if it is still running. */
+  rehold: { reference: string; customer: string | null; days: number } | null;
+  by: string | null;
+  isAdmin: boolean;
+}): Promise<{
+  packed: boolean;
+  released: boolean;
+  reheld: boolean;
+  /** Every reason anything was refused, by slab. */
+  skipped: { slab: number; reason: string }[];
+  before: SlabRow[];
+}> {
+  const skipped: { slab: number; reason: string }[] = [];
+
+  const pack = await packSlabs({ slabNumbers: [opts.replacementSlabNumber], references: opts.references, by: opts.by, isAdmin: opts.isAdmin });
+  skipped.push(...bridgeRefusals(pack));
+  if (pack.updated !== 1) return { packed: false, released: false, reheld: false, skipped, before: pack.before };
+
+  const back = await unpackSlabs({ slabNumbers: [opts.refusedSlabNumber], by: opts.by, isAdmin: opts.isAdmin });
+  skipped.push(...bridgeRefusals(back));
+  const release = swapReleaseOutcome(opts.refusedSlabNumber, back.before, back.updated);
+  if (!release.ok) {
+    // Two slabs PACKED for one slot is the state this undo exists to prevent —
+    // and so is the losing half of a double swap (release.wasPacked false).
+    const undo = await unpackSlabs({ slabNumbers: [opts.replacementSlabNumber], by: opts.by, isAdmin: opts.isAdmin });
+    if (undo.updated !== 1) skipped.push({ slab: opts.replacementSlabNumber, reason: "packed for the swap and could NOT be put back — check it in finished goods" });
+    if (!skipped.some((s) => s.slab === opts.refusedSlabNumber)) skipped.push({ slab: opts.refusedSlabNumber, reason: release.reason });
+    return { packed: false, released: false, reheld: false, skipped, before: [...pack.before, ...back.before] };
+  }
+
+  let reheld = false;
+  if (opts.rehold) {
+    const held = await changeSlabStatus([opts.refusedSlabNumber], "reserve", {
+      pi: opts.rehold.reference, customer: opts.rehold.customer, expiryDays: opts.rehold.days,
+      by: opts.by, source: "Commercial hold", onlyFrom: ["AVAILABLE"],
+    });
+    reheld = held.updated === 1;
+    for (const s of held.skipped) skipped.push({ slab: s.slab, reason: `not put back on hold: ${s.reason}` });
+    for (const n of held.missing) skipped.push({ slab: n, reason: "not put back on hold: not found in finished goods" });
+  }
+  return { packed: true, released: true, reheld, skipped, before: [...pack.before, ...back.before] };
+}
+
+/**
+ * PUT A SWAP BACK when the inventory moved but the list did not. The route
+ * writes the packed-slab row, the hold-slab stamps, the verification note and
+ * the slab_swapped event in ONE db.$transaction; if that transaction fails,
+ * finished goods has already been changed and nothing else has, so the two
+ * slabs are the wrong way round against a list that still names the refused
+ * one. This walks them back, in the order that never leaves both PACKED:
+ *
+ *   1. the replacement is unpacked (and put back on the hold it came off, when
+ *      it came off one — a swap that did not happen must not end a customer's
+ *      five-day hold either);
+ *   2. the refused slab is packed again, because the list row still names it:
+ *      PACKED is the state that matches the document.
+ *
+ * It never throws — it is the compensation for something that already went
+ * wrong — and it REPORTS what it managed (SwapUndoLike) so the caller can log
+ * a note naming both slabs. A repack that fails leaves the refused slab held
+ * or in open stock while the list shows it packed; that is a real divergence
+ * and the log is the only thing that will tell anybody, which is why the state
+ * is read back rather than guessed.
+ */
+export async function undoSwapPackedSlab(opts: {
+  refusedSlabNumber: number;
+  replacementSlabNumber: number;
+  /** What this order may pack under: ownReferences(order). */
+  references: readonly string[];
+  /** The hold the REPLACEMENT came off, if it was on one. */
+  replacementRehold: { reference: string; customer: string | null; days: number } | null;
+  by: string | null;
+  isAdmin: boolean;
+}): Promise<SwapUndoLike> {
+  let replacementUnpacked = false;
+  let replacementHold: string | null = null;
+  try {
+    const undo = await unpackSlabs({ slabNumbers: [opts.replacementSlabNumber], by: opts.by, isAdmin: opts.isAdmin });
+    replacementUnpacked = undo.updated === 1;
+    if (replacementUnpacked && opts.replacementRehold) {
+      const held = await changeSlabStatus([opts.replacementSlabNumber], "reserve", {
+        pi: opts.replacementRehold.reference, customer: opts.replacementRehold.customer,
+        expiryDays: opts.replacementRehold.days, by: opts.by, source: "Commercial hold", onlyFrom: ["AVAILABLE"],
+      });
+      if (held.updated === 1) replacementHold = opts.replacementRehold.reference;
+    }
+  } catch (e) {
+    console.error("[commercial] swap undo: replacement not put back:", (e as Error).message);
+  }
+
+  try {
+    const repack = await packSlabs({ slabNumbers: [opts.refusedSlabNumber], references: opts.references, by: opts.by, isAdmin: opts.isAdmin });
+    if (repack.updated === 1) return { replacementUnpacked, replacementHold, refusedState: "packed", refusedHold: null };
+  } catch (e) {
+    console.error("[commercial] swap undo: refused slab not re-packed:", (e as Error).message);
+  }
+  // Unfiltered, like every restore read here: what the row says now decides
+  // what the note tells the clerk to go and look at.
+  const [now] = await readForOp("unpack", [opts.refusedSlabNumber], opts.isAdmin).catch(() => [] as SlabRow[]);
+  const refusedState = now?.status === "PACKED" ? "packed" : now?.status === "RESERVED" ? "held" : "stock";
+  return { replacementUnpacked, replacementHold, refusedState, refusedHold: now?.reservedForPi ?? null };
+}
+
+/** A bridge answer's refusals and misses as one list, for the swap's report. */
+function bridgeRefusals(res: BridgeResult): { slab: number; reason: string }[] {
+  const out = res.skipped.map((s) => ({ slab: Number(s.slab), reason: s.reason }));
+  for (const n of res.missing) if (!out.some((s) => s.slab === Number(n))) out.push({ slab: Number(n), reason: "not found in finished goods" });
+  return out;
 }

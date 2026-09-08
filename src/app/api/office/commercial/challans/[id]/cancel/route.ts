@@ -1,8 +1,10 @@
 // POST /api/office/commercial/challans/[id]/cancel — { reason }
 //
-// The challan is kept, not deleted: the number came from the counter and the
-// book has to account for it. The reason goes into notes (the row has no
-// cancel_reason column) and onto the order's log when there is an order.
+// Cancellation is an admin's or the Commercial Manager's act, as for every
+// numbered document the module issues (commercialGate("cancel")). The challan
+// is kept, not deleted: the number came from the counter and the book has to
+// account for it. The reason goes into notes (the row has no cancel_reason
+// column) and onto the order's log when there is an order.
 import { commercialGate } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain, str } from "@/lib/commercial/http";
 import { logOrderEvent } from "@/lib/commercial/events";
@@ -13,7 +15,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("cancel");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await challanIdOf(params);
@@ -26,7 +28,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const notes = [str(row.notes), `Cancelled: ${reason}`].filter(Boolean).join("\n");
     await db.commercialDeliveryChallan.update({ where: { id }, data: { status: "CANCELLED", cancelledAt: new Date(), notes } });
     if (row.orderId) {
-      await logOrderEvent(String(row.orderId), "note", {
+      await logOrderEvent(String(row.orderId), "challan_cancelled", {
         note: `Delivery challan ${row.number} cancelled — ${reason}`,
         by: g.user,
         payload: { challanId: id, number: row.number, reason },

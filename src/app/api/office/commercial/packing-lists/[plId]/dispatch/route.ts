@@ -21,16 +21,37 @@
 // module — a list cannot be split, and a FINAL list's slabs cannot be edited —
 // so the honest answer to "one of these cannot go" is that this list does not
 // go, and Commercial either fixes the slab or rebuilds the list.
+//
+// TWO MORE REFUSALS SINCE THE OWNER'S ANSWERS OF 2026-09-07, both before
+// anything is read from finished goods:
+//
+//   answers 2 and 31 — NOTHING SHIPS UNTIL THE LIST IS CORRECTED. A slab the
+//   dispatch check marked UNFIT (on a FINAL list, at loading) and a slab nobody
+//   has checked (a replacement swapped in since) both stop the list; the reason
+//   names them (dispatchBlockers).
+//
+//   answer 2 — THE TRUCK DOES NOT LEAVE BEFORE THE ADVANCE. The one payment
+//   gate in the module: no ADVANCE receipt on the order, no dispatch. Packing,
+//   the check and the finalise are not gated (answer 2 again), so this is the
+//   first and only place the money is asked about.
+//
+// And the order moves with moveOrder, not bumpOrder: DISPATCHED is one of the
+// three gated stages (stages.canEnter) and the explicit move is the one that
+// carries the gate. Its refusal is reported, never swallowed.
 import { commercialGate } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain } from "@/lib/commercial/http";
 import { logOrderEvent } from "@/lib/commercial/events";
-import { bumpOrder } from "@/lib/commercial/order-stage";
+import { moveOrder } from "@/lib/commercial/order-stage";
 import { readSlabs, dispatchSlabs } from "@/lib/commercial/inventory-bridge";
 import {
-  canDispatch, dispatchNote, dispatchPlan, bridgeSkips, fmtSlabNo,
+  canDispatch, dispatchNote, dispatchPlan, dispatchBlockers, bridgeSkips, fmtSlabNo,
   PACKING_STATUS_LABEL, type PackingStatus,
 } from "@/lib/commercial/packing-rules";
 import { db, loadList, paramPl, byOf, isAdminOf } from "../../_lib";
+
+/** "The advance has not been received" — the reason the owner's answer 2 sets,
+ *  word for word, so the screen and the stage strip say the same thing. */
+const NO_ADVANCE = "The advance has not been received";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -53,6 +74,20 @@ export async function POST(req: Request, { params }: Ctx) {
 
     const numbers = list.slabs.map((s) => Number(s.slabNumber));
     if (!numbers.length) fail(409, `${list.number} has no slabs`);
+
+    // Answers 2 and 31: every slab FIT, or nothing goes.
+    const blockers = dispatchBlockers(list.slabs.map((s) => ({ slabNumber: Number(s.slabNumber), fit: String(s.fit), unfitReason: (s.unfitReason as string | null) ?? null })));
+    if (!blockers.ok) {
+      return json({ error: `${list.number} was not dispatched. ${blockers.reason}`, dispatched: 0, unfit: blockers.unfit, unchecked: blockers.unchecked }, 409);
+    }
+
+    // Answer 2: the advance opens the gate. Read off the order's receipts
+    // directly — the fact is a count, and this route must not depend on which
+    // screen recorded it.
+    const advances: number = await db.commercialReceipt.count({ where: { orderId: list.orderId, kind: "ADVANCE" } });
+    if (advances < 1) {
+      return json({ error: `${list.number} was not dispatched. ${NO_ADVANCE}: record the advance receipt on order ${list.order.number} first — the truck does not leave before it.`, dispatched: 0, advanceReceived: false }, 409);
+    }
     const isAdmin = isAdminOf(g);
 
     // Pre-flight: everything the inventory would refuse, found BEFORE anything
@@ -109,13 +144,17 @@ export async function POST(req: Request, { params }: Ctx) {
       });
     }
     await db.commercialPackingList.update({ where: { id: plId }, data: { status: "DISPATCHED", dispatchedAt: now } });
-    await bumpOrder(list.orderId, "DISPATCHED", g.user, `Packing list ${list.number} dispatched`);
+    // The slabs have left whatever the stage strip says, so the list is marked
+    // first and the order's move is reported rather than allowed to undo it:
+    // an order already at DISPATCHED (moved by hand) or CLOSED refuses the
+    // move, and that is a fact for the log, not a reason to un-dispatch.
+    const moved = await moveOrder(list.orderId, "DISPATCHED", g.user, `Packing list ${list.number} dispatched`);
 
     await logOrderEvent(list.orderId, "dispatched", {
-      note: dispatchNote(list.number, res.updated, []),
+      note: `${dispatchNote(list.number, res.updated, [])}${moved.ok ? "" : `. The order did not move: ${moved.reason}`}`,
       by: g.user,
-      payload: { packingListId: plId, number: list.number, dispatched: res.updated, onList: numbers.length, skipped: [] },
+      payload: { packingListId: plId, number: list.number, dispatched: res.updated, onList: numbers.length, skipped: [], orderMoved: moved.ok, orderMoveReason: moved.ok ? null : moved.reason },
     });
-    return json(plain({ list: await loadList(plId), dispatched: res.updated, skipped: [] }));
+    return json(plain({ list: await loadList(plId), dispatched: res.updated, skipped: [], orderMoved: moved.ok, orderMoveReason: moved.ok ? null : moved.reason }));
   });
 }

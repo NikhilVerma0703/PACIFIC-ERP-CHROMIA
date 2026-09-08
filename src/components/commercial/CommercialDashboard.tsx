@@ -11,8 +11,9 @@ interface Dashboard {
   enquiries: { open: number };
   orders: { byStatus: Record<string, number>; total: number };
   holds: { active: number; expiringSoon: Array<{ id: string; reference: string; customer: string | null; expiresAt: string; slabs: number; orderId: string | null }> };
-  queue: { queued: number; inProduction: number };
+  queue: { queued: number; inProduction: number; notScheduled: number };
   packing: { submitted: number };
+  receipts: { awaitingAdvance: number };
   recent: Array<{ id: string; orderId: string; orderNumber: string; kind: string; note: string | null; byName: string | null; at: string }>;
 }
 
@@ -42,7 +43,7 @@ export function CommercialDashboard({ actions }: { actions: string[] }) {
   const open = Object.entries(data.orders.byStatus).filter(([k]) => k !== "CLOSED" && k !== "CANCELLED").reduce((a, [, n]) => a + n, 0);
   return (
     <div className="flex flex-col gap-6">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
         <Link href="/office/commercial/enquiries"><Kpi label="Open enquiries" value={data.enquiries.open} /></Link>
         <Link href="/office/commercial/orders"><Kpi label="Open orders" value={open} sub={`${data.orders.total} in all`} /></Link>
         {/* NOT A LINK. It used to carry ?tab=holds to the orders board, which
@@ -59,6 +60,37 @@ export function CommercialDashboard({ actions }: { actions: string[] }) {
         />
         <Link href="/office/commercial/production-planning"><Kpi label="Production queue" value={data.queue.queued} sub={data.queue.inProduction ? `${data.queue.inProduction} running` : undefined} /></Link>
         <Link href={actions.includes("verify") ? "/office/commercial/dispatch-check" : "/office/commercial/packing-lists"}><Kpi label="Awaiting dispatch check" value={data.packing.submitted} /></Link>
+        {/* NOT WRAPPED IN A LINK, either of these two. A Kpi with `working`
+            renders a <details>; inside a next/link anchor the click on its
+            summary is swallowed (Link preventDefaults and navigates), so the
+            explanation could never open — the one tile that most needs one.
+            The destination lives inside the explanation instead. */}
+        <Kpi
+          label="Planned but not scheduled"
+          value={data.queue.notScheduled}
+          working={(
+            <>
+              Reductions made on the planning page that nobody has added back or removed yet (answer 13). Each one is slabs an
+              order asked for that the plant has not been told to make.{" "}
+              <Link href="/office/commercial/production-planning" className="font-medium text-brand hover:underline">Open production planning →</Link>
+            </>
+          )}
+        />
+        {/* The orders board filters by one status at a time and this figure
+            spans two, so the link opens the board unfiltered and the text says
+            what was counted; the Receipts card on each order is where the
+            advance goes. */}
+        <Kpi
+          label="Waiting for an advance"
+          value={data.receipts.awaitingAdvance}
+          working={(
+            <>
+              Orders at Ready or Invoiced with no ADVANCE receipt recorded. Dispatch refuses these until one is (answer 2);
+              record it on the order&apos;s Receipts card.{" "}
+              <Link href="/office/commercial/orders" className="font-medium text-brand hover:underline">Open the orders board →</Link>
+            </>
+          )}
+        />
       </div>
 
       <Card>

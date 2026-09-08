@@ -15,6 +15,7 @@ import { PACKING_STATUS_LABEL, type PackingStatus } from "@/lib/commercial/packi
 interface Row {
   id: string; number: string; status: PackingStatus;
   submittedAt: string | null; verifiedAt: string | null; verifiedByName: string | null; verificationNote: string | null;
+  finalisedAt: string | null;
   containerNo: string | null; vehicleNo: string | null; packagesSummary: string | null;
   orderNumber: string; kind: string; clientName: string;
   crateCount: number; slabCount: number;
@@ -22,8 +23,11 @@ interface Row {
 }
 interface Payload { items: Row[]; total: number; page: number; limit: number; counts: Record<string, number> }
 
+// FINAL is the loading bay (answer 30): a slab found cracked while the
+// container is stuffed is marked unfit from there, and Commercial swaps it.
 const TABS: Array<{ key: PackingStatus; label: string }> = [
   { key: "SUBMITTED", label: "To check" },
+  { key: "FINAL", label: "At loading" },
   { key: "VERIFIED", label: "Verified" },
   { key: "REJECTED", label: "Rejected" },
 ];
@@ -70,7 +74,7 @@ export function DispatchQueue() {
       {error && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-base text-red-700">{error}</div>}
 
       {loading && !data ? <Empty>Loading…</Empty> : !data || data.items.length === 0 ? (
-        <Empty>{tab === "SUBMITTED" ? "Nothing is waiting to be checked." : "Nothing here."}</Empty>
+        <Empty>{tab === "SUBMITTED" ? "Nothing is waiting to be checked." : tab === "FINAL" ? "No list is at the loading bay." : "Nothing here."}</Empty>
       ) : (
         <div className="flex flex-col gap-3">
           {data.items.map((r) => (
@@ -91,7 +95,7 @@ export function DispatchQueue() {
                       {r.packagesSummary ?? `${r.crateCount} package(s)`}
                       {r.containerNo ? ` · container ${r.containerNo}` : ""}
                       {r.vehicleNo ? ` · vehicle ${r.vehicleNo}` : ""}
-                      {r.status === "SUBMITTED" ? ` · waiting ${ago(r.submittedAt)}` : r.verifiedAt ? ` · checked ${ago(r.verifiedAt)}${r.verifiedByName ? ` by ${r.verifiedByName}` : ""}` : ""}
+                      {r.status === "SUBMITTED" ? ` · waiting ${ago(r.submittedAt)}` : r.status === "FINAL" ? ` · final ${ago(r.finalisedAt)}${r.fit.unfit > 0 ? ` · ${r.fit.unfit} unfit — awaiting a swap` : ""}` : r.verifiedAt ? ` · checked ${ago(r.verifiedAt)}${r.verifiedByName ? ` by ${r.verifiedByName}` : ""}` : ""}
                     </div>
                   </div>
                   <div className="text-right">

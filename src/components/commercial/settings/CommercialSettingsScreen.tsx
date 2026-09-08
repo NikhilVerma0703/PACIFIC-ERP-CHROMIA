@@ -16,8 +16,16 @@
 // — the next number each document kind will take — and each is set on its own
 // through PATCH …/settings/sequences, which refuses a decrease without an
 // explicit confirmation.
+//
+// WHO SEES WHAT. The page gates "view" and passes the actions down. The form
+// above needs "admin" — its API refuses anyone else, and a form that loads
+// into a 403 is worse than no form. The design-code master (answer 20) is
+// editable with "plan" (an admin or the Commercial Manager) and read-only for
+// everyone else, so a Commercial login can look a code up without being able
+// to change the shade the plant sequences by.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Card, Empty, Badge } from "@/components/ui";
+import DesignCodesEditor from "@/components/commercial/settings/DesignCodesEditor";
 import { readJson } from "@/lib/readJson";
 import { patchJson } from "@/lib/fab/postJson";
 import { NUMBERING_KINDS, type CommercialSettings, type NumberingKind } from "@/lib/commercial/settings-defaults";
@@ -58,10 +66,14 @@ const btnSmall = "rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-med
 const LABELS: Record<string, string> = {
   holdDays: "Stock hold (days)",
   piValidityDays: "Proforma validity (days)",
+  measurementUnitDefault: "Packing list unit",
+  "planning.cleaningHoursDefault": "Cleaning between runs (hours)",
+  "planning.cleaningHoursAbrupt": "Cleaning after dark → light (hours)",
   "company.legalName": "Legal name (proforma / export)",
   "company.shortName": "Short name (DTA invoice / challan)",
   "company.addressLines": "Address — one line per line",
   "company.gstin": "GSTIN",
+  "company.alternateGstins": "Other GSTINs — one per line, \"Label | GSTIN\"",
   "company.pan": "PAN",
   "company.iec": "IEC",
   "company.tan": "TAN",
@@ -96,8 +108,11 @@ const LABELS: Record<string, string> = {
   "tax.cgstRate": "CGST rate (%)",
   "tax.sgstRate": "SGST rate (%)",
   "tax.supplierStateCode": "Supplier state code",
+  "tax.alwaysIgst": "Domestic is always IGST",
   "notify.telegram": "Send shortages to Telegram",
   "notify.mail": "Send shortages by email",
+  "notify.telegramPrivate": "Telegram to a private chat",
+  "notify.mailFromCommercialLogin": "Mail from the Commercial login",
   "notify.mailTo": "Email recipients — one per line",
 };
 
@@ -107,14 +122,22 @@ const BANK_LABELS: Record<string, string> = {
 };
 
 const COMPANY_ORDER = [
-  "legalName", "shortName", "addressLines", "email", "phone", "gstin", "pan", "iec", "tan",
+  "legalName", "shortName", "addressLines", "email", "phone", "gstin", "alternateGstins", "pan", "iec", "tan",
   "stateCode", "districtCode", "rbiCode", "locationCode", "hsnQuartz", "hsnStand",
   "commissionerate", "division", "range", "customsOffice", "lutText",
 ];
 const BANK_ORDER = ["name", "branch", "address", "accountNo", "ifsc", "swift", "adCode", "routingBank", "routingSwift"];
 const TERMS_ORDER = ["portOfLoading", "preCarriageBy", "countryOfOrigin", "exportPaymentTerms", "domesticPaymentTerms", "domesticDeliveryTerms", "unitExport", "unitDomestic"];
 const TEXTS_ORDER = ["piDeclaration", "dtaDeclaration", "noReturn", "eoe", "challanNote", "challanApprox"];
-const TAX_ORDER = ["igstRate", "cgstRate", "sgstRate", "supplierStateCode"];
+const TAX_ORDER = ["alwaysIgst", "igstRate", "cgstRate", "sgstRate", "supplierStateCode"];
+
+/** The hint under a field, where the label alone would leave a question. */
+const HINTS: Record<string, string> = {
+  "company.alternateGstins": "Offered in the GSTIN dropdown on export documents beside the company GSTIN above, which stays the default (answer 21). One registration per line as \"Label | GSTIN\"; a bare GSTIN is labelled by itself.",
+  "tax.alwaysIgst": "answer 22: domestic is always IGST. The buyer's state is not consulted; CGST + SGST is only used when this is off.",
+  "notify.telegramPrivate": "On: the message goes to the private chat in TELEGRAM_COMMERCIAL_CHAT_ID (one person, answer 13). Off: the plant group.",
+  "notify.mailFromCommercialLogin": "On: sent from the Commercial login's own SMTP when it has one, so the mail carries that person's address (answer 13). Off: the global SMTP.",
+};
 
 /** Known keys in a sensible order, then anything the defaults gained since —
  *  nothing in the shape can go un-editable just because this list is stale. */
@@ -132,7 +155,9 @@ function humanise(path: string): string {
 
 const labelFor = (path: string): string => LABELS[path] ?? (/^banks\./.test(path) ? BANK_LABELS[path.split(".")[2]] ?? humanise(path) : humanise(path));
 
-type FieldKind = "text" | "area" | "lines" | "number" | "switch";
+type FieldKind = "text" | "area" | "lines" | "number" | "switch" | "select";
+interface SelectOption { value: string; label: string }
+const UNIT_OPTIONS: SelectOption[] = [{ value: "cm", label: "Centimetres (cm)" }, { value: "in", label: "Inches (in)" }];
 
 function kindFor(path: string, def: unknown): FieldKind {
   if (Array.isArray(def)) return "lines";
@@ -158,7 +183,53 @@ const errorMap = (list: SettingsIssue[] | undefined): Record<string, string> => 
 };
 
 // ───────────────────────────── the screen ────────────────────────────────────
-export function CommercialSettingsScreen() {
+export function CommercialSettingsScreen({ actions }: { actions: string[] }) {
+  // The design-code master is a SIBLING of the form, never its child: the form
+  // returns early while loading and on a load error, and an admin whose
+  // settings read failed must not lose the code master with it — that is the
+  // moment they would be on this page to look something up. The form's fixed
+  // save bar needs the bottom padding, so the wrapper carries it whenever the
+  // form is present.
+  const admin = actions.includes("admin");
+  return (
+    <div className={`flex flex-col gap-6 ${admin ? "pb-28" : ""}`}>
+      {admin && <SettingsForm />}
+      <DesignCodesSection editable={actions.includes("plan")} />
+    </div>
+  );
+}
+
+/** The design-code master (answer 20). Read-only is the editor's own prop,
+ *  not a `<fieldset disabled>` around it: a disabled fieldset inerts EVERY
+ *  control inside, including the Find box and the shade filter, so a login
+ *  without "plan" could not look a code up — the one thing it is here to do.
+ *  With `readOnly` the editor keeps its search and hides only the writes. */
+function DesignCodesSection({ editable }: { editable: boolean }) {
+  return (
+    <Card>
+      <div className="mb-4">
+        <h2 className="text-sm font-semibold text-gray-900">Design codes and shades</h2>
+        <p className="mt-0.5 text-xs text-gray-500">
+          One row per design: the owner's item code (answer 20), printed on order lines and export documents, and the shade
+          (light / medium / dark) the production queue sequences by (answer 13). A shade guessed from the name stays
+          unconfirmed until somebody confirms it.
+        </p>
+        {!editable && (
+          <p className="mt-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+            Read-only for this login. Codes and shades are changed by an admin or the Commercial Manager.
+          </p>
+        )}
+      </div>
+      <DesignCodesEditor readOnly={!editable} />
+    </Card>
+  );
+}
+
+/** The settings form proper — "admin" only; its API refuses anyone else.
+ *  It renders nothing but itself: whatever else the page shows sits beside it
+ *  in CommercialSettingsScreen, so this form's loading and error states gate
+ *  only the form. */
+function SettingsForm() {
   const [view, setView] = useState<SettingsView | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -267,12 +338,13 @@ export function CommercialSettingsScreen() {
   }, []);
 
   // ── one field ──────────────────────────────────────────────────────────────
-  const field = (path: string, opts: { label?: string; hint?: string; kind?: FieldKind; rows?: number } = {}) => {
+  const field = (path: string, opts: { label?: string; hint?: string; kind?: FieldKind; rows?: number; options?: SelectOption[] } = {}) => {
     if (!draft || !defaults) return null;
     const def = getAt(defaults, path);
     const value = getAt(draft, path);
     const kind = opts.kind ?? kindFor(path, def);
     const label = opts.label ?? labelFor(path);
+    const hint = opts.hint ?? HINTS[path];
     const error = errors[path];
     const changed = changedSet.has(path);
     const cls = error ? inpBad : inp;
@@ -283,6 +355,10 @@ export function CommercialSettingsScreen() {
           className="h-4 w-4 rounded border-gray-300 text-brand focus:ring-brand/30" />
         <span className="text-gray-700">{Boolean(value) ? "On" : "Off"}</span>
       </label>
+    ) : kind === "select" ? (
+      <select id={path} className={cls} value={String(value ?? "")} onChange={(e) => setField(path, e.target.value)}>
+        {(opts.options ?? []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
     ) : kind === "lines" ? (
       <textarea id={path} rows={opts.rows ?? Math.max(2, (Array.isArray(value) ? value.length : 1) + 1)} className={cls}
         value={Array.isArray(value) ? value.join("\n") : String(value ?? "")}
@@ -311,7 +387,7 @@ export function CommercialSettingsScreen() {
         </div>
         {control}
         {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
-        {!error && opts.hint && <p className="mt-1 text-xs text-gray-400">{opts.hint}</p>}
+        {!error && hint && <p className="mt-1 text-xs text-gray-400">{hint}</p>}
         {!error && changed && <p className="mt-1 text-xs text-gray-400">Default: {showDefault(def)}</p>}
       </div>
     );
@@ -376,7 +452,7 @@ export function CommercialSettingsScreen() {
   const banks = orderedKeys(defaults.banks, ["export", "domestic"]);
 
   return (
-    <div className="flex flex-col gap-6 pb-28">
+    <div className="flex flex-col gap-6">
       {/* what is not shipped-default */}
       <div className="flex flex-wrap items-center gap-3">
         <Badge tone={view.changed.length ? "amber" : "green"}>
@@ -402,17 +478,26 @@ export function CommercialSettingsScreen() {
         </div>
       )}
 
-      {section("Holds and validity", "How long a stock hold lasts, and how long a proforma stays valid once issued.", (
+      {section("Holds and validity", "How long a stock hold lasts, and whether a proforma ever stops being valid.", (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {field("holdDays", { hint: "1 to 60 days. Slabs are reserved for this long against the order number." })}
-          {field("piValidityDays", { hint: "1 to 365 days. Stamped as 'valid until' when a proforma is issued." })}
+          {field("holdDays", { hint: "1 to 60 days. Slabs are reserved for this long against the order number; on expiry the order returns to the stock check (answer 11)." })}
+          {field("piValidityDays", { hint: "0 = valid forever (the default). Up to 365 days, stamped as 'valid until' when a proforma is issued." })}
+        </div>
+      ))}
+
+      {section("Packing and planning", "The unit a new packing list prints in (answer 17), and the cleaning the plant needs between production runs (answer 13).", (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {field("measurementUnitDefault", { kind: "select", options: UNIT_OPTIONS, hint: "Each packing list can be switched to the other unit on its own screen; the finished-goods record stays in inches." })}
+          {field("planning.cleaningHoursDefault", { hint: "Between any two consecutive runs in the queue." })}
+          {field("planning.cleaningHoursAbrupt", { hint: "When the run before is dark and this one is light — the abrupt change the owner named." })}
         </div>
       ))}
 
       {section("Document numbering", "The format and the counter behind every number the module issues. A number can still be overridden by hand on the document itself.", (
         <div className="flex flex-col gap-4">
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            Counters start at 1 until set — align them with the last issued Tally numbers before the first live document.
+            Every series starts at N1 by design (answers 4 and 8): the N marks a number this ERP issued, and nothing is aligned with Tally.
+            A counter is only set by hand to skip numbers, never to continue an old series.
           </div>
           {NUMBERING_KINDS.map((kind) => {
             const base = `numbering.${kind}`;
@@ -475,22 +560,49 @@ export function CommercialSettingsScreen() {
         </div>
       ))}
 
-      {section("Tax", "IGST when the buyer's state differs from the supplier's, CGST + SGST when it matches, nothing on an export under LUT.", (
+      {section("Tax", "IGST on every domestic invoice (answer 22) and nothing on an export under LUT. The CGST + SGST rates stay for the day the switch is turned off.", (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {orderedKeys(defaults.tax, TAX_ORDER).map((k) => field(`tax.${k}`))}
         </div>
       ))}
 
-      {section("Notifications", "Where a stock shortage is announced. Both channels ship off: a shortage lands on the Production Planning page and nowhere else.", (
+      {section("Notifications", "Where a stock shortage is announced besides the Production Planning page (answer 13). A channel whose credentials are not configured is skipped silently and the request records that it went to the planning page only.", (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {field("notify.telegram")}
+          {field("notify.telegramPrivate")}
           {field("notify.mail")}
+          {field("notify.mailFromCommercialLogin")}
           {field("notify.mailTo", { rows: 3 })}
         </div>
       ))}
 
-      {section("All counters", "Every row in the counter table, including the financial years that have rolled past. Setting one only changes the next number it hands out.", (
+      {section("All counters", "What each document kind would take today, then every row in the counter table, including the financial years that have rolled past. Setting one only changes the next number it hands out.", (
         <div className="flex flex-col gap-3">
+          {/* Every kind, whether or not its counter has a row yet: a kind that
+              has never issued (the PI, until the first one) would otherwise be
+              missing from the table that is read to find it. */}
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[36rem] text-sm">
+              <thead>
+                <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-400">
+                  <th className="py-2 pr-3 font-medium">Document</th>
+                  <th className="py-2 pr-3 font-medium">Counter</th>
+                  <th className="py-2 pr-3 font-medium">Next</th>
+                  <th className="py-2 font-medium">Would issue today</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {NUMBERING_KINDS.map((kind) => (
+                  <tr key={kind}>
+                    <td className="py-2 pr-3 text-gray-700">{NUMBERING_LABELS[kind]}</td>
+                    <td className="py-2 pr-3"><code className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700">{draftPreviews[kind].key}</code></td>
+                    <td className="py-2 pr-3 font-medium text-gray-900">{draftPreviews[kind].next}</td>
+                    <td className="py-2"><code className="rounded bg-brand/10 px-2 py-0.5 text-xs font-semibold text-brand">{draftPreviews[kind].preview}</code></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           {view.sequences.length === 0 ? (
             <Empty>No counter has been set or used yet — every kind starts at 1.</Empty>
           ) : (

@@ -31,11 +31,12 @@ export async function GET(req: Request) {
     const [rows, total, groups] = await Promise.all([
       db.commercialPackingList.findMany({
         where,
-        // Oldest first: the container that has been waiting longest is checked first.
-        orderBy: status === "SUBMITTED" ? { submittedAt: "asc" } : { verifiedAt: "desc" },
+        // Oldest first: the container that has been waiting longest is checked
+        // first. FINAL lists (at the loading bay, answer 30) newest first.
+        orderBy: status === "SUBMITTED" ? { submittedAt: "asc" } : status === "FINAL" ? { finalisedAt: "desc" } : { verifiedAt: "desc" },
         skip, take,
         select: {
-          id: true, number: true, status: true, submittedAt: true, verifiedAt: true, verifiedByName: true,
+          id: true, number: true, status: true, submittedAt: true, verifiedAt: true, verifiedByName: true, finalisedAt: true,
           verificationNote: true, containerNo: true, vehicleNo: true, packagesSummary: true,
           order: { select: { number: true, kind: true, client: { select: { name: true, country: true } } } },
           crates: { select: { id: true } },
@@ -54,7 +55,7 @@ export async function GET(req: Request) {
       const slabs = (r.slabs as Array<{ fit: string }>) ?? [];
       return {
         id: r.id, number: r.number, status: r.status,
-        submittedAt: r.submittedAt, verifiedAt: r.verifiedAt, verifiedByName: r.verifiedByName,
+        submittedAt: r.submittedAt, verifiedAt: r.verifiedAt, verifiedByName: r.verifiedByName, finalisedAt: r.finalisedAt,
         verificationNote: r.verificationNote,
         containerNo: r.containerNo, vehicleNo: r.vehicleNo, packagesSummary: r.packagesSummary,
         orderNumber: order?.number ?? "", kind: order?.kind ?? "", clientName: order?.client?.name ?? "",

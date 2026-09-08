@@ -10,9 +10,11 @@
 import { commercialGate, actorStamp } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain, paramId, str } from "@/lib/commercial/http";
 import { issueNumber } from "@/lib/commercial/sequence";
+import { loadSettings } from "@/lib/commercial/settings";
 import { logOrderEvent } from "@/lib/commercial/events";
 import { reconcileHold } from "@/lib/commercial/inventory-bridge";
-import { slabNumberList, pageArgs, parsePackingStatus, type OrderItemLike } from "@/lib/commercial/packing-rules";
+import { slabNumberList, pageArgs, parsePackingStatus, canCreatePackingList, type OrderItemLike } from "@/lib/commercial/packing-rules";
+import { parseMeasurementUnit } from "@/lib/commercial/measure";
 import { db, loadList, intakeSlabs, isAdminOf } from "../../../packing-lists/_lib";
 
 export const dynamic = "force-dynamic";
@@ -45,6 +47,7 @@ interface CreateBody {
   fromHoldId?: unknown;
   numberOverride?: unknown;
   notes?: unknown;
+  measurementUnit?: unknown;
 }
 
 export async function POST(req: Request, { params }: Ctx) {
@@ -59,9 +62,15 @@ export async function POST(req: Request, { params }: Ctx) {
         items: { orderBy: { lineNo: "asc" } },
         enquiry: { select: { number: true } },
         holds: { include: { slabs: { orderBy: { slabNumber: "asc" } } }, orderBy: { placedAt: "desc" } },
+        packingLists: { select: { number: true, status: true }, orderBy: { createdAt: "desc" } },
       },
     });
     if (!order) fail(404, "Order not found");
+
+    // One PI, one packing list (answer 18): a REJECTED list is reopened, not
+    // replaced, and anything else already IS this order's list.
+    const one = canCreatePackingList(order.packingLists as Array<{ number: string; status: string }>);
+    if (!one.ok) fail(409, one.reason);
 
     // Where the slab numbers come from.
     const fromHoldId = str(body.fromHoldId);
@@ -98,6 +107,11 @@ export async function POST(req: Request, { params }: Ctx) {
     }
 
     const now = new Date();
+    // The unit the sheets print in (answer 17) comes from Settings; the body
+    // may name one, and anything that is not cm or in falls back rather than
+    // being stored.
+    const settings = await loadSettings();
+    const measurementUnit = parseMeasurementUnit(body.measurementUnit) ?? parseMeasurementUnit(settings.measurementUnitDefault) ?? "cm";
     const issued = await issueNumber("packingList", now, body.numberOverride);
     const stamp = actorStamp(g.user);
     let created: { id: string };
@@ -107,6 +121,7 @@ export async function POST(req: Request, { params }: Ctx) {
           orderId,
           number: issued.number,
           status: "DRAFT",
+          measurementUnit,
           notes: str(body.notes),
           createdById: stamp.id,
           createdByName: stamp.name,

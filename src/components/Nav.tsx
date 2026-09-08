@@ -292,11 +292,14 @@ export function Nav({
     { href: "/office/commercial/production-planning", icon: I.planning, label: "Production Queue" },
   ];
   // The manager's nav: everything Commercial has, plus the dispatch check —
-  // the manager is on the module's verify line (lib/commercial/access-rules.ts).
-  // Settings stay admin-only.
+  // the manager is on the module's verify line (lib/commercial/access-rules.ts)
+  // — and the settings page, which hosts the design-code master the manager
+  // maintains (answer 20). The settings FORM on that page stays admin-only;
+  // the page itself gates on view and shows the manager the design section.
   const commercialManagerItems = [
     ...commercialItems,
     { href: "/office/commercial/dispatch-check", icon: I.live,     label: "Dispatch Check" },
+    { href: "/office/commercial/settings",       icon: I.spanner,  label: "Design codes" },
   ];
   // Admin-only rows: the dispatch check is the dispatch team's screen (and the
   // admin's), settings hold the numbering counters and the company master.

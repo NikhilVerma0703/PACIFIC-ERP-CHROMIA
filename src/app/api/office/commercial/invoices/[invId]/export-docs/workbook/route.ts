@@ -10,6 +10,7 @@ import { json, deny, bad, fail, HttpError } from "@/lib/commercial/http";
 import { loadSettings } from "@/lib/commercial/settings";
 import { buildExportWorkbook, workbookFileName } from "@/lib/commercial/export-workbook/build";
 import { loadExportInvoice, rootsFor, slabRowsOf, crateRowsOf } from "../_lib";
+import { designCodesLookup } from "../../../_lib";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -30,7 +31,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ invId: 
     const settings = await loadSettings();
     const { roots } = await rootsFor(inv, settings);
 
-    const slabs = slabRowsOf(inv.packingList ?? null);
+    const slabs = slabRowsOf(inv.packingList ?? null, await designCodesLookup());
     const crateRows = crateRowsOf(inv, slabs, roots);
 
     const buffer = await buildExportWorkbook({ roots, slabs, crateRows });

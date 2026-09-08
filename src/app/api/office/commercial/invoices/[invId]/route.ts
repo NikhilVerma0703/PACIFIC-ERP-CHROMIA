@@ -1,15 +1,19 @@
 // GET   /api/office/commercial/invoices/[invId] — one invoice with its snapshot
 // PATCH /api/office/commercial/invoices/[invId] — edit a DRAFT
 //
-// A draft may have its transport fields, its lines and its invoice date
-// changed; the totals, the tax and the amount in words are re-derived from the
-// lines and the buyer's state on every edit, so the row and the PDF can never
-// drift apart. The number is NOT editable — it was taken from the counter.
+// A draft may have its transport fields, its lines, its invoice date and the
+// two dropdowns — the GSTIN it is issued under (answer 21) and the bank it
+// prints (answer 23) — changed; the totals, the tax and the amount in words
+// are re-derived from the lines on every edit, so the row and the PDF can
+// never drift apart. The number is NOT editable — it was taken from the counter.
 import { commercialGate } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain, str, num, dateOnly } from "@/lib/commercial/http";
 import { loadSettings } from "@/lib/commercial/settings";
 import { logOrderEvent } from "@/lib/commercial/events";
-import { canEditInvoice, applyDraftPatch, isoDate, TRANSPORT_COLUMNS } from "@/lib/commercial/invoice-rules";
+import {
+  canEditInvoice, applyDraftPatch, isoDate, TRANSPORT_COLUMNS,
+  patchedInvoiceFields, registrationChanges, registrationChangeNote,
+} from "@/lib/commercial/invoice-rules";
 import { db, INVOICE_INCLUDE, invoiceIdOf, loadInvoice, snapshotOf, rowPatchFor } from "../_lib";
 
 export const dynamic = "force-dynamic";
@@ -68,10 +72,19 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ invId:
     if (Object.keys(data).length === 0) return json(plain(row));
 
     await db.commercialInvoice.update({ where: { id }, data });
-    await logOrderEvent(String(row.orderId), "note", {
-      note: `Invoice ${row.number} edited`,
+
+    // What the log says this edit was. `Object.keys(data)` named the columns
+    // the UPDATE wrote — subtotal, igst, grandTotal, re-derived on every edit —
+    // so switching the invoice to the sister company's GSTIN (answer 21) or to
+    // the other bank (answer 23) left no trace an auditor could read. Report
+    // the body keys that actually landed, and those two by value.
+    const fields = patchedInvoiceFields(body, before, snapshot);
+    const registration = registrationChanges(before, snapshot);
+    const tail = registrationChangeNote(registration);
+    await logOrderEvent(String(row.orderId), "invoice_edited", {
+      note: `Invoice ${row.number} edited${tail ? ` — ${tail}` : ""}`,
       by: g.user,
-      payload: { invoiceId: id, fields: Object.keys(data).filter((k) => k !== "snapshot") },
+      payload: { invoiceId: id, fields, ...(registration ?? {}) },
     });
     const after = await db.commercialInvoice.findUnique({ where: { id }, include: INVOICE_INCLUDE });
     return json(plain(after));

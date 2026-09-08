@@ -5,6 +5,7 @@
 import { prisma } from "@/lib/prisma";
 import { fail, str, num, dateOnly } from "@/lib/commercial/http";
 import { parseChecklist, prefillChecklist, type ChecklistItem, type ChecklistSource } from "@/lib/commercial/checklist";
+import { advanceReceived } from "@/lib/commercial/receipts-rules";
 import {
   HEADER_TEXT_FIELDS, HEADER_PARTY_FIELDS, ORDER_KINDS, PO_EVIDENCE,
   normalizeParty, checklistSourceFromOrder,
@@ -20,19 +21,27 @@ export const ORDER_DETAIL_INCLUDE = {
   enquiry: { select: { id: true, number: true } },
   items: { orderBy: { lineNo: "asc" } },
   holds: { include: { slabs: { orderBy: { slabNumber: "asc" } } }, orderBy: { placedAt: "desc" } },
-  productionRequests: { orderBy: { raisedAt: "desc" } },
+  // The plan's own figures ride on the request row (plannedSlabs, plannedHours,
+  // cleaningHours, shade — columns, so nothing to map); every edit to them is a
+  // CommercialProductionPlanChange, newest first (answer 13).
+  productionRequests: { include: { changes: { orderBy: { changedAt: "desc" } } }, orderBy: { raisedAt: "desc" } },
   proformas: { orderBy: [{ number: "asc" }, { revision: "desc" }] },
+  // measurementUnit is a column on the list (answer 17); the include needs no more.
   packingLists: { include: { crates: { orderBy: { crateNo: "asc" } }, slabs: { orderBy: { sortOrder: "asc" } } }, orderBy: { createdAt: "desc" } },
   invoices: { include: { exportDocSet: true }, orderBy: { invoiceDate: "desc" } },
   challans: { orderBy: { challanDate: "desc" } },
+  // Newest first by the date the money arrived, then by entry — two receipts on
+  // one day keep the order they were typed in.
+  receipts: { orderBy: [{ receivedAt: "desc" }, { createdAt: "desc" }] },
   events: { orderBy: { at: "desc" }, take: 100 },
 } as const;
 
-/** The order detail, checklist parsed, or a 404. Pass through plain() before json(). */
+/** The order detail, checklist parsed and `advanceReceived` derived (answer
+ *  2: the dispatch gate's fact), or a 404. Pass through plain() before json(). */
 export async function loadOrderDetail(id: string): Promise<Record<string, unknown>> {
   const row = await db.commercialOrder.findUnique({ where: { id }, include: ORDER_DETAIL_INCLUDE });
   if (!row) fail(404, "Order not found");
-  return { ...row, checklist: parseChecklist(row.checklist) };
+  return { ...row, checklist: parseChecklist(row.checklist), advanceReceived: advanceReceived(row.receipts) };
 }
 
 /** The bare order row with its items (for writes), or a 404. */

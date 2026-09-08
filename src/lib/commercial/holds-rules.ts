@@ -3,7 +3,7 @@
 // node --test without Prisma, Next or the inventory bridge: which slab numbers
 // a body names, when a hold lapses, which of the slabs the bridge touched are
 // the hold's own, what a refused hold says, and which of a hold's slabs are
-// still on it when an extension re-reserves them.
+// still on it when some are released.
 //
 // IMPORT-FREE, deliberately. The routes in app/api/office/commercial/holds
 // and .../orders/[id]/holds import this; nothing here imports them back.
@@ -16,11 +16,15 @@
 // from under its owner, a part-packed hold recorded as RELEASED) were all
 // wrong in the DECISION, not in the SQL. They live here now, pure, and
 // tests/commercialHolds.test.ts runs them.
+//
+// THERE IS NO EXTENSION (answer 11). A hold that lapses sends the order back
+// to the stock check — reconcileHold does that through holdStatusAfterReconcile
+// — and the only way to keep slabs is a fresh hold with fresh days.
 
 /** A hold lasts this many days when neither the body nor settings says. */
 export const FALLBACK_HOLD_DAYS = 5;
-/** An extension or a hold may not be asked for longer than this. Anything
- *  longer is a reservation, not a stock check, and belongs to the PI. */
+/** A hold may not be asked for longer than this. Anything longer is a
+ *  reservation, not a stock check, and belongs to the PI. */
 export const MAX_HOLD_DAYS = 60;
 
 /** Slab numbers from a request body: numbers or numeric strings, finite,
@@ -196,6 +200,22 @@ export function resolveHoldReference(
   };
 }
 
+/**
+ * Answer 12: a hold is placed against an ORDER, never against an enquiry. The
+ * enquiry-referenced hold used to be the way stock was kept while a quote was
+ * out; the owner closed it, so a body that names an enquiry and no order is
+ * refused with the reason — not silently turned into an order hold, because
+ * the caller plainly meant the enquiry. Whatever else the body says, the
+ * order id is the only target the routes accept.
+ */
+export function holdTarget(body: { orderId?: unknown; enquiryId?: unknown }): { ok: true; orderId: string } | { ok: false; reason: string } {
+  const orderId = typeof body.orderId === "string" ? body.orderId.trim() : "";
+  const enquiryId = typeof body.enquiryId === "string" ? body.enquiryId.trim() : "";
+  if (orderId) return { ok: true, orderId };
+  if (enquiryId) return { ok: false, reason: "Stock is not held against an enquiry (answer 12) — convert it to an order and hold from there." };
+  return { ok: false, reason: "A hold needs the order it is for (orderId)." };
+}
+
 export interface HoldSlabStateLike {
   slabNumber: number;
   releasedAt: string | Date | null;
@@ -203,9 +223,25 @@ export interface HoldSlabStateLike {
 }
 
 /** Slabs still on the hold: neither released (by hand or by the sweep) nor
- *  consumed by a packing list. These are what release-all and extend act on. */
+ *  consumed by a packing list. These are what release-all acts on. */
 export function stillHeldSlabs<T extends HoldSlabStateLike>(slabs: T[]): T[] {
   return slabs.filter((s) => s.releasedAt == null && s.packedAt == null);
+}
+
+/**
+ * Answer 11, in the words the hold card shows. An ACTIVE hold says when it
+ * lapses and what that costs — the order goes back to the stock check — so
+ * nobody looks for an Extend button that no longer exists. An EXPIRED hold
+ * says that it happened. `expiresAtText` is already formatted: the screen
+ * owns the locale, the rule owns the sentence.
+ */
+export function holdExpiryLine(status: string, expiresAtText: string): string {
+  switch (status) {
+    case "ACTIVE": return `expires ${expiresAtText} — on expiry the order returns to the stock check`;
+    case "EXPIRED": return `lapsed ${expiresAtText} — the order went back to the stock check`;
+    case "CONSUMED": return "packed";
+    default: return "released";
+  }
 }
 
 /** Which of a hold's slabs a release request names. No list → every slab
@@ -220,8 +256,8 @@ export function releaseTargets(slabs: HoldSlabStateLike[], requested: number[] |
   return { targets, notOnHold };
 }
 
-/** A hold may be released or extended only while ACTIVE; an EXPIRED, RELEASED
- *  or CONSUMED hold is history. */
+/** A hold may be released only while ACTIVE; an EXPIRED, RELEASED or
+ *  CONSUMED hold is history. */
 export function canActOnHold(status: string): { ok: true } | { ok: false; reason: string } {
   if (status === "ACTIVE") return { ok: true };
   const word = status === "EXPIRED" ? "lapsed" : status === "CONSUMED" ? "been packed" : "already been released";

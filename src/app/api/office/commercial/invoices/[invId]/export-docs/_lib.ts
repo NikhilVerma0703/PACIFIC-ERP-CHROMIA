@@ -9,6 +9,7 @@ import {
   DEFAULT_ROOTS, ROOT_CELLS, crateRowsFor, slabRowsFromPacking,
   type SlabRow, type CrateRow, type InvoiceSnapshotLike,
 } from "@/lib/commercial/export-workbook/mapping";
+import type { DesignCodeLookup } from "@/lib/commercial/invoice-rules";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
@@ -88,10 +89,11 @@ function plainPackingList(pl: Row) {
 }
 
 /** The packed slabs as measurement-list rows. The mapping lives in the pure
- *  module (slabRowsFromPacking) so the customer-numbering and area rules are
- *  tested; this is only the Prisma row handed across. */
-export function slabRowsOf(pl: Row | null): SlabRow[] {
-  return slabRowsFromPacking(pl as never);
+ *  module (slabRowsFromPacking) so the customer-numbering, area and item-code
+ *  rules are tested; this is only the Prisma row handed across, with the
+ *  design master's lookup (answer 20) for the SKU column. */
+export function slabRowsOf(pl: Row | null, codeFor: DesignCodeLookup): SlabRow[] {
+  return slabRowsFromPacking(pl as never, codeFor);
 }
 
 /** The goods lines the documents print, from the slabs plus the invoice's own

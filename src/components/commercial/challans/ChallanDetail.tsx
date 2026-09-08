@@ -1,7 +1,8 @@
 "use client";
 // One delivery challan: edit while it is a draft, issue it, cancel it, print
 // it. The PDF is four pages — one per copy (Buyer, Transporter, Central
-// Excise, Assessee), each carrying its own label.
+// Excise, Assessee), each carrying its own label. Cancel is the manager's or
+// an admin's (commercialGate("cancel")), as for every numbered document.
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Card, Badge, Empty, H2 } from "@/components/ui";
@@ -9,7 +10,8 @@ import { readJson } from "@/lib/readJson";
 import { patchJson, postJson } from "@/lib/fab/postJson";
 import { challanStatusTone, canEditChallan, canIssueChallan, canCancelChallan, CHALLAN_COPIES } from "@/lib/commercial/challan-rules";
 import type { ChallanItem } from "@/lib/commercial/types";
-import { inp, lbl, btnPrimary, btnGhost, btnDanger, errorBox, noteBox, money, dmy, dateValue } from "@/components/commercial/invoices/ui";
+import { inp, lbl, btnPrimary, btnGhost, btnDanger, errorBox, noteBox, money, dateValue } from "@/components/commercial/invoices/ui";
+import { DocNumber } from "@/components/commercial/invoices/DocNumber";
 import { ChallanFields, rowsFromItems, draftToBody, type ChallanDraft } from "./ChallanFields";
 
 interface Challan {
@@ -64,6 +66,7 @@ export function ChallanDetail({ challanId, actions }: { challanId: string; actio
   const [cancelling, setCancelling] = useState(false);
   const [reason, setReason] = useState("");
   const mayWrite = actions.includes("write");
+  const mayCancel = actions.includes("cancel");
 
   const load = useCallback(async () => {
     const r = await fetch(`/api/office/commercial/challans/${challanId}`, { cache: "no-store" });
@@ -112,17 +115,17 @@ export function ChallanDetail({ challanId, actions }: { challanId: string; actio
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <h2 className="text-xl font-semibold text-gray-900">{ch.number}</h2>
-          <Badge tone={challanStatusTone(ch.status)}>{ch.status}</Badge>
-          <span className="text-sm text-gray-500">{dmy(ch.challanDate)}</span>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
+          {/* the date DIRECTLY UNDER the number (answer 6) */}
+          <DocNumber number={ch.number} date={ch.challanDate} size="lg" />
+          <div className="pt-1"><Badge tone={challanStatusTone(ch.status)}>{ch.status}</Badge></div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <a href={`/api/office/commercial/challans/${ch.id}/pdf`} target="_blank" rel="noreferrer" className={btnGhost}>Open PDF (4 copies)</a>
           {ch.order && <Link href={`/office/commercial/orders/${ch.order.id}?tab=invoice`} className={btnGhost}>Order {ch.order.number}</Link>}
           {mayWrite && canIssueChallan(ch.status) && <button type="button" className={btnPrimary} disabled={busy} onClick={() => void issue()}>Issue challan</button>}
-          {mayWrite && canCancelChallan(ch.status) && <button type="button" className={btnDanger} disabled={busy} onClick={() => setCancelling((v) => !v)}>Cancel…</button>}
+          {mayCancel && canCancelChallan(ch.status) && <button type="button" className={btnDanger} disabled={busy} onClick={() => setCancelling((v) => !v)}>Cancel…</button>}
         </div>
       </div>
 

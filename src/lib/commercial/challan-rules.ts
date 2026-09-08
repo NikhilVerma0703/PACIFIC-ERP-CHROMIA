@@ -119,6 +119,24 @@ export function challanDate(iso: string | null | undefined): string {
   return m ? `${m[3]}/${m[2]}/${m[1]}` : "";
 }
 
+/**
+ * The number with its date DIRECTLY UNDER it (answer 6), as the challan
+ * header, the challan book and the order's Invoice tab all print it:
+ *
+ *   challanNumberLines("PESPL/DC/N3/26", "2026-08-20") → ["PESPL/DC/N3/26", "Dated: 20/08/2026"]
+ *
+ * A missing date gives the number alone rather than a bare "Dated:"; a
+ * missing number, the date alone — a draft is never printed headless.
+ */
+export function challanNumberLines(number: unknown, iso: string | null | undefined): string[] {
+  const out: string[] = [];
+  const n = s(number);
+  const d = challanDate(iso);
+  if (n) out.push(n);
+  if (d) out.push(`Dated: ${d}`);
+  return out;
+}
+
 // ───────────────────────────── list filters ──────────────────────────────────
 
 export interface ChallansFilter {

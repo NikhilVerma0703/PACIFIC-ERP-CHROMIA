@@ -18,7 +18,7 @@ import { amountInWords } from "./words.ts";
 import { computeTax, stateCodeFromGstin, type TaxResult } from "./tax.ts";
 import { slabMeasure, sumTo } from "./measure.ts";
 import { canonThickness } from "../thickness.ts";
-import type { CommercialSettings } from "./settings-defaults.ts";
+import { gstinChoices, type CommercialSettings, type GstinChoice } from "./settings-defaults.ts";
 import type { DocLine, Party, InvoiceSnapshot } from "./types.ts";
 
 // ───────────────────────────── kinds & status ────────────────────────────────
@@ -67,6 +67,126 @@ export function statusTone(status: string): "brand" | "green" | "amber" | "red" 
     case "DRAFT": return "amber";
     default: return "red";
   }
+}
+
+// ───────────────────── one invoice per order (answer 18) ─────────────────────
+
+/** The invoice that blocks a new one on this order: the first that is not
+ *  cancelled. Null when the order may take a draft. */
+export function openInvoiceOf<T extends { status: string }>(existing: ReadonlyArray<T> | null | undefined): T | null {
+  return (existing ?? []).find((i) => String(i.status).toUpperCase() !== "CANCELLED") ?? null;
+}
+
+/**
+ * Why drafting a second invoice is refused, or null when it may go ahead.
+ * "One PI has one invoice" — a cancelled one no longer counts, so a wrong
+ * invoice is cancelled with a reason and raised again, never doubled up.
+ */
+export function refuseCreate(existing: ReadonlyArray<{ status: string; number?: string | null }> | null | undefined): string | null {
+  const open = openInvoiceOf(existing);
+  if (!open) return null;
+  const which = printable(open.number) ? `invoice ${open.number}` : "an invoice";
+  return `This order already has ${which} (${String(open.status).toLowerCase()}). One order carries one invoice — cancel it with a reason before raising another`;
+}
+
+// ───────────────────── approval before the final invoice (answer 10) ─────────
+
+/** Who may approve the checklist, for the refusal to name. */
+export const INVOICE_APPROVERS = "an admin or the Commercial Manager";
+
+/**
+ * Why issuing is refused for want of approval, or null. The same sentence
+ * stages.canEnter gives, with the approver named, so the clerk knows whose
+ * door to knock on rather than which rule they hit.
+ */
+export function refuseIssueUnapproved(order: { approvedAt?: string | Date | null } | null | undefined): string | null {
+  const at = order?.approvedAt;
+  if (at !== null && at !== undefined && at !== "") return null;
+  return `The checklist must be approved before the final invoice — ${INVOICE_APPROVERS} approves it on the order's Overview tab`;
+}
+
+// ───────────────────── the bank and the GSTIN printed (answers 21, 23) ───────
+
+export type BankKey = "export" | "domestic";
+export const BANK_KEYS: readonly BankKey[] = ["export", "domestic"];
+
+export function isBankKey(v: unknown): v is BankKey {
+  return v === "export" || v === "domestic";
+}
+
+/** ICICI (domestic) on a DTA invoice, Kotak (export) otherwise — answer 23's
+ *  default, which the dropdown may change while the invoice is a draft. */
+export function defaultBankKeyFor(kind: InvoiceKind): BankKey {
+  return kind === "DTA" ? "domestic" : "export";
+}
+
+/** The printed bank block for a key. */
+export function bankBlockFor(settings: CommercialSettings, key: BankKey): InvoiceSnapshot["bank"] {
+  const bank = settings.banks[key];
+  return {
+    name: bank.name, address: bank.address, accountNo: bank.accountNo,
+    ifsc: bank.ifsc, swift: bank.swift,
+    adCode: bank.adCode, routingBank: bank.routingBank, routingSwift: bank.routingSwift,
+  };
+}
+
+/**
+ * The GSTIN an invoice is issued under: the one asked for when it is on the
+ * dropdown, else the company's own (answer 21). Null when a GSTIN was named
+ * that the settings do not offer — the route refuses it rather than printing
+ * a registration nobody vouched for.
+ */
+export function gstinChoiceFor(settings: CommercialSettings, requested?: string | null): GstinChoice | null {
+  const choices = gstinChoices(settings.company);
+  const want = printable(requested).toUpperCase();
+  if (!want) return choices[0];
+  return choices.find((c) => c.gstin === want) ?? null;
+}
+
+/**
+ * The label printed beside an alternate GSTIN — where the old export template
+ * carried the sister company's name under PESPL's heading. The company's own
+ * registration needs no label: the name above it says whose it is.
+ */
+export function gstinLabelFor(settings: CommercialSettings, choice: GstinChoice): string | null {
+  return choice.gstin === settings.company.gstin ? null : choice.label;
+}
+
+/** "33AAFCP5374A1ZQ (Pacific Granites (India) Pvt Ltd)" — or just the GSTIN. */
+export function gstinWithLabel(gstin: string | null | undefined, label: string | null | undefined): string {
+  const g = printable(gstin);
+  const l = printable(label);
+  return g && l ? `${g} (${l})` : g;
+}
+
+// ───────────────────── design codes on the lines (answer 20) ─────────────────
+
+/** design → its code from commercial_design_code; null when the row has none. */
+export type DesignCodeLookup = (design: string | null | undefined) => string | null;
+
+/** Build the lookup from the master's rows. Case- and space-insensitive on the
+ *  design, because FG names arrive in every spelling the floor uses. */
+export function designCodeLookup(rows: ReadonlyArray<{ design: string; code?: string | null }> | null | undefined): DesignCodeLookup {
+  const by = new Map<string, string>();
+  for (const r of rows ?? []) {
+    const key = printable(r.design).toUpperCase().replace(/\s+/g, " ");
+    const code = printable(r.code);
+    if (key && code) by.set(key, code);
+  }
+  return (design) => by.get(printable(design).toUpperCase().replace(/\s+/g, " ")) ?? null;
+}
+
+export const NO_DESIGN_CODE: DesignCodeLookup = () => null;
+
+/** What the DOCUMENT prints as the item code: the design's code, else the
+ *  design name — never blank, and never a "no code" marker on paper. */
+export function printedItemCode(line: { itemCode?: string | null; design?: string | null; description?: string | null }): string {
+  return printable(line.itemCode) || printable(line.design) || printable(line.description);
+}
+
+/** The SCREEN's marker: a line whose design has no code in the master yet. */
+export function lineLacksCode(line: { itemCode?: string | null; isSample?: boolean | null }): boolean {
+  return !line.isSample && !printable(line.itemCode);
 }
 
 // ───────────────────────────── small helpers ─────────────────────────────────
@@ -254,6 +374,50 @@ export function datedRef(reference: unknown, date: unknown): string {
   return ref ? `${ref}      Dated: ${d}` : `Dated: ${d}`;
 }
 
+/**
+ * The number with its date DIRECTLY UNDER it (answer 6) — the invoice and
+ * challan headers and their registers all print this pair, so a reader finds
+ * the date in the same place on every document the module issues:
+ *
+ *   datedLines("PESPL/N12", "2026-07-14") → ["PESPL/N12", "Dated: 14/07/2026"]
+ *
+ * A missing date gives the number alone rather than a bare "Dated:".
+ */
+export function datedLines(reference: unknown, date: unknown): string[] {
+  const ref = printable(reference);
+  const d = fmtDMY(date);
+  const out: string[] = [];
+  if (ref) out.push(ref);
+  if (d) out.push(`Dated: ${d}`);
+  return out;
+}
+
+/**
+ * The financial year a date falls in, as the numbering writes it ("26-27").
+ * From the ISO date, not a Date object: the register shows this beside a
+ * continuous export number (answer 6), and a Date read in local time would
+ * roll 1 April back into March for anyone west of India.
+ */
+export function fyOfIso(v: unknown): string {
+  const m = (v instanceof Date ? isoDate(v) : printable(v)).match(/^(\d{4})-(\d{2})/);
+  if (!m) return "";
+  const y = Number(m[1]);
+  const start = Number(m[2]) >= 4 ? y : y - 1;
+  return `${String(start).slice(2)}-${String(start + 1).slice(2)}`;
+}
+
+/**
+ * The financial-year tag the register shows BESIDE an export invoice's number
+ * (answer 6): PESPL/N{seq} runs on across years, so the number alone no longer
+ * says which year's books it sits in. A DTA number carries its FY already
+ * (PESPL/N7/26-27), so it gets nothing. "FY 26-27", or null.
+ */
+export function fyBadge(kind: string | null | undefined, date: unknown): string | null {
+  if (String(kind ?? "").toUpperCase() !== "EXPORT") return null;
+  const fy = fyOfIso(date);
+  return fy ? `FY ${fy}` : null;
+}
+
 /** "PESPL/0137/26-27" → "PESPL-0137-26-27.pdf" (a slash cannot be a filename). */
 export function invoiceFilename(number: string): string {
   const safe = printable(number).replace(/[\/\\:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim();
@@ -368,6 +532,35 @@ export interface InvoiceSnapshotOptions {
   netWeight?: string | null;
   vessel?: string | null;
   notes?: string | null;
+  /** The registration to print (answer 21); blank → the company's own. */
+  gstin?: string | null;
+  /** The bank to print (answer 23); blank → by kind (defaultBankKeyFor). */
+  bankKey?: BankKey | null;
+}
+
+/**
+ * What the snapshot carries on top of the InvoiceSnapshot contract since the
+ * owner's answers of 2026-09-07: the chosen GSTIN with the label printed
+ * beside it when it is not the company's own (answer 21), and which bank the
+ * block came from (answer 23), so a draft can switch banks without anyone
+ * re-typing account numbers. `company.gstin` is ALSO set to the chosen one,
+ * so a reader of the old shape prints the right registration.
+ */
+export interface InvoiceSnapshotExtras {
+  gstin: string;
+  gstinLabel: string | null;
+  bankKey: BankKey;
+}
+export type InvoiceDocSnapshot = InvoiceSnapshot & InvoiceSnapshotExtras;
+
+/** The extras of a stored snapshot, with the pre-answer defaults for a row
+ *  written before they existed: the company's GSTIN, the bank by kind. */
+export function snapshotExtras(s: InvoiceSnapshot & Partial<InvoiceSnapshotExtras>): InvoiceSnapshotExtras {
+  return {
+    gstin: printable(s.gstin) || printable(s.company?.gstin),
+    gstinLabel: clean(s.gstinLabel),
+    bankKey: isBankKey(s.bankKey) ? s.bankKey : defaultBankKeyFor(s.kind),
+  };
 }
 
 // ───────────────────────────── parties ───────────────────────────────────────
@@ -405,7 +598,9 @@ export function clientParty(client: InvoiceClientInput | null | undefined): Part
   };
 }
 
-export function exporterParty(settings: CommercialSettings): Party {
+/** The company as a Party. `gstin` is the registration the document is issued
+ *  under (answer 21) — the company's own unless the dropdown chose another. */
+export function exporterParty(settings: CommercialSettings, gstin?: string | null): Party {
   const c = settings.company;
   return {
     name: c.legalName,
@@ -413,7 +608,7 @@ export function exporterParty(settings: CommercialSettings): Party {
     country: settings.defaults.countryOfOrigin || "India",
     tel: c.phone || null,
     email: c.email || null,
-    gstin: c.gstin || null,
+    gstin: printable(gstin) || c.gstin || null,
     stateCode: c.stateCode || null,
     code: null,
   };
@@ -468,8 +663,10 @@ export function exportDescription(item: { customerSku?: string | null; descripti
 }
 
 /** One order line → one printed line. The STORED amount is printed when the
- *  line has one; only a line with none is worked out (qty × rate at 3 dp). */
-export function lineFromItem(item: InvoiceItemInput, index: number, kind: InvoiceKind, settings: CommercialSettings): DocLine {
+ *  line has one; only a line with none is worked out (qty × rate at 3 dp).
+ *  The item code is the design master's (answer 20), never the customer's
+ *  SKU — that stays in the description, where the CIOT sheet printed it. */
+export function lineFromItem(item: InvoiceItemInput, index: number, kind: InvoiceKind, settings: CommercialSettings, codeFor: DesignCodeLookup = NO_DESIGN_CODE): DocLine {
   const unit = invoiceUnit(item.uom, kind);
   const qty = round3(toNumber(item.qty, 0));
   const rate = round4(toNumber(item.rate, 0));
@@ -477,7 +674,7 @@ export function lineFromItem(item: InvoiceItemInput, index: number, kind: Invoic
   const slabs = item.qtySlabs === null || item.qtySlabs === undefined ? null : Math.round(toNumber(item.qtySlabs, 0));
   return {
     lineNo: item.lineNo ?? index + 1,
-    itemCode: clean(item.customerSku),
+    itemCode: codeFor(item.design),
     description: kind === "DTA" ? dtaDescription(item) : (exportDescription(item) || dtaDescription(item)),
     design: clean(item.design),
     thickness: printInvoiceThickness(item.thickness, kind),
@@ -540,10 +737,11 @@ export function buildInvoiceLines(
   slabs: ReadonlyArray<InvoiceSlabInput> | null | undefined,
   kind: InvoiceKind,
   settings: CommercialSettings,
+  codeFor: DesignCodeLookup = NO_DESIGN_CODE,
 ): DocLine[] {
   const orderItems = (items ?? []).slice();
   if (!slabs || slabs.length === 0) {
-    return orderItems.map((it, i) => lineFromItem(it, i, kind, settings));
+    return orderItems.map((it, i) => lineFromItem(it, i, kind, settings, codeFor));
   }
   const groups = groupSlabs(slabs);
   const lines: DocLine[] = groups.map((g, i) => {
@@ -554,7 +752,7 @@ export function buildInvoiceLines(
     const rate = round4(toNumber(item?.rate, 0));
     return {
       lineNo: i + 1,
-      itemCode: clean(item?.customerSku),
+      itemCode: codeFor(g.design ?? item?.design),
       description: kind === "DTA"
         ? dtaDescription({ description: item?.description, design: g.design ?? item?.design })
         : (exportDescription({ customerSku: item?.customerSku, description: item?.description, design: g.design ?? item?.design }) || DTA_DEFAULT_DESCRIPTION),
@@ -571,7 +769,7 @@ export function buildInvoiceLines(
   });
   // Sample lines are not slabs and never appear in a packing list group; they
   // still have to be invoiced, so they come along from the order unchanged.
-  const sampleLines = orderItems.filter((it) => it.isSample).map((it, i) => lineFromItem(it, lines.length + i, kind, settings));
+  const sampleLines = orderItems.filter((it) => it.isSample).map((it, i) => lineFromItem(it, lines.length + i, kind, settings, codeFor));
   return [...lines, ...sampleLines].map((l, i) => ({ ...l, lineNo: i + 1 }));
 }
 
@@ -689,6 +887,9 @@ export function invoiceTotals(
     cgstRate: settings.tax.cgstRate,
     sgstRate: settings.tax.sgstRate,
     roundToWhole: kind === "DTA",
+    // Answer 22: domestic is IGST 18% whatever the buyer's state, and no
+    // "state code missing" warning is raised — there is nothing to fill in.
+    alwaysIgst: settings.tax.alwaysIgst,
   });
   const grandTotal = kind === "EXPORT" ? subtotal : t.grandTotal;
   const roundOff = kind === "EXPORT" ? 0 : t.roundOff;
@@ -718,7 +919,7 @@ export function buildInvoiceSnapshot(
   kind: InvoiceKind,
   lines: DocLine[],
   opts: InvoiceSnapshotOptions,
-): InvoiceSnapshot {
+): InvoiceDocSnapshot {
   const isExport = kind === "EXPORT";
   const currency = (isExport ? (printable(order.currency) || "USD") : "INR").toUpperCase();
   const client = order.client ?? null;
@@ -730,11 +931,17 @@ export function buildInvoiceSnapshot(
   const notifyParty = partyOrNull(order.notifyParty) ?? partyOrNull(ext?.notifyParty) ?? null;
   const state = buyerStateCode(ext, buyer);
   const totals = invoiceTotals(lines, kind, state, settings, currency);
-  const bank = isExport ? settings.banks.export : settings.banks.domestic;
+  const bankKey = isBankKey(opts.bankKey) ? opts.bankKey : defaultBankKeyFor(kind);
+  // A GSTIN the settings do not offer falls back to the company's own here;
+  // the route has already refused it, so this only guards a direct caller.
+  const gstinChoice = gstinChoiceFor(settings, opts.gstin) ?? gstinChoiceFor(settings, null)!;
   const c = settings.company;
 
   return {
     kind,
+    gstin: gstinChoice.gstin,
+    gstinLabel: gstinLabelFor(settings, gstinChoice),
+    bankKey,
     number: "",                                   // stamped by the route once issueNumber has run
     date: opts.date,
     piNumber: clean(opts.piNumber) ?? clean(order.number),
@@ -744,7 +951,7 @@ export function buildInvoiceSnapshot(
     commodity: COMMODITY,
     currency,
     exchangeRate: opts.exchangeRate ?? (order.exchangeRate === null || order.exchangeRate === undefined ? null : round4(toNumber(order.exchangeRate, 0))),
-    exporter: exporterParty(settings),
+    exporter: exporterParty(settings, gstinChoice.gstin),
     buyer: { ...buyer, gstin: buyer.gstin ?? clean(ext?.gstin), stateCode: buyer.stateCode ?? state },
     consignee,
     notifyParty,
@@ -778,14 +985,10 @@ export function buildInvoiceSnapshot(
     vehicleNo: clean(opts.vehicleNo),
     transporter: clean(opts.transporter),
     lutText: isExport ? (clean(c.lutText)) : null,
-    bank: {
-      name: bank.name, address: bank.address, accountNo: bank.accountNo,
-      ifsc: bank.ifsc, swift: bank.swift,
-      adCode: bank.adCode, routingBank: bank.routingBank, routingSwift: bank.routingSwift,
-    },
+    bank: bankBlockFor(settings, bankKey),
     company: {
       legalName: c.legalName, shortName: c.shortName, addressLines: [...c.addressLines],
-      gstin: c.gstin, iec: c.iec, pan: c.pan, tan: c.tan,
+      gstin: gstinChoice.gstin, iec: c.iec, pan: c.pan, tan: c.tan,
       stateCode: c.stateCode, districtCode: c.districtCode,
       customsOffice: c.customsOffice, commissionerate: c.commissionerate,
       division: c.division, range: c.range, locationCode: c.locationCode,
@@ -798,7 +1001,7 @@ export function buildInvoiceSnapshot(
 
 /** Re-derive subtotal, tax, round-off, grand total and the words on a snapshot
  *  whose lines (or date) were edited. Returns a NEW snapshot. */
-export function recomputeSnapshot(snapshot: InvoiceSnapshot, settings: CommercialSettings): InvoiceSnapshot {
+export function recomputeSnapshot<S extends InvoiceSnapshot>(snapshot: S, settings: CommercialSettings): S {
   const totals = invoiceTotals(snapshot.lines, snapshot.kind, snapshot.buyer?.stateCode ?? null, settings, snapshot.currency);
   return {
     ...snapshot,
@@ -830,7 +1033,7 @@ export const EDITABLE_PARTY_FIELDS = ["buyer", "consignee", "notifyParty"] as co
 export const TRANSPORT_COLUMNS = ["vehicleNo", "transporter", "lrNo", "containerNo", "sealNo", "ewayBillNo"] as const;
 
 export interface DraftPatchResult {
-  snapshot: InvoiceSnapshot;
+  snapshot: InvoiceDocSnapshot;
   /** Something in the snapshot is now different from what came in. */
   changed: boolean;
   /**
@@ -848,13 +1051,34 @@ export interface DraftPatchResult {
  * ignored — the totals are re-derived whenever the lines or the buyer change.
  * Returns a NEW snapshot, whether anything changed, and what was refused.
  */
-export function applyDraftPatch(snapshot: InvoiceSnapshot, patch: unknown, settings: CommercialSettings): DraftPatchResult {
-  if (typeof patch !== "object" || patch === null) return { snapshot, changed: false, rejected: [] };
+export function applyDraftPatch(snapshot: InvoiceSnapshot & Partial<InvoiceSnapshotExtras>, patch: unknown, settings: CommercialSettings): DraftPatchResult {
+  // A row written before the extras existed is read with its defaults, so the
+  // bank and the GSTIN can be changed on it like on any other draft.
+  const base: InvoiceDocSnapshot = { ...snapshot, ...snapshotExtras(snapshot) };
+  if (typeof patch !== "object" || patch === null) return { snapshot: base, changed: false, rejected: [] };
   const p = patch as Record<string, unknown>;
-  const next: InvoiceSnapshot = { ...snapshot };
+  const next: InvoiceDocSnapshot = { ...base };
   let changed = false;
   let totalsDirty = false;
   const rejected: string[] = [];
+
+  // The two dropdowns (answers 21, 23). A value the settings do not offer is
+  // refused by name, never silently kept as the old one.
+  if ("bankKey" in p) {
+    if (!isBankKey(p.bankKey)) rejected.push("bankKey");
+    else if (p.bankKey !== next.bankKey) { next.bankKey = p.bankKey; next.bank = bankBlockFor(settings, p.bankKey); changed = true; }
+  }
+  if ("gstin" in p) {
+    const choice = gstinChoiceFor(settings, printable(p.gstin) || null);
+    if (!choice) rejected.push("gstin");
+    else if (choice.gstin !== next.gstin) {
+      next.gstin = choice.gstin;
+      next.gstinLabel = gstinLabelFor(settings, choice);
+      next.company = { ...next.company, gstin: choice.gstin };
+      next.exporter = { ...next.exporter, gstin: choice.gstin };
+      changed = true;
+    }
+  }
 
   for (const f of EDITABLE_TEXT_FIELDS) {
     if (!(f in p)) continue;
@@ -897,6 +1121,158 @@ export function applyDraftPatch(snapshot: InvoiceSnapshot, patch: unknown, setti
     }
   }
   return { snapshot: totalsDirty ? recomputeSnapshot(next, settings) : next, changed, rejected };
+}
+
+// ───────────────────── what an edit changed, for the order log ───────────────
+
+/** A PATCH body key → the snapshot field it lands on (the row calls the
+ *  invoice date `invoiceDate`; the snapshot calls it `date`). */
+const SNAPSHOT_FIELD_FOR: Record<string, string> = { invoiceDate: "date" };
+
+/**
+ * The body keys whose snapshot value the patch ACTUALLY changed. The log used
+ * to list the row columns written — `subtotal`, `igst`, `grandTotal`, derived
+ * on every edit — which named nothing the clerk typed and never a GSTIN or a
+ * bank switch. Compared against the stored snapshot with its extras filled in,
+ * so a pre-answer row does not report "gstin changed" for a default it always
+ * had.
+ */
+export function patchedSnapshotFields(
+  body: Record<string, unknown> | null | undefined,
+  before: InvoiceSnapshot & Partial<InvoiceSnapshotExtras>,
+  after: InvoiceSnapshot & Partial<InvoiceSnapshotExtras>,
+): string[] {
+  if (!body || typeof body !== "object") return [];
+  const b = { ...before, ...snapshotExtras(before) } as unknown as Record<string, unknown>;
+  const a = { ...after, ...snapshotExtras(after) } as unknown as Record<string, unknown>;
+  return Object.keys(body).filter((k) => {
+    const f = SNAPSHOT_FIELD_FOR[k] ?? k;
+    return f in a && JSON.stringify(a[f] ?? null) !== JSON.stringify(b[f] ?? null);
+  });
+}
+
+/** PATCH body keys that land ONLY on the invoice row — the snapshot has no
+ *  such field, so patchedSnapshotFields cannot see them and the log would
+ *  otherwise never name an LR number or a re-pointed packing list. */
+export const ROW_ONLY_PATCH_FIELDS = ["lrNo", "ewayBillNo", "packingListId"] as const;
+
+/**
+ * Everything one PATCH touched, in the order the body named it: the snapshot
+ * fields it actually changed plus the row-only columns it wrote. This is what
+ * `invoice_edited` reports. The old payload listed the columns UPDATE wrote —
+ * `subtotal`, `igst`, `grandTotal`, re-derived on every edit — so a clerk
+ * switching the invoice to the sister company's GSTIN logged "fields:
+ * [subtotal, igst, grandTotal]" and the registration change vanished.
+ */
+export function patchedInvoiceFields(
+  body: Record<string, unknown> | null | undefined,
+  before: InvoiceSnapshot & Partial<InvoiceSnapshotExtras>,
+  after: InvoiceSnapshot & Partial<InvoiceSnapshotExtras>,
+): string[] {
+  if (!body || typeof body !== "object") return [];
+  const snap = new Set(patchedSnapshotFields(body, before, after));
+  const rowOnly: readonly string[] = ROW_ONLY_PATCH_FIELDS;
+  return Object.keys(body).filter((k) => snap.has(k) || rowOnly.includes(k));
+}
+
+export type Change<T> = { from: T; to: T };
+export interface RegistrationChange {
+  gstin?: Change<string>;
+  gstinLabel?: Change<string | null>;
+  bankKey?: Change<BankKey>;
+}
+
+/**
+ * How the GSTIN (answer 21) and the bank (answer 23) moved in an edit, or null
+ * when neither did. These two are what an auditor reading the order log wants
+ * to see by value — a tax document re-registered under the sister company is
+ * not "fields: [gstin]", it is 33AALCP… → 33AAFCP….
+ */
+export function registrationChanges(
+  before: InvoiceSnapshot & Partial<InvoiceSnapshotExtras>,
+  after: InvoiceSnapshot & Partial<InvoiceSnapshotExtras>,
+): RegistrationChange | null {
+  const b = snapshotExtras(before);
+  const a = snapshotExtras(after);
+  const out: RegistrationChange = {};
+  if (a.gstin !== b.gstin) out.gstin = { from: b.gstin, to: a.gstin };
+  if (a.gstinLabel !== b.gstinLabel) out.gstinLabel = { from: b.gstinLabel, to: a.gstinLabel };
+  if (a.bankKey !== b.bankKey) out.bankKey = { from: b.bankKey, to: a.bankKey };
+  return Object.keys(out).length ? out : null;
+}
+
+/** The log line's tail for a registration change: "GSTIN 33A… → 33B… (label)", "bank export → domestic". */
+export function registrationChangeNote(c: RegistrationChange | null | undefined): string {
+  if (!c) return "";
+  const parts: string[] = [];
+  if (c.gstin || c.gstinLabel) {
+    const from = gstinWithLabel(c.gstin?.from ?? null, c.gstinLabel?.from ?? null);
+    const to = gstinWithLabel(c.gstin?.to ?? null, c.gstinLabel?.to ?? null);
+    parts.push(`GSTIN ${from || "—"} → ${to || "—"}`);
+  }
+  if (c.bankKey) parts.push(`bank ${c.bankKey.from} → ${c.bankKey.to}`);
+  return parts.join("; ");
+}
+
+// ────────── what the SAVED export form overrides (answers 21, 23) ────────────
+
+/**
+ * The two workbook root cells that carry the invoice's registration: the
+ * exporter GSTIN line (Invoice!J8) and the bank name (Invoice!G27). Spelled
+ * out here rather than imported from export-workbook/mapping.ts so the order
+ * screen does not pull 1,500 lines of cell map into the browser bundle;
+ * tests/commercialExportWorkbook.test.ts asserts both keys still exist there.
+ */
+export const EXPORT_ROOT_GSTIN_KEY = "exporterGstinText";
+export const EXPORT_ROOT_BANK_KEY = "bankName";
+
+export interface ExportRootOverride {
+  /** the root cell's key in commercial_export_doc_set.rootVariables */
+  key: string;
+  what: "GSTIN" | "bank";
+  /** what the invoice snapshot says (what the form defaulted to) */
+  onInvoice: string;
+  /** what the saved form holds, and therefore what the workbook prints */
+  saved: string;
+}
+
+const squashed = (v: unknown): string => printable(v).toUpperCase().replace(/\s+/g, " ");
+const alnum = (v: unknown): string => printable(v).toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+/**
+ * Where a SAVED export document set no longer agrees with the invoice it hangs
+ * off. The form is prefilled from the snapshot, but every root cell is typed
+ * over-able and the workbook prints the saved value — so the Documents tab
+ * cannot assert "the workbook prints GSTIN X and the Y account" from the
+ * snapshot alone. Returns [] when nothing is saved (roots null) or the two
+ * cells still match.
+ */
+export function exportRootOverrides(
+  snapshot: (InvoiceSnapshot & Partial<InvoiceSnapshotExtras>) | null | undefined,
+  roots: Record<string, unknown> | null | undefined,
+): ExportRootOverride[] {
+  if (!snapshot || !roots || typeof roots !== "object") return [];
+  const out: ExportRootOverride[] = [];
+  const x = snapshotExtras(snapshot);
+
+  // The cell prints "GSTIN NO: 33AALCP2750N1Z3 (label)", so the registration is
+  // looked for INSIDE it: re-typed spacing, a dropped "NO:" or an added label
+  // is a wording change, not a different company.
+  const savedGstin = roots[EXPORT_ROOT_GSTIN_KEY];
+  if (x.gstin && savedGstin !== undefined && !alnum(savedGstin).includes(alnum(x.gstin))) {
+    out.push({
+      key: EXPORT_ROOT_GSTIN_KEY, what: "GSTIN",
+      onInvoice: gstinWithLabel(x.gstin, x.gstinLabel),
+      saved: printable(savedGstin),
+    });
+  }
+
+  const bankOnInvoice = printable(snapshot.bank?.name);
+  const savedBank = roots[EXPORT_ROOT_BANK_KEY];
+  if (savedBank !== undefined && squashed(savedBank) !== squashed(bankOnInvoice)) {
+    out.push({ key: EXPORT_ROOT_BANK_KEY, what: "bank", onInvoice: bankOnInvoice, saved: printable(savedBank) });
+  }
+  return out;
 }
 
 /**

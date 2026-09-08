@@ -4,9 +4,18 @@
 // UNFIT must say why: an unfit slab sends the whole list back and pulls the
 // order to PACKING, and "no reason given" is not something Commercial can act
 // on at eight in the evening with a container booked.
+//
+// A LATE VERDICT (answer 30). On a VERIFIED or FINAL list the check is over,
+// but the loading bay is where a slab passed last week turns out to be cracked.
+// The checker marks it UNFIT here — the list keeps its status, nothing is
+// unpacked, the order stays put — and the dispatch route refuses until
+// Commercial swaps the slab (answer 31). A verdict on such a list is logged on
+// the order, because nothing else re-runs the conclusion and the log is where
+// Commercial learns why the truck is waiting.
 import { commercialGate, actorStamp } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain } from "@/lib/commercial/http";
-import { fitPatch, canVerify, fitCounts, checkerMaySee, checkerSlabView } from "@/lib/commercial/packing-rules";
+import { logOrderEvent } from "@/lib/commercial/events";
+import { fitPatch, canVerify, canRecheck, fitCounts, checkerMaySee, checkerSlabView, fmtSlabNo } from "@/lib/commercial/packing-rules";
 import { db, paramTwo } from "../../../../packing-lists/_lib";
 
 export const dynamic = "force-dynamic";
@@ -19,15 +28,16 @@ export async function PATCH(req: Request, { params }: Ctx) {
   if (!g.ok) return deny(g);
   return handle(async () => {
     const [plId, slabId] = await paramTwo(params as Promise<Record<string, string>>, "plId", "slabId");
-    const list = await db.commercialPackingList.findUnique({ where: { id: plId }, select: { id: true, number: true, status: true } });
+    const list = await db.commercialPackingList.findUnique({ where: { id: plId }, select: { id: true, number: true, status: true, orderId: true } });
     // Same two gates as the GET beside this one: a list outside the dispatch
-    // check's three statuses does not exist here, so a DRAFT list is a 404 and
-    // not a status message that confirms it.
+    // check's statuses does not exist here, so a DRAFT list is a 404 and not a
+    // status message that confirms it.
     if (!list || !checkerMaySee(String(list.status))) fail(404, "Packing list not found");
-    if (!canVerify(list.status)) {
-      fail(409, `${list.number} is ${list.status === "VERIFIED" ? "already verified" : "already rejected"} — it is not waiting for a check`);
+    const late = canRecheck(String(list.status));
+    if (!canVerify(list.status) && !late) {
+      fail(409, `${list.number} is already rejected — reopen it before checking again`);
     }
-    const slab = await db.commercialPackedSlab.findUnique({ where: { id: slabId }, select: { id: true, packingListId: true, slabNumber: true } });
+    const slab = await db.commercialPackedSlab.findUnique({ where: { id: slabId }, select: { id: true, packingListId: true, slabNumber: true, fit: true } });
     if (!slab || slab.packingListId !== plId) fail(404, "Slab not found on this list");
 
     const body = await readBody<{ fit?: unknown; unfitReason?: unknown }>(req);
@@ -39,6 +49,15 @@ export async function PATCH(req: Request, { params }: Ctx) {
       where: { id: slabId },
       data: { fit: patch.fit, unfitReason: patch.unfitReason, checkedById: stamp.id, checkedAt: new Date() },
     });
+    if (late && String(slab.fit) !== patch.fit) {
+      await logOrderEvent(list.orderId, "note", {
+        note: patch.fit === "UNFIT"
+          ? `Packing list ${list.number} (${String(list.status).toLowerCase()}): slab #${fmtSlabNo(Number(slab.slabNumber))} marked UNFIT at loading (${patch.unfitReason}) — nothing ships until it is swapped`
+          : `Packing list ${list.number} (${String(list.status).toLowerCase()}): slab #${fmtSlabNo(Number(slab.slabNumber))} checked fit`,
+        by: g.user,
+        payload: { packingListId: plId, slabId, slabNumber: slab.slabNumber, fit: patch.fit, unfitReason: patch.unfitReason, late: true },
+      });
+    }
     const slabs: Array<{ fit: string }> = await db.commercialPackedSlab.findMany({ where: { packingListId: plId }, select: { fit: true } });
     // The slab as the floor screen reads it, not the row as it is stored: this
     // segment answers a login that may check slabs and nothing else.

@@ -10,15 +10,17 @@
 // container, seal, vehicle, weights — stays open until the slabs have gone,
 // because those are known at stuffing time, after the check.
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Card, Badge, Empty, Kpi } from "@/components/ui";
 import { readJson } from "@/lib/readJson";
 import { postJson, patchJson, deleteJson } from "@/lib/fab/postJson";
 import {
-  canEdit, canEditHeader, canSubmit, canReopen, canFinalise, canDispatch,
+  canEdit, canEditHeader, canSubmit, canReopen, canFinalise, canDispatch, canRecheck,
   PACKING_STATUS_LABEL, CRATE_KINDS, parseSlabNumbers, fitCounts, packagesSummary,
   crateGroups, measurementRows, type PackingStatus,
 } from "@/lib/commercial/packing-rules";
+import { sizeInUnit, sizeToCm, MEASUREMENT_UNITS, type MeasurementUnit } from "@/lib/commercial/measure";
+import { SwapSlabPicker } from "@/components/commercial/dispatch/SwapSlabPicker";
 
 // ── shapes the API hands back ────────────────────────────────────────────────
 interface Crate { id: string; crateNo: number; kind: string; grossKg: number | null; netKg: number | null; lengthCm: number | null; widthCm: number | null; heightCm: number | null; remarks: string | null }
@@ -34,6 +36,8 @@ interface PList {
   id: string; number: string; status: PackingStatus; orderId: string;
   containerNo: string | null; sealNo: string | null; linerOtlNo: string | null; vehicleNo: string | null;
   grossWeightKg: number | null; netWeightKg: number | null; packagesSummary: string | null; notes: string | null;
+  /** cm | in — what the size columns and the sheets show (answer 17). */
+  measurementUnit: MeasurementUnit;
   createdByName: string | null; createdAt: string; submittedAt: string | null; verifiedAt: string | null;
   verifiedByName: string | null; verificationNote: string | null; finalisedAt: string | null; dispatchedAt: string | null;
   crates: Crate[]; slabs: Slab[]; order: Order;
@@ -83,6 +87,7 @@ export function PackingListEditor({ plId, actions }: { plId: string; actions: st
   const [assignTo, setAssignTo] = useState("");
   const [addText, setAddText] = useState("");
   const [addHold, setAddHold] = useState("");
+  const [swapping, setSwapping] = useState<string | null>(null); // slab id being swapped (answer 30)
   const [header, setHeader] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
@@ -129,8 +134,22 @@ export function PackingListEditor({ plId, actions }: { plId: string; actions: st
   if (!list) return <Empty>Loading…</Empty>;
 
   const submitCheck = canSubmit(list.status, list.slabs);
+  // The rows are stored in centimetres whatever the list shows; the unit is a
+  // lens on the two size columns, applied on the way out and on the way in.
+  const unit: MeasurementUnit = list.measurementUnit ?? "cm";
+  const inUnit = (cm: number | null): string => n3(sizeInUnit(cm, unit));
+  const maySwap = mayWrite && canRecheck(list.status);
 
   // ── writes ────────────────────────────────────────────────────────────────
+  const setUnit = (u: MeasurementUnit) => run(() => patchJson(`/api/office/commercial/packing-lists/${plId}`, { measurementUnit: u }), () => `Sizes now in ${u}.`);
+  /** A size typed in the list's unit, saved as the centimetres the row keeps. */
+  const commitSize = (id: string, side: "lengthCm" | "widthCm", typed: string) => {
+    const v = typed.trim();
+    if (v === "") return patchSlab(id, { [side]: null });
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) { setError(`${side === "lengthCm" ? "Length" : "Width"} must be a number of ${unit}`); return Promise.resolve(false); }
+    return patchSlab(id, { [side]: sizeToCm(n, unit) });
+  };
   const saveHeader = () => run(() => patchJson(`/api/office/commercial/packing-lists/${plId}`, {
     containerNo: header.containerNo, sealNo: header.sealNo, linerOtlNo: header.linerOtlNo, vehicleNo: header.vehicleNo,
     grossWeightKg: header.grossWeightKg === "" ? null : header.grossWeightKg,
@@ -214,7 +233,7 @@ export function PackingListEditor({ plId, actions }: { plId: string; actions: st
             {mayWrite && canDispatch(list.status) && (
               <button type="button" className={btn} disabled={busy} onClick={() => act("dispatch")}>Mark dispatched</button>
             )}
-            {mayVerify && list.status === "SUBMITTED" && (
+            {mayVerify && (list.status === "SUBMITTED" || canRecheck(list.status)) && (
               <Link href={`/office/commercial/dispatch-check/${plId}`} className={btnGhost}>Open the check</Link>
             )}
           </div>
@@ -222,6 +241,13 @@ export function PackingListEditor({ plId, actions }: { plId: string; actions: st
         {list.verificationNote && (
           <div className={`mt-3 rounded-xl border px-4 py-3 text-sm ${list.status === "REJECTED" ? "border-red-200 bg-red-50 text-red-700" : "border-green-200 bg-green-50 text-green-800"}`}>
             {list.verificationNote}
+          </div>
+        )}
+        {canRecheck(list.status) && (counts.unfit > 0 || counts.pending > 0) && (
+          <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            {counts.unfit > 0
+              ? `${counts.unfit} slab(s) refused by the dispatch check — nothing ships until each is swapped for a slab of the same design and thickness (Swap beside the slab).`
+              : `${counts.pending} swapped-in slab(s) await the dispatch check — nothing ships until they are marked fit.`}
           </div>
         )}
         {error && <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
@@ -346,7 +372,19 @@ export function PackingListEditor({ plId, actions }: { plId: string; actions: st
       {/* slabs */}
       <Card>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">Slabs · {list.slabs.length}</h2>
+          <div className="flex flex-wrap items-center gap-3">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">Slabs · {list.slabs.length}</h2>
+            <div className="flex items-center gap-1 text-xs text-gray-500" role="group" aria-label="Unit for slab sizes">
+              <span>Sizes in</span>
+              {MEASUREMENT_UNITS.map((u) => (
+                <button key={u} type="button"
+                  className={`rounded-md border px-2 py-0.5 text-xs font-medium transition ${unit === u ? "border-brand bg-brand/10 text-brand" : "border-gray-300 text-gray-600 hover:bg-gray-50"} disabled:opacity-60`}
+                  disabled={!editable || busy || unit === u} aria-pressed={unit === u}
+                  title={editable ? "" : "The unit can only be switched while the list is with Commercial"}
+                  onClick={() => setUnit(u)}>{u}</button>
+              ))}
+            </div>
+          </div>
           {editable && selected.size > 0 && (
             <div className="flex flex-wrap items-center gap-2 rounded-lg border border-brand/30 bg-brand/5 px-3 py-2">
               <span className="text-sm text-gray-700">{selected.size} selected</span>
@@ -374,8 +412,8 @@ export function PackingListEditor({ plId, actions }: { plId: string; actions: st
                   <th className="py-2 pr-2">Crate</th>
                   <th className="py-2 pr-2">Cust. slab no</th>
                   <th className="py-2 pr-2">Cust. batch</th>
-                  <th className="py-2 pr-2">L cm</th>
-                  <th className="py-2 pr-2">W cm</th>
+                  <th className="py-2 pr-2">L {unit}</th>
+                  <th className="py-2 pr-2">W {unit}</th>
                   <th className="py-2 pr-2 text-right">Sqm</th>
                   <th className="py-2 pr-2">Check</th>
                   <th className="py-2" />
@@ -383,7 +421,8 @@ export function PackingListEditor({ plId, actions }: { plId: string; actions: st
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {list.slabs.map((s) => (
-                  <tr key={s.id} className={s.fit === "UNFIT" ? "bg-red-50/50" : undefined}>
+                  <React.Fragment key={s.id}>
+                  <tr className={s.fit === "UNFIT" ? "bg-red-50/50" : undefined}>
                     {editable && (
                       <td className="py-1.5 pr-2">
                         <input type="checkbox" className="h-4 w-4 rounded border-gray-300 text-brand focus:ring-brand/30"
@@ -402,8 +441,8 @@ export function PackingListEditor({ plId, actions }: { plId: string; actions: st
                     </td>
                     <td className="py-1.5 pr-2 w-28"><Cell value={s.customerSlabNo ?? ""} disabled={!editable} onCommit={(v) => patchSlab(s.id, { customerSlabNo: v })} /></td>
                     <td className="py-1.5 pr-2 w-28"><Cell value={s.customerBatchNo ?? ""} disabled={!editable} onCommit={(v) => patchSlab(s.id, { customerBatchNo: v })} /></td>
-                    <td className="py-1.5 pr-2 w-16"><Cell value={n3(s.lengthCm)} disabled={!editable} onCommit={(v) => patchSlab(s.id, { lengthCm: v })} /></td>
-                    <td className="py-1.5 pr-2 w-16"><Cell value={n3(s.widthCm)} disabled={!editable} onCommit={(v) => patchSlab(s.id, { widthCm: v })} /></td>
+                    <td className="py-1.5 pr-2 w-16"><Cell value={inUnit(s.lengthCm)} disabled={!editable} onCommit={(v) => commitSize(s.id, "lengthCm", v)} /></td>
+                    <td className="py-1.5 pr-2 w-16"><Cell value={inUnit(s.widthCm)} disabled={!editable} onCommit={(v) => commitSize(s.id, "widthCm", v)} /></td>
                     <td className="py-1.5 pr-2 text-right text-gray-600">{s.sqm != null ? s.sqm.toFixed(4) : "—"}</td>
                     <td className="py-1.5 pr-2">
                       <Badge tone={FIT_TONE[s.fit] ?? "brand"}>{s.fit === "PENDING" ? "—" : s.fit}</Badge>
@@ -411,8 +450,21 @@ export function PackingListEditor({ plId, actions }: { plId: string; actions: st
                     </td>
                     <td className="py-1.5 text-right">
                       {editable && <button type="button" className={btnDanger} disabled={busy} onClick={() => removeSlab(s.id)}>Remove</button>}
+                      {maySwap && s.fit === "UNFIT" && (
+                        <button type="button" className={btnGhost} disabled={busy} onClick={() => setSwapping(swapping === s.id ? null : s.id)}>Swap</button>
+                      )}
                     </td>
                   </tr>
+                  {swapping === s.id && maySwap && (
+                    <tr>
+                      <td colSpan={editable ? 13 : 12} className="pb-3">
+                        <SwapSlabPicker plId={plId} slabId={s.id}
+                          onCancel={() => setSwapping(null)}
+                          onDone={async (msg) => { setSwapping(null); setError(null); setNote(msg); await load(); }} />
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
                 ))}
               </tbody>
             </table>

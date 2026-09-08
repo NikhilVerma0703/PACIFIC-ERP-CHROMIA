@@ -8,7 +8,7 @@ import {
   CHALLAN_COPIES, CHALLAN_DEFAULT_PO_REF, CHALLAN_DEFAULT_COMMODITY, CHALLAN_UNITS,
   canEditChallan, canIssueChallan, canCancelChallan, refuseChallanIssue, challanStatusTone,
   challanLineAmount, normaliseChallanItems, challanTotals, challanWords, challanTariffHead,
-  challanFilename, challanDate, challansWhere, pageArgs,
+  challanFilename, challanDate, challanNumberLines, challansWhere, pageArgs,
 } from "../src/lib/commercial/challan-rules.ts";
 import { fmtIndian } from "../src/lib/commercial/invoice-rules.ts";
 import { indianWords } from "../src/lib/commercial/words.ts";
@@ -171,6 +171,14 @@ test("challanFilename and challanDate print the reference's forms", () => {
   assert.equal(challanDate("2026-08-20T06:30:00.000Z"), "20/08/2026");
   assert.equal(challanDate(null), "");
   assert.equal(challanDate("nonsense"), "");
+});
+
+test("the date prints DIRECTLY UNDER the challan number (answer 6), on the page and in the book", () => {
+  assert.deepEqual(challanNumberLines("PESPL/DC/N3/26", "2026-08-20"), ["PESPL/DC/N3/26", "Dated: 20/08/2026"]);
+  assert.deepEqual(challanNumberLines("PESPL/DC/N3/26", "2026-08-20T06:30:00.000Z"), ["PESPL/DC/N3/26", "Dated: 20/08/2026"], "an @db.Date arrives as an instant");
+  assert.deepEqual(challanNumberLines("PESPL/DC/N3/26", null), ["PESPL/DC/N3/26"], "no date, no bare 'Dated:'");
+  assert.deepEqual(challanNumberLines(null, "2026-08-20"), ["Dated: 20/08/2026"]);
+  assert.deepEqual(challanNumberLines("", "nonsense"), []);
 });
 
 // ───────────────────────────── list filters ──────────────────────────────────

@@ -98,7 +98,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ invId: s
     });
 
     if (inv.orderId) {
-      await logOrderEvent(inv.orderId, "note", {
+      await logOrderEvent(inv.orderId, "export_docs", {
         note: `Export document variables saved for invoice ${inv.number}`,
         payload: { invoiceId: invId, keys: Object.keys(incoming).length },
         by: g.user,

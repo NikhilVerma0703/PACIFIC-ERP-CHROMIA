@@ -3,9 +3,10 @@
 //
 // Lines come from the packing list when one is named (its slabs grouped by
 // design + thickness, priced from the matching order line) and from the order
-// itself otherwise. The tax is worked out from the buyer's state code — the
-// one on commercial_client_ext, else the first two digits of the GSTIN — and
-// the whole thing is frozen into a snapshot the PDF renders from.
+// itself otherwise. Domestic tax is IGST whatever the buyer's state (answer
+// 22, settings.tax.alwaysIgst) and the whole thing is frozen into a snapshot
+// the PDF renders from — including which GSTIN and which bank it is issued
+// under (answers 21, 23), both chosen here and editable while a draft.
 import { commercialGate } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain, str, num, dateOnly, paramId } from "@/lib/commercial/http";
 import { loadSettings } from "@/lib/commercial/settings";
@@ -13,10 +14,11 @@ import { issueNumber } from "@/lib/commercial/sequence";
 import { logOrderEvent } from "@/lib/commercial/events";
 import {
   INVOICE_KINDS, defaultKindFor, sequenceKindFor, buildInvoiceLines, buildInvoiceSnapshot, sanitiseLine,
-  isoDate, istIsoDate, unpricedWarning, pageArgs, type InvoiceKind,
+  isoDate, istIsoDate, unpricedWarning, pageArgs, refuseCreate, isBankKey, gstinChoiceFor,
+  type InvoiceKind,
 } from "@/lib/commercial/invoice-rules";
 import type { DocLine } from "@/lib/commercial/types";
-import { db, INVOICE_INCLUDE, rowPatchFor, livePiFor, marksForCrates, weightText, isUniqueViolation } from "../../../invoices/_lib";
+import { db, INVOICE_INCLUDE, rowPatchFor, livePiFor, marksForCrates, weightText, isUniqueViolation, designCodesLookup } from "../../../invoices/_lib";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -47,13 +49,31 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
     const order = await db.commercialOrder.findUnique({
       where: { id: orderId },
-      include: { client: { include: { commercialExt: true } }, items: { orderBy: { lineNo: "asc" } } },
+      include: {
+        client: { include: { commercialExt: true } },
+        items: { orderBy: { lineNo: "asc" } },
+        invoices: { select: { id: true, number: true, status: true }, orderBy: { createdAt: "asc" } },
+      },
     });
     if (!order) fail(404, "Order not found");
+
+    // Answer 18: one PI has one invoice. A wrong one is cancelled with a
+    // reason and raised again; it is never doubled up. This is the cheap early
+    // refusal; the one that holds under concurrency is inside the transaction
+    // below.
+    const blocked = refuseCreate(order.invoices as Array<{ status: string; number: string | null }>);
+    if (blocked) fail(409, blocked);
 
     const rawKind = str(body.kind)?.toUpperCase();
     const kind: InvoiceKind = rawKind ? (rawKind as InvoiceKind) : defaultKindFor(order.kind);
     if (!INVOICE_KINDS.includes(kind)) fail(400, "kind must be DTA or EXPORT");
+
+    // The two dropdowns (answers 21, 23). A GSTIN that is not on the settings
+    // list is refused here rather than printed on a tax document unvouched.
+    const bankKeyRaw = str(body.bankKey);
+    if (bankKeyRaw && !isBankKey(bankKeyRaw)) fail(400, "bankKey must be export or domestic");
+    const gstinRaw = str(body.gstin);
+    if (gstinRaw && !gstinChoiceFor(settings, gstinRaw)) fail(400, `GSTIN ${gstinRaw} is not one the company issues under — add it in Settings first`);
 
     // No date given → TODAY IN INDIA. The UTC day would date a document raised
     // before 05:30 IST to yesterday, and one raised in that window on 1 April
@@ -74,13 +94,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const slabs = pl ? (pl.slabs as Array<Record<string, unknown>>) : null;
     const crates = pl ? (pl.crates as Array<Record<string, unknown>>) : [];
 
-    // lines: what the caller sent, else the packing list's slabs, else the order
+    // lines: what the caller sent, else the packing list's slabs, else the order.
+    // The item code on every line is the design master's (answer 20).
+    const codeFor = await designCodesLookup();
     const typedLines = Array.isArray(body.lines)
       ? (body.lines as unknown[]).map((l, i) => sanitiseLine(l, i)).filter((l): l is DocLine => l !== null)
       : null;
     const lines = typedLines && typedLines.length
       ? typedLines
-      : buildInvoiceLines(order.items as never, slabs as never, kind, settings);
+      : buildInvoiceLines(order.items as never, slabs as never, kind, settings, codeFor);
     if (lines.length === 0) fail(400, "Nothing to invoice — the order has no line items");
 
     const pi = await livePiFor(orderId);
@@ -100,14 +122,30 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       netWeight: str(body.netWeight) ?? (pl ? weightText(pl.netWeightKg) : null),
       vessel: str(body.vessel),
       notes: str(body.notes),
+      gstin: gstinRaw,
+      bankKey: isBankKey(bankKeyRaw) ? bankKeyRaw : null,
     });
 
-    const issued = await issueNumber(sequenceKindFor(kind), invoiceDate, body.numberOverride);
-    snapshot.number = issued.number;
+    // Answer 18, enforced where it counts. The probe above ran on a plain read
+    // many awaits ago and nothing in the schema stops a second open invoice,
+    // so two clerks drafting at once would both pass it. Inside one
+    // transaction the order row is locked first (FOR UPDATE — without it, two
+    // READ COMMITTED transactions would both see no open invoice and both
+    // insert), the probe is re-run against committed state, and only then is
+    // a number taken and the row written.
+    const { created, issued } = await db.$transaction(async (tx: typeof db) => {
+      await tx.$queryRaw`SELECT id FROM commercial_order WHERE id = ${orderId} FOR UPDATE`;
+      const open = await tx.commercialInvoice.findFirst({
+        where: { orderId, status: { not: "CANCELLED" } },
+        orderBy: { createdAt: "asc" },
+        select: { number: true, status: true },
+      });
+      const blockedNow = refuseCreate(open ? [open as { status: string; number: string | null }] : []);
+      if (blockedNow) fail(409, blockedNow);
 
-    let created: { id: string };
-    try {
-      created = await db.commercialInvoice.create({
+      const issued = await issueNumber(sequenceKindFor(kind), invoiceDate, body.numberOverride);
+      snapshot.number = issued.number;
+      const created: { id: string } = await tx.commercialInvoice.create({
         data: {
           orderId,
           packingListId: packingListId ?? null,
@@ -128,20 +166,25 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           ...rowPatchFor(snapshot),
         },
         select: { id: true },
+      }).catch((e: unknown) => {
+        if (isUniqueViolation(e)) fail(409, `Invoice number ${snapshot.number} already exists`);
+        throw e;
       });
-    } catch (e) {
-      if (isUniqueViolation(e)) fail(409, `Invoice number ${issued.number} already exists`);
-      throw e;
-    }
+      return { created, issued };
+    });
 
     // A packing-list line whose design the order does not carry finds no rate
     // and would be billed at zero. Say so in the log as well as on the screen.
     const unpriced = unpricedWarning(snapshot.lines);
 
-    await logOrderEvent(orderId, "note", {
+    await logOrderEvent(orderId, "invoice_created", {
       note: `${kind} invoice ${issued.number} drafted${issued.overridden ? " (number typed by hand)" : ""}${pl ? ` from packing list ${pl.number}` : ""}${unpriced ? ` — ${unpriced}` : ""}`,
       by: g.user,
-      payload: { invoiceId: created.id, kind, number: issued.number, packingListId, lines: lines.length, grandTotal: snapshot.grandTotal, overridden: issued.overridden, unpriced },
+      payload: {
+        invoiceId: created.id, kind, number: issued.number, packingListId, lines: lines.length,
+        grandTotal: snapshot.grandTotal, overridden: issued.overridden, unpriced,
+        gstin: snapshot.gstin, bankKey: snapshot.bankKey,
+      },
     });
 
     const row = await db.commercialInvoice.findUnique({ where: { id: created.id }, include: INVOICE_INCLUDE });

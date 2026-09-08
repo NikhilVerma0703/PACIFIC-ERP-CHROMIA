@@ -15,17 +15,25 @@
 //   └───────────────────────────┴────────────────────────────────────────┘
 //   Material Description │ HSN │ NO OF Slabs │ Thickness │ Quantity │ Rate │ Amount
 //     (a group heading row "Artificial Quartz Slabs" above the lines)
-//   Delivery / Payment terms │ Total, IGST 18% (or CGST 9 + SGST 9),
+//   Delivery / Payment terms │ Total, IGST 18% (always, since answer 22 —
+//                            │ the CGST 9 + SGST 9 rows stay for the switch),
 //                            │ Round Off, Grand Total
 //   Rs. <amount in words>
 //   Time of removal of goods :        Vehicle No : ...
 //   declaration · For <company> / (Authorised Signatory)
 //   Goods once sold will not be taken back or exchanged.        E. & O. E
 //
-// Renders ONLY from the frozen snapshot — never from the live order.
+// Renders ONLY from the frozen snapshot — never from the live order. The
+// snapshot says which GSTIN it was issued under and which bank it prints
+// (answers 21, 23); a row frozen before those existed reads with its defaults.
 import { buildPdf } from "@/lib/sales/pdf/common";
-import { fmtIndian, fmtRateIndian, amountColumnDp, datedRef, DTA_GROUP_HEADING } from "@/lib/commercial/invoice-rules";
+import {
+  fmtIndian, fmtRateIndian, amountColumnDp, datedRef, datedLines, gstinWithLabel, snapshotExtras,
+  DTA_GROUP_HEADING, type InvoiceSnapshotExtras,
+} from "@/lib/commercial/invoice-rules";
 import type { InvoiceSnapshot, Party } from "@/lib/commercial/types";
+
+type Snap = InvoiceSnapshot & Partial<InvoiceSnapshotExtras>;
 
 const FS = 7.5;                 // the reference sheet is dense; 7.5pt fits its 7 columns
 const GREY = "#f2f2f2";
@@ -42,12 +50,13 @@ function label(text: unknown, opts: Record<string, any> = {}): any {
   return cell(text, { bold: true, ...opts });
 }
 
-/** A framed key/value stack — the way the reference prints its header blocks. */
-function kv(rows: Array<[string, string]>, widths: [string | number, string | number] = ["38%", "*"]): any {
+/** A framed key/value stack — the way the reference prints its header blocks.
+ *  A value may be a ready-made pdfmake node (a stack) instead of text. */
+function kv(rows: Array<[string, string | Record<string, any>]>, widths: [string | number, string | number] = ["38%", "*"]): any {
   return {
     table: {
       widths,
-      body: rows.map(([k, v]) => [cell(k, { bold: true }), cell(v)]),
+      body: rows.map(([k, v]) => [cell(k, { bold: true }), typeof v === "string" ? cell(v) : v]),
     },
     layout: "noBorders",
   };
@@ -121,9 +130,10 @@ function totalsRows(s: InvoiceSnapshot, dp: 2 | 3): Array<[string, string]> {
   return rows;
 }
 
-export function dtaInvoiceDocDef(s: InvoiceSnapshot): any {
+export function dtaInvoiceDocDef(s: Snap): any {
   const c = s.company;
   const b = s.bank;
+  const x = snapshotExtras(s);
   const hsn = s.lines.find((l) => l.hsn)?.hsn ?? c.hsnQuartz;
   const dp = amountColumnDp(s.lines, s.subtotal);
 
@@ -132,12 +142,16 @@ export function dtaInvoiceDocDef(s: InvoiceSnapshot): any {
     ...c.addressLines.map((l) => ({ text: l, fontSize: FS })),
     { text: " ", fontSize: 3 },
     { text: `TAN NO : ${t(c.tan)}`, fontSize: FS, bold: true },
-    { text: `GSTIN NO : ${t(c.gstin)}`, fontSize: FS, bold: true },
+    // the chosen registration, with the sister company's name beside it when
+    // it is not the company's own (answer 21)
+    { text: `GSTIN NO : ${gstinWithLabel(x.gstin, x.gstinLabel)}`, fontSize: FS, bold: true },
     { text: `PAN : ${t(c.pan)}`, fontSize: FS },
   ];
 
+  // the date DIRECTLY UNDER the number (answer 6)
+  const numberStack = { stack: datedLines(s.number, s.date).map((l, i) => ({ text: l, fontSize: FS, bold: i === 0 })), margin: [2, 1.5, 2, 1.5] };
   const rightBlock = kv([
-    ["DTA Invoice No. :", datedRef(s.number, s.date)],
+    ["DTA Invoice No. :", numberStack],
     ["PI No. & Date :", datedRef(s.piNumber, s.piDate)],
     ["Sales Person :", t(s.salesPerson)],
     ["Commodity :", t(s.commodity)],
@@ -271,6 +285,6 @@ export function dtaInvoiceDocDef(s: InvoiceSnapshot): any {
   };
 }
 
-export async function generateDtaInvoicePdf(snapshot: InvoiceSnapshot): Promise<Buffer> {
+export async function generateDtaInvoicePdf(snapshot: Snap): Promise<Buffer> {
   return buildPdf(dtaInvoiceDocDef(snapshot));
 }

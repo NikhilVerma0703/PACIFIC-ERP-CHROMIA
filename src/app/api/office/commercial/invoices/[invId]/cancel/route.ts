@@ -1,8 +1,11 @@
 // POST /api/office/commercial/invoices/[invId]/cancel — { reason }
 //
-// A cancelled invoice is kept, not deleted: the number was taken from the
+// Answer 24's rule for the PI holds for the invoice too: cancellation is an
+// admin's or the Commercial Manager's act (commercialGate("cancel")). A
+// cancelled invoice is kept, not deleted: the number was taken from the
 // counter and the register has to show what happened to it. The reason is
-// required, and it lands on the order's log.
+// required, and it lands on the order's log. Once cancelled, the order may
+// take a new invoice (answer 18).
 import { commercialGate } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain, str } from "@/lib/commercial/http";
 import { logOrderEvent } from "@/lib/commercial/events";
@@ -13,7 +16,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function POST(req: Request, { params }: { params: Promise<{ invId: string }> }) {
-  const g = await commercialGate("write");
+  const g = await commercialGate("cancel");
   if (!g.ok) return deny(g);
   return handle(async () => {
     const id = await invoiceIdOf(params);

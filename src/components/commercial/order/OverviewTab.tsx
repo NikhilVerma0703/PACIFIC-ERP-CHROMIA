@@ -6,14 +6,21 @@
 // paper one is the rule here: where a detail is missing, Commercial goes back
 // to the sender for it. So the outstanding points are highlighted rather than
 // hidden, and the count of them sits next to the Check and Approve buttons —
-// approving with points open is allowed (nothing in this module is gated), but
-// it is never accidental.
+// approving with points open is allowed, but it is never accidental.
+//
+// Two signatures, two people (answer 10): Commercial PREPARES the sheet and
+// marks it checked; the Commercial Manager (or an admin) APPROVES it, and the
+// final invoice waits for that approval. A Commercial login sees the Approve
+// button, disabled, with the reason — the button is not hidden, because "why
+// can't I approve" is a question the screen should answer.
 import { useEffect, useMemo, useState } from "react";
 import { Card, Badge, Empty } from "@/components/ui";
 import { patchJson } from "@/lib/fab/postJson";
+import { readJson } from "@/lib/readJson";
 import type { OrderTabProps, Party } from "@/lib/commercial/types";
 import { partiesFromClient, clientDefaults, type ClientLike } from "@/lib/commercial/orders-rules";
 import { ClientPicker, type ClientRow } from "../orders/ClientPicker";
+import { ReceiptsCard } from "../orders/ReceiptsCard";
 import {
   INPUT, BTN, BTN_PRIMARY, ErrorNote, OkNote, Field, TextField, AreaField, SelectField, PartyEditor,
   KIND_OPTIONS, PO_EVIDENCE_OPTIONS, partyToDraft, draftToParty, dateInputValue, dmy,
@@ -89,7 +96,7 @@ function partyDraftsOf(o: OrderTabProps["order"]): PartyDrafts {
 
 export default function OverviewTab({ order, actions, refresh }: OrderTabProps) {
   const mayWrite = actions.includes("write");
-  const mayApprove = actions.includes("write");     // canApprove() on the server refuses the dispatch checker
+  const mayApprove = actions.includes("approve");   // ADMIN / COMMERCIAL_MANAGER (canApprove, access-rules)
   const base = useMemo(() => draftOf(order), [order]);
   const baseParties = useMemo(() => partyDraftsOf(order), [order]);
 
@@ -261,12 +268,16 @@ export default function OverviewTab({ order, actions, refresh }: OrderTabProps) 
         </div>
       </Card>
 
+      <ReceiptsCard order={order} actions={actions} refresh={refresh} />
+
       <ChecklistCard order={order} refresh={refresh} mayWrite={mayWrite} mayApprove={mayApprove} />
     </div>
   );
 }
 
 // ───────────────────────────── the SOP checklist ─────────────────────────────
+
+const APPROVE_HINT = "Only the Commercial Manager or an admin approves";
 
 function ChecklistCard({ order, refresh, mayWrite, mayApprove }: {
   order: OrderTabProps["order"]; refresh: () => void; mayWrite: boolean; mayApprove: boolean;
@@ -276,8 +287,21 @@ function ChecklistCard({ order, refresh, mayWrite, mayApprove }: {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  // The signed-in name, for the "Prepared by" default before the sheet has
+  // been checked. The order detail does not carry the viewer, so the
+  // checklist's own GET says who is looking.
+  const [viewer, setViewer] = useState<string | null>(null);
 
   useEffect(() => { setDraft(order.checklist ?? []); }, [order.checklist]);
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const r = await fetch(`/api/office/commercial/orders/${order.id}/checklist`, { cache: "no-store" });
+      const res = await readJson<{ viewer?: { name: string | null } }>(r);
+      if (live && res.ok && res.data?.viewer) setViewer(res.data.viewer.name ?? null);
+    })();
+    return () => { live = false; };
+  }, [order.id]);
 
   const outstanding = draft.filter((i) => !i.ok).length;
   const dirty = JSON.stringify(draft) !== JSON.stringify(list);
@@ -318,27 +342,29 @@ function ChecklistCard({ order, refresh, mayWrite, mayApprove }: {
               {busy === "check" ? "Stamping…" : order.checkedAt ? "Check again" : "Mark checked"}
             </button>
           )}
-          {mayApprove && (
-            <button type="button" className={BTN} disabled={busy !== null} onClick={() => void send({ approve: true }, "approve")}>
+          {(mayWrite || mayApprove) && (
+            <button type="button" className={BTN} disabled={!mayApprove || busy !== null} title={mayApprove ? undefined : APPROVE_HINT}
+              onClick={() => void send({ approve: true }, "approve")}>
               {busy === "approve" ? "Stamping…" : order.approvedAt ? "Approve again" : "Approve"}
             </button>
           )}
         </div>
       </div>
+      {mayWrite && !mayApprove && <p className="-mt-2 mb-3 text-right text-xs text-amber-700">{APPROVE_HINT}.</p>}
 
       {error && <div className="mb-3"><ErrorNote>{error}</ErrorNote></div>}
       {saved && <div className="mb-3"><OkNote>{saved}</OkNote></div>}
 
       <div className="mb-4 flex flex-wrap gap-3 text-sm">
         <div className="rounded-lg border border-gray-200 px-3 py-2">
-          <span className="text-xs uppercase tracking-wide text-gray-400">Checked by</span>
-          <div className="font-medium text-gray-900">{order.checkedByName ?? "—"}</div>
-          <div className="text-xs text-gray-400">{order.checkedAt ? dmy(order.checkedAt) : "not yet checked"}</div>
+          <span className="text-xs uppercase tracking-wide text-gray-400">Prepared by</span>
+          <div className="font-medium text-gray-900">{order.checkedByName ?? viewer ?? "—"}</div>
+          <div className="text-xs text-gray-400">{order.checkedAt ? `checked ${dmy(order.checkedAt)}` : viewer ? "you — stamped on Mark checked" : "not yet checked"}</div>
         </div>
         <div className="rounded-lg border border-gray-200 px-3 py-2">
-          <span className="text-xs uppercase tracking-wide text-gray-400">Approved by</span>
+          <span className="text-xs uppercase tracking-wide text-gray-400">Approved by (Commercial Manager)</span>
           <div className="font-medium text-gray-900">{order.approvedByName ?? "—"}</div>
-          <div className="text-xs text-gray-400">{order.approvedAt ? dmy(order.approvedAt) : "not yet approved"}</div>
+          <div className="text-xs text-gray-400">{order.approvedAt ? dmy(order.approvedAt) : "not yet approved — the final invoice waits for this"}</div>
         </div>
       </div>
 

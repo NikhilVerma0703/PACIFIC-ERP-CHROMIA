@@ -1,24 +1,32 @@
 "use client";
-// The order workspace's PI tab: every proforma revision of this order, and the
-// five things anyone does with one — draft a new revision from the order as it
-// stands, edit the draft's shipping facts, issue it, record the customer's
-// acceptance, or withdraw it. The PDF opens in a new tab straight from the
-// route, so what the customer gets is what the server rendered.
+// The order workspace's PI tab: every proforma this order has had — the live
+// one, the drafts, and the cancelled ones that a revision replaced — and the
+// things anyone does with one: build a draft from the order as it stands,
+// edit the draft's shipping facts and choose its bank and GSTIN, issue it,
+// revise an issued one (a NEW number; the old stays live until the new one is
+// issued, then is cancelled — answer 24), record the customer's acceptance,
+// or (manager / admin) cancel it by hand.
+// The PDF opens in a new tab straight from the route, so what the customer
+// gets is what the server rendered.
 //
-// Revisions come from the order detail (DESIGN.md §5 already includes them,
-// snapshots and all), so a write here only has to call refresh().
+// PIs come from the order detail (DESIGN.md §5 includes them, snapshots and
+// all), so a write here only has to call refresh().
 //
-// Nothing on this screen decides anything: the label, the badge tone, the
-// warnings and the printed date all come from lib/commercial/proforma-rules,
+// Nothing on this screen decides anything: the badge tone, the warnings, the
+// bank default and the printed date all come from lib/commercial/proforma-rules,
 // which the PI routes and the PDF use too and tests/commercialProforma.test.ts
-// runs.
-import { useMemo, useState } from "react";
+// runs. The bank and GSTIN options come from GET /proformas/choices (the
+// settings route itself is the admin's, and the clerk issuing a PI is not).
+import { useEffect, useMemo, useState } from "react";
 import { Card, Badge, Empty } from "@/components/ui";
 import { postJson, patchJson } from "@/lib/fab/postJson";
-import { statusTone, piLabel, orderWarnings, formatPiDate } from "@/lib/commercial/proforma-rules";
+import { readJson } from "@/lib/readJson";
+import { statusTone, orderWarnings, formatPiDate, defaultBankKey, revisionDraftFor, BANK_KEYS, type BankKey, type PiChoices } from "@/lib/commercial/proforma-rules";
+import type { GstinChoice } from "@/lib/commercial/settings-defaults";
 import type { OrderTabProps, ProformaDto, ProformaSnapshot } from "@/lib/commercial/types";
+import { isLiveHold } from "@/lib/commercial/orders-rules";
 import {
-  BTN, BTN_PRIMARY, BTN_DANGER, ErrorNote, OkNote, TextField, AreaField,
+  BTN, BTN_PRIMARY, BTN_DANGER, ErrorNote, OkNote, TextField, AreaField, SelectField,
   dmy, dateInputValue, money, qty,
 } from "../orders/fields";
 
@@ -29,9 +37,11 @@ interface DraftForm {
   netWeight: string;
   discount: string;
   notes: string;
+  bankKey: BankKey;
+  gstinKey: string;
 }
 
-function formOf(s: ProformaSnapshot | null | undefined): DraftForm {
+function formOf(s: ProformaSnapshot | null | undefined, kind: string, ownGstin: string): DraftForm {
   return {
     deliveryDate: dateInputValue(s?.deliveryDate),
     vessel: s?.vessel ?? "",
@@ -39,19 +49,46 @@ function formOf(s: ProformaSnapshot | null | undefined): DraftForm {
     netWeight: s?.netWeight ?? "",
     discount: s?.discount ? String(s.discount) : "",
     notes: s?.notes ?? "",
+    bankKey: s?.bankKey ?? defaultBankKey(kind),
+    gstinKey: s?.gstinKey ?? s?.company?.gstin ?? ownGstin,
   };
 }
 
 export default function PiTab({ order, actions, refresh }: OrderTabProps) {
   const canWrite = actions.includes("write");
+  const canCancelPi = actions.includes("cancel");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
-  const [form, setForm] = useState<DraftForm>(formOf(null));
+  const [form, setForm] = useState<DraftForm>(formOf(null, order.kind, ""));
   const [open, setOpen] = useState<string | null>(null);
+  const [banks, setBanks] = useState<Array<{ value: string; label: string }>>(
+    BANK_KEYS.map((k) => ({ value: k, label: k === "export" ? "Export account" : "Domestic account" })),
+  );
+  const [gstins, setGstins] = useState<GstinChoice[]>([]);
+  const [validityDays, setValidityDays] = useState<number | null>(null);
 
-  const revisions = useMemo(
+  // The two dropdowns' options. Until (or unless) they load, the bank list
+  // keeps its two fixed keys — the snapshot needs a key, not a name — and the
+  // GSTIN list offers only what the draft already carries.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await readJson<PiChoices>(await fetch("/api/office/commercial/proformas/choices", { cache: "no-store" }));
+        if (!alive || !res.ok || !res.data) return;
+        setBanks(res.data.banks.map((b) => ({ value: b.key, label: b.label })));
+        setGstins(res.data.gstins);
+        setValidityDays(res.data.piValidityDays);
+      } catch {
+        // the fallbacks above stand
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const proformas = useMemo(
     () => [...(order.proformas ?? [])].sort((a, b) => b.revision - a.revision),
     [order.proformas],
   );
@@ -59,7 +96,12 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
     () => orderWarnings({ items: order.items, consignee: order.consignee, client: order.client }),
     [order.items, order.consignee, order.client],
   );
-  const live = revisions.find((p) => p.status === "ISSUED" || p.status === "ACCEPTED") ?? null;
+  const live = proformas.find((p) => p.status === "ISSUED" || p.status === "ACCEPTED") ?? null;
+  // The stock check stands only while a hold does. Same rule as the server
+  // gate (loadStageFacts + canEnter), so the tab never offers an issue the
+  // route will refuse: an ACTIVE hold past its expiry is not a live hold, even
+  // before the sweep marks it EXPIRED (answers 1, 11).
+  const stockChecked = Boolean(order.stockCheckedAt) && (order.holds ?? []).some((h) => isLiveHold(h, new Date()));
 
   async function run(key: string, fn: () => Promise<{ ok: boolean; error: string | null }>, ok: string): Promise<boolean> {
     setBusy(key); setError(null); setDone(null);
@@ -72,21 +114,31 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
   }
 
   const createDraft = () =>
-    run("create", () => postJson(`/api/office/commercial/orders/${order.id}/proformas`, {}), "Draft revision built from the order.");
+    run("create", () => postJson(`/api/office/commercial/orders/${order.id}/proformas`, {}), "Draft PI built from the order, under its own number.");
 
   const issue = (pi: ProformaDto) =>
     run(`issue:${pi.id}`, () => postJson(`/api/office/commercial/proformas/${pi.id}/issue`, {}),
-      `${piLabel(pi.number, pi.revision)} issued — any earlier live revision is now superseded.`);
+      `${pi.number} issued${live && live.id !== pi.id ? ` — ${live.number} is cancelled as revised` : ""}.`);
 
   const accept = (pi: ProformaDto) =>
     run(`accept:${pi.id}`, () => postJson(`/api/office/commercial/proformas/${pi.id}/accept`, {}),
-      `${piLabel(pi.number, pi.revision)} recorded as accepted by the customer.`);
+      `${pi.number} recorded as accepted by the customer.`);
+
+  // Answer 24 as decided: the new draft gets a NEW number and names the PI it
+  // revises; that PI stays live until the draft is issued, and is cancelled
+  // then, in the same transaction — never here.
+  function revise(pi: ProformaDto) {
+    const reason = window.prompt(`Revise ${pi.number}? A new draft gets a NEW number; ${pi.number} stays live until the new one is issued, then is cancelled. Why?`, "");
+    if (reason === null) return;
+    void run(`revise:${pi.id}`, () => postJson(`/api/office/commercial/proformas/${pi.id}/revise`, { reason }),
+      `A draft revising ${pi.number} is ready under a new number — issue it to retire ${pi.number}.`);
+  }
 
   function cancel(pi: ProformaDto) {
-    const reason = window.prompt(`Cancel ${piLabel(pi.number, pi.revision)} — why?`, "");
+    const reason = window.prompt(`Cancel ${pi.number} — why?`, "");
     if (reason === null) return;
     void run(`cancel:${pi.id}`, () => postJson(`/api/office/commercial/proformas/${pi.id}/cancel`, { reason }),
-      `${piLabel(pi.number, pi.revision)} cancelled.`);
+      `${pi.number} cancelled.`);
   }
 
   async function saveDraft(pi: ProformaDto) {
@@ -97,16 +149,22 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
       netWeight: form.netWeight || null,
       discount: form.discount.trim() === "" ? 0 : Number(form.discount),
       notes: form.notes || null,
+      bankKey: form.bankKey,
+      gstinKey: form.gstinKey,
     }), "Draft saved.");
     if (ok) setEditing(null);
   }
 
   function startEdit(pi: ProformaDto) {
-    setForm(formOf(pi.snapshot));
+    setForm(formOf(pi.snapshot, order.kind, gstins[0]?.gstin ?? ""));
     setEditing(pi.id);
     setOpen(pi.id);
     setError(null);
   }
+
+  const gstinOptions = gstins.length
+    ? gstins.map((c) => ({ value: c.gstin, label: `${c.gstin} — ${c.label}` }))
+    : [{ value: form.gstinKey, label: form.gstinKey || "Company GSTIN" }];
 
   return (
     <div className="flex flex-col gap-4">
@@ -115,14 +173,20 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
           <ul className="list-disc space-y-1 pl-5">{warnings.map((w) => <li key={w}>{w}</li>)}</ul>
         </div>
       )}
+      {!stockChecked && proformas.some((p) => p.status === "DRAFT") && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Stock check first: a PI is issued only once a hold is placed on this order and still live.
+        </div>
+      )}
       <ErrorNote>{error}</ErrorNote>
       <OkNote>{done}</OkNote>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="max-w-2xl text-sm text-gray-500">
-          The proforma carries the order&rsquo;s own number, <span className="font-medium text-gray-700">{order.number}</span>.
-          Each rebuild is a new revision and only one may be live at a time — issuing supersedes the last.
-          {live ? ` ${piLabel(live.number, live.revision)} is live.` : ""}
+          Each PI has its own number from the proforma counter; the order stays <span className="font-medium text-gray-700">{order.number}</span>.
+          A revision is a new number; the old PI stays live until the new one is issued, then is cancelled. The advance is asked for on the PI and recorded as a receipt on the order.
+          {validityDays === null ? "" : validityDays > 0 ? ` A PI is valid for ${validityDays} days from issue.` : " A PI does not expire."}
+          {live ? ` ${live.number} is live.` : ""}
         </p>
         {canWrite && (
           <button className={BTN_PRIMARY} disabled={busy === "create"} onClick={() => void createDraft()}>
@@ -131,26 +195,35 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
         )}
       </div>
 
-      {revisions.length === 0 ? (
+      {proformas.length === 0 ? (
         <Empty>No proforma invoice yet. Build a draft from the order&rsquo;s items, check it, then issue it.</Empty>
       ) : (
         <div className="flex flex-col gap-3">
-          {revisions.map((pi) => {
-            const s = pi.snapshot;
+          {proformas.map((pi) => {
+            const s: ProformaSnapshot | null = pi.snapshot ?? null;
             const isOpen = open === pi.id;
             const isEditing = editing === pi.id;
+            const cancelledAt = pi.cancelledAt ?? null;
+            const cancelReason = pi.cancelReason ?? null;
+            // A draft already revising this PI: the route would refuse a second
+            // (409), so the button says so instead of offering one.
+            const pendingRevision = (pi.status === "ISSUED" || pi.status === "ACCEPTED") ? revisionDraftFor(proformas, pi.id) : null;
             return (
               <Card key={pi.id}>
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-base font-semibold text-gray-900">{piLabel(pi.number, pi.revision)}</span>
+                      <span className="text-base font-semibold text-gray-900">{pi.number}</span>
                       <Badge tone={statusTone(pi.status)}>{pi.status.toLowerCase()}</Badge>
                       {s?.kind && <span className="text-xs uppercase tracking-wide text-gray-400">{s.kind}</span>}
                     </div>
+                    <div className="text-sm text-gray-600">{formatPiDate(s?.date) || "—"}</div>
                     <div className="mt-1 text-xs text-gray-500">
-                      Dated {formatPiDate(s?.date) || "—"} · Issued {dmy(pi.issuedAt)} · Valid until {dmy(pi.validUntil)} · Accepted {dmy(pi.acceptedAt)}
-                      {pi.supersededAt ? ` · Superseded ${dmy(pi.supersededAt)}` : ""}
+                      Issued {dmy(pi.issuedAt)}
+                      {pi.validUntil ? ` · Valid until ${dmy(pi.validUntil)}` : ""}
+                      {pi.acceptedAt ? ` · Accepted ${dmy(pi.acceptedAt)}` : ""}
+                      {cancelledAt ? ` · Cancelled ${dmy(cancelledAt)}${cancelReason ? ` (${cancelReason})` : ""}` : ""}
+                      {s?.revises?.number ? ` · Revises ${s.revises.number}` : ""}
                     </div>
                   </div>
                   <div className="text-right">
@@ -177,7 +250,16 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
                       {busy === `accept:${pi.id}` ? "Saving…" : "Customer accepted"}
                     </button>
                   )}
-                  {canWrite && (pi.status === "DRAFT" || pi.status === "ISSUED" || pi.status === "ACCEPTED") && (
+                  {canWrite && (pi.status === "ISSUED" || pi.status === "ACCEPTED") && (
+                    pendingRevision ? (
+                      <span className="self-center text-xs text-gray-500">Revision {pendingRevision.number} in draft — issue it to retire this PI</span>
+                    ) : (
+                      <button className={BTN} disabled={busy === `revise:${pi.id}`} onClick={() => revise(pi)}>
+                        {busy === `revise:${pi.id}` ? "Revising…" : "Revise (new number)"}
+                      </button>
+                    )
+                  )}
+                  {canCancelPi && (pi.status === "DRAFT" || pi.status === "ISSUED" || pi.status === "ACCEPTED") && (
                     <button className={BTN_DANGER} disabled={busy === `cancel:${pi.id}`} onClick={() => cancel(pi)}>Cancel</button>
                   )}
                 </div>
@@ -185,6 +267,11 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
                 {isEditing && (
                   <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50/60 p-4">
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      <SelectField label="Bank on the PI" value={form.bankKey} options={banks}
+                        onChange={(v) => setForm({ ...form, bankKey: v === "domestic" ? "domestic" : "export" })}
+                        hint="Kotak on export, ICICI on domestic by default." />
+                      <SelectField label="GSTIN on the PI" value={form.gstinKey} options={gstinOptions}
+                        onChange={(v) => setForm({ ...form, gstinKey: v })} hint="Defaults to the company's own." />
                       <TextField label="Delivery date" type="date" value={form.deliveryDate} onChange={(v) => setForm({ ...form, deliveryDate: v })} />
                       <TextField label="Vessel / flight no" value={form.vessel} onChange={(v) => setForm({ ...form, vessel: v })} />
                       <TextField label={`Discount (${pi.currency})`} value={form.discount} onChange={(v) => setForm({ ...form, discount: v })}
@@ -201,7 +288,7 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
                       <button className={BTN} onClick={() => setEditing(null)}>Discard changes</button>
                     </div>
                     <p className="mt-2 text-xs text-gray-400">
-                      Parties, lines and rates are frozen from the order the moment a revision is built — to change those, edit the order and build a new revision.
+                      Parties, lines and rates are frozen from the order the moment a draft is built — to change those, edit the order and build a new draft (or revise the issued PI).
                     </p>
                   </div>
                 )}
@@ -217,7 +304,9 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
                       <div><span className="text-gray-400">Port of discharge: </span>{s.portOfDischarge || "—"}</div>
                       <div><span className="text-gray-400">Vessel: </span>{s.vessel || "—"}</div>
                       <div><span className="text-gray-400">Gross / net: </span>{s.grossWeight || "—"} / {s.netWeight || "—"}</div>
-                      <div><span className="text-gray-400">Bank: </span>{s.bank?.name || "—"}</div>
+                      <div><span className="text-gray-400">Bank: </span>{s.bank?.name || "—"}{s.bankKey ? ` (${s.bankKey})` : ""}</div>
+                      <div><span className="text-gray-400">GSTIN: </span>{s.company?.gstin || "—"}</div>
+                      <div><span className="text-gray-400">Valid until: </span>{s.validUntil ? formatPiDate(s.validUntil) : "—"}</div>
                     </div>
                     <div className="overflow-x-auto">
                       <table className="min-w-full text-sm">

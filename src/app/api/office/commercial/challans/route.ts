@@ -87,7 +87,7 @@ export async function POST(req: Request) {
     }
 
     if (orderId) {
-      await logOrderEvent(orderId, "note", {
+      await logOrderEvent(orderId, "challan_created", {
         note: `Delivery challan ${issued.number} drafted${issued.overridden ? " (number typed by hand)" : ""}`,
         by: g.user,
         payload: { challanId: created.id, number: issued.number, lines: totals.items.length, totalAmount: totals.totalAmount },

@@ -54,8 +54,13 @@ export async function POST(req: Request, { params }: Ctx) {
     // for the same reason the GET says so: a status message would confirm a
     // DRAFT list to a login that may not know it is there.
     if (!checkerMaySee(list.status)) fail(404, "Packing list not found");
+    // A VERIFIED or FINAL list takes a late verdict slab by slab (answer 30,
+    // the PATCH beside this one) but is never concluded twice: the conclusion
+    // of a list at the loading bay is the dispatch route's refusal, not a
+    // second rejection that would unpack the container.
     if (!canVerify(list.status)) {
-      fail(409, `${list.number} is ${list.status === "VERIFIED" ? "already verified" : "already rejected"} — it is not waiting for a check`);
+      const state = list.status === "VERIFIED" ? "already verified" : list.status === "FINAL" ? "already final" : "already rejected";
+      fail(409, `${list.number} is ${state} — it is not waiting for a check`);
     }
     const body = await readBody<{ note?: unknown }>(req);
     const note = str(body.note);

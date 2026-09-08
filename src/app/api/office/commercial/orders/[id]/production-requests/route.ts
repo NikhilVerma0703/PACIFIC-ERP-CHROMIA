@@ -4,16 +4,20 @@
 // What happens when the stock check comes up short: the shortfall goes into the
 // Production Planning queue at the back (priority = one past the last request
 // still open), the order gets an event, and notifyShortage() tells whichever
-// channel Settings has switched on — none, by default, because the owner wants
-// shortages to land on the planning page before anyone is messaged.
+// channel Settings has switched on (answer 13: Varun's private Telegram and a
+// mail to vmundra, both degrading silently until their credentials exist).
+//
+// The request is born with its plan (answer 13): plannedSlabs = the shortfall,
+// shade = the design master's, cleaningHours = the queue rule against the row
+// that will run before it. The planner edits those on the planning page.
 import { commercialGate, actorStamp } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain, paramId, str, int } from "@/lib/commercial/http";
 import { logOrderEvent } from "@/lib/commercial/events";
 import { notifyShortage } from "@/lib/commercial/notify";
 import { canonThickness } from "@/lib/thickness";
-import { shortfall, nextPriority, parseStatusFilter, historyOnly } from "@/lib/commercial/production-rules";
+import { shortfall, nextPriority, parseStatusFilter, historyOnly, initialPlan, lastInChain } from "@/lib/commercial/production-rules";
 import { pageArgs } from "@/lib/commercial/holds-rules";
-import { db, REQUEST_INCLUDE, loadOrderForRequest } from "../../../production-requests/_lib";
+import { db, REQUEST_INCLUDE, loadOrderForRequest, shadeForDesign, loadChainRows, loadPlanning } from "../../../production-requests/_lib";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -74,6 +78,16 @@ export async function POST(req: Request, { params }: Ctx) {
     const priority = nextPriority(open);
     const stamp = actorStamp(g.user);
 
+    // The row before this one is the last QUEUED / SCHEDULED request by
+    // priority — or, when the queue is empty, the row the plant is running
+    // now (else the last one it produced). Answer 13's case: a DARK row in
+    // production and a LIGHT request raised behind it is the 6-hour clean,
+    // so the running row must count as the predecessor even though its own
+    // figure is never rewritten (production-rules.lastInChain).
+    const [shade, chain, planning] = await Promise.all([shadeForDesign(design), loadChainRows(), loadPlanning()]);
+    const prev = lastInChain(chain);
+    const plan = initialPlan(qtyShort, shade, prev?.shade ?? null, planning);
+
     const row = await db.commercialProductionRequest.create({
       data: {
         orderId: id,
@@ -84,6 +98,9 @@ export async function POST(req: Request, { params }: Ctx) {
         qtyRequired, qtyAvailable, qtyShort,
         priority,
         status: "QUEUED",
+        plannedSlabs: plan.plannedSlabs,
+        shade: plan.shade,
+        cleaningHours: plan.cleaningHours,
         // notes is Commercial's ("ship by the 20th"); the cleaning note and the
         // planned batch are the planner's and are set on the queue, not here.
         notes: str(body.notes),
@@ -95,7 +112,7 @@ export async function POST(req: Request, { params }: Ctx) {
     await logOrderEvent(id, "production_requested", {
       note: `${qtyShort} slab(s) of ${design} ${thickness} requested from production (needed ${qtyRequired}, ${qtyAvailable} in stock)`,
       by: g.user,
-      payload: { requestId: row.id, design, thickness, qtyRequired, qtyAvailable, qtyShort, priority },
+      payload: { requestId: row.id, design, thickness, qtyRequired, qtyAvailable, qtyShort, priority, plannedSlabs: plan.plannedSlabs, shade: plan.shade, cleaningHours: plan.cleaningHours },
     });
 
     const client = order.client as { name?: string } | null;

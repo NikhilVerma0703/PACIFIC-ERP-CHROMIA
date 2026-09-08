@@ -25,6 +25,7 @@ import {
   buildExportWorkbookWithLayout, loadTemplate, workbookFileName, crateGroups, slabWeightKg,
   TEMPLATE_RELATIVE_PATH,
 } from "../src/lib/commercial/export-workbook/build.ts";
+import { EXPORT_ROOT_GSTIN_KEY, EXPORT_ROOT_BANK_KEY } from "../src/lib/commercial/invoice-rules.ts";
 
 const TEMPLATE = path.join(process.cwd(), TEMPLATE_RELATIVE_PATH);
 
@@ -408,6 +409,17 @@ test("every ROOT_CELLS entry names a real sheet and a cell that is NOT a formula
   assert.ok(ROOT_CELLS.length >= 130, `only ${ROOT_CELLS.length} root cells mapped`);
 });
 
+test("the two registration cells the order screen watches are still on the map", () => {
+  // invoice-rules.exportRootOverrides names these two keys as text (the order
+  // screen must not import 1,500 lines of cell map into the browser bundle) and
+  // tells the clerk which of them the SAVED form overrode. Rename a key here
+  // and that warning would go quietly silent, so it is pinned from both ends.
+  assert.equal(rootCell(EXPORT_ROOT_GSTIN_KEY)?.cell, "J8", "the exporter GSTIN line the invoice's registration lands on");
+  assert.equal(rootCell(EXPORT_ROOT_BANK_KEY)?.cell, "G27", "the bank name the invoice's chosen account lands on");
+  assert.ok(ROOT_KEYS.includes(EXPORT_ROOT_GSTIN_KEY));
+  assert.ok(ROOT_KEYS.includes(EXPORT_ROOT_BANK_KEY));
+});
+
 test("root keys are unique, and so is every (sheet, cell) pair", () => {
   assert.equal(new Set(ROOT_KEYS).size, ROOT_KEYS.length, "duplicate root key");
   const addrs = ROOT_CELLS.map((r) => `${r.sheet}!${r.cell}`);
@@ -585,6 +597,89 @@ test("DEFAULT_ROOTS returns exactly one value per root cell, derived from the ER
   assert.equal(roots.sopHasEmail, "N/A");
 });
 
+test("DEFAULT_ROOTS prints the GSTIN the invoice chose (answer 21), labelled when it is not PESPL's", () => {
+  // No choice recorded (a snapshot frozen before the dropdown existed) → the company's own, unlabelled.
+  const own = defaultRoots();
+  assert.equal(own.exporterGstinText, "GSTIN NO: 33AALCP2750N1Z3");
+  assert.equal(own.plGstin, "GSTIN NO: 33AALCP2750N1Z3");
+  assert.equal(own.custPlGstin, "GSTIN NO: 33AALCP2750N1Z3");
+  assert.equal(own.c1Gstin, "33AALCP2750N1Z3");
+
+  // The sister company's, chosen on the invoice: every GSTIN heading carries
+  // it WITH its label, where the old sheets carried PGI's name; the Annexure
+  // C1 form field takes the bare registration.
+  const pgi = DEFAULT_ROOTS({ ...SNAPSHOT, gstin: "33AAFCP5374A1ZQ", gstinLabel: "Pacific Granites (India) Pvt Ltd" }, PACKING, ORDER, SETTINGS);
+  assert.equal(pgi.exporterGstinText, "GSTIN NO: 33AAFCP5374A1ZQ (Pacific Granites (India) Pvt Ltd)");
+  assert.equal(pgi.plGstin, "GSTIN NO: 33AAFCP5374A1ZQ (Pacific Granites (India) Pvt Ltd)");
+  assert.equal(pgi.custPlGstin, "GSTIN NO: 33AAFCP5374A1ZQ (Pacific Granites (India) Pvt Ltd)");
+  assert.equal(pgi.c1Gstin, "33AAFCP5374A1ZQ");
+  assert.equal(pgi.exporterName, "Pacific Engineered Surfaces Private Limited", "the exporter's name does not change — only the registration under it");
+
+  // The snapshot's company block, when that is all a stored row has.
+  const viaCompany = DEFAULT_ROOTS({ ...SNAPSHOT, company: { gstin: "33AAFCP5374A1ZQ" } }, PACKING, ORDER, SETTINGS);
+  assert.equal(viaCompany.exporterGstinText, "GSTIN NO: 33AAFCP5374A1ZQ");
+  assert.equal(viaCompany.c1Gstin, "33AAFCP5374A1ZQ");
+});
+
+test("DEFAULT_ROOTS prints the bank the invoice chose (answer 23)", () => {
+  const withDomestic = {
+    ...SETTINGS,
+    banks: { ...SETTINGS.banks, domestic: { name: "ICICI Bank", address: "5, PT Colony, R.T Nagar Main Road, Bangalore - 560032", accountNo: "020405012473", swift: "ICICINBBCTS" } },
+  };
+  // Default: Kotak, the export account.
+  const kotak = DEFAULT_ROOTS(SNAPSHOT, PACKING, ORDER, withDomestic);
+  assert.equal(kotak.bankName, "Kotak Mahindra Bank Limited");
+  assert.equal(kotak.bankAccountNo, "A/c No. 3214292773");
+  assert.equal(kotak.adCode, "AD Code: 0180038-8400009");
+
+  // The key alone (a snapshot with no bank block) picks the settings' block.
+  const icici = DEFAULT_ROOTS({ ...SNAPSHOT, bankKey: "domestic" }, PACKING, ORDER, withDomestic);
+  assert.equal(icici.bankName, "ICICI Bank");
+  assert.equal(icici.bankAccountNo, "A/c No. 020405012473");
+  assert.equal(icici.bankSwift, "Swift Code - ICICINBBCTS");
+  assert.equal(icici.adCode, "", "the domestic account has no AD code");
+  assert.equal(icici.routingBankLine1, "");
+
+  // The snapshot's own bank block is what the PDF printed, so it wins over the
+  // settings even when the settings have since changed.
+  const frozen = DEFAULT_ROOTS({ ...SNAPSHOT, bankKey: "export", bank: { name: "Kotak (old branch)", address: "Old Address, Bangalore", accountNo: "111", swift: "KKBKOLD" } }, PACKING, ORDER, withDomestic);
+  assert.equal(frozen.bankName, "Kotak (old branch)");
+  assert.equal(frozen.bankAccountNo, "A/c No. 111");
+  assert.equal(frozen.bankSwift, "Swift Code - KKBKOLD");
+
+  // A nonsense key falls to the export account rather than to nothing.
+  assert.equal(DEFAULT_ROOTS({ ...SNAPSHOT, bankKey: "hdfc" }, PACKING, ORDER, withDomestic).bankName, "Kotak Mahindra Bank Limited");
+});
+
+test("the item code is the design master's (answer 20): code, else the design's name, never a marker", () => {
+  const codeFor = (design: string | null | undefined): string | null =>
+    ({ OASIS: "PES-OA-01" } as Record<string, string>)[String(design ?? "").toUpperCase()] ?? null;
+  const rows = slabRowsFromPacking({
+    crates: [{ id: "c1", crateNo: 1 }],
+    slabs: [
+      { crateId: "c1", slabNumber: 1, design: "Oasis", customerSku: "OSWT10305A", thickness: "3 cm", lengthCm: 347, widthCm: 201, sortOrder: 1 },
+      { crateId: "c1", slabNumber: 2, design: "Vega", customerSku: "VGWT10301A", thickness: "3 cm", lengthCm: 347, widthCm: 201, sortOrder: 2 },
+      { crateId: "c1", slabNumber: 3, customerSku: "NO-DESIGN", thickness: "3 cm", lengthCm: 347, widthCm: 201, sortOrder: 3 },
+    ],
+  }, codeFor);
+  assert.equal(rows[0].sku, "PES-OA-01", "the master's code, whatever the case the floor typed");
+  assert.equal(rows[1].sku, "Vega", "no code in the master → the design's name, not the customer's SKU and not a placeholder");
+  assert.equal(rows[2].sku, "NO-DESIGN", "a slab with no design at all falls to the customer's SKU rather than to a blank row");
+
+  // The goods lines take each invoice line's own rate whether the line is
+  // found by its code or, where the master has none, by its design.
+  const lines = [
+    { itemCode: "PES-OA-01", description: "OSWT10305A", design: "Oasis", rate: 5.2, isSample: false },
+    { itemCode: null, description: "VGWT10301A", design: "VEGA", rate: 6.4, isSample: false },
+  ];
+  const crateRows = crateRowsFor(rows, { netWeightTotalKg: 3000, invoiceLines: lines });
+  assert.deepEqual(crateRows.map((r) => [r.description, r.rate]), [["PES-OA-01", 5.2], ["Vega", 6.4], ["NO-DESIGN", 5.2]]);
+
+  // PL-852's "Pacific colour" is the first goods line's code, else its design.
+  assert.equal(DEFAULT_ROOTS({ ...SNAPSHOT, lines }, PACKING, ORDER, SETTINGS).pl852PacificColour, "PES-OA-01");
+  assert.equal(DEFAULT_ROOTS({ ...SNAPSHOT, lines: [lines[1]] }, PACKING, ORDER, SETTINGS).pl852PacificColour, "VEGA");
+});
+
 test("DEFAULT_ROOTS keeps company boilerplate but never invents customer data", () => {
   const bare = DEFAULT_ROOTS(null, null, null, null);
   assert.deepEqual(Object.keys(bare).sort(), [...ROOT_KEYS].sort());
@@ -651,11 +746,14 @@ test("slabRowsFromPacking prints the customer's numbering when they wanted their
   // The customer's number and batch win where they were filled in.
   assert.equal(rows[1].slabNo, "CI-0001");
   assert.equal(rows[1].batch, "CIOT-77");
-  assert.equal(rows[1].sku, "OASIS");            // no customer SKU on this one
+  assert.equal(rows[1].sku, "OASIS");
   // Ours where they were not.
   assert.equal(rows[2].slabNo, "150910");
   assert.equal(rows[2].batch, "1397");
-  assert.equal(rows[2].sku, "OSWT10305A");
+  // Answer 20: with no design master the DESIGN NAME is the item code, even
+  // where the order line carried a customer SKU — that SKU is the old stopgap
+  // the owner's per-design codes replace.
+  assert.equal(rows[2].sku, "OASIS");
   assert.equal(rows[2].thick, "3CM");
   // Area comes from the centimetres, exactly as the sheet's own formula does.
   assert.equal(rows[1].sqm, Math.round((347 * 201 / 10000) * 10.764 * 10000) / 10000);

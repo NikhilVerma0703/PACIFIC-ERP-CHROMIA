@@ -17,11 +17,15 @@ import {
   measurementRows, partyLines, fallbackParty, fmtSlabNo, measurementHeaderRef,
   type SlabLike, type CrateLike, type PartyLike,
 } from "@/lib/commercial/packing-rules";
+import { sizeInUnit, parseMeasurementUnit, type MeasurementUnit } from "@/lib/commercial/measure";
 
 export interface MeasurementListPdfInput {
   list: {
     number: string;
     createdAt?: string | Date | null;
+    /** cm (347 × 201) or in (137 × 79) — the unit the Length and Width columns
+     *  print in (answer 17). The rows are stored in centimetres either way. */
+    measurementUnit?: MeasurementUnit | string | null;
     containerNo?: string | null;
     vehicleNo?: string | null;
     crates: CrateLike[];
@@ -64,10 +68,18 @@ export async function generateMeasurementListPdf(input: MeasurementListPdfInput)
     ? order.consignee
     : fallbackParty(input.client ?? null, input.ext ?? null);
 
+  // The unit is in the heading and the figure is converted at the edge: a
+  // list switched to inches prints 136.6 × 79.1 under "Length in", never a
+  // centimetre figure under an inch heading. Inches carry one decimal because
+  // the conversion produces one; centimetres print whole, as the sheet always has.
+  const unit: MeasurementUnit = parseMeasurementUnit(list.measurementUnit) ?? "cm";
+  const sizeDp = unit === "in" ? 1 : 0;
+  const size = (cm: number | null): string => fmt(sizeInUnit(cm, unit), sizeDp);
+
   const batchHead = sheet.hasCustomerBatches ? "Batch\nours / theirs" : "Batch";
   const header = both
-    ? [th("Sl"), th("Design / SKU", "left"), th(batchHead), th("Cust. Slab No"), th("Slab No"), th("Thick"), th("Length\ncm"), th("Width\ncm"), th("Sqm"), th("Crate")]
-    : [th("Sl"), th("Design / SKU", "left"), th(batchHead), th("Slab No"), th("Thick"), th("Length\ncm"), th("Width\ncm"), th("Sqm"), th("Crate")];
+    ? [th("Sl"), th("Design / SKU", "left"), th(batchHead), th("Cust. Slab No"), th("Slab No"), th("Thick"), th(`Length\n${unit}`), th(`Width\n${unit}`), th("Sqm"), th("Crate")]
+    : [th("Sl"), th("Design / SKU", "left"), th(batchHead), th("Slab No"), th("Thick"), th(`Length\n${unit}`), th(`Width\n${unit}`), th("Sqm"), th("Crate")];
 
   const body: any[][] = [header];
   for (const r of sheet.rows) {
@@ -81,8 +93,8 @@ export async function generateMeasurementListPdf(input: MeasurementListPdfInput)
         ...(both ? [td(r.customerSlabNo, "center")] : []),
         td(fmtSlabNo(r.slabNumber), "center"),
         td(r.thickness, "center"),
-        td(fmt(r.lengthCm, 0), "right"),
-        td(fmt(r.widthCm, 0), "right"),
+        td(size(r.lengthCm), "right"),
+        td(size(r.widthCm), "right"),
         td(fmt(r.sqm, 4), "right"),
         td(r.crateNo != null ? String(r.crateNo) : "—", "center"),
       ];
@@ -158,7 +170,7 @@ export async function generateMeasurementListPdf(input: MeasurementListPdfInput)
       },
       {
         columns: [
-          { text: `${sheet.totals.slabs} slab(s) · ${fmt(sheet.totals.sqm, 4)} sqm · ${fmt(sheet.totals.sqft, 3)} sqft`, fontSize: 7, color: "#555" },
+          { text: `${sheet.totals.slabs} slab(s) · ${fmt(sheet.totals.sqm, 4)} sqm · ${fmt(sheet.totals.sqft, 3)} sqft · sizes in ${unit === "in" ? "inches" : "centimetres"}`, fontSize: 7, color: "#555" },
           {
             stack: [
               { text: `For ${company.legalName}`, fontSize: 7.5, bold: true, alignment: "right" },

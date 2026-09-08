@@ -3,27 +3,42 @@
 // challans that moved goods under it, and the form that drafts the next one.
 //
 // The kind is chosen for you — DTA for a domestic order, EXPORT for an export
-// one — because that is what decides the layout, the bank, the tax and which
-// counter the number comes from. Naming a packing list draws the lines from
-// the slabs actually packed (grouped by design and thickness, priced from the
+// one — because that is what decides the layout, the tax and which counter the
+// number comes from. The registration it is issued under (answer 21) and the
+// bank it prints (answer 23) are dropdowns, defaulted and changeable while
+// the invoice is a draft. Naming a packing list draws the lines from the
+// slabs actually packed (grouped by design and thickness, priced from the
 // order line that matches) instead of from the order's own quantities.
+//
+// One order carries one invoice (answer 18): while one exists that is not
+// cancelled the form is not offered, and the reason is written where the
+// button was. The final invoice waits for the checklist's approval (answer
+// 10): the tab says whether that has happened and who does it when it has not.
 import Link from "next/link";
 import { useState } from "react";
 import { Card, Badge, Empty, H2 } from "@/components/ui";
 import { postJson } from "@/lib/fab/postJson";
-import { statusTone, canIssueInvoice, canCancelInvoice, defaultKindFor, unpricedLineNos, displayGrandTotal } from "@/lib/commercial/invoice-rules";
+import {
+  statusTone, canIssueInvoice, canCancelInvoice, defaultKindFor, defaultBankKeyFor, unpricedLineNos, displayGrandTotal,
+  refuseCreate, refuseIssueUnapproved, fyBadge, lineLacksCode, snapshotExtras, gstinWithLabel,
+} from "@/lib/commercial/invoice-rules";
 import { challanStatusTone } from "@/lib/commercial/challan-rules";
 import type { OrderTabProps } from "@/lib/commercial/types";
-import { inp, lbl, btnPrimary, btnGhost, btnDanger, th, thead, errorBox, money, dmy, today } from "@/components/commercial/invoices/ui";
+import { inp, lbl, btnPrimary, btnGhost, btnDanger, th, thead, errorBox, noteBox, money, dmy, today } from "@/components/commercial/invoices/ui";
+import { DocNumber } from "@/components/commercial/invoices/DocNumber";
+import { useInvoiceChoices } from "@/components/commercial/invoices/useInvoiceChoices";
 
 export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
   const mayWrite = actions.includes("write");
+  const mayCancel = actions.includes("cancel");     // ADMIN / COMMERCIAL_MANAGER — the same rule as a PI (answer 24)
+  const { choices, error: choicesError } = useInvoiceChoices();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [cancelId, setCancelId] = useState<string | null>(null);
   const [reason, setReason] = useState("");
+  const [bankTouched, setBankTouched] = useState(false);
   const [form, setForm] = useState({
     kind: defaultKindFor(order.kind) as string,
     packingListId: "",
@@ -34,10 +49,19 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
     lrNo: "",
     ewayBillNo: "",
     exchangeRate: order.exchangeRate === null || order.exchangeRate === undefined ? "" : String(order.exchangeRate),
+    gstin: "",                                         // blank = the company's own
+    bankKey: defaultBankKeyFor(defaultKindFor(order.kind)) as string,
   });
 
   const packable = order.packingLists.filter((p) => p.status !== "REJECTED");
   const dpFor = (k: string) => (k === "DTA" ? 2 : 3);
+  const blocked = refuseCreate(order.invoices);
+  const unapproved = refuseIssueUnapproved(order);
+
+  const setKind = (kind: string) => {
+    // ICICI on DTA, Kotak on export — unless the clerk already chose a bank.
+    setForm((f) => ({ ...f, kind, bankKey: bankTouched ? f.bankKey : defaultBankKeyFor(kind === "DTA" ? "DTA" : "EXPORT") }));
+  };
 
   const create = async () => {
     setBusy(true); setError(null); setNotice(null);
@@ -51,6 +75,8 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
       lrNo: form.lrNo || null,
       ewayBillNo: form.ewayBillNo || null,
       exchangeRate: form.exchangeRate === "" ? null : Number(form.exchangeRate),
+      gstin: form.gstin || null,
+      bankKey: form.bankKey || null,
     });
     setBusy(false);
     if (!res.ok) { setError(res.error); return; }
@@ -87,15 +113,25 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
       <Card>
         <div className="mb-3 flex items-center justify-between gap-3">
           <H2>Invoices</H2>
-          {mayWrite && <button type="button" className={btnPrimary} onClick={() => setOpen((v) => !v)}>{open ? "Close" : "New invoice"}</button>}
+          {mayWrite && !blocked && <button type="button" className={btnPrimary} onClick={() => setOpen((v) => !v)}>{open ? "Close" : "New invoice"}</button>}
         </div>
 
-        {open && (
+        {/* answer 10: the fact the issue button turns on, stated rather than discovered at the 409 */}
+        {order.approvedAt ? (
+          <p className="mb-3 text-sm text-gray-600">
+            Checklist approved by <span className="font-medium text-gray-900">{order.approvedByName ?? "—"}</span> on {dmy(order.approvedAt)} — the final invoice may be issued.
+          </p>
+        ) : (
+          <div className={`${noteBox} mb-3`}>{unapproved} A draft can be prepared meanwhile.</div>
+        )}
+        {mayWrite && blocked && <p className="mb-3 text-sm text-gray-500">{blocked}.</p>}
+
+        {open && !blocked && (
           <div className="mb-5 rounded-xl border border-gray-200 bg-gray-50/60 p-4">
             <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
               <div>
                 <label className={lbl} htmlFor="ni-kind">Kind</label>
-                <select id="ni-kind" className={inp} value={form.kind} onChange={(e) => setForm((f) => ({ ...f, kind: e.target.value }))}>
+                <select id="ni-kind" className={inp} value={form.kind} onChange={(e) => setKind(e.target.value)}>
                   <option value="DTA">DTA — domestic, with GST</option>
                   <option value="EXPORT">Export — under LUT, no GST</option>
                 </select>
@@ -114,7 +150,20 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
               </div>
               <div>
                 <label className={lbl} htmlFor="ni-override">Number (blank takes the next one)</label>
-                <input id="ni-override" className={inp} value={form.numberOverride} onChange={(e) => setForm((f) => ({ ...f, numberOverride: e.target.value }))} placeholder={form.kind === "DTA" ? "PESPL/0137/26-27" : "PESPL/2780"} />
+                <input id="ni-override" className={inp} value={form.numberOverride} onChange={(e) => setForm((f) => ({ ...f, numberOverride: e.target.value }))} placeholder={form.kind === "DTA" ? "PESPL/N7/26-27" : "PESPL/N12"} />
+              </div>
+              <div>
+                <label className={lbl} htmlFor="ni-gstin">Issued under GSTIN</label>
+                <select id="ni-gstin" className={inp} value={form.gstin} onChange={(e) => setForm((f) => ({ ...f, gstin: e.target.value }))} disabled={!choices}>
+                  {(choices?.gstins ?? []).map((c, i) => <option key={c.gstin} value={i === 0 ? "" : c.gstin}>{c.gstin} — {c.label}</option>)}
+                </select>
+                {choicesError && <p className="mt-1 text-xs text-red-600">{choicesError}</p>}
+              </div>
+              <div>
+                <label className={lbl} htmlFor="ni-bank">Bank printed</label>
+                <select id="ni-bank" className={inp} value={form.bankKey} onChange={(e) => { setBankTouched(true); setForm((f) => ({ ...f, bankKey: e.target.value })); }} disabled={!choices}>
+                  {(choices?.banks ?? []).map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
+                </select>
               </div>
               <div>
                 <label className={lbl} htmlFor="ni-vehicle">Vehicle no</label>
@@ -155,7 +204,7 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
                 <tr className={thead}>
                   <th className={th}>Invoice</th>
                   <th className={th}>Kind</th>
-                  <th className={th}>Date</th>
+                  <th className={th}>GSTIN · bank</th>
                   <th className={th}>Packing list</th>
                   <th className={`${th} text-right`}>Grand total</th>
                   <th className={th}>Status</th>
@@ -165,29 +214,42 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
               <tbody>
                 {order.invoices.map((inv) => {
                   const unpriced = unpricedLineNos(inv.snapshot?.lines).length;
+                  // answer 20: the paper prints the design's name; the screen says a code is missing
+                  const uncoded = inv.kind === "EXPORT" ? (inv.snapshot?.lines ?? []).filter(lineLacksCode).length : 0;
+                  const x = inv.snapshot ? snapshotExtras(inv.snapshot) : null;
+                  const issueBlocked = canIssueInvoice(inv.status) ? unapproved : null;
                   return (
                   <tr key={inv.id} className="border-b border-gray-50 last:border-0">
-                    <td className="py-2 pr-4">
-                      <Link href={`/office/commercial/invoices/${inv.id}`} className="font-medium text-brand hover:underline">{inv.number}</Link>
+                    <td className="py-2 pr-4 align-top">
+                      <DocNumber number={inv.number} date={inv.invoiceDate} href={`/office/commercial/invoices/${inv.id}`} tag={fyBadge(inv.kind, inv.invoiceDate)} />
                       {unpriced > 0 && (
                         <span className="mt-0.5 block text-xs font-medium text-amber-700">
                           {unpriced} line{unpriced === 1 ? "" : "s"} without a rate
                         </span>
                       )}
+                      {uncoded > 0 && (
+                        <span className="mt-0.5 block text-xs font-medium text-amber-700" title="The design master has no code for this design; the document prints the design name">
+                          {uncoded} line{uncoded === 1 ? "" : "s"} with no design code
+                        </span>
+                      )}
                     </td>
-                    <td className="py-2 pr-4 text-gray-600">{inv.kind}</td>
-                    <td className="py-2 pr-4 text-gray-600">{dmy(inv.invoiceDate)}</td>
-                    <td className="py-2 pr-4 text-gray-500">{order.packingLists.find((p) => p.id === inv.packingListId)?.number ?? "—"}</td>
+                    <td className="py-2 pr-4 align-top text-gray-600">{inv.kind}</td>
+                    <td className="py-2 pr-4 align-top text-xs text-gray-500">
+                      {x ? <><div>{gstinWithLabel(x.gstin, x.gstinLabel) || "—"}</div><div>{inv.snapshot?.bank?.name ?? "—"}</div></> : "—"}
+                    </td>
+                    <td className="py-2 pr-4 align-top text-gray-500">{order.packingLists.find((p) => p.id === inv.packingListId)?.number ?? "—"}</td>
                     {/* the snapshot's figure: grand_total is NUMERIC(16,2) and an
                         export document carries three decimals */}
-                    <td className="py-2 pr-4 text-right text-gray-900">{money(displayGrandTotal(inv), inv.currency, dpFor(inv.kind))}</td>
-                    <td className="py-2 pr-4"><Badge tone={statusTone(inv.status)}>{inv.status}</Badge></td>
-                    <td className="py-2 pr-4">
+                    <td className="py-2 pr-4 align-top text-right text-gray-900">{money(displayGrandTotal(inv), inv.currency, dpFor(inv.kind))}</td>
+                    <td className="py-2 pr-4 align-top"><Badge tone={statusTone(inv.status)}>{inv.status}</Badge></td>
+                    <td className="py-2 pr-4 align-top">
                       <div className="flex flex-wrap items-center gap-3">
                         <a href={`/api/office/commercial/invoices/${inv.id}/pdf`} target="_blank" rel="noreferrer" className="text-brand hover:underline">PDF</a>
                         {inv.kind === "EXPORT" && <Link href={`/office/commercial/orders/${order.id}?tab=documents`} className="text-brand hover:underline">Export docs</Link>}
-                        {mayWrite && canIssueInvoice(inv.status) && <button type="button" className="text-brand hover:underline disabled:opacity-50" disabled={busy} onClick={() => void issue(inv.id)}>Issue</button>}
-                        {mayWrite && canCancelInvoice(inv.status) && <button type="button" className="text-red-600 hover:underline disabled:opacity-50" disabled={busy} onClick={() => { setCancelId(cancelId === inv.id ? null : inv.id); setReason(""); }}>Cancel</button>}
+                        {mayWrite && canIssueInvoice(inv.status) && (
+                          <button type="button" className="text-brand hover:underline disabled:cursor-not-allowed disabled:opacity-50" disabled={busy || Boolean(issueBlocked)} title={issueBlocked ?? undefined} onClick={() => void issue(inv.id)}>Issue</button>
+                        )}
+                        {mayCancel && canCancelInvoice(inv.status) && <button type="button" className="text-red-600 hover:underline disabled:opacity-50" disabled={busy} onClick={() => { setCancelId(cancelId === inv.id ? null : inv.id); setReason(""); }}>Cancel</button>}
                       </div>
                       {cancelId === inv.id && (
                         <div className="mt-2 flex flex-wrap items-end gap-2">
@@ -218,7 +280,6 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
               <thead>
                 <tr className={thead}>
                   <th className={th}>Challan</th>
-                  <th className={th}>Date</th>
                   <th className={th}>Consignee</th>
                   <th className={th}>Lorry</th>
                   <th className={`${th} text-right`}>Declared value</th>
@@ -229,13 +290,12 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
               <tbody>
                 {order.challans.map((c) => (
                   <tr key={c.id} className="border-b border-gray-50 last:border-0">
-                    <td className="py-2 pr-4"><Link href={`/office/commercial/challans/${c.id}`} className="font-medium text-brand hover:underline">{c.number}</Link></td>
-                    <td className="py-2 pr-4 text-gray-600">{dmy(c.challanDate)}</td>
-                    <td className="py-2 pr-4 text-gray-900">{c.consigneeName}</td>
-                    <td className="py-2 pr-4 text-gray-500">{c.lorryNo ?? "—"}</td>
-                    <td className="py-2 pr-4 text-right text-gray-900">{money(c.totalAmount, "INR")}</td>
-                    <td className="py-2 pr-4"><Badge tone={challanStatusTone(c.status)}>{c.status}</Badge></td>
-                    <td className="py-2 pr-4"><a href={`/api/office/commercial/challans/${c.id}/pdf`} target="_blank" rel="noreferrer" className="text-brand hover:underline">Open</a></td>
+                    <td className="py-2 pr-4 align-top"><DocNumber number={c.number} date={c.challanDate} href={`/office/commercial/challans/${c.id}`} /></td>
+                    <td className="py-2 pr-4 align-top text-gray-900">{c.consigneeName}</td>
+                    <td className="py-2 pr-4 align-top text-gray-500">{c.lorryNo ?? "—"}</td>
+                    <td className="py-2 pr-4 align-top text-right text-gray-900">{money(c.totalAmount, "INR")}</td>
+                    <td className="py-2 pr-4 align-top"><Badge tone={challanStatusTone(c.status)}>{c.status}</Badge></td>
+                    <td className="py-2 pr-4 align-top"><a href={`/api/office/commercial/challans/${c.id}/pdf`} target="_blank" rel="noreferrer" className="text-brand hover:underline">Open</a></td>
                   </tr>
                 ))}
               </tbody>

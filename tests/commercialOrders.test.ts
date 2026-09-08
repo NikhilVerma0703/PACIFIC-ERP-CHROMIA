@@ -11,9 +11,10 @@ import {
   ORDER_KINDS, PO_EVIDENCE, HEADER_TEXT_FIELDS, HEADER_PARTY_FIELDS,
   defaultsForKind, clientDefaults, splitAddress, partyFromClient, normalizeParty, partiesFromClient,
   itemAmount, orderTotals, changedFields, fmtDateDMY, checklistSourceFromOrder,
-  ordersWhere, pageArgs, nextLineNo, renumberLines, canApprove, describeItem, orderWorkspaceView,
+  ordersWhere, pageArgs, nextLineNo, renumberLines, canApprove, describeItem, orderWorkspaceView, stageFactsOf, isLiveHold,
   type SettingsLike, type ClientLike, type ClientExtLike,
 } from "../src/lib/commercial/orders-rules.ts";
+import { canEnter } from "../src/lib/commercial/stages.ts";
 import { prefillChecklist, parseChecklist, outstandingPoints, CHECKLIST_POINTS } from "../src/lib/commercial/checklist.ts";
 import { DEFAULT_SETTINGS } from "../src/lib/commercial/settings-defaults.ts";
 
@@ -358,6 +359,80 @@ test("the header field lists cover the order form and overlap nothing", () => {
   for (const k of HEADER_PARTY_FIELDS) assert.ok(!HEADER_TEXT_FIELDS.includes(k), `${k} is a party block, not text`);
   assert.deepEqual([...ORDER_KINDS], ["DOMESTIC", "EXPORT"]);
   assert.deepEqual([...PO_EVIDENCE], ["PO", "PI_ACKNOWLEDGED", "EMAIL"]);
+});
+
+// ───────────────────────────── the pipeline's facts ──────────────────────────
+// order-stage.loadStageFacts (server) and OrderWorkspace's strip (client) both
+// run stageFactsOf and hand the result to canEnter, so the reason a stage is
+// greyed on screen is the reason the route 409s with.
+
+test("stageFactsOf: every fact is a definite boolean — an undefined would slip past canEnter's gates", () => {
+  const none = stageFactsOf({});
+  assert.deepEqual(none, { stockChecked: false, approved: false, advanceReceived: false });
+  for (const v of Object.values(none)) assert.equal(typeof v, "boolean");
+});
+
+test("stageFactsOf: stockChecked needs the stamp AND a live hold — a lapsed hold sends the order back (answer 11)", () => {
+  const stamped = "2026-09-01T10:00:00.000Z";
+  assert.equal(stageFactsOf({ stockCheckedAt: stamped, holds: [{ status: "ACTIVE" }] }).stockChecked, true);
+  assert.equal(stageFactsOf({ stockCheckedAt: stamped, holds: [{ status: "EXPIRED" }] }).stockChecked, false, "the stamp alone is history");
+  assert.equal(stageFactsOf({ stockCheckedAt: stamped, holds: [{ status: "RELEASED" }, { status: "ACTIVE" }] }).stockChecked, true, "one live hold among old ones is enough");
+  assert.equal(stageFactsOf({ stockCheckedAt: null, holds: [{ status: "ACTIVE" }] }).stockChecked, false, "a hold without the stamp is not a stock check either");
+  assert.equal(stageFactsOf({ stockCheckedAt: new Date(stamped), holds: [{ status: "ACTIVE" }] }).stockChecked, true, "a Date from Prisma counts as set");
+  assert.equal(stageFactsOf({ stockCheckedAt: "", holds: [{ status: "ACTIVE" }] }).stockChecked, false);
+});
+
+test("isLiveHold / stageFactsOf: an ACTIVE hold past its expiry is not a live stock check, even before the sweep marks it EXPIRED", () => {
+  const now = new Date("2026-09-08T12:00:00.000Z");
+  const stamped = "2026-09-01T10:00:00.000Z";
+  // the sweep (reconcileHold) runs after the lapse; between the two the row still says ACTIVE
+  assert.equal(isLiveHold({ status: "ACTIVE", expiresAt: "2026-09-08T11:59:59.000Z" }, now), false, "lapsed a second ago");
+  assert.equal(isLiveHold({ status: "ACTIVE", expiresAt: "2026-09-08T12:00:00.000Z" }, now), false, "expiring exactly now is not live (gt, matching the server probe)");
+  assert.equal(isLiveHold({ status: "ACTIVE", expiresAt: "2026-09-12T12:00:00.000Z" }, now), true, "still inside its window");
+  assert.equal(isLiveHold({ status: "ACTIVE", expiresAt: new Date("2026-09-12T12:00:00.000Z") }, now), true, "a Date from Prisma reads the same as the ISO the detail carries");
+  assert.equal(isLiveHold({ status: "EXPIRED", expiresAt: "2026-09-12T12:00:00.000Z" }, now), false, "a status other than ACTIVE is never live, whatever the date says");
+  assert.equal(isLiveHold({ status: "ACTIVE" }, now), true, "no expiresAt: the server probe already filtered on it");
+  assert.equal(isLiveHold({ status: "ACTIVE", expiresAt: "not a date" }, now), false, "an unreadable expiry is not proof of a held slab");
+  // and through stageFactsOf, which is what canEnter's PI gate reads (answers 1, 11)
+  assert.equal(stageFactsOf({ stockCheckedAt: stamped, holds: [{ status: "ACTIVE", expiresAt: "2026-09-07T00:00:00.000Z" }] }, now).stockChecked, false, "the stamp plus a lapsed-but-unswept hold is history");
+  assert.equal(stageFactsOf({ stockCheckedAt: stamped, holds: [{ status: "ACTIVE", expiresAt: "2026-09-07T00:00:00.000Z" }, { status: "ACTIVE", expiresAt: "2026-09-20T00:00:00.000Z" }] }, now).stockChecked, true, "one live hold among lapsed ones is enough");
+  const lapsed = stageFactsOf({ stockCheckedAt: stamped, approvedAt: stamped, holds: [{ status: "ACTIVE", expiresAt: "2026-09-07T00:00:00.000Z" }], receipts: [] }, now);
+  const pi = canEnter("CONFIRMED", "PI_ISSUED", lapsed);
+  assert.equal(pi.ok, false, "the PI gate shuts on a lapsed hold");
+  assert.match((pi as { reason: string }).reason, /Stock check first/);
+});
+
+test("stageFactsOf: approved is the approval stamp (answer 10); advanceReceived is an ADVANCE receipt (answers 2, 29)", () => {
+  assert.equal(stageFactsOf({ approvedAt: "2026-09-02T00:00:00.000Z" }).approved, true);
+  assert.equal(stageFactsOf({ approvedAt: null }).approved, false);
+  assert.equal(stageFactsOf({ receipts: [{ kind: "CAD" }] }).advanceReceived, false);
+  assert.equal(stageFactsOf({ receipts: [{ kind: "CAD" }, { kind: "ADVANCE" }] }).advanceReceived, true);
+  // the detail already carries the derived flag; it wins over re-deriving from the list
+  assert.equal(stageFactsOf({ advanceReceived: true, receipts: [] }).advanceReceived, true);
+  assert.equal(stageFactsOf({ advanceReceived: false, receipts: [{ kind: "ADVANCE" }] }).advanceReceived, false);
+});
+
+test("the strip's reasons: the three gates refuse with a named reason, and nothing else is gated", () => {
+  const bare = stageFactsOf({ stockCheckedAt: null, approvedAt: null, holds: [], receipts: [] });
+  const pi = canEnter("CONFIRMED", "PI_ISSUED", bare);
+  assert.equal(pi.ok, false);
+  assert.match((pi as { reason: string }).reason, /Stock check first/);
+  const inv = canEnter("READY", "INVOICED", bare);
+  assert.equal(inv.ok, false);
+  assert.match((inv as { reason: string }).reason, /approved before the final invoice/);
+  const disp = canEnter("INVOICED", "DISPATCHED", bare);
+  assert.equal(disp.ok, false);
+  assert.match((disp as { reason: string }).reason, /advance has not been received/);
+  // packing, the dispatch check and readiness happen before the money (answer 2)
+  for (const to of ["CONFIRMED", "STOCK_CHECKED", "PACKING", "DISPATCH_CHECK", "READY", "CLOSED"]) {
+    assert.equal(canEnter("DRAFT", to, bare).ok, true, `${to} is not gated`);
+  }
+  const full = stageFactsOf({ stockCheckedAt: "2026-09-01T00:00:00.000Z", approvedAt: "2026-09-02T00:00:00.000Z", holds: [{ status: "ACTIVE" }], receipts: [{ kind: "ADVANCE" }] });
+  assert.equal(canEnter("CONFIRMED", "PI_ISSUED", full).ok, true);
+  assert.equal(canEnter("READY", "INVOICED", full).ok, true);
+  assert.equal(canEnter("INVOICED", "DISPATCHED", full).ok, true);
+  // cancelling is never gated on a fact — only on who asks (answer 24, the route's commercialGate("cancel"))
+  assert.equal(canEnter("PACKING", "CANCELLED", bare).ok, true);
 });
 
 // ───────────────────────── the workspace's own state ─────────────────────────

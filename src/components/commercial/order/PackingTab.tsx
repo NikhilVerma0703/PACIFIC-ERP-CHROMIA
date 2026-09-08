@@ -9,7 +9,8 @@ import { useState } from "react";
 import type { OrderTabProps } from "@/lib/commercial/types";
 import { Card, Badge, Empty } from "@/components/ui";
 import { postJson } from "@/lib/fab/postJson";
-import { PACKING_STATUS_LABEL, parseSlabNumbers, type PackingStatus } from "@/lib/commercial/packing-rules";
+import { PACKING_STATUS_LABEL, parseSlabNumbers, canCreatePackingList, type PackingStatus } from "@/lib/commercial/packing-rules";
+import { isLiveHold } from "@/lib/commercial/orders-rules";
 
 const btn = "rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transition hover:bg-brand/90 disabled:opacity-60";
 const btnGhost = "rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-60";
@@ -31,8 +32,14 @@ export default function PackingTab({ order, actions, refresh }: OrderTabProps) {
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
-  const holds = order.holds.filter((h) => h.status === "ACTIVE" && h.slabs.some((s) => !s.releasedAt && !s.packedAt));
+  // ONE rule for "is this hold still live", shared with the server gate
+  // (loadStageFacts): an ACTIVE row past its expiry is not a live hold, even in
+  // the window before the sweep marks it EXPIRED (answers 1, 11).
+  const holds = order.holds.filter((h) => isLiveHold(h, new Date()) && h.slabs.some((s) => !s.releasedAt && !s.packedAt));
   const parsed = parseSlabNumbers(numbers);
+  // One PI, one packing list (answer 18). The server refuses a second with the
+  // same reason; asking here saves the clerk building a list that will bounce.
+  const one = canCreatePackingList(order.packingLists);
 
   async function create() {
     setBusy(true); setError(null); setNote(null);
@@ -48,7 +55,14 @@ export default function PackingTab({ order, actions, refresh }: OrderTabProps) {
 
   return (
     <div className="flex flex-col gap-6">
-      {mayWrite && (
+      {mayWrite && !one.ok && (
+        <Card>
+          <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">Packing list</h2>
+          {note && <div className="mb-3 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">{note}</div>}
+          <p className="text-sm text-gray-600">{one.reason}</p>
+        </Card>
+      )}
+      {mayWrite && one.ok && (
         <Card>
           <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">Start a packing list</h2>
           {error && <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
@@ -103,6 +117,7 @@ export default function PackingTab({ order, actions, refresh }: OrderTabProps) {
                   <th className="py-2 pr-3">Status</th>
                   <th className="py-2 pr-3 text-right">Slabs</th>
                   <th className="py-2 pr-3 text-right">Crates</th>
+                  <th className="py-2 pr-3">Unit</th>
                   <th className="py-2 pr-3">Container</th>
                   <th className="py-2 pr-3">Submitted</th>
                   <th className="py-2 pr-3">Verified</th>
@@ -119,6 +134,7 @@ export default function PackingTab({ order, actions, refresh }: OrderTabProps) {
                     <td className="py-2 pr-3"><Badge tone={TONE[pl.status] ?? "brand"}>{PACKING_STATUS_LABEL[pl.status] ?? pl.status}</Badge></td>
                     <td className="py-2 pr-3 text-right">{pl.slabs.length}</td>
                     <td className="py-2 pr-3 text-right">{pl.crates.length}</td>
+                    <td className="py-2 pr-3 text-gray-600">{pl.measurementUnit ?? "cm"}</td>
                     <td className="py-2 pr-3 text-gray-600">{pl.containerNo ?? "—"}</td>
                     <td className="py-2 pr-3 text-gray-600">{when(pl.submittedAt)}</td>
                     <td className="py-2 pr-3 text-gray-600">{when(pl.verifiedAt)}</td>

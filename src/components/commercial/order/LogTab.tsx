@@ -23,10 +23,14 @@ const TONE: Record<string, "brand" | "green" | "amber" | "red"> = {
   stage: "amber", checklist: "amber", approved: "green",
   hold_placed: "brand", hold_released: "amber", hold_expired: "red",
   production_requested: "amber", production_produced: "green",
-  pi_issued: "green", pi_accepted: "green", pi_superseded: "amber",
+  pi_drafted: "brand", pi_edited: "brand", pi_issued: "green", pi_accepted: "green", pi_superseded: "amber", pi_revised: "amber", pi_cancelled: "red",
+  receipt_recorded: "green", receipt_deleted: "red",
+  plan_changed: "amber", slab_swapped: "amber",
   packing_created: "brand", packing_submitted: "amber", packing_verified: "green",
   packing_rejected: "red", packing_final: "green",
-  invoice_issued: "green", invoice_cancelled: "red", dispatched: "green", cancelled: "red",
+  invoice_created: "brand", invoice_edited: "brand", invoice_issued: "green", invoice_cancelled: "red",
+  challan_created: "brand", challan_issued: "green", challan_cancelled: "red", export_docs: "brand",
+  dispatched: "green", cancelled: "red",
 };
 
 const KIND_FILTERS: Array<{ value: string; label: string }> = [
@@ -35,10 +39,11 @@ const KIND_FILTERS: Array<{ value: string; label: string }> = [
   { value: "stage,cancelled", label: "Stage moves" },
   { value: "checklist,approved", label: "Checklist" },
   { value: "hold_placed,hold_released,hold_expired", label: "Stock holds" },
-  { value: "production_requested,production_produced", label: "Production" },
-  { value: "pi_issued,pi_accepted,pi_superseded", label: "Proforma" },
-  { value: "packing_created,packing_submitted,packing_verified,packing_rejected,packing_final", label: "Packing" },
-  { value: "invoice_issued,invoice_cancelled,dispatched", label: "Invoice and dispatch" },
+  { value: "production_requested,production_produced,plan_changed", label: "Production" },
+  { value: "pi_drafted,pi_edited,pi_issued,pi_accepted,pi_superseded,pi_revised,pi_cancelled", label: "Proforma" },
+  { value: "receipt_recorded,receipt_deleted", label: "Receipts" },
+  { value: "packing_created,packing_submitted,packing_verified,packing_rejected,packing_final,slab_swapped", label: "Packing" },
+  { value: "invoice_created,invoice_edited,invoice_issued,invoice_cancelled,challan_created,challan_issued,challan_cancelled,export_docs,dispatched", label: "Invoice and dispatch" },
 ];
 
 export default function LogTab({ order }: OrderTabProps) {

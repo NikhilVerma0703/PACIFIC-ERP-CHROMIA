@@ -35,6 +35,12 @@ export interface DocLine {
 
 /** The PI snapshot — everything the PI PDF prints, frozen at issue time. */
 export interface ProformaSnapshot {
+  /** Answers 21 and 23: the registration and the bank this PI prints,
+   *  chosen before issue; absent on PIs drafted before the choice existed. */
+  bankKey?: "export" | "domestic";
+  gstinKey?: string | null;
+  /** The PI this one replaced (answer 24: a revision is a new number). */
+  revises?: { id: string; number: string } | null;
   number: string;
   revision: number;
   date: string;                 // YYYY-MM-DD
@@ -310,6 +316,10 @@ export interface ReceiptDto {
 export interface ProformaDto {
   id: string;
   orderId: string;
+  /** Set when the PI was cancelled — by hand, or by the system when a
+   *  revision replaced it (answer 24). Columns since scripts/0077. */
+  cancelledAt?: string | null;
+  cancelReason?: string | null;
   number: string;
   revision: number;
   status: "DRAFT" | "ISSUED" | "ACCEPTED" | "SUPERSEDED" | "CANCELLED";

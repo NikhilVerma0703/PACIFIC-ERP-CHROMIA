@@ -1,20 +1,23 @@
-// GET  /api/office/commercial/orders/[id]/proformas — this order's revisions, paged
-// POST /api/office/commercial/orders/[id]/proformas — a DRAFT revision, built
-//      from the order as it stands now plus the module settings (DESIGN.md §6).
+// GET  /api/office/commercial/orders/[id]/proformas — this order's PIs, paged
+// POST /api/office/commercial/orders/[id]/proformas — a DRAFT PI, built from
+//      the order as it stands now plus the module settings (DESIGN.md §6, §8).
 //
-// The number is the ORDER's number: a PI is not separately numbered (the
-// reference PI is SAL-ORD/25-26/01404, which is the internal sales order). The
-// revision is max(existing) + 1, 0 for the first, and the snapshot is frozen
-// here — nothing downstream recomputes an amount.
+// The number is the PI's OWN, from the proforma counter (answers 5, 8, 24:
+// SAL-ORD/{fy}/N{seq}, per financial year) — not the order's number, because
+// a revision is a new number and an order keeps one number for life. The
+// `revision` column is the order's PI ordinal (0 first) for the row's unique
+// key and the tab's ordering; it is not part of the number. The snapshot is
+// frozen here — nothing downstream recomputes an amount.
 import { commercialGate, actorStamp } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain, str, paramId } from "@/lib/commercial/http";
 import { loadSettings } from "@/lib/commercial/settings";
+import { issueNumber } from "@/lib/commercial/sequence";
 import { logOrderEvent } from "@/lib/commercial/events";
 import {
-  buildProformaSnapshot, nextRevision, isoDate, piLabel, pageArgs,
+  buildProformaSnapshot, nextRevision, isoDate, pageArgs, parseBankKey,
   type SnapshotOrderInput,
 } from "@/lib/commercial/proforma-rules";
-import { db, loadOrderForPi, siblingRevisions, PI_LIST_SELECT } from "../../../proformas/_lib";
+import { db, loadOrderForPi, orderProformas, PI_LIST_SELECT } from "../../../proformas/_lib";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -30,7 +33,7 @@ export async function GET(req: Request, { params }: Ctx) {
     const { page, limit, skip } = pageArgs(u.searchParams.get("page"), u.searchParams.get("limit"));
     const where = { orderId: id };
     const [items, total] = await Promise.all([
-      db.commercialProforma.findMany({ where, select: PI_LIST_SELECT, orderBy: [{ number: "asc" }, { revision: "desc" }], skip, take: limit }),
+      db.commercialProforma.findMany({ where, select: PI_LIST_SELECT, orderBy: [{ revision: "desc" }], skip, take: limit }),
       db.commercialProforma.count({ where }),
     ]);
     return json(plain({ items, total, page, limit }));
@@ -46,24 +49,27 @@ export async function POST(req: Request, { params }: Ctx) {
     const order = await loadOrderForPi(id);
     const settings = await loadSettings();
 
-    const number = String(order.number ?? "");
-    if (!number) fail(400, "This order has no number yet");
-    const existing = await siblingRevisions(number);
-    const revision = nextRevision(existing);
-
     const date = str(body.date);
     if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) fail(400, "date must be YYYY-MM-DD");
-    const validUntil = str(body.validUntil);
-    if (validUntil && !/^\d{4}-\d{2}-\d{2}$/.test(validUntil)) fail(400, "validUntil must be YYYY-MM-DD");
     const deliveryDate = str(body.deliveryDate);
     if (deliveryDate && !/^\d{4}-\d{2}-\d{2}$/.test(deliveryDate)) fail(400, "deliveryDate must be YYYY-MM-DD");
 
+    const now = new Date();
+    const revision = nextRevision(await orderProformas(id));
+    // The counter is taken before the row exists: a draft that then fails to
+    // save leaves a gap in the series, which is the honest outcome — a number
+    // once handed out is never handed out again (answer 24).
+    const issued = await issueNumber("proforma", now, body.numberOverride);
+
     const snapshot = buildProformaSnapshot(order as unknown as SnapshotOrderInput, settings, {
+      number: issued.number,
       revision,
-      date: date ?? isoDate(new Date()),
-      validUntil,
+      date: date ?? isoDate(now),
+      validUntil: null,
       deliveryDate,
       notes: str(body.notes),
+      bankKey: parseBankKey(body.bankKey),
+      gstinKey: str(body.gstinKey),
     });
 
     const by = actorStamp(g.user);
@@ -72,7 +78,7 @@ export async function POST(req: Request, { params }: Ctx) {
       row = await db.commercialProforma.create({
         data: {
           orderId: id,
-          number,
+          number: issued.number,
           revision,
           status: "DRAFT",
           snapshot,
@@ -83,14 +89,14 @@ export async function POST(req: Request, { params }: Ctx) {
         },
       });
     } catch (e) {
-      if ((e as { code?: string }).code === "P2002") fail(409, `Revision ${revision} of ${number} already exists — reload the tab`);
+      if ((e as { code?: string }).code === "P2002") fail(409, `A proforma numbered ${issued.number} already exists — check the counter in Settings`);
       throw e;
     }
 
-    await logOrderEvent(id, "note", {
-      note: `Proforma ${piLabel(number, revision)} drafted (${snapshot.currency} ${snapshot.totalAmount.toFixed(3)})`,
+    await logOrderEvent(id, "pi_drafted", {
+      note: `Proforma ${issued.number} drafted (${snapshot.currency} ${snapshot.totalAmount.toFixed(3)})`,
       by: g.user,
-      payload: { proformaId: row.id, number, revision, total: snapshot.totalAmount, currency: snapshot.currency },
+      payload: { proformaId: row.id, number: issued.number, seq: issued.seq, overridden: issued.overridden, total: snapshot.totalAmount, currency: snapshot.currency },
     });
 
     return json(plain(row), 201);

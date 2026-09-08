@@ -1,7 +1,10 @@
+// GET   /api/office/commercial/orders/[id]/checklist — the sheet, its stamps and
+//       who is looking (the "Prepared by" default is the signed-in name)
 // PATCH /api/office/commercial/orders/[id]/checklist
 //   { items: [{ key, value?, ok? }] }  values / ok by key (known keys only)
-//   { check: true }                    stamps checkedBy*
-//   { approve: true }                  stamps approvedBy* (ADMIN or COMMERCIAL)
+//   { check: true }                    stamps checkedBy* — "prepared / checked by"
+//   { approve: true }                  stamps approvedBy* — the "approve" action
+//                                      (answer 10: the Commercial Manager or an admin)
 // Any combination in one call. Events "checklist" / "approved".
 import { commercialGate, actorStamp } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain, paramId } from "@/lib/commercial/http";
@@ -21,6 +24,26 @@ interface Body {
   approve?: unknown;
 }
 
+// Not exported: a route file may only export handlers and config, and Next
+// type-checks that.
+const APPROVE_REFUSED = "Only the Commercial Manager or an admin approves";
+
+export async function GET(_req: Request, { params }: Ctx) {
+  const g = await commercialGate("view");
+  if (!g.ok) return deny(g);
+  return handle(async () => {
+    const id = await paramId(params);
+    const order = await loadOrderWithItems(id);
+    const stamp = actorStamp(g.user);
+    return json(plain({
+      checklist: parseChecklist(order.checklist),
+      checkedByName: order.checkedByName ?? null, checkedAt: order.checkedAt ?? null,
+      approvedByName: order.approvedByName ?? null, approvedAt: order.approvedAt ?? null,
+      viewer: { name: stamp.name, canApprove: canApprove(g.actor) },
+    }));
+  });
+}
+
 export async function PATCH(req: Request, { params }: Ctx) {
   const g = await commercialGate("write");
   if (!g.ok) return deny(g);
@@ -32,7 +55,12 @@ export async function PATCH(req: Request, { params }: Ctx) {
     const wantApprove = body.approve === true;
     const incoming = Array.isArray(body.items) ? body.items : [];
     if (!wantCheck && !wantApprove && incoming.length === 0) fail(400, "Nothing to change: send items, check: true or approve: true");
-    if (wantApprove && !canApprove(g.actor)) fail(403, "Only Commercial or an admin may approve the checklist");
+    if (wantApprove) {
+      // Filling and checking are write; the approval alone is the narrower
+      // action, asked for only once the body says that is what this call is.
+      const a = await commercialGate("approve");
+      if (!a.ok || !canApprove(a.actor)) fail(403, APPROVE_REFUSED);
+    }
 
     const data: Record<string, unknown> = {};
     const now = new Date();
@@ -63,13 +91,13 @@ export async function PATCH(req: Request, { params }: Ctx) {
     const open = outstandingPoints(finalList).length;
     if (touched.length || wantCheck) {
       await logOrderEvent(id, "checklist", {
-        note: wantCheck ? `Checklist checked by ${stamp.name ?? "—"}${open ? ` · ${open} point${open === 1 ? "" : "s"} outstanding` : " · all points settled"}` : `Checklist updated: ${touched.join(", ")}`,
+        note: wantCheck ? `Checklist prepared and checked by ${stamp.name ?? "—"}${open ? ` · ${open} point${open === 1 ? "" : "s"} outstanding` : " · all points settled"}` : `Checklist updated: ${touched.join(", ")}`,
         by: g.user,
         payload: { keys: touched, checked: wantCheck, outstanding: open },
       });
     }
     if (wantApprove) {
-      await logOrderEvent(id, "approved", { note: `Checklist approved by ${stamp.name ?? "—"}`, by: g.user, payload: { outstanding: open } });
+      await logOrderEvent(id, "approved", { note: `Checklist approved by ${stamp.name ?? "—"} (Commercial Manager)`, by: g.user, payload: { outstanding: open } });
     }
     return json(plain(await loadOrderDetail(id)));
   });

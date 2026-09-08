@@ -306,7 +306,10 @@ test("setAt writes a dotted path without touching the object it was given", () =
 });
 
 // ───────────────────────── counters ──────────────────────────────────────────
-test("a counter may be raised to align with Tally, and set at all when it has no row yet", () => {
+// Raising is the only manual move a counter is meant for (answers 4 and 8):
+// every series starts at N1 and a set-by-hand only SKIPS numbers, never
+// continues a Tally series — so raising needs no confirmation.
+test("a counter may be raised to skip numbers, and set at all when it has no row yet", () => {
   assert.deepEqual(sequenceChange({ key: "PESPL-EXP", nextValue: 2781, current: 1 }), { ok: true, key: "PESPL-EXP", value: 2781 });
   assert.deepEqual(sequenceChange({ key: "PESPL-EXP", nextValue: "2781", current: null }), { ok: true, key: "PESPL-EXP", value: 2781 });
   assert.deepEqual(sequenceChange({ key: "PESPL-EXP", nextValue: 12, current: 12 }), { ok: true, key: "PESPL-EXP", value: 12 }, "setting it where it already is is a no-op, not a clash");
@@ -366,8 +369,11 @@ test("the same on/off list runs every settings switch: what a checkbox, a select
 });
 
 test("1 is a legal next value: a new counter starts there and a new financial year resets to it", () => {
-  // The counters ship unset and every one of them is set for the first time by
-  // hand (OPEN-QUESTIONS §4, §8), so "set it to 1" must go through.
+  // Answers 4 and 8: a counter is NOT seeded by hand — every series starts at
+  // N1 by design and a manual set only SKIPS numbers. So 1 has to stay a legal
+  // value: it is where an unset counter already stands and where a per-FY
+  // counter lands on the first of April, and typing it back must not be
+  // mistaken for a lowering.
   assert.deepEqual(sequenceChange({ key: "PESPL-DTA:27-28", nextValue: 1, current: null }), { ok: true, key: "PESPL-DTA:27-28", value: 1 }, "a per-FY counter's first year starts at 1");
   assert.deepEqual(sequenceChange({ key: "PL", nextValue: "1", current: null }), { ok: true, key: "PL", value: 1 }, "the form posts a string");
   assert.deepEqual(sequenceChange({ key: "PL", nextValue: 1, current: 1 }), { ok: true, key: "PL", value: 1 }, "setting it where it already is is not a lowering");
@@ -435,4 +441,97 @@ test("previewCounters follows an edited template and key, which is what makes th
   const across = previewCounters(DEFAULT_SETTINGS, [{ key: "PESPL-DC:25-26", nextValue: 21 }], new Date(2026, 2, 31));
   assert.equal(across.challan.key, "PESPL-DC:25-26", "31 March is still the old financial year");
   assert.equal(across.challan.preview, "PESPL/DC/N21/26");
+});
+
+// ───────────────────────── what the settings SCREEN posts ────────────────────
+// The screen (CommercialSettingsScreen) sends the whole draft back as the
+// strings a form holds: a <select> value, a checkbox's "on"/"off", a textarea
+// of "Label | GSTIN" lines. These run the rules on exactly those shapes for the
+// leaves the 2026-09-07 answers added, so a field that renders cannot post a
+// value the route then refuses.
+import { gstinChoices } from "../src/lib/commercial/settings-defaults.ts";
+
+test("the unit select posts 'cm' or 'in' and nothing the packing list could not print in", () => {
+  for (const unit of ["cm", "in"]) {
+    const v = validateOverrides({ measurementUnitDefault: unit });
+    assert.equal(v.ok, true, JSON.stringify(v.errors));
+    assert.equal(mergeSettings(DEFAULT_SETTINGS, v.cleaned).measurementUnitDefault, unit);
+  }
+  assert.equal(errorAt(validateOverrides({ measurementUnitDefault: "mm" }), "measurementUnitDefault"), "The unit is cm or in");
+  // the default is cm (answer 17) so posting it back stores nothing
+  assert.deepEqual(pruneDefaults(validateOverrides({ measurementUnitDefault: "cm" }).cleaned), {});
+  assert.deepEqual(pruneDefaults(validateOverrides({ measurementUnitDefault: "in" }).cleaned), { measurementUnitDefault: "in" });
+});
+
+test("the cleaning hours arrive as typed text and land as numbers, with the abrupt/default warning where the screen shows it", () => {
+  const v = validateOverrides({ planning: { cleaningHoursDefault: "3", cleaningHoursAbrupt: "6" } });
+  assert.equal(v.ok, true, JSON.stringify(v.errors));
+  assert.deepEqual(pruneDefaults(v.cleaned), {}, "3 and 6 are the shipped values (answer 13)");
+  const moved = validateOverrides({ planning: { cleaningHoursDefault: "4", cleaningHoursAbrupt: "8" } });
+  assert.deepEqual(pruneDefaults(moved.cleaned), { planning: { cleaningHoursDefault: 4, cleaningHoursAbrupt: 8 } });
+  assert.equal(moved.warnings.length, 0);
+  // shorter abrupt than ordinary: the route saves and hands the screen a warning under that field
+  const odd = validateOverrides({ planning: { cleaningHoursDefault: "5", cleaningHoursAbrupt: "4" } });
+  assert.equal(odd.ok, true);
+  assert.deepEqual(odd.warnings.map((w) => w.path), ["planning.cleaningHoursAbrupt"]);
+  assert.ok(errorAt(validateOverrides({ planning: { cleaningHoursAbrupt: "49" } }), "planning.cleaningHoursAbrupt"));
+});
+
+test("the alwaysIgst switch (answer 22) ships on; the screen's 'off' is the only thing that turns CGST + SGST back on", () => {
+  assert.equal(DEFAULT_SETTINGS.tax.alwaysIgst, true);
+  const off = validateOverrides({ tax: { alwaysIgst: "off" } });
+  assert.equal(off.ok, true, JSON.stringify(off.errors));
+  assert.deepEqual(pruneDefaults(off.cleaned), { tax: { alwaysIgst: false } });
+  assert.deepEqual(pruneDefaults(validateOverrides({ tax: { alwaysIgst: "on" } }).cleaned), {});
+  // the loose diff — what lights the "differs from default" dot — agrees
+  const draft = JSON.parse(JSON.stringify(DEFAULT_SETTINGS)) as Record<string, unknown>;
+  assert.deepEqual(diffFromDefaults(setAt(draft, "tax.alwaysIgst", false), DEFAULT_SETTINGS, true), ["tax.alwaysIgst"]);
+  assert.deepEqual(diffFromDefaults(setAt(draft, "tax.alwaysIgst", true), DEFAULT_SETTINGS, true), []);
+});
+
+test("the alternate-GSTIN textarea becomes the dropdown choices, the company GSTIN first and by default (answer 21)", () => {
+  const typed = "Pacific Granites (India) Pvt Ltd | 33AAFCP5374A1ZQ\n\n  29ABCDE1234F1Z5  \n";
+  const v = validateOverrides({ company: { alternateGstins: typed } });
+  assert.equal(v.ok, true, JSON.stringify(v.errors));
+  const merged = mergeSettings(DEFAULT_SETTINGS, v.cleaned);
+  assert.deepEqual(merged.company.alternateGstins, ["Pacific Granites (India) Pvt Ltd | 33AAFCP5374A1ZQ", "29ABCDE1234F1Z5"]);
+  const choices = gstinChoices(merged.company);
+  assert.equal(choices[0].gstin, DEFAULT_SETTINGS.company.gstin, "the company's own registration is the default");
+  assert.equal(choices[0].label, DEFAULT_SETTINGS.company.legalName);
+  assert.deepEqual(choices.slice(1), [
+    { label: "Pacific Granites (India) Pvt Ltd", gstin: "33AAFCP5374A1ZQ" },
+    { label: "29ABCDE1234F1Z5", gstin: "29ABCDE1234F1Z5" },
+  ]);
+  // a typo in one line refuses the save and names the line, so the dropdown never offers it
+  const bad = validateOverrides({ company: { alternateGstins: "Sister | 33AAFCP5374A1ZQ\nBranch | 33AAFCP5374" } });
+  assert.equal(bad.ok, false);
+  assert.ok((errorAt(bad, "company.alternateGstins") ?? "").includes("Branch"));
+  // an emptied textarea is a legal "no alternates": only the company GSTIN is offered
+  const none = validateOverrides({ company: { alternateGstins: "" } });
+  assert.equal(none.ok, true, JSON.stringify(none.errors));
+  assert.equal(gstinChoices(mergeSettings(DEFAULT_SETTINGS, none.cleaned).company).length, 1);
+});
+
+test("the two notify switches (answer 13) ship on and take what a checkbox posts", () => {
+  assert.equal(DEFAULT_SETTINGS.notify.telegramPrivate, true);
+  assert.equal(DEFAULT_SETTINGS.notify.mailFromCommercialLogin, true);
+  const v = validateOverrides({ notify: { telegramPrivate: "off", mailFromCommercialLogin: "on" } });
+  assert.equal(v.ok, true, JSON.stringify(v.errors));
+  assert.deepEqual(pruneDefaults(v.cleaned), { notify: { telegramPrivate: false } });
+  assert.equal(errorAt(validateOverrides({ notify: { mailFromCommercialLogin: "maybe" } }), "notify.mailFromCommercialLogin"), "Must be on or off");
+});
+
+test("the counters table lists every kind including the PI, under the label the screen prints", () => {
+  // The "All counters" table used to list only rows that exist in
+  // commercial_sequence, so a kind that had never issued was absent from the
+  // very table an admin reads to find it. The screen now walks NUMBERING_KINDS
+  // through previewCounters: every kind is a row whether or not it has issued.
+  const at = new Date(2026, 8, 7);
+  const p = previewCounters(DEFAULT_SETTINGS, [], at);
+  const rows = NUMBERING_KINDS.map((kind) => ({ label: NUMBERING_LABELS[kind], key: p[kind].key, next: p[kind].next, preview: p[kind].preview }));
+  assert.equal(rows.length, 7);
+  const pi = rows.find((r) => r.label === "Proforma invoice (PI)");
+  assert.ok(pi, "the PI has its own row");
+  assert.deepEqual(pi, { label: "Proforma invoice (PI)", key: "SAL-ORD:26-27", next: 1, preview: "SAL-ORD/26-27/N1" });
+  assert.equal(new Set(rows.map((r) => r.key)).size, 7, "no two kinds draw from one counter");
 });

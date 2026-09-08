@@ -20,8 +20,10 @@ export default async function ProductionPlanningPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Production planning</h1>
         <p className="mt-1 max-w-2xl text-sm text-gray-500">
-          What Commercial is short of, in the order the plant should make it. Drag a row (or use ▲▼) to change the order,
-          type the cleaning note for the changeover, and mark a request produced once the slabs are in finished goods.
+          What Commercial is short of, in the order the plant should make it, with the shade of each design and the
+          slabs, hours and cleaning hours planned. Drag a row (or use ▲▼) to change the order — a light design straight
+          after a dark one is flagged and costs the longer clean — edit the plan in place, and mark a request produced
+          once the slabs are in finished goods. Anything cut from a plan waits below until it is added back or removed.
         </p>
       </div>
       <ProductionPlanningBoard actions={g.actions} />

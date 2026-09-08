@@ -23,7 +23,7 @@
 // A challan is a MOVEMENT, not a sale: the amounts are declared approximate
 // values, which is what the second note says on the page.
 import { buildPdf } from "@/lib/sales/pdf/common";
-import { CHALLAN_COPIES, challanTotals, challanWords, challanTariffHead, challanDate } from "@/lib/commercial/challan-rules";
+import { CHALLAN_COPIES, challanTotals, challanWords, challanTariffHead, challanNumberLines } from "@/lib/commercial/challan-rules";
 import { fmtIndian } from "@/lib/commercial/invoice-rules";
 import type { CommercialSettings } from "@/lib/commercial/settings-defaults";
 import type { ChallanItem } from "@/lib/commercial/types";
@@ -111,10 +111,11 @@ function copyPage(ch: ChallanForPdf, settings: CommercialSettings, copyLabel: st
   const totals = challanTotals(ch.items ?? []);
   const words = ch.amountInWords || challanWords(totals.totalAmount);
   const tariff = challanTariffHead(ch.items ?? [], c.hsnQuartz);
-  const dated = challanDate(isoOf(ch.challanDate));
-
-  const rightRows: Array<[string, string]> = [
-    ["DC No. :", `${t(ch.number)}      Dated: ${dated}`],
+  // the date DIRECTLY UNDER the number (answer 6) — the same pair the invoice
+  // header prints, so a reader finds it in one place on every document
+  const numberStack: any = { stack: challanNumberLines(ch.number, isoOf(ch.challanDate)).map((l, i) => ({ text: l, fontSize: FS, bold: i === 0 })), margin: [2, 2, 2, 2] };
+  const rightRows: Array<[string, string | Record<string, any>]> = [
+    ["DC No. :", numberStack],
     ["PO No. & Date :", t(ch.poRef) || "Verbal"],
     ["Commodity :", t(ch.commodity) || "Artificial Quartz Slabs"],
     ["Commissionerate :", t(c.commissionerate)],
@@ -166,7 +167,7 @@ function copyPage(ch: ChallanForPdf, settings: CommercialSettings, copyLabel: st
             { text: `GSTIN NO : ${t(c.gstin)}`, fontSize: FS, bold: true },
           ], margin: [3, 3, 3, 3] },
           { stack: [{
-            table: { widths: ["36%", "*"], body: rightRows.map(([k, v]) => [cell(k, { bold: true }), cell(v)]) },
+            table: { widths: ["36%", "*"], body: rightRows.map(([k, v]) => [cell(k, { bold: true }), typeof v === "string" ? cell(v) : v]) },
             layout: "noBorders",
           }], margin: [3, 3, 3, 3] },
         ]],

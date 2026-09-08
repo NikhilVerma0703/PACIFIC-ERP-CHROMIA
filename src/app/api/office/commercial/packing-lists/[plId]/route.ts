@@ -5,9 +5,10 @@
 // container is stuffed, which is AFTER the dispatch check — so unlike crates
 // and slabs, the header stays editable until the slabs have left the yard.
 import { commercialGate } from "@/lib/commercial/access";
-import { json, deny, handle, readBody, plain, str, num } from "@/lib/commercial/http";
+import { json, deny, fail, handle, readBody, plain, str, num } from "@/lib/commercial/http";
 import { logOrderEvent } from "@/lib/commercial/events";
-import { packagesSummary } from "@/lib/commercial/packing-rules";
+import { packagesSummary, canSetUnit, PACKING_STATUS_LABEL, type PackingStatus } from "@/lib/commercial/packing-rules";
+import { parseMeasurementUnit } from "@/lib/commercial/measure";
 import { db, loadList, paramPl, requireHeaderEditable } from "../_lib";
 
 export const dynamic = "force-dynamic";
@@ -42,6 +43,18 @@ export async function PATCH(req: Request, { params }: Ctx) {
     // the invoice's Packages column reads it, and nobody should have to count
     // crates by hand to fill a column the crates already answer.
     if (has("packagesSummary") && !data.packagesSummary) data.packagesSummary = packagesSummary(list.crates);
+
+    // The unit (answer 17) is not a header field: it changes what every size
+    // on the sheet reads, so it is closed the moment the dispatch team has the
+    // list, while the container number stays open.
+    if (has("measurementUnit")) {
+      const unit = parseMeasurementUnit(body.measurementUnit);
+      if (!unit) fail(400, "The unit is cm or in");
+      if (!canSetUnit(list.status)) {
+        fail(409, `${list.number} is ${PACKING_STATUS_LABEL[list.status as PackingStatus]?.toLowerCase() ?? list.status} — the unit can only be switched while the list is with Commercial`);
+      }
+      if (unit !== list.measurementUnit) data.measurementUnit = unit;
+    }
 
     if (!Object.keys(data).length) return json(plain(list));
     await db.commercialPackingList.update({ where: { id: plId }, data });

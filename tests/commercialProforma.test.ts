@@ -1,7 +1,8 @@
 // Proforma-invoice rules, RUN against the real reference document: how an order
 // becomes the snapshot a PI prints, how a line is composed, how the totals and
 // the amount in words are derived, what a draft edit may touch, which status
-// may move where, and every string the PDF puts in a cell.
+// may move where, what a revision inherits and what it cancels, when issuing
+// is refused, and every string the PDF puts in a cell.
 //
 // The reference is the 1404 PI (Surfaces by Pacific, 10-07-2026):
 //   VGWT10301A-Polish-Super Jumbo-30mm-Premium / CARRARA ROYALE-…
@@ -9,25 +10,38 @@
 // — and 3208.273 × 5.4 is 17324.6742, NOT 17324.657, which is the whole reason
 // a stored amount is printed and never recomputed.
 //
+// The owner's answers of 2026-09-07 (DECISIONS.md) that this file pins:
+//   1   stock check before the PI (piIssueRefusal asks stages.canEnter)
+//   5/8 the PI's own counter, SAL-ORD/{fy}/N{seq} — never the order's number
+//   21  a GSTIN dropdown, the company's own by default
+//   23  Kotak on export, ICICI on domestic, changeable before issue
+//   24  no validity; a revision is a NEW number and the old PI is CANCELLED;
+//       nothing is re-numbered, no suffix, no reuse
+//
 // proforma-rules imports only sibling pure modules by path, so node --test
 // loads it bare: no Next, no Prisma, no session.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  printable, round3, printThickness, unitLabel, trimNumber, fmtQty, fmtAmount, fmtRate, fmtSlabs,
-  formatPiDate, isoDate, validUntilFor, piFilename, piLabel, printedNumber,
+  printable, round3, round2, printThickness, unitLabel, trimNumber, fmtQty, fmtAmount, fmtRate, fmtSlabs,
+  formatPiDate, isoDate, validUntilFor, piFilename, printedNumber,
   buildItemCode, buildDescription, buildLine, sanitiseLine, recomputeTotals,
-  clientParty, exporterParty, buildProformaSnapshot, applyDraftPatch, piBank, piAmountInWords,
-  nextRevision, canEditDraft, canIssue, canAccept, canCancel, refuseIssue, supersededIds,
+  clientParty, exporterParty, buildProformaSnapshot, applyDraftPatch, piAmountInWords,
+  defaultBankKey, parseBankKey, piBank, bankBlock, gstinChoiceFor, piChoices, BANK_KEYS,
+  nextRevision, canEditDraft, canIssue, canAccept, canCancel, canRevise, refuseIssue,
+  piIssueRefusal, revisionReason, revisedByIssue, carriedIntoRevision,
+  revisesAtIssue, refreezeAtIssue, revisionDraftFor, refuseRevise,
   statusTone, pageArgs, parseProformaStatus, partyBlock, piTableHeader, piRow, piTotalRow,
   piPrintFields, orderWarnings,
   EDITABLE_TEXT_FIELDS,
-  type SnapshotOrderInput, type SnapshotItemInput,
+  type SnapshotOrderInput, type SnapshotItemInput, type PiSnapshot,
 } from "../src/lib/commercial/proforma-rules.ts";
-import { DEFAULT_SETTINGS } from "../src/lib/commercial/settings-defaults.ts";
-import type { ProformaSnapshot } from "../src/lib/commercial/types.ts";
+import { DEFAULT_SETTINGS, gstinChoices, type CommercialSettings } from "../src/lib/commercial/settings-defaults.ts";
+import { canEnter } from "../src/lib/commercial/stages.ts";
 
 const S = DEFAULT_SETTINGS;
+const OWN_GSTIN = S.company.gstin;                       // 33AALCP2750N1Z3
+const ALT_GSTIN = gstinChoices(S.company)[1].gstin;      // 33AAFCP5374A1ZQ, the PGI line
 
 // The reference PI's two lines: a quartz line and the free trade samples that
 // carry slabs but no money.
@@ -59,8 +73,11 @@ const sampleLine: SnapshotItemInput = {
   isSample: true,
 };
 
+// The ORDER has its own number (ORD/…); the PI's number comes from the
+// proforma counter and is passed in as opts.number. The two must never be
+// confused again, so the fixtures keep them visibly different.
 const exportOrder: SnapshotOrderInput = {
-  number: "SAL-ORD/26-27/01642",
+  number: "ORD/26-27/N7",
   kind: "EXPORT",
   currency: "usd",
   customerPoNumber: "PO-4068622",
@@ -81,14 +98,15 @@ const exportOrder: SnapshotOrderInput = {
 };
 
 const domesticOrder: SnapshotOrderInput = {
-  number: "SAL-ORD/26-27/01700",
+  number: "ORD/26-27/N8",
   kind: "DOMESTIC",
   currency: "INR",
   client: { name: "JB Homes", address: "No 4, Race Course Road", city: "Coimbatore", country: "India", commercialExt: { gstin: "33AABCJ1234K1Z5", stateCode: "33" } },
   items: [{ lineNo: 1, design: "Statuario Bianco", thickness: "2 cm", qtySlabs: 6, qty: 784.887, uom: "SQFT", rate: 210, amount: 164826.27, hsn: "68101990" }],
 };
 
-const opts = { revision: 0, date: "2026-07-10", validUntil: null };
+const PI_NO = "SAL-ORD/26-27/N3";
+const opts = { number: PI_NO, revision: 0, date: "2026-07-10", validUntil: null };
 
 // ───────────────────────────── printing primitives ───────────────────────────
 
@@ -149,6 +167,7 @@ test("numbers: quantity and amount at 3 dp, the rate exactly as typed, slabs who
   assert.equal(fmtAmount(undefined), "");
   assert.equal(round3(17324.6574), 17324.657);
   assert.equal(round3(0.1 + 0.2), 0.3);
+  assert.equal(round2(100.255), 100.26);
 });
 
 test("dates: stored YYYY-MM-DD, printed DD-MM-YYYY, blank stays blank", () => {
@@ -160,26 +179,30 @@ test("dates: stored YYYY-MM-DD, printed DD-MM-YYYY, blank stays blank", () => {
   assert.equal(isoDate(new Date("2026-07-10T23:45:00.000Z")), "2026-07-10");
 });
 
-test("validUntilFor: the issue day plus the settings' validity, in whole days", () => {
+test("validUntilFor: 0 days is NO validity (answer 24), a positive setting is the issue day plus the days", () => {
   const issued = new Date("2026-07-10T09:30:00.000Z");
-  assert.equal(validUntilFor(issued, 30), "2026-08-09");
-  // Answer 24: a PI is valid forever, so the default validity is 0 and the
-  // issue route stamps NO validUntil at all; the helper itself still answers
-  // for the day the owner sets a number of days.
+  // The default is forever. The bug this pins: the first cut answered the
+  // issue day itself for 0, so a PI would have "expired" the day it went out.
   assert.equal(S.piValidityDays, 0, "the default is forever (DECISIONS.md 24)");
-  assert.equal(validUntilFor(issued, S.piValidityDays), "2026-07-10");
-  assert.equal(validUntilFor(issued, 0), "2026-07-10");
+  assert.equal(validUntilFor(issued, S.piValidityDays), null);
+  assert.equal(validUntilFor(issued, 0), null);
+  assert.equal(validUntilFor(issued, -5), null, "a negative setting is not a validity either");
+  assert.equal(validUntilFor(issued, Number.NaN), null);
+  // and the days path stays for the day the owner sets a number
+  assert.equal(validUntilFor(issued, 30), "2026-08-09");
   assert.equal(validUntilFor(new Date("2026-02-27T00:00:00.000Z"), 3), "2026-03-02", "no leap day in 2026");
+  assert.equal(validUntilFor(issued, 0.4), null, "rounds to whole days before deciding");
 });
 
-test("piFilename / piLabel / printedNumber: a slash is not a filename, a revision is a suffix", () => {
-  assert.equal(piFilename("SAL-ORD/26-27/01642", 0), "SAL-ORD-26-27-01642-R0.pdf");
-  assert.equal(piFilename("SAL-ORD/26-27/01642", 2), "SAL-ORD-26-27-01642-R2.pdf");
-  assert.equal(piFilename("", 0), "proforma-R0.pdf");
-  assert.equal(piLabel("SAL-ORD/26-27/01642", 1), "SAL-ORD/26-27/01642-R1");
-  // The printed invoice number keeps the order number; only a revision is suffixed.
-  assert.equal(printedNumber("SAL-ORD/26-27/01642", 0), "SAL-ORD/26-27/01642");
-  assert.equal(printedNumber("SAL-ORD/26-27/01642", 1), "SAL-ORD/26-27/01642-R1");
+test("piFilename / printedNumber: a slash is not a filename; the number prints whole, with no revision suffix (answer 24)", () => {
+  assert.equal(piFilename("SAL-ORD/26-27/N3"), "SAL-ORD-26-27-N3.pdf");
+  assert.equal(piFilename("SAL-ORD/26-27/N142"), "SAL-ORD-26-27-N142.pdf");
+  assert.equal(piFilename(""), "proforma.pdf");
+  assert.equal(piFilename('a:b*c?"d<e>f|g'), "a-b-c-d-e-f-g.pdf");
+  // A revision is a NEW number, so there is nothing to suffix: N3 prints as N3.
+  assert.equal(printedNumber("SAL-ORD/26-27/N3"), "SAL-ORD/26-27/N3");
+  assert.equal(printedNumber(" SAL-ORD/26-27/N3 "), "SAL-ORD/26-27/N3");
+  assert.doesNotMatch(printedNumber("SAL-ORD/26-27/N3"), /-R\d+$/);
 });
 
 // ───────────────────────────── lines ─────────────────────────────────────────
@@ -300,7 +323,7 @@ test("a domestic PI's total in words is the figure it prints — paise and all",
   // words ABOVE the figure ("138686.750" over "…Eighty Seven Rupees Only"),
   // so one PI would state two different totals.
   const of = (amount: number) =>
-    buildProformaSnapshot({ ...domesticOrder, items: [{ ...domesticOrder.items![0], amount }] }, S, { revision: 0, date: "2026-07-12" });
+    buildProformaSnapshot({ ...domesticOrder, items: [{ ...domesticOrder.items![0], amount }] }, S, { number: PI_NO, revision: 0, date: "2026-07-12" });
 
   for (const amount of [138686.25, 138686.75, 138686.5, 164826.27, 6000, 0.05, 12345678.9]) {
     const s = of(amount);
@@ -326,7 +349,7 @@ test("an INR total is money at paise precision, so figure and words can agree at
   const s = buildProformaSnapshot({
     ...domesticOrder,
     items: [{ ...domesticOrder.items![0], amount: 100.126 }, { ...domesticOrder.items![0], lineNo: 2, amount: 0.13 }],
-  }, S, { revision: 0, date: "2026-07-12" });
+  }, S, { number: PI_NO, revision: 0, date: "2026-07-12" });
   assert.equal(s.totalAmount, 100.26, "100.126 + 0.13 = 100.256 → 100.26; a rupee has two decimals, not three");
   assert.equal(rupeesFromWords(s.amountInWords), 100.26);
   // an export PI keeps the document's 3 dp
@@ -346,12 +369,15 @@ test("clientParty: the client master as the consignee fallback", () => {
   assert.equal(clientParty({}), null, "a client with neither a name nor an address is no party at all");
 });
 
-test("exporterParty: the company master, exactly", () => {
+test("exporterParty: the company master, under the chosen registration (answer 21)", () => {
   const e = exporterParty(S);
   assert.equal(e.name, "Pacific Engineered Surfaces Private Limited");
   assert.deepEqual(e.lines, S.company.addressLines);
-  assert.equal(e.gstin, "33AALCP2750N1Z3");
+  assert.equal(e.gstin, OWN_GSTIN, "no choice → the company's own");
   assert.equal(e.country, "India");
+  assert.equal(exporterParty(S, ALT_GSTIN).gstin, ALT_GSTIN);
+  assert.equal(exporterParty(S, "").gstin, OWN_GSTIN, "a blank choice is no choice");
+  assert.equal(exporterParty(S, null).gstin, OWN_GSTIN);
 });
 
 test("partyBlock: bold name, address lines, and only the contacts that exist", () => {
@@ -364,14 +390,74 @@ test("partyBlock: bold name, address lines, and only the contacts that exist", (
   assert.deepEqual(partyBlock({ name: "Y", lines: ["", "  ", "Real line"] }).lines, ["Real line"]);
 });
 
+// ───────────────────────────── the two choices ───────────────────────────────
+
+test("defaultBankKey / parseBankKey: ICICI on domestic, Kotak on international (answer 23); a typo is no choice", () => {
+  assert.equal(defaultBankKey("DOMESTIC"), "domestic");
+  assert.equal(defaultBankKey("EXPORT"), "export");
+  assert.equal(defaultBankKey("anything else"), "export", "a PI of unknown kind is an export PI");
+  assert.equal(parseBankKey("export"), "export");
+  assert.equal(parseBankKey(" DOMESTIC "), "domestic");
+  assert.equal(parseBankKey("kotak"), null, "the key is the settings slot, not the bank's name");
+  assert.equal(parseBankKey(null), null);
+  assert.equal(parseBankKey(""), null);
+  assert.deepEqual([...BANK_KEYS], ["export", "domestic"]);
+});
+
+test("piBank / bankBlock: the account is the settings slot, frozen as a copy", () => {
+  assert.equal(piBank(S, "export").name, "Kotak Mahindra Bank Limited");
+  assert.equal(piBank(S, "domestic").name, "ICICI Bank");
+  const block = bankBlock(S.banks.export);
+  assert.deepEqual(block, {
+    name: "Kotak Mahindra Bank Limited",
+    address: S.banks.export.address,
+    accountNo: "3214292773",
+    ifsc: "KKBK0000422",
+    swift: "KKBKINBBXXX",
+    adCode: "0180038-8400009",
+    routingBank: S.banks.export.routingBank,
+    routingSwift: "IRVTUS3NXXX",
+  });
+  assert.notEqual(block, S.banks.export, "a copy, so a later settings edit cannot change a PI the customer holds");
+  assert.equal(bankBlock(S.banks.domestic).adCode, undefined, "ICICI has no AD code and the block does not invent one");
+});
+
+test("gstinChoiceFor: the company's own by default, an alternate when it is on the list, own again for a stranger", () => {
+  assert.equal(gstinChoiceFor(S, null).gstin, OWN_GSTIN);
+  assert.equal(gstinChoiceFor(S, undefined).gstin, OWN_GSTIN);
+  assert.equal(gstinChoiceFor(S, "").gstin, OWN_GSTIN);
+  assert.equal(gstinChoiceFor(S, ALT_GSTIN).gstin, ALT_GSTIN);
+  assert.equal(gstinChoiceFor(S, ALT_GSTIN).label, "Pacific Granites (India) Pvt Ltd");
+  assert.equal(gstinChoiceFor(S, ALT_GSTIN.toLowerCase()).gstin, ALT_GSTIN, "case does not matter");
+  // A GSTIN removed from Settings after the draft was built must not print as
+  // a blank on the customer's paper.
+  assert.equal(gstinChoiceFor(S, "29ZZZZZ9999Z1Z9").gstin, OWN_GSTIN);
+  assert.equal(gstinChoiceFor(S, OWN_GSTIN).label, S.company.legalName);
+});
+
+test("piChoices: what the PI tab's dropdowns offer, labels only", () => {
+  const c = piChoices(S);
+  assert.deepEqual(c.banks, [
+    { key: "export", label: "Kotak Mahindra Bank Limited (export)" },
+    { key: "domestic", label: "ICICI Bank (domestic)" },
+  ]);
+  assert.deepEqual(c.gstins.map((g) => g.gstin), [OWN_GSTIN, ALT_GSTIN]);
+  assert.equal(c.piValidityDays, 0);
+  assert.equal(piChoices({ ...S, piValidityDays: 30 }).piValidityDays, 30);
+  assert.equal(piChoices({ ...S, piValidityDays: -3 }).piValidityDays, 0, "a negative setting reads as forever");
+  assert.equal(JSON.stringify(c).includes(S.banks.export.accountNo), false, "no account number leaves through the choices route");
+});
+
 // ───────────────────────────── the snapshot ──────────────────────────────────
 
-test("buildProformaSnapshot (EXPORT): the reference PI, field by field", () => {
+test("buildProformaSnapshot (EXPORT): the reference PI, field by field — under the PI's OWN number", () => {
   const s = buildProformaSnapshot(exportOrder, S, { ...opts, deliveryDate: "2026-08-15" });
-  assert.equal(s.number, "SAL-ORD/26-27/01642");
+  assert.equal(s.number, PI_NO, "the number is the proforma counter's (answers 5, 8, 24)");
+  assert.notEqual(s.number, exportOrder.number, "…and never the order's");
   assert.equal(s.revision, 0);
   assert.equal(s.date, "2026-07-10");
   assert.equal(s.deliveryDate, "2026-08-15");
+  assert.equal(s.validUntil, null, "answer 24: no validity");
   assert.equal(s.kind, "EXPORT");
   assert.equal(s.currency, "USD", "the currency is upper-cased");
   assert.equal(s.buyerPoNo, "PO-4068622");
@@ -390,28 +476,33 @@ test("buildProformaSnapshot (EXPORT): the reference PI, field by field", () => {
   assert.equal(s.vessel, null);
   assert.equal(s.lines.length, 2);
   assert.equal(s.discount, 0);
-  assert.equal(s.bank.name, "Kotak Mahindra Bank Limited", "export banks with Kotak (OPEN-QUESTIONS §23)");
+  assert.equal(s.bankKey, "export", "answer 23: Kotak on international by default");
+  assert.equal(s.bank.name, "Kotak Mahindra Bank Limited");
   assert.equal(s.bank.adCode, "0180038-8400009");
   assert.equal(s.bank.routingSwift, "IRVTUS3NXXX");
-  assert.equal(s.company.gstin, "33AALCP2750N1Z3");
+  assert.equal(s.gstinKey, OWN_GSTIN, "answer 21: the company's own by default");
+  assert.equal(s.company.gstin, OWN_GSTIN);
+  assert.equal(s.exporter.gstin, OWN_GSTIN);
   assert.equal(s.company.rbiCode, "678");
   assert.equal(s.declaration, S.texts.piDeclaration);
   assert.equal(s.grossWeight, null);
   assert.equal(s.netWeight, null);
+  assert.equal(s.revises, null);
 });
 
-test("buildProformaSnapshot (DOMESTIC): CM thickness, the SQFT code, the Kotak account, rupees and paise in words", () => {
-  const s = buildProformaSnapshot(domesticOrder, S, { revision: 1, date: "2026-07-12" });
+test("buildProformaSnapshot (DOMESTIC): CM thickness, the SQFT code, ICICI by default, rupees and paise in words", () => {
+  const s = buildProformaSnapshot(domesticOrder, S, { number: "SAL-ORD/26-27/N4", revision: 1, date: "2026-07-12" });
+  assert.equal(s.number, "SAL-ORD/26-27/N4");
   assert.equal(s.kind, "DOMESTIC");
   assert.equal(s.currency, "INR");
   assert.equal(s.revision, 1);
   assert.equal(s.lines[0].thickness, "2 CM");
   assert.equal(s.lines[0].unit, "SQFT");
-  // OPEN-QUESTIONS §23: ICICI is the DTA INVOICE's account; the PI, the export
-  // documents and the challan carry Kotak. A proforma is a PI whatever its kind.
-  assert.equal(s.bank.name, "Kotak Mahindra Bank Limited");
-  assert.equal(s.bank.accountNo, "3214292773");
-  assert.notEqual(s.bank.accountNo, S.banks.domestic.accountNo, "the ICICI account does not belong on a PI");
+  // Answer 23: "ICICI on domestic, Kotak on international".
+  assert.equal(s.bankKey, "domestic");
+  assert.equal(s.bank.name, "ICICI Bank");
+  assert.equal(s.bank.accountNo, "020405012473");
+  assert.equal(s.bank.ifsc, "ICIC0000204");
   assert.equal(s.deliveryTerms, "Ex-Factory Without Packing", "the domestic default");
   assert.equal(s.paymentTerms, "100% Advance Payment");
   assert.equal(s.preCarriageBy, null, "a domestic PI has no pre-carriage default");
@@ -422,19 +513,20 @@ test("buildProformaSnapshot (DOMESTIC): CM thickness, the SQFT code, the Kotak a
   assert.equal(s.consignee.gstin, "33AABCJ1234K1Z5");
 });
 
-test("the PI prints Kotak on both kinds, and piBank says so on its own (OPEN-QUESTIONS §23)", () => {
-  assert.equal(piBank(S), S.banks.export);
-  assert.equal(piBank(S).name, "Kotak Mahindra Bank Limited");
-  const dom = buildProformaSnapshot(domesticOrder, S, opts);
-  const exp = buildProformaSnapshot(exportOrder, S, opts);
-  assert.deepEqual(dom.bank, exp.bank, "one PI account, whatever the kind — the customer wires an advance to it");
-  for (const s of [dom, exp]) {
-    assert.equal(s.bank.ifsc, "KKBK0000422");
-    assert.notEqual(s.bank.name, S.banks.domestic.name);
-    assert.notEqual(piPrintFields(s).accountNo, S.banks.domestic.accountNo);
-  }
-  // and the bank the settings call "domestic" is still there for the DTA invoice
-  assert.equal(S.banks.domestic.accountNo, "020405012473");
+test("buildProformaSnapshot: the dropdowns' choices override the kind's defaults (answers 21, 23)", () => {
+  const dom = buildProformaSnapshot(domesticOrder, S, { ...opts, bankKey: "export" });
+  assert.equal(dom.bankKey, "export");
+  assert.equal(dom.bank.name, "Kotak Mahindra Bank Limited", "a domestic customer may still be asked to wire to Kotak");
+  const exp = buildProformaSnapshot(exportOrder, S, { ...opts, bankKey: "domestic", gstinKey: ALT_GSTIN });
+  assert.equal(exp.bankKey, "domestic");
+  assert.equal(exp.bank.name, "ICICI Bank");
+  assert.equal(exp.gstinKey, ALT_GSTIN);
+  assert.equal(exp.company.gstin, ALT_GSTIN, "the printed GSTIN follows the choice…");
+  assert.equal(exp.exporter.gstin, ALT_GSTIN, "…in both places it prints");
+  assert.equal(exp.company.legalName, S.company.legalName, "the name does not: the PI is still PESPL's paper");
+  const stranger = buildProformaSnapshot(exportOrder, S, { ...opts, gstinKey: "29ZZZZZ9999Z1Z9", bankKey: null });
+  assert.equal(stranger.gstinKey, OWN_GSTIN);
+  assert.equal(stranger.bankKey, "export");
 });
 
 test("buildProformaSnapshot: the order's own parties beat the client master, and bill-to becomes buyer-if-not-consignee", () => {
@@ -503,10 +595,39 @@ test("applyDraftPatch: replacing the lines re-derives slabs, total and words", (
   assert.equal(snapshot.amountInWords, "USD Three Thousand only.");
 });
 
+test("applyDraftPatch: the bank and GSTIN choices re-freeze from Settings — and only when Settings are passed", () => {
+  const base = buildProformaSnapshot(exportOrder, S, opts);
+  // the bank
+  const toIcici = applyDraftPatch(base, { bankKey: "domestic" }, S);
+  assert.equal(toIcici.changed, true);
+  assert.equal(toIcici.snapshot.bankKey, "domestic");
+  assert.equal(toIcici.snapshot.bank.name, "ICICI Bank");
+  assert.equal(toIcici.snapshot.bank.accountNo, "020405012473");
+  assert.equal(toIcici.snapshot.bank.adCode, undefined, "the whole block is re-frozen, not patched over Kotak's");
+  assert.equal(applyDraftPatch(base, { bankKey: "export" }, S).changed, false, "the same key is a no-op");
+  assert.equal(applyDraftPatch(base, { bankKey: "kotak" }, S).changed, false, "a typo changes nothing rather than blanking the bank");
+  assert.equal(applyDraftPatch(base, { bankKey: "domestic" }).changed, false, "no settings, no re-freeze: the route always passes them");
+  // the GSTIN
+  const toAlt = applyDraftPatch(base, { gstinKey: ALT_GSTIN }, S);
+  assert.equal(toAlt.changed, true);
+  assert.equal(toAlt.snapshot.gstinKey, ALT_GSTIN);
+  assert.equal(toAlt.snapshot.company.gstin, ALT_GSTIN);
+  assert.equal(toAlt.snapshot.exporter.gstin, ALT_GSTIN);
+  assert.equal(toAlt.snapshot.exporter.name, base.exporter.name);
+  assert.equal(applyDraftPatch(base, { gstinKey: OWN_GSTIN }, S).changed, false);
+  assert.equal(applyDraftPatch(base, { gstinKey: "29ZZZZZ9999Z1Z9" }, S).changed, false, "a stranger falls back to the own GSTIN the draft already has");
+  assert.equal(applyDraftPatch(toAlt.snapshot, { gstinKey: "29ZZZZZ9999Z1Z9" }, S).snapshot.gstinKey, OWN_GSTIN, "…and back to own when the draft was on an alternate");
+  // the bank block itself and the company block are NOT editable directly
+  const direct = applyDraftPatch(base, { bank: { name: "Some Other Bank" }, company: { gstin: ALT_GSTIN } }, S);
+  assert.equal(direct.changed, false);
+  assert.equal(direct.snapshot.bank.name, "Kotak Mahindra Bank Limited");
+  assert.equal(direct.snapshot.company.gstin, OWN_GSTIN);
+});
+
 test("applyDraftPatch: everything the customer's paper identity depends on is ignored", () => {
   const base = buildProformaSnapshot(exportOrder, S, opts);
   const { snapshot, changed } = applyDraftPatch(base, {
-    number: "SAL-ORD/26-27/09999",
+    number: "SAL-ORD/26-27/N999",
     revision: 9,
     kind: "DOMESTIC",
     currency: "EUR",
@@ -517,9 +638,11 @@ test("applyDraftPatch: everything the customer's paper identity depends on is ig
     company: { legalName: "Not Us" },
     declaration: "",
     exporter: { name: "Not Us", lines: [] },
-  });
+    revises: { id: "x", number: "SAL-ORD/26-27/N1" },
+    validUntil: "2030-01-01",
+  }, S);
   assert.equal(changed, false);
-  assert.equal(snapshot.number, "SAL-ORD/26-27/01642");
+  assert.equal(snapshot.number, PI_NO);
   assert.equal(snapshot.revision, 0);
   assert.equal(snapshot.kind, "EXPORT");
   assert.equal(snapshot.currency, "USD");
@@ -528,6 +651,8 @@ test("applyDraftPatch: everything the customer's paper identity depends on is ig
   assert.equal(snapshot.company.legalName, "Pacific Engineered Surfaces Private Limited");
   assert.equal(snapshot.declaration, S.texts.piDeclaration);
   assert.equal(snapshot.exporter.name, "Pacific Engineered Surfaces Private Limited");
+  assert.equal(snapshot.revises, null);
+  assert.equal(snapshot.validUntil, null, "validity is the issue route's to set, never a draft edit's");
 });
 
 test("applyDraftPatch: a consignee may be replaced but never emptied; a bad date is refused", () => {
@@ -551,7 +676,7 @@ test("applyDraftPatch: a consignee may be replaced but never emptied; a bad date
 // checked twice: the flag it returns, and whether the snapshot it returns
 // actually differs. The two must agree, always.
 test("applyDraftPatch: `changed` is true on EVERY path that moves the document, and false on none of them", () => {
-  const base = JSON.parse(JSON.stringify(buildProformaSnapshot(exportOrder, S, opts))) as ProformaSnapshot;
+  const base = JSON.parse(JSON.stringify(buildProformaSnapshot(exportOrder, S, opts))) as PiSnapshot;
   const line = { lineNo: 1, itemCode: "X", description: "ONE LINE", thickness: "30mm", slabs: 10, hsn: "68101990", unit: "Square Foot", qty: 500, rate: 6, amount: 3000 };
 
   const cases: Array<{ what: string; patch: unknown; changed: boolean }> = [
@@ -582,6 +707,9 @@ test("applyDraftPatch: `changed` is true on EVERY path that moves the document, 
     { what: "lines replaced", patch: { lines: [line] }, changed: true },
     { what: "lines emptied", patch: { lines: [] }, changed: true },
     { what: "one line's amount edited", patch: { lines: [{ ...base.lines[0], amount: 17324.66 }, base.lines[1]] }, changed: true },
+    // the two choices (answers 21, 23)
+    { what: "bankKey", patch: { bankKey: "domestic" }, changed: true },
+    { what: "gstinKey", patch: { gstinKey: ALT_GSTIN }, changed: true },
     // and the paths that really are no-ops: the route may skip the write
     { what: "nothing at all", patch: {}, changed: false },
     { what: "a null body", patch: null, changed: false },
@@ -593,11 +721,15 @@ test("applyDraftPatch: `changed` is true on EVERY path that moves the document, 
     { what: "an emptied consignee (ignored)", patch: { consignee: null }, changed: false },
     { what: "a bad delivery date (ignored)", patch: { deliveryDate: "15/08/2026" }, changed: false },
     { what: "a bad date (ignored)", patch: { date: "not a date" }, changed: false },
-    { what: "read-only fields", patch: { number: "X", revision: 9, currency: "EUR", totalAmount: 1, bank: { name: "Other" } }, changed: false },
+    { what: "the same bank key", patch: { bankKey: "export" }, changed: false },
+    { what: "a bank key typo", patch: { bankKey: "kotak" }, changed: false },
+    { what: "the same GSTIN", patch: { gstinKey: OWN_GSTIN }, changed: false },
+    { what: "an unknown GSTIN on a draft already on its own", patch: { gstinKey: "29ZZZZZ9999Z1Z9" }, changed: false },
+    { what: "read-only fields", patch: { number: "X", revision: 9, currency: "EUR", totalAmount: 1, bank: { name: "Other" }, validUntil: "2030-01-01" }, changed: false },
   ];
 
   for (const c of cases) {
-    const r = applyDraftPatch(base, c.patch);
+    const r = applyDraftPatch(base, c.patch, S);
     const moved = JSON.stringify(r.snapshot) !== JSON.stringify(base);
     assert.equal(r.changed, c.changed, `${c.what}: changed should be ${c.changed}`);
     assert.equal(
@@ -617,19 +749,23 @@ test("applyDraftPatch: the PI tab's own save body reports changed, so the PATCH 
     netWeight: "23,100 KGS",
     discount: 324.657,
     notes: "Container stuffed at the factory.",
+    bankKey: "export",
+    gstinKey: OWN_GSTIN,
   };
-  const first = applyDraftPatch(base, body);
+  const first = applyDraftPatch(base, body, S);
   assert.equal(first.changed, true, "the first save must reach the database");
   assert.equal(first.snapshot.totalAmount, 17000, "and the discount re-derived the total");
   assert.equal(first.snapshot.amountInWords, "USD Seventeen Thousand only.");
   // saving the same form again is the one honest no-op
-  const again = applyDraftPatch(first.snapshot, body);
+  const again = applyDraftPatch(first.snapshot, body, S);
   assert.equal(again.changed, false);
   assert.deepEqual(again.snapshot, first.snapshot);
   // and changing one field of it moves again
-  assert.equal(applyDraftPatch(first.snapshot, { ...body, vessel: "MAERSK SENTOSA" }).changed, true);
-  assert.equal(applyDraftPatch(first.snapshot, { ...body, discount: 0 }).changed, true);
-  assert.equal(applyDraftPatch(first.snapshot, { ...body, notes: null }).changed, true);
+  assert.equal(applyDraftPatch(first.snapshot, { ...body, vessel: "MAERSK SENTOSA" }, S).changed, true);
+  assert.equal(applyDraftPatch(first.snapshot, { ...body, discount: 0 }, S).changed, true);
+  assert.equal(applyDraftPatch(first.snapshot, { ...body, notes: null }, S).changed, true);
+  assert.equal(applyDraftPatch(first.snapshot, { ...body, bankKey: "domestic" }, S).changed, true);
+  assert.equal(applyDraftPatch(first.snapshot, { ...body, gstinKey: ALT_GSTIN }, S).changed, true);
 });
 
 test("the editable field list is the whole of what a draft edit may reach", () => {
@@ -638,21 +774,25 @@ test("the editable field list is the whole of what a draft edit may reach", () =
   assert.ok(EDITABLE_TEXT_FIELDS.includes("grossWeight"));
   assert.ok(EDITABLE_TEXT_FIELDS.includes("netWeight"));
   assert.ok(EDITABLE_TEXT_FIELDS.includes("notes"));
-  for (const forbidden of ["number", "revision", "currency", "totalAmount", "amountInWords", "declaration"]) {
+  for (const forbidden of ["number", "revision", "currency", "totalAmount", "amountInWords", "declaration", "validUntil", "bankKey", "gstinKey", "revises"]) {
     assert.equal((EDITABLE_TEXT_FIELDS as readonly string[]).includes(forbidden), false, forbidden);
   }
 });
 
 // ───────────────────────────── revisions and status ──────────────────────────
 
-test("nextRevision: 0 for the first, max + 1 after", () => {
+test("nextRevision: 0 for the first, max + 1 after — an ordinal, never part of the number", () => {
   assert.equal(nextRevision([]), 0);
   assert.equal(nextRevision([{ revision: 0 }]), 1);
   assert.equal(nextRevision([{ revision: 0 }, { revision: 2 }, { revision: 1 }]), 3, "a gap does not get re-used");
   assert.equal(nextRevision([0, 4]), 5);
+  const second = buildProformaSnapshot(exportOrder, S, { ...opts, number: "SAL-ORD/26-27/N9", revision: nextRevision([{ revision: 0 }]) });
+  assert.equal(second.revision, 1);
+  assert.equal(printedNumber(second.number), "SAL-ORD/26-27/N9", "the ordinal does not print");
+  assert.equal(piPrintFields(second).invoiceNo, "SAL-ORD/26-27/N9");
 });
 
-test("who may do what to a revision", () => {
+test("who may do what to a PI", () => {
   assert.equal(canEditDraft("DRAFT"), true);
   assert.equal(canEditDraft("ISSUED"), false);
   assert.equal(canIssue("DRAFT"), true);
@@ -666,6 +806,12 @@ test("who may do what to a revision", () => {
   assert.equal(canCancel("ACCEPTED"), true);
   assert.equal(canCancel("SUPERSEDED"), false);
   assert.equal(canCancel("CANCELLED"), false);
+  // a revision replaces paper the customer holds; a draft is edited, a cancelled one is history
+  assert.equal(canRevise("ISSUED"), true);
+  assert.equal(canRevise("ACCEPTED"), true);
+  assert.equal(canRevise("DRAFT"), false);
+  assert.equal(canRevise("CANCELLED"), false);
+  assert.equal(canRevise("SUPERSEDED"), false);
 });
 
 test("refuseIssue: names the reason, or nothing at all", () => {
@@ -677,18 +823,229 @@ test("refuseIssue: names the reason, or nothing at all", () => {
   assert.match(refuseIssue({ status: "DRAFT", snapshot: null })!, /no lines/);
 });
 
-test("supersededIds: issuing kills the other live revisions of the same number, nothing else", () => {
+test("piIssueRefusal (answer 1): no PI without a stock check — a stamp AND a live hold — in canEnter's own words", () => {
+  const stamp = "2026-09-01T10:00:00.000Z";
+  const gateWords = (canEnter("STOCK_CHECKED", "PI_ISSUED", { stockChecked: false }) as { reason: string }).reason;
+  assert.match(gateWords, /Stock check first/);
+
+  // the ordinary first PI
+  assert.equal(piIssueRefusal({ status: "STOCK_CHECKED", stockCheckedAt: stamp, activeHolds: 1 }), null);
+  assert.equal(piIssueRefusal({ status: "CONFIRMED", stockCheckedAt: null, activeHolds: 0 }), gateWords, "the same words the stage strip shows");
+  assert.equal(piIssueRefusal({ status: "CONFIRMED", stockCheckedAt: stamp, activeHolds: 0 }), gateWords, "the stamp alone is history: the hold lapsed (answer 11)");
+  assert.equal(piIssueRefusal({ status: "STOCK_CHECKED", stockCheckedAt: null, activeHolds: 1 }), gateWords, "a hold with no stamp is not a stock check either");
+  assert.equal(piIssueRefusal({ status: "DRAFT", stockCheckedAt: null, activeHolds: 0 }), gateWords);
+  assert.equal(piIssueRefusal({ status: "CONFIRMED", stockCheckedAt: new Date(stamp), activeHolds: 2 }), null, "a Date works as well as an ISO string");
+
+  // a revision: the order already stands at PI_ISSUED (or further) — not a
+  // stage move, so canEnter's "Already PI issued" no-op must not refuse it
+  assert.equal(piIssueRefusal({ status: "PI_ISSUED", stockCheckedAt: stamp, activeHolds: 1 }), null);
+  assert.equal(piIssueRefusal({ status: "PI_ISSUED", stockCheckedAt: stamp, activeHolds: 0 }), gateWords, "…but the stock gate still holds on a revision");
+  assert.equal(piIssueRefusal({ status: "PACKING", stockCheckedAt: stamp, activeHolds: 1 }), null);
+
+  // a terminal order never gets a PI
+  assert.match(piIssueRefusal({ status: "CANCELLED", stockCheckedAt: stamp, activeHolds: 1 })!, /cannot move/);
+  assert.match(piIssueRefusal({ status: "CLOSED", stockCheckedAt: stamp, activeHolds: 1 })!, /cannot move/);
+});
+
+test("revisionReason / revisedByIssue (answer 24): the old PI is CANCELLED as revised, by number, on the same order only", () => {
+  assert.equal(revisionReason("SAL-ORD/26-27/N4"), "Revised as SAL-ORD/26-27/N4");
+  assert.equal(revisionReason("  SAL-ORD/26-27/N4 "), "Revised as SAL-ORD/26-27/N4");
+
   const all = [
-    { id: "a", number: "SAL-ORD/26-27/01642", status: "ISSUED" },
-    { id: "b", number: "SAL-ORD/26-27/01642", status: "ACCEPTED" },
-    { id: "c", number: "SAL-ORD/26-27/01642", status: "DRAFT" },
-    { id: "d", number: "SAL-ORD/26-27/01642", status: "CANCELLED" },
-    { id: "e", number: "SAL-ORD/26-27/01642", status: "SUPERSEDED" },
-    { id: "f", number: "SAL-ORD/26-27/01700", status: "ISSUED" },
-    { id: "me", number: "SAL-ORD/26-27/01642", status: "DRAFT" },
+    { id: "a", orderId: "o1", status: "ISSUED" },
+    { id: "b", orderId: "o1", status: "ACCEPTED" },
+    { id: "c", orderId: "o1", status: "DRAFT" },
+    { id: "d", orderId: "o1", status: "CANCELLED" },
+    { id: "e", orderId: "o1", status: "SUPERSEDED" },
+    { id: "f", orderId: "o2", status: "ISSUED" },
+    { id: "me", orderId: "o1", status: "DRAFT" },
   ];
-  assert.deepEqual(supersededIds(all, { id: "me", number: "SAL-ORD/26-27/01642" }), ["a", "b"]);
-  assert.deepEqual(supersededIds([], { id: "me", number: "X" }), []);
+  assert.deepEqual(revisedByIssue(all, { id: "me", orderId: "o1" }), ["a", "b"], "the live ones of this order, not drafts, not history, not another order, not itself");
+  assert.deepEqual(revisedByIssue([], { id: "me", orderId: "o1" }), []);
+  assert.deepEqual(revisedByIssue([{ id: "me", orderId: "o1", status: "ISSUED" }], { id: "me", orderId: "o1" }), [], "a PI does not revise itself");
+});
+
+// Answer 24, the revise/issue split: /revise leaves the old PI ISSUED and only
+// drafts the replacement, so the order is never without a live PI between the
+// two; the retirement happens at ISSUE, in one transaction with the new paper
+// going live. These four helpers are everything the two routes decide.
+
+test("revisionDraftFor / refuseRevise (answer 24): the old PI stays live, and a second revision of it is refused while the first draft exists", () => {
+  const live = { id: "old", status: "ISSUED" };
+
+  // nothing pending → the revision may go ahead
+  assert.equal(refuseRevise(live, []), null);
+  assert.equal(refuseRevise({ id: "old", status: "ACCEPTED" }, []), null, "accepted paper is revisable too");
+
+  // only paper the customer holds is revisable — a draft is simply edited,
+  // history is history
+  assert.match(refuseRevise({ id: "old", status: "DRAFT" }, [])!, /Only an issued or accepted PI can be revised \(this PI is draft\)/);
+  assert.match(refuseRevise({ id: "old", status: "CANCELLED" }, [])!, /this PI is cancelled/);
+  assert.match(refuseRevise({ id: "old", status: "SUPERSEDED" }, [])!, /this PI is superseded/);
+
+  const siblings = [
+    { id: "d1", number: "SAL-ORD/26-27/N9", status: "DRAFT", snapshot: { revises: null } },
+    { id: "d2", number: "SAL-ORD/26-27/N4", status: "DRAFT", snapshot: { revises: { id: "old", number: "SAL-ORD/26-27/N3" } } },
+    { id: "x", number: "SAL-ORD/26-27/N5", status: "ISSUED", snapshot: { revises: { id: "old", number: "SAL-ORD/26-27/N3" } } },
+  ];
+  assert.equal(revisionDraftFor(siblings, "old")!.id, "d2", "the DRAFT that already revises it");
+  assert.equal(revisionDraftFor(siblings, "other"), null, "a draft revising a different PI is not in the way");
+  assert.equal(revisionDraftFor([siblings[0], siblings[2]], "old"), null, "an ISSUED revision does not block — it already retired the old one");
+
+  // the 409 the route returns: two clerks would take two numbers off the
+  // counter and leave two drafts racing to retire one paper
+  const refusal = refuseRevise(live, siblings)!;
+  assert.match(refusal, /A draft revising this PI already exists \(SAL-ORD\/26-27\/N4\)/);
+  assert.match(refusal, /edit and issue that one/);
+
+  // a draft that revises it and was then abandoned as CANCELLED does not block
+  assert.equal(refuseRevise(live, [{ id: "d2", number: "SAL-ORD/26-27/N4", status: "CANCELLED", snapshot: { revises: { id: "old", number: "SAL-ORD/26-27/N3" } } }]), null);
+});
+
+test("revisesAtIssue: paper issued over a live PI always names what it retired, even when it was not drafted through /revise", () => {
+  const retired = [
+    { id: "o2", number: "SAL-ORD/26-27/N2" },
+    { id: "o3", number: "SAL-ORD/26-27/N3" },
+  ];
+
+  // a draft from /revise already carries the link — it is never overwritten,
+  // because the paper names what the clerk actually revised
+  assert.deepEqual(revisesAtIssue({ id: "o1", number: "SAL-ORD/26-27/N1" }, retired), { id: "o1", number: "SAL-ORD/26-27/N1" });
+  assert.deepEqual(revisesAtIssue({ id: "o1", number: "SAL-ORD/26-27/N1" }, []), { id: "o1", number: "SAL-ORD/26-27/N1" });
+
+  // a draft built straight off the order carries none — link it to what it
+  // retired, or the chain has a hole nobody reading the register can close
+  assert.deepEqual(revisesAtIssue(null, retired), { id: "o3", number: "SAL-ORD/26-27/N3" }, "the last retired is the one the customer held most recently");
+  assert.deepEqual(revisesAtIssue(undefined, [retired[0]]), { id: "o2", number: "SAL-ORD/26-27/N2" });
+
+  // the first PI of an order retires nothing and revises nothing
+  assert.equal(revisesAtIssue(null, []), null);
+  assert.equal(revisesAtIssue({ id: "", number: "" }, []), null, "a blank link is no link");
+});
+
+test("refreezeAtIssue: the bank and the GSTIN are read from Settings at the moment the paper goes out, not when the draft was built", () => {
+  const draft = applyDraftPatch(
+    buildProformaSnapshot(exportOrder, S, opts),
+    { bankKey: "export", gstinKey: OWN_GSTIN },
+    S,
+  ).snapshot;
+  assert.equal(draft.bank.accountNo, S.banks.export.accountNo);
+
+  // an admin corrects the account number and the company's own GSTIN while the
+  // draft sits — a wrong account number on issued paper is money that never
+  // arrives, so the details are re-read (the KEYS stay the clerk's choice)
+  const later: CommercialSettings = {
+    ...S,
+    banks: { ...S.banks, export: { ...S.banks.export, accountNo: "9988776655", ifsc: "KKBK0000999" } },
+  };
+  const issued = refreezeAtIssue(draft, later);
+  assert.equal(issued.bankKey, "export", "the clerk's key stands");
+  assert.equal(issued.bank.accountNo, "9988776655");
+  assert.equal(issued.bank.ifsc, "KKBK0000999");
+  assert.equal(draft.bank.accountNo, S.banks.export.accountNo, "and the draft it was derived from is untouched");
+
+  // the chosen registration prints on all three places it appears
+  const alt = refreezeAtIssue({ ...draft, gstinKey: ALT_GSTIN }, S);
+  assert.equal(alt.gstinKey, ALT_GSTIN);
+  assert.equal(alt.company.gstin, ALT_GSTIN);
+  assert.equal(alt.exporter.gstin, ALT_GSTIN);
+
+  // a GSTIN removed from Settings since the draft was built falls back to the
+  // company's own rather than printing a blank on the customer's paper
+  const dropped = refreezeAtIssue({ ...draft, gstinKey: "33ZZZZZ9999Z9Z9" }, S);
+  assert.equal(dropped.gstinKey, OWN_GSTIN);
+  assert.equal(dropped.company.gstin, OWN_GSTIN);
+
+  // a legacy draft frozen before the two choices existed: the kind's default
+  // bank (answer 23) and the company's own GSTIN (answer 21)
+  const legacy = { ...draft } as PiSnapshot;
+  delete legacy.bankKey;
+  delete legacy.gstinKey;
+  const exportRefrozen = refreezeAtIssue(legacy, S);
+  assert.equal(exportRefrozen.bankKey, "export", "EXPORT → Kotak");
+  assert.equal(exportRefrozen.bank.name, S.banks.export.name);
+  assert.equal(exportRefrozen.gstinKey, OWN_GSTIN);
+  const domesticLegacy = refreezeAtIssue({ ...legacy, kind: "DOMESTIC" }, S);
+  assert.equal(domesticLegacy.bankKey, "domestic", "DOMESTIC → ICICI");
+  assert.equal(domesticLegacy.bank.name, S.banks.domestic.name);
+
+  // everything else on the paper is the frozen snapshot, untouched
+  assert.equal(issued.number, draft.number);
+  assert.deepEqual(issued.lines, draft.lines);
+  assert.equal(issued.totalAmount, draft.totalAmount);
+  assert.equal(issued.amountInWords, draft.amountInWords);
+});
+
+test("a revision is a NEW snapshot under a NEW number: parties, lines and rates from the order as it stands; the clerk's shipping facts and choices carried", () => {
+  // the PI the customer holds, with everything the clerk typed onto it
+  const old = applyDraftPatch(
+    buildProformaSnapshot(exportOrder, S, { ...opts, number: "SAL-ORD/26-27/N3", deliveryDate: "2026-08-15" }),
+    { vessel: "MSC ISABELLA / 431W", grossWeight: "24,500 KGS", netWeight: "23,100 KGS", discount: 24.657, notes: "Stuffed at the factory.", portOfDischarge: "NEW YORK", bankKey: "domestic", gstinKey: ALT_GSTIN },
+    S,
+  ).snapshot;
+  // the order has moved on: a new rate and a new consignee — the reason for the revision
+  const changedOrder: SnapshotOrderInput = {
+    ...exportOrder,
+    consignee: { name: "Gulf Stone LLC", lines: ["PO Box 4411", "Dubai"], country: "UAE" },
+    items: [{ ...quartzLine, rate: 5.6, amount: 17966.329 }, sampleLine],
+  };
+  const carried = carriedIntoRevision(old);
+  assert.deepEqual(Object.keys(carried).sort(), [
+    "bankKey", "deliveryDate", "discount", "finalDestination", "grossWeight", "gstinKey", "netWeight", "notes",
+    "placeOfReceipt", "portOfDischarge", "portOfLoading", "preCarriageBy", "vessel",
+  ]);
+  for (const k of ["consignee", "notifyParty", "lines", "number", "date", "validUntil", "revises", "buyerPoNo", "deliveryTerms", "paymentTerms"]) {
+    assert.equal(k in carried, false, `${k} comes from the order, not from the old paper`);
+  }
+
+  const fresh = buildProformaSnapshot(changedOrder, S, {
+    number: "SAL-ORD/26-27/N4", revision: 1, date: "2026-09-08", validUntil: null,
+    revises: { id: "old-id", number: old.number },
+  });
+  const revised = applyDraftPatch(fresh, carried, S).snapshot;
+
+  assert.equal(revised.number, "SAL-ORD/26-27/N4", "a brand-new number");
+  assert.notEqual(revised.number, old.number);
+  assert.equal(printedNumber(revised.number), "SAL-ORD/26-27/N4", "nothing is re-numbered and nothing is suffixed");
+  assert.deepEqual(revised.revises, { id: "old-id", number: "SAL-ORD/26-27/N3" }, "the chain reads from the paper");
+  assert.equal(revised.date, "2026-09-08", "a revision is dated the day it is made");
+  assert.equal(revised.validUntil, null);
+  // from the order as it stands
+  assert.equal(revised.consignee.name, "Gulf Stone LLC");
+  assert.equal(revised.lines[0].rate, 5.6);
+  assert.equal(revised.lines[0].amount, 17966.329);
+  assert.equal(revised.countryOfDestination, "UAE");
+  // carried from the old paper
+  assert.equal(revised.vessel, "MSC ISABELLA / 431W");
+  assert.equal(revised.grossWeight, "24,500 KGS");
+  assert.equal(revised.netWeight, "23,100 KGS");
+  assert.equal(revised.deliveryDate, "2026-08-15");
+  assert.equal(revised.notes, "Stuffed at the factory.");
+  assert.equal(revised.portOfDischarge, "NEW YORK");
+  assert.equal(revised.discount, 24.657);
+  assert.equal(revised.bankKey, "domestic");
+  assert.equal(revised.bank.name, "ICICI Bank");
+  assert.equal(revised.gstinKey, ALT_GSTIN);
+  assert.equal(revised.company.gstin, ALT_GSTIN);
+  // and the money is re-derived from the NEW lines less the carried discount
+  assert.equal(revised.totalAmount, round3(17966.329 - 24.657));
+  assert.equal(revised.totalSlabs, 68);
+  assert.equal(old.totalAmount, 17300, "the old snapshot is untouched — it is the paper the customer holds");
+
+  // the cancellation the system writes on the old one
+  assert.equal(revisionReason(revised.number), "Revised as SAL-ORD/26-27/N4");
+  assert.equal(canRevise("CANCELLED"), false, "and a cancelled PI cannot be revised again — the new one is");
+});
+
+test("carriedIntoRevision on a PI frozen before the choices existed carries nothing that would blank them", () => {
+  const legacy = { ...buildProformaSnapshot(exportOrder, S, opts) } as PiSnapshot;
+  delete legacy.bankKey;
+  delete legacy.gstinKey;
+  const fresh = buildProformaSnapshot(domesticOrder, S, { number: "SAL-ORD/26-27/N5", revision: 1, date: "2026-09-08" });
+  const revised = applyDraftPatch(fresh, carriedIntoRevision(legacy), S).snapshot;
+  assert.equal(revised.bankKey, "domestic", "no bank key on the old paper → the kind's default stands");
+  assert.equal(revised.bank.name, "ICICI Bank");
+  assert.equal(revised.gstinKey, OWN_GSTIN);
 });
 
 test("statusTone / parseProformaStatus / pageArgs", () => {
@@ -700,6 +1057,7 @@ test("statusTone / parseProformaStatus / pageArgs", () => {
 
   assert.equal(parseProformaStatus("issued"), "ISSUED");
   assert.equal(parseProformaStatus("ACCEPTED"), "ACCEPTED");
+  assert.equal(parseProformaStatus("cancelled"), "CANCELLED", "cancelled PIs stay in the register (answer 24), so they can be filtered for");
   assert.equal(parseProformaStatus("junk"), null);
   assert.equal(parseProformaStatus(null), null);
 
@@ -737,13 +1095,13 @@ test("piPrintFields: everything the PI prints, formatted — and a blank is blan
   ).snapshot;
   const f = piPrintFields({ ...issued, validUntil: "2026-08-09" });
   assert.equal(f.title, "PROFORMA INVOICE");
-  assert.equal(f.invoiceNo, "SAL-ORD/26-27/01642");
+  assert.equal(f.invoiceNo, PI_NO, "the PI's own number, whole");
   assert.equal(f.invoiceDate, "10-07-2026");
   assert.equal(f.deliveryDate, "15-08-2026");
-  assert.equal(f.validUntil, "09-08-2026");
+  assert.equal(f.validUntil, "09-08-2026", "the days path, when the owner sets a validity");
   assert.equal(f.buyerPoNo, "PO-4068622");
   assert.equal(f.rbiCode, "678");
-  assert.equal(f.gstin, "33AALCP2750N1Z3");
+  assert.equal(f.gstin, OWN_GSTIN);
   assert.equal(f.customsOffice, S.company.customsOffice.toUpperCase());
   assert.equal(f.countryOfOrigin, "India");
   assert.equal(f.countryOfDestination, "USA");
@@ -755,6 +1113,7 @@ test("piPrintFields: everything the PI prints, formatted — and a blank is blan
   assert.equal(f.portOfLoading, "CHENNAI");
   assert.equal(f.portOfDischarge, "HOUSTON");
   assert.equal(f.finalDestination, "DALLAS, TX");
+  assert.equal(f.bankKey, "export");
   assert.equal(f.bankName, "Kotak Mahindra Bank Limited");
   assert.equal(f.adCode, "0180038-8400009");
   assert.equal(f.accountNo, "3214292773");
@@ -771,10 +1130,38 @@ test("piPrintFields: everything the PI prints, formatted — and a blank is blan
   assert.equal(f.declaration, S.texts.piDeclaration);
 });
 
+test("piPrintFields: no validity prints NO validity (answer 24) — the PDF adds its line only for a non-blank", () => {
+  const s = buildProformaSnapshot(exportOrder, S, opts);
+  assert.equal(s.validUntil, null);
+  assert.equal(piPrintFields(s).validUntil, "");
+  assert.equal(piPrintFields({ ...s, validUntil: "" }).validUntil, "");
+  assert.equal(piPrintFields({ ...s, validUntil: "None" }).validUntil, "", "never the serialiser's None");
+  assert.equal(piPrintFields({ ...s, validUntil: validUntilFor(new Date("2026-07-10T00:00:00.000Z"), 0) }).validUntil, "", "as the issue route stores it for a 0 setting");
+  assert.equal(piPrintFields({ ...s, validUntil: validUntilFor(new Date("2026-07-10T00:00:00.000Z"), 15) }).validUntil, "25-07-2026");
+});
+
+test("piPrintFields: the chosen bank and GSTIN print, and a legacy snapshot without the keys still prints its frozen bank", () => {
+  const dom = piPrintFields(buildProformaSnapshot(domesticOrder, S, opts));
+  assert.equal(dom.bankKey, "domestic");
+  assert.equal(dom.bankName, "ICICI Bank");
+  assert.equal(dom.accountNo, "020405012473");
+  assert.equal(dom.adCode, "", "ICICI has no AD code: blank, not undefined");
+  assert.equal(dom.routingBank, "");
+  const alt = piPrintFields(buildProformaSnapshot(exportOrder, S, { ...opts, gstinKey: ALT_GSTIN }));
+  assert.equal(alt.gstin, ALT_GSTIN);
+  // a PI frozen before 2026-09-07 has no bankKey; it prints the block it froze
+  // and the screen labels it by the kind's default
+  const legacy = { ...buildProformaSnapshot(exportOrder, S, opts) } as PiSnapshot;
+  delete legacy.bankKey;
+  const lf = piPrintFields(legacy);
+  assert.equal(lf.bankKey, "export");
+  assert.equal(lf.bankName, "Kotak Mahindra Bank Limited");
+});
+
 test("piPrintFields: an empty domestic PI prints empty cells, never None or null", () => {
-  const bare = buildProformaSnapshot({ number: "SAL-ORD/26-27/01701", kind: "DOMESTIC", items: [] }, S, { revision: 2, date: "2026-09-06" });
+  const bare = buildProformaSnapshot({ number: "ORD/26-27/N9", kind: "DOMESTIC", items: [] }, S, { number: "SAL-ORD/26-27/N12", revision: 2, date: "2026-09-06" });
   const f = piPrintFields(bare);
-  assert.equal(f.invoiceNo, "SAL-ORD/26-27/01701-R2");
+  assert.equal(f.invoiceNo, "SAL-ORD/26-27/N12", "the ordinal 2 is nowhere on the paper");
   assert.equal(f.buyerPoNo, "");
   assert.equal(f.deliveryDate, "");
   assert.equal(f.validUntil, "");
@@ -786,9 +1173,7 @@ test("piPrintFields: an empty domestic PI prints empty cells, never None or null
   assert.equal(f.netWeight, "");
   assert.equal(f.discount, "", "a zero discount prints nothing, not 0.000");
   assert.equal(f.termsAndConditions, "");
-  assert.equal(f.bankName, "Kotak Mahindra Bank Limited", "a domestic PI carries the PI's bank (§23), not the DTA invoice's");
-  assert.equal(f.routingBank, S.banks.export.routingBank, "it is the Kotak block whole, on both kinds");
-  assert.equal(f.routingSwift, "IRVTUS3NXXX");
+  assert.equal(f.bankName, "ICICI Bank", "a domestic PI banks with ICICI by default (answer 23)");
   for (const [k, v] of Object.entries(f)) {
     assert.equal(typeof v, "string", k);
     assert.ok(!/^(None|null|undefined)$/.test(v), `${k} printed ${v}`);
@@ -811,9 +1196,22 @@ test("orderWarnings: what the PI tab says before anyone builds a document", () =
 });
 
 test("a snapshot round-trips through JSON — it is stored in a Json column", () => {
-  const s = buildProformaSnapshot(exportOrder, S, opts);
-  const back = JSON.parse(JSON.stringify(s)) as ProformaSnapshot;
+  const s = buildProformaSnapshot(exportOrder, S, { ...opts, gstinKey: ALT_GSTIN, bankKey: "domestic", revises: { id: "x", number: "SAL-ORD/26-27/N1" } });
+  const back = JSON.parse(JSON.stringify(s)) as PiSnapshot;
   assert.deepEqual(back, s);
   assert.deepEqual(piRow(back.lines[0]), piRow(s.lines[0]));
   assert.equal(piPrintFields(back).totalAmount, "17324.657");
+  assert.equal(back.bankKey, "domestic");
+  assert.equal(back.gstinKey, ALT_GSTIN);
+  assert.deepEqual(back.revises, { id: "x", number: "SAL-ORD/26-27/N1" });
+});
+
+test("a settings edit after issue does not reach the paper: the snapshot froze its own copy", () => {
+  const s = buildProformaSnapshot(exportOrder, S, opts);
+  const later: CommercialSettings = { ...S, banks: { ...S.banks, export: { ...S.banks.export, accountNo: "0000000000" } }, company: { ...S.company, gstin: "33NEWGSTIN0000Z1" } };
+  assert.equal(piPrintFields(s).accountNo, "3214292773");
+  assert.equal(piPrintFields(s).gstin, OWN_GSTIN);
+  // only a DRAFT edit that names the key re-freezes, and it re-freezes from the settings it is handed
+  assert.equal(applyDraftPatch(s, { bankKey: "export" }, later).changed, false, "the same key does not silently pull new account details in");
+  assert.equal(applyDraftPatch(s, { bankKey: "domestic" }, later).snapshot.bank.name, "ICICI Bank");
 });

@@ -1,7 +1,7 @@
 // GET   /api/office/commercial/holds/[id] — one hold, reconciled first
 // PATCH /api/office/commercial/holds/[id] — its note (nothing else: the slabs
-//        and the expiry change only through release / extend, which touch
-//        finished goods too)
+//        change only through release, which touches finished goods too, and
+//        the expiry never changes — answer 11)
 import { commercialGate } from "@/lib/commercial/access";
 import { json, deny, handle, readBody, plain, paramId, str } from "@/lib/commercial/http";
 import { db, HOLD_INCLUDE, loadHold, reconcileAndLoad } from "../_lib";

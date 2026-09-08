@@ -56,7 +56,8 @@ export async function settingsView(overrides?: Record<string, unknown>, sequence
 }
 
 /** The counter's current next value, or null when it has no row yet (which is
- *  every counter until an admin aligns it with Tally, or a document is issued). */
+ *  every counter until its first document is issued at N1, or an admin sets it
+ *  to skip numbers — answers 4 and 8: nothing is continued from Tally). */
 export async function currentNext(key: string): Promise<number | null> {
   const row = await db.commercialSequence.findUnique({ where: { key }, select: { nextValue: true } });
   return row ? Number(row.nextValue) : null;

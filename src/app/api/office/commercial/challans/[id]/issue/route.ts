@@ -21,7 +21,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
 
     await db.commercialDeliveryChallan.update({ where: { id }, data: { status: "ISSUED", issuedAt: new Date() } });
     if (row.orderId) {
-      await logOrderEvent(String(row.orderId), "note", {
+      await logOrderEvent(String(row.orderId), "challan_issued", {
         note: `Delivery challan ${row.number} issued to ${row.consigneeName}`,
         by: g.user,
         payload: { challanId: id, number: row.number, totalAmount: row.totalAmount },

@@ -10,6 +10,7 @@ import { prisma } from "@/lib/prisma";
 import { fail } from "@/lib/commercial/http";
 import type { CommercialGate } from "@/lib/commercial/access";
 import { readSlabs, type SlabRow } from "@/lib/commercial/inventory-bridge";
+import { parseMeasurementUnit } from "@/lib/commercial/measure";
 import {
   nextPackagesSummary, slabEligibility, buildPackedSlab, canEdit, canEditHeader,
   vesselFromSnapshot, PACKING_STATUS_LABEL, type PackingStatus, type OrderItemLike, type PartyLike,
@@ -39,6 +40,8 @@ export interface PackingListRow extends Record<string, unknown> {
   number: string;
   status: PackingStatus;
   packagesSummary: string | null;
+  /** cm | in — what the sheets print in (answer 17). */
+  measurementUnit: string;
   crates: Array<Record<string, unknown> & { id: string; crateNo: number; kind: string }>;
   slabs: Array<Record<string, unknown> & { id: string; slabNumber: number; sortOrder: number; fit: string }>;
   order: Record<string, unknown> & { id: string; number: string; kind: "DOMESTIC" | "EXPORT"; status: string; items: Array<Record<string, unknown>>; client: Record<string, unknown>; holds: Array<Record<string, unknown>> };
@@ -222,6 +225,7 @@ export async function shapeForPdf(plId: string) {
       grossWeightKg: dec(list.grossWeightKg),
       netWeightKg: dec(list.netWeightKg),
       packagesSummary: list.packagesSummary,
+      measurementUnit: parseMeasurementUnit(list.measurementUnit) ?? "cm",
       notes: (list.notes as string | null) ?? null,
       crates: list.crates.map((c): PdfCrate => ({
         id: c.id, crateNo: Number(c.crateNo), kind: String(c.kind),

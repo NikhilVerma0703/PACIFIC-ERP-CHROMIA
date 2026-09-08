@@ -131,7 +131,7 @@ export function OrdersBoard({ actions, initialStatus = "", initialKind = "", ini
           })}
         </div>
         <p className="mt-3 text-xs text-gray-400">
-          {totalOpen} order{totalOpen === 1 ? "" : "s"} short of Closed. A stage can be entered in any order — every one is stamped and logged, none is gated.
+          {totalOpen} order{totalOpen === 1 ? "" : "s"} short of Closed. Every move is stamped and logged; three are gated — the PI waits for the stock check, the invoice for the approval, dispatch for the advance.
         </p>
       </Card>
 
@@ -179,7 +179,6 @@ export function OrdersBoard({ actions, initialStatus = "", initialKind = "", ini
                   <th className="py-2 pr-4 font-medium">Customer PO</th>
                   <th className="py-2 pr-4 font-medium">Currency</th>
                   <th className="py-2 pr-4 text-right font-medium">Lines</th>
-                  <th className="py-2 pr-4 font-medium">Created</th>
                   <th className="py-2 font-medium">Updated</th>
                 </tr>
               </thead>
@@ -188,7 +187,8 @@ export function OrdersBoard({ actions, initialStatus = "", initialKind = "", ini
                   <tr key={o.id} className="hover:bg-gray-50/70">
                     <td className="py-2 pr-4">
                       <Link href={`/office/commercial/orders/${o.id}`} className="font-medium text-brand hover:underline">{o.number}</Link>
-                      {o.createdByName && <div className="text-xs text-gray-400">{o.createdByName}</div>}
+                      {/* The order date under the number (answer 6). ORD/… is the order; the PI carries its own SAL-ORD/… number. */}
+                      <div className="text-xs text-gray-400">{dmy(o.createdAt)}{o.createdByName ? ` · ${o.createdByName}` : ""}</div>
                     </td>
                     <td className="py-2 pr-4 text-gray-900">
                       {o.client?.name ?? "—"}
@@ -207,7 +207,6 @@ export function OrdersBoard({ actions, initialStatus = "", initialKind = "", ini
                         {[o.holdsCount ? `${o.holdsCount}H` : "", o.proformasCount ? `${o.proformasCount}PI` : "", o.packingListsCount ? `${o.packingListsCount}PL` : "", o.invoicesCount ? `${o.invoicesCount}INV` : ""].filter(Boolean).join(" · ") || "—"}
                       </div>
                     </td>
-                    <td className="py-2 pr-4 text-gray-600">{dmy(o.createdAt)}</td>
                     <td className="py-2 text-gray-600">{dmy(o.updatedAt)}</td>
                   </tr>
                 ))}

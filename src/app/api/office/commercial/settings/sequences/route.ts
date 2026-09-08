@@ -2,9 +2,11 @@
 // PATCH /api/office/commercial/settings/sequences — set one counter's next value.
 //
 // A counter is the next number a document of that kind will take. Every one
-// starts at 1, because who owns the numbering — Tally or the ERP — is still
-// open (OPEN-QUESTIONS §4, §8). Before the first live document an admin sets
-// each counter to the number after the last one Tally issued.
+// starts at 1 BY DESIGN (answers 4 and 8): the ERP owns its numbering, every
+// series opens at N1, and nothing is aligned with Tally — the N marks a number
+// this system issued. Setting a counter by hand is therefore only for SKIPPING
+// numbers (a spoilt pre-printed run, a gap the auditor wants kept), never for
+// continuing an old series.
 //
 // LOWERING a counter is the dangerous direction: it hands out numbers already
 // printed on documents a customer holds, and the document tables' uniqueness
@@ -56,7 +58,7 @@ export async function PATCH(req: Request) {
     await setNext(decision.key, decision.value);
     // commercial_sequence.updated_at is @default(now()) with no @updatedAt, and
     // setNext's upsert does not set it — only takeSequence's raw SQL does. So a
-    // counter aligned by hand would keep showing the date it was first used,
+    // counter set by hand would keep showing the date it was first used,
     // which is exactly the column this screen is read for. Stamp it here.
     await db.commercialSequence.update({ where: { key: decision.key }, data: { updatedAt: new Date() } }).catch(() => undefined);
     const sequences = await loadSequences();

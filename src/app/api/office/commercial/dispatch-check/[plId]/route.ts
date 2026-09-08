@@ -30,13 +30,16 @@ export async function GET(_req: Request, { params }: Ctx) {
       select: {
         id: true, number: true, status: true, submittedAt: true, verifiedAt: true, verifiedByName: true,
         verificationNote: true, containerNo: true, sealNo: true, linerOtlNo: true, vehicleNo: true,
-        packagesSummary: true, grossWeightKg: true, netWeightKg: true, notes: true,
+        packagesSummary: true, grossWeightKg: true, netWeightKg: true, notes: true, measurementUnit: true,
         order: { select: { number: true, kind: true, customerPoNumber: true, client: { select: { name: true, country: true } } } },
         crates: { orderBy: { crateNo: "asc" } },
         slabs: { orderBy: { sortOrder: "asc" } },
       },
     });
     if (!row || !checkerMaySee(String(row.status))) fail(404, "Packing list not found");
-    return json(plain(checkerListView(plain<Record<string, unknown>>(row))));
+    // The signed-in login's own Commercial actions ride along, so the screen
+    // can offer the swap (a `write` action, answer 30) to Commercial and hide
+    // it from a verify-only login rather than showing a button that 403s.
+    return json(plain({ ...checkerListView(plain<Record<string, unknown>>(row)), actions: g.actions }));
   });
 }

@@ -6,7 +6,8 @@ import { useCallback, useEffect, useState } from "react";
 import { Card, Badge, Empty, Kpi } from "@/components/ui";
 import { readJson } from "@/lib/readJson";
 import { challanStatusTone } from "@/lib/commercial/challan-rules";
-import { inp, lbl, btnPrimary, btnGhost, th, thead, errorBox, money, dmy } from "@/components/commercial/invoices/ui";
+import { inp, lbl, btnPrimary, btnGhost, th, thead, errorBox, money } from "@/components/commercial/invoices/ui";
+import { DocNumber } from "@/components/commercial/invoices/DocNumber";
 
 interface Row {
   id: string;
@@ -106,7 +107,6 @@ export function ChallanList() {
               <thead>
                 <tr className={thead}>
                   <th className={th}>Challan</th>
-                  <th className={th}>Date</th>
                   <th className={th}>Consignee</th>
                   <th className={th}>PO ref</th>
                   <th className={th}>Lorry</th>
@@ -119,9 +119,9 @@ export function ChallanList() {
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.id} className="border-b border-gray-50 last:border-0">
-                    <td className="py-2 pr-4"><Link href={`/office/commercial/challans/${r.id}`} className="font-medium text-brand hover:underline">{r.number}</Link></td>
-                    <td className="py-2 pr-4 text-gray-600">{dmy(r.challanDate)}</td>
-                    <td className="py-2 pr-4 text-gray-900">{r.consigneeName}{r.consigneeGstin ? <span className="block text-xs text-gray-400">{r.consigneeGstin}</span> : null}</td>
+                    {/* the date DIRECTLY UNDER the number (answer 6) */}
+                    <td className="py-2 pr-4 align-top"><DocNumber number={r.number} date={r.challanDate} href={`/office/commercial/challans/${r.id}`} /></td>
+                    <td className="py-2 pr-4 align-top text-gray-900">{r.consigneeName}{r.consigneeGstin ? <span className="block text-xs text-gray-400">{r.consigneeGstin}</span> : null}</td>
                     <td className="py-2 pr-4 text-gray-500">{r.poRef ?? "—"}</td>
                     <td className="py-2 pr-4 text-gray-500">{r.lorryNo ?? "—"}</td>
                     <td className="py-2 pr-4">{r.order ? <Link href={`/office/commercial/orders/${r.order.id}?tab=invoice`} className="text-brand hover:underline">{r.order.number}</Link> : "—"}</td>

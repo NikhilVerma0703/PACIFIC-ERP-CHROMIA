@@ -15,6 +15,8 @@
 //   ordersWhere            the list filters as a Prisma where
 //   renumberLines          lineNo 1..n after a delete
 //   canApprove             who may stamp "Approved by"
+//   isLiveHold             an ACTIVE hold still inside its expiry window
+//   stageFactsOf           what the pipeline gates read off an order row
 //   orderWorkspaceView     what the workspace shows when a refresh fails
 
 export type OrderKind = "DOMESTIC" | "EXPORT";
@@ -459,6 +461,66 @@ export function renumberLines<T extends { id: string; lineNo: number }>(items: T
  *  actor string so the workspace can ask without the user object. */
 export function canApprove(actor: string | null | undefined): boolean {
   return actor === "ADMIN" || actor === "COMMERCIAL_MANAGER";
+}
+
+// ───────────────────────────── the pipeline's facts ──────────────────────────
+
+/** The order fields the three stage gates read (answers 1, 2, 10). Holds and
+ *  receipts may arrive as the full lists the detail carries or as the one-row
+ *  probes order-stage loads; `advanceReceived` may already be derived. */
+export interface StageFactSource {
+  stockCheckedAt?: unknown;
+  approvedAt?: unknown;
+  /** `expiresAt` (Date or ISO string) is read when present; a probe that did
+   *  not select it has already filtered on it server-side. */
+  holds?: ReadonlyArray<{ status: string; expiresAt?: unknown }> | null;
+  receipts?: ReadonlyArray<{ kind: string }> | null;
+  advanceReceived?: boolean | null;
+}
+
+/**
+ * Whether a hold row is a LIVE stock check at `now`: ACTIVE and not past its
+ * expiry. The inventory sweep (reconcileHold) is what stamps EXPIRED, and it
+ * runs later than the lapse — so a row that still says ACTIVE with an
+ * expiresAt in the past is slabs nobody is holding any more, and must not let
+ * the PI through (answers 1, 11). A missing expiresAt is trusted (the server
+ * probe selected only rows still inside their window); an unreadable one is
+ * not — a hold whose expiry cannot be read is not proof of anything.
+ */
+export function isLiveHold(h: { status: string; expiresAt?: unknown }, now: Date): boolean {
+  if (h.status !== "ACTIVE") return false;
+  if (h.expiresAt === undefined || h.expiresAt === null) return true;
+  const t = h.expiresAt instanceof Date ? h.expiresAt.getTime() : new Date(String(h.expiresAt)).getTime();
+  return Number.isFinite(t) && t > now.getTime();
+}
+
+export interface StageFactsShape {
+  stockChecked: boolean;
+  approved: boolean;
+  advanceReceived: boolean;
+}
+
+/**
+ * What an order has actually done, for stages.canEnter. Every fact is a
+ * definite boolean — canEnter only refuses on an explicit `false`, so an
+ * `undefined` here would let the PI, the invoice or the truck through
+ * ungated, which is the failure this exists to prevent.
+ *
+ *   stockChecked     stockCheckedAt is stamped AND a hold is still live —
+ *                    ACTIVE and inside its expiry window at `now`: a lapsed
+ *                    hold sends the order back to the stock check (answer
+ *                    11), so the stamp alone is history, not a fact
+ *   approved         approvedAt is stamped (answer 10)
+ *   advanceReceived  an ADVANCE receipt exists (answers 2, 29)
+ */
+export function stageFactsOf(o: StageFactSource, now: Date = new Date()): StageFactsShape {
+  const activeHold = Boolean(o.holds?.some((h) => isLiveHold(h, now)));
+  const advance = typeof o.advanceReceived === "boolean" ? o.advanceReceived : Boolean(o.receipts?.some((r) => r.kind === "ADVANCE"));
+  return {
+    stockChecked: o.stockCheckedAt != null && o.stockCheckedAt !== "" && activeHold,
+    approved: o.approvedAt != null && o.approvedAt !== "",
+    advanceReceived: advance,
+  };
 }
 
 // ───────────────────────── the workspace's own state ─────────────────────────

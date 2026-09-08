@@ -16,11 +16,20 @@ import {
   lineNeedsPrice, unpricedLineNos, unpricedWarning, isDerivedAmount, displayGrandTotal, displaySubtotal,
   invoiceTotals, buildInvoiceSnapshot, recomputeSnapshot, applyDraftPatch, rowTotalsFromSnapshot,
   invoicesWhere, pageArgs,
+  openInvoiceOf, refuseCreate, refuseIssueUnapproved, INVOICE_APPROVERS,
+  BANK_KEYS, isBankKey, defaultBankKeyFor, bankBlockFor, gstinChoiceFor, gstinLabelFor, gstinWithLabel,
+  designCodeLookup, NO_DESIGN_CODE, printedItemCode, lineLacksCode,
+  datedLines, fyOfIso, fyBadge, snapshotExtras,
+  patchedSnapshotFields, patchedInvoiceFields, ROW_ONLY_PATCH_FIELDS,
+  registrationChanges, registrationChangeNote,
+  exportRootOverrides, EXPORT_ROOT_GSTIN_KEY, EXPORT_ROOT_BANK_KEY,
 } from "../src/lib/commercial/invoice-rules.ts";
-import { DEFAULT_SETTINGS } from "../src/lib/commercial/settings-defaults.ts";
+import { DEFAULT_SETTINGS, gstinChoices } from "../src/lib/commercial/settings-defaults.ts";
 import type { DocLine } from "../src/lib/commercial/types.ts";
 
 const S = DEFAULT_SETTINGS;
+/** The pre-answer-22 tax rule, kept behind the switch: the buyer's state decides. */
+const S_BY_STATE = { ...S, tax: { ...S.tax, alwaysIgst: false } };
 
 // ───────────────────────────── kinds & status ────────────────────────────────
 
@@ -290,9 +299,13 @@ test("lineFromItem prints the STORED amount and never recomputes it", () => {
   assert.equal(l.thickness, "3CM");
   assert.equal(l.unit, "SQFT");
   assert.equal(l.slabs, 43);
-  assert.equal(l.itemCode, "VGWT10301A");
-  assert.equal(l.description, "VGWT10301A");
+  assert.equal(l.itemCode, null, "answer 20: the item code is the design master's, and the master is empty here");
+  assert.equal(l.description, "VGWT10301A", "the customer's SKU stays in the description, where the CIOT sheet printed it");
   assert.equal(l.hsn, "68101990");
+  const coded = lineFromItem({ design: "Carrara Royale", customerSku: "VGWT10301A", thickness: "3 cm", uom: "SQFT", qty: 1, rate: 1 }, 0, "EXPORT", S,
+    designCodeLookup([{ design: "CARRARA ROYALE", code: "PES-CR-01" }]));
+  assert.equal(coded.itemCode, "PES-CR-01", "the master's code, matched whatever the case");
+  assert.equal(coded.description, "VGWT10301A");
   // a line with no amount typed is worked out
   const w = lineFromItem({ design: "Statuario", thickness: "2 cm", uom: "SQFT", qty: 100, rate: 12.5 }, 0, "DTA", S);
   assert.equal(w.amount, 1250);
@@ -443,8 +456,24 @@ test("DTA totals: IGST 18% out of state, whole-rupee grand total, the round-off 
   assert.equal(t.warning, null);
 });
 
-test("DTA totals: a Tamil Nadu buyer pays CGST 9 + SGST 9, not IGST", () => {
-  const t = invoiceTotals([dtaLine(100000)], "DTA", "33", S);
+test("DTA totals (answer 22): IGST 18% for EVERY domestic buyer, Tamil Nadu included, and no state warning", () => {
+  assert.equal(S.tax.alwaysIgst, true, "the switch the owner set on 2026-09-07");
+  const tn = invoiceTotals([dtaLine(100000)], "DTA", "33", S);
+  assert.equal(tn.taxType, "IGST");
+  assert.equal(tn.igst, 18000);
+  assert.equal(tn.cgst, 0);
+  assert.equal(tn.sgst, 0);
+  assert.equal(tn.grandTotal, 118000);
+  assert.equal(tn.warning, null);
+  const unknown = invoiceTotals([dtaLine(100000)], "DTA", null, S);
+  assert.equal(unknown.taxType, "IGST");
+  assert.equal(unknown.warning, null, "there is no state code to fill in, so nothing to warn about");
+  const exp = invoiceTotals([dtaLine(100000)], "EXPORT", "33", S, "USD");
+  assert.equal(exp.taxType, "NONE", "the switch is about domestic tax; export stays under LUT");
+});
+
+test("DTA totals: with the switch OFF a Tamil Nadu buyer pays CGST 9 + SGST 9, not IGST", () => {
+  const t = invoiceTotals([dtaLine(100000)], "DTA", "33", S_BY_STATE);
   assert.equal(t.taxType, "CGST_SGST");
   assert.equal(t.cgst, 9000);
   assert.equal(t.sgst, 9000);
@@ -453,8 +482,8 @@ test("DTA totals: a Tamil Nadu buyer pays CGST 9 + SGST 9, not IGST", () => {
   assert.equal(t.grandTotal, 118000);
 });
 
-test("DTA totals: an unknown buyer state falls to IGST and says so", () => {
-  const t = invoiceTotals([dtaLine(100000)], "DTA", null, S);
+test("DTA totals: with the switch OFF an unknown buyer state falls to IGST and says so", () => {
+  const t = invoiceTotals([dtaLine(100000)], "DTA", null, S_BY_STATE);
   assert.equal(t.taxType, "IGST");
   assert.match(t.warning ?? "", /state code missing/i);
 });
@@ -575,7 +604,9 @@ test("applyDraftPatch changes only the fields it may, and re-derives the totals"
   assert.equal(e.snapshot.grandTotal, 118);
 
   const f = applyDraftPatch(snap, { buyer: { name: "JB Homes", lines: ["Hosur"], stateCode: "33" } }, S);
-  assert.equal(f.snapshot.taxType, "CGST_SGST", "moving the buyer into Tamil Nadu switches the tax");
+  assert.equal(f.snapshot.taxType, "IGST", "answer 22: moving the buyer into Tamil Nadu changes nothing");
+  const f2 = applyDraftPatch(recomputeSnapshot(snap, S_BY_STATE), { buyer: { name: "JB Homes", lines: ["Hosur"], stateCode: "33" } }, S_BY_STATE);
+  assert.equal(f2.snapshot.taxType, "CGST_SGST", "the by-state path still works behind the switch");
 
   const g = applyDraftPatch(snap, { consignee: null }, S);
   assert.equal(g.changed, false, "an invoice must name a consignee — a blank one is ignored");
@@ -691,4 +722,275 @@ test("pageArgs: 1/50 by default, clamped, skip worked out", () => {
   assert.deepEqual(pageArgs("3", "20"), { page: 3, limit: 20, skip: 40, take: 20 });
   assert.deepEqual(pageArgs(-4, 9000), { page: 1, limit: 500, skip: 0, take: 500 });
   assert.deepEqual(pageArgs("abc", "abc"), { page: 1, limit: 50, skip: 0, take: 50 });
+});
+
+// ───────────────────── the owner's answers of 2026-09-07 ─────────────────────
+
+test("one invoice per order (answer 18): a second draft is refused while one is not cancelled", () => {
+  assert.equal(refuseCreate([]), null);
+  assert.equal(refuseCreate(null), null);
+  assert.equal(refuseCreate([{ status: "CANCELLED", number: "PESPL/N1" }]), null, "a cancelled invoice no longer counts");
+  assert.match(refuseCreate([{ status: "DRAFT", number: "PESPL/N2" }]) ?? "", /already has invoice PESPL\/N2 \(draft\)/);
+  assert.match(refuseCreate([{ status: "ISSUED", number: "PESPL/N2" }]) ?? "", /cancel it with a reason before raising another/);
+  assert.match(refuseCreate([{ status: "issued" }]) ?? "", /already has an invoice/, "case-insensitive, and a number-less row still blocks");
+  assert.equal(openInvoiceOf([{ status: "CANCELLED", id: 1 }, { status: "ISSUED", id: 2 }])?.id, 2);
+  assert.equal(openInvoiceOf([{ status: "CANCELLED" }]), null);
+});
+
+test("approval before the final invoice (answer 10): the refusal names who approves", () => {
+  assert.equal(refuseIssueUnapproved({ approvedAt: "2026-09-07T10:00:00.000Z" }), null);
+  assert.equal(refuseIssueUnapproved({ approvedAt: new Date() }), null);
+  const r = refuseIssueUnapproved({ approvedAt: null });
+  assert.match(r ?? "", /^The checklist must be approved before the final invoice/, "the same sentence stages.canEnter gives");
+  assert.ok(r?.includes(INVOICE_APPROVERS), "and who can do it");
+  assert.match(INVOICE_APPROVERS, /Commercial Manager/);
+  assert.notEqual(refuseIssueUnapproved(null), null);
+  assert.notEqual(refuseIssueUnapproved({}), null);
+  assert.notEqual(refuseIssueUnapproved({ approvedAt: "" }), null);
+});
+
+test("the bank (answer 23): ICICI on a DTA invoice, Kotak on an export one, either by choice", () => {
+  assert.deepEqual([...BANK_KEYS], ["export", "domestic"]);
+  assert.equal(defaultBankKeyFor("DTA"), "domestic");
+  assert.equal(defaultBankKeyFor("EXPORT"), "export");
+  assert.equal(isBankKey("export"), true);
+  assert.equal(isBankKey("EXPORT"), false, "the key is the settings key, exactly");
+  assert.equal(isBankKey(null), false);
+  assert.equal(bankBlockFor(S, "domestic").accountNo, S.banks.domestic.accountNo);
+  assert.equal(bankBlockFor(S, "export").adCode, S.banks.export.adCode);
+
+  const lines = buildInvoiceLines(items, null, "DTA", S);
+  const kotakOnDta = buildInvoiceSnapshot(order, S, "DTA", lines, { date: "2026-07-10", bankKey: "export" });
+  assert.equal(kotakOnDta.bankKey, "export");
+  assert.equal(kotakOnDta.bank.accountNo, S.banks.export.accountNo, "the dropdown overrides the default");
+  const dflt = buildInvoiceSnapshot(order, S, "DTA", lines, { date: "2026-07-10" });
+  assert.equal(dflt.bankKey, "domestic");
+  assert.equal(dflt.bank.accountNo, S.banks.domestic.accountNo);
+
+  // editable while a draft
+  const sw = applyDraftPatch(dflt, { bankKey: "export" }, S);
+  assert.equal(sw.changed, true);
+  assert.equal(sw.snapshot.bankKey, "export");
+  assert.equal(sw.snapshot.bank.name, S.banks.export.name);
+  assert.equal(applyDraftPatch(sw.snapshot, { bankKey: "export" }, S).changed, false, "the same bank again is no change");
+  const bad = applyDraftPatch(dflt, { bankKey: "hdfc" }, S);
+  assert.deepEqual(bad.rejected, ["bankKey"], "a bank the settings do not hold is refused by name");
+  assert.equal(bad.snapshot.bank.accountNo, S.banks.domestic.accountNo);
+});
+
+test("the GSTIN (answer 21): the company's own by default, the sister company's by choice, labelled", () => {
+  const choices = gstinChoices(S.company);
+  assert.equal(choices[0].gstin, "33AALCP2750N1Z3");
+  assert.equal(choices[1].gstin, "33AAFCP5374A1ZQ", "PGI's, seeded in the defaults");
+  assert.equal(gstinChoiceFor(S, null)?.gstin, "33AALCP2750N1Z3");
+  assert.equal(gstinChoiceFor(S, "")?.gstin, "33AALCP2750N1Z3");
+  assert.equal(gstinChoiceFor(S, "33aafcp5374a1zq")?.gstin, "33AAFCP5374A1ZQ", "case does not matter");
+  assert.equal(gstinChoiceFor(S, "27AAACJ1234A1Z5"), null, "a registration the settings do not offer is refused, not printed");
+  assert.equal(gstinLabelFor(S, choices[0]), null, "the company's own needs no label — the name above it says whose it is");
+  assert.equal(gstinLabelFor(S, choices[1]), "Pacific Granites (India) Pvt Ltd");
+  assert.equal(gstinWithLabel("33AAFCP5374A1ZQ", "Pacific Granites (India) Pvt Ltd"), "33AAFCP5374A1ZQ (Pacific Granites (India) Pvt Ltd)");
+  assert.equal(gstinWithLabel("33AALCP2750N1Z3", null), "33AALCP2750N1Z3");
+  assert.equal(gstinWithLabel(null, "x"), "");
+
+  const lines = buildInvoiceLines(items, null, "EXPORT", S);
+  const own = buildInvoiceSnapshot({ ...order, kind: "EXPORT", currency: "USD" }, S, "EXPORT", lines, { date: "2026-08-20" });
+  assert.equal(own.gstin, "33AALCP2750N1Z3");
+  assert.equal(own.gstinLabel, null);
+  assert.equal(own.company.gstin, "33AALCP2750N1Z3");
+  assert.equal(own.exporter.gstin, "33AALCP2750N1Z3");
+
+  const pgi = buildInvoiceSnapshot({ ...order, kind: "EXPORT", currency: "USD" }, S, "EXPORT", lines, { date: "2026-08-20", gstin: "33AAFCP5374A1ZQ" });
+  assert.equal(pgi.gstin, "33AAFCP5374A1ZQ");
+  assert.equal(pgi.gstinLabel, "Pacific Granites (India) Pvt Ltd");
+  assert.equal(pgi.company.gstin, "33AAFCP5374A1ZQ", "a reader of the old shape prints the chosen registration too");
+  assert.equal(pgi.exporter.gstin, "33AAFCP5374A1ZQ");
+  assert.equal(pgi.company.legalName, S.company.legalName, "the company's name does not change — only the registration under it");
+
+  const unknown = buildInvoiceSnapshot(order, S, "DTA", buildInvoiceLines(items, null, "DTA", S), { date: "2026-07-10", gstin: "27AAACJ1234A1Z5" });
+  assert.equal(unknown.gstin, "33AALCP2750N1Z3", "a direct caller with an unknown GSTIN gets the company's own, never a blank");
+
+  // editable while a draft
+  const sw = applyDraftPatch(own, { gstin: "33AAFCP5374A1ZQ" }, S);
+  assert.equal(sw.changed, true);
+  assert.equal(sw.snapshot.gstin, "33AAFCP5374A1ZQ");
+  assert.equal(sw.snapshot.gstinLabel, "Pacific Granites (India) Pvt Ltd");
+  assert.equal(sw.snapshot.company.gstin, "33AAFCP5374A1ZQ");
+  assert.equal(sw.snapshot.exporter.gstin, "33AAFCP5374A1ZQ");
+  assert.equal(sw.snapshot.grandTotal, own.grandTotal, "the registration does not touch the money");
+  assert.deepEqual(applyDraftPatch(own, { gstin: "27AAACJ1234A1Z5" }, S).rejected, ["gstin"]);
+  const back = applyDraftPatch(sw.snapshot, { gstin: "" }, S);
+  assert.equal(back.snapshot.gstin, "33AALCP2750N1Z3", "blank means the company's own");
+  assert.equal(back.snapshot.gstinLabel, null);
+});
+
+test("snapshotExtras reads a row frozen before the answers with the defaults it would have had", () => {
+  const lines = buildInvoiceLines(items, null, "DTA", S);
+  const snap = buildInvoiceSnapshot(order, S, "DTA", lines, { date: "2026-07-10" });
+  const { gstin, gstinLabel, bankKey, ...old } = snap;
+  void gstin; void gstinLabel; void bankKey;
+  const ex = snapshotExtras(old);
+  assert.equal(ex.gstin, "33AALCP2750N1Z3", "from company.gstin");
+  assert.equal(ex.gstinLabel, null);
+  assert.equal(ex.bankKey, "domestic", "by kind");
+  assert.equal(snapshotExtras({ ...old, kind: "EXPORT" }).bankKey, "export");
+  // and such a row can still have its bank switched
+  const sw = applyDraftPatch(old, { bankKey: "export" }, S);
+  assert.equal(sw.changed, true);
+  assert.equal(sw.snapshot.bankKey, "export");
+});
+
+test("design codes (answer 20): the master's code on the line, the name on paper, a marker on the screen", () => {
+  const codeFor = designCodeLookup([
+    { design: "Carrara Royale", code: "PES-CR-01" },
+    { design: "  Statuario  Venato ", code: " PES-SV-02 " },
+    { design: "Nero", code: null },
+    { design: "", code: "ORPHAN" },
+  ]);
+  assert.equal(codeFor("carrara royale"), "PES-CR-01");
+  assert.equal(codeFor("STATUARIO VENATO"), "PES-SV-02", "spacing and case are the floor's, not the master's");
+  assert.equal(codeFor("Nero"), null, "a row without a code is no code");
+  assert.equal(codeFor("Calacatta"), null);
+  assert.equal(codeFor(null), null);
+  assert.equal(NO_DESIGN_CODE("Carrara Royale"), null);
+
+  const coded = buildInvoiceLines(items, slabs, "EXPORT", S, codeFor);
+  assert.equal(coded[0].itemCode, "PES-CR-01");
+  assert.equal(coded[1].itemCode, null, "Statuario has no code in this master");
+  assert.equal(lineLacksCode(coded[0]), false);
+  assert.equal(lineLacksCode(coded[1]), true, "the screen marks it");
+  assert.equal(printedItemCode(coded[0]), "PES-CR-01");
+  assert.equal(printedItemCode(coded[1]), "Statuario", "the document prints the design name, never a marker");
+  assert.equal(printedItemCode({ itemCode: null, design: null, description: "Display stand" }), "Display stand");
+  assert.equal(lineLacksCode({ itemCode: null, isSample: true }), false, "a sample is not a design");
+
+  const plain = buildInvoiceLines(items, slabs, "EXPORT", S);
+  assert.deepEqual(plain.map((l) => l.itemCode), [null, null], "no master, no codes — the description still carries the SKU");
+  assert.equal(plain[0].description, "CR-2");
+});
+
+test("the date prints DIRECTLY UNDER the number (answer 6), and an export number shows its FY beside it", () => {
+  assert.deepEqual(datedLines("PESPL/N12", "2026-07-14"), ["PESPL/N12", "Dated: 14/07/2026"]);
+  assert.deepEqual(datedLines("PESPL/N12", null), ["PESPL/N12"], "no date, no bare 'Dated:'");
+  assert.deepEqual(datedLines(null, "2026-07-14"), ["Dated: 14/07/2026"]);
+  assert.deepEqual(datedLines("", ""), []);
+  assert.deepEqual(datedLines("PESPL/DC/N3/26", new Date(Date.UTC(2026, 7, 20))), ["PESPL/DC/N3/26", "Dated: 20/08/2026"]);
+
+  assert.equal(fyOfIso("2026-04-01"), "26-27");
+  assert.equal(fyOfIso("2026-03-31"), "25-26");
+  assert.equal(fyOfIso("2027-01-15T10:00:00.000Z"), "26-27");
+  assert.equal(fyOfIso(new Date(Date.UTC(2026, 3, 1))), "26-27");
+  assert.equal(fyOfIso("nonsense"), "");
+  assert.equal(fyOfIso(null), "");
+
+  assert.equal(fyBadge("EXPORT", "2026-07-14"), "FY 26-27", "PESPL/N{seq} runs on across years, so the register says which year");
+  assert.equal(fyBadge("export", "2027-02-01"), "FY 26-27");
+  assert.equal(fyBadge("DTA", "2026-07-14"), null, "a DTA number already carries its FY");
+  assert.equal(fyBadge("EXPORT", null), null);
+});
+
+// ─────────── what an edit logged, and what the export form overrode ──────────
+
+test("the edit log names the body keys that landed — never the derived totals", () => {
+  const lines = buildInvoiceLines(items, null, "DTA", S);
+  const before = buildInvoiceSnapshot(order, S, "DTA", lines, { date: "2026-07-10" });
+
+  const body: Record<string, unknown> = {
+    gstin: "33AAFCP5374A1ZQ",     // changes the registration
+    vehicleNo: "KA 05 AB 1234",   // changes a snapshot field
+    notes: null,                  // named, but already null — nothing changed
+    lrNo: "LR-99",                // row-only: no snapshot field to compare
+  };
+  const { snapshot: after } = applyDraftPatch(before, body, S);
+
+  assert.deepEqual(patchedSnapshotFields(body, before, after), ["gstin", "vehicleNo"]);
+  assert.deepEqual(patchedInvoiceFields(body, before, after), ["gstin", "vehicleNo", "lrNo"],
+    "the row-only columns are in the log too, in the order the body named them");
+  assert.deepEqual([...ROW_ONLY_PATCH_FIELDS], ["lrNo", "ewayBillNo", "packingListId"]);
+
+  // the failure this replaced: Object.keys(the UPDATE data) reported the
+  // re-derived money columns and nothing the clerk actually typed.
+  const edited = applyDraftPatch(before, { lines: [{ ...lines[0], rate: 200 }] }, S);
+  const fields = patchedInvoiceFields({ lines: [] }, before, edited.snapshot);
+  assert.deepEqual(fields, ["lines"]);
+  assert.equal(fields.includes("grandTotal"), false);
+  assert.equal(fields.includes("igst"), false);
+  assert.notEqual(edited.snapshot.grandTotal, before.grandTotal, "the totals DID move — they are just not the news");
+
+  // the invoice date is `invoiceDate` on the row and `date` in the snapshot
+  const dated = applyDraftPatch(before, { invoiceDate: "2026-07-11", date: "2026-07-11" }, S);
+  assert.deepEqual(patchedInvoiceFields({ invoiceDate: "2026-07-11" }, before, dated.snapshot), ["invoiceDate"]);
+
+  assert.deepEqual(patchedInvoiceFields(null, before, after), []);
+  assert.deepEqual(patchedInvoiceFields({}, before, before), []);
+});
+
+test("a GSTIN or bank switch is logged BY VALUE (answers 21, 23)", () => {
+  const lines = buildInvoiceLines(items, null, "DTA", S);
+  const before = buildInvoiceSnapshot(order, S, "DTA", lines, { date: "2026-07-10" });
+  const { snapshot: after } = applyDraftPatch(before, { gstin: "33AAFCP5374A1ZQ", bankKey: "export" }, S);
+
+  const c = registrationChanges(before, after);
+  assert.deepEqual(c?.gstin, { from: "33AALCP2750N1Z3", to: "33AAFCP5374A1ZQ" });
+  assert.deepEqual(c?.gstinLabel, { from: null, to: "Pacific Granites (India) Pvt Ltd" });
+  assert.deepEqual(c?.bankKey, { from: "domestic", to: "export" });
+
+  const note = registrationChangeNote(c);
+  assert.match(note, /GSTIN 33AALCP2750N1Z3 → 33AAFCP5374A1ZQ \(Pacific Granites \(India\) Pvt Ltd\)/);
+  assert.match(note, /bank domestic → export/);
+
+  assert.equal(registrationChanges(before, before), null, "an edit that left both alone logs no registration change");
+  assert.equal(registrationChangeNote(null), "");
+
+  // a row frozen before the two answers existed carries neither field; reading
+  // it must not report a change against the defaults it always had.
+  const { gstin, gstinLabel, bankKey, ...pre } = before;
+  void gstin; void gstinLabel; void bankKey;
+  assert.equal(registrationChanges(pre, before), null);
+  assert.deepEqual(patchedInvoiceFields({ gstin: "33AALCP2750N1Z3" }, pre, before), []);
+});
+
+test("exportRootOverrides: the SAVED export form, not the invoice, is what the workbook prints", () => {
+  const lines = buildInvoiceLines(items, null, "EXPORT", S);
+  const snap = buildInvoiceSnapshot({ ...order, kind: "EXPORT", currency: "USD" }, S, "EXPORT", lines, { date: "2026-08-20" });
+  const bankName = snap.bank?.name ?? "";
+  assert.equal(snap.gstin, "33AALCP2750N1Z3");
+  assert.equal(bankName, S.banks.export.name);
+
+  assert.deepEqual(exportRootOverrides(snap, null), [], "nothing saved — the invoice's choice is what the form will default to");
+  assert.deepEqual(exportRootOverrides(snap, {}), []);
+  assert.deepEqual(exportRootOverrides(null, { [EXPORT_ROOT_GSTIN_KEY]: "anything" }), []);
+
+  assert.deepEqual(exportRootOverrides(snap, {
+    [EXPORT_ROOT_GSTIN_KEY]: `GSTIN NO: ${snap.gstin}`,
+    [EXPORT_ROOT_BANK_KEY]: bankName,
+  }), [], "the prefill saved back unchanged is not an override");
+
+  assert.deepEqual(exportRootOverrides(snap, {
+    [EXPORT_ROOT_GSTIN_KEY]: `GSTIN  ${snap.gstin} (Pacific Exports)`,
+    [EXPORT_ROOT_BANK_KEY]: `  ${bankName.toUpperCase()} `,
+  }), [], "re-typed wording, spacing and case around the SAME registration and bank are not an override");
+
+  const o = exportRootOverrides(snap, {
+    [EXPORT_ROOT_GSTIN_KEY]: "GSTIN NO: 33AAFCP5374A1ZQ",
+    [EXPORT_ROOT_BANK_KEY]: "HDFC Bank Ltd",
+  });
+  assert.deepEqual(o.map((x) => x.what), ["GSTIN", "bank"]);
+  assert.equal(o[0].key, EXPORT_ROOT_GSTIN_KEY);
+  assert.equal(o[0].onInvoice, "33AALCP2750N1Z3");
+  assert.equal(o[0].saved, "GSTIN NO: 33AAFCP5374A1ZQ");
+  assert.equal(o[1].onInvoice, bankName);
+  assert.equal(o[1].saved, "HDFC Bank Ltd");
+
+  // a cell cleared in the form prints blank — the screen must say so rather
+  // than promise the invoice's bank.
+  const blank = exportRootOverrides(snap, { [EXPORT_ROOT_BANK_KEY]: "" });
+  assert.equal(blank.length, 1);
+  assert.equal(blank[0].what, "bank");
+  assert.equal(blank[0].saved, "");
+
+  // the sister company's invoice with the form still on the old registration
+  const pgi = buildInvoiceSnapshot({ ...order, kind: "EXPORT", currency: "USD" }, S, "EXPORT", lines, { date: "2026-08-20", gstin: "33AAFCP5374A1ZQ" });
+  const stale = exportRootOverrides(pgi, { [EXPORT_ROOT_GSTIN_KEY]: "GSTIN NO: 33AALCP2750N1Z3" });
+  assert.equal(stale.length, 1);
+  assert.equal(stale[0].onInvoice, "33AAFCP5374A1ZQ (Pacific Granites (India) Pvt Ltd)");
 });

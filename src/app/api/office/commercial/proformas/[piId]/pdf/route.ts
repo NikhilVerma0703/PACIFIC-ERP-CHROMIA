@@ -2,9 +2,11 @@
 //
 // The snapshot is printed exactly as it was frozen: a PI that went to a
 // customer must render the same way a year later even if the order, the client
-// master or the settings have moved on. Served inline so the browser's viewer
-// opens it in the tab the PI tab points at; a missing row or an unusable
-// snapshot still comes back through handle() as JSON with a status.
+// master or the settings have moved on — the bank block and the GSTIN it
+// carries are the ones chosen for it, not today's settings. Served inline so
+// the browser's viewer opens it in the tab the PI tab points at; a missing row
+// or an unusable snapshot still comes back through handle() as JSON with a
+// status.
 import { NextResponse } from "next/server";
 import { commercialGate } from "@/lib/commercial/access";
 import { deny, handle } from "@/lib/commercial/http";
@@ -27,7 +29,7 @@ export async function GET(_req: Request, { params }: Ctx) {
     return new NextResponse(new Uint8Array(buffer), {
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `inline; filename="${piFilename(pi.number, pi.revision)}"`,
+        "Content-Disposition": `inline; filename="${piFilename(pi.number)}"`,
         "Cache-Control": "no-store",
       },
     });

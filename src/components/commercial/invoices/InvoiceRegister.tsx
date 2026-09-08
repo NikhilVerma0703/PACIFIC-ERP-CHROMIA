@@ -8,8 +8,9 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Card, Badge, Empty, Kpi } from "@/components/ui";
 import { readJson } from "@/lib/readJson";
-import { statusTone, displayGrandTotal } from "@/lib/commercial/invoice-rules";
-import { inp, lbl, btnGhost, th, thead, errorBox, money, dmy } from "./ui";
+import { statusTone, displayGrandTotal, fyBadge } from "@/lib/commercial/invoice-rules";
+import { inp, lbl, btnGhost, th, thead, errorBox, money } from "./ui";
+import { DocNumber } from "./DocNumber";
 
 interface Row {
   id: string;
@@ -129,7 +130,6 @@ export function InvoiceRegister() {
                 <tr className={thead}>
                   <th className={th}>Invoice</th>
                   <th className={th}>Kind</th>
-                  <th className={th}>Date</th>
                   <th className={th}>Order</th>
                   <th className={th}>Client</th>
                   <th className={th}>Packing list</th>
@@ -142,17 +142,17 @@ export function InvoiceRegister() {
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.id} className="border-b border-gray-50 last:border-0">
-                    <td className="py-2 pr-4">
-                      <Link href={`/office/commercial/invoices/${r.id}`} className="font-medium text-brand hover:underline">{r.number}</Link>
+                    <td className="py-2 pr-4 align-top">
+                      {/* the date DIRECTLY UNDER the number (answer 6); the FY beside a continuous export number */}
+                      <DocNumber number={r.number} date={r.invoiceDate} href={`/office/commercial/invoices/${r.id}`} tag={fyBadge(r.kind, r.invoiceDate)} />
                       {r.unpricedLines > 0 && (
                         <span className="mt-0.5 block text-xs font-medium text-amber-700" title="A line came off the packing list with no order line to price it">
                           {r.unpricedLines} line{r.unpricedLines === 1 ? "" : "s"} without a rate
                         </span>
                       )}
                     </td>
-                    <td className="py-2 pr-4 text-gray-600">{r.kind}</td>
-                    <td className="py-2 pr-4 text-gray-600">{dmy(r.invoiceDate)}</td>
-                    <td className="py-2 pr-4">
+                    <td className="py-2 pr-4 align-top text-gray-600">{r.kind}</td>
+                    <td className="py-2 pr-4 align-top">
                       {r.order ? <Link href={`/office/commercial/orders/${r.order.id}?tab=invoice`} className="text-brand hover:underline">{r.order.number}</Link> : "—"}
                     </td>
                     <td className="py-2 pr-4 text-gray-600">{r.order?.client?.name ?? "—"}</td>

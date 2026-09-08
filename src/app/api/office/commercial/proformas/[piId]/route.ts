@@ -1,14 +1,16 @@
-// GET   /api/office/commercial/proformas/[piId] — one revision, snapshot and all
+// GET   /api/office/commercial/proformas/[piId] — one PI, snapshot and all
 // PATCH /api/office/commercial/proformas/[piId] — edit a DRAFT: { notes,
-//       snapshot? } (or the snapshot fields flat in the body). Only the fields
+//       snapshot? } (or the snapshot fields flat in the body), plus the two
+//       choices, bankKey (answer 23) and gstinKey (answer 21). Only the fields
 //       applyDraftPatch allows move; totals and the amount in words are
 //       re-derived whenever lines or the discount change, and the row's
 //       totalAmount / currency follow the snapshot so the register never
 //       disagrees with the paper.
 import { commercialGate } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain, str } from "@/lib/commercial/http";
+import { loadSettings } from "@/lib/commercial/settings";
 import { logOrderEvent } from "@/lib/commercial/events";
-import { applyDraftPatch, canEditDraft, piLabel } from "@/lib/commercial/proforma-rules";
+import { applyDraftPatch, canEditDraft } from "@/lib/commercial/proforma-rules";
 import { db, loadProforma, snapshotOf, piIdOf } from "../_lib";
 
 export const dynamic = "force-dynamic";
@@ -31,7 +33,7 @@ export async function PATCH(req: Request, { params }: Ctx) {
   return handle(async () => {
     const piId = await piIdOf(params);
     const pi = await loadProforma(piId);
-    if (!canEditDraft(pi.status)) fail(409, `Only a draft can be edited (this revision is ${pi.status.toLowerCase()})`);
+    if (!canEditDraft(pi.status)) fail(409, `Only a draft can be edited (this PI is ${pi.status.toLowerCase()})`);
 
     const body = await readBody<Record<string, unknown>>(req);
     const hasNotes = Object.prototype.hasOwnProperty.call(body, "notes");
@@ -43,7 +45,8 @@ export async function PATCH(req: Request, { params }: Ctx) {
       ? { ...(body.snapshot as Record<string, unknown>), ...(hasNotes ? { notes: body.notes } : {}) }
       : body;
 
-    const { snapshot, changed } = applyDraftPatch(snapshotOf(pi), patchSource);
+    const settings = await loadSettings();
+    const { snapshot, changed } = applyDraftPatch(snapshotOf(pi), patchSource, settings);
     const notes = hasNotes ? str(body.notes) : (pi.notes as string | null | undefined) ?? null;
     if (!changed && notes === ((pi.notes as string | null | undefined) ?? null)) {
       return json(plain(await loadProforma(piId)));
@@ -53,10 +56,10 @@ export async function PATCH(req: Request, { params }: Ctx) {
       where: { id: piId },
       data: { snapshot, notes, currency: snapshot.currency, totalAmount: snapshot.totalAmount },
     });
-    await logOrderEvent(pi.orderId, "note", {
-      note: `Proforma ${piLabel(pi.number, pi.revision)} draft edited`,
+    await logOrderEvent(pi.orderId, "pi_edited", {
+      note: `Proforma ${pi.number} draft edited`,
       by: g.user,
-      payload: { proformaId: piId, number: pi.number, revision: pi.revision, total: snapshot.totalAmount },
+      payload: { proformaId: piId, number: pi.number, total: snapshot.totalAmount, bankKey: snapshot.bankKey, gstinKey: snapshot.gstinKey },
     });
     return json(plain(await loadProforma(piId)));
   });

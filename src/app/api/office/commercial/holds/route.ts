@@ -1,20 +1,22 @@
 // GET  /api/office/commercial/holds?status=&orderId=&enquiryId= — every hold
-// POST /api/office/commercial/holds — an ENQUIRY-referenced hold
+// POST /api/office/commercial/holds — { orderId, slabNumbers, … } places an
+//      order hold, the same as POST /orders/[id]/holds
 //
-// A hold may be placed before there is an order (owner default, open question
-// 12): the reference is then the enquiry number. Order-referenced holds are
-// placed at /orders/[id]/holds, which also bumps the order's stage.
+// There are no enquiry holds (answer 12). This route used to place one when
+// the body named an enquiry; it now refuses that with the reason, and the
+// enquiry filter on GET stays only so the holds placed before the answer can
+// still be found.
 //
 // The list reconciles each ACTIVE hold on the page against live inventory
 // before returning it. It is a handful of reads per page and it keeps the
 // module honest: a hold whose five days lapsed overnight reads EXPIRED here,
-// not ACTIVE, because the inventory sweep has already freed its slabs.
-import { commercialGate, actorStamp } from "@/lib/commercial/access";
+// not ACTIVE, because the inventory sweep has already freed its slabs — and
+// reconcileHold has already sent the order back to the stock check (answer 11).
+import { commercialGate } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain, str } from "@/lib/commercial/http";
-import { loadSettings } from "@/lib/commercial/settings";
 import { reconcileHold } from "@/lib/commercial/inventory-bridge";
-import { parseSlabNumbers, normaliseDays, resolveHoldReference, parseHoldStatus, pageArgs } from "@/lib/commercial/holds-rules";
-import { db, HOLD_INCLUDE, placeHold } from "./_lib";
+import { parseHoldStatus, pageArgs, holdTarget } from "@/lib/commercial/holds-rules";
+import { db, HOLD_INCLUDE, placeOrderHold } from "./_lib";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -59,44 +61,9 @@ export async function POST(req: Request) {
   if (!g.ok) return deny(g);
   return handle(async () => {
     const body = await readBody<Record<string, unknown>>(req);
-    const enquiryId = str(body.enquiryId);
-    if (!enquiryId) fail(400, "An enquiry hold needs enquiryId — hold against an order at /orders/[id]/holds");
-    const enquiry = await db.commercialEnquiry.findUnique({
-      where: { id: enquiryId },
-      select: {
-        id: true, number: true, prospectName: true,
-        client: { select: { id: true, name: true } },
-        // An enquiry that has already been converted: its order's number is
-        // the only other reference its stock may sit under.
-        orders: { select: { number: true } },
-      },
-    });
-    if (!enquiry) fail(404, "Enquiry not found");
-
-    const slabNumbers = parseSlabNumbers(body.slabNumbers);
-    if (!slabNumbers.length) fail(400, "Tick at least one slab to hold");
-
-    const settings = await loadSettings();
-    const days = normaliseDays(body.days, settings.holdDays);
-    // As on the order route: the reference decides which slabs this module will
-    // later treat as its own to release and to pack, so it is derived from the
-    // enquiry (and the order it became), never taken from the body on trust.
-    const orders = (enquiry.orders ?? []) as Array<{ number?: string | null }>;
-    const ref = resolveHoldReference(body.reference, [String(enquiry.number), ...orders.map((o) => o.number ?? null)]);
-    if (!ref.ok) fail(400, ref.reason);
-    const reference = ref.reference;
-    const client = enquiry.client as { name?: string } | null;
-    const customer = str(body.customer) ?? client?.name ?? (enquiry.prospectName as string | null) ?? null;
-    const stamp = actorStamp(g.user);
-
-    const res = await placeHold({
-      slabNumbers, reference, customer, days,
-      notes: str(body.notes),
-      orderId: null, enquiryId,
-      by: stamp.name, byId: stamp.id, isAdmin: g.actor === "ADMIN",
-    });
-    // No order, so no order event: the enquiry's holds are its own record until
-    // the enquiry is converted, and the hold row carries who placed it.
+    const target = holdTarget(body);
+    if (!target.ok) fail(400, target.reason);
+    const res = await placeOrderHold(target.orderId, body, g);
     return json(plain({ hold: res.hold, updated: res.updated, skipped: res.skipped, missing: res.missing, sqft: res.sqft }), 201);
   });
 }

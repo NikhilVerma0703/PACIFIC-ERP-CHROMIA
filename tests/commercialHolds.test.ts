@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   parseSlabNumbers, normaliseDays, holdExpiry, hoursLeft, heldSlabNumbers, buildHoldSlabRows, holdSqft,
-  nothingHeldMessage, resolveHoldReference, stillHeldSlabs, releaseTargets, canActOnHold, parseHoldStatus, pageArgs,
+  nothingHeldMessage, resolveHoldReference, stillHeldSlabs, releaseTargets, canActOnHold, parseHoldStatus, pageArgs, holdExpiryLine, holdTarget,
   toggleSlab, toggleBatch, batchTickState, selectionSummary, shortfallOffer,
   FALLBACK_HOLD_DAYS, MAX_HOLD_DAYS,
   // The bridge's own decisions, lifted out of inventory-bridge.ts by the
@@ -303,4 +303,56 @@ test("canonicalFromMap: the same answer canonicalDesign gives, from one loaded t
   assert.equal(canonicalFromMap(aliases, undefined), null);
   assert.equal(canonicalFromMap(aliases, ""), null, "no design, no canonical — never the empty string");
   assert.equal(canonicalFromMap(new Map(), "Cappuccino"), "Cappuccino", "an unreadable alias table still answers the raw name");
+});
+
+// ═══════════════ answer 11: there is no extension ════════════════════════════
+//
+// The extend route, its rule and its button are gone. What replaces them is
+// nothing: a hold lapses, reconcileHold marks it EXPIRED through
+// holdStatusAfterReconcile, and regressExpiredOrder sends the order back to
+// the stock check. These pin the pure half of that path and the sentence the
+// card shows instead of a button.
+
+test("no extension: the rules module exports nothing that extends a hold", async () => {
+  const mod = await import("../src/lib/commercial/holds-rules.ts");
+  assert.deepEqual(Object.keys(mod).filter((k) => /extend/i.test(k)), [], "an extend helper coming back here means the route is coming back too");
+});
+
+test("expiry sends the order back: a lapsed hold with nothing packed is EXPIRED, whatever else happened to it", () => {
+  const lapsed = new Date("2026-09-01T00:00:00.000Z");
+  const checkedAt = new Date("2026-09-06T10:00:00.000Z");
+  // the sweep freed every slab overnight: released = all, expiry in the past
+  assert.equal(holdStatusAfterReconcile({ stillHeld: 0, packed: 0, released: 40, unreadable: 0 }, lapsed, checkedAt), "EXPIRED");
+  // some were released by hand before the five days ran; the rest lapsed
+  assert.equal(holdStatusAfterReconcile({ stillHeld: 0, packed: 0, released: 12, unreadable: 0 }, lapsed, checkedAt), "EXPIRED");
+  // one slab we could not read does not stop the hold being recorded as lapsed
+  assert.equal(holdStatusAfterReconcile({ stillHeld: 0, packed: 0, released: 39, unreadable: 1 }, lapsed, checkedAt), "EXPIRED");
+  // exactly at the expiry instant it has not lapsed yet — the sweep runs after
+  assert.equal(holdStatusAfterReconcile({ stillHeld: 0, packed: 0, released: 40, unreadable: 0 }, checkedAt, checkedAt), "RELEASED");
+  // and a hold with slabs in a container never lapses into a stock re-check
+  assert.equal(holdStatusAfterReconcile({ stillHeld: 0, packed: 3, released: 37, unreadable: 0 }, lapsed, checkedAt), "CONSUMED");
+  assert.equal(canActOnHold("EXPIRED").ok, false, "nothing can be done to a lapsed hold — a new hold is the only way on");
+});
+
+test("holdExpiryLine: the card says what expiry costs instead of offering a button", () => {
+  assert.equal(holdExpiryLine("ACTIVE", "11/09/2026, 10:00 am"), "expires 11/09/2026, 10:00 am — on expiry the order returns to the stock check");
+  assert.equal(holdExpiryLine("EXPIRED", "01/09/2026, 10:00 am"), "lapsed 01/09/2026, 10:00 am — the order went back to the stock check");
+  assert.equal(holdExpiryLine("CONSUMED", "x"), "packed");
+  assert.equal(holdExpiryLine("RELEASED", "x"), "released");
+});
+
+// ═══════════════ answer 12: no holds against an enquiry ══════════════════════
+
+test("holdTarget: an order id is the only target; an enquiry is refused with the reason, not converted", () => {
+  assert.deepEqual(holdTarget({ orderId: " ord_1 " }), { ok: true, orderId: "ord_1" });
+  assert.deepEqual(holdTarget({ orderId: "ord_1", enquiryId: "enq_1" }), { ok: true, orderId: "ord_1" }, "an order in the body wins; the enquiry is history");
+  const enq = holdTarget({ enquiryId: "enq_1" });
+  assert.equal(enq.ok, false);
+  assert.match((enq as { reason: string }).reason, /not held against an enquiry/);
+  assert.match((enq as { reason: string }).reason, /answer 12/);
+  const none = holdTarget({});
+  assert.equal(none.ok, false);
+  assert.match((none as { reason: string }).reason, /orderId/);
+  assert.equal(holdTarget({ orderId: "   ", enquiryId: "" }).ok, false, "blanks are not ids");
+  assert.equal(holdTarget({ orderId: 42 }).ok, false, "an id is a string");
 });

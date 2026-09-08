@@ -1,16 +1,17 @@
 "use client";
-// The holds placed against an order (or an enquiry) and what can still be done
-// with them: release some or all of the slabs, or extend the five days.
+// The holds placed against an order and what can still be done with them:
+// release some or all of the slabs. Nothing else — there is no extension
+// (answer 11).
 //
 // A hold's status is not decorative. ACTIVE means those slabs are RESERVED in
 // finished goods right now; EXPIRED means the inventory sweep gave them back
-// because nobody extended in time; CONSUMED means a packing list took them.
-// Release and Extend are offered only on an ACTIVE hold, and only to a login
-// that may write — the same rule the routes enforce.
+// when the days ran out, and the order went back to the stock check; CONSUMED
+// means a packing list took them. Release is offered only on an ACTIVE hold,
+// and only to a login that may write — the same rule the route enforces.
 import { useState } from "react";
 import { Badge, Empty, fmt } from "@/components/ui";
 import { postJson } from "@/lib/fab/postJson";
-import { hoursLeft, stillHeldSlabs } from "@/lib/commercial/holds-rules";
+import { hoursLeft, stillHeldSlabs, holdExpiryLine } from "@/lib/commercial/holds-rules";
 import type { HoldDto } from "@/lib/commercial/types";
 
 const btn = "rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:border-brand hover:text-brand disabled:cursor-not-allowed disabled:opacity-40";
@@ -28,18 +29,16 @@ function whenLeft(h: HoldDto): string {
   return `${Math.round(hrs / 24)} day(s) left`;
 }
 
-export function HoldsPanel({ holds, canWrite, onChanged, defaultDays }: {
+export function HoldsPanel({ holds, canWrite, onChanged }: {
   holds: HoldDto[];
   canWrite: boolean;
   onChanged: () => void;
-  defaultDays: number;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [reason, setReason] = useState("");
-  const [days, setDays] = useState(String(defaultDays));
   const [picked, setPicked] = useState<number[]>([]);
 
   async function release(h: HoldDto, only: number[] | null) {
@@ -52,18 +51,6 @@ export function HoldsPanel({ holds, canWrite, onChanged, defaultDays }: {
     if (!r.ok) { setError(r.error ?? "Could not release"); return; }
     setNote(`${r.data?.released ?? 0} slab(s) released${r.data?.notOnHold?.length ? `; ${r.data.notOnHold.length} were not on the hold` : ""}.`);
     setPicked([]); setReason("");
-    onChanged();
-  }
-
-  async function extend(h: HoldDto) {
-    setBusy(h.id); setError(null); setNote(null);
-    const r = await postJson(`/api/office/commercial/holds/${h.id}/extend`, { days: Number(days) });
-    setBusy(null);
-    if (!r.ok) { setError(r.error ?? "Could not extend"); return; }
-    const asked = r.data?.asked ?? 0, reheld = r.data?.reheld ?? 0;
-    setNote(reheld === asked
-      ? `Extended — ${reheld} slab(s) held for another ${r.data?.days ?? days} day(s).`
-      : `Extended — ${reheld} of ${asked} slab(s) came back; the rest were taken meanwhile.`);
     onChanged();
   }
 
@@ -84,7 +71,8 @@ export function HoldsPanel({ holds, canWrite, onChanged, defaultDays }: {
               <Badge tone={TONE[h.status] ?? "brand"}>{h.status.toLowerCase()}</Badge>
               <span className="text-sm text-gray-600">{still.length} of {h.slabs.length} slab(s) held · {fmt(sqft, 2)} sqft</span>
               <span className="text-sm text-gray-500">
-                {h.status === "ACTIVE" ? whenLeft(h) : "ended"} · expires {new Date(h.expiresAt).toLocaleString("en-IN")}
+                {h.status === "ACTIVE" && <>{whenLeft(h)} · </>}
+                {holdExpiryLine(h.status, new Date(h.expiresAt).toLocaleString("en-IN"))}
               </span>
               <span className="text-xs text-gray-400">{h.placedByName ?? "—"} · {new Date(h.placedAt).toLocaleDateString("en-IN")}</span>
               <button type="button" className={`${btn} ml-auto`} onClick={() => { setOpenId(isOpen ? null : h.id); setPicked([]); }}>
@@ -152,13 +140,6 @@ export function HoldsPanel({ holds, canWrite, onChanged, defaultDays }: {
                     </button>
                     <button type="button" className={btnDanger} disabled={busy === h.id || still.length === 0} onClick={() => void release(h, null)}>
                       Release all {still.length}
-                    </button>
-                    <label className="ml-auto flex flex-col gap-1">
-                      <span className="text-xs font-medium uppercase tracking-wide text-gray-400">Extend by (days)</span>
-                      <input className={`${input} w-24`} type="number" min={1} max={60} value={days} onChange={(e) => setDays(e.target.value)} />
-                    </label>
-                    <button type="button" className={btn} disabled={busy === h.id || still.length === 0} onClick={() => void extend(h)}>
-                      Extend
                     </button>
                   </div>
                 )}

@@ -16,8 +16,25 @@
 // stored amount is printed, never recomputed).
 import { amountInWords, inrWords } from "./words.ts";
 import { canonThickness } from "../thickness.ts";
-import type { CommercialSettings } from "./settings-defaults.ts";
+import { canEnter } from "./stages.ts";
+import { gstinChoices, type BankDetails, type CommercialSettings, type GstinChoice } from "./settings-defaults.ts";
 import type { DocLine, Party, ProformaSnapshot } from "./types.ts";
+
+// ───────────────────────────── the PI's own choices ──────────────────────────
+
+/** Which of the two accounts in settings.banks the PI prints (answer 23). */
+export type BankKey = "export" | "domestic";
+export const BANK_KEYS: readonly BankKey[] = ["export", "domestic"];
+
+/**
+ * The snapshot as THIS module writes it. types.ts ProformaSnapshot now carries
+ * the two choices answers 21 and 23 put on a PI (bankKey, gstinKey — optional,
+ * because PIs frozen before 2026-09-07 have neither; readers fall back to the
+ * kind's default bank and the company's own GSTIN) and the `revises` link of
+ * answer 24, so this is the same type under the name the PI code has always
+ * used. Kept as an alias so the routes, the PDF and the tests keep one name.
+ */
+export type PiSnapshot = ProformaSnapshot;
 
 // ───────────────────────────── inputs ────────────────────────────────────────
 
@@ -83,12 +100,22 @@ export interface SnapshotOrderInput {
 }
 
 export interface SnapshotOptions {
+  /** The PI's own number, from the proforma counter (answers 5, 8, 24) —
+   *  never the order's number. */
+  number: string;
+  /** The order's n-th PI (0 first). An ordinal for the tab's ordering and the
+   *  row's unique key; it is NOT part of the number and never prints. */
   revision: number;
   /** YYYY-MM-DD; the PI's printed date. */
   date: string;
   validUntil?: string | null;
   deliveryDate?: string | null;
   notes?: string | null;
+  /** Defaults by kind when absent (answer 23). */
+  bankKey?: BankKey | null;
+  /** Defaults to the company's own registration when absent (answer 21). */
+  gstinKey?: string | null;
+  revises?: { id: string; number: string } | null;
 }
 
 // ───────────────────────────── small helpers ─────────────────────────────────
@@ -206,22 +233,24 @@ export function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-/** The PI's validity: issue day + settings.piValidityDays, as YYYY-MM-DD. */
-export function validUntilFor(issuedAt: Date, validityDays: number): string {
+/**
+ * The PI's validity: issue day + settings.piValidityDays, as YYYY-MM-DD — or
+ * null when the setting is 0, which is "valid forever" (answer 24). Null, not
+ * the issue day: a PI that "expired" the day it was issued would be refused
+ * by every customer's accounts department.
+ */
+export function validUntilFor(issuedAt: Date, validityDays: number): string | null {
+  const days = Math.round(Number(validityDays));
+  if (!Number.isFinite(days) || days <= 0) return null;
   const d = new Date(Date.UTC(issuedAt.getUTCFullYear(), issuedAt.getUTCMonth(), issuedAt.getUTCDate()));
-  d.setUTCDate(d.getUTCDate() + Math.max(0, Math.round(validityDays)));
+  d.setUTCDate(d.getUTCDate() + days);
   return isoDate(d);
 }
 
-/** "SAL-ORD/26-27/01642" R0 → "SAL-ORD-26-27-01642-R0.pdf" (a slash cannot be a filename). */
-export function piFilename(number: string, revision: number): string {
+/** "SAL-ORD/26-27/N3" → "SAL-ORD-26-27-N3.pdf" (a slash cannot be a filename). */
+export function piFilename(number: string): string {
   const safe = printable(number).replace(/[\/\\:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim() || "proforma";
-  return `${safe}-R${Math.max(0, Math.round(revision))}.pdf`;
-}
-
-/** "SAL-ORD/26-27/01642-R1" — how a revision is named on screen and in the log. */
-export function piLabel(number: string, revision: number): string {
-  return `${number}-R${revision}`;
+  return `${safe}.pdf`;
 }
 
 // ───────────────────────────── lines ─────────────────────────────────────────
@@ -352,20 +381,80 @@ export function clientParty(client: SnapshotClientInput | null | undefined): Par
   };
 }
 
-/**
- * Which bank prints on a proforma. OPEN-QUESTIONS §23: ICICI is the DTA
- * invoice's account; the PI, the export documents and the delivery challan
- * carry Kotak (it is the account on the reference PI and the reference
- * challan). A proforma is a PI whatever its kind, so a DOMESTIC one prints
- * Kotak too: the PI is what an advance is paid against, and the owner has
- * said which account that is. Only the DTA invoice keeps ICICI
- * (invoice-rules picks its own bank by kind).
- */
-export function piBank(settings: CommercialSettings): CommercialSettings["banks"]["export"] {
-  return settings.banks.export;
+/** Answer 23: "ICICI on domestic, Kotak on international" — the default the
+ *  dropdown opens on. */
+export function defaultBankKey(kind: string): BankKey {
+  return kind === "DOMESTIC" ? "domestic" : "export";
 }
 
-export function exporterParty(settings: CommercialSettings): Party {
+/** A bank key from a request body; anything that is not one of the two is
+ *  null so a typo falls back to the kind's default rather than to a blank
+ *  bank block on the customer's paper. */
+export function parseBankKey(raw: unknown): BankKey | null {
+  const s = printable(raw).toLowerCase();
+  return (BANK_KEYS as string[]).includes(s) ? (s as BankKey) : null;
+}
+
+/** The account a PI prints: settings.banks[bankKey] (answer 23). */
+export function piBank(settings: CommercialSettings, bankKey: BankKey): BankDetails {
+  return settings.banks[bankKey];
+}
+
+/** The bank as the snapshot freezes it — a copy, so a later edit in Settings
+ *  cannot change a PI the customer already holds. The optional keys are left
+ *  OUT when the account has none (ICICI has no AD code or routing bank) rather
+ *  than written as undefined: JSON drops undefined, so the snapshot in memory
+ *  must already be the snapshot the Json column will hold. */
+export function bankBlock(bank: BankDetails): ProformaSnapshot["bank"] {
+  const block: ProformaSnapshot["bank"] = {
+    name: bank.name,
+    address: bank.address,
+    accountNo: bank.accountNo,
+    ifsc: bank.ifsc,
+    swift: bank.swift,
+  };
+  if (bank.adCode) block.adCode = bank.adCode;
+  if (bank.routingBank) block.routingBank = bank.routingBank;
+  if (bank.routingSwift) block.routingSwift = bank.routingSwift;
+  return block;
+}
+
+/**
+ * What the PI tab's two dropdowns offer (answers 21, 23), shaped for a screen.
+ * Served by GET /proformas/choices under the "view" gate: the settings route
+ * itself is admin-only, and a Commercial clerk who cannot see Settings still
+ * has to choose the bank and the GSTIN before issuing. Only the labels leave
+ * the server — the account numbers print from the frozen snapshot, not from
+ * anything this returns.
+ */
+export interface PiChoices {
+  banks: Array<{ key: BankKey; label: string }>;
+  gstins: GstinChoice[];
+  /** 0 = valid forever (answer 24); the tab says so beside the issue button. */
+  piValidityDays: number;
+}
+
+export function piChoices(settings: CommercialSettings): PiChoices {
+  return {
+    banks: BANK_KEYS.map((key) => ({ key, label: `${settings.banks[key].name} (${key})` })),
+    gstins: gstinChoices(settings.company),
+    piValidityDays: Math.max(0, Math.round(Number(settings.piValidityDays)) || 0),
+  };
+}
+
+/**
+ * The registration a PI is issued under (answer 21): the chosen one when it
+ * is on the settings list, else the company's own. An unknown key is not an
+ * error — a GSTIN that was on the list when the draft was built and has
+ * since been removed from Settings must not print as a blank.
+ */
+export function gstinChoiceFor(settings: CommercialSettings, gstinKey: string | null | undefined): GstinChoice {
+  const choices = gstinChoices(settings.company);
+  const key = printable(gstinKey).toUpperCase();
+  return choices.find((c) => c.gstin === key) ?? choices[0];
+}
+
+export function exporterParty(settings: CommercialSettings, gstin?: string | null): Party {
   const c = settings.company;
   return {
     name: c.legalName,
@@ -373,7 +462,7 @@ export function exporterParty(settings: CommercialSettings): Party {
     country: settings.defaults.countryOfOrigin || "India",
     tel: c.phone || null,
     email: c.email || null,
-    gstin: c.gstin || null,
+    gstin: clean(gstin) ?? c.gstin ?? null,
     stateCode: c.stateCode || null,
     code: null,
   };
@@ -387,12 +476,15 @@ function sameParty(a: Party | null, b: Party | null): boolean {
 // ───────────────────────────── the snapshot ──────────────────────────────────
 
 /**
- * Freeze an order into what the PI prints. Bank: Kotak on both kinds
- * (piBank — OPEN-QUESTIONS §23). Consignee: the order's, else the client's shipping address,
- * else the client master. Notify: the order's, else the client's. Buyer if not
- * consignee: the order's, else bill-to when it is a different party.
+ * Freeze an order into what the PI prints. Number: the PI's own (opts.number,
+ * from the proforma counter — answer 24 made it distinct from the order's).
+ * Bank: the chosen key, else the kind's default (answer 23). GSTIN: the chosen
+ * registration, else the company's own (answer 21). Consignee: the order's,
+ * else the client's shipping address, else the client master. Notify: the
+ * order's, else the client's. Buyer if not consignee: the order's, else
+ * bill-to when it is a different party.
  */
-export function buildProformaSnapshot(order: SnapshotOrderInput, settings: CommercialSettings, opts: SnapshotOptions): ProformaSnapshot {
+export function buildProformaSnapshot(order: SnapshotOrderInput, settings: CommercialSettings, opts: SnapshotOptions): PiSnapshot {
   const kind: "DOMESTIC" | "EXPORT" = order.kind === "DOMESTIC" ? "DOMESTIC" : "EXPORT";
   const isExport = kind === "EXPORT";
   const currency = (printable(order.currency) || (isExport ? "USD" : "INR")).toUpperCase();
@@ -406,10 +498,12 @@ export function buildProformaSnapshot(order: SnapshotOrderInput, settings: Comme
   const buyerIfNotConsignee = partyOrNull(order.buyerIfNotConsignee) ?? (billTo && !sameParty(billTo, consignee) ? billTo : null);
 
   const lines = (order.items ?? []).map((it, i) => buildLine(it, i, kind, settings));
-  const bank = piBank(settings);
+  const bankKey = opts.bankKey ?? defaultBankKey(kind);
+  const bank = piBank(settings, bankKey);
+  const gstin = gstinChoiceFor(settings, opts.gstinKey);
 
-  const base: ProformaSnapshot = {
-    number: order.number,
+  const base: PiSnapshot = {
+    number: printable(opts.number),
     revision: Math.max(0, Math.round(opts.revision)),
     date: opts.date,
     deliveryDate: clean(opts.deliveryDate),
@@ -417,7 +511,7 @@ export function buildProformaSnapshot(order: SnapshotOrderInput, settings: Comme
     kind,
     currency,
     buyerPoNo: clean(order.customerPoNumber),
-    exporter: exporterParty(settings),
+    exporter: exporterParty(settings, gstin.gstin),
     consignee,
     notifyParty,
     buyerIfNotConsignee,
@@ -438,25 +532,19 @@ export function buildProformaSnapshot(order: SnapshotOrderInput, settings: Comme
     grossWeight: null,
     netWeight: null,
     discount: 0,
-    bank: {
-      name: bank.name,
-      address: bank.address,
-      accountNo: bank.accountNo,
-      ifsc: bank.ifsc,
-      swift: bank.swift,
-      adCode: bank.adCode,
-      routingBank: bank.routingBank,
-      routingSwift: bank.routingSwift,
-    },
+    bankKey,
+    bank: bankBlock(bank),
+    gstinKey: gstin.gstin,
     company: {
       legalName: settings.company.legalName,
       addressLines: [...settings.company.addressLines],
-      gstin: settings.company.gstin,
+      gstin: gstin.gstin,
       rbiCode: settings.company.rbiCode,
       customsOffice: settings.company.customsOffice,
     },
     declaration: settings.texts.piDeclaration,
     notes: clean(opts.notes),
+    revises: opts.revises ?? null,
   };
   return recomputeTotals(base);
 }
@@ -473,17 +561,38 @@ export const EDITABLE_PARTY_FIELDS = ["consignee", "notifyParty", "buyerIfNotCon
 
 /**
  * Apply a PATCH body to a draft snapshot: only the fields above, `discount`
- * (a number, never negative) and `lines` (a full replacement array). Anything
- * else — number, revision, bank, company, totals — is ignored, and the totals
- * and the words are re-derived when lines or discount change. Returns a NEW
- * snapshot and whether anything changed.
+ * (a number, never negative), `lines` (a full replacement array), and — when
+ * the settings are passed — the two choices, `bankKey` (answer 23) and
+ * `gstinKey` (answer 21), which re-freeze the bank block and the printed
+ * GSTIN from Settings. Anything else — number, revision, totals, the bank
+ * block itself — is ignored, and the totals and the words are re-derived
+ * when lines or discount change. Returns a NEW snapshot and whether anything
+ * changed.
  */
-export function applyDraftPatch(snapshot: ProformaSnapshot, patch: unknown): { snapshot: ProformaSnapshot; changed: boolean } {
+export function applyDraftPatch(snapshot: PiSnapshot, patch: unknown, settings?: CommercialSettings): { snapshot: PiSnapshot; changed: boolean } {
   if (typeof patch !== "object" || patch === null) return { snapshot, changed: false };
   const p = patch as Record<string, unknown>;
-  const next: ProformaSnapshot = { ...snapshot };
+  const next: PiSnapshot = { ...snapshot };
   let changed = false;
   let totalsDirty = false;
+
+  if (settings && "bankKey" in p) {
+    const key = parseBankKey(p.bankKey);
+    if (key && key !== snapshot.bankKey) {
+      next.bankKey = key;
+      next.bank = bankBlock(piBank(settings, key));
+      changed = true;
+    }
+  }
+  if (settings && "gstinKey" in p) {
+    const choice = gstinChoiceFor(settings, printable(p.gstinKey));
+    if (choice.gstin !== snapshot.gstinKey) {
+      next.gstinKey = choice.gstin;
+      next.company = { ...snapshot.company, gstin: choice.gstin };
+      next.exporter = { ...snapshot.exporter, gstin: choice.gstin };
+      changed = true;
+    }
+  }
 
   for (const f of EDITABLE_TEXT_FIELDS) {
     if (!(f in p)) continue;
@@ -511,9 +620,15 @@ export function applyDraftPatch(snapshot: ProformaSnapshot, patch: unknown): { s
 
 // ───────────────────────────── revisions & status ────────────────────────────
 
+// SUPERSEDED is a status the enum still carries from the first cut (a revision
+// used to keep the number with a suffix and push the old one aside). Since
+// answer 24 nothing is superseded: a replaced PI is CANCELLED, with the
+// number that replaced it as the reason. The value stays readable so rows
+// frozen before 2026-09-07 still list.
 export type ProformaStatus = "DRAFT" | "ISSUED" | "ACCEPTED" | "SUPERSEDED" | "CANCELLED";
 
-/** The next revision for a number: max existing + 1, or 0 for the first. */
+/** The order's next PI ordinal: max existing + 1, or 0 for the first. Only
+ *  the row's unique key and the tab's ordering use it — never the number. */
 export function nextRevision(existing: Array<{ revision: number }> | number[]): number {
   let max = -1;
   for (const e of existing) {
@@ -527,23 +642,166 @@ export function canEditDraft(status: string): boolean { return status === "DRAFT
 export function canIssue(status: string): boolean { return status === "DRAFT"; }
 export function canAccept(status: string): boolean { return status === "ISSUED"; }
 export function canCancel(status: string): boolean { return status === "DRAFT" || status === "ISSUED" || status === "ACCEPTED"; }
+/** A revision replaces paper the customer holds — an issued or an accepted PI.
+ *  A draft is simply edited; a cancelled one is history. */
+export function canRevise(status: string): boolean { return status === "ISSUED" || status === "ACCEPTED"; }
 
 /** Why a transition is refused, or null when it may go ahead. */
 export function refuseIssue(pi: { status: string; snapshot: { lines: unknown[] } | null | undefined }): string | null {
-  if (!canIssue(pi.status)) return `Only a draft can be issued (this revision is ${pi.status.toLowerCase()})`;
+  if (!canIssue(pi.status)) return `Only a draft can be issued (this PI is ${pi.status.toLowerCase()})`;
   if (!pi.snapshot || !Array.isArray(pi.snapshot.lines) || pi.snapshot.lines.length === 0) return "The PI has no lines — add items to the order and rebuild the draft";
   return null;
 }
 
+/** What the issue route needs to know about the order, beyond the PI itself. */
+export interface IssueOrderFacts {
+  status: string;
+  stockCheckedAt: string | Date | null | undefined;
+  /** Holds on the order still ACTIVE — after reconcileHold, so a lapsed one
+   *  does not count. */
+  activeHolds: number;
+}
+
 /**
- * Issuing a revision supersedes every OTHER issued (or accepted) revision of
- * the same number: the customer holds one live PI at a time. Drafts and
- * cancelled ones are left alone.
+ * Answer 1: "stock check before the PI". The one gate on issuing, asked of
+ * stages.canEnter so the PI route and the stage strip refuse with the SAME
+ * words. The fact is stockCheckedAt AND a hold that is still live — the stamp
+ * alone is history (a hold that lapsed sends the order back to CONFIRMED,
+ * answer 11, and the stamp stays).
+ *
+ * A revision is issued on an order that already stands at PI_ISSUED or
+ * further along; that is not a stage move, so canEnter's "Already PI issued"
+ * no-op refusal does not apply — the question is asked from STOCK_CHECKED,
+ * which keeps the stock gate and the terminal-order refusal and drops the
+ * no-op. Advance-with-PI (also answer 1) is the PI's payment terms, not a
+ * gate.
  */
-export function supersededIds(all: Array<{ id: string; number: string; status: string }>, issuing: { id: string; number: string }): string[] {
+export function piIssueRefusal(order: IssueOrderFacts): string | null {
+  const stockChecked = Boolean(order.stockCheckedAt) && order.activeHolds > 0;
+  const from = order.status === "PI_ISSUED" ? "STOCK_CHECKED" : order.status;
+  const check = canEnter(from, "PI_ISSUED", { stockChecked });
+  return check.ok ? null : check.reason;
+}
+
+/** The reason written on a PI that a revision replaced (answer 24). */
+export function revisionReason(newNumber: string): string {
+  return `Revised as ${printable(newNumber)}`;
+}
+
+/**
+ * Issuing a PI cancels every OTHER live PI (issued or accepted) of the same
+ * ORDER, as revised by the one being issued: the customer holds one live PI
+ * at a time, and answer 24 says the old one is discarded, not kept beside the
+ * new. Drafts and cancelled ones are left alone. The match is on the order,
+ * not the number — every PI has its own number now.
+ *
+ * This is the ONLY place a revision retires the old paper. /revise itself
+ * leaves the old PI ISSUED: if it cancelled on the spot, the order would have
+ * no live PI between revise and issue, and a draft nobody ever issues would
+ * leave it with none for good. The old one goes CANCELLED in the same
+ * transaction as the new one goes ISSUED, so the register never shows two
+ * live PIs or zero.
+ */
+export function revisedByIssue(all: Array<{ id: string; orderId: string; status: string }>, issuing: { id: string; orderId: string }): string[] {
   return all
-    .filter((p) => p.id !== issuing.id && p.number === issuing.number && (p.status === "ISSUED" || p.status === "ACCEPTED"))
+    .filter((p) => p.id !== issuing.id && p.orderId === issuing.orderId && (p.status === "ISSUED" || p.status === "ACCEPTED"))
     .map((p) => p.id);
+}
+
+/**
+ * The `revises` link the issued paper carries. A draft made through /revise
+ * already names the PI it replaces; a second draft built directly from the
+ * order (POST …/orders/[id]/proformas) does not, yet issuing it retires the
+ * live PI all the same — so it is linked to what it retired, else the chain
+ * has a hole a reader of the register cannot close. An existing link is never
+ * overwritten (the paper names what the clerk revised, even if that PI was
+ * cancelled by hand in between). With more than one retired — a state
+ * revisedByIssue exists to prevent — the LAST (highest ordinal) is the one
+ * the customer held most recently.
+ */
+export function revisesAtIssue(
+  current: { id: string; number: string } | null | undefined,
+  retired: Array<{ id: string; number: string }>,
+): { id: string; number: string } | null {
+  if (current && printable(current.id)) return { id: current.id, number: current.number };
+  const last = retired[retired.length - 1];
+  return last ? { id: last.id, number: last.number } : null;
+}
+
+/**
+ * Re-freeze the bank block and the printed GSTIN from Settings at the moment
+ * the PI goes out. Both are chosen on the draft (answers 21, 23) and frozen
+ * then — but a draft can sit for days while an admin corrects an account
+ * number or adds a registration in Settings, and the paper the customer gets
+ * must carry Settings as they stand at ISSUE, not at drafting. The KEYS are
+ * the clerk's choice and are kept (defaulted by kind / to the company's own
+ * when a legacy draft has none); only the details behind them are re-read.
+ * After issue nothing re-freezes — an ISSUED snapshot is the paper.
+ */
+export function refreezeAtIssue(snapshot: PiSnapshot, settings: CommercialSettings): PiSnapshot {
+  const bankKey = snapshot.bankKey ?? defaultBankKey(snapshot.kind);
+  const gstin = gstinChoiceFor(settings, snapshot.gstinKey);
+  return {
+    ...snapshot,
+    bankKey,
+    bank: bankBlock(piBank(settings, bankKey)),
+    gstinKey: gstin.gstin,
+    company: { ...snapshot.company, gstin: gstin.gstin },
+    exporter: { ...snapshot.exporter, gstin: gstin.gstin },
+  };
+}
+
+/** The slice of a PI row the revise gate reads: its status and whom it revises. */
+export interface RevisionCandidate {
+  id: string;
+  number: string;
+  status: string;
+  snapshot?: { revises?: { id: string; number: string } | null } | null;
+}
+
+/** The DRAFT that already revises `oldId`, or null. Only a DRAFT counts: once
+ *  it is issued the old PI is cancelled and cannot be revised anyway, and a
+ *  cancelled draft is a revision somebody abandoned. */
+export function revisionDraftFor<T extends RevisionCandidate>(all: T[], oldId: string): T | null {
+  return all.find((p) => p.status === "DRAFT" && p.snapshot?.revises?.id === oldId) ?? null;
+}
+
+/**
+ * Why a revision is refused, or null when it may go ahead. Two clerks
+ * revising the same PI would take two numbers off the counter and leave two
+ * drafts racing to retire one paper; the second is refused and pointed at the
+ * draft that already exists (409 on the route).
+ */
+export function refuseRevise(old: { id: string; status: string }, siblings: RevisionCandidate[]): string | null {
+  if (!canRevise(old.status)) return `Only an issued or accepted PI can be revised (this PI is ${old.status.toLowerCase()})`;
+  const pending = revisionDraftFor(siblings, old.id);
+  if (pending) return `A draft revising this PI already exists (${pending.number}) — edit and issue that one`;
+  return null;
+}
+
+/**
+ * What a new draft inherits from the PI it revises: the shipping facts and
+ * the two choices the clerk typed onto the old one, which the order does not
+ * hold and would otherwise be retyped. Parties, lines and rates are NOT
+ * carried — they come from the order as it stands, which is the whole reason
+ * a revision is being made. Fed to applyDraftPatch on the fresh snapshot.
+ */
+export function carriedIntoRevision(old: PiSnapshot): Record<string, unknown> {
+  return {
+    deliveryDate: old.deliveryDate,
+    vessel: old.vessel,
+    grossWeight: old.grossWeight,
+    netWeight: old.netWeight,
+    discount: old.discount,
+    notes: old.notes,
+    preCarriageBy: old.preCarriageBy,
+    placeOfReceipt: old.placeOfReceipt,
+    portOfLoading: old.portOfLoading,
+    portOfDischarge: old.portOfDischarge,
+    finalDestination: old.finalDestination,
+    bankKey: old.bankKey,
+    gstinKey: old.gstinKey,
+  };
 }
 
 /** Badge tone per status, shared by the tab and any list. */
@@ -591,11 +849,10 @@ export function partyBlock(p: Party | null | undefined): { name: string; lines: 
   return { name: printable(p.name), lines };
 }
 
-/** The printed invoice number: the order number, with -R1 / -R2 on a revision
- *  (OPEN-QUESTIONS §24 default — a revision keeps the number with a suffix). */
-export function printedNumber(number: string, revision: number): string {
-  const n = printable(number);
-  return revision > 0 ? `${n}-R${Math.round(revision)}` : n;
+/** The printed invoice number is the PI's own number, whole. There is no
+ *  revision suffix: a revision is a new number (answer 24). */
+export function printedNumber(number: string): string {
+  return printable(number);
 }
 
 /** The item table's header: one row of labels, three of them stacked under
@@ -665,14 +922,19 @@ export interface PiPrintFields {
   amountInWords: string;
   declaration: string;
   currency: string;
+  /** "Kotak" / "ICICI" — which of the two accounts this is (answer 23),
+   *  for the screen; the PDF prints the block itself. */
+  bankKey: string;
 }
 
 /** Every scalar the PI prints, already formatted. A blank field is "" — the PI
- *  is a customer-facing document and must never show "None" or "null". */
-export function piPrintFields(s: ProformaSnapshot): PiPrintFields {
+ *  is a customer-facing document and must never show "None" or "null". The
+ *  validity is blank when the PI has none (answer 24: valid forever), and the
+ *  PDF prints no "valid until" line for a blank. */
+export function piPrintFields(s: PiSnapshot): PiPrintFields {
   return {
     title: "PROFORMA INVOICE",
-    invoiceNo: printedNumber(s.number, s.revision),
+    invoiceNo: printedNumber(s.number),
     invoiceDate: formatPiDate(s.date),
     buyerPoNo: printable(s.buyerPoNo),
     deliveryDate: formatPiDate(s.deliveryDate),
@@ -707,6 +969,7 @@ export function piPrintFields(s: ProformaSnapshot): PiPrintFields {
     amountInWords: printable(s.amountInWords),
     declaration: printable(s.declaration),
     currency: printable(s.currency).toUpperCase(),
+    bankKey: s.bankKey ?? defaultBankKey(s.kind),
   };
 }
 

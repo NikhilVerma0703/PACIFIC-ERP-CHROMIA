@@ -15,6 +15,7 @@ import { postJson } from "@/lib/fab/postJson";
 import { StockPicker, type StockSearchResult } from "@/components/commercial/stock/StockPicker";
 import { HoldsPanel } from "@/components/commercial/stock/HoldsPanel";
 import { shortfallOffer } from "@/lib/commercial/holds-rules";
+import { isLiveHold } from "@/lib/commercial/orders-rules";
 import { label as statusLabel } from "@/lib/commercial/production-rules";
 import type { OrderTabProps, OrderItemDto } from "@/lib/commercial/types";
 
@@ -131,7 +132,9 @@ export default function StockTab({ order, actions, refresh }: OrderTabProps) {
               <tbody className="divide-y divide-gray-100">
                 {stockLines.map((it) => {
                   const heldForLine = order.holds
-                    .filter((h) => h.status === "ACTIVE")
+                    // A lapsed hold still says ACTIVE until the sweep runs; its
+                    // slabs are not held any more, so they are not offered here.
+                    .filter((h) => isLiveHold(h, new Date()))
                     .reduce((n, h) => n + h.slabs.filter((s) => s.releasedAt == null
                       && (it.design ? (s.design ?? "").toLowerCase() === it.design.toLowerCase() : true)
                       && (it.thickness ? (s.thickness ?? "") === it.thickness : true)).length, 0);
@@ -245,7 +248,7 @@ export default function StockTab({ order, actions, refresh }: OrderTabProps) {
 
       <Card>
         <H2>Holds on this order</H2>
-        <HoldsPanel holds={order.holds} canWrite={canWrite} onChanged={refresh} defaultDays={holdDays} />
+        <HoldsPanel holds={order.holds} canWrite={canWrite} onChanged={refresh} />
       </Card>
 
       <Card>
@@ -265,6 +268,7 @@ export default function StockTab({ order, actions, refresh }: OrderTabProps) {
                   <th className="px-2 py-2 text-right">Needed</th>
                   <th className="px-2 py-2 text-right">In stock</th>
                   <th className="px-2 py-2 text-right">Short</th>
+                  <th className="px-2 py-2 text-right">Planned</th>
                   <th className="px-2 py-2 text-right">Queue</th>
                   <th className="px-2 py-2 text-left">Status</th>
                   <th className="px-2 py-2 text-left">Raised</th>
@@ -279,6 +283,7 @@ export default function StockTab({ order, actions, refresh }: OrderTabProps) {
                     <td className="px-2 py-2 text-right">{fmt(r.qtyRequired)}</td>
                     <td className="px-2 py-2 text-right">{fmt(r.qtyAvailable)}</td>
                     <td className="px-2 py-2 text-right font-semibold">{fmt(r.qtyShort)}</td>
+                    <td className="px-2 py-2 text-right text-gray-500">{r.plannedSlabs == null ? "—" : fmt(r.plannedSlabs)}{r.shade ? ` · ${r.shade.toLowerCase()}` : ""}</td>
                     <td className="px-2 py-2 text-right text-gray-500">#{r.priority}</td>
                     <td className="px-2 py-2"><Badge tone={REQ_TONE[r.status] ?? "brand"}>{statusLabel(r.status)}</Badge></td>
                     <td className="px-2 py-2 text-gray-500">{new Date(r.raisedAt).toLocaleDateString("en-IN")} · {r.raisedByName ?? "—"}</td>

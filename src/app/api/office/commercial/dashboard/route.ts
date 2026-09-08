@@ -15,7 +15,7 @@ export async function GET() {
   return handle(async () => {
     const now = new Date();
     const soon = new Date(now.getTime() + 48 * 3600 * 1000);
-    const [openEnquiries, orderGroups, activeHolds, expiring, queued, inProduction, submitted, recent] = await Promise.all([
+    const [openEnquiries, orderGroups, activeHolds, expiring, queued, inProduction, submitted, recent, notScheduled, awaitingAdvance] = await Promise.all([
       db.commercialEnquiry.count({ where: { status: { in: ["NEW", "QUOTED"] } } }),
       db.commercialOrder.groupBy({ by: ["status"], _count: { _all: true } }),
       db.commercialStockHold.count({ where: { status: "ACTIVE" } }),
@@ -28,6 +28,15 @@ export async function GET() {
       db.commercialProductionRequest.count({ where: { status: "IN_PRODUCTION" } }),
       db.commercialPackingList.count({ where: { status: "SUBMITTED" } }),
       db.commercialOrderEvent.findMany({ orderBy: { at: "desc" }, take: 12, include: { order: { select: { number: true } } } }),
+      // Answer 13: a reduction of a planned figure is written as an OPEN plan
+      // change until somebody adds it back or removes it. Slabs in that state
+      // are wanted by an order and promised to nobody, so they get a tile.
+      db.commercialProductionPlanChange.count({ where: { status: "OPEN" } }),
+      // Answer 2: the truck does not leave before the advance. An order that
+      // has been verified (READY) or invoiced with no ADVANCE receipt is one
+      // the dispatch route will refuse; the tile names them before the lorry
+      // is at the gate.
+      db.commercialOrder.count({ where: { status: { in: ["READY", "INVOICED"] }, receipts: { none: { kind: "ADVANCE" } } } }),
     ]);
     const byStatus: Record<string, number> = {};
     let total = 0;
@@ -36,8 +45,9 @@ export async function GET() {
       enquiries: { open: openEnquiries },
       orders: { byStatus, total },
       holds: { active: activeHolds, expiringSoon: (expiring as Array<Record<string, unknown>>).map((h) => ({ id: h.id, reference: h.reference, customer: h.customer, expiresAt: h.expiresAt, orderId: h.orderId, slabs: (h._count as { slabs: number }).slabs })) },
-      queue: { queued, inProduction },
+      queue: { queued, inProduction, notScheduled },
       packing: { submitted },
+      receipts: { awaitingAdvance },
       recent: (recent as Array<Record<string, unknown>>).map((e) => ({ id: e.id, orderId: e.orderId, orderNumber: (e.order as { number: string }).number, kind: e.kind, note: e.note, byName: e.byName, at: e.at })),
     }));
   });

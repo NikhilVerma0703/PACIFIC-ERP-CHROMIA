@@ -1,8 +1,14 @@
 "use client";
-// One invoice: what the PDF will print (the frozen snapshot), the transport
-// fields a draft may still change, and the two irreversible buttons — issue
-// and cancel. Nothing here recomputes the money; the snapshot carries it, and
-// a PATCH re-derives it on the server so the row and the page cannot disagree.
+// One invoice: what the PDF will print (the frozen snapshot), the fields a
+// draft may still change — transport, rates, and the two dropdowns, the GSTIN
+// it is issued under (answer 21) and the bank it prints (answer 23) — and the
+// two irreversible buttons, issue and cancel. Nothing here recomputes the
+// money; the snapshot carries it, and a PATCH re-derives it on the server so
+// the row and the page cannot disagree.
+//
+// Issue waits for the checklist's approval (answer 10): the button is off and
+// says who approves until the order carries approvedAt. Cancel is the
+// manager's or an admin's (commercialGate("cancel")), as for a PI (answer 24).
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Card, Badge, Empty, H2 } from "@/components/ui";
@@ -11,9 +17,13 @@ import { patchJson, postJson } from "@/lib/fab/postJson";
 import {
   statusTone, canEditInvoice, canIssueInvoice, canCancelInvoice,
   unpricedWarning, lineNeedsPrice, isDerivedAmount, rateDp, displayGrandTotal, displaySubtotal,
+  refuseIssueUnapproved, fyBadge, snapshotExtras, gstinWithLabel, printedItemCode, lineLacksCode,
+  type InvoiceSnapshotExtras,
 } from "@/lib/commercial/invoice-rules";
 import type { DocLine, InvoiceSnapshot, Party } from "@/lib/commercial/types";
 import { inp, lbl, btnPrimary, btnGhost, btnDanger, th, thead, errorBox, noteBox, money, qty, dmy, dateValue } from "./ui";
+import { DocNumber } from "./DocNumber";
+import { useInvoiceChoices } from "./useInvoiceChoices";
 
 interface Invoice {
   id: string;
@@ -25,7 +35,7 @@ interface Invoice {
   status: "DRAFT" | "ISSUED" | "CANCELLED";
   currency: string;
   exchangeRate: number | null;
-  snapshot: InvoiceSnapshot;
+  snapshot: InvoiceSnapshot & Partial<InvoiceSnapshotExtras>;
   subtotal: number | null;
   taxType: string | null;
   taxRate: number | null;
@@ -45,7 +55,11 @@ interface Invoice {
   issuedAt: string | null;
   cancelledAt: string | null;
   cancelReason: string | null;
-  order: { id: string; number: string; kind: string; status: string; client: { id: string; name: string } | null } | null;
+  order: {
+    id: string; number: string; kind: string; status: string;
+    approvedAt: string | null; approvedByName: string | null;
+    client: { id: string; name: string } | null;
+  } | null;
   packingList: { id: string; number: string; status: string } | null;
   exportDocSet: { id: string; generatedAt: string | null } | null;
 }
@@ -93,9 +107,12 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState<Record<string, string>>({});
   const [prices, setPrices] = useState<PriceRow[]>([]);
+  const [regForm, setRegForm] = useState<{ gstin: string; bankKey: string }>({ gstin: "", bankKey: "" });
   const [cancelReason, setCancelReason] = useState("");
   const [cancelling, setCancelling] = useState(false);
   const mayWrite = actions.includes("write");
+  const mayCancel = actions.includes("cancel");
+  const { choices, error: choicesError } = useInvoiceChoices();
 
   const load = useCallback(async () => {
     const r = await fetch(`/api/office/commercial/invoices/${invoiceId}`, { cache: "no-store" });
@@ -111,6 +128,9 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
       notes: d.notes ?? "",
     });
     setPrices(priceRows(d.snapshot?.lines ?? []));
+    // a row frozen before the dropdowns existed reads with the defaults it would have had
+    const x = d.snapshot ? snapshotExtras(d.snapshot) : null;
+    setRegForm({ gstin: x?.gstin ?? "", bankKey: x?.bankKey ?? "" });
   }, [invoiceId]);
 
   useEffect(() => { void load(); }, [load]);
@@ -119,9 +139,15 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
   if (!inv) return <Empty>Loading…</Empty>;
 
   const s = inv.snapshot;
+  const x = snapshotExtras(s);
   const dp = inv.kind === "DTA" ? 2 : 3;
   const editable = mayWrite && canEditInvoice(inv.status);
   const unpriced = unpricedWarning(s.lines);
+  const unapproved = refuseIssueUnapproved(inv.order);
+  const uncoded = inv.kind === "EXPORT" ? s.lines.filter(lineLacksCode) : [];
+  // answer 22: with alwaysIgst on there is no state code to fill in, so nothing to warn about
+  const stateWarning = Boolean(choices && !choices.alwaysIgst && s.taxType === "IGST" && inv.kind === "DTA" && !s.buyer?.stateCode);
+  const regDirty = regForm.gstin.toUpperCase() !== x.gstin.toUpperCase() || regForm.bankKey !== x.bankKey;
 
   const saveLines = async () => {
     setBusy(true); setError(null); setNotice(null);
@@ -148,6 +174,14 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
     setNotice("Saved.");
     await load();
   };
+  const saveRegistration = async () => {
+    setBusy(true); setError(null); setNotice(null);
+    const res = await patchJson(`/api/office/commercial/invoices/${inv.id}`, { gstin: regForm.gstin, bankKey: regForm.bankKey });
+    setBusy(false);
+    if (!res.ok) { setError(res.error); return; }
+    setNotice("Registration and bank saved — the PDF prints them.");
+    await load();
+  };
   const issue = async () => {
     setBusy(true); setError(null); setNotice(null);
     const res = await postJson(`/api/office/commercial/invoices/${inv.id}/issue`, {});
@@ -169,11 +203,14 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <h2 className="text-xl font-semibold text-gray-900">{inv.number}</h2>
-          <Badge tone={statusTone(inv.status)}>{inv.status}</Badge>
-          <Badge>{inv.kind === "DTA" ? "DTA · domestic" : "Export"}</Badge>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
+          {/* the date DIRECTLY UNDER the number (answer 6), the FY beside a continuous export number */}
+          <DocNumber number={inv.number} date={inv.invoiceDate} tag={fyBadge(inv.kind, inv.invoiceDate)} size="lg" />
+          <div className="flex items-center gap-2 pt-1">
+            <Badge tone={statusTone(inv.status)}>{inv.status}</Badge>
+            <Badge>{inv.kind === "DTA" ? "DTA · domestic" : "Export"}</Badge>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <a href={`/api/office/commercial/invoices/${inv.id}/pdf`} target="_blank" rel="noreferrer" className={btnGhost}>Open PDF</a>
@@ -181,15 +218,26 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
           {inv.kind === "EXPORT" && inv.order && (
             <Link href={`/office/commercial/orders/${inv.order.id}?tab=documents`} className={btnGhost}>Export documents</Link>
           )}
-          {mayWrite && canIssueInvoice(inv.status) && <button type="button" className={btnPrimary} disabled={busy} onClick={() => void issue()}>Issue invoice</button>}
-          {mayWrite && canCancelInvoice(inv.status) && <button type="button" className={btnDanger} disabled={busy} onClick={() => setCancelling((v) => !v)}>Cancel…</button>}
+          {mayWrite && canIssueInvoice(inv.status) && (
+            <button type="button" className={`${btnPrimary} disabled:cursor-not-allowed`} disabled={busy || Boolean(unapproved)} title={unapproved ?? undefined} onClick={() => void issue()}>Issue invoice</button>
+          )}
+          {mayCancel && canCancelInvoice(inv.status) && <button type="button" className={btnDanger} disabled={busy} onClick={() => setCancelling((v) => !v)}>Cancel…</button>}
         </div>
       </div>
 
       {error && <div className={errorBox}>{error}</div>}
       {notice && <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">{notice}</div>}
+      {/* answer 10: the approval the final invoice waits for */}
+      {inv.status === "DRAFT" && (unapproved
+        ? <div className={noteBox}>{unapproved}.</div>
+        : <p className="text-sm text-gray-600">Checklist approved by <span className="font-medium text-gray-900">{inv.order?.approvedByName ?? "—"}</span> on {dmy(inv.order?.approvedAt)} — this invoice may be issued.</p>)}
       {unpriced && <div className={noteBox}>{unpriced}</div>}
-      {s.taxType === "IGST" && inv.kind === "DTA" && !s.buyer?.stateCode && (
+      {uncoded.length > 0 && (
+        <div className={noteBox}>
+          {uncoded.length === 1 ? "One line has" : `${uncoded.length} lines have`} no design code in the master ({uncoded.map((l) => printedItemCode(l)).join(", ")}) — the document prints the design name. Codes are added under Settings.
+        </div>
+      )}
+      {stateWarning && (
         <div className={noteBox}>The buyer has no GST state code on file, so IGST was assumed. Fill the state code on the client to have CGST + SGST worked out for a Tamil Nadu buyer.</div>
       )}
       {inv.status === "CANCELLED" && inv.cancelReason && <div className={noteBox}>Cancelled: {inv.cancelReason}</div>}
@@ -197,7 +245,7 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
       {cancelling && (
         <Card>
           <H2>Cancel this invoice</H2>
-          <p className="mb-2 text-sm text-gray-500">The number is kept and the register shows it as cancelled — a number taken from the counter is never reused.</p>
+          <p className="mb-2 text-sm text-gray-500">The number is kept and the register shows it as cancelled — a number taken from the counter is never reused. The order may then take a new invoice.</p>
           <div className="flex flex-wrap items-end gap-3">
             <div className="min-w-[18rem] flex-1">
               <label className={lbl} htmlFor="cancel-reason">Reason</label>
@@ -213,7 +261,6 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
         <Card>
           <H2>Particulars</H2>
           <dl className="space-y-1.5 text-sm">
-            <div className="flex justify-between gap-3"><dt className="text-gray-500">Invoice date</dt><dd className="text-gray-900">{dmy(inv.invoiceDate)}</dd></div>
             <div className="flex justify-between gap-3"><dt className="text-gray-500">PI no &amp; date</dt><dd className="text-right text-gray-900">{s.piNumber ?? "—"}{s.piDate ? ` · ${dmy(s.piDate)}` : ""}</dd></div>
             <div className="flex justify-between gap-3"><dt className="text-gray-500">Buyer&apos;s PO ref</dt><dd className="text-right text-gray-900">{s.buyerPoRef ?? "—"}</dd></div>
             <div className="flex justify-between gap-3"><dt className="text-gray-500">Sales person</dt><dd className="text-gray-900">{s.salesPerson ?? "—"}</dd></div>
@@ -231,12 +278,44 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
       </div>
 
       <Card>
+        <H2>Registration and bank</H2>
+        <p className="mb-3 text-sm text-gray-500">
+          The GSTIN the invoice is issued under and the bank it prints. ICICI on a domestic invoice, Kotak on an export one, PESPL&apos;s own registration — unless changed here while it is a draft.
+        </p>
+        {choicesError && <div className={`${errorBox} mb-3`}>{choicesError}</div>}
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div>
+            <label className={lbl} htmlFor="f-gstin">Issued under GSTIN</label>
+            <select id="f-gstin" className={inp} disabled={!editable || !choices} value={regForm.gstin} onChange={(e) => setRegForm((f) => ({ ...f, gstin: e.target.value }))}>
+              {(choices?.gstins ?? [{ gstin: x.gstin, label: x.gstinLabel ?? s.company.legalName }]).map((c) => <option key={c.gstin} value={c.gstin}>{c.gstin} — {c.label}</option>)}
+              {choices && !choices.gstins.some((c) => c.gstin === x.gstin) && <option value={x.gstin}>{gstinWithLabel(x.gstin, x.gstinLabel)} (no longer in Settings)</option>}
+            </select>
+            <p className="mt-1 text-xs text-gray-400">Prints as GSTIN {gstinWithLabel(x.gstin, x.gstinLabel) || "—"}</p>
+          </div>
+          <div>
+            <label className={lbl} htmlFor="f-bank">Bank printed</label>
+            <select id="f-bank" className={inp} disabled={!editable || !choices} value={regForm.bankKey} onChange={(e) => setRegForm((f) => ({ ...f, bankKey: e.target.value }))}>
+              {(choices?.banks ?? [{ key: x.bankKey, name: s.bank.name, label: s.bank.name }]).map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
+            </select>
+            <p className="mt-1 text-xs text-gray-400">{s.bank.name} · A/C {s.bank.accountNo} · IFSC {s.bank.ifsc}{s.bank.swift ? ` · Swift ${s.bank.swift}` : ""}{s.bank.adCode ? ` · AD code ${s.bank.adCode}` : ""}</p>
+          </div>
+        </div>
+        {editable && (
+          <div className="mt-3 flex gap-2">
+            <button type="button" className={btnPrimary} disabled={busy || !regDirty} onClick={() => void saveRegistration()}>Save registration and bank</button>
+            <button type="button" className={btnGhost} disabled={busy || !regDirty} onClick={() => setRegForm({ gstin: x.gstin, bankKey: x.bankKey })}>Reset</button>
+          </div>
+        )}
+      </Card>
+
+      <Card>
         <H2>Lines</H2>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className={thead}>
                 <th className={th}>#</th>
+                {inv.kind === "EXPORT" && <th className={th}>Item code</th>}
                 <th className={th}>Description</th>
                 <th className={th}>HSN</th>
                 <th className={th}>Slabs</th>
@@ -251,7 +330,14 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
               {s.lines.map((l, i) => (
                 <tr key={l.lineNo} className={`border-b border-gray-50 last:border-0 ${lineNeedsPrice(l) ? "bg-amber-50/70" : ""}`}>
                   <td className="py-2 pr-4 text-gray-400">{l.lineNo}</td>
-                  <td className="py-2 pr-4 text-gray-900">{l.description}{l.itemCode && l.itemCode !== l.description ? <span className="block text-xs text-gray-400">{l.itemCode}</span> : null}</td>
+                  {inv.kind === "EXPORT" && (
+                    // answer 20: the design master's code; the paper prints the design's name where there is none
+                    <td className="py-2 pr-4 text-gray-900">
+                      {printedItemCode(l) || "—"}
+                      {lineLacksCode(l) && <Badge tone="amber">no code</Badge>}
+                    </td>
+                  )}
+                  <td className="py-2 pr-4 text-gray-900">{l.description}{l.design && l.design.toUpperCase() !== l.description.toUpperCase() ? <span className="block text-xs text-gray-400">{l.design}</span> : null}</td>
                   <td className="py-2 pr-4 text-gray-500">{l.hsn}</td>
                   <td className="py-2 pr-4 text-gray-600">{l.slabs ?? "—"}</td>
                   <td className="py-2 pr-4 text-gray-600">{l.thickness ?? "—"}</td>

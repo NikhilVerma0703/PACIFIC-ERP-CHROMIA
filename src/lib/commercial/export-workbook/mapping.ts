@@ -55,9 +55,17 @@
 //    other — build.ts fills it from the same roots and repairs the #REF!s.
 //
 // 5. The packing sheets print GSTIN 33AAFCP5374A1ZQ, which belongs to Pacific
-//    Granites (India), while the invoice prints PESPL's 33AALCP2750N1Z3. That
-//    is OPEN-QUESTIONS §21 and is not resolved here: both are root cells, the
-//    default is what the template carries, and the form can override either.
+//    Granites (India), while the invoice prints PESPL's 33AALCP2750N1Z3. The
+//    owner settled it (answer 21): ONE registration per invoice, chosen from a
+//    dropdown that defaults to PESPL's and stored in the invoice snapshot.
+//    Every GSTIN cell here prints that one; an alternate prints with its
+//    label beside it, where the old sheets carried the sister company's name.
+//    The cells stay root cells, so the form can still override them.
+//
+// 6. The item code on every sheet is the design master's (answer 20,
+//    commercial_design_code). Where the master has no code yet the DESIGN NAME
+//    prints — never a placeholder, this is a customs document — and the
+//    screen, not the paper, says a code is missing.
 
 // ───────────────────────────── the root cell table ───────────────────────────
 
@@ -204,7 +212,7 @@ export const ROOT_CELLS: RootCell[] = [
   { key: "plDistrictCodeText", sheet: "Packing List", cell: "C8", label: "District code", kind: "text", group: "Packing list" },
   { key: "plTinNo",            sheet: "Packing List", cell: "H7", label: "TIN no.",     kind: "text", group: "Packing list" },
   { key: "plCstNo",            sheet: "Packing List", cell: "H8", label: "CST no.",     kind: "text", group: "Packing list" },
-  { key: "plGstin",            sheet: "Packing List", cell: "J7", label: "GSTIN on packing list", kind: "text", group: "Packing list", hint: "OPEN-QUESTIONS §21: the template carries Pacific Granites' 33AAFCP5374A1ZQ, not PESPL's." },
+  { key: "plGstin",            sheet: "Packing List", cell: "J7", label: "GSTIN on packing list", kind: "text", group: "Packing list", hint: "Answer 21: the registration chosen on the invoice, labelled when it is not PESPL's own. The old template carried Pacific Granites' 33AAFCP5374A1ZQ here." },
   { key: "custPlTinNo",        sheet: "Cust-PL",      cell: "H7", label: "TIN no. (customer copy)",  kind: "text", group: "Packing list" },
   { key: "custPlCstNo",        sheet: "Cust-PL",      cell: "H8", label: "CST no. (customer copy)",  kind: "text", group: "Packing list" },
   { key: "custPlGstin",        sheet: "Cust-PL",      cell: "J7", label: "GSTIN (customer copy)",    kind: "text", group: "Packing list" },
@@ -794,9 +802,15 @@ export interface InvoiceSnapshotLike {
   lutText?: string | null;
   amountInWords?: string | null;
   commodity?: string | null;
-  lines?: Array<{ rate?: number | null; hsn?: string | null; itemCode?: string | null; description?: string | null; qty?: number | null; unit?: string | null; isSample?: boolean | null }> | null;
+  lines?: Array<{ rate?: number | null; hsn?: string | null; itemCode?: string | null; description?: string | null; design?: string | null; qty?: number | null; unit?: string | null; isSample?: boolean | null }> | null;
   company?: Record<string, unknown> | null;
   bank?: Record<string, unknown> | null;
+  /** Answers 21 and 23, carried by invoice-rules' InvoiceSnapshotExtras: the
+   *  registration the invoice is issued under, the label printed beside it
+   *  when it is not the company's own, and which bank block `bank` holds. */
+  gstin?: string | null;
+  gstinLabel?: string | null;
+  bankKey?: string | null;
 }
 
 export interface PackingListLike {
@@ -1006,7 +1020,17 @@ export function DEFAULT_ROOTS(
   const ord = order ?? null;
   const set = settings ?? {};
   const company = (set.company ?? {}) as Record<string, unknown>;
-  const bank = (set.banks?.export ?? {}) as Record<string, unknown>;
+  // Answer 23: the bank the invoice chose. The snapshot's own block is the
+  // truth once an invoice exists (it is what the PDF prints); the settings'
+  // block by key stands in for a snapshot frozen before the choice existed.
+  const snapBank = (inv.bank ?? null) as Record<string, unknown> | null;
+  const bankKey = s(inv.bankKey) === "domestic" ? "domestic" : "export";
+  const bank = (snapBank && s(snapBank.name) ? snapBank : (set.banks?.[bankKey] ?? set.banks?.export ?? {})) as Record<string, unknown>;
+  // Answer 21: the registration the invoice was issued under, with the
+  // sister company's name beside it when it is not PESPL's own.
+  const gstin = s(inv.gstin) || s((inv.company ?? {})["gstin"]) || s(company.gstin);
+  const gstinLabel = s(inv.gstinLabel);
+  const gstinPrinted = gstin && gstinLabel ? `${gstin} (${gstinLabel})` : gstin;
   const texts = (set.texts ?? {}) as Record<string, unknown>;
 
   const exporter = inv.exporter ?? null;
@@ -1042,7 +1066,7 @@ export function DEFAULT_ROOTS(
     buyerPoRef: buyerPoRefText(inv, ord),
     iecCode: s(company.iec) ? `IEC ${s(company.iec)}` : "",
     salesPerson: s(inv.salesPerson),
-    exporterGstinText: s(company.gstin) ? `GSTIN NO: ${s(company.gstin)}` : "",
+    exporterGstinText: gstinPrinted ? `GSTIN NO: ${gstinPrinted}` : "",
 
     // Exporter
     exporterName: legalName,
@@ -1139,23 +1163,26 @@ export function DEFAULT_ROOTS(
     plDistrictCodeText: s(company.districtCode) ? `Disctrict Code - ${s(company.districtCode)}` : "",
     plTinNo: "",
     plCstNo: "",
-    // OPEN-QUESTIONS §21 default: PESPL's own GSTIN, overridable in the form.
-    plGstin: s(company.gstin) ? `GSTIN NO: ${s(company.gstin)}` : "",
+    // Answer 21: the invoice's chosen registration, labelled when it is an
+    // alternate — the packing sheets are where the old template carried PGI's.
+    plGstin: gstinPrinted ? `GSTIN NO: ${gstinPrinted}` : "",
     custPlTinNo: "",
     custPlCstNo: "",
-    custPlGstin: s(company.gstin) ? `GSTIN NO: ${s(company.gstin)}` : "",
+    custPlGstin: gstinPrinted ? `GSTIN NO: ${gstinPrinted}` : "",
 
     // PL-852
-    // The sheet's two colour names: what the customer calls it, and our code.
+    // The sheet's two colour names: what the customer calls it, and our code —
+    // the design master's (answer 20), the design's name until it has one.
     pl852ConsigneeColour: s(firstGoods?.description).split("-")[0] || "",
-    pl852PacificColour: s(firstGoods?.itemCode),
+    pl852PacificColour: s(firstGoods?.itemCode) || s(firstGoods?.design),
     pl852PoNo: s(ord?.customerPoNumber),
     pl852Ref: s(pl?.number),
 
     // Annexure C1
     c1CompanyName: legalName,
     c1Iec: s(company.iec) ? `IEC ${s(company.iec)}` : "",
-    c1Gstin: s(company.gstin),
+    // A form field, not a heading: the bare registration, no label.
+    c1Gstin: gstin,
     c1FactoryLine1: s(factory[0]),
     c1FactoryLine2: s(factory[1]),
     c1FactoryLine3: s(factory[2]),
@@ -1216,11 +1243,15 @@ export function DEFAULT_ROOTS(
   // Never hand back a key the map does not know, and never miss one it does.
   // An empty derived value falls back to the template's boilerplate where the
   // cell is company boilerplate; where it is shipment data it stays empty.
+  // The Bank group is the exception once a bank is KNOWN: its boilerplate is
+  // Kotak's, and an invoice issued on ICICI (answer 23) must not print Kotak's
+  // AD code and routing bank under ICICI's name because ICICI has none.
+  const bankKnown = s(bank.name) !== "";
   const out: Record<string, string | number> = {};
   for (const rc of ROOT_CELLS) {
     const v = roots[rc.key];
     const empty = v === undefined || v === null || v === "" || (rc.kind === "number" && v === 0);
-    if (empty && rc.key in TEMPLATE_BOILERPLATE) { out[rc.key] = TEMPLATE_BOILERPLATE[rc.key]; continue; }
+    if (empty && rc.key in TEMPLATE_BOILERPLATE && !(bankKnown && rc.group === "Bank")) { out[rc.key] = TEMPLATE_BOILERPLATE[rc.key]; continue; }
     out[rc.key] = v === undefined || v === null ? (rc.kind === "number" ? 0 : "") : v;
   }
   // texts.piDeclaration is unused here on purpose: the export invoice carries
@@ -1347,7 +1378,7 @@ export function crateRowsFor(
     unit?: string;
     netWeightTotalKg?: number;
     invoiceLines?: Array<{
-      description?: string | null; itemCode?: string | null; thickness?: string | null;
+      description?: string | null; itemCode?: string | null; design?: string | null; thickness?: string | null;
       rate?: number | null; qty?: number | null; unit?: string | null;
       slabs?: number | null; isSample?: boolean | null;
     }> | null;
@@ -1356,14 +1387,17 @@ export function crateRowsFor(
   const invLines = Array.isArray(opts.invoiceLines) ? opts.invoiceLines : [];
   const goodsInv = invLines.filter((l) => !l?.isSample);
   const fallbackRate = typeof goodsInv[0]?.rate === "number" ? goodsInv[0]!.rate! : 0;
+  const same = (a: unknown, b: string): boolean => { const x = s(a).trim().toUpperCase(); return x !== "" && x === b.trim().toUpperCase(); };
 
   const rows = goodsLinesFromSlabs(slabs, {
     marks: opts.marks, packages: opts.packages, unit: opts.unit,
     rate: fallbackRate, netWeightTotalKg: opts.netWeightTotalKg,
   }).map((row) => {
-    // Prefer the rate the invoice actually quoted for this SKU.
-    const match = goodsInv.find((l) =>
-      s(l.itemCode).trim() === row.description || s(l.description).trim() === row.description);
+    // Prefer the rate the invoice actually quoted for this line. The row is
+    // keyed by the design master's code when there is one and by the design
+    // name when there is not (answer 20), so the line is found by whichever
+    // of its code, description or design the row carries.
+    const match = goodsInv.find((l) => same(l.itemCode, row.description) || same(l.description, row.description) || same(l.design, row.description));
     return typeof match?.rate === "number" ? { ...row, rate: match.rate } : row;
   });
 
@@ -1401,6 +1435,10 @@ export function crateRowsFor(
  *    differ in the third decimal and make the sheet look wrong.
  *  · Slabs with no crate sort first as crate 0 rather than being dropped — an
  *    unassigned slab is a packing mistake, and it has to be VISIBLE.
+ *  · The SKU column is the design master's code (answer 20), looked up by
+ *    `codeFor`; a design the master has no code for prints its NAME, and the
+ *    customer's SKU is the last resort for a slab with no design at all. The
+ *    printed sheet never carries a "no code" marker — the screen does.
  */
 export function slabRowsFromPacking(packingList: {
   crates?: Array<{ id?: string | null; crateNo?: number | null }> | null;
@@ -1412,7 +1450,7 @@ export function slabRowsFromPacking(packingList: {
     lengthCm?: number | string | null; widthCm?: number | string | null;
     sortOrder?: number | null;
   }> | null;
-} | null | undefined): SlabRow[] {
+} | null | undefined, codeFor?: ((design: string | null | undefined) => string | null) | null): SlabRow[] {
   if (!packingList) return [];
   const crateNoById = new Map<string, number>();
   for (const c of packingList.crates ?? []) {
@@ -1429,7 +1467,7 @@ export function slabRowsFromPacking(packingList: {
       const widthCm = n(slab.widthCm);
       return {
         sl: i + 1,
-        sku: s(slab.customerSku) || s(slab.design),
+        sku: s(codeFor?.(slab.design)) || s(slab.design) || s(slab.customerSku),
         batch: s(slab.customerBatchNo) || s(slab.batchNumber) || s(slab.batchKey),
         slabNo: s(slab.customerSlabNo) || s(slab.slabNumber),
         thick: printThickness(slab.thickness),
