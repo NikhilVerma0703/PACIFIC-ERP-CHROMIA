@@ -67,8 +67,10 @@ export function HourlyProductionLine({ data }: { data: HourBucket[] }) {
               <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
               {/* Left padding keeps the first hour's angled label clear of the
                   pinned Y-axis instead of tucked behind it. */}
+              {/* Left padding keeps the first angled label clear of the pinned
+                  Y-axis gutter so its leading digits ("18:00…") are not clipped. */}
               <XAxis dataKey="label" height={HP_XAXIS_H} interval={0} angle={-45} textAnchor="end"
-                padding={{ left: 30, right: 20 }}
+                padding={{ left: 44, right: 20 }}
                 tick={{ fontSize: 11, fill: MUTED }} axisLine={{ stroke: AXIS }} tickLine={false} />
               <YAxis width={HP_AXIS_W} domain={[0, yMax]} ticks={ticks} allowDecimals={false}
                 tick={{ fontSize: 12, fill: MUTED }} axisLine={false} tickLine={false} />
@@ -89,11 +91,13 @@ export function HourlyProductionLine({ data }: { data: HourBucket[] }) {
       </div>
 
       {/* Pinned Y-axis: an opaque, clipped copy of the same axis — identical
-          height, margins and domain, so its ticks line up exactly with the
-          plot's gridlines — held over the left edge so the scale stays readable
-          while the plot scrolls under it. */}
+          margins and domain, so its ticks line up exactly with the plot's
+          gridlines — held over the left edge so the scale stays readable while
+          the plot scrolls under it. Its white cover stops ABOVE the x-axis label
+          band (height − x-axis height): covering that band too was painting over
+          the first time label's leading digits ("18:00…" showing as ":00…"). */}
       <div className="pointer-events-none absolute left-0 top-0 overflow-hidden bg-white"
-        style={{ width: HP_AXIS_W, height: HP_HEIGHT }}>
+        style={{ width: HP_AXIS_W, height: HP_HEIGHT - HP_XAXIS_H }}>
         <div style={{ width: 200, height: HP_HEIGHT }}>
           <ResponsiveContainer width="100%" height={HP_HEIGHT}>
             <LineChart data={data} margin={{ top: HP_TOP, right: 24, left: 0, bottom: 0 }}>

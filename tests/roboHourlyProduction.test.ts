@@ -240,3 +240,59 @@ test("a single forward-mis-dated slab mid-run does not open a second day", () =>
   assert.ok(s.every((b) => b.date === "2026-08-31"));
   assert.equal(s.reduce((a, b) => a + b.slabs, 0), 3);
 });
+
+/* ── change #2: a long-held slab must not fabricate an extra day ─────────────
+   Continuity is measured IN-to-IN. A slab kept open for many hours has a late
+   Out; keying the next slab's midnight check off that Out made a normal
+   following slab look like a backward jump and drew a phantom next day. */
+
+test("SINGLE DAY — a long-held slab (late Out) does NOT spill the chart into the next day", () => {
+  // S2 opens at 09:00 and only closes at 22:30 (a long hold). S3 at 09:30 must
+  // stay on the SAME day, not be flung 24h forward by S2's late Out.
+  const s = hourlyProduction([
+    { serialNumber: 1, productionDate: "2026-08-31", inTime: "08:00", outTime: "08:30" },
+    { serialNumber: 2, productionDate: "2026-08-31", inTime: "09:00", outTime: "22:30" }, // 13½h hold
+    { serialNumber: 3, productionDate: "2026-08-31", inTime: "09:30", outTime: "10:00" },
+  ]);
+  assert.deepEqual(s.map((b) => b.hour), [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]);
+  assert.ok(s.every((b) => b.date === "2026-08-31"), "must stay entirely on 31 Aug");
+  assert.equal(s.find((b) => b.hour === 8)!.slabs, 1);  // S1 completes 08:30
+  assert.equal(s.find((b) => b.hour === 10)!.slabs, 1); // S3 completes 10:00, same day
+  assert.equal(s.find((b) => b.hour === 22)!.slabs, 1); // S2 completes 22:30
+  assert.equal(s.reduce((a, b) => a + b.slabs, 0), 3);
+});
+
+test("BATCH 1386 — a real two-day run with a long hold does NOT draw a phantom third day", () => {
+  // 20 Jul 12:12 → 21 Jul 17:12, crossing midnight once. A long-held slab on the
+  // 21st (In 02:00 → Out 20:00) must not push the slab after it onto 22 Jul.
+  const s = hourlyProduction([
+    { serialNumber: 1, productionDate: "2026-07-20", inTime: "12:12", outTime: "12:30" },
+    { serialNumber: 2, productionDate: "2026-07-20", inTime: "23:40", outTime: "23:55" },
+    { serialNumber: 3, productionDate: "2026-07-21", inTime: "00:10", outTime: "00:40" }, // crosses midnight
+    { serialNumber: 4, productionDate: "2026-07-21", inTime: "02:00", outTime: "20:00" }, // 18h hold
+    { serialNumber: 5, productionDate: "2026-07-21", inTime: "02:30", outTime: "03:00" },
+  ]);
+  // Exactly two calendar dates — 20 and 21 July — never 22 July.
+  const dates = [...new Set(s.map((b) => b.date))];
+  assert.deepEqual(dates, ["2026-07-20", "2026-07-21"]);
+  assert.ok(!s.some((b) => b.date === "2026-07-22"), "no phantom third day");
+  // The boundary flows 23:00 (20 Jul) straight into 00:00 (21 Jul), no gap.
+  const i23 = s.findIndex((b) => b.hour === 23 && b.date === "2026-07-20");
+  assert.equal(s[i23 + 1].hour, 0);
+  assert.equal(s[i23 + 1].date, "2026-07-21");
+  assert.equal(s.reduce((a, b) => a + b.slabs, 0), 5);
+});
+
+test("OVERNIGHT slab (issue 3) — an Out before the In is treated as the NEXT day", () => {
+  // In 23:55 on 20 Jul, Out 00:09 → that 00:09 is 21 Jul 00:09, never 20 Jul.
+  // The next slab entered 00:04 was re-dated to 21 Jul, and lands there too.
+  const s = hourlyProduction([
+    { serialNumber: 1, productionDate: "2026-07-20", inTime: "23:55", outTime: "00:09" },
+    { serialNumber: 2, productionDate: "2026-07-21", inTime: "00:04", outTime: "00:20" },
+  ]);
+  assert.deepEqual(s.map((b) => b.hour), [23, 0]);
+  assert.deepEqual(s.map((b) => b.date), ["2026-07-20", "2026-07-21"]);
+  // Both completions (00:09 and 00:20) count in 00:00–01:00 on 21 Jul, not on 20 Jul.
+  assert.equal(s.find((b) => b.hour === 23)!.slabs, 0);
+  assert.equal(s.find((b) => b.hour === 0)!.slabs, 2);
+});

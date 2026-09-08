@@ -22,10 +22,14 @@
  *     day.
  *
  *   • The day then advances ONLY when the times wrap past midnight: walking the
- *     slabs in register order (serialNumber, then createdAt), a slab whose time
- *     falls far BEFORE the run so far (more than 12h) has crossed into the next
- *     day. This fires for a real crossing whether or not the post-midnight slabs
- *     were re-dated, so a cross-midnight batch never loses its second half.
+ *     slabs in register order (serialNumber, then createdAt), a slab whose IN
+ *     time falls far BEFORE the run's latest IN so far (more than 12h) has
+ *     crossed into the next day. Continuity is measured IN-to-IN, not off the
+ *     previous slab's Out — a slab held open for hours has a late Out that would
+ *     otherwise make the next normal slab look like a backward midnight jump and
+ *     fabricate an empty extra day. This fires for a real crossing whether or not
+ *     the post-midnight slabs were re-dated, so a cross-midnight batch never
+ *     loses its second half.
  *
  * A later slab's own stored date is deliberately NOT allowed to advance the day.
  * A date that jumps forward mid-run while the time barely moved — a late slab
@@ -176,7 +180,16 @@ export function hourlyProduction(slabs: readonly HourlySlab[]): HourBucket[] {
       winEnd = Math.max(winEnd, outAbs);
       completions.push(outAbs);
     }
-    prevRef = outAbs ?? startAbs;
+    // Continuity is carried on the IN time, never the Out. A slab held open for
+    // many hours (a long delay, or a hold across a shift) finishes with a late
+    // Out; keying the next slab's wrap check off that late Out made a perfectly
+    // normal following slab look more than 12h "earlier" than the run so far — a
+    // FALSE midnight crossing that fabricated an empty extra day (a single-day
+    // batch spilling into the next date; a genuine two-day batch — e.g. 1386,
+    // 20 Jul 12:12 → 21 Jul 17:12 — drawing a phantom third day). The In times
+    // move forward across a real run, so the only >12h backstep they carry is a
+    // TRUE crossing (…23:55 → 00:04…), which still wraps exactly as before.
+    prevRef = inAbs ?? startAbs;
   }
 
   if (!Number.isFinite(winStart) && !Number.isFinite(winEnd)) return [];
