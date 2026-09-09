@@ -218,7 +218,20 @@ export function Nav({
   // International Sales context is FOCUSED: whoever is signed into that
   // branch (admins included, via the sales login card) sees only the sales
   // section + Admin — production/fab nav stays in the other branches.
-  const isFab   = isAdmin || branch === "FABRICATION";               // fabrication section
+  // FABRICATION, and the two questions about it are not the same question.
+  //   isFabDash  may this login see the fabrication NUMBERS (one row, on the
+  //              overview) — an admin may, from anywhere.
+  //   isFab      does this login WORK the cut-to-size benches, and so need the
+  //              dozen rows of Purchase Orders, Cut Queue, Cutting, Polishing,
+  //              Sink Cutting, Fabrication, Packaging and Samples.
+  // The owner, 2026-09-09: "reduce cut to size section in shop floor in admin —
+  // we don't need as admin." An admin standing on the shop floor is not at a
+  // fabrication bench, so the section goes and the dashboard stays. An admin
+  // whose own branch IS Fabrication still gets the whole section, and every
+  // page remains reachable by URL — middleware admits admins everywhere; what
+  // changed is what the sidebar offers.
+  const isFabDash = isAdmin || branch === "FABRICATION";
+  const isFab   = branch === "FABRICATION";                          // fabrication section
   const isProd  = isAdmin || (!office && branch !== "FABRICATION" && branch !== "INTERNATIONAL_SALES");  // production section
   const mgmt    = fabTier === "ADMIN" || fabTier === "MANAGER";
   const supPlus = mgmt || fabTier === "SUPERVISOR";
@@ -275,6 +288,20 @@ export function Nav({
     { href: "/sampling/requests",   icon: I.factory,   label: "Requests" },
     { href: "/sampling/add-stock",  icon: I.entry,     label: "Add Stock" },
     { href: "/sampling/dispatch",   icon: I.packaging, label: "Dispatch" },
+  ];
+
+  // The robo line. ONE list, for the same reason chromiaItems below is one: it
+  // is the ROBO operator's entire nav AND a section on the admin's shop-floor
+  // nav (owner, 2026-09-09: "add robo module and chromia module in admin shop
+  // floor login as well"), and two hand-kept copies of a module's rows drift
+  // the first time a page is added to one of them.
+  const roboItems = [
+    { href: "/robo",           icon: I.factory, label: "Robo Entry", exact: true },
+    { href: "/robo/slabs",     icon: I.batch,   label: "Slab Records" },
+    { href: "/robo/reports",   icon: I.ceo,     label: "Reports" },
+    { href: "/robo/downloads", icon: I.box,     label: "Downloads" },
+    { href: "/robo/import",    icon: I.entry,   label: "Import" },
+    { href: "/robo/masters",   icon: I.tables,  label: "Master Lists" },
   ];
 
   const chromiaItems = [
@@ -365,18 +392,9 @@ export function Nav({
     // robo line operator — the robo module is their whole ERP
     return (
       <nav className="flex flex-col">
-        <Section label="Production" items={[
-          { href: "/robo", icon: I.factory, label: "Robo Entry", exact: true },
-          { href: "/robo/slabs", icon: I.batch, label: "Slab Records" },
-        ]} path={path} />
-        <Section label="Reports" items={[
-          { href: "/robo/reports", icon: I.ceo, label: "Reports" },
-          { href: "/robo/downloads", icon: I.box, label: "Downloads" },
-        ]} path={path} />
-        <Section label="Setup" items={[
-          { href: "/robo/import", icon: I.entry, label: "Import" },
-          { href: "/robo/masters", icon: I.tables, label: "Master Lists" },
-        ]} path={path} />
+        <Section label="Production" items={roboItems.filter(t => t.href === "/robo" || t.href === "/robo/slabs")} path={path} />
+        <Section label="Reports" items={roboItems.filter(t => t.href === "/robo/reports" || t.href === "/robo/downloads")} path={path} />
+        <Section label="Setup" items={roboItems.filter(t => t.href === "/robo/import" || t.href === "/robo/masters")} path={path} />
       </nav>
     );
   if (role === "CHROMIA" || (!isAdmin && branch === "CHROMIA"))
@@ -447,7 +465,7 @@ export function Nav({
 
   const overview = [
     ...(isProd ? [{ href: "/", icon: I.overview, label: "Production Dashboard" }] : []),
-    ...(isFab  ? [{ href: "/fab/ceo", icon: I.ceo, label: "Fabrication Dashboard" }] : []),
+    ...(isFabDash ? [{ href: "/fab/ceo", icon: I.ceo, label: "Fabrication Dashboard" }] : []),
   ];
   const production = [
     { href: "/live",   icon: I.live,   label: "Live Status" },
@@ -535,8 +553,11 @@ export function Nav({
       {isProd && <Section label="Production" items={production} path={path} />}
       {isProd && <Section label="Lookups &amp; Reports" items={reports} path={path} />}
       {isFab  && <Section label="Fabrication" items={fabrication} path={path} />}
-      {/* Shop Floor -> Chromia. Admins only: the CHROMIA role gets the whole-nav
-          takeover above, and no other role may open the module (middleware). */}
+      {/* Shop Floor -> Robo and Chromia. Admins only: each module's own role
+          gets the whole-nav takeover above, and no other role may open them
+          (middleware). The owner asked for both here on 2026-09-09; Chromia was
+          already present and Robo was reachable only by typing the URL. */}
+      {isAdmin && <Section label="Robo" items={roboItems} path={path} />}
       {isAdmin && <Section label="Chromia" items={chromiaItems} path={path} />}
       {/* Shop Floor -> Sampling. Admins only, for the same reason as Chromia
           above: the SAMPLING role gets the whole-nav takeover, and the only
