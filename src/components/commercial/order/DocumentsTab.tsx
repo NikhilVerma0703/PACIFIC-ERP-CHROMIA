@@ -13,10 +13,20 @@ import { lineLacksCode, printedItemCode, snapshotExtras, gstinWithLabel, exportR
 import { noteBox } from "@/components/commercial/invoices/ui";
 import { ExportDocsPanel } from "@/components/commercial/export-docs/ExportDocsPanel";
 import { useInvoiceChoices } from "@/components/commercial/invoices/useInvoiceChoices";
+// Round three, answers 7 and 8. Most of the task list is the documentation
+// desk's own work — the BL draft, COO, CEFA, TiO2, the Daltile upload, the
+// shipping documents, the ETA sheet — and this is the tab that desk works on,
+// so the same card appears here rather than only on Overview. It is defined
+// with the order header because that is the file that owns the order's cards.
+import { TasksCard } from "./OverviewTab";
 
 export default function DocumentsTab({ order, actions }: OrderTabProps) {
   const exportInvoices = (order.invoices ?? []).filter((i) => i.kind === "EXPORT");
   const dtaInvoices = (order.invoices ?? []).filter((i) => i.kind === "DTA");
+  // Also what the Tasks card below is enabled from: its routes gate on the
+  // CHECKLIST area, and every login holding checklist: write holds the write
+  // action too (pinned in tests/commercialOrders.test.ts) — so this desk, the
+  // one most of those lines belong to, is offered the tick it will be allowed.
   const canWrite = actions.includes("write");
   const [selected, setSelected] = useState<string>(exportInvoices[0]?.id ?? "");
   // The company's OWN registration — the first entry of the clerk-readable
@@ -29,19 +39,24 @@ export default function DocumentsTab({ order, actions }: OrderTabProps) {
 
   if (!exportInvoices.length) {
     return (
-      <Card>
-        <h3 className="text-sm font-semibold text-gray-900">No export documents for this order</h3>
-        <p className="mt-2 max-w-2xl text-sm text-gray-600">
-          The export document workbook — commercial invoice, packing list, customer copies, measurement list,
-          slab sheet, gate pass, Annexure C1, Annex D and the VGM declaration — is generated per{" "}
-          <strong>export</strong> invoice.
-          {dtaInvoices.length
-            ? " This order has only DTA (domestic) invoices; their invoice PDF and the delivery challan are on the Invoice tab."
-            : order.kind === "DOMESTIC"
-              ? " This is a domestic order, so its paperwork is the DTA invoice and the delivery challan, both on the Invoice tab."
-              : " Issue the export invoice on the Invoice tab and it will appear here."}
-        </p>
-      </Card>
+      <div className="space-y-4">
+        <Card>
+          <h3 className="text-sm font-semibold text-gray-900">No export documents for this order</h3>
+          <p className="mt-2 max-w-2xl text-sm text-gray-600">
+            The export document workbook — commercial invoice, packing list, customer copies, measurement list,
+            slab sheet, gate pass, Annexure C1, Annex D and the VGM declaration — is generated per{" "}
+            <strong>export</strong> invoice.
+            {dtaInvoices.length
+              ? " This order has only DTA (domestic) invoices; their invoice PDF and the delivery challan are on the Invoice tab."
+              : order.kind === "DOMESTIC"
+                ? " This is a domestic order, so its paperwork is the DTA invoice and the delivery challan, both on the Invoice tab."
+                : " Issue the export invoice on the Invoice tab and it will appear here."}
+          </p>
+        </Card>
+        {/* The workbook is not the only paperwork on an order, and the ticks
+            are the part the desk keeps whether or not an invoice exists yet. */}
+        <TasksCard order={order} mayWrite={canWrite} />
+      </div>
     );
   }
 
@@ -135,6 +150,7 @@ export default function DocumentsTab({ order, actions }: OrderTabProps) {
         </Card>
       )}
       <ExportDocsPanel key={current.id} invoiceId={current.id} canWrite={canWrite} />
+      <TasksCard order={order} mayWrite={canWrite} />
     </div>
   );
 }

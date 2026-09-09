@@ -12,6 +12,11 @@ export interface InvoiceChoicesDto {
   gstins: GstinChoiceDto[];
   banks: BankChoiceDto[];
   alwaysIgst: boolean;
+  /** What this login may do on the INVOICES area — not the same question as
+   *  the global `actions` a screen is handed, which say "write" for a login
+   *  that only reads invoices (DECISIONS-2 1 and 2). Optional because a route
+   *  answering an older shape simply leaves the screens as they were. */
+  access?: "none" | "view" | "write";
 }
 
 export function useInvoiceChoices(): { choices: InvoiceChoicesDto | null; error: string | null } {

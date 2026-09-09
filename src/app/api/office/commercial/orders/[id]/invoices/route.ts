@@ -20,6 +20,7 @@ import {
   INVOICE_KINDS, defaultKindFor, sequenceKindFor, buildInvoiceLines, buildInvoiceSnapshot, sanitiseLine,
   isoDate, istIsoDate, unpricedWarning, pageArgs, refuseCreate, isBankKey, gstinChoiceFor,
   bankKeyForInvoice, mayChangeInvoiceBank, BANK_FOLLOWS_PI, gstinScopeWord,
+  exchangeRateRefusal, exchangeRateNote,
   type InvoiceKind,
 } from "@/lib/commercial/invoice-rules";
 import type { DocLine } from "@/lib/commercial/types";
@@ -146,6 +147,34 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       bankKey,
     });
 
+    // ROUND THREE, ANSWER 10 — the rate, and the DATE it was put on this row.
+    //
+    // Two things are settled here, both because the rate is load-bearing:
+    // receipts-rules converts a foreign advance through it and a truck leaves
+    // on the answer.
+    //
+    //   A rupee invoice carries no rate. The figure is rupees per one unit of
+    //   the invoice's currency, so on an INR document it is rupees per rupee —
+    //   it converts nothing (usableRate discards it) and would only sit on the
+    //   screen contradicting the receipts card. A typed one is refused with the
+    //   sentence the disabled box carries; the ORDER's rate, which
+    //   buildInvoiceSnapshot inherits when the body names none, is dropped
+    //   rather than copied in, and the log says so.
+    //
+    //   Every rate that IS written is stamped. Without this the inherited rate
+    //   was the DEFAULT way to end up with an undated figure — exactly the
+    //   state exchangeRateAt exists to prevent — and an undated rate converts
+    //   all the same. The stamp is honest: it says when this rate was put on
+    //   THIS invoice, which is now.
+    const typedRate = num(body.exchangeRate);
+    const rateRefusal = exchangeRateRefusal(snapshot.currency);
+    if (typedRate !== null && rateRefusal) fail(400, rateRefusal);
+    const inheritedRate = typedRate === null && snapshot.exchangeRate !== null ? snapshot.exchangeRate : null;
+    const rateDropped = rateRefusal !== null && inheritedRate !== null;
+    if (rateRefusal) snapshot.exchangeRate = null;      // the row and the frozen document agree
+    const exchangeRate = snapshot.exchangeRate;
+    const exchangeRateAt = exchangeRate === null ? null : new Date();
+
     // Answer 18, enforced where it counts. The probe above ran on a plain read
     // many awaits ago and nothing in the schema stops a second open invoice,
     // so two clerks drafting at once would both pass it. Inside one
@@ -174,7 +203,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           invoiceDate,
           status: "DRAFT",
           currency: snapshot.currency,
-          exchangeRate: snapshot.exchangeRate,
+          exchangeRate,
+          exchangeRateAt,
           vehicleNo: str(body.vehicleNo) ?? snapshot.vehicleNo,
           transporter: str(body.transporter),
           lrNo: str(body.lrNo),
@@ -206,14 +236,27 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       ? (pi ? `, on the PI's ${bankKey} bank` : `, on the ${bankKey} bank`)
       : `, bank changed to ${bankKey} from the PI's ${inheritedBankKey}`;
     const gstinNote = snapshot.gstinLabel ? `, under ${snapshot.gstin} (${snapshot.gstinLabel}) on ${gstinScopeWord(snapshot.gstinApplyAll)}` : "";
+    // Answer 10: the rate this invoice starts life with, BY VALUE, and whether
+    // it was typed or came off the order — a rate the clerk never saw typed is
+    // the one an auditor asks about, and it is what the advance converts money
+    // through from the moment the row exists.
+    const rateNote = exchangeRate !== null
+      ? `, ${exchangeRateNote(null, exchangeRate)}${inheritedRate !== null ? " inherited from the order and dated today" : ""}`
+      : rateDropped
+        ? `, the order's rate ${inheritedRate} was not carried over — this invoice is priced in ${snapshot.currency}`
+        : "";
     await logOrderEvent(orderId, "invoice_created", {
-      note: `${kind} invoice ${issued.number} drafted${issued.overridden ? " (number typed by hand)" : ""}${pl ? ` from packing list ${pl.number}` : ""}${bankNote}${gstinNote}${unpriced ? ` — ${unpriced}` : ""}`,
+      note: `${kind} invoice ${issued.number} drafted${issued.overridden ? " (number typed by hand)" : ""}${pl ? ` from packing list ${pl.number}` : ""}${bankNote}${gstinNote}${rateNote}${unpriced ? ` — ${unpriced}` : ""}`,
       by: g.user,
       payload: {
         invoiceId: created.id, kind, number: issued.number, packingListId, lines: lines.length,
         grandTotal: snapshot.grandTotal, overridden: issued.overridden, unpriced,
         gstin: snapshot.gstin, gstinApplyAll: snapshot.gstinApplyAll,
         bankKey: snapshot.bankKey, piBankKey: inheritedBankKey, piNumber: pi?.number ?? null,
+        currency: snapshot.currency,
+        exchangeRate, exchangeRateAt: exchangeRateAt?.toISOString() ?? null,
+        exchangeRateInherited: inheritedRate !== null && !rateDropped,
+        exchangeRateDropped: rateDropped ? inheritedRate : null,
       },
     });
 

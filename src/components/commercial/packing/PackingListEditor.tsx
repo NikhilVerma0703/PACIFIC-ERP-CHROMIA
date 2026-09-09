@@ -20,7 +20,9 @@ import {
   crateGroups, measurementRows, type PackingStatus,
 } from "@/lib/commercial/packing-rules";
 import { sizeInUnit, sizeToCm, MEASUREMENT_UNITS, type MeasurementUnit } from "@/lib/commercial/measure";
+import { pieceTotals } from "@/lib/commercial/pieces-rules";
 import { SwapSlabPicker } from "@/components/commercial/dispatch/SwapSlabPicker";
+import { PiecesTable, type PieceRow } from "@/components/commercial/packing/PiecesTable";
 
 // ── shapes the API hands back ────────────────────────────────────────────────
 interface Crate { id: string; crateNo: number; kind: string; grossKg: number | null; netKg: number | null; lengthCm: number | null; widthCm: number | null; heightCm: number | null; remarks: string | null }
@@ -40,7 +42,10 @@ interface PList {
   measurementUnit: MeasurementUnit;
   createdByName: string | null; createdAt: string; submittedAt: string | null; verifiedAt: string | null;
   verifiedByName: string | null; verificationNote: string | null; finalisedAt: string | null; dispatchedAt: string | null;
-  crates: Crate[]; slabs: Slab[]; order: Order;
+  crates: Crate[]; slabs: Slab[];
+  /** The second kind of line (round three, answer 5): a list may hold both. */
+  pieces: PieceRow[];
+  order: Order;
   invoices?: Array<{ id: string; number: string; kind: string; status: string }>;
 }
 
@@ -89,6 +94,11 @@ export function PackingListEditor({ plId, actions }: { plId: string; actions: st
   const [addHold, setAddHold] = useState("");
   const [swapping, setSwapping] = useState<string | null>(null); // slab id being swapped (answer 30)
   const [header, setHeader] = useState<Record<string, string>>({});
+  // A list may pack slabs, pieces, or both (round three, answer 5). Each table
+  // shows when it has rows, or when the clerk has asked for it — an empty list
+  // asks which kind it is rather than putting two empty tables on the screen.
+  const [wantSlabs, setWantSlabs] = useState(false);
+  const [wantPieces, setWantPieces] = useState(false);
 
   const load = useCallback(async () => {
     const res = await readJson<PList>(await fetch(`/api/office/commercial/packing-lists/${plId}`, { cache: "no-store" }));
@@ -121,6 +131,7 @@ export function PackingListEditor({ plId, actions }: { plId: string; actions: st
   const headerEditable = !!list && canEditHeader(list.status) && mayWrite;
 
   const counts = useMemo(() => fitCounts(list?.slabs ?? []), [list]);
+  const pieceSums = useMemo(() => pieceTotals(list?.pieces ?? []).total, [list]);
   const groups = useMemo(() => crateGroups(list?.slabs ?? [], list?.crates ?? []), [list]);
   const sheet = useMemo(() => measurementRows(list?.slabs ?? [], list?.crates ?? []), [list]);
   const autoPackages = useMemo(() => packagesSummary(list?.crates ?? []) ?? "", [list]);
@@ -133,12 +144,15 @@ export function PackingListEditor({ plId, actions }: { plId: string; actions: st
   if (error && !list) return <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>;
   if (!list) return <Empty>Loading…</Empty>;
 
-  const submitCheck = canSubmit(list.status, list.slabs);
+  const submitCheck = canSubmit(list.status, list.slabs, list.pieces ?? []);
   // The rows are stored in centimetres whatever the list shows; the unit is a
   // lens on the two size columns, applied on the way out and on the way in.
   const unit: MeasurementUnit = list.measurementUnit ?? "cm";
   const inUnit = (cm: number | null): string => n3(sizeInUnit(cm, unit));
   const maySwap = mayWrite && canRecheck(list.status);
+  const pieces = list.pieces ?? [];
+  const showSlabs = list.slabs.length > 0 || wantSlabs;
+  const showPieces = pieces.length > 0 || wantPieces;
 
   // ── writes ────────────────────────────────────────────────────────────────
   const setUnit = (u: MeasurementUnit) => run(() => patchJson(`/api/office/commercial/packing-lists/${plId}`, { measurementUnit: u }), () => `Sizes now in ${u}.`);
@@ -162,6 +176,18 @@ export function PackingListEditor({ plId, actions }: { plId: string; actions: st
   const removeCrate = (id: string) => run(() => deleteJson(`/api/office/commercial/packing-lists/${plId}/crates/${id}`), () => "Crate removed; its slabs are unassigned.");
   const patchSlab = (id: string, data: Record<string, unknown>) => run(() => patchJson(`/api/office/commercial/packing-lists/${plId}/slabs/${id}`, data));
   const removeSlab = (id: string) => run(() => deleteJson(`/api/office/commercial/packing-lists/${plId}/slabs/${id}`), () => "Slab taken off the list.");
+
+  // The cut-to-size lines (round three, answer 5). They point at no slab in
+  // finished goods, so unlike a packed slab a line simply goes away.
+  const addPiece = (body: Record<string, unknown>) => run(
+    () => postJson(`/api/office/commercial/packing-lists/${plId}/pieces`, body),
+    (d) => {
+      const r = d as { added?: number; refused?: Array<{ line: number; reason: string }> };
+      return `${r?.added ?? 0} cut-to-size line(s) added${r?.refused?.length ? ` — refused: ${r.refused.map((x) => `line ${x.line} (${x.reason})`).join("; ")}` : ""}.`;
+    },
+  );
+  const patchPiece = (id: string, data: Record<string, unknown>) => run(() => patchJson(`/api/office/commercial/packing-lists/${plId}/pieces/${id}`, data));
+  const removePiece = (id: string) => run(() => deleteJson(`/api/office/commercial/packing-lists/${plId}/pieces/${id}`), () => "Cut-to-size line removed.");
 
   const bulkAssign = (crateId: string | null) => run(
     () => patchJson(`/api/office/commercial/packing-lists/${plId}/slabs/assign`, { slabIds: Array.from(selected), crateId }),
@@ -254,8 +280,9 @@ export function PackingListEditor({ plId, actions }: { plId: string; actions: st
         {note && <div className="mt-3 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">{note}</div>}
       </Card>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+      <div className={`grid grid-cols-2 gap-3 ${showPieces ? "lg:grid-cols-6" : "lg:grid-cols-5"}`}>
         <Kpi label="Slabs" value={list.slabs.length} />
+        {showPieces && <Kpi label="Cut pieces" value={pieceSums.pieces} sub={`${pieceSums.lines} line(s) · ${pieceSums.sqft.toFixed(3)} sqft`} />}
         <Kpi label="Packages" value={list.crates.length} sub={list.packagesSummary ?? autoPackages ?? undefined} />
         <Kpi label="Sqm" value={sheet.totals.sqm.toFixed(4)} sub={`${sheet.totals.sqft.toFixed(3)} sqft`} />
         <Kpi label="Unassigned" value={list.slabs.filter((s) => !s.crateId).length} sub="not in a crate" />
@@ -369,7 +396,23 @@ export function PackingListEditor({ plId, actions }: { plId: string; actions: st
         )}
       </Card>
 
+      {/* Neither kind of line yet: ask which, rather than showing two empty
+          tables (round three, answer 5). A refused action stays visible with
+          its reason — this chooser is simply not offered on a list Commercial
+          may no longer edit. */}
+      {!showSlabs && !showPieces && (
+        <Card>
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">What does this list pack?</h2>
+          <p className="mt-2 text-sm text-gray-600">A packing list may carry slabs, cut-to-size pieces, or both.</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button type="button" className={btn} disabled={!editable} title={editable ? "" : "This list is no longer with Commercial"} onClick={() => setWantSlabs(true)}>Slabs</button>
+            <button type="button" className={btnGhost} disabled={!editable} title={editable ? "" : "This list is no longer with Commercial"} onClick={() => setWantPieces(true)}>Cut-to-size pieces</button>
+          </div>
+        </Card>
+      )}
+
       {/* slabs */}
+      {showSlabs && (
       <Card>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-3">
@@ -496,6 +539,44 @@ export function PackingListEditor({ plId, actions }: { plId: string; actions: st
           </div>
         )}
       </Card>
+      )}
+
+      {/* cut-to-size pieces (round three, answer 5) */}
+      {showPieces && (
+        <Card>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+              Cut to size · {pieceSums.lines} line(s) · {pieceSums.pieces} piece(s)
+            </h2>
+            <p className="text-xs text-gray-400">Sizes shown in {unit}; stored in millimetres, printed in {unit} on both sheets.</p>
+          </div>
+          <PiecesTable
+            pieces={pieces} unit={unit} editable={editable} busy={busy}
+            onAdd={addPiece} onPatch={patchPiece} onRemove={removePiece} onError={setError}
+          />
+        </Card>
+      )}
+
+      {/* The other kind of line, once one of them is already on the list.
+          A REFUSED ACTION IS DISABLED WITH ITS REASON, NEVER HIDDEN: these used
+          to disappear on a submitted list, so a clerk who opened it to add the
+          cut-to-size lines they forgot saw no cut-to-size affordance at all and
+          concluded the list could not carry pieces — rather than that it has to
+          be reopened first. Same wording as the chooser card above. */}
+      {(!showSlabs || !showPieces) && (showSlabs || showPieces) && (
+        <div className="flex flex-wrap gap-2">
+          {!showSlabs && (
+            <button type="button" className={btnGhost} disabled={!editable}
+              title={editable ? "" : "This list is no longer with Commercial"}
+              onClick={() => setWantSlabs(true)}>+ Add slabs to this list</button>
+          )}
+          {!showPieces && (
+            <button type="button" className={btnGhost} disabled={!editable}
+              title={editable ? "" : "This list is no longer with Commercial"}
+              onClick={() => setWantPieces(true)}>+ Add cut-to-size pieces</button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

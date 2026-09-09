@@ -21,6 +21,9 @@ const LIMIT = 50;
 const TONE: Record<string, "brand" | "green" | "amber" | "red"> = {
   created: "brand", edited: "brand", note: "brand",
   stage: "amber", checklist: "amber", approved: "green",
+  // The work around the order (answers 7, 8) — its own kind, so it reads and
+  // filters apart from the 22-point SOP checklist it is not.
+  task_changed: "amber",
   hold_placed: "brand", hold_released: "amber", hold_expired: "red",
   production_requested: "amber", production_produced: "green",
   pi_drafted: "brand", pi_edited: "brand", pi_issued: "green", pi_accepted: "green", pi_superseded: "amber", pi_revised: "amber", pi_cancelled: "red",
@@ -38,6 +41,10 @@ const KIND_FILTERS: Array<{ value: string; label: string }> = [
   { value: "created,edited,note", label: "Edits" },
   { value: "stage,cancelled", label: "Stage moves" },
   { value: "checklist,approved", label: "Checklist" },
+  // Container booking, CHA, the BL draft, COO, fumigation, the portal uploads:
+  // the desk that runs those reads only these lines, and the SOP checklist
+  // above is a different sheet with a different approval on it.
+  { value: "task_changed", label: "Order tasks" },
   { value: "hold_placed,hold_released,hold_expired", label: "Stock holds" },
   { value: "production_requested,production_produced,plan_changed", label: "Production" },
   { value: "pi_drafted,pi_edited,pi_issued,pi_accepted,pi_superseded,pi_revised,pi_cancelled", label: "Proforma" },

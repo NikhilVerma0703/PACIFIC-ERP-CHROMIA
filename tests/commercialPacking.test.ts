@@ -58,6 +58,29 @@ test("canSubmit: an editable list with at least one slab, and it says why not", 
   assert.match((late as { reason: string }).reason, /awaiting check/i);
 });
 
+test("canSubmit: a cut-to-size list carries no slab, and it still goes for the check", () => {
+  // Round three, answer 5: a packing list may pack pieces alone. An empty-list
+  // refusal that only counted slabs left such a list unsendable for ever, which
+  // is the dead end the second kind of line exists to remove.
+  assert.deepEqual(canSubmit("DRAFT", [], [{}]), { ok: true });
+  assert.deepEqual(canSubmit("REJECTED", [], [{}, {}]), { ok: true });
+  assert.deepEqual(canSubmit("DRAFT", [{}], [{}]), { ok: true }, "both kinds together");
+
+  // Neither kind is still nothing to send, and the reason now names both.
+  const empty = canSubmit("DRAFT", [], []);
+  assert.equal(empty.ok, false);
+  assert.match((empty as { reason: string }).reason, /at least one slab or cut-to-size line/i);
+
+  // The pieces argument is optional: every caller written before there were
+  // pieces asks the old question and gets the old answer.
+  assert.deepEqual(canSubmit("DRAFT", [{}]), { ok: true });
+  assert.equal(canSubmit("DRAFT", []).ok, false);
+
+  // The status gate still comes first — a piece-only list that has gone for the
+  // check cannot be sent again.
+  assert.equal(canSubmit("SUBMITTED", [], [{}]).ok, false);
+});
+
 test("the other gates line up with the pipeline", () => {
   assert.equal(canReopen("SUBMITTED"), true);
   assert.equal(canReopen("REJECTED"), true);
@@ -139,6 +162,7 @@ test("fitCounts and verifyOutcome", () => {
   assert.equal(clean.ok, true);
   assert.equal(clean.pending, 0);
   assert.deepEqual(clean.unfit, []);
+  assert.equal(clean.nothingToVerify, false);
 
   const half = verifyOutcome(slabs([[1, "FIT"], [2, "PENDING"]]));
   assert.equal(half.ok, false);
@@ -161,6 +185,25 @@ test("the notes a conclusion writes", () => {
   assert.match(rejectionNote([{ slabNumber: 1, reason: "Crack" }], "reload tomorrow"), /reload tomorrow$/);
   assert.equal(verificationNote(47), "All 47 slab(s) checked fit");
   assert.equal(verificationNote(47, "loaded 18:40"), "All 47 slab(s) checked fit. loaded 18:40");
+
+  // A cut-to-size list has no slab line to tick (answer 5), and a piece carries
+  // no fit column: the note says what was actually in front of the checker
+  // rather than recording "All 0 slab(s) checked fit".
+  assert.match(verificationNote(0), /no slab line to check/i);
+  assert.doesNotMatch(verificationNote(0), /All 0 slab/);
+  assert.match(verificationNote(0, "crates 01 to 06 sealed"), /crates 01 to 06 sealed$/);
+});
+
+test("verifyOutcome: a list with nothing to check says so, and does not pretend it was checked", () => {
+  // A piece-only list reaches the checker with an empty slab table and passes
+  // instantly. That is a fact the outcome now carries — refusing here would
+  // leave a cut-to-size list unshippable, and folding piece verdicts in needs a
+  // fit column on commercial_packed_piece (an owner question, not a fixer's).
+  const none = verifyOutcome([]);
+  assert.equal(none.nothingToVerify, true);
+  assert.equal(none.ok, true, "there is nothing pending and nothing unfit");
+  assert.equal(none.pending, 0);
+  assert.equal(verifyOutcome(slabs([[1, "PENDING"]])).nothingToVerify, false);
 });
 
 test("fitPatch: UNFIT must say why; PENDING is not a verdict", () => {

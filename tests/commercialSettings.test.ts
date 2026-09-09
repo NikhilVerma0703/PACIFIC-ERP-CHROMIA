@@ -563,3 +563,76 @@ test("the dispatch advance percentages are editable and land as numbers (answer 
   assert.deepEqual(diffFromDefaults(setAt(draft, "dispatch.advancePctExport", "30"), DEFAULT_SETTINGS, true), [], "a typed '30' is the default typed back");
   assert.deepEqual(diffFromDefaults(setAt(draft, "dispatch.advancePctExport", "40"), DEFAULT_SETTINGS, true), ["dispatch.advancePctExport"]);
 });
+
+// ───────── the advance percentages are editable (round three, answer 9) ──────
+// "Make it editable too." The two figures round two's answer 11 set — 100
+// domestic, 30 export — shipped with nowhere to change them, which made the
+// shipped figures the only figures. They are on the settings screen now, and
+// what is checked here is that the shape THE SCREEN POSTS is a shape the route
+// accepts: the form holds strings, the whole merged draft goes back as
+// `overrides`, and only the leaves that really differ are stored.
+
+test("round three, answer 9: the advance percentages the screen posts validate, coerce and prune", () => {
+  // exactly what the form sends: strings, inside the dispatch group
+  const v = validateOverrides({ dispatch: { advancePctDomestic: "100", advancePctExport: "25" } });
+  assert.equal(v.ok, true, JSON.stringify(v.errors));
+  assert.deepEqual(v.cleaned, { dispatch: { advancePctDomestic: 100, advancePctExport: 25 } });
+  assert.deepEqual(v.dropped, [], "the screen posts no key the defaults do not know");
+
+  const merged = mergeSettings(DEFAULT_SETTINGS, v.cleaned);
+  assert.equal(merged.dispatch.advancePctExport, 25);
+  assert.equal(merged.dispatch.advancePctDomestic, 100);
+
+  // the domestic figure was typed equal to its default, so it is NOT stored —
+  // it keeps following the default if the default ever moves
+  assert.deepEqual(pruneDefaults(v.cleaned), { dispatch: { advancePctExport: 25 } });
+  // and that is exactly the path the screen marks as changed
+  assert.deepEqual(
+    diffFromDefaults(merged).filter((x) => x.startsWith("dispatch.")),
+    ["dispatch.advancePctExport"],
+  );
+});
+
+test("round three, answer 9: the whole screen draft posts back clean, dispatch included", () => {
+  // Save posts the WHOLE merged draft, not a patch, so the round trip is what
+  // has to hold: nothing dropped, nothing refused, nothing stored.
+  const draft = setAt(
+    JSON.parse(JSON.stringify(DEFAULT_SETTINGS)) as Record<string, unknown>,
+    "dispatch.advancePctExport",
+    "30",                                   // a form holds the string
+  );
+  const v = validateOverrides(draft);
+  assert.equal(v.ok, true, JSON.stringify(v.errors));
+  assert.deepEqual(v.dropped, [], "every leaf the screen renders is a leaf the route knows");
+  assert.deepEqual(pruneDefaults(v.cleaned), {}, "a draft equal to the defaults stores nothing");
+  // and the loose comparison the screen itself runs does not call the typed
+  // string a change either
+  assert.deepEqual(diffFromDefaults(draft, DEFAULT_SETTINGS, true), []);
+});
+
+test("round two, answer 11: the percentages are percentages, and the refusal says so", () => {
+  assert.equal(leafIssue("dispatch.advancePctDomestic", 0), null, "0 asks for no advance at all — a real answer");
+  assert.equal(leafIssue("dispatch.advancePctExport", 100), null);
+  assert.equal(leafIssue("dispatch.advancePctExport", 30.5), null, "a share is not a whole number");
+  assert.equal(leafIssue("dispatch.advancePctExport", 101), "Advance percentage must be between 0 and 100");
+  assert.equal(leafIssue("dispatch.advancePctDomestic", -1), "Advance percentage must be between 0 and 100");
+
+  const bad = validateOverrides({ dispatch: { advancePctExport: "one third" } });
+  assert.equal(bad.ok, false);
+  assert.equal(errorAt(bad, "dispatch.advancePctExport"), "Must be a number");
+  assert.deepEqual(bad.cleaned, { dispatch: {} }, "the invalid leaf is left out; the group survives empty and merges to nothing");
+  assert.equal(mergeSettings(DEFAULT_SETTINGS, bad.cleaned).dispatch.advancePctExport, DEFAULT_SETTINGS.dispatch.advancePctExport);
+
+  const tooHigh = validateOverrides({ dispatch: { advancePctDomestic: "150" } });
+  assert.equal(tooHigh.ok, false);
+  assert.equal(errorAt(tooHigh, "dispatch.advancePctDomestic"), "Advance percentage must be between 0 and 100");
+});
+
+test("both advance leaves are on the settings shape, so the screen can render them", () => {
+  const paths = leafPaths();
+  assert.ok(paths.includes("dispatch.advancePctDomestic"));
+  assert.ok(paths.includes("dispatch.advancePctExport"));
+  // the shipped figures the owner confirmed on 2026-09-09
+  assert.equal(getAt(DEFAULT_SETTINGS, "dispatch.advancePctDomestic"), 100);
+  assert.equal(getAt(DEFAULT_SETTINGS, "dispatch.advancePctExport"), 30);
+});

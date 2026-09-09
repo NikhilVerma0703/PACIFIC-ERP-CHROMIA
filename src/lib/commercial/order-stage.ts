@@ -34,7 +34,10 @@ import { stageFactsOf, orderTotals } from "./orders-rules";
 import { advanceStatus, effectiveAdvancePct, type AdvanceStatus } from "./receipts-rules";
 import { loadSettings } from "./settings";
 import { logOrderEvent } from "./events";
-import type { CommercialUser } from "./access";
+import { commercialActorOf, type CommercialUser } from "./access";
+import { dispatchReservedForOrder } from "./inventory-bridge";
+import { autoDispatchNote, autoDispatchIntentNote } from "./tasks-rules";
+import { advanceRateFor } from "@/lib/commercial/advance-rate";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
@@ -74,6 +77,9 @@ export async function loadStageFacts(orderId: string, now: Date = new Date()): P
       domestic: settings.dispatch.advancePctDomestic,
       export: settings.dispatch.advancePctExport,
     }),
+    // Round three, answer 10: the rate on the order's live invoice, so a
+    // foreign advance counts here exactly as it counts on the receipts card.
+    rate: await advanceRateFor(orderId),
     // Answer 12: the manager's waiver satisfies the gate outright.
     waived: order.advanceWaivedAt != null,
   });
@@ -91,6 +97,100 @@ async function writeStage(orderId: string, from: OrderStatus, to: OrderStatus, n
   return res.count === 1;
 }
 
+/** What the close did to the stock, for the caller that asked for the move. */
+export interface AutoDispatchReport {
+  moved: number;
+  slabNumbers: number[];
+  skipped: { slab: number; reason: string }[];
+  /** RESERVED against the order but not readable by this login (the
+   *  sales-approval filter) — left where they are, and said out loud. */
+  unreadable: number;
+  /** The line written to the order log; safe to show on screen. */
+  note: string;
+}
+
+/**
+ * CLOSED is the last stage, and round three, answer 6 says what reaching it
+ * does to the stock: "whatever is reserved should be marked dispatched after
+ * deliver / last step."
+ *
+ * WHY THIS RUNS AFTER THE STAGE WRITE AND NOT IN A TRANSACTION WITH IT. The
+ * bridge moves slabs through changeSlabStatus — the same function Finished
+ * Goods uses, which opens its own writes and takes no transaction client — so
+ * there is no way to enrol it in the order's update from here. Given that, the
+ * ORDER of the two matters more than their atomicity: the stage write is the
+ * conditional one (updateMany where { id, status }) and is what decides which
+ * of two concurrent closers wins. Dispatching first would mean the loser had
+ * already moved the stock. So the close lands, then the stock follows, and the
+ * gap is covered by the log rather than pretended away.
+ *
+ * Nothing here may fail the close. The order IS closed by the time this runs;
+ * a bridge error becomes a logged note naming it, so the desk is told the
+ * slabs are still reserved instead of the whole call 500-ing after the fact.
+ */
+async function dispatchOnClose(orderId: string, by: CommercialUser | null): Promise<AutoDispatchReport | null> {
+  try {
+    const order = await db.commercialOrder.findUnique({
+      where: { id: orderId },
+      select: {
+        number: true,
+        client: { select: { name: true } },
+        enquiry: { select: { number: true } },
+        holds: { select: { reference: true } },
+      },
+    });
+    if (!order) return null;
+    // The same list packSlabs is given (packing-lists/_lib.ownReferences): the
+    // order number, every hold it placed, and its enquiry number. A slab
+    // reserved under somebody else's PI is not ours to move, and closing an
+    // order must never become a way to clear another desk's hold.
+    const refs = new Set<string>();
+    if (order.number) refs.add(String(order.number));
+    for (const h of (order.holds ?? []) as Array<{ reference?: string | null }>) if (h?.reference) refs.add(h.reference);
+    if (order.enquiry?.number) refs.add(String(order.enquiry.number));
+
+    const res = await dispatchReservedForOrder({
+      references: Array.from(refs),
+      reference: String(order.number ?? ""),
+      customer: (order.client?.name as string | undefined) ?? "",
+      by: by?.name || by?.email || null,
+      isAdmin: commercialActorOf(by) === "ADMIN",
+      // WRITTEN BEFORE ANYTHING MOVES. The sweep is one round trip per slab
+      // (changeSlabStatus reads, writes and logs each one), so a close with a
+      // large enquiry-level hold behind it can outlive the serverless
+      // function: half the slabs move and the result note below — written
+      // last — never lands, leaving the log silent about a stock movement
+      // that half happened. This line is the record that survives that, and
+      // the per-slab events finished goods writes say how far it got.
+      onPlanned: async (plan) => {
+        await logOrderEvent(orderId, "dispatched", {
+          note: autoDispatchIntentNote(String(order.number ?? ""), plan.slabNumbers),
+          by,
+          payload: { auto: true, closed: true, intent: true, slabs: plan.slabNumbers, skipped: plan.skipped },
+        });
+      },
+    });
+    const note = autoDispatchNote(String(order.number ?? ""), res.updated, res.skipped.length, res.unreadable);
+    // Logged whether or not anything moved: a no-op is a fact the desk needs
+    // ("nothing was still reserved"), and after this change nobody is ticking
+    // slabs by hand, so the log is the only record that the sweep ran at all.
+    await logOrderEvent(orderId, "dispatched", {
+      note,
+      by,
+      payload: { auto: true, closed: true, dispatched: res.updated, slabs: res.slabNumbers, skipped: res.skipped, unreadable: res.unreadable },
+    });
+    return { moved: res.updated, slabNumbers: res.slabNumbers, skipped: res.skipped, unreadable: res.unreadable, note };
+  } catch (e) {
+    const msg = (e as Error)?.message ?? String(e);
+    await logOrderEvent(orderId, "note", {
+      note: `The order closed, but the automatic dispatch of its reserved slabs failed: ${msg}. They are still RESERVED — dispatch them from finished goods.`,
+      by,
+      payload: { auto: true, closed: true, failed: msg },
+    });
+    return null;
+  }
+}
+
 /**
  * An explicit move. `extra` is merged into the same update as the stage
  * patch — the stage route passes { cancelReason } with it, so a cancelled
@@ -99,7 +199,7 @@ async function writeStage(orderId: string, from: OrderStatus, to: OrderStatus, n
  * retry because a cancelled order cannot move). The stage patch wins over
  * `extra` on a clashing key so a caller cannot smuggle a different status in.
  */
-export async function moveOrder(orderId: string, to: OrderStatus, by: CommercialUser | null, note?: string | null, extra?: Record<string, unknown>): Promise<{ ok: true; status: OrderStatus } | { ok: false; reason: string }> {
+export async function moveOrder(orderId: string, to: OrderStatus, by: CommercialUser | null, note?: string | null, extra?: Record<string, unknown>): Promise<{ ok: true; status: OrderStatus; autoDispatch?: AutoDispatchReport } | { ok: false; reason: string }> {
   const order = await loadStageFacts(orderId);
   if (!order) return { ok: false, reason: "Order not found" };
   const check = canEnter(order.status, to, order.facts);
@@ -107,7 +207,10 @@ export async function moveOrder(orderId: string, to: OrderStatus, by: Commercial
   const now = new Date();
   if (!(await writeStage(orderId, order.status, to, now, extra))) return { ok: false, reason: MOVED_MEANWHILE };
   await logOrderEvent(orderId, to === "CANCELLED" ? "cancelled" : "stage", { note: note ?? `${stageOf(order.status)?.label ?? order.status} → ${stageOf(to)?.label ?? to}`, by, payload: { from: order.status, to } });
-  return { ok: true, status: to };
+  // Answer 6: the last stage takes the stock with it. Only the mover that
+  // actually landed the write gets here, so the sweep runs once per close.
+  const autoDispatch = to === "CLOSED" ? await dispatchOnClose(orderId, by) : null;
+  return autoDispatch ? { ok: true, status: to, autoDispatch } : { ok: true, status: to };
 }
 
 /** The stage the side effect moved the order to; null when it moved nothing —
@@ -130,5 +233,9 @@ export async function bumpOrder(orderId: string, implied: OrderStatus, by: Comme
   const now = new Date();
   if (!(await writeStage(orderId, order.status, to, now))) return null;
   await logOrderEvent(orderId, "stage", { note: note ?? `${stageOf(order.status)?.label ?? order.status} → ${stageOf(to)?.label ?? to}`, by, payload: { from: order.status, to, implied: true } });
+  // Nothing implies CLOSED today, but answer 6 is about REACHING the last
+  // stage, not about which route asked — so the sweep hangs off the move
+  // itself and a later implied close cannot quietly skip it.
+  if (to === "CLOSED") await dispatchOnClose(orderId, by);
   return to;
 }

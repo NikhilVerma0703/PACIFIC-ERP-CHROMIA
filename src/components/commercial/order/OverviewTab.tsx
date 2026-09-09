@@ -15,9 +15,10 @@
 // can't I approve" is a question the screen should answer.
 import { useEffect, useMemo, useState } from "react";
 import { Card, Badge, Empty } from "@/components/ui";
-import { patchJson } from "@/lib/fab/postJson";
+import { patchJson, postJson } from "@/lib/fab/postJson";
 import { readJson } from "@/lib/readJson";
-import type { OrderTabProps, Party } from "@/lib/commercial/types";
+import { groupTasks, taskProgress, progressNote, statusFromTick } from "@/lib/commercial/tasks-rules";
+import type { OrderTabProps, OrderTaskDto, Party } from "@/lib/commercial/types";
 import { partiesFromClient, clientDefaults, type ClientLike } from "@/lib/commercial/orders-rules";
 import { advanceBadge, fmtPct } from "@/lib/commercial/receipts-rules";
 import { ClientPicker, type ClientRow } from "../orders/ClientPicker";
@@ -301,6 +302,10 @@ export default function OverviewTab({ order, actions, refresh }: OrderTabProps) 
       <ReceiptsCard order={order} actions={actions} refresh={refresh} />
 
       <ChecklistCard order={order} refresh={refresh} mayWrite={mayWrite} mayApprove={mayApprove} />
+
+      {/* Round three, answers 7 and 8: the outside work, as ticks. Below the
+          SOP sheet because it is what happens AFTER the order is agreed. */}
+      <TasksCard order={order} mayWrite={mayWrite} />
     </div>
   );
 }
@@ -449,6 +454,197 @@ function ChecklistCard({ order, refresh, mayWrite, mayApprove }: {
       </div>
       <p className="mt-3 text-xs text-gray-400">
         Points the order can answer are filled in automatically and refilled after every edit — an answer typed here is never overwritten.
+      </p>
+    </Card>
+  );
+}
+
+// ───────────────────────── the tasks (answers 7 and 8) ───────────────────────
+//
+// Container booking, CHA, the BL draft, COO, CEFA, fumigation, TiO2, the RFID
+// lock, container pictures, the shipping documents, the Daltile upload and the
+// ETA sheet — and on a domestic order transport booking, the transporter bills
+// and the e-way bill. The owner's answer was "for now if we cannot add
+// anything we'll add a tickbox, or if we can add more then we'll add more", so
+// this is a tick, a date and a note, and it does not pretend to do the work.
+//
+// EXPORTED because the Documents tab shows the same card: most of these lines
+// are Raghav's, and Documents is the tab he lives on. One component, two
+// mounts, each with its own copy of the list — a tick on one is seen by the
+// other when that tab is next opened, which is how tabs already behave here.
+//
+// The card owns its own data rather than reading order.tasks: the GET is what
+// SEEDS an order that has never been opened, and re-fetching the whole order
+// after every checkbox would reload eight relations to change one row.
+// order.tasks is the initial paint, so the card is never blank on arrival.
+//
+// WHAT `mayWrite` HAS TO MEAN. The routes behind this card gate on the
+// CHECKLIST area (answers 7 and 8: these lines are the work around the order,
+// and most of them are COMMERCIAL_DOCS's own), while the prop it is given is
+// the login's `write` ACTION. Those two answer the same set of logins — every
+// actor holding checklist: write is exactly every actor holding the write
+// action — which is why the controls below can be enabled from the action
+// without offering a tick the server will refuse. It is not a coincidence
+// worth trusting silently, so tests/commercialOrders.test.ts pins the two
+// columns of access-rules against each other and fails if they ever diverge.
+
+const TASKS_READONLY = "This login may read this order but not change it";
+
+export function TasksCard({ order, mayWrite }: { order: OrderTabProps["order"]; mayWrite: boolean }) {
+  const [tasks, setTasks] = useState<OrderTaskDto[]>(order.tasks ?? []);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [adding, setAdding] = useState("");
+  // Typed but not yet sent: a note is saved on blur, so the box has to hold
+  // what is in it without the list underneath overwriting each keystroke.
+  const [notes, setNotes] = useState<Record<string, string>>({});
+
+  useEffect(() => { setTasks(order.tasks ?? []); }, [order.tasks]);
+
+  // First read seeds the defaults for the order's kind, server-side.
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const r = await fetch(`/api/office/commercial/orders/${order.id}/tasks`, { cache: "no-store" });
+      const res = await readJson<{ tasks?: OrderTaskDto[] }>(r);
+      if (!live) return;
+      if (res.ok && Array.isArray(res.data?.tasks)) setTasks(res.data.tasks);
+      setLoaded(true);
+    })();
+    return () => { live = false; };
+  }, [order.id]);
+
+  const progress = taskProgress(tasks);
+  const groups = groupTasks(tasks);
+
+  async function patch(t: OrderTaskDto, body: Record<string, unknown>) {
+    setBusy(t.id);
+    setError(null);
+    const res = await patchJson(`/api/office/commercial/orders/${order.id}/tasks/${t.id}`, body);
+    setBusy(null);
+    if (!res.ok) { setError(res.error ?? `"${t.label}" was not saved.`); return; }
+    if (Array.isArray(res.data?.tasks)) setTasks(res.data.tasks as OrderTaskDto[]);
+    setNotes((n) => { const { [t.id]: _drop, ...rest } = n; return rest; });
+  }
+
+  async function add() {
+    const label = adding.trim();
+    if (!label) return;
+    setBusy("add");
+    setError(null);
+    const res = await postJson(`/api/office/commercial/orders/${order.id}/tasks`, { label });
+    setBusy(null);
+    if (!res.ok) { setError(res.error ?? "The task was not added."); return; }
+    if (Array.isArray(res.data?.tasks)) setTasks(res.data.tasks as OrderTaskDto[]);
+    setAdding("");
+  }
+
+  function row(t: OrderTaskDto) {
+    const waived = t.status === "NOT_REQUIRED";
+    const done = t.status === "DONE";
+    const noteValue = notes[t.id] ?? t.note ?? "";
+    return (
+      <div key={t.id} className={`flex flex-col gap-2 border-b border-gray-100 py-2 last:border-0 md:flex-row md:items-center ${waived ? "opacity-70" : ""}`}>
+        <label className="flex min-w-0 flex-1 items-center gap-2" title={mayWrite ? undefined : TASKS_READONLY}>
+          <input
+            type="checkbox"
+            className="h-4 w-4 shrink-0 rounded border-gray-300 text-brand focus:ring-brand/30"
+            checked={done}
+            disabled={!mayWrite || busy !== null}
+            onChange={(e) => void patch(t, { status: statusFromTick(e.target.checked) })}
+          />
+          <span className={`truncate text-sm ${done ? "text-gray-500 line-through" : "text-gray-800"}`}>{t.label}</span>
+          {waived && <Badge tone="amber">not required</Badge>}
+        </label>
+        <div className="flex flex-wrap items-center gap-2 md:justify-end">
+          <input
+            type="date"
+            className={`${INPUT} w-40`}
+            value={dateInputValue(t.doneAt)}
+            disabled={!mayWrite || !done || busy !== null}
+            title={done ? undefined : "The date is the day the task was done — tick it first"}
+            onChange={(e) => void patch(t, { doneAt: e.target.value })}
+          />
+          <input
+            className={`${INPUT} w-full md:w-64`}
+            placeholder="Note"
+            value={noteValue}
+            disabled={!mayWrite || busy !== null}
+            title={mayWrite ? undefined : TASKS_READONLY}
+            onChange={(e) => setNotes((n) => ({ ...n, [t.id]: e.target.value }))}
+            onBlur={() => { if ((notes[t.id] ?? null) !== null && notes[t.id] !== (t.note ?? "")) void patch(t, { note: notes[t.id] }); }}
+          />
+          {/* A refusal is disabled with its reason, never hidden — a login that
+              may only read still sees what the desk can do here. */}
+          <button
+            type="button"
+            className={BTN}
+            disabled={!mayWrite || busy !== null}
+            title={mayWrite ? "The customer or the shipment does not need this one" : TASKS_READONLY}
+            onClick={() => void patch(t, { status: waived ? "PENDING" : "NOT_REQUIRED" })}
+          >
+            {waived ? "Needed after all" : "Not required"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <Card>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">Order tasks</h2>
+          <p className="mt-1 text-xs text-gray-400">
+            {loaded || tasks.length ? progressNote(progress) : "Loading…"}
+          </p>
+        </div>
+        {!mayWrite && <span className="text-xs text-amber-700">{TASKS_READONLY}.</span>}
+      </div>
+
+      {error && <div className="mb-3"><ErrorNote>{error}</ErrorNote></div>}
+
+      {loaded && tasks.length === 0 ? (
+        <Empty>No tasks on this order.</Empty>
+      ) : (
+        <>
+          <div className="mb-4">
+            <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-400">
+              Outstanding{groups.outstanding.length ? ` (${groups.outstanding.length})` : ""}
+            </h3>
+            {groups.outstanding.length === 0
+              ? <p className="py-2 text-sm text-gray-500">Nothing outstanding.</p>
+              : groups.outstanding.map(row)}
+          </div>
+          {groups.done.length > 0 && (
+            <div>
+              <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-400">
+                Done and not required ({groups.done.length})
+              </h3>
+              {groups.done.map(row)}
+            </div>
+          )}
+        </>
+      )}
+
+      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-gray-100 pt-3">
+        <input
+          className={`${INPUT} w-full md:w-80`}
+          placeholder="Add a task this order needs"
+          value={adding}
+          disabled={!mayWrite || busy !== null}
+          title={mayWrite ? undefined : TASKS_READONLY}
+          onChange={(e) => setAdding(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void add(); } }}
+        />
+        <button type="button" className={BTN} disabled={!mayWrite || busy !== null || adding.trim() === ""} onClick={() => void add()}>
+          {busy === "add" ? "Adding…" : "Add task"}
+        </button>
+      </div>
+      <p className="mt-3 text-xs text-gray-400">
+        Booking, CHA, the documents and the portals are done outside the ERP — this is the record that they were, with the date and a note.
+        Ticks are kept against the order, so a task that becomes a screen here later keeps its line.
       </p>
     </Card>
   );

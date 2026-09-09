@@ -17,6 +17,7 @@ import { json, deny, handle, plain } from "@/lib/commercial/http";
 import { loadSettings } from "@/lib/commercial/settings";
 import { advanceStatus, effectiveAdvancePct } from "@/lib/commercial/receipts-rules";
 import { orderTotals, type ItemLike } from "@/lib/commercial/orders-rules";
+import { advanceRatesFor } from "@/lib/commercial/advance-rate";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -58,11 +59,16 @@ async function countAwaitingAdvance(): Promise<number> {
     orderBy: { createdAt: "desc" },
     take: ADVANCE_SCAN_CAP,
     select: {
-      kind: true, currency: true, advancePct: true,
+      // id, because the rate is read per order below. Without it every order
+      // asked for the rate of "" and was measured as though none existed.
+      id: true, kind: true, currency: true, advancePct: true,
       items: { select: { amount: true } },
       receipts: { where: { kind: "ADVANCE" }, select: { kind: true, amount: true, currency: true } },
     },
   });
+  // ONE query for every rate, not one per order: this loop runs over up to
+  // ADVANCE_SCAN_CAP orders and it is drawing a single number on an overview.
+  const rates = await advanceRatesFor((orders as Array<Record<string, unknown>>).map(o => String(o.id ?? "")));
   let waiting = 0;
   for (const o of orders as Array<Record<string, unknown>>) {
     const a = advanceStatus({
@@ -73,6 +79,9 @@ async function countAwaitingAdvance(): Promise<number> {
         domestic: settings.dispatch.advancePctDomestic,
         export: settings.dispatch.advancePctExport,
       }),
+      // Round three, answer 10: the same rate the gate uses, so the tile and
+      // the truck cannot disagree about whether an order is still waiting.
+      rate: rates.get(String(o.id ?? "")) ?? null,
       // Every waived order was filtered out above; saying so here keeps the
       // call honest rather than relying on the reader to remember the where.
       waived: false,

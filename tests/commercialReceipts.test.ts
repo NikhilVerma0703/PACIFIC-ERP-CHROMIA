@@ -10,7 +10,9 @@ import {
   fmtReceiptAmount, receiptNote, receiptTotals, canRecordReceipt,
   advanceStatus, advanceShortfall, advanceBadge, effectiveAdvancePct, pctOf, fmtPct, parseWaiverReason,
   ADVANCE_PCT_FALLBACK, canWaiveAdvance, countsTowardAdvance, advancePctChange,
+  RUPEES, usableRate, ratePerRupees, fmtRate, convertThroughRate, advanceReceiptCheck, type AdvanceRate,
 } from "../src/lib/commercial/receipts-rules.ts";
+import { invoiceAdvanceRate, exchangeRateRefusal } from "../src/lib/commercial/invoice-rules.ts";
 import { ORDER_STATUSES, isTerminal } from "../src/lib/commercial/stages.ts";
 import { DEFAULT_SETTINGS } from "../src/lib/commercial/settings-defaults.ts";
 
@@ -227,7 +229,7 @@ test("advanceStatus: short money refuses, and the reason names every figure (the
   );
 });
 
-test("advanceStatus: only ADVANCE receipts count, and only in the ORDER's currency", () => {
+test("advanceStatus: only ADVANCE receipts count, and — with no rate on file — only in the ORDER's currency", () => {
   const a = advanceStatus({
     receipts: [usd(9000, "CAD"), usd(5000, "BALANCE"), usd(2000, "OTHER"), usd(9000)],
     orderTotal: 30000, currency: "USD", advancePct: 30,
@@ -235,15 +237,19 @@ test("advanceStatus: only ADVANCE receipts count, and only in the ORDER's curren
   assert.equal(a.receivedAdvance, 9000, "CAD, balance and other money is recorded but is not the advance");
   assert.equal(a.satisfied, true);
 
-  // a receipt in another currency is SEEN and NOT counted — there is no FX table
+  // a receipt in another currency, with NO rate on the invoice, is SEEN and NOT
+  // counted — and the reason now names the rate that is missing rather than
+  // saying the module has no exchange table, because since round three's answer
+  // 10 it has one and typing it is the clerk's next move.
   const fx = advanceStatus({
     receipts: [usd(3000), usd(500000, "ADVANCE", "INR")],
     orderTotal: 30000, currency: "USD", advancePct: 30,
   });
   assert.equal(fx.receivedAdvance, 3000, "INR 500,000 is not silently converted into the USD figure");
   assert.equal(fx.satisfied, false);
-  assert.match(fx.reason ?? "", /INR 500,000\.00 was received as an advance in another currency and is not counted/);
-  assert.match(fx.reason ?? "", /no exchange table/);
+  assert.match(fx.reason ?? "", /INR 500,000\.00 is not the order's currency \(USD\)/);
+  assert.match(fx.reason ?? "", /no exchange rate is set on the order's invoice/);
+  assert.equal(fx.convertedAdvance, 0);
 
   // and it is still said even when the order-currency money is enough
   const enough = advanceStatus({
@@ -251,7 +257,7 @@ test("advanceStatus: only ADVANCE receipts count, and only in the ORDER's curren
     orderTotal: 30000, currency: "USD", advancePct: 30,
   });
   assert.equal(enough.satisfied, true);
-  assert.match(enough.reason ?? "", /is not counted/, "the clerk is told the money was seen, whichever way the gate went");
+  assert.match(enough.reason ?? "", /is not the order's currency/, "the clerk is told the money was seen, whichever way the gate went");
 
   // the comparison is case-insensitive on both sides
   const cased = advanceStatus({ receipts: [{ kind: "advance", amount: 9000, currency: "usd" }], orderTotal: 30000, currency: "usd", advancePct: 30 });
@@ -380,7 +386,7 @@ test("countsTowardAdvance and advanceStatus agree receipt by receipt", () => {
   const counted = rows.filter((r) => countsTowardAdvance(r, "USD")).reduce((t, r) => t + r.amount, 0);
   assert.equal(counted, 7000);
   assert.equal(a.receivedAdvance, counted, "the card's flag and the gate's arithmetic cannot drift");
-  assert.match(a.reason ?? "", /INR 500,000\.00 was received as an advance in another currency/);
+  assert.match(a.reason ?? "", /INR 500,000\.00 is not the order's currency \(USD\)/);
 });
 
 // ───────────────────── lowering the gate is the waiver's desk ────────────────
@@ -431,4 +437,225 @@ test("advancePctChange: an unreadable percentage fails CLOSED on both sides", ()
   assert.equal(advancePctChange(null, 30).ok, false, "unknown before means 100% before — 30 is a lowering");
   assert.equal(advancePctChange(30, "nonsense").ok, true, "unknown after means the fallback 100%, which is a raise");
   assert.equal(advancePctChange(ADVANCE_PCT_FALLBACK, 0).ok, false);
+});
+
+// ───────── the rate makes a foreign receipt count (round three, answer 10) ───
+// "Add exchange rate per invoice, manual." This REPLACES round two's answer 13
+// reading — same currency only — so the direction is pinned here BOTH ways and
+// in words, because a rate applied the wrong way round does not look wrong: it
+// looks like a truck that left on 1/88th of the advance.
+//
+// THE DIRECTION: `rate` is RUPEES PER ONE UNIT OF THE INVOICE CURRENCY.
+//   order in INR, receipt in USD   →  amount × rate
+//   order in USD, receipt in INR   →  amount ÷ rate
+
+const usdRate = (rate = 88.42, invoiceNumber: string | null = "PESPL/2780"): AdvanceRate =>
+  ({ rate, currency: "USD", at: "2026-09-09T06:00:00.000Z", invoiceNumber });
+
+test("usableRate / fmtRate: a rate that cannot convert anything is no rate at all", () => {
+  assert.equal(RUPEES, "INR");
+  assert.equal(usableRate(null), null);
+  assert.equal(usableRate({ rate: 0, currency: "USD" }), null, "zero would divide by zero one way and annihilate the money the other");
+  assert.equal(usableRate({ rate: -88, currency: "USD" }), null);
+  assert.equal(usableRate({ rate: 88.42, currency: "" }), null);
+  assert.equal(usableRate({ rate: 88.42, currency: "INR" }), null, "rupees per rupee says nothing");
+  assert.deepEqual(usableRate({ rate: "88.42", currency: " usd " } as unknown as AdvanceRate), { rate: 88.42, currency: "USD" });
+  assert.equal(fmtRate(usdRate()), "INR 88.42 per USD");
+});
+
+test("convertThroughRate: rupees per one unit of the invoice currency, both directions", () => {
+  const r = usdRate();
+  // order in rupees, money arrived in the invoice's currency → MULTIPLY
+  assert.equal(convertThroughRate(3000, "USD", "INR", r), 265260);
+  // order in the invoice's currency, money arrived in rupees → DIVIDE
+  assert.equal(convertThroughRate(265260, "INR", "USD", r), 3000);
+  // and the two are each other's inverse, which is the whole point
+  assert.equal(convertThroughRate(convertThroughRate(3000, "USD", "INR", r) as number, "INR", "USD", r), 3000);
+  // same currency needs no rate at all
+  assert.equal(convertThroughRate(3000, "USD", "USD", null), 3000);
+  assert.equal(convertThroughRate(3000, "usd", "USD", null), 3000, "case is not a different currency");
+  // a pair this rate is not about is refused, never guessed
+  assert.equal(convertThroughRate(3000, "EUR", "USD", r), null);
+  assert.equal(convertThroughRate(3000, "EUR", "INR", r), null);
+  assert.equal(convertThroughRate(3000, "USD", "INR", null), null);
+});
+
+test("advanceReceiptCheck: what counted, what did not, and why not by name", () => {
+  const r = usdRate();
+  const direct = advanceReceiptCheck({ kind: "ADVANCE", amount: 9000, currency: "USD" }, { orderCurrency: "USD", rate: r });
+  assert.deepEqual(direct, { counted: true, amount: 9000, via: "direct", reason: null });
+
+  const converted = advanceReceiptCheck({ kind: "ADVANCE", amount: 265260, currency: "INR" }, { orderCurrency: "USD", rate: r });
+  assert.equal(converted.counted, true);
+  assert.equal(converted.via, "converted");
+  assert.equal(converted.amount, 3000);
+  assert.match(converted.reason ?? "", /INR 265,260\.00 counts as USD 3,000\.00 at INR 88\.42 per USD, the rate on invoice PESPL\/2780\./);
+
+  // no rate on file: the refusal names the CURRENCY and the RATE that is missing
+  const noRate = advanceReceiptCheck({ kind: "ADVANCE", amount: 265260, currency: "INR" }, { orderCurrency: "USD" });
+  assert.equal(noRate.counted, false);
+  assert.equal(noRate.amount, 0);
+  assert.match(noRate.reason ?? "", /INR 265,260\.00 is not the order's currency \(USD\)/);
+  assert.match(noRate.reason ?? "", /no exchange rate is set on the order's invoice/);
+
+  // a rate on file that is not about this pair: named too, with the rate itself
+  const wrongPair = advanceReceiptCheck({ kind: "ADVANCE", amount: 4000, currency: "EUR" }, { orderCurrency: "USD", rate: r });
+  assert.equal(wrongPair.counted, false);
+  assert.match(wrongPair.reason ?? "", /EUR 4,000\.00 is not the order's currency \(USD\)/);
+  assert.match(wrongPair.reason ?? "", /invoice PESPL\/2780 — INR 88\.42 per USD — does not convert EUR/);
+
+  // money that is not an advance is not the advance's business, rate or no rate
+  assert.deepEqual(
+    advanceReceiptCheck({ kind: "CAD", amount: 265260, currency: "INR" }, { orderCurrency: "USD", rate: r }),
+    { counted: false, amount: 0, via: null, reason: null },
+  );
+});
+
+// A rate typed on a RUPEE invoice is quoted per rupee and converts nothing.
+// It has to be told apart from "no rate on the invoice", because that refusal
+// asks the clerk to type a rate — and here he already has, on a screen sitting
+// beside the card, and the invoice refuses to take another.
+test("ratePerRupees: a rate on a rupee invoice is named as such, not reported as a missing rate", () => {
+  assert.equal(ratePerRupees(null), false);
+  assert.equal(ratePerRupees({ rate: 88.42, currency: "USD" }), false, "this one converts; nothing to explain");
+  assert.equal(ratePerRupees({ rate: 88.42, currency: "INR" }), true);
+  assert.equal(ratePerRupees({ rate: 88.42, currency: "inr" }), true, "case is not a different currency");
+  assert.equal(ratePerRupees({ rate: 0, currency: "INR" }), false, "no rate was typed at all");
+  // usableRate discards both, which is why the two need telling apart here
+  assert.equal(usableRate({ rate: 88.42, currency: "INR" }), null);
+
+  const perRupee: AdvanceRate = { rate: 88.42, currency: "INR", at: null, invoiceNumber: "PESPL/N7/26-27" };
+  const c = advanceReceiptCheck({ kind: "ADVANCE", amount: 30000, currency: "USD" }, { orderCurrency: "INR", rate: perRupee });
+  assert.equal(c.counted, false);
+  assert.equal(c.amount, 0);
+  assert.match(c.reason ?? "", /USD 30,000\.00 is not the order's currency \(INR\)/);
+  assert.match(c.reason ?? "", /invoice PESPL\/N7\/26-27 is itself priced in INR/);
+  assert.match(c.reason ?? "", /a rate quoted per rupee converts nothing/);
+  assert.doesNotMatch(c.reason ?? "", /no exchange rate is set/, "he has typed one; the invoice screen shows it");
+
+  // and the whole gate says the same thing, because advanceStatus hands the
+  // per-receipt rule the rate AS TYPED rather than the usable one
+  const a = advanceStatus({
+    receipts: [{ kind: "ADVANCE", amount: 30000, currency: "USD" }],
+    orderTotal: 2652600, currency: "INR", advancePct: 100, rate: perRupee,
+  });
+  assert.equal(a.receivedAdvance, 0);
+  assert.equal(a.satisfied, false);
+  assert.equal(a.rate, null, "the exported rate is still the USABLE one — nothing converted");
+  assert.match(a.reason ?? "", /a rate quoted per rupee converts nothing/);
+
+  // the sentence and the invoice screen's refusal are about the same fact
+  assert.ok(exchangeRateRefusal("INR"), "the box that would have taken this rate is refused");
+});
+
+test("advanceStatus: an INR receipt against a USD export order now counts (this replaces round two, answer 13)", () => {
+  const r = usdRate();
+  // 30% of USD 30,000 is USD 9,000. Nothing arrived in USD; INR 795,780 did.
+  const a = advanceStatus({
+    receipts: [usd(795780, "ADVANCE", "INR")],
+    orderTotal: 30000, currency: "USD", advancePct: 30, rate: r,
+  });
+  assert.equal(a.receivedAdvance, 9000, "795,780 divided by 88.42");
+  assert.equal(a.convertedAdvance, 9000, "all of it arrived in another currency");
+  assert.equal(a.satisfied, true, "the truck may leave");
+  assert.match(a.reason ?? "", /counts as USD 9,000\.00 at INR 88\.42 per USD/);
+
+  // the same money with no rate on the invoice is the old answer, unchanged
+  const without = advanceStatus({ receipts: [usd(795780, "ADVANCE", "INR")], orderTotal: 30000, currency: "USD", advancePct: 30 });
+  assert.equal(without.receivedAdvance, 0);
+  assert.equal(without.satisfied, false);
+  assert.match(without.reason ?? "", /no exchange rate is set on the order's invoice/);
+});
+
+test("advanceStatus: the other direction — a USD receipt against a rupee order", () => {
+  // A domestic order priced in INR, 100% asked, USD money transferred against it.
+  const a = advanceStatus({
+    receipts: [usd(30000, "ADVANCE", "USD")],
+    orderTotal: 2652600, currency: "INR", advancePct: 100, rate: usdRate(),
+  });
+  assert.equal(a.receivedAdvance, 2652600, "30,000 times 88.42");
+  assert.equal(a.convertedAdvance, 2652600);
+  assert.equal(a.satisfied, true);
+});
+
+test("advanceStatus: a rate converts only the pair it is about; a third currency is still listed and refused", () => {
+  const a = advanceStatus({
+    receipts: [usd(3000), usd(88420, "ADVANCE", "INR"), usd(4000, "ADVANCE", "EUR")],
+    orderTotal: 30000, currency: "USD", advancePct: 30, rate: usdRate(),
+  });
+  assert.equal(a.receivedAdvance, 4000, "USD 3,000 direct plus INR 88,420 converted to USD 1,000");
+  assert.equal(a.convertedAdvance, 1000);
+  assert.equal(a.satisfied, false);
+  assert.match(a.reason ?? "", /does not convert EUR/);
+  assert.equal(advanceShortfall(a), 5000);
+});
+
+test("advanceStatus: the waiver is untouched by the rate (answer 12)", () => {
+  const waived = advanceStatus({
+    receipts: [usd(4000, "ADVANCE", "EUR")],
+    orderTotal: 30000, currency: "USD", advancePct: 30, waived: true, rate: usdRate(),
+  });
+  assert.equal(waived.satisfied, true);
+  assert.match(waived.reason ?? "", /^The advance was waived/);
+  // and the money that could not be converted is STILL said, so a waiver never
+  // hides a receipt nobody has reconciled
+  assert.match(waived.reason ?? "", /does not convert EUR/);
+
+  // a waiver with no receipts at all reads exactly as it did before answer 10
+  const bare = advanceStatus({ receipts: [], orderTotal: 30000, currency: "USD", advancePct: 30, waived: true, rate: usdRate() });
+  assert.equal(bare.reason, "The advance was waived — this order may be dispatched without it.");
+  assert.equal(advanceBadge(bare, "USD"), "Advance waived");
+});
+
+test("countsTowardAdvance is advanceReceiptCheck, so the card and the gate stay one question", () => {
+  const r = usdRate();
+  const rows = [
+    { kind: "ADVANCE", amount: 3000, currency: "USD" },
+    { kind: "ADVANCE", amount: 88420, currency: "INR" },
+    { kind: "ADVANCE", amount: 4000, currency: "EUR" },
+    { kind: "CAD", amount: 9000, currency: "USD" },
+  ];
+  const a = advanceStatus({ receipts: rows, orderTotal: 30000, currency: "USD", advancePct: 30, rate: r });
+  const counted = rows.filter((x) => countsTowardAdvance(x, "USD", r))
+    .reduce((t, x) => t + advanceReceiptCheck(x, { orderCurrency: "USD", rate: r }).amount, 0);
+  assert.equal(a.receivedAdvance, counted);
+  // and asked WITHOUT a rate it is the pre-answer-10 predicate, exactly
+  assert.equal(countsTowardAdvance({ kind: "ADVANCE", currency: "INR" }, "USD"), false);
+  assert.equal(countsTowardAdvance({ kind: "ADVANCE", currency: "INR" }, "USD", r), true);
+});
+
+// ───────────── the join: the invoice's rate reaches the gate ─────────────────
+// invoiceAdvanceRate reads the rate off the order's live invoice and hands it
+// to advanceStatus. Checked together because a rate that never leaves the
+// invoice screen is exactly the state answer 10 was answering.
+
+test("invoiceAdvanceRate: the live invoice's rate, and nothing from a cancelled one", () => {
+  const inv = (over: Record<string, unknown> = {}) => ({
+    status: "ISSUED", number: "PESPL/2780", currency: "USD",
+    exchangeRate: 88.42, exchangeRateAt: "2026-09-09T06:00:00.000Z", ...over,
+  });
+  assert.deepEqual(invoiceAdvanceRate([inv()]), {
+    rate: 88.42, currency: "USD", at: "2026-09-09T06:00:00.000Z", invoiceNumber: "PESPL/2780",
+  });
+  // answer 18 leaves one live invoice; a cancelled one lends nothing (the same
+  // rule refuseCreate uses, so "the order's invoice" means one thing)
+  assert.equal(invoiceAdvanceRate([inv({ status: "CANCELLED" })]), null);
+  assert.equal(invoiceAdvanceRate([]), null);
+  assert.equal(invoiceAdvanceRate(null), null);
+  // a rate box never filled is the same situation as no invoice: type a rate
+  assert.equal(invoiceAdvanceRate([inv({ exchangeRate: null })]), null);
+  assert.equal(invoiceAdvanceRate([inv({ currency: null })]), null);
+  // an UNDATED rate still converts — the stamp is what the screens complain
+  // about, not what the arithmetic waits for
+  assert.equal(invoiceAdvanceRate([inv({ exchangeRateAt: null })])?.rate, 88.42);
+  assert.equal(invoiceAdvanceRate([inv({ exchangeRateAt: null })])?.at, null);
+
+  // and end to end: the invoice's rate is what settles the order's advance
+  const rate = invoiceAdvanceRate([inv()]);
+  const a = advanceStatus({
+    receipts: [{ kind: "ADVANCE", amount: 795780, currency: "INR" }],
+    orderTotal: 30000, currency: "USD", advancePct: 30, rate,
+  });
+  assert.equal(a.satisfied, true);
+  assert.equal(a.receivedAdvance, 9000);
 });

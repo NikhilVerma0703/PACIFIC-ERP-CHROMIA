@@ -4,16 +4,22 @@
 //      { kind, amount, currency?, receivedAt, mode?, reference?, notes? }
 //
 // Answer 29: advance and CAD receipts are recorded here. Answer 2 and round
-// two answer 11: the ADVANCE money in the ORDER's currency, measured against
-// the percentage the order asks for, is what lets a packing list dispatch —
-// which is why the body goes through receipts-rules before it touches the row.
-// The amount and the currency are the figures the gate does arithmetic on. A
-// terminal order (CLOSED / CANCELLED) 409s.
+// two answer 11: the ADVANCE money, measured against the percentage the order
+// asks for, is what lets a packing list dispatch — which is why the body goes
+// through receipts-rules before it touches the row. The amount and the currency
+// are the figures the gate does arithmetic on. A terminal order (CLOSED /
+// CANCELLED) 409s.
+//
+// Round three, answer 10: money in ANOTHER currency now counts too, converted
+// through the manual rate on the order's live invoice. The advance returned
+// with every reply is therefore worked out by ./_lib's advanceWithRate, which
+// is advanceOf plus that rate.
 import { commercialGate, actorStamp } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain, paramId, dateOnly } from "@/lib/commercial/http";
 import { logOrderEvent } from "@/lib/commercial/events";
 import { parseReceipt, receiptNote, todayIst, canRecordReceipt } from "@/lib/commercial/receipts-rules";
-import { advanceOf, db, loadOrderWithItems } from "../../_lib";
+import { db, loadOrderWithItems } from "../../_lib";
+import { advanceWithRate } from "./_lib";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -29,7 +35,7 @@ export async function GET(_req: Request, { params }: Ctx) {
     const id = await paramId(params);
     const order = await loadOrderWithItems(id);
     const items = await db.commercialReceipt.findMany({ where: { orderId: id }, orderBy: RECEIPTS_ORDER });
-    return json(plain({ items, advance: await advanceOf(order, order.items, items) }));
+    return json(plain({ items, advance: await advanceWithRate(order, order.items, items) }));
   });
 }
 
@@ -64,6 +70,6 @@ export async function POST(req: Request, { params }: Ctx) {
       payload: { receiptId: row.id, kind: r.kind, amount: r.amount, currency: r.currency, receivedAt: r.receivedAt, mode: r.mode, reference: r.reference },
     });
     const items = await db.commercialReceipt.findMany({ where: { orderId: id }, orderBy: RECEIPTS_ORDER });
-    return json(plain({ receipt: row, items, advance: await advanceOf(order, order.items, items) }), 201);
+    return json(plain({ receipt: row, items, advance: await advanceWithRate(order, order.items, items) }), 201);
   });
 }

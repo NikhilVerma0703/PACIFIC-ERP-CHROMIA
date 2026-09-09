@@ -58,6 +58,11 @@ export async function PATCH(req: Request, { params }: Ctx) {
       }
       fail(409, res.reason);
     }
-    return json(plain({ status: res.status, order: await loadOrderDetail(id) }));
+    // Round three, answer 6: closing an order dispatches whatever is still
+    // reserved against it. moveOrder has already done it and logged it; the
+    // report rides back so the screen that asked for the close can SAY what
+    // moved instead of the clerk finding out from the log. Absent on every
+    // other move, and absent on a close that swept nothing readable.
+    return json(plain({ status: res.status, autoDispatch: res.autoDispatch ?? null, order: await loadOrderDetail(id) }));
   });
 }

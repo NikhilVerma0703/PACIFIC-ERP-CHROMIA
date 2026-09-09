@@ -318,6 +318,156 @@ export function bankChangeRefusal(actions: ReadonlyArray<string> | null | undefi
   return mayChangeInvoiceBank(actions) ? null : BANK_FOLLOWS_PI;
 }
 
+// ────────── the manual exchange rate per invoice (round three, answer 10) ────
+// "Add exchange rate per invoice, manual." The column has been on the row since
+// scripts/0076; what answer 10 adds is that the rate is now LOAD-BEARING — a
+// receipt in another currency is measured against the advance through it
+// (receipts-rules.advanceReceiptCheck) — and that it is STAMPED.
+//
+// WHY THE STAMP. A rate is a fact about a day. Six months later, "88.42" with
+// no date beside it cannot be defended to an auditor, to the bank, or to the
+// customer who asks why his INR transfer covered 27% and not 30%. exchangeRateAt
+// (scripts/0081) is written every time the figure changes, and the before and
+// after go into invoice_edited, so the rate that opened a truck is recoverable.
+
+/** Who may retype the rate once the invoice is no longer a draft (answer 10),
+ *  named in the refusal so the clerk knows whose door to knock on. */
+export const EXCHANGE_RATE_DESK = "The exchange rate on an issued invoice is the Commercial Manager's or an admin's to change";
+
+/** What the screens say about a rate that carries no date. Answer 10's stamp
+ *  exists to prevent exactly this, and a row drafted before the stamp existed —
+ *  or created with the order's rate copied in — still shows it. */
+export const RATE_UNDATED = "This rate carries no date. Retype it to stamp it — an undated rate cannot be defended later";
+
+/** The currency an invoice of this kind is raised in. A DTA is a rupee
+ *  document; an export one takes the order's currency, USD where the order
+ *  names none. Stated once here because the screens have to predict it for a
+ *  draft that does not exist yet (the rate box below), and buildInvoiceSnapshot
+ *  must decide it identically for the row that is written. */
+export function invoiceCurrencyFor(kind: InvoiceKind, orderCurrency: unknown): string {
+  return (kind === "EXPORT" ? (printable(orderCurrency) || "USD") : "INR").toUpperCase();
+}
+
+/**
+ * Why the exchange-rate box is refused on THIS invoice, or null when it may be
+ * typed (round three, answer 10).
+ *
+ * THE RATE IS QUOTED PER ONE UNIT OF THE INVOICE'S CURRENCY — "rupees per one
+ * USD". On an invoice priced in rupees that reads "rupees per rupee", which is
+ * not a rate: receipts-rules.usableRate discards it, so a figure typed there
+ * converts nothing and the receipts card would go on saying the advance has no
+ * rate while the invoice screen showed one. The box is DISABLED WITH THIS
+ * SENTENCE rather than hidden, and the create route refuses a rate sent with a
+ * rupee invoice for the same reason.
+ */
+export function exchangeRateRefusal(currency: unknown): string | null {
+  return printable(currency).toUpperCase() === "INR"
+    ? "This invoice is priced in rupees, so there is nothing to convert — the rate is rupees per one unit of a foreign currency. Raise the invoice in the currency the money arrives in, or record the receipt in rupees"
+    : null;
+}
+
+/**
+ * What the PDF and the export workbook actually print, when that is NOT the
+ * working figure on the row — null when the two agree and there is nothing to
+ * disclose.
+ *
+ * WHY THE TWO CAN DIFFER: a rate-only PATCH on an ISSUED invoice deliberately
+ * leaves the frozen snapshot alone (the customer holds that paper), so after
+ * the manager retypes the rate the row and the document disagree by design.
+ * Every screen that shows the row's figure says the document's beside it, so
+ * the page never shows one number where the paper holds another.
+ */
+export function printedRateNote(rowRate: unknown, snapRate: unknown, currency: string): string | null {
+  if (sameExchangeRate(rowRate, snapRate)) return null;
+  const c = printable(currency).toUpperCase() || "—";
+  const printed = snapRate === null || snapRate === undefined || snapRate === ""
+    ? "no exchange rate"
+    : `INR ${round4(toNumber(snapRate, 0))} per ${c}`;
+  return `The document prints ${printed}; this is the working figure since.`;
+}
+
+export type ExchangeRateParse = { ok: true; value: number | null } | { ok: false; error: string };
+
+/**
+ * The rate a body typed, or the one thing wrong with it. A blank CLEARS it —
+ * a nullable column where null means "no rate agreed" — while a zero or a
+ * negative is a slipped key, not a rate, and is refused rather than stored: at
+ * 0 the conversion the advance runs would divide by zero one way round and
+ * annihilate the money the other.
+ */
+export function parseExchangeRate(v: unknown): ExchangeRateParse {
+  if (v === null || v === undefined || (typeof v === "string" && !v.trim())) return { ok: true, value: null };
+  const raw = typeof v === "number" ? v : Number(String(v).replace(/,/g, "").trim());
+  if (!Number.isFinite(raw)) return { ok: false, error: "The exchange rate must be a number, or blank for no rate" };
+  if (raw <= 0) return { ok: false, error: "The exchange rate must be more than zero" };
+  const n = round4(raw);
+  if (n <= 0) return { ok: false, error: "The exchange rate must be more than zero" };
+  if (n >= 100_000_000) return { ok: false, error: "The exchange rate is too large — 4 decimals and at most 8 digits before them" };
+  return { ok: true, value: n };
+}
+
+/** Two rates as the column stores them, compared: a re-typed 88.4200 over an
+ *  88.42 is not a change and must not restamp the date or write a log line. */
+export function sameExchangeRate(a: unknown, b: unknown): boolean {
+  const x = a === null || a === undefined || a === "" ? null : round4(toNumber(a, NaN));
+  const y = b === null || b === undefined || b === "" ? null : round4(toNumber(b, NaN));
+  if (x === null || y === null) return x === y;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+  return x === y;
+}
+
+/**
+ * May THIS login change the rate on an invoice in THIS status (answer 10)?
+ * While it is a draft, anyone who may write invoices — it is one of the fields
+ * being prepared. Once it is issued the document is out and the rate on it is
+ * a figure the customer and the bank have seen, so retyping it is the same desk
+ * that cancels the invoice (`cancel`: the manager and an admin, answer 24).
+ * A cancelled invoice is history and takes no edits from anybody.
+ */
+export function mayEditExchangeRate(status: string, actions: ReadonlyArray<string> | null | undefined): { ok: true } | { ok: false; reason: string } {
+  const s = String(status ?? "").toUpperCase();
+  const acts = actions ?? [];
+  if (s === "CANCELLED") return { ok: false, reason: "This invoice is cancelled — nothing on it can be changed" };
+  if (canEditInvoice(s)) {
+    return acts.includes("write") ? { ok: true } : { ok: false, reason: "Not available for this login." };
+  }
+  return acts.includes("cancel") ? { ok: true } : { ok: false, reason: EXCHANGE_RATE_DESK };
+}
+
+/** The invoice_edited tail for a rate change — by value, both ends, because
+ *  "fields: [exchangeRate]" says nothing an auditor can use. */
+export function exchangeRateNote(from: unknown, to: unknown): string {
+  const say = (v: unknown): string => (v === null || v === undefined || v === "" ? "none" : String(round4(toNumber(v, 0))));
+  return `exchange rate ${say(from)} → ${say(to)}`;
+}
+
+/** The invoice whose rate the order's advance is measured through: the one
+ *  that is not cancelled (answer 18 leaves at most one). The same rule
+ *  refuseCreate uses, so "the order's invoice" means one thing everywhere. */
+export function liveInvoiceOf<T extends { status: string }>(invoices: ReadonlyArray<T> | null | undefined): T | null {
+  return openInvoiceOf(invoices);
+}
+
+/**
+ * The rate the advance is converted through (answer 10), read off the order's
+ * live invoice, or null when there is none to read. Null covers all three ways
+ * of having no rate — no invoice, a cancelled one, and an invoice whose rate
+ * box was never filled — because to the clerk they are one situation: type a
+ * rate on the invoice.
+ */
+export function invoiceAdvanceRate(
+  invoices: ReadonlyArray<{ status: string; number?: string | null; currency?: string | null; exchangeRate?: unknown; exchangeRateAt?: string | Date | null }> | null | undefined,
+): { rate: number; currency: string; at: string | null; invoiceNumber: string | null } | null {
+  const inv = liveInvoiceOf(invoices);
+  if (!inv) return null;
+  const parsed = parseExchangeRate(inv.exchangeRate ?? null);
+  if (!parsed.ok || parsed.value === null) return null;
+  const currency = printable(inv.currency).toUpperCase();
+  if (!currency) return null;
+  const at = inv.exchangeRateAt ? new Date(inv.exchangeRateAt).toISOString() : null;
+  return { rate: parsed.value, currency, at, invoiceNumber: printable(inv.number) || null };
+}
+
 // ───────────────────── design codes on the lines (answer 20) ─────────────────
 
 /** design → its code from commercial_design_code; null when the row has none. */
@@ -1092,7 +1242,7 @@ export function buildInvoiceSnapshot(
   opts: InvoiceSnapshotOptions,
 ): InvoiceDocSnapshot {
   const isExport = kind === "EXPORT";
-  const currency = (isExport ? (printable(order.currency) || "USD") : "INR").toUpperCase();
+  const currency = invoiceCurrencyFor(kind, order.currency);
   const client = order.client ?? null;
   const ext = client?.commercialExt ?? null;
 

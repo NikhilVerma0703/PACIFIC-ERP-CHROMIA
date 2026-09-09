@@ -331,6 +331,12 @@ export interface AdvanceStatusDto {
   satisfied: boolean;
   reason: string | null;
   waived: boolean;
+  /** Round three, answer 10: the rate the advance was measured through, and
+   *  what the foreign receipts came to in the order's currency. Both are
+   *  serialised by advanceOf, so the card can say WHY a figure counted —
+   *  reading them through a cast was the screen guessing at its own data. */
+  rate?: { rate: number; currency: string; invoiceNumber: string | null; at: string | null } | null;
+  convertedAdvance?: number;
 }
 
 export interface ProformaDto {
@@ -398,6 +404,34 @@ export interface PackedSlabDto {
   sortOrder: number;
 }
 
+/**
+ * A cut-to-size line (round three, answer 5): a PIECE cut to the customer's
+ * size, not a slab. Sizes are MILLIMETRES whatever the list prints in — his
+ * workbooks carry millimetres under headings reading "SIZE(Inches)" and
+ * "SIZE(IN CM)", so the store is explicit and only the printed unit follows
+ * the list's measurementUnit.
+ */
+export interface PackedPieceDto {
+  id: string;
+  crateId: string | null;
+  /** As printed on his sheet ("1", "1A") — not always one of our crate rows. */
+  crateNo: string | null;
+  drawingNo: string | null;
+  pieceNo: string | null;
+  design: string;
+  lengthMm: number | null;
+  widthMm: number | null;
+  thicknessMm: number | null;
+  /** The LINE's area, quantity included — his TOTAL row adds this column. */
+  sqft: number | null;
+  quantity: number;
+  /** BUILDING / AREA on his sheets: "KITCHEN", "BATH ROOM VANITY". */
+  room: string | null;
+  /** The line's weight, quantity included. */
+  weightKg: number | null;
+  notes: string | null;
+}
+
 export interface PackingListDto {
   id: string;
   orderId: string;
@@ -424,6 +458,8 @@ export interface PackingListDto {
   createdAt: string;
   crates: CrateDto[];
   slabs: PackedSlabDto[];
+  /** The second kind of line (round three, answer 5). A list may hold both. */
+  pieces: PackedPieceDto[];
 }
 
 export interface InvoiceDto {
@@ -479,6 +515,28 @@ export interface ChallanDto {
   status: "DRAFT" | "ISSUED" | "CANCELLED";
   issuedAt: string | null;
   createdAt: string;
+}
+
+/**
+ * One line of the order's task list (round three, answers 7 and 8): the
+ * outside work — container booking, CHA, the BL draft, COO, CEFA, fumigation,
+ * TiO2, the RFID lock, container pictures, the shipping documents, the Daltile
+ * upload, the ETA sheet; transport booking, transporter bills and the e-way
+ * bill on a domestic order — as a tick, a date and a note.
+ *
+ * `taskKey` is the stable one. A task that later becomes this module's own
+ * screen hangs off the row already sitting on the order, so the key survives
+ * every rewording of the label.
+ */
+export interface OrderTaskDto {
+  id: string;
+  taskKey: string;
+  label: string;
+  status: "PENDING" | "DONE" | "NOT_REQUIRED";
+  doneAt: string | null;
+  doneByName: string | null;
+  note: string | null;
+  sortOrder: number;
 }
 
 export interface OrderEventDto {
@@ -568,6 +626,9 @@ export interface OrderDetail {
   packingLists: PackingListDto[];
   invoices: InvoiceDto[];
   challans: ChallanDto[];
+  /** Answers 7 and 8. Empty until the tasks route seeds the defaults for the
+   *  order's kind on its first read — an order nobody has opened has none. */
+  tasks: OrderTaskDto[];
   events: OrderEventDto[];
 }
 

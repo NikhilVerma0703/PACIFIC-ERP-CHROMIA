@@ -12,6 +12,7 @@
 // disabled fieldset inerts every control inside, the Find box included, so a
 // login with `view` could not look a code up — the one thing it is here to do.
 import type { Metadata } from "next";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { commercialGate } from "@/lib/commercial/access";
 import { areaAccessFor } from "@/lib/commercial/access-rules";
@@ -35,6 +36,19 @@ export default async function CommercialDesignCodesPage() {
           One row per design: the owner&apos;s item code (answer 20), printed on order lines and export documents, the shade
           the production queue sequences by (answer 13), and the colour read off the sample — name, L*a*b* and the swatch
           the sequencing rule measures a changeover by (round two, answers 14 and 15).
+        </p>
+        {/* THE WAY IN TO THE ARTICLE LIST (round three, answer 4). This master
+            is one row per DESIGN and is ours; an article is the same design at
+            ONE SIZE seen from the customer's side — their item code, their
+            description, their EAN-13 — and there were twelve of them for one
+            design in the file the owner sent. The two screens gate the same
+            area, and the desk that fills this one fills that one, so the link
+            belongs here: without it the article screen has no entry point at
+            all and every crate label goes out without a barcode. */}
+        <p className="mt-2 text-sm text-gray-500">
+          The customer&apos;s own item codes, descriptions and barcodes — one row per design AND size, and the crate and
+          piece labels that print off them — are on the{" "}
+          <Link className="underline" href="/office/commercial/articles">customer article list</Link>.
         </p>
       </div>
       <Card>

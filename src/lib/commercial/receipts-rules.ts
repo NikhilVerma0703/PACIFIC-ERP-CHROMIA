@@ -277,18 +277,180 @@ export interface AdvanceReceiptLike {
  *  quietly counted against an order that has none either. */
 const orderCur = (v: unknown): string => cur(v) || "—";
 
+// ───────────── the rate that makes a foreign receipt count ──────────────────
+// Round three, answer 10: "add exchange rate per invoice, manual." The rate is
+// not decoration. It REPLACES round two's answer 13 reading — "same currency
+// only" — so an INR receipt against a USD export PI now counts toward the
+// advance, converted through the rate the order's live invoice carries.
+//
+// THE DIRECTION, ONCE, IN WORDS: `rate` is RUPEES PER ONE UNIT OF THE INVOICE
+// CURRENCY. USD 1 = INR 88.4200 is a rate of 88.42 on an invoice whose currency
+// is USD. That is how the desk types it and how the export invoice prints it
+// ("Exchange Rate : 88.42"), so nothing is inverted on the way in and nobody
+// has to remember which way round the box means. Everything follows:
+//
+//     order in rupees, receipt in the invoice's currency   →  amount × rate
+//     order in the invoice's currency, receipt in rupees   →  amount ÷ rate
+//
+// Any OTHER pair — two foreign currencies, or a receipt in a third currency —
+// is not convertible from one rate and is refused rather than guessed. A truck
+// must not leave on a number nobody typed.
+
+/** The currency an invoice's exchange rate is quoted INTO (answer 10). */
+export const RUPEES = "INR";
+
+/** The rate on the order's live invoice, as everything below reads it. */
+export interface AdvanceRate {
+  /** Rupees per ONE unit of `currency`. */
+  rate: number;
+  /** The INVOICE's currency — the unit the rate is quoted per. */
+  currency: string;
+  /** `exchangeRateAt`: when the rate was typed. A rate with no date still
+   *  converts; the screens say it was never stamped. */
+  at?: string | null;
+  /** The invoice it was read off, so a refusal or a conversion can name it. */
+  invoiceNumber?: string | null;
+}
+
 /**
- * Does this receipt add to the advance the gate measures (answer 11)? An
- * ADVANCE receipt in the ORDER's own currency, compared case-blind — "usd" and
- * "USD" are one currency, and a receipt typed in lower case must not read as
- * money in a different one.
+ * A rate that can actually convert something, normalised, or null. A rate of
+ * zero or less converts nothing (and would divide by zero the other way), and
+ * "rupees per rupee" says nothing at all — both are a half-filled box, not an
+ * agreed figure.
+ */
+export function usableRate(r: AdvanceRate | null | undefined): AdvanceRate | null {
+  if (!r) return null;
+  const n = money(r.rate);
+  const c = cur(r.currency);
+  if (n === null || n <= 0 || !c || c === RUPEES) return null;
+  return { ...r, rate: n, currency: c };
+}
+
+/**
+ * A rate IS on file, and it is quoted per RUPEE — the invoice itself is priced
+ * in INR, so "rupees per rupee" converts nothing (answer 10 quotes the rate per
+ * one unit of the invoice's currency).
  *
- * Exported because the receipts card flags the receipts this returns false for:
+ * WHY THIS IS ITS OWN QUESTION: usableRate answers null for this and for an
+ * invoice whose rate box was never filled, and the two send the clerk to
+ * DIFFERENT places. "Type the rate on the invoice" is followable when there is
+ * no rate; said to a manager who has already typed one it is a refusal he can
+ * only obey by retyping the same figure and getting the same answer. The rate
+ * box is refused on a rupee invoice for exactly this reason
+ * (invoice-rules.exchangeRateRefusal), and the sentence below says so.
+ */
+export function ratePerRupees(r: AdvanceRate | null | undefined): boolean {
+  if (!r) return false;
+  const n = money(r.rate);
+  return n !== null && n > 0 && cur(r.currency) === RUPEES;
+}
+
+/** "INR 88.42 per USD" — the rate as every refusal and every note prints it. */
+export function fmtRate(r: AdvanceRate): string {
+  return `${RUPEES} ${Number(r.rate.toFixed(4))} per ${cur(r.currency)}`;
+}
+
+/** Where the rate came from, for the sentence that names it. */
+function rateSource(r: AdvanceRate): string {
+  return r.invoiceNumber ? `invoice ${r.invoiceNumber}` : "the order's invoice";
+}
+
+/**
+ * `amount` of `from` expressed in `to` through ONE invoice rate, or null when
+ * this is not the pair that rate is about. Same currency both sides is the
+ * trivial conversion and needs no rate at all.
+ */
+export function convertThroughRate(amount: number, from: string, to: string, rate: AdvanceRate | null | undefined): number | null {
+  const f = cur(from), t = cur(to);
+  const n = money(amount);
+  if (!f || !t || n === null) return null;
+  if (f === t) return round2(n);
+  const r = usableRate(rate);
+  if (!r) return null;
+  if (t === RUPEES && f === r.currency) return round2(n * r.rate);
+  if (f === RUPEES && t === r.currency) return round2(n / r.rate);
+  return null;
+}
+
+/** One receipt, weighed against the advance. */
+export interface AdvanceReceiptCheck {
+  counted: boolean;
+  /** What it adds to the advance, IN THE ORDER'S CURRENCY. 0 when nothing. */
+  amount: number;
+  /** How it got there: in the order's own currency, or through the rate. */
+  via: "direct" | "converted" | null;
+  /** The conversion in words when it counted through a rate, and the refusal —
+   *  naming the currency and the rate that is missing — when it did not. Null
+   *  for a receipt that simply arrived in the order's own currency, and for
+   *  money that is not an advance at all. */
+  reason: string | null;
+}
+
+/**
+ * Does this receipt add to the advance the gate measures (answers 11 and 10)?
+ * An ADVANCE receipt in the ORDER's own currency, compared case-blind — "usd"
+ * and "USD" are one currency — or one the invoice's rate can convert into it.
+ *
+ * Exported because the receipts card prints exactly this, receipt by receipt:
  * the screen's "not counted" note and advanceStatus's arithmetic have to be the
  * SAME question, or the card says a receipt counts while the truck stands.
  */
-export function countsTowardAdvance(r: { kind: string; currency: string }, orderCurrency: string): boolean {
-  return cur(r.kind) === "ADVANCE" && cur(r.currency) === orderCur(orderCurrency);
+export function advanceReceiptCheck(
+  r: { kind: string; amount?: unknown; currency: string },
+  ctx: { orderCurrency: string; rate?: AdvanceRate | null },
+): AdvanceReceiptCheck {
+  const none: AdvanceReceiptCheck = { counted: false, amount: 0, via: null, reason: null };
+  if (cur(r.kind) !== "ADVANCE") return none;
+  const to = orderCur(ctx.orderCurrency);
+  const from = cur(r.currency) || "—";
+  const amount = money(r.amount) ?? 0;
+  if (from === to) {
+    // An order with no currency has nothing to count money in, so a receipt
+    // with no currency does not quietly count against it: orderCur makes both
+    // "—", and "—" is refused here rather than matched.
+    if (to === "—") return { ...none, reason: `This order has no currency, so nothing can be counted toward its advance.` };
+    return { counted: true, amount: round2(amount), via: "direct", reason: null };
+  }
+  const rate = usableRate(ctx.rate);
+  if (!rate) {
+    // The rate is there but quoted per rupee (the invoice is priced in INR):
+    // saying "no exchange rate is set" would be contradicted by the invoice
+    // screen sitting beside this card, and the move it asks for — type the rate
+    // — is one the clerk has already made and the invoice screen refuses.
+    if (ratePerRupees(ctx.rate)) {
+      return {
+        ...none,
+        reason: `${fmtReceiptAmount(amount, from)} is not the order's currency (${to}), and ${rateSource(ctx.rate!)} is itself priced in ${RUPEES} — a rate quoted per rupee converts nothing. Record the money in ${to}, raise the invoice in the currency the money arrived in, or waive the advance.`,
+      };
+    }
+    return {
+      ...none,
+      reason: `${fmtReceiptAmount(amount, from)} is not the order's currency (${to}) and no exchange rate is set on the order's invoice — type the rate on the invoice, record the money in ${to}, or waive the advance.`,
+    };
+  }
+  const converted = convertThroughRate(amount, from, to, rate);
+  if (converted === null) {
+    return {
+      ...none,
+      reason: `${fmtReceiptAmount(amount, from)} is not the order's currency (${to}), and the rate on ${rateSource(rate)} — ${fmtRate(rate)} — does not convert ${from}; record the money in ${to}, or waive the advance.`,
+    };
+  }
+  return {
+    counted: true,
+    amount: converted,
+    via: "converted",
+    reason: `${fmtReceiptAmount(amount, from)} counts as ${fmtReceiptAmount(converted, to)} at ${fmtRate(rate)}, the rate on ${rateSource(rate)}.`,
+  };
+}
+
+/**
+ * The old boolean, kept for the callers that ask the question without a rate.
+ * It is the SAME function with no rate on file, never a second comparison —
+ * that is how the card's flag and the gate's arithmetic were made to agree in
+ * the first place, and adding the rate must not undo it.
+ */
+export function countsTowardAdvance(r: { kind: string; currency: string }, orderCurrency: string, rate?: AdvanceRate | null): boolean {
+  return advanceReceiptCheck(r, { orderCurrency, rate }).counted;
 }
 
 export interface AdvanceInput {
@@ -302,37 +464,62 @@ export interface AdvanceInput {
   advancePct: unknown;
   /** answer 12: the manager let this one go. */
   waived?: boolean | null;
+  /** Round three, answer 10: the manual rate on the order's live invoice.
+   *  Absent or unusable and the module behaves exactly as it did before the
+   *  answer — foreign advance money is listed and not counted. */
+  rate?: AdvanceRate | null;
 }
 
 export interface AdvanceStatus {
   /** The money that must be in, in the order currency. 0 when nothing is
    *  asked, and 0 when the order has no total to take a share of. */
   required: number;
-  /** ADVANCE receipts in the ORDER currency. Money in any other currency is
-   *  deliberately not here — see `reason`. */
+  /** ADVANCE money measured in the ORDER's currency: what arrived in it, plus
+   *  whatever the invoice's rate could convert into it (answer 10). Money in a
+   *  currency the rate does not reach is deliberately not here — see `reason`. */
   receivedAdvance: number;
   /** The percentage asked (answer 11), after the settings default. */
   pct: number;
   satisfied: boolean;
   /** One sentence about the state: what is missing, or what qualifies a
-   *  satisfied answer (a waiver, or advance money in another currency that
-   *  could not be counted). Null when the money is simply in. */
+   *  satisfied answer (a waiver, foreign money converted through the invoice's
+   *  rate, or foreign money that could not be). Null when the money is simply
+   *  in, in the order's own currency. */
   reason: string | null;
   waived: boolean;
+  /** How much of `receivedAdvance` arrived in another currency and was
+   *  converted (answer 10). Optional so a reader written before the rate
+   *  existed still type-checks; 0 when nothing was converted. */
+  convertedAdvance?: number;
+  /** The rate that did the converting, when one was used. */
+  rate?: AdvanceRate | null;
 }
 
-/** Advance money in a currency that is not the order's, summed per currency.
- *  It is NOT converted: this module has no exchange table, and a rate invented
- *  here would open a truck on a number nobody agreed. */
-function uncountedNote(rows: ReadonlyArray<AdvanceReceiptLike>): string {
+/**
+ * Advance money summed per currency and put through the SAME per-receipt rule,
+ * so the wording on the card's row and the wording in the summary cannot say
+ * different things about the same money.
+ *
+ * ONE helper for both halves of the sentence — the foreign money that WAS
+ * converted (said once, so a satisfied gate still shows what satisfied it) and
+ * the money that could NOT be counted, whose reason names the rate that is
+ * missing rather than claiming the module has no exchange table: since answer
+ * 10 it has one, and the clerk's next move is to type it on the invoice.
+ * They were two byte-identical functions; one would have been reworded and the
+ * other left, and the two halves of one sentence would have stopped matching.
+ */
+function noteFor(rows: ReadonlyArray<AdvanceReceiptLike>, ctx: { orderCurrency: string; rate?: AdvanceRate | null }): string {
   if (!rows.length) return "";
   const by = new Map<string, number>();
   for (const r of rows) {
     const c = cur(r.currency) || "—";
     by.set(c, round2((by.get(c) ?? 0) + (money(r.amount) ?? 0)));
   }
-  const listed = Array.from(by.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([c, n]) => fmtReceiptAmount(n, c)).join(" and ");
-  return `${listed} was received as an advance in another currency and is not counted — this module has no exchange table.`;
+  return Array.from(by.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([c, n]) => advanceReceiptCheck({ kind: "ADVANCE", amount: n, currency: c }, ctx).reason)
+    .filter((s): s is string => Boolean(s))
+    .join(" ");
 }
 
 const sentence = (...parts: Array<string | null | undefined>): string | null => {
@@ -346,11 +533,13 @@ const sentence = (...parts: Array<string | null | undefined>): string | null => 
  *
  * THREE THINGS THIS DELIBERATELY REFUSES TO GUESS:
  *
- *   a receipt in another currency — listed on the card, never added in. There
- *   is no FX table in this module, so USD 3,000 and INR 250,000 cannot be one
- *   figure; the reason says the money was seen and not counted, which is the
- *   honest answer and the one a clerk can act on (record it in the order's
- *   currency, or waive).
+ *   a receipt in a currency the rate does not reach — listed on the card, never
+ *   added in. Round three, answer 10 gave the module ONE rate, the manual one
+ *   on the order's live invoice, and it converts exactly the pair it is about
+ *   (rupees ↔ the invoice's currency). Anything else — two foreign currencies,
+ *   or an invoice with no rate typed yet — is money that was seen and not
+ *   counted, and the reason says which rate is missing, which is the honest
+ *   answer and the one a clerk can act on.
  *
  *   an order with no total — a percentage of nothing is nothing, and treating
  *   it as "0 required, therefore satisfied" would open dispatch on every
@@ -364,17 +553,27 @@ export function advanceStatus(input: AdvanceInput): AdvanceStatus {
   const currency = orderCur(input.currency);
   const waived = Boolean(input.waived);
   const pct = pctOf(input.advancePct) ?? ADVANCE_PCT_FALLBACK;
+  const rate = usableRate(input.rate);
+  // The per-receipt rule is handed the rate AS TYPED, not the usable one: it
+  // has to tell "no rate on the invoice" from "a rate that is quoted per rupee
+  // and converts nothing", and those two sentences send the clerk to different
+  // places. What is exported below (`rate`) is still the usable one — that is
+  // the figure the screens print and the one that did any converting.
+  const ctx = { orderCurrency: currency, rate: input.rate ?? null };
   const advances = (input.receipts ?? []).filter((r) => cur(r.kind) === "ADVANCE");
-  // One predicate, shared with the card (countsTowardAdvance), so "not counted"
-  // on the screen and "not added in" here can never mean different things.
-  const counted = advances.filter((r) => countsTowardAdvance(r, currency));
-  const uncounted = advances.filter((r) => !countsTowardAdvance(r, currency));
-  const receivedAdvance = round2(counted.reduce((t, r) => t + (money(r.amount) ?? 0), 0));
-  const flag = uncountedNote(uncounted);
+  // One rule, shared with the card (advanceReceiptCheck), so "not counted" on
+  // the screen and "not added in" here can never mean different things — and
+  // the converted figure on the row is the very number summed here.
+  const checked = advances.map((r) => ({ r, c: advanceReceiptCheck(r, ctx) }));
+  const uncounted = checked.filter((x) => !x.c.counted).map((x) => x.r);
+  const converted = checked.filter((x) => x.c.via === "converted").map((x) => x.r);
+  const receivedAdvance = round2(checked.reduce((t, x) => t + x.c.amount, 0));
+  const convertedAdvance = round2(checked.filter((x) => x.c.via === "converted").reduce((t, x) => t + x.c.amount, 0));
+  const flag = sentence(noteFor(converted, ctx), noteFor(uncounted, ctx)) ?? "";
   const total = money(input.orderTotal);
   const priced = total !== null && total > 0;
   const required = priced ? round2((total * pct) / 100) : 0;
-  const base = { required, receivedAdvance, pct, waived };
+  const base = { required, receivedAdvance, pct, waived, convertedAdvance, rate };
 
   if (waived) {
     return { ...base, satisfied: true, reason: sentence("The advance was waived — this order may be dispatched without it.", flag) };

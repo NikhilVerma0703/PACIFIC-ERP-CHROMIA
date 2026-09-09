@@ -4,11 +4,15 @@
 // figure the bank has already matched should not vanish on a Commercial
 // login's mis-click. Logged with the amount and kind so the log still says
 // what was there.
+//
+// The advance returned afterwards is measured with the invoice's exchange rate
+// (round three, answer 10), the same way the list route measures it.
 import { commercialGate } from "@/lib/commercial/access";
 import { json, deny, fail, handle, plain } from "@/lib/commercial/http";
 import { logOrderEvent } from "@/lib/commercial/events";
 import { receiptNote } from "@/lib/commercial/receipts-rules";
-import { advanceOf, db, loadOrderWithItems } from "../../../_lib";
+import { db, loadOrderWithItems } from "../../../_lib";
+import { advanceWithRate } from "../_lib";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -40,6 +44,6 @@ export async function DELETE(_req: Request, { params }: Ctx) {
       payload: { receiptId, kind: gone.kind, amount: gone.amount, currency: gone.currency, receivedAt: gone.receivedAt, mode: gone.mode, reference: gone.reference },
     });
     const items = await db.commercialReceipt.findMany({ where: { orderId: id }, orderBy: [{ receivedAt: "desc" }, { createdAt: "desc" }] });
-    return json(plain({ ok: true, deleted: receiptId, items, advance: await advanceOf(order, order.items, items) }));
+    return json(plain({ ok: true, deleted: receiptId, items, advance: await advanceWithRate(order, order.items, items) }));
   });
 }

@@ -26,7 +26,11 @@ import {
   isAlternateOf, isAlternateGstin, gstinApplyAllFor, gstinScopeNote, gstinScopeWord, GSTIN_APPLY_ALL_QUESTION,
   hasExportWorkbook, gstinQuestionApplies, gstinScopeUnasked,
   isLivePi, livePiOf, bankKeyForInvoice, mayChangeInvoiceBank, bankChangeRefusal, BANK_FOLLOWS_PI,
+  parseExchangeRate, sameExchangeRate, mayEditExchangeRate, exchangeRateNote, liveInvoiceOf,
+  invoiceAdvanceRate, EXCHANGE_RATE_DESK, RATE_UNDATED,
+  invoiceCurrencyFor, exchangeRateRefusal, printedRateNote,
 } from "../src/lib/commercial/invoice-rules.ts";
+import { usableRate } from "../src/lib/commercial/receipts-rules.ts";
 import { DEFAULT_SETTINGS, gstinChoices } from "../src/lib/commercial/settings-defaults.ts";
 import type { DocLine } from "../src/lib/commercial/types.ts";
 
@@ -1233,4 +1237,129 @@ test("round two, answer 20: the bank is the manager's to change, and the refusal
   assert.equal(bankChangeRefusal(["cancel"]), null);
   assert.equal(bankChangeRefusal(["write"]), BANK_FOLLOWS_PI);
   assert.equal(BANK_FOLLOWS_PI, "The invoice follows the PI's bank; the Commercial Manager may change it");
+});
+
+// ───────── the manual exchange rate per invoice (round three, answer 10) ─────
+// "Add exchange rate per invoice, manual." What is tested here is the invoice
+// half: the shape of the figure, whether a re-save is a change, whose desk it
+// is once the paper is out, and what the order log is told. The conversion
+// itself lives in receipts-rules and is pinned in tests/commercialReceipts.
+
+test("parseExchangeRate: a positive figure at 4 dp; blank clears it, zero is a slipped key", () => {
+  assert.deepEqual(parseExchangeRate("88.42"), { ok: true, value: 88.42 });
+  assert.deepEqual(parseExchangeRate(88.42), { ok: true, value: 88.42 });
+  assert.deepEqual(parseExchangeRate(" 1,088.4256 "), { ok: true, value: 1088.4256 }, "a typed thousands separator is not a NaN");
+  assert.deepEqual(parseExchangeRate("88.42567"), { ok: true, value: 88.4257 }, "the column is NUMERIC(12,4)");
+
+  // blank CLEARS: the column is nullable and null means "no rate agreed"
+  assert.deepEqual(parseExchangeRate(""), { ok: true, value: null });
+  assert.deepEqual(parseExchangeRate("   "), { ok: true, value: null });
+  assert.deepEqual(parseExchangeRate(null), { ok: true, value: null });
+  assert.deepEqual(parseExchangeRate(undefined), { ok: true, value: null });
+
+  // zero is refused rather than stored: the advance divides by it one way round
+  assert.equal(parseExchangeRate("0").ok, false);
+  assert.equal(parseExchangeRate("0.00004").ok, false, "rounded to 4 dp this is zero");
+  assert.equal(parseExchangeRate("-88.42").ok, false);
+  assert.equal(parseExchangeRate("eighty eight").ok, false);
+  assert.equal(parseExchangeRate("1e12").ok, false, "wider than the column holds");
+});
+
+test("sameExchangeRate: 88.4200 typed over 88.42 is not a change, so nothing is restamped", () => {
+  assert.equal(sameExchangeRate(88.42, "88.4200"), true);
+  assert.equal(sameExchangeRate(88.42, 88.42), true);
+  assert.equal(sameExchangeRate(null, null), true);
+  assert.equal(sameExchangeRate(null, ""), true, "a blank box over no rate is no change");
+  assert.equal(sameExchangeRate(88.42, null), false, "clearing a rate IS a change");
+  assert.equal(sameExchangeRate(null, "88.42"), false);
+  assert.equal(sameExchangeRate(88.42, "88.43"), false);
+  assert.equal(sameExchangeRate(88.42, "nonsense"), false, "an unreadable value is never 'the same'");
+});
+
+test("mayEditExchangeRate: the draft is any invoice writer's; once issued it is the manager's (answer 10)", () => {
+  assert.deepEqual(mayEditExchangeRate("DRAFT", ["view", "write"]), { ok: true });
+  assert.deepEqual(mayEditExchangeRate("DRAFT", ["view", "write", "cancel"]), { ok: true });
+  assert.equal(mayEditExchangeRate("DRAFT", ["view"]).ok, false, "a read-only login edits nothing");
+
+  // the paper is out: the same desk that cancels the invoice (answer 24)
+  const issued = mayEditExchangeRate("ISSUED", ["view", "write"]);
+  assert.equal(issued.ok, false);
+  assert.equal(issued.ok === false ? issued.reason : "", EXCHANGE_RATE_DESK);
+  assert.deepEqual(mayEditExchangeRate("ISSUED", ["view", "write", "cancel"]), { ok: true });
+
+  // a cancelled invoice is history and takes nothing from anybody
+  assert.equal(mayEditExchangeRate("CANCELLED", ["view", "write", "cancel"]).ok, false);
+  assert.equal(mayEditExchangeRate("cancelled", ["write", "cancel"]).ok, false, "status is asked case-blind");
+
+  // the refusal is a sentence a clerk can act on, not a rule number
+  assert.match(EXCHANGE_RATE_DESK, /Commercial Manager/);
+  assert.match(RATE_UNDATED, /no date/);
+});
+
+test("invoiceCurrencyFor: what a draft will be priced in, decided once for the screen and the snapshot", () => {
+  assert.equal(invoiceCurrencyFor("DTA", "USD"), "INR", "a DTA is a rupee document whatever the order says");
+  assert.equal(invoiceCurrencyFor("EXPORT", "USD"), "USD");
+  assert.equal(invoiceCurrencyFor("EXPORT", " eur "), "EUR");
+  assert.equal(invoiceCurrencyFor("EXPORT", null), "USD", "an export order that names none");
+  assert.equal(invoiceCurrencyFor("EXPORT", "INR"), "INR", "an export order priced in rupees is a rupee invoice");
+  // and it is the SAME answer the frozen snapshot carries, which is what lets
+  // the create form predict a currency for an invoice that does not exist yet
+  const euro = { ...order, kind: "EXPORT", currency: "EUR" };
+  const euroLines = buildInvoiceLines(items, null, "EXPORT", S);
+  assert.equal(buildInvoiceSnapshot(euro, S, "EXPORT", euroLines, { date: "2026-08-20" }).currency, invoiceCurrencyFor("EXPORT", "EUR"));
+  assert.equal(buildInvoiceSnapshot(euro, S, "DTA", euroLines, { date: "2026-08-20" }).currency, invoiceCurrencyFor("DTA", "EUR"));
+});
+
+test("exchangeRateRefusal: the box is refused on a rupee invoice, because the rate is quoted PER a foreign unit", () => {
+  assert.equal(exchangeRateRefusal("USD"), null);
+  assert.equal(exchangeRateRefusal("eur"), null);
+  const refused = exchangeRateRefusal("INR");
+  assert.ok(refused, "every DTA, and an export invoice on a rupee-priced order");
+  assert.equal(exchangeRateRefusal("inr"), refused, "case is not a different currency");
+  assert.match(refused ?? "", /priced in rupees/);
+  // the refusal exists because the receipts side would discard the figure: the
+  // two rules are about one fact, and this is the sentence said at the box
+  assert.equal(usableRate({ rate: 88.42, currency: invoiceCurrencyFor("DTA", "USD") }), null);
+  assert.equal(usableRate({ rate: 88.42, currency: invoiceCurrencyFor("EXPORT", "USD") })?.rate, 88.42);
+});
+
+test("printedRateNote: the row's working rate against the one the document froze", () => {
+  // agreed — nothing to disclose, and the screen prints one figure
+  assert.equal(printedRateNote(88.42, 88.42, "USD"), null);
+  assert.equal(printedRateNote("88.4200", 88.42, "USD"), null, "the same rate typed again is not a difference");
+  assert.equal(printedRateNote(null, null, "USD"), null);
+  // moved after the invoice was issued: the PDF and the workbook keep 88.42
+  assert.match(printedRateNote(91, 88.42, "USD") ?? "", /The document prints INR 88\.42 per USD/);
+  assert.match(printedRateNote(91, 88.42, "usd") ?? "", /per USD/);
+  // a rate added to a row whose snapshot never had one
+  assert.match(printedRateNote(88.42, null, "USD") ?? "", /The document prints no exchange rate/);
+});
+
+test("exchangeRateNote: the log carries both figures, because 'fields: [exchangeRate]' defends nothing", () => {
+  assert.equal(exchangeRateNote(null, 88.42), "exchange rate none → 88.42");
+  assert.equal(exchangeRateNote(88.42, 89), "exchange rate 88.42 → 89");
+  assert.equal(exchangeRateNote(88.42, null), "exchange rate 88.42 → none");
+  assert.equal(exchangeRateNote("", ""), "exchange rate none → none");
+});
+
+test("liveInvoiceOf is openInvoiceOf, so 'the order's invoice' means one thing (answer 18)", () => {
+  const rows = [{ status: "CANCELLED", number: "PESPL/2779" }, { status: "ISSUED", number: "PESPL/2780" }];
+  assert.equal(liveInvoiceOf(rows), rows[1]);
+  assert.equal(liveInvoiceOf(rows), openInvoiceOf(rows));
+  assert.equal(liveInvoiceOf([{ status: "CANCELLED", number: "x" }]), null);
+  assert.equal(liveInvoiceOf(null), null);
+});
+
+test("invoiceAdvanceRate: what the receipts side is handed, and the three ways of having no rate", () => {
+  const live = { status: "DRAFT", number: "PESPL/2780", currency: "USD", exchangeRate: "88.4200", exchangeRateAt: new Date("2026-09-09T06:00:00.000Z") };
+  assert.deepEqual(invoiceAdvanceRate([live]), {
+    rate: 88.42, currency: "USD", at: "2026-09-09T06:00:00.000Z", invoiceNumber: "PESPL/2780",
+  });
+  // no invoice, a cancelled one, and an empty rate box are one situation to the
+  // clerk — type a rate on the invoice — so they are one answer here
+  assert.equal(invoiceAdvanceRate([]), null);
+  assert.equal(invoiceAdvanceRate([{ ...live, status: "CANCELLED" }]), null);
+  assert.equal(invoiceAdvanceRate([{ ...live, exchangeRate: null }]), null);
+  // a zero on the row (from before parseExchangeRate refused it) converts nothing
+  assert.equal(invoiceAdvanceRate([{ ...live, exchangeRate: 0 }]), null);
 });

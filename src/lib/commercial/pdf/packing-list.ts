@@ -15,6 +15,7 @@ import {
   docDate, quantityUnit, kgToMt, pad2, packagesSummary,
   type SlabLike, type CrateLike, type PartyLike,
 } from "@/lib/commercial/packing-rules";
+import { pieceSheet, sizeFromMm, type PieceLike } from "@/lib/commercial/pieces-rules";
 import { parseMeasurementUnit, type MeasurementUnit } from "@/lib/commercial/measure";
 
 export interface PackingListPdfInput {
@@ -37,6 +38,10 @@ export interface PackingListPdfInput {
     notes?: string | null;
     crates: CrateLike[];
     slabs: SlabLike[];
+    /** Cut-to-size lines (round three, answer 5), printed UNDER the slab lines
+     *  in their own table. Stored in millimetres; converted to the list's unit
+     *  on the way onto the page, with the unit in the column heading. */
+    pieces?: PieceLike[];
   };
   order: {
     number: string;
@@ -169,11 +174,116 @@ export async function generatePackingListPdf(input: PackingListPdfInput): Promis
     td(q.unit, "center", true),
   ]);
 
+  // ── the cut-to-size table (round three, answer 5) ─────────────────────────
+  // A second table UNDER the slab lines, because a piece is not a slab: it has
+  // a drawing, a piece number, a building and a size of its own, and squeezing
+  // it into the goods table would put ten columns of nothing against every slab.
+  // Printed only when the list has pieces — a list that packs slabs alone reads
+  // exactly as it did.
+  //
+  // THE UNIT IS IN EVERY SIZE HEADING and the figure is converted on the way in
+  // (sizeFromMm), so the heading can never disagree with the number under it the
+  // way "SIZE(Inches)" over millimetres does in his own workbook.
+  const unit = parseMeasurementUnit(list.measurementUnit) ?? "cm";
+  const sizeDp = unit === "in" ? 2 : 1;
+  const psheet = pieceSheet(list.pieces ?? []);
+  const mm = (v: number | null | undefined): string => fmt(sizeFromMm(v ?? null, unit), sizeDp);
+
+  interface PieceCol { head: string; width: number | string; align: "left" | "center" | "right"; cell: (r: Extract<typeof psheet.rows[number], { kind: "piece" }>) => string }
+  const pieceCols: PieceCol[] = [
+    { head: "Crate\nNo.", width: 30, align: "center", cell: (r) => r.crateNo ?? "—" },
+    ...(psheet.hasDrawings ? [{ head: "Drawing\nNo.", width: 44, align: "center" as const, cell: (r: Extract<typeof psheet.rows[number], { kind: "piece" }>) => r.drawingNo }] : []),
+    { head: "Piece\nNo.", width: 32, align: "center", cell: (r) => r.pieceNo },
+    { head: "Material Name", width: "*", align: "left", cell: (r) => r.design },
+    { head: `Length\n(${unit})`, width: 36, align: "right", cell: (r) => mm(r.lengthMm) },
+    { head: `Width\n(${unit})`, width: 34, align: "right", cell: (r) => mm(r.widthMm) },
+    { head: `Thick\n(${unit})`, width: 32, align: "right", cell: (r) => mm(r.thicknessMm) },
+    { head: "Sqft", width: 40, align: "right", cell: (r) => fmt(r.sqft, 3) },
+    { head: "Qty\n(Pcs)", width: 28, align: "center", cell: (r) => String(r.quantity) },
+    ...(psheet.hasRooms ? [{ head: "Building", width: 56, align: "left" as const, cell: (r: Extract<typeof psheet.rows[number], { kind: "piece" }>) => r.room }] : []),
+    ...(psheet.hasWeights ? [{ head: "Weight\n(Kgs)", width: 40, align: "right" as const, cell: (r: Extract<typeof psheet.rows[number], { kind: "piece" }>) => fmt(r.weightKg, 2) }] : []),
+  ];
+  const sqftAt = pieceCols.findIndex((c) => c.head === "Sqft");
+  const tailFrom = sqftAt + 2; // everything after Sqft and Qty (building, weight)
+
+  /** A totals line: the label spans everything up to Sqft, then the figures sit
+   *  under their own columns — the sheet's TOTAL row, not a footnote. */
+  const pieceTotalRow = (label: string, sqft: number, pcs: number, kg: number | null, bold = true): any[] => [
+    { text: label, fontSize: 7, bold, alignment: "right", colSpan: sqftAt, margin: [2, 2, 2, 2] },
+    // The colSpan's continuation cells carry an empty TEXT, not a bare {}: the
+    // crate subtotal rows below paint every cell grey, and pdfmake throws
+    // "Unrecognized document structure" on a cell that has a fill and no
+    // content — which took the whole packing-list PDF down for any list with a
+    // cut-to-size line in a crate.
+    ...Array.from({ length: sqftAt - 1 }, () => ({ text: "" })),
+    { text: fmt(sqft, 3), fontSize: 7, bold, alignment: "right", margin: [2, 2, 2, 2] },
+    { text: String(pcs), fontSize: 7, bold, alignment: "center", margin: [2, 2, 2, 2] },
+    ...pieceCols.slice(tailFrom).map((c) => ({
+      text: c.head.startsWith("Weight") ? (kg == null ? "" : fmt(kg, 2)) : "",
+      fontSize: 7, bold, alignment: c.align, margin: [2, 2, 2, 2],
+    })),
+  ];
+
+  const pieceBody: any[][] = [pieceCols.map((c) => th(c.head, c.align))];
+  for (const r of psheet.rows) {
+    if (r.kind === "piece") pieceBody.push(pieceCols.map((c) => td(c.cell(r), c.align)));
+    else {
+      const label = r.crateNo ? `Crate ${r.crateNo} — ${r.pieces} pc(s)` : `Not in a crate — ${r.pieces} pc(s)`;
+      pieceBody.push(pieceTotalRow(label, r.sqft, r.pieces, r.weightKg).map((cell: any) => ({ ...cell, fillColor: GREY })));
+    }
+  }
+  pieceBody.push(pieceTotalRow(`TOTAL — ${psheet.totals.lines} line(s)`, psheet.totals.sqft, psheet.totals.pieces, psheet.totals.weightKg));
+
+  // MARKS & NOS SURVIVE A LIST THAT PACKS PIECES ONLY. The shipping marks and
+  // the package count print in the first row of the goods table above, and that
+  // table is dropped when there is no slab line and no sample line — so a
+  // cut-to-size list was going out with no "01 to 06" anywhere on it, which is
+  // the field the customs desk and the CHA read off the crates. They print here
+  // as their own strip instead, in the same words the table's headings use.
+  const marksStrip: any[] = (!groups.length && !samples && list.crates.length) ? [
+    { text: " ", fontSize: 3 },
+    {
+      table: {
+        widths: [90, 90, "*"],
+        body: [[
+          field("Marks & Nos", marks || "—"),
+          field("No. of W/Crt / Bdl / Box", pad2(list.crates.length)),
+          field("Description of Goods", "Cut to size — see the lines below"),
+        ]],
+      },
+      layout: { hLineWidth: () => 0.6, vLineWidth: () => 0.6, hLineColor: () => B, vLineColor: () => B },
+    },
+  ] : [];
+
+  const pieceBlock: any[] = psheet.rows.length ? [
+    { text: " ", fontSize: 3 },
+    { text: `Cut to Size — sizes in ${unit === "in" ? "inches" : "centimetres"}`, fontSize: 7, bold: true, margin: [0, 0, 0, 2] },
+    {
+      table: { headerRows: 1, widths: pieceCols.map((c) => c.width), body: pieceBody },
+      layout: { hLineWidth: () => 0.6, vLineWidth: () => 0.6, hLineColor: () => B, vLineColor: () => B },
+    },
+  ] : [];
+
+  // NET WEIGHT ON A LIST THAT PACKS PIECES ONLY. totals.netKg is built from the
+  // crates and the slab groups alone, so a cut-to-size list printed a TOTAL of
+  // 4,180.500 Kgs in its own table and "Net Weight —" two inches below it: one
+  // sheet answering the same question twice, once with a figure and once with a
+  // dash. The piece total stands in ONLY when there is no slab or sample line
+  // whose own weight could be the missing part — and psheet.totals.weightKg is
+  // already null when any line is unweighed, so it never guesses.
+  const netFromPieces = (!groups.length && !samples) ? psheet.totals.weightKg : null;
+  const netWeightText = list.netWeightKg != null
+    ? `${fmt(list.netWeightKg, 0)} Kgs (${kgToMt(list.netWeightKg)})`
+    : totals.netKg != null
+      ? `${fmt(totals.netKg, 0)} Kgs`
+      : netFromPieces != null
+        ? `${fmt(netFromPieces, 0)} Kgs (cut-to-size lines)`
+        : "—";
+
   const exporterLines = [company.legalName, ...company.addressLines, `IEC: ${company.iec}   GSTIN: ${company.gstin}`, `State Code: ${company.stateCode}   District Code: ${company.districtCode}`];
 
   // The LUT declaration prints on an export sheet only — a domestic packing
   // list has no export under bond to declare.
-  const unit = parseMeasurementUnit(list.measurementUnit) ?? "cm";
   const remarks = [
     isExport ? company.lutText : "",
     (list.notes ?? "").trim(),
@@ -260,14 +370,23 @@ export async function generatePackingListPdf(input: PackingListPdfInput): Promis
 
       { text: " ", fontSize: 3 },
 
-      // the goods
-      {
+      // the goods. A list may pack slabs, pieces, or both (round three, answer
+      // 5), so the slab table prints only when there is something in it: a
+      // cut-to-size list was printing a goods table whose only line was a TOTAL
+      // of nought slabs, which is a line the customs desk has to ask about.
+      ...(groups.length || samples ? [{
         table: { headerRows: 1, widths: [46, 40, "*", 30, 40, 36, 52, 30], body: itemRows },
         layout: {
           hLineWidth: () => 0.6, vLineWidth: () => 0.6,
           hLineColor: () => B, vLineColor: () => B,
         },
-      },
+      }] : []),
+
+      // the marks, when there is no goods table to carry them
+      ...marksStrip,
+
+      // the cut-to-size lines, under the slab lines (round three, answer 5)
+      ...pieceBlock,
 
       { text: " ", fontSize: 3 },
 
@@ -296,9 +415,17 @@ export async function generatePackingListPdf(input: PackingListPdfInput): Promis
                 stack: [
                   { columns: [{ text: "Total Packages", fontSize: 7 }, { text: packages, fontSize: 7, bold: true, alignment: "right" }] },
                   { columns: [{ text: "Total Slabs / Pcs", fontSize: 7 }, { text: String(totals.slabs), fontSize: 7, bold: true, alignment: "right" }] },
+                  // Cut-to-size stands as its own pair of figures rather than
+                  // being added into the slab totals: a slab and a cut piece are
+                  // not the same article, and one number covering both is a
+                  // count the customs desk cannot reconcile to either table.
+                  ...(psheet.rows.length ? [
+                    { columns: [{ text: "Cut-to-size Pieces", fontSize: 7 }, { text: String(psheet.totals.pieces), fontSize: 7, bold: true, alignment: "right" }] },
+                    { columns: [{ text: "Cut-to-size Area (SQFT)", fontSize: 7 }, { text: fmt(psheet.totals.sqft, 3), fontSize: 7, bold: true, alignment: "right" }] },
+                  ] : []),
                   { columns: [{ text: `Total Area (${q.unit})`, fontSize: 7 }, { text: fmt(q.field === "sqm" ? totals.sqm : totals.sqft, q.dp), fontSize: 7, bold: true, alignment: "right" }] },
                   { columns: [{ text: "Gross Weight", fontSize: 7 }, { text: list.grossWeightKg != null ? `${fmt(list.grossWeightKg, 0)} Kgs (${kgToMt(list.grossWeightKg)})` : "—", fontSize: 7, bold: true, alignment: "right" }] },
-                  { columns: [{ text: "Net Weight", fontSize: 7 }, { text: list.netWeightKg != null ? `${fmt(list.netWeightKg, 0)} Kgs (${kgToMt(list.netWeightKg)})` : (totals.netKg != null ? `${fmt(totals.netKg, 0)} Kgs` : "—"), fontSize: 7, bold: true, alignment: "right" }] },
+                  { columns: [{ text: "Net Weight", fontSize: 7 }, { text: netWeightText, fontSize: 7, bold: true, alignment: "right" }] },
                 ],
                 margin: [4, 3, 4, 3],
               },

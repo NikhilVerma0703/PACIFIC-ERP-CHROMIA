@@ -6,7 +6,9 @@
 // route — Next ignores a colocated file that is not route.ts.
 import { prisma } from "@/lib/prisma";
 import { fail } from "@/lib/commercial/http";
-import { rowTotalsFromSnapshot, designCodeLookup, BANK_KEYS, LIVE_PI_STATUSES, livePiOf, type DesignCodeLookup, type PiBankSource } from "@/lib/commercial/invoice-rules";
+import { rowTotalsFromSnapshot, designCodeLookup, BANK_KEYS, LIVE_PI_STATUSES, livePiOf, invoiceAdvanceRate, type DesignCodeLookup, type PiBankSource } from "@/lib/commercial/invoice-rules";
+import type { AdvanceRate } from "@/lib/commercial/receipts-rules";
+import type { AreaAccess } from "@/lib/commercial/access-rules";
 import { gstinChoices, type CommercialSettings, type GstinChoice } from "@/lib/commercial/settings-defaults";
 import type { InvoiceSnapshot } from "@/lib/commercial/types";
 
@@ -78,6 +80,11 @@ export async function livePiFor(orderId: string): Promise<{ number: string; date
   };
 }
 
+// The rate lookup moved to lib/commercial/advance-rate.ts so that
+// lib/commercial/order-stage.ts can ask for it too; re-exported here because
+// the invoice routes have always imported it from this module.
+export { advanceRateFor } from "@/lib/commercial/advance-rate";
+
 /** "01 TO 07" — the marks & nos an export invoice prints for N crates. */
 export function marksForCrates(count: number): string | null {
   if (!count || count < 1) return null;
@@ -111,6 +118,20 @@ export interface InvoiceChoices {
   gstins: GstinChoice[];
   banks: Array<{ key: "export" | "domestic"; name: string; label: string }>;
   alwaysIgst: boolean;
+  /**
+   * What THIS login may do on the invoices AREA (DECISIONS-2 1 and 2), set by
+   * the route from its own gate.
+   *
+   * WHY IT RIDES HERE: an invoice screen is handed the login's GLOBAL actions,
+   * and "write" in that list is not permission to write an INVOICE — Murali
+   * (COMMERCIAL_LOGISTICS) holds the action for his own screens and only reads
+   * invoices. Fields keyed off the global list therefore render enabled and are
+   * refused by commercialGate("write", "invoices") at the server. The screen
+   * asks this instead, so a refused field is disabled with its reason, which is
+   * the house rule. This route is already per-login and already fetched by
+   * every invoice screen, so nothing new is asked of the page.
+   */
+  access?: AreaAccess;
 }
 
 export function choicesFor(settings: CommercialSettings): InvoiceChoices {

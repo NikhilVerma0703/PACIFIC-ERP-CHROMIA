@@ -23,6 +23,11 @@ export const db = prisma as any;
 export const PL_INCLUDE = {
   crates: { orderBy: { crateNo: "asc" } },
   slabs: { orderBy: { sortOrder: "asc" } },
+  // The second kind of line (round three, answer 5). Ordered by the crate
+  // number as TYPED, then by when it was entered — the sheet's own order is
+  // decided in pieces-rules (orderedPieces), which the database cannot do
+  // because "10" sorts before "2" as a string.
+  pieces: { orderBy: [{ crateNo: "asc" }, { createdAt: "asc" }] },
   order: {
     include: {
       client: { include: { commercialExt: true } },
@@ -44,6 +49,8 @@ export interface PackingListRow extends Record<string, unknown> {
   measurementUnit: string;
   crates: Array<Record<string, unknown> & { id: string; crateNo: number; kind: string }>;
   slabs: Array<Record<string, unknown> & { id: string; slabNumber: number; sortOrder: number; fit: string }>;
+  /** Cut-to-size lines (round three, answer 5) — sizes in MILLIMETRES. */
+  pieces: Array<Record<string, unknown> & { id: string; design: string; crateNo: string | null; quantity: number }>;
   order: Record<string, unknown> & { id: string; number: string; kind: "DOMESTIC" | "EXPORT"; status: string; items: Array<Record<string, unknown>>; client: Record<string, unknown>; holds: Array<Record<string, unknown>> };
 }
 
@@ -182,6 +189,25 @@ export interface PdfSlab {
   sortOrder: number;
 }
 
+/** A cut-to-size line as the sheets read it — Decimal columns already numbers,
+ *  sizes still in the millimetres the row stores (round three, answer 5). */
+export interface PdfPiece {
+  id: string;
+  crateId: string | null;
+  crateNo: string | null;
+  drawingNo: string | null;
+  pieceNo: string | null;
+  design: string;
+  lengthMm: number | null;
+  widthMm: number | null;
+  thicknessMm: number | null;
+  sqft: number | null;
+  quantity: number;
+  room: string | null;
+  weightKg: number | null;
+  notes: string | null;
+}
+
 export interface PdfCrate {
   id: string;
   crateNo: number;
@@ -192,6 +218,25 @@ export interface PdfCrate {
 }
 
 const dec = (v: unknown): number | null => (v === null || v === undefined || v === "" ? null : Number(v));
+
+/** A commercial_packed_piece row as pieces-rules reads it: Decimals as numbers,
+ *  which is what parsePiece / piecePatch validate and what the sheets print. */
+export function pieceOf(row: Record<string, unknown>): PdfPiece {
+  return {
+    id: String(row.id ?? ""),
+    crateId: (row.crateId as string | null) ?? null,
+    crateNo: (row.crateNo as string | null) ?? null,
+    drawingNo: (row.drawingNo as string | null) ?? null,
+    pieceNo: (row.pieceNo as string | null) ?? null,
+    design: String(row.design ?? ""),
+    lengthMm: dec(row.lengthMm), widthMm: dec(row.widthMm), thicknessMm: dec(row.thicknessMm),
+    sqft: dec(row.sqft),
+    quantity: Number(row.quantity ?? 1),
+    room: (row.room as string | null) ?? null,
+    weightKg: dec(row.weightKg),
+    notes: (row.notes as string | null) ?? null,
+  };
+}
 
 /** Everything either sheet needs, read once and converted out of Decimal. */
 export async function shapeForPdf(plId: string) {
@@ -246,6 +291,10 @@ export async function shapeForPdf(plId: string) {
         fit: String(s.fit),
         sortOrder: Number(s.sortOrder) || 0,
       })),
+      // Both sheets print the piece lines under the slab lines (round three,
+      // answer 5). They travel in the same `list` the two pdf routes already
+      // hand the generators, so neither route had to change to carry them.
+      pieces: (list.pieces ?? []).map(pieceOf),
     },
     plOrder: {
       number: String(order.number),

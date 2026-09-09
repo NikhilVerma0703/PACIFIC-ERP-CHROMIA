@@ -22,6 +22,10 @@ export type OrderEventKind =
   // again is just as much a fact. A kind rather than a note so the log can be
   // filtered for every order that shipped unpaid.
   | "advance_waived" | "advance_waiver_lifted"
+  // The work around the order (answers 7, 8 of round three): container
+  // booking, the BL draft, COO, fumigation. Its own kind so the Log tab can
+  // filter it apart from the 22-point SOP checklist it is not.
+  | "task_changed"
   | "plan_changed" | "slab_swapped"
   | "packing_created" | "packing_submitted" | "packing_verified" | "packing_rejected" | "packing_final"
   | "invoice_created" | "invoice_edited" | "invoice_issued" | "invoice_cancelled"

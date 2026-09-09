@@ -275,6 +275,15 @@ const SEGMENT_AREA: Record<string, CommercialArea> = {
   "production-requests": "planning",
   "production-planning": "planning",
   "design-codes": "designCodes",
+  // The customer's article master and its labels (round three, answer 4)
+  // live with the design master: same people, same screen group.
+  articles: "designCodes",
+  // The work AROUND an order (answers 7, 8) belongs to the checklist area,
+  // not to "orders". Most of that list is Raghav's — the BL draft, COO,
+  // CEFA, the portal uploads, fumigation — and he reads orders without
+  // writing them. Gating his own tasks on "orders" would have shown him the
+  // card with every control disabled.
+  tasks: "checklist",
   proformas: "proforma",
   "packing-lists": "packing",
   "dispatch-check": "dispatchCheck",

@@ -30,7 +30,9 @@ export async function POST(req: Request, { params }: Ctx) {
   return handle(async () => {
     const plId = await paramPl(params);
     const list = await loadList(plId);
-    const ok = canSubmit(list.status, list.slabs);
+    // Round three, answer 5: a cut-to-size list packs PIECES and may hold no
+    // slab at all. canSubmit refuses only when both are empty.
+    const ok = canSubmit(list.status, list.slabs, list.pieces);
     if (!ok.ok) fail(409, ok.reason);
     await readBody(req);   // body is optional; drain it
 

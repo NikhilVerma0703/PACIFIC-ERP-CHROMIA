@@ -18,7 +18,8 @@ import {
   statusTone, canEditInvoice, canIssueInvoice, canCancelInvoice,
   unpricedWarning, lineNeedsPrice, isDerivedAmount, rateDp, displayGrandTotal, displaySubtotal,
   refuseIssueUnapproved, fyBadge, snapshotExtras, gstinWithLabel, printedItemCode, lineLacksCode,
-  bankChangeRefusal,
+  bankChangeRefusal, mayEditExchangeRate, sameExchangeRate, RATE_UNDATED,
+  exchangeRateRefusal, printedRateNote,
   type InvoiceSnapshotExtras,
 } from "@/lib/commercial/invoice-rules";
 import type { DocLine, InvoiceSnapshot, Party } from "@/lib/commercial/types";
@@ -37,6 +38,9 @@ interface Invoice {
   status: "DRAFT" | "ISSUED" | "CANCELLED";
   currency: string;
   exchangeRate: number | null;
+  /** Round three, answer 10: when the rate was typed. A rate without one is
+   *  what the stamp exists to prevent, and the screen says so. */
+  exchangeRateAt: string | null;
   snapshot: InvoiceSnapshot & Partial<InvoiceSnapshotExtras>;
   subtotal: number | null;
   taxType: string | null;
@@ -65,6 +69,15 @@ interface Invoice {
   packingList: { id: string; number: string; status: string } | null;
   exportDocSet: { id: string; generatedAt: string | null } | null;
 }
+
+/** The stamp as the office reads it: date and time, in IST. */
+const dmyTimeIso = (v: string): string => new Date(v).toLocaleString("en-IN");
+
+/** DECISIONS-2 1 and 2: a login may hold the `write` ACTION for its own screens
+ *  and only READ invoices (Murali, COMMERCIAL_LOGISTICS). The area says which,
+ *  and a field it refuses is disabled with this rather than failing at the
+ *  server after the clerk has typed. */
+const INVOICES_READ_ONLY = "This login may read invoices but not change them — ask the Commercial desk";
 
 function PartyBlock({ title, p }: { title: string; p: Party | null | undefined }) {
   return (
@@ -110,11 +123,19 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
   const [form, setForm] = useState<Record<string, string>>({});
   const [prices, setPrices] = useState<PriceRow[]>([]);
   const [regForm, setRegForm] = useState<{ gstin: string; bankKey: string; gstinApplyAll: boolean }>({ gstin: "", bankKey: "", gstinApplyAll: true });
+  const [rateForm, setRateForm] = useState("");
   const [cancelReason, setCancelReason] = useState("");
   const [cancelling, setCancelling] = useState(false);
-  const mayWrite = actions.includes("write");
-  const mayCancel = actions.includes("cancel");
   const { choices, error: choicesError } = useInvoiceChoices();
+  // The page hands down the login's GLOBAL actions; the INVOICES AREA is what
+  // the server actually gates on (commercialGate("write", "invoices")), and the
+  // choices route — already fetched by this screen, and per login — says what
+  // it is. Until it answers, nothing changes, so a real writer sees no flicker;
+  // once it does, a read-only login's boxes are disabled with their reason
+  // instead of being refused after he has typed into them.
+  const areaWrite = choices?.access ? choices.access === "write" : true;
+  const mayWrite = actions.includes("write") && areaWrite;
+  const mayCancel = actions.includes("cancel") && areaWrite;
 
   const load = useCallback(async () => {
     const r = await fetch(`/api/office/commercial/invoices/${invoiceId}`, { cache: "no-store" });
@@ -130,6 +151,7 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
       notes: d.notes ?? "",
     });
     setPrices(priceRows(d.snapshot?.lines ?? []));
+    setRateForm(d.exchangeRate === null || d.exchangeRate === undefined ? "" : String(d.exchangeRate));
     // a row frozen before the dropdowns existed reads with the defaults it would have had
     const x = d.snapshot ? snapshotExtras(d.snapshot) : null;
     setRegForm({ gstin: x?.gstin ?? "", bankKey: x?.bankKey ?? "", gstinApplyAll: x?.gstinApplyAll ?? true });
@@ -153,6 +175,24 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
   // round two, answer 20: the bank follows the PI, and only the manager or an
   // admin may move it off that. Refused is disabled WITH the reason, not hidden.
   const bankRefusal = bankChangeRefusal(actions);
+  // Round three, answer 10: the rate is editable while the invoice is a draft
+  // by anyone who may write invoices, and by the manager or an admin after it
+  // is issued. Refused is DISABLED WITH ITS REASON, never hidden — and there
+  // are three ways to be refused, asked in the order the clerk would ask them:
+  //   the invoice is priced in rupees, so a rate quoted per rupee converts
+  //   nothing and the box takes no figure at all;
+  //   this login only READS invoices (the area, not the global action list);
+  //   the status and the desk (mayEditExchangeRate).
+  const rateCurrencyRefusal = exchangeRateRefusal(inv.currency);
+  const rateEdit: { ok: true } | { ok: false; reason: string } =
+    rateCurrencyRefusal ? { ok: false, reason: rateCurrencyRefusal }
+      : !areaWrite ? { ok: false, reason: INVOICES_READ_ONLY }
+        : mayEditExchangeRate(inv.status, actions);
+  const rateDirty = !sameExchangeRate(inv.exchangeRate, rateForm.trim() === "" ? null : rateForm.trim());
+  const rateUndated = inv.exchangeRate !== null && !inv.exchangeRateAt;
+  // What the PDF and the export workbook print, when a rate-only PATCH on an
+  // issued invoice has moved the row past the frozen snapshot.
+  const printedRate = printedRateNote(inv.exchangeRate, s.exchangeRate, inv.currency);
 
   const saveLines = async () => {
     setBusy(true); setError(null); setNotice(null);
@@ -177,6 +217,17 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
     setBusy(false);
     if (!res.ok) { setError(res.error); return; }
     setNotice("Saved.");
+    await load();
+  };
+  // Round three, answer 10. Sent ALONE, because a body naming only the rate is
+  // the one PATCH an issued invoice accepts — anything else with it would be
+  // refused as an edit to a printed document.
+  const saveRate = async () => {
+    setBusy(true); setError(null); setNotice(null);
+    const res = await patchJson(`/api/office/commercial/invoices/${inv.id}`, { exchangeRate: rateForm.trim() === "" ? null : rateForm.trim() });
+    setBusy(false);
+    if (!res.ok) { setError(res.error); return; }
+    setNotice("Exchange rate saved and dated.");
     await load();
   };
   const saveRegistration = async () => {
@@ -242,6 +293,9 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
       {inv.status === "DRAFT" && (unapproved
         ? <div className={noteBox}>{unapproved}.</div>
         : <p className="text-sm text-gray-600">Checklist approved by <span className="font-medium text-gray-900">{inv.order?.approvedByName ?? "—"}</span> on {dmy(inv.order?.approvedAt)} — this invoice may be issued.</p>)}
+      {/* Why the whole screen is flat for this login, said once at the top
+          rather than as a tooltip on every disabled box (DECISIONS-2 1 and 2). */}
+      {!areaWrite && <div className={noteBox}>{INVOICES_READ_ONLY}.</div>}
       {unpriced && <div className={noteBox}>{unpriced}</div>}
       {uncoded.length > 0 && (
         <div className={noteBox}>
@@ -276,7 +330,26 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
             <div className="flex justify-between gap-3"><dt className="text-gray-500">Buyer&apos;s PO ref</dt><dd className="text-right text-gray-900">{s.buyerPoRef ?? "—"}</dd></div>
             <div className="flex justify-between gap-3"><dt className="text-gray-500">Sales person</dt><dd className="text-gray-900">{s.salesPerson ?? "—"}</dd></div>
             <div className="flex justify-between gap-3"><dt className="text-gray-500">Commodity</dt><dd className="text-gray-900">{s.commodity}</dd></div>
-            <div className="flex justify-between gap-3"><dt className="text-gray-500">Currency</dt><dd className="text-gray-900">{inv.currency}{inv.exchangeRate ? ` @ ${inv.exchangeRate}` : ""}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-gray-500">Currency</dt><dd className="text-gray-900">{inv.currency}</dd></div>
+            {/* Answer 10: the rate AND the day it was typed. Never one without
+                the other — an undated rate is what the stamp exists to prevent.
+                Labelled the WORKING rate where the frozen document prints
+                another, with that figure beside it: a rate-only PATCH on an
+                issued invoice deliberately leaves the snapshot alone, so this
+                line and the customer's copy can legitimately differ and the
+                page must not show one number as though it were both. */}
+            <div className="flex justify-between gap-3">
+              <dt className="text-gray-500">{printedRate ? "Exchange rate (working)" : "Exchange rate"}</dt>
+              <dd className="text-right text-gray-900">
+                {inv.exchangeRate ? `INR ${inv.exchangeRate} per ${inv.currency}` : "—"}
+                {inv.exchangeRate ? (
+                  <span className={`block text-xs ${rateUndated ? "text-amber-700" : "text-gray-500"}`}>
+                    {inv.exchangeRateAt ? `typed ${dmy(inv.exchangeRateAt)}` : "no date"}
+                  </span>
+                ) : null}
+                {printedRate && <span className="block text-xs text-amber-700">{printedRate}</span>}
+              </dd>
+            </div>
             <div className="flex justify-between gap-3"><dt className="text-gray-500">Packing list</dt><dd className="text-gray-900">{inv.packingList ? <Link href={`/office/commercial/packing-lists/${inv.packingList.id}`} className="text-brand hover:underline">{inv.packingList.number}</Link> : "—"}</dd></div>
             <div className="flex justify-between gap-3"><dt className="text-gray-500">Issued</dt><dd className="text-gray-900">{inv.issuedAt ? new Date(inv.issuedAt).toLocaleString("en-IN") : "—"}</dd></div>
           </dl>
@@ -325,6 +398,54 @@ export function InvoiceDetail({ invoiceId, actions }: { invoiceId: string; actio
           <div className="mt-3 flex gap-2">
             <button type="button" className={btnPrimary} disabled={busy || !regDirty} onClick={() => void saveRegistration()}>Save registration and bank</button>
             <button type="button" className={btnGhost} disabled={busy || !regDirty} onClick={() => setRegForm({ gstin: x.gstin, bankKey: x.bankKey, gstinApplyAll: x.gstinApplyAll })}>Reset</button>
+          </div>
+        )}
+      </Card>
+
+      {/* ROUND THREE, ANSWER 10 — "add exchange rate per invoice, manual".
+          Its own card because its permission is its own: a draft's rate is any
+          invoice writer's, an issued invoice's is the Commercial Manager's, and
+          the field says which rather than disappearing. Every change stamps the
+          date and writes both figures to the order log. */}
+      <Card>
+        <H2>Exchange rate</H2>
+        {rateCurrencyRefusal ? (
+          // The rate is quoted per one unit of the invoice's currency, so on a
+          // rupee invoice there is nothing for it to be quoted per. Said here
+          // rather than left to be discovered on the receipts card, which would
+          // otherwise go on reporting that no rate is set beside a screen that
+          // shows one.
+          <p className="mb-3 text-sm text-amber-700">{rateCurrencyRefusal}.</p>
+        ) : (
+          <p className="mb-3 text-sm text-gray-500">
+            Rupees per one {inv.currency}, typed by hand. It is what a receipt in another currency is converted through when the advance is
+            tested on order {inv.order?.number ?? ""} — so a rate typed here can be what lets a truck leave.
+            {inv.status !== "DRAFT" ? " The invoice has been issued, so the PDF keeps the rate it was printed with; this figure is the working one." : ""}
+          </p>
+        )}
+        {printedRate && <p className="mb-3 text-sm text-amber-700">{printedRate} The customer&apos;s copy and the export workbook are not re-rendered by a change here.</p>}
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          <div>
+            {/* "Rate (INR per INR)" is not a label anybody can act on, so a
+                rupee invoice's box is named plainly and refused above. */}
+            <label className={lbl} htmlFor="f-fx">{rateCurrencyRefusal ? "Exchange rate" : `Rate (INR per ${inv.currency})`}</label>
+            <input id="f-fx" className={inp} inputMode="decimal" placeholder="88.4200" disabled={!rateEdit.ok || busy}
+              title={rateEdit.ok ? undefined : rateEdit.reason}
+              value={rateForm} onChange={(e) => setRateForm(e.target.value)} />
+            <p className="mt-1 text-xs text-gray-400">Blank means no rate is agreed; money in another currency then counts toward nothing.</p>
+          </div>
+          <div className="md:col-span-2">
+            <span className={lbl}>Dated</span>
+            <p className={`mt-2 text-sm ${rateUndated ? "text-amber-700" : "text-gray-700"}`}>
+              {inv.exchangeRateAt ? dmyTimeIso(inv.exchangeRateAt) : rateUndated ? RATE_UNDATED : "—"}
+            </p>
+          </div>
+        </div>
+        {!rateEdit.ok && <p className="mt-2 text-xs text-amber-700">{rateEdit.reason}.</p>}
+        {rateEdit.ok && (
+          <div className="mt-3 flex gap-2">
+            <button type="button" className={btnPrimary} disabled={busy || !rateDirty} onClick={() => void saveRate()}>Save rate</button>
+            <button type="button" className={btnGhost} disabled={busy || !rateDirty} onClick={() => setRateForm(inv.exchangeRate === null ? "" : String(inv.exchangeRate))}>Reset</button>
           </div>
         )}
       </Card>

@@ -79,9 +79,17 @@ export function canEditHeader(status: string): boolean {
   return status !== "DISPATCHED";
 }
 
-export function canSubmit(status: string, slabs: ReadonlyArray<unknown>): { ok: true } | { ok: false; reason: string } {
+/**
+ * A list goes for the dispatch check once it has something on it.
+ *
+ * `pieces` is the SECOND kind of line (round three, answer 5): a cut-to-size
+ * list packs pieces and may carry no slab at all, and an empty-list refusal that
+ * only counts slabs would leave such a list unsendable for ever. Optional, so
+ * every caller written before there were pieces still asks the old question.
+ */
+export function canSubmit(status: string, slabs: ReadonlyArray<unknown>, pieces: ReadonlyArray<unknown> = []): { ok: true } | { ok: false; reason: string } {
   if (!canEdit(status)) return { ok: false, reason: `A ${PACKING_STATUS_LABEL[status as PackingStatus]?.toLowerCase() ?? status} list cannot be submitted` };
-  if (!slabs.length) return { ok: false, reason: "Add at least one slab before submitting" };
+  if (!slabs.length && !pieces.length) return { ok: false, reason: "Add at least one slab or cut-to-size line before submitting" };
   return { ok: true };
 }
 
@@ -160,6 +168,19 @@ export interface VerifyOutcome {
   ok: boolean;
   pending: number;
   unfit: Array<{ id: string; slabNumber: number; reason: string }>;
+  /**
+   * THERE WAS NOTHING FOR THE FLOOR TO TICK. A cut-to-size list may carry no
+   * slab at all (round three, answer 5), and a piece line has no fit column to
+   * carry a verdict — so such a list passes the check the moment it is opened.
+   *
+   * It is a FACT here, not a refusal: refusing would leave a cut-to-size list
+   * unshippable, which is the dead end answer 5 exists to remove. What it needs
+   * to stop being a rubber stamp is a fit + unfit_reason on commercial_packed_
+   * piece and the piece verdicts folded in here — a schema change, so it is an
+   * owner question, not a fixer's. Until then the check says what it did:
+   * verificationNote() below writes no "all N slabs checked fit" for N = 0.
+   */
+  nothingToVerify: boolean;
 }
 
 /** What the verdicts add up to. `ok` is only true with nothing PENDING and
@@ -167,7 +188,7 @@ export interface VerifyOutcome {
 export function verifyOutcome(slabs: ReadonlyArray<{ id?: string; slabNumber: number; fit: string; unfitReason?: string | null }>): VerifyOutcome {
   const c = fitCounts(slabs);
   const unfit = slabs.filter((s) => s.fit === "UNFIT").map((s) => ({ id: s.id ?? "", slabNumber: s.slabNumber, reason: (s.unfitReason ?? "").trim() || "no reason given" }));
-  return { ok: c.pending === 0 && unfit.length === 0, pending: c.pending, unfit };
+  return { ok: c.pending === 0 && unfit.length === 0, pending: c.pending, unfit, nothingToVerify: c.total === 0 };
 }
 
 /** The verification note written on a rejected list. */
@@ -1003,9 +1024,17 @@ export function dispatchNote(number: string, dispatched: number, skipped: Readon
   return skipped.length ? `${head}. Not dispatched: ${skipped.map((s) => `#${fmtSlabNo(s.slab)} (${s.reason})`).join("; ")}` : head;
 }
 
-/** The note a verified list carries. */
+/** The note a verified list carries.
+ *
+ *  A LIST WITH NO SLAB ON IT SAYS SO. A cut-to-size list carries pieces alone
+ *  (round three, answer 5) and a piece has no fit column, so the checker ticked
+ *  nothing; "All 0 slab(s) checked fit" would put a check in the record that
+ *  nobody performed. The note names what was actually in front of them, and the
+ *  checker's own words follow it. */
 export function verificationNote(slabs: number, note?: string | null): string {
-  const head = `All ${slabs} slab(s) checked fit`;
+  const head = slabs === 0
+    ? "No slab line to check — the cut-to-size lines were passed on the sheet"
+    : `All ${slabs} slab(s) checked fit`;
   const extra = (note ?? "").trim();
   return extra ? `${head}. ${extra}` : head;
 }

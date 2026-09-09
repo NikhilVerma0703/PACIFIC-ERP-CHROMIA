@@ -7,6 +7,7 @@ import { fail, str, num, dateOnly } from "@/lib/commercial/http";
 import { parseChecklist, prefillChecklist, type ChecklistItem, type ChecklistSource } from "@/lib/commercial/checklist";
 import { loadSettings } from "@/lib/commercial/settings";
 import { advanceStatus, effectiveAdvancePct, pctOf, type AdvanceStatus } from "@/lib/commercial/receipts-rules";
+import { advanceRateFor } from "@/lib/commercial/advance-rate";
 import {
   HEADER_TEXT_FIELDS, HEADER_PARTY_FIELDS, ORDER_KINDS, PO_EVIDENCE,
   normalizeParty, checklistSourceFromOrder, orderTotals,
@@ -34,6 +35,12 @@ export const ORDER_DETAIL_INCLUDE = {
   // Newest first by the date the money arrived, then by entry — two receipts on
   // one day keep the order they were typed in.
   receipts: { orderBy: [{ receivedAt: "desc" }, { createdAt: "desc" }] },
+  // Round three, answers 7 and 8: the outside work — container booking, CHA,
+  // the BL, COO, CEFA, fumigation, the Daltile upload, the ETA sheet — as
+  // ticks on the order. In the include so the Tasks card and the order's own
+  // progress line read the SAME rows the tasks route writes; the route seeds
+  // the defaults, so an order nobody has opened yet simply has none here.
+  tasks: { orderBy: [{ sortOrder: "asc" }, { label: "asc" }] },
   events: { orderBy: { at: "desc" }, take: 100 },
 } as const;
 
@@ -57,6 +64,10 @@ export async function advanceOf(
     orderTotal: orderTotals(items as ItemLike[]).amount,
     currency: String(order.currency ?? ""),
     advancePct: await advancePctOf(order),
+    // Round three, answer 10: a receipt in another currency counts through the
+    // rate typed on the order's live invoice. Without this the money shows on
+    // the receipts card and still does not open the truck.
+    rate: await advanceRateFor(String(order.id ?? "")),
     waived: order.advanceWaivedAt != null,
   });
 }

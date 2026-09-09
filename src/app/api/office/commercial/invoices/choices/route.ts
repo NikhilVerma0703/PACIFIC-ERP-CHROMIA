@@ -15,5 +15,11 @@ export const runtime = "nodejs";
 export async function GET() {
   const g = await commercialGate("view", "invoices");
   if (!g.ok) return deny(g);
-  return handle(async () => json(choicesFor(await loadSettings())));
+  // The login's access to the invoices AREA rides along, because the screens
+  // are handed the login's GLOBAL actions and "write" there is not permission
+  // to write an invoice (DECISIONS-2 1 and 2: Murali holds the action and only
+  // READS invoices). Without this the boxes he cannot save render enabled and
+  // fail at the server; with it they are disabled with their reason, which is
+  // the house rule. Nothing here depends on the settings, so it costs no read.
+  return handle(async () => json({ ...choicesFor(await loadSettings()), access: g.areas.invoices }));
 }

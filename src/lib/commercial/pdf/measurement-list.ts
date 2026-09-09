@@ -17,6 +17,7 @@ import {
   measurementRows, partyLines, fallbackParty, fmtSlabNo, measurementHeaderRef,
   type SlabLike, type CrateLike, type PartyLike,
 } from "@/lib/commercial/packing-rules";
+import { pieceSheet, sizeFromMm, type PieceLike } from "@/lib/commercial/pieces-rules";
 import { sizeInUnit, parseMeasurementUnit, type MeasurementUnit } from "@/lib/commercial/measure";
 
 export interface MeasurementListPdfInput {
@@ -30,6 +31,9 @@ export interface MeasurementListPdfInput {
     vehicleNo?: string | null;
     crates: CrateLike[];
     slabs: SlabLike[];
+    /** Cut-to-size lines (round three, answer 5): stored in millimetres, printed
+     *  under the slab lines in the list's own unit, with the unit in the heading. */
+    pieces?: PieceLike[];
   };
   order: {
     number: string;
@@ -122,6 +126,67 @@ export async function generateMeasurementListPdf(input: MeasurementListPdfInput)
     ? [18, "*", 46, 50, 44, 26, 32, 30, 42, 24]
     : [18, "*", 50, 48, 28, 34, 32, 46, 26];
 
+  // ── the cut-to-size lines (round three, answer 5) ──────────────────────────
+  // The measurement list is the sheet that carries SIZES, so his cut-to-size
+  // columns belong on it in full: crate, drawing, piece, material, L × W × T,
+  // sqft, quantity, building and weight, with a subtotal per crate and the
+  // sheet's TOTAL — the rows and the subtotals decided in ../pieces-rules.
+  //
+  // The rows are millimetres; the heading names the printed unit and the figure
+  // is converted into it, so a heading can never sit over a number in another
+  // unit, which is what his own workbook does.
+  const psheet = pieceSheet(list.pieces ?? []);
+  const mm = (v: number | null | undefined): string => fmt(sizeFromMm(v ?? null, unit), unit === "in" ? 2 : 1);
+
+  type PieceRow = Extract<typeof psheet.rows[number], { kind: "piece" }>;
+  interface PieceCol { head: string; width: number | string; align: "left" | "center" | "right"; cell: (r: PieceRow) => string }
+  const pieceCols: PieceCol[] = [
+    { head: "Sl", width: 18, align: "center", cell: (r) => String(r.sl) },
+    { head: "Crate\nNo.", width: 28, align: "center", cell: (r) => r.crateNo ?? "—" },
+    ...(psheet.hasDrawings ? [{ head: "Drawing\nNo.", width: 44, align: "center" as const, cell: (r: PieceRow) => r.drawingNo }] : []),
+    { head: "Piece\nNo.", width: 30, align: "center", cell: (r) => r.pieceNo },
+    { head: "Material Name", width: "*", align: "left", cell: (r) => r.design },
+    { head: `Length\n${unit}`, width: 36, align: "right", cell: (r) => mm(r.lengthMm) },
+    { head: `Width\n${unit}`, width: 32, align: "right", cell: (r) => mm(r.widthMm) },
+    { head: `Thick\n${unit}`, width: 30, align: "right", cell: (r) => mm(r.thicknessMm) },
+    { head: "Sqft", width: 38, align: "right", cell: (r) => fmt(r.sqft, 3) },
+    { head: "Qty\n(Pcs)", width: 26, align: "center", cell: (r) => String(r.quantity) },
+    ...(psheet.hasRooms ? [{ head: "Building", width: 54, align: "left" as const, cell: (r: PieceRow) => r.room }] : []),
+    ...(psheet.hasWeights ? [{ head: "Weight\n(Kgs)", width: 38, align: "right" as const, cell: (r: PieceRow) => fmt(r.weightKg, 2) }] : []),
+  ];
+  const sqftAt = pieceCols.findIndex((c) => c.head === "Sqft");
+  const tailFrom = sqftAt + 2;
+
+  const pieceTotalRow = (label: string, sqft: number, pcs: number, kg: number | null, fill?: string): any[] => [
+    { text: label, fontSize: 7, bold: true, alignment: "right", colSpan: sqftAt, margin: [2, 2, 2, 2], fillColor: fill },
+    // An empty TEXT, not a bare {}: pdfmake throws "Unrecognized document
+    // structure" on a cell that carries a fill and no content, which is exactly
+    // what a grey crate-subtotal row is made of.
+    ...Array.from({ length: sqftAt - 1 }, () => ({ text: "", fillColor: fill })),
+    { text: fmt(sqft, 3), fontSize: 7, bold: true, alignment: "right", margin: [2, 2, 2, 2], fillColor: fill },
+    { text: String(pcs), fontSize: 7, bold: true, alignment: "center", margin: [2, 2, 2, 2], fillColor: fill },
+    ...pieceCols.slice(tailFrom).map((c) => ({
+      text: c.head.startsWith("Weight") ? (kg == null ? "" : fmt(kg, 2)) : "",
+      fontSize: 7, bold: true, alignment: c.align, margin: [2, 2, 2, 2], fillColor: fill,
+    })),
+  ];
+
+  const pieceBody: any[][] = [pieceCols.map((c) => th(c.head, c.align))];
+  for (const r of psheet.rows) {
+    if (r.kind === "piece") pieceBody.push(pieceCols.map((c) => td(c.cell(r), c.align)));
+    else pieceBody.push(pieceTotalRow(r.crateNo ? `Crate ${r.crateNo} — ${r.pieces} pc(s)` : `Not in a crate — ${r.pieces} pc(s)`, r.sqft, r.pieces, r.weightKg, GREY));
+  }
+  pieceBody.push(pieceTotalRow(`TOTAL — ${psheet.totals.lines} line(s)`, psheet.totals.sqft, psheet.totals.pieces, psheet.totals.weightKg));
+
+  const pieceBlock: any[] = psheet.rows.length ? [
+    { text: " ", fontSize: 4 },
+    { text: `Cut to Size — sizes in ${unit === "in" ? "inches" : "centimetres"}`, fontSize: 8, bold: true, margin: [0, 0, 0, 2] },
+    {
+      table: { headerRows: 1, widths: pieceCols.map((c) => c.width), body: pieceBody },
+      layout: { hLineWidth: () => 0.5, vLineWidth: () => 0.5, hLineColor: () => "#666", vLineColor: () => "#666" },
+    },
+  ] : [];
+
   const docDef: any = {
     pageSize: "A4",
     pageMargins: [20, 20, 20, 28],
@@ -161,16 +226,21 @@ export async function generateMeasurementListPdf(input: MeasurementListPdfInput)
         layout: { hLineWidth: () => 0.6, vLineWidth: () => 0.6, hLineColor: () => B, vLineColor: () => B },
       },
       { text: " ", fontSize: 3 },
-      {
+      // A list may pack slabs, pieces, or both (round three, answer 5). Each
+      // table prints only when it has rows: a cut-to-size list was showing an
+      // empty slab table whose TOTAL read nought slabs, which is a line a
+      // customs desk has to ask about.
+      ...(list.slabs.length ? [{
         table: { headerRows: 1, widths, body },
         layout: {
           hLineWidth: () => 0.5, vLineWidth: () => 0.5,
           hLineColor: () => "#666", vLineColor: () => "#666",
         },
-      },
+      }] : []),
+      ...pieceBlock,
       {
         columns: [
-          { text: `${sheet.totals.slabs} slab(s) · ${fmt(sheet.totals.sqm, 4)} sqm · ${fmt(sheet.totals.sqft, 3)} sqft · sizes in ${unit === "in" ? "inches" : "centimetres"}`, fontSize: 7, color: "#555" },
+          { text: `${sheet.totals.slabs} slab(s) · ${fmt(sheet.totals.sqm, 4)} sqm · ${fmt(sheet.totals.sqft, 3)} sqft${psheet.rows.length ? ` · ${psheet.totals.pieces} cut piece(s) · ${fmt(psheet.totals.sqft, 3)} sqft` : ""} · sizes in ${unit === "in" ? "inches" : "centimetres"}`, fontSize: 7, color: "#555" },
           {
             stack: [
               { text: `For ${company.legalName}`, fontSize: 7.5, bold: true, alignment: "right" },

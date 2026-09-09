@@ -3,23 +3,28 @@
 // and delete for the manager.
 //
 // THE ADVANCE IS A FIGURE HERE, NOT A TICK (round two, answer 11). What the
-// order asks for, what has arrived in the order's own currency, and what is
-// still short are all on the card, because "why is dispatch refused" is asked
-// at this card and must be answerable without reading a 409. Advance money in
-// another currency is listed in the table like any other receipt and said, in
-// words, not to count — this module has no exchange table.
+// order asks for, what has arrived, and what is still short are all on the
+// card, because "why is dispatch refused" is asked at this card and must be
+// answerable without reading a 409.
+//
+// AND SINCE ROUND THREE, ANSWER 10, advance money in another currency may
+// count: the manual rate on the order's live invoice converts it. So every
+// receipt says, in its own row, whether it counted and — when it did not — the
+// currency it arrived in and the rate that is missing, by name. The row asks
+// the SAME rule the gate does (advanceReceiptCheck), never a second comparison.
 //
 // And the waiver (answer 12): who lifted the gate, when, and why, with the
 // button to set or lift it. A login without `cancel` sees that button
 // disabled with the reason beside it rather than not at all.
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Card, Badge, Empty } from "@/components/ui";
 import { postJson, deleteJson } from "@/lib/fab/postJson";
 import type { OrderTabProps, ReceiptDto } from "@/lib/commercial/types";
 import {
   RECEIPT_KINDS, RECEIPT_KIND_LABEL, fmtReceiptAmount, receiptTotals, todayIst, canRecordReceipt,
-  advanceBadge, advanceShortfall, fmtPct, countsTowardAdvance,
+  advanceBadge, advanceShortfall, fmtPct, advanceReceiptCheck, fmtRate, usableRate,
 } from "@/lib/commercial/receipts-rules";
+import { invoiceAdvanceRate } from "@/lib/commercial/invoice-rules";
 import { orderTotals } from "@/lib/commercial/orders-rules";
 import { BTN, BTN_DANGER, BTN_PRIMARY, INPUT, ErrorNote, OkNote, Field, StatBox, dmy, dmyTime } from "./fields";
 
@@ -105,6 +110,30 @@ export function ReceiptsCard({ order, actions, refresh }: OrderTabProps) {
   // cancelled order takes no more money. Asked here too so the clerk reads it
   // before typing an amount rather than after, in a 409.
   const recordable = canRecordReceipt(order.status);
+  // Round three, answer 10: the rate a foreign receipt is converted through,
+  // read off the order's live invoice by the same rule the server reads it —
+  // so the row's verdict and the gate's arithmetic are one question.
+  // usableRate, not the raw figure: a rate on a RUPEE invoice is quoted per
+  // rupee and converts nothing (invoice-rules.exchangeRateRefusal refuses the
+  // box for exactly that reason), and printing "INR 88.42 per INR" in the hint
+  // below would tell the clerk a rate is doing work that it is not.
+  const invoiceRate = invoiceAdvanceRate(order.invoices);
+  const rate = usableRate(invoiceRate);
+  // The row's verdict is asked with the rate AS TYPED, the way the server asks
+  // it, so a rate quoted per rupee is named as such instead of being reported
+  // as "no exchange rate is set" beside an invoice screen that shows one.
+  const checked = receipts.map((r) => ({ r, c: advanceReceiptCheck(r, { orderCurrency: order.currency, rate: invoiceRate }) }));
+  // The advance FIGURES are the server's — they are what the dispatch gate
+  // measures, and this screen must not answer a question the truck does not
+  // ask. So where the card can see a rate the server's answer was not given,
+  // it says so out loud rather than showing a counted row above a total that
+  // does not include it. (AdvanceStatusDto in lib/commercial/types.ts predates
+  // answer 10 and does not declare the rate the server measured with; read
+  // through a narrow cast rather than editing a type this screen does not own.)
+  const measuredRate = (advance as { rate?: { rate: number; currency: string } | null }).rate ?? null;
+  const rateIgnored = measuredRate === null && checked.some((x) => x.c.via === "converted");
+  const notInTheFigures = checked.filter((x) => x.c.via === "converted")
+    .map((x) => fmtReceiptAmount(x.r.amount, x.r.currency)).join(", ");
 
   return (
     <Card>
@@ -127,7 +156,9 @@ export function ReceiptsCard({ order, actions, refresh }: OrderTabProps) {
         <StatBox
           label={`Received (advance, ${order.currency})`}
           value={fmtReceiptAmount(advance.receivedAdvance, order.currency)}
-          hint="Only ADVANCE receipts in the order's own currency count."
+          hint={rate
+            ? `ADVANCE receipts in ${order.currency}, plus advance money the invoice's rate converts — ${fmtRate(rate)} (answer 10).`
+            : `Only ADVANCE receipts in ${order.currency} count. Type an exchange rate on the invoice and money in the other currency counts too.`}
         />
         <StatBox
           label="Still short"
@@ -140,6 +171,16 @@ export function ReceiptsCard({ order, actions, refresh }: OrderTabProps) {
       {advance.reason && (
         <p className={`mb-4 rounded-xl border px-4 py-3 text-sm ${advance.satisfied ? "border-gray-200 bg-gray-50 text-gray-600" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
           {advance.reason}
+        </p>
+      )}
+
+      {/* Round three, answer 10 has reached this screen's rows but not the
+          figures above, which the server worked out. Said out loud, because a
+          card showing "counted" beside a total that does not include it would
+          be worse than either answer on its own. */}
+      {rate && rateIgnored && (
+        <p className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          {notInTheFigures} is convertible at {fmtRate(rate)}{rate.invoiceNumber ? ` (invoice ${rate.invoiceNumber})` : ""}, but the advance figures above — and the dispatch gate, which measures them the same way — were worked out without that rate.
         </p>
       )}
 
@@ -204,19 +245,34 @@ export function ReceiptsCard({ order, actions, refresh }: OrderTabProps) {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {receipts.map((r) => (
-                <tr key={r.id}>
+              {checked.map(({ r, c }) => (
+                <Fragment key={r.id}>
+                <tr>
                   <td className="py-2 pr-3"><Badge tone={r.kind === "ADVANCE" ? "green" : "brand"}>{RECEIPT_KIND_LABEL[r.kind] ?? r.kind}</Badge></td>
                   <td className="py-2 pr-3 text-right font-medium text-gray-900">
                     {fmtReceiptAmount(r.amount, r.currency)}
-                    {/* Listed, never converted: an advance in another currency
-                        is money that arrived and does not open the gate. The
-                        flag asks the RULE (countsTowardAdvance), not the two
-                        strings: advanceStatus compares currencies case-blind,
-                        and a card that compared them exactly would call a
-                        receipt typed "usd" uncounted while the gate counted it. */}
-                    {r.kind === "ADVANCE" && !countsTowardAdvance(r, order.currency) && (
-                      <div className="text-xs font-normal text-amber-700">not counted — not {order.currency}</div>
+                    {/* Answer 10, receipt by receipt: whether it counted toward
+                        the advance and, when it did not, the currency it came in
+                        and the rate that is missing. The verdict asks the RULE
+                        (advanceReceiptCheck), never the two currency strings:
+                        the gate compares them case-blind and converts through
+                        the invoice's rate, and a card doing its own comparison
+                        would call a receipt uncounted while the truck left on it. */}
+                    {/* "Counted" is a claim about the FIGURES ABOVE, which are
+                        the server's. Where the server's answer was worked out
+                        WITHOUT a rate (measuredRate null) this money is not in
+                        them and not in the dispatch gate's arithmetic either,
+                        so the row says what it is — convertible — instead of
+                        asserting a total it is not part of. A clerk who
+                        screenshots this row to accounts must not be able to
+                        read "counted" off money the truck was refused for. */}
+                    {r.kind === "ADVANCE" && c.via === "converted" && (
+                      measuredRate !== null
+                        ? <div className="text-xs font-normal text-gray-500">counted as {fmtReceiptAmount(c.amount, order.currency)}</div>
+                        : <div className="text-xs font-normal text-amber-700">convertible at {fmtReceiptAmount(c.amount, order.currency)} — not in the figures above</div>
+                    )}
+                    {r.kind === "ADVANCE" && !c.counted && (
+                      <div className="text-xs font-normal text-amber-700">not counted toward the advance</div>
                     )}
                   </td>
                   <td className="py-2 pr-3 text-gray-600">{dmy(r.receivedAt)}</td>
@@ -234,6 +290,17 @@ export function ReceiptsCard({ order, actions, refresh }: OrderTabProps) {
                     </td>
                   )}
                 </tr>
+                {/* WHY it did not count, in the rule's own words — the currency
+                    it arrived in and the rate that is missing, named. Given a
+                    row of its own because it is a sentence, and a sentence in a
+                    right-aligned money column is unreadable. */}
+                {r.kind === "ADVANCE" && !c.counted && c.reason && (
+                  <tr>
+                    <td />
+                    <td className="pb-2 text-xs text-amber-700" colSpan={mayDelete ? 6 : 5}>{c.reason}</td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
             <tfoot>

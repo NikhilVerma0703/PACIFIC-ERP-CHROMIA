@@ -12,6 +12,16 @@
 // slabs actually packed (grouped by design and thickness, priced from the
 // order line that matches) instead of from the order's own quantities.
 //
+// Round three, answer 10: an invoice carries its own manual exchange rate, and
+// that rate is what converts a receipt in another currency when the order's
+// advance is tested (ReceiptsCard). The list says what each invoice's rate is
+// so the desk can see, from the order, why a foreign receipt counted or did
+// not; the rate is DATED on the invoice screen, which is where it is stamped.
+// The rate is RUPEES PER ONE UNIT OF THE INVOICE'S CURRENCY, so a rupee
+// invoice — every DTA, and an export invoice on a rupee-priced order — has
+// nothing to convert: the box is disabled with that reason rather than taking
+// a figure the advance would discard (invoice-rules.exchangeRateRefusal).
+//
 // One order carries one invoice (answer 18): while one exists that is not
 // cancelled the form is not offered, and the reason is written where the
 // button was. The final invoice waits for the checklist's approval (answer
@@ -24,7 +34,7 @@ import {
   statusTone, canIssueInvoice, canCancelInvoice, defaultKindFor, unpricedLineNos, displayGrandTotal,
   refuseCreate, refuseIssueUnapproved, fyBadge, lineLacksCode, snapshotExtras, gstinWithLabel,
   bankKeyForInvoice, livePiOf, bankChangeRefusal, gstinScopeWord,
-  hasExportWorkbook, gstinScopeUnasked,
+  hasExportWorkbook, gstinScopeUnasked, invoiceCurrencyFor, exchangeRateRefusal, printedRateNote,
   type InvoiceKind,
 } from "@/lib/commercial/invoice-rules";
 import { challanStatusTone } from "@/lib/commercial/challan-rules";
@@ -71,6 +81,12 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
 
   const packable = order.packingLists.filter((p) => p.status !== "REJECTED");
   const dpFor = (k: string) => (k === "DTA" ? 2 : 3);
+  // Answer 10: what this draft will be priced in, and therefore whether a rate
+  // means anything on it. Worked out with the SAME rule the server freezes the
+  // snapshot with (invoiceCurrencyFor), so the box cannot promise a currency
+  // the created invoice does not have.
+  const draftCurrency = invoiceCurrencyFor(form.kind as InvoiceKind, order.currency);
+  const rateRefusal = exchangeRateRefusal(draftCurrency);
   const blocked = refuseCreate(order.invoices);
   const unapproved = refuseIssueUnapproved(order);
 
@@ -103,7 +119,10 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
       transporter: form.transporter || null,
       lrNo: form.lrNo || null,
       ewayBillNo: form.ewayBillNo || null,
-      exchangeRate: form.exchangeRate === "" ? null : Number(form.exchangeRate),
+      // Nothing is sent where the box is refused: the server refuses it too
+      // (400 with the same sentence), and the order's own rate is not carried
+      // onto a rupee invoice either.
+      exchangeRate: rateRefusal || form.exchangeRate === "" ? null : Number(form.exchangeRate),
       gstin: form.gstin || null,
       gstinApplyAll: form.gstinApplyAll,
       // The bank goes back only where this login may set it; otherwise the
@@ -221,12 +240,22 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
                 <label className={lbl} htmlFor="ni-eway">E-way bill no</label>
                 <input id="ni-eway" className={inp} value={form.ewayBillNo} onChange={(e) => setForm((f) => ({ ...f, ewayBillNo: e.target.value }))} />
               </div>
-              {form.kind === "EXPORT" && (
-                <div>
-                  <label className={lbl} htmlFor="ni-fx">Exchange rate</label>
-                  <input id="ni-fx" className={inp} inputMode="decimal" value={form.exchangeRate} onChange={(e) => setForm((f) => ({ ...f, exchangeRate: e.target.value }))} />
-                </div>
-              )}
+              {/* Round three, answer 10. The rate is rupees per one unit of the
+                  invoice's currency, so it is offered wherever that currency is
+                  not the rupee — an export order in USD, whichever kind is
+                  chosen — and REFUSED WITH ITS REASON, not hidden, where it is.
+                  A figure typed on a rupee invoice would convert nothing
+                  (receipts-rules.usableRate discards it) and the receipts card
+                  would go on saying no rate is set. */}
+              <div>
+                <label className={lbl} htmlFor="ni-fx">Exchange rate (INR per {draftCurrency})</label>
+                <input id="ni-fx" className={inp} inputMode="decimal" value={rateRefusal ? "" : form.exchangeRate}
+                  disabled={Boolean(rateRefusal)} title={rateRefusal ?? undefined}
+                  onChange={(e) => setForm((f) => ({ ...f, exchangeRate: e.target.value }))} />
+                {rateRefusal
+                  ? <p className="mt-1 text-xs text-amber-700">{rateRefusal}.</p>
+                  : <p className="mt-1 text-xs text-gray-400">Rupees per one {draftCurrency}, by hand. It is stamped with the date it is put on the invoice, and it is what converts a receipt in another currency when the advance is tested.</p>}
+              </div>
             </div>
             <div className="mt-3 flex gap-2">
               <button type="button" className={btnPrimary} disabled={busy} onClick={() => void create()}>Create draft invoice</button>
@@ -257,6 +286,9 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
                   // answer 20: the paper prints the design's name; the screen says a code is missing
                   const uncoded = inv.kind === "EXPORT" ? (inv.snapshot?.lines ?? []).filter(lineLacksCode).length : 0;
                   const x = inv.snapshot ? snapshotExtras(inv.snapshot) : null;
+                  // answer 10: the working rate on the row against the one the
+                  // frozen document prints, when they have come apart
+                  const printedRate = printedRateNote(inv.exchangeRate, inv.snapshot?.exchangeRate ?? null, inv.currency);
                   const issueBlocked = canIssueInvoice(inv.status) ? unapproved : null;
                   return (
                   <tr key={inv.id} className="border-b border-gray-50 last:border-0">
@@ -273,7 +305,19 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
                         </span>
                       )}
                     </td>
-                    <td className="py-2 pr-4 align-top text-gray-600">{inv.kind}</td>
+                    <td className="py-2 pr-4 align-top text-gray-600">
+                      {inv.kind}
+                      {/* answer 10: the rate the advance is converted through —
+                          the ROW's working figure. On an issued invoice a
+                          rate-only PATCH leaves the frozen snapshot alone, so
+                          the PDF and the export workbook can print another; it
+                          is named here rather than left to be discovered when
+                          the customer's copy disagrees. */}
+                      <div className="text-xs text-gray-400">
+                        {inv.exchangeRate ? `${inv.currency} @ INR ${inv.exchangeRate}` : `${inv.currency} · no rate`}
+                      </div>
+                      {printedRate && <div className="text-xs text-amber-700">{printedRate}</div>}
+                    </td>
                     <td className="py-2 pr-4 align-top text-xs text-gray-500">
                       {x ? (
                         <>

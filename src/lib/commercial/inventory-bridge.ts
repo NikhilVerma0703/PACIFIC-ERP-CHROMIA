@@ -614,3 +614,105 @@ function bridgeRefusals(res: BridgeResult): { slab: number; reason: string }[] {
   for (const n of res.missing) if (!out.some((s) => s.slab === Number(n))) out.push({ slab: Number(n), reason: "not found in finished goods" });
   return out;
 }
+
+// ─────────── automatic dispatch when an order closes (round three, answer 6) ──
+//
+// The import sits HERE rather than in the block at the top of the file because
+// this section was appended while other builders held the same file open; an ES
+// import is hoisted wherever it is written, so the placement costs nothing at
+// run time and costs nobody a conflict in the header.
+import { autoDispatchPlan, type AutoDispatchPlan } from "./tasks-rules";
+
+/**
+ * Mark everything still RESERVED against an order DISPATCHED.
+ *
+ * Round three, answer 6: "whatever is reserved should be marked dispatched
+ * after deliver / last step." No clerk marks slabs one at a time any more; the
+ * close does it, and this is the one function that moves them.
+ *
+ * HOW THE CANDIDATES ARE FOUND, and why it is not the order's own hold rows. A
+ * hold's slab list is this module's bookkeeping of what it ASKED for; the
+ * question here is what the INVENTORY still says is reserved against this
+ * order right now. So the search is fg_finished_slab itself — status RESERVED,
+ * reservedForPi in the order's references — which also catches a slab reserved
+ * against the order outside a commercial hold, and does not chase one whose
+ * hold row was never reconciled after the sweep let it go.
+ *
+ * Those rows are then RE-READ through readForOp (the sales-approval filter,
+ * like every other acquiring path here) and put through the pure decision, so a
+ * status that changed between the two reads is caught before anything moves.
+ * `onlyFrom: ["RESERVED"]` is the last guard: closing an order can never sweep
+ * a PACKED slab out of a crate nobody has loaded.
+ *
+ * `unreadable` is reported rather than swallowed: a slab in an unapproved
+ * (design, batch) pair is invisible to a non-admin, so it stays RESERVED — and
+ * an order that closes leaving stock reserved with nothing on any screen
+ * saying so is exactly the bug this count exists to prevent.
+ *
+ * `slabNumbers` IS WHAT MOVED, NOT WHAT WAS PLANNED. It used to be the plan,
+ * and the plan is only a proposal: changeSlabStatus refuses a CTS/SAMPLE-marked
+ * slab, a slab whose mark cannot be read, and one that lost the concurrency
+ * guard between the two reads, and it reports a row that vanished as `missing`.
+ * The order log and the close's on-screen report both print this list, so a
+ * plan-shaped answer named slabs the sweep had just declined to touch — the
+ * one number a person reading the order months later has no way to check
+ * against the floor. Every refusal now leaves the list and enters `skipped`
+ * with its reason, `missing` included, the way holdSlabs and packSlabs already
+ * merge theirs.
+ */
+export async function dispatchReservedForOrder(opts: {
+  /** Every reference this order's slabs may legitimately be held under —
+   *  ownReferences(order): its number, its holds', its enquiry's. AN EMPTY
+   *  LIST OWNS NOTHING, the same rule packSlabs applies. */
+  references: readonly string[];
+  /** What the dispatch stamps on the slab — the order number. */
+  reference: string;
+  customer: string;
+  by: string | null;
+  isAdmin: boolean;
+  /** Told what the sweep is ABOUT to move, before a single slab moves — the
+   *  caller logs it, so a request killed part-way through a long sweep still
+   *  leaves a record of what was in flight (order-stage.dispatchOnClose). It
+   *  is never allowed to stop the sweep: a failure here is the caller's log,
+   *  not the stock. */
+  onPlanned?: (plan: AutoDispatchPlan) => Promise<void> | void;
+}): Promise<{ updated: number; slabNumbers: number[]; skipped: { slab: number; reason: string }[]; unreadable: number }> {
+  const refs = (opts.references ?? []).filter((r) => typeof r === "string" && r.trim() !== "");
+  const none = { updated: 0, slabNumbers: [] as number[], skipped: [] as { slab: number; reason: string }[], unreadable: 0 };
+  if (!refs.length) return none;
+
+  const candidates: Array<{ slabNumber: number }> = await db.finishedSlab.findMany({
+    where: { status: "RESERVED", reservedForPi: { in: refs } },
+    select: { slabNumber: true },
+  });
+  const numbers = candidates.map((c) => Number(c.slabNumber)).filter((n) => Number.isFinite(n));
+  if (!numbers.length) return none;
+
+  const live = await readForOp("dispatch", numbers, opts.isAdmin);
+  const unreadable = numbers.length - live.length;
+  const plan = autoDispatchPlan(live, refs);
+  if (!plan.slabNumbers.length) return { ...none, skipped: plan.skipped, unreadable };
+
+  // Announce the intent, then move. A throw here would leave the stock alone
+  // for a logging failure, which is the wrong way round.
+  try { await opts.onPlanned?.(plan); } catch (e) {
+    console.error("[commercial] auto-dispatch: intent not logged:", (e as Error).message);
+  }
+
+  const res = await changeSlabStatus(plan.slabNumbers, "dispatch", {
+    pi: opts.reference,
+    customer: opts.customer,
+    by: opts.by,
+    source: "Commercial auto-dispatch",
+    onlyFrom: ["RESERVED"],
+  });
+  // What the bridge REFUSED (a cut mark, a status that changed under the
+  // guard) and what it could not find, each with its reason and each dropped
+  // from the moved list — bridgeRefusals is the same merge holdSlabs and
+  // packSlabs do, so all three answers read alike.
+  const refusals = bridgeRefusals({ updated: res.updated, missing: res.missing, skipped: res.skipped, before: [] });
+  const refused = new Set(refusals.map((r) => r.slab));
+  const moved = plan.slabNumbers.filter((n) => !refused.has(n));
+  const skipped = [...plan.skipped, ...refusals];
+  return { updated: res.updated, slabNumbers: moved, skipped, unreadable };
+}

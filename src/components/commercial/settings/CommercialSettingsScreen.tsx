@@ -465,11 +465,12 @@ function SettingsForm() {
       {/* Round two, answer 11: the advance is a percentage, and these two are
           the percentages every new order starts from. They shipped at 100 and
           30 and there was nowhere to change them — which made the shipped
-          figures the only figures. */}
-      {section("Dispatch", "How much of an order must be received before the truck leaves (answer 11). An order may carry its own percentage; these are what a blank one falls back to.", (
+          figures the only figures. Round three, answer 9 settled it: "make it
+          editable too." */}
+      {section("Dispatch", "How much of an order must be received before the truck leaves (round two, answer 11). An order may carry its own percentage; these are what a blank one falls back to.", (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {field("dispatch.advancePctDomestic", { hint: "0 to 100. Applied to the order total (Σ of the priced lines) — the money must be in, in the order's own currency, before dispatch is allowed." })}
-          {field("dispatch.advancePctExport", { hint: "0 to 100. The export default the owner named — the balance follows on CAD or LC terms." })}
+          {field("dispatch.advancePctDomestic", { hint: "Round two, answer 11: the domestic default, 0 to 100. Applied to the order total (Σ of the priced lines). The terms on file read 100% advance." })}
+          {field("dispatch.advancePctExport", { hint: "Round two, answer 11: the export default, 0 to 100 — the balance follows on CAD or LC terms. Money received in another currency counts through the invoice's exchange rate (round three, answer 10)." })}
         </div>
       ))}
 

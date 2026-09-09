@@ -55,6 +55,7 @@ import { loadSettings } from "@/lib/commercial/settings";
 import { advanceStatus, effectiveAdvancePct } from "@/lib/commercial/receipts-rules";
 import { orderTotals, type ItemLike } from "@/lib/commercial/orders-rules";
 import { db, loadList, paramPl, byOf, isAdminOf } from "../../_lib";
+import { advanceRateFor } from "@/lib/commercial/advance-rate";
 
 /** The last-resort wording when the rule has no sentence of its own — the
  *  owner answer 2 phrasing, kept so the screen and the strip never go quiet. */
@@ -106,6 +107,10 @@ export async function POST(req: Request, { params }: Ctx) {
         domestic: settings.dispatch.advancePctDomestic,
         export: settings.dispatch.advancePctExport,
       }),
+    // Round three, answer 10: a receipt in another currency counts through the
+    // rate typed on the order's live invoice. Without this the money shows on
+    // the receipts card and still does not open the truck.
+      rate: await advanceRateFor(list.orderId),
       waived: order.advanceWaivedAt != null,
     });
     if (!advance.satisfied) {

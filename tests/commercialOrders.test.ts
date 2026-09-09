@@ -14,7 +14,14 @@ import {
   ordersWhere, pageArgs, nextLineNo, renumberLines, canApprove, describeItem, orderWorkspaceView, stageFactsOf, isLiveHold,
   type SettingsLike, type ClientLike, type ClientExtLike,
 } from "../src/lib/commercial/orders-rules.ts";
-import { canEnter } from "../src/lib/commercial/stages.ts";
+import { canEnter, ORDER_STAGES, stageIndex, isTerminal } from "../src/lib/commercial/stages.ts";
+// Round three, answers 6, 7 and 8 — the close's automatic dispatch and the
+// task list are the orders area's too, and the sweep has to agree with the
+// pipeline about which stage is last.
+import { autoDispatchPlan, autoDispatchNote, tasksFor, taskProgress, progressNote, tasksToSeed } from "../src/lib/commercial/tasks-rules.ts";
+// The task list is gated on the CHECKLIST area while the card that draws it is
+// enabled from the WRITE action — the two have to name the same people.
+import { COMMERCIAL_ACTORS, COMMERCIAL_AREA_ACCESS, areaOfPath, type CommercialActor } from "../src/lib/commercial/access-rules.ts";
 import { advanceStatus, effectiveAdvancePct, advancePctChange } from "../src/lib/commercial/receipts-rules.ts";
 import { prefillChecklist, parseChecklist, outstandingPoints, CHECKLIST_POINTS } from "../src/lib/commercial/checklist.ts";
 import { DEFAULT_SETTINGS } from "../src/lib/commercial/settings-defaults.ts";
@@ -547,4 +554,114 @@ test("orderWorkspaceView: a failed refresh keeps the last good order, the open t
   // a blank message is no message
   assert.deepEqual(orderWorkspaceView({ order, error: "   " }), { showWorkspace: true, fatal: null, stale: null, loading: false });
   assert.equal(orderWorkspaceView({ order: null, error: "  " }).loading, true, "a blank error is not a reason to stop waiting");
+});
+
+// ─────────────── closing the order, and what it does to the stock ────────────
+// Round three, answer 6: "whatever is reserved should be marked dispatched
+// after deliver / last step." Two halves have to hold together — the stage
+// pipeline has to agree that CLOSED is the last step, and the sweep has to
+// agree about which slabs are the order's. They live in different files, so
+// they are pinned against each other here.
+
+test("CLOSED is the last step of the pipeline, and reaching it is what triggers the sweep", () => {
+  const steps = ORDER_STAGES.filter((s) => s.step).map((s) => s.status);
+  assert.equal(steps[steps.length - 1], "CLOSED", "answer 6 keys off the LAST stage; if a stage is added after CLOSED this test is the alarm");
+  assert.equal(stageIndex("CLOSED"), steps.length - 1);
+  assert.ok(isTerminal("CLOSED"));
+
+  // an order is allowed to get there from the stage before it, and from
+  // anywhere else the desk closes it from — canEnter gates PI, invoice and
+  // dispatch, and deliberately does not gate the close
+  assert.deepEqual(canEnter("DISPATCHED", "CLOSED", {}), { ok: true });
+  assert.deepEqual(canEnter("READY", "CLOSED", { advanceReceived: false }), { ok: true });
+  // and once closed it never moves again, so the sweep runs at most once
+  assert.equal(canEnter("CLOSED", "CLOSED", {}).ok, false);
+  assert.equal(canEnter("CLOSED", "DISPATCHED", {}).ok, false);
+});
+
+test("closing sweeps the order's own reserved slabs and nobody else's", () => {
+  // the references an order owns are its number, its holds' and its enquiry's
+  // — the same list packSlabs is handed (packing-lists/_lib.ownReferences)
+  const order = { number: "SAL-ORD/26-27/01642", holds: [{ reference: "SAL-ORD/26-27/01642" }, { reference: "HOLD-77" }], enquiry: { number: "ENQ/26-27/0009" } };
+  const refs = [order.number, ...order.holds.map((h) => h.reference), order.enquiry.number];
+
+  const plan = autoDispatchPlan([
+    { slabNumber: 501, status: "RESERVED", reservedForPi: "SAL-ORD/26-27/01642" },
+    { slabNumber: 502, status: "RESERVED", reservedForPi: "HOLD-77" },
+    { slabNumber: 503, status: "RESERVED", reservedForPi: "ENQ/26-27/0009" },
+    { slabNumber: 504, status: "RESERVED", reservedForPi: "SAL-ORD/26-27/01599" },  // another order's
+    { slabNumber: 505, status: "PACKED",   reservedForPi: "SAL-ORD/26-27/01642" },  // in a crate already
+  ], refs);
+
+  assert.deepEqual(plan.slabNumbers, [501, 502, 503]);
+  assert.deepEqual(plan.skipped, [
+    { slab: 504, reason: "held under SAL-ORD/26-27/01599" },
+    { slab: 505, reason: "PACKED, not on hold" },
+  ], "closing an order is not a way to clear another desk's hold, nor to empty a packed crate");
+  assert.equal(autoDispatchNote(order.number, plan.slabNumbers.length, plan.skipped.length),
+    "Closed SAL-ORD/26-27/01642: 3 reserved slabs marked dispatched automatically · 2 left alone");
+});
+
+test("an order with nothing reserved closes quietly, and the log still says so", () => {
+  const plan = autoDispatchPlan([], ["SAL-ORD/26-27/01642"]);
+  assert.deepEqual(plan.slabNumbers, []);
+  assert.equal(autoDispatchNote("SAL-ORD/26-27/01642", 0, 0),
+    "Closed SAL-ORD/26-27/01642: nothing was still reserved against it, so no slab was dispatched.",
+    "a no-op is reported rather than silent — after answer 6 nobody ticks slabs by hand, so the log is the only record");
+});
+
+test("the task list an order is seeded with follows its kind, and the two lists share no key", () => {
+  const ex = tasksFor("EXPORT").map((t) => t.key);
+  const dom = tasksFor("DOMESTIC").map((t) => t.key);
+  assert.equal(ex.filter((k) => dom.includes(k)).length, 0);
+  // the progress line the order screen prints, over a freshly seeded export order
+  const seeded = tasksFor("EXPORT").map((t) => ({ taskKey: t.key, label: t.label, status: "PENDING", sortOrder: t.sortOrder }));
+  assert.equal(progressNote(taskProgress(seeded)), "0 of 12 done, 12 outstanding.");
+});
+
+
+// ─────────────────── the task list's gate (answers 7 and 8) ──────────────────
+
+test("the order's tasks are gated on `checklist`, so the desk that owns the list can tick it", () => {
+  // Nine of the twelve export lines are COMMERCIAL_DOCS's own work — the BL
+  // draft, COO, CEFA, TiO2, the portal uploads — and that login reads orders
+  // without writing them. Gated on "orders" the card was drawn fully enabled
+  // and every tick came back 403.
+  assert.equal(COMMERCIAL_AREA_ACCESS.COMMERCIAL_DOCS.orders, "view");
+  assert.equal(COMMERCIAL_AREA_ACCESS.COMMERCIAL_DOCS.checklist, "write",
+    "the row access-rules describes as 'he fills the checklist on an order he does not otherwise edit'");
+
+  // Middleware asks areaOfPath, the routes ask commercialGate: both must land
+  // on the same area or the path admits somebody the route then refuses.
+  assert.equal(areaOfPath("/api/office/commercial/orders/abc/tasks"), "checklist");
+  assert.equal(areaOfPath("/api/office/commercial/orders/abc/tasks/t1"), "checklist");
+  assert.equal(areaOfPath("/api/office/commercial/orders/abc"), "orders", "the order itself is still the order's area");
+});
+
+test("the Tasks card's mayWrite (the `write` action) names exactly the logins holding checklist: write", () => {
+  // The card is given `actions.includes("write")` and the routes gate on the
+  // checklist AREA. They agree today, which is what lets a refused control be
+  // disabled with its reason instead of failing at the server — and if either
+  // column of access-rules moves, this is the test that says so.
+  const actors = Object.keys(COMMERCIAL_AREA_ACCESS) as CommercialActor[];
+  for (const actor of actors) {
+    const mayWrite = COMMERCIAL_ACTORS.write.includes(actor);
+    const areaWrite = COMMERCIAL_AREA_ACCESS[actor].checklist === "write";
+    assert.equal(areaWrite, mayWrite,
+      `${actor}: the card would offer the tick to ${mayWrite ? "them" : "nobody"} and the route would ${areaWrite ? "allow" : "refuse"} it`);
+  }
+  assert.ok(!COMMERCIAL_ACTORS.write.includes("DISPATCHER" as CommercialActor), "no actor outside the table");
+  assert.equal(COMMERCIAL_AREA_ACCESS.DISPATCH_CHECKER.checklist, "none",
+    "bay 5 has one tab and this is not it");
+});
+
+test("correcting an order's kind still brings the right task list (seeded by missing key, not by a row count)", () => {
+  // The Kind select stays editable after creation, so an order opened once as
+  // DOMESTIC carries three truck ticks; under the old count guard the twelve
+  // export lines could never arrive on it.
+  const seededDomestic = tasksFor("DOMESTIC").map((t) => t.key);
+  const arriving = tasksToSeed("EXPORT", seededDomestic).map((t) => t.key);
+  assert.equal(arriving.length, 12);
+  assert.deepEqual(tasksToSeed("EXPORT", [...seededDomestic, ...arriving]), [],
+    "and the next read of that order writes nothing at all");
 });
