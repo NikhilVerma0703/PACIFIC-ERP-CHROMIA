@@ -563,16 +563,23 @@ export function Nav({
           above: the SAMPLING role gets the whole-nav takeover, and the only
           other login middleware admits to these pages is an admin. */}
       {isAdmin && <Section label="Sampling" items={samplingItems} path={path} />}
-      {/* Shop Floor -> Commercial. Admins get the whole section, same reasoning
-          as Sampling. A line manager gets the ONE row the area table gives him
-          — the dispatch check in bay 5 (answer 6) — under the same
-          "Verification" heading the store incharge's arm above uses, so the two
-          logins that stand in for the dispatch team read alike. Every other
-          shop-floor role has no Commercial area at all and Section renders
-          nothing for an empty list. */}
-      {isAdmin
-        ? <Section label="Commercial" items={commercialItems} path={path} />
-        : <Section label="Verification" items={commercialItems} path={path} />}
+      {/* Shop Floor -> the dispatch check, and NOTHING ELSE of Commercial.
+          The owner, 2026-09-09: "make sure commercial is only in office not in
+          shopfloor." So the admin's full Commercial section is gone from this
+          nav — it is on his OFFICE nav, which is where the desk works, and an
+          admin's sidebar follows the login card he came in on.
+
+          The ONE row that stays is the dispatch check, and it stays because it
+          is not really an office screen: bay 5 is on the shop floor (round two,
+          answer 6), and a line manager standing there needs the tab. It keeps
+          the "Verification" heading the store incharge's arm above uses, so the
+          two logins that stand in for the dispatch team read alike. filter, not
+          a second list — commercialItems is still the area table's answer, so a
+          login with no dispatch area gets an empty list and Section renders
+          nothing at all. */}
+      <Section label="Verification"
+        items={commercialItems.filter((r) => r.href.startsWith("/office/commercial/dispatch-check"))}
+        path={path} />
       {(inventory || (slabIntake && isAdmin)) && <Section label="Inventory" items={[
         ...(inventory ? [{ href: "/inventory", icon: I.box, label: "Finished Goods" }] : []),
         // Admins only here: a named intake person on the shop floor already
