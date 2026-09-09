@@ -87,6 +87,34 @@ test("AN UNPRICEABLE SHAPE FREEZES THE SINK AND NOT THE EDGE", () => {
   assert.deepEqual(pieceCharge(s, true), { edge: 0, sink: 230 });
 });
 
+test("AN AGREED TOTAL WITH NO SIDES TICKED FREEZES THE MONEY, NOT A ZERO", () => {
+  // THE FAILURE: an L-shaped 60-piece row nobody could tick a side on, priced at
+  // Rs50,000 over the phone — which is exactly what the override is for. The
+  // divisor under RUNNING_FOOT was edgePieces, and edgePieces is 0 with no side
+  // ticked, so every piece got a share of NOTHING while rowHasEdgeWork said the
+  // row had no edge work at all — and mayFreeze still said yes, because the row
+  // priced cleanly. Packing then wrote charged_edge = 0 onto all sixty pieces,
+  // `AND charged_at IS NULL` means it is never rewritten, and the period report
+  // pays Rs0 on a row somebody agreed Rs50,000 for.
+  const s = rowShares({
+    ...ROW_A, shape: "L_SHAPE", edges: {}, edgeTotalOverride: 50000,
+  });
+  assert.equal(s.unpriced, false, "an agreed figure is a priced row");
+  assert.equal(mayFreeze(s), true);
+  assert.equal(s.rowHasEdgeWork, true, "the row IS charged for hand work — Rs50,000 of it");
+  assert.ok(Math.abs(s.edge - 50000 / 60) < 1e-9, "the agreed total over the ordered pieces");
+  assert.equal(s.sink, 230, "and the sink is untouched by the override");
+
+  // What is stamped onto the sixty pieces adds back up to what was agreed.
+  const plain = pieceCharge(s, false);
+  assert.ok(Math.abs(plain.edge * 60 - 50000) < 1e-9);
+
+  // A row that DOES have sides ticked is unchanged: the feet still decide the
+  // divisor, and 60 is 60 either way.
+  const ticked = rowShares({ ...ROW_A, edgeTotalOverride: 50000 });
+  assert.ok(Math.abs(ticked.edge - 50000 / 60) < 1e-9);
+});
+
 test("A ROW THAT CANNOT BE PRICED AT ALL FREEZES ZEROES, not NaN", () => {
   // 12 mm stone is off the rate card. Both shares are zero and the report says
   // so; what must never happen is a NaN reaching a SUM in Postgres, which turns

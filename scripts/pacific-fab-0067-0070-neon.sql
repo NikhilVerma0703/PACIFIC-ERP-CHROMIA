@@ -103,14 +103,45 @@
 --     new names, and nothing is missing from it.
 --
 -- ─────────────────────── 5 · LOCK PROFILE AND DURATION ──────────────────────
---  Every statement is ADD COLUMN or ADD CONSTRAINT. Each takes ACCESS EXCLUSIVE
---  on its table for the instant it edits the catalogue, then releases it. No
---  table is scanned and no row is rewritten, so duration does not grow with
---  table size — milliseconds on any size of fab_*.
+--  Every statement is ADD COLUMN, ADD CONSTRAINT or CREATE INDEX, and no row is
+--  ever rewritten. But 0067 is NOT the same shape as the other three, and an
+--  earlier version of this section said "no table is scanned" for all four.
+--  That was wrong for 0067. Read this before you pick the hour to run it.
 --
---  0068, 0069 and 0070 add their CHECKs NOT VALID and validate them in separate
---  statements outside the transaction, so the validation pass takes only SHARE
---  UPDATE EXCLUSIVE and blocks neither reads nor writes.
+--  0067 VALIDATES IN-TRANSACTION — it is one BEGIN … COMMIT. Its eleven
+--  CHECK constraints are added plain — no NOT VALID — so each one seq-scans its
+--  table to prove no existing row breaks it. None can break (every column named
+--  is new and NULL on every row), but Postgres scans anyway; its two CREATE
+--  INDEXes are plain as well, not CONCURRENTLY, so they scan too. Duration for
+--  0067 therefore DOES grow with table size: fab_requirement, fab_piece and
+--  fab_project are each read end to end. Sub-second at the fab_* row counts we
+--  have today — which is a statement about today, not a property of the script.
+--
+--  AND IT IS ONE TRANSACTION, so every lock it takes is held from the statement
+--  that takes it until COMMIT, not "for the instant it edits the catalogue":
+--    · ACCESS EXCLUSIVE on fab_requirement, fab_piece and fab_project. Reads
+--      and writes to the fabrication tables wait for the whole of 0067.
+--    · ShareRowExclusive on "users" and on fab_machine_session, taken by the
+--      four foreign keys — three of which point at users. That lock blocks
+--      WRITES to those tables, not reads. users is shared by every department,
+--      so while 0067 runs, a login that bumps session_version, an edit in Users
+--      & Roles and the opening of a new machine session all queue behind it.
+--      Section 3 does list these FKs, but the "Applies to" line at the top of
+--      this file reads as fab-only. For 0067 it is not.
+--
+--  0068, 0069 and 0070 are the shape 0067 should have been: they add their
+--  CHECKs NOT VALID and validate them in separate statements outside the
+--  transaction, so the validation pass takes only SHARE UPDATE EXCLUSIVE and
+--  blocks neither reads nor writes. They add no foreign key and no index, so
+--  they never touch users or fab_machine_session at all.
+--
+--  0067 IS ALREADY APPLIED IN PRODUCTION and its statements are deliberately
+--  left exactly as they were run. Re-running the file is still safe, but note
+--  that the drop-then-add idempotency in 0067 re-executes those scanning ADD
+--  CONSTRAINTs — so a re-run costs the same locks as the first run, and wants
+--  the same quiet hour. When you write the NEXT fab migration, copy the
+--  0068-0070 pattern (NOT VALID + a separate VALIDATE, CONCURRENTLY for any
+--  index), not 0067's.
 --
 --  If a statement blocks, it is waiting on an existing long transaction, not on
 --  its own work. Cancel and retry rather than waiting it out.

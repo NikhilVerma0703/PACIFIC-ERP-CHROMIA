@@ -14,6 +14,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { priceRow, sumPricing, runningFeet, parseEdges, ALL_EDGES, rateFor } from "../src/lib/fab/pricing.ts";
 import { planSinkSplit, sideOf } from "../src/lib/fab/sinkSplit.ts";
@@ -546,4 +547,51 @@ test("SAMPLES · forty samples across two slabs still make exactly forty", () =>
   assert.equal(a.pieces.concat(b.pieces).filter(p => p.hasSink).length, 0,
     "not one sample piece may carry a sink");
   assert.equal(b.pieces.at(-1)!.n, 40, "and the numbering ends where it should");
+});
+
+/* ══════════════════════════════════════════════════════════════════════════
+   8 · THE FROZEN CHARGE — the two edits that would lose it silently
+   ══════════════════════════════════════════════════════════════════════════ */
+
+// These two read source text rather than call a function, because what they
+// guard is not a calculation: it is a pair of declarations whose absence is
+// invisible until money is already gone. Both failures below have a dated
+// precedent in this repo.
+
+test("FABRICATION · FabPiece still declares the three scripts/0066 charge columns", () => {
+  // `prisma db push` compares the database to schema.prisma and DROPS any
+  // column no model describes — that is how grants were lost on the dev
+  // database on 24 Aug 2026. charged_edge / charged_sink / charged_at hold the
+  // frozen earnings of every packed piece for closed months, so a db push with
+  // these three undeclared deletes the audit trail the CEO period report reads,
+  // permanently and without a word.
+  const schema = readFileSync(new URL("../prisma/schema.prisma", import.meta.url), "utf8");
+  const start = schema.indexOf("model FabPiece {");
+  assert.notEqual(start, -1, "model FabPiece must exist");
+  const model = schema.slice(start, schema.indexOf("\n}", start));
+
+  assert.match(model, /chargedEdge\s+Float\?\s+@map\("charged_edge"\)/);
+  assert.match(model, /chargedSink\s+Float\?\s+@map\("charged_sink"\)/);
+  assert.match(model, /chargedAt\s+DateTime\?\s+@map\("charged_at"\)/);
+});
+
+test("FABRICATION · undoing a pack clears the freeze, and cannot swallow the failure", () => {
+  // The packaging route stamps the charge once — `AND charged_at IS NULL` — so
+  // an undo that does not clear all three leaves the FIRST pack's figure to be
+  // counted on the SECOND pack's day.
+  //
+  // AND IT MUST BE ALLOWED TO FAIL LOUDLY. The clear runs inside the undo
+  // transaction, and a caught error does not un-abort a Postgres transaction:
+  // one failed statement aborts it, so a try/catch around the clear only hides
+  // that the COMMIT failed too, and the operator is told an undo happened that
+  // did not. An empty catch anywhere in this route is that bug coming back.
+  const undo = readFileSync(
+    new URL("../src/app/api/fab/queues/undo/route.ts", import.meta.url), "utf8");
+
+  assert.match(undo, /chargedEdge:\s*null/);
+  assert.match(undo, /chargedSink:\s*null/);
+  assert.match(undo, /chargedAt:\s*null/);
+
+  const swallowed = /catch\s*(\([^)]*\))?\s*\{(\s*\/\/[^\n]*)*\s*\}/.test(undo);
+  assert.equal(swallowed, false, "no empty catch may hide a failed statement in the undo transaction");
 });

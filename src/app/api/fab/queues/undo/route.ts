@@ -63,18 +63,23 @@ export async function POST(req: Request) {
     // again. Without this the report keeps the single-face figure permanently,
     // which is the exact "half an invoice" outcome 0066 exists to prevent.
     //
-    // RAW AND WRAPPED, like every other read of a 0066 column: a deploy running
-    // ahead of the migration undoes the pack exactly as it does today and simply
-    // has no stamp to clear.
+    // NOT RAW AND NOT SWALLOWED, though it used to be both. A raw UPDATE in a
+    // try/catch here could only ever make things worse: catching the error does
+    // NOT undo the failed statement, and in Postgres one failed statement
+    // aborts the whole transaction, so every statement after it — and the
+    // COMMIT — fails with "current transaction is aborted". The catch turned a
+    // loud failure into a silent one: the operator is told the undo succeeded
+    // and the piece is still packed.
+    //
+    // The missing-column case the catch was written for cannot happen anyway:
+    // the three columns are declared on FabPiece, so the fabPiece.update above
+    // already selects them back and a deploy running ahead of scripts/0066
+    // fails before it ever reaches this line.
     if (operationType === "PACKAGING") {
-      try {
-        await tx.$executeRaw`
-          UPDATE fab_piece
-             SET charged_edge = NULL, charged_sink = NULL, charged_at = NULL
-           WHERE id = ${pieceId}`;
-      } catch {
-        // scripts/0066 not applied yet. Nothing was frozen, nothing to clear.
-      }
+      await tx.fabPiece.update({
+        where: { id: pieceId },
+        data:  { chargedEdge: null, chargedSink: null, chargedAt: null },
+      });
     }
     return true;
   });

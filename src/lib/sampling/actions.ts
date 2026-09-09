@@ -44,10 +44,24 @@
 // THREE KINDS OF LOGIN REACH THIS MODULE, and only one of them is sampling:
 //
 //   SAMPLING       (Role.SAMPLING)      everything: see the inventory, add
-//                                       stock, release, dispatch, deliver
+//                                       stock, raise a request, release,
+//                                       dispatch, deliver
 //   FAB_SUPERVISOR (branch FABRICATION,
-//                   rank >= INCHARGE)   ADD STOCK ONLY
+//                   rank >= OPERATOR)   ADD STOCK ONLY
 //   ADMIN          (any branch)         everything
+//
+// ADD IS NOT ASK, AND THEY USED TO BE THE SAME WORD. "addStock" gated both the
+// fabrication side's one errand — recording an offcut that came off the saw —
+// and the sampling desk's own request book: GET /api/sampling/requests, which
+// lists the last 100 sample orders WITH the customer each was raised for, and
+// POST, which CREATES a SAMPLE fab_project against any customer name and burns
+// an SR- number that is never reused. While the fab line stopped at INCHARGE
+// that was merely untidy. Lowering it to OPERATOR (below) handed the shared
+// floor login the desk's duty and its customer list along with the offcut.
+//
+// So raising a request is its own action, listed for SAMPLING and ADMIN only.
+// The offcut stays on addStock — intake, the catalogue and the sizes lookup it
+// needs — and widening WHO may contribute stays what it says it is.
 //
 // The fabrication half is there because the offcuts are theirs: a usable piece
 // left over from a cut-to-size job becomes sample stock at the moment it comes
@@ -75,8 +89,8 @@
 import { rankOf, ROLE_RANK } from "../roles.ts";
 
 /** Everything a signed-in user can be asked to do in this module. */
-export type SamplingAction = "view" | "addStock" | "release" | "dispatch" | "deliver";
-export const SAMPLING_ACTIONS: SamplingAction[] = ["view", "addStock", "release", "dispatch", "deliver"];
+export type SamplingAction = "view" | "addStock" | "raiseRequest" | "release" | "dispatch" | "deliver";
+export const SAMPLING_ACTIONS: SamplingAction[] = ["view", "addStock", "raiseRequest", "release", "dispatch", "deliver"];
 
 /** The three kinds of login this module recognises. Not a ranking — a
  *  FAB_SUPERVISOR is not "below" a SAMPLING login, he is a different person
@@ -95,11 +109,12 @@ export type SamplingActor = "SAMPLING" | "FAB_SUPERVISOR" | "ADMIN";
  * module exists around that difference.
  */
 export const SAMPLING_ACTORS: Record<SamplingAction, readonly SamplingActor[]> = {
-  view:     ["SAMPLING", "ADMIN"],
-  addStock: ["SAMPLING", "FAB_SUPERVISOR", "ADMIN"],
-  release:  ["SAMPLING", "ADMIN"],
-  dispatch: ["SAMPLING", "ADMIN"],
-  deliver:  ["SAMPLING", "ADMIN"],
+  view:         ["SAMPLING", "ADMIN"],
+  addStock:     ["SAMPLING", "FAB_SUPERVISOR", "ADMIN"],
+  raiseRequest: ["SAMPLING", "ADMIN"],
+  release:      ["SAMPLING", "ADMIN"],
+  dispatch:     ["SAMPLING", "ADMIN"],
+  deliver:      ["SAMPLING", "ADMIN"],
 };
 
 /**
@@ -124,6 +139,14 @@ export const SAMPLING_ACTORS: Record<SamplingAction, readonly SamplingActor[]> =
  * FAB_SUPERVISOR against "addStock" and against nothing else, and this function
  * does not touch that table. Widening WHO may contribute does not widen WHAT
  * they may do.
+ *
+ * THAT SENTENCE WAS ONCE TRUE OF THE TABLE AND FALSE OF THE ROUTES, which is
+ * the trap worth recording: /api/sampling/requests gated its GET and its POST
+ * on "addStock" too, so this one edit also handed the floor the desk's request
+ * book — customer names and all — and the power to create SAMPLE projects. The
+ * action a route names is the real rule; the table only decides what the name
+ * means. Raising a request is "raiseRequest" now, and this function reaches
+ * nothing but the offcut.
  *
  * The actor is still named FAB_SUPERVISOR. Renaming it would rewrite every
  * entry in that table for no change in behaviour, and the name has always meant
