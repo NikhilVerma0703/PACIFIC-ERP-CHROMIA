@@ -17,6 +17,29 @@
 // A supervisor or manager needs no session — his login IS the identity — and
 // one is recorded anyway if he happens to have it open.
 //
+// ─────────────────────── THE ACT IS THE CUTTER'S, THE PRICE IS NOT ──────────
+// Sending a piece to the bench and deciding what the bench is paid are two
+// different decisions that arrived through one button, and only the first one
+// was ever the floor's. The hand figures are not a note: pieceChargeWithHand
+// prefers a piece's hand spec over its row, and stampPieceCharges FREEZES the
+// result into charged_edge when the piece is packed — written once, never
+// rewritten. So a floor login typing a rate here was not proposing a price, it
+// was settling what the project earned, on any piece id it cared to name and,
+// with wholeRow, on every in-progress piece of any row.
+//
+// The split: polish_by_hand and the three faces are accepted from EMPLOYEE —
+// the machine broke and the man at it is the one who knows — while rate,
+// pairRate, rateTop/Bottom/Side, pricingMode and totalOverride are accepted
+// only from SUPERVISOR and above. From a floor login those fields are IGNORED,
+// not refused: the send still happens, the pieces keep whatever terms they
+// already had, and the reply says so (priceAccepted) so the screen can tell him
+// the price is the supervisor's rather than silently dropping his figure.
+//
+// IGNORED MEANS UNTOUCHED, not blanked. Writing NULL over a rate a supervisor
+// had already agreed would be the same repricing by a different route — the
+// piece would fall back to the rate card. The floor's write does not name those
+// columns at all.
+//
 // ─────────────────────── PRICING ONLY, AS AGREED ────────────────────────────
 // polish_by_hand does NOT reroute anything. The piece stays in the polishing
 // queue and the piece funnel counts do not move. The owner chose that: "pricing
@@ -31,7 +54,7 @@
 
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { fabGate } from "@/lib/fab/access";
+import { fabGate, TIER_RANK, type FabTier } from "@/lib/fab/access";
 import { readProcessSession } from "@/lib/fab/processSessionServer";
 import {
   POLISH_FACES, parseShape, isRound, RECT_EDGES, ROUND_EDGE,
@@ -322,6 +345,17 @@ export async function POST(req: NextRequest) {
   const override = money(body.totalOverride, "The agreed total");
   if (!override.ok) return Response.json({ error: override.error }, { status: 400 });
 
+  // WHO IS ALLOWED TO SETTLE THE FIGURE — see the head of this file. g.ok is
+  // true here, so the tier is set; SUPERVISOR and above price, EMPLOYEE sends.
+  const mayPrice = TIER_RANK[g.tier as FabTier] >= TIER_RANK.SUPERVISOR;
+  const priced = mayPrice
+    ? {
+        rate: rate.value, pairRate: pairRate.value,
+        rateTop: rateTop.value, rateBottom: rateBottom.value, rateSide: rateSide.value,
+        mode, override: override.value,
+      }
+    : { rate: null, pairRate: null, rateTop: null, rateBottom: null, rateSide: null, mode: null, override: null };
+
   // NOTHING AGREED AT ALL IS REFUSED. A piece on the bench with no faces, no
   // rate and no figure is somebody polishing stone for a price nobody set — the
   // pricing module reports it as unpriced, and it is better to refuse the button
@@ -334,44 +368,73 @@ export async function POST(req: NextRequest) {
   // demanding faces demanded a lie. Per piece and lump sum price from the
   // quantity, not the perimeter; only RUNNING_FOOT needs to know which edges,
   // because only feet are measured along them. See priceRow's chargePieces.
+  //
+  // ASKED OF WHAT WILL ACTUALLY BE WRITTEN, which is why it reads `priced` and
+  // not the body: a floor login's rate is ignored, so a send carrying nothing
+  // BUT a rate would otherwise pass this check and store an empty spec —
+  // handPieceCharge reports exactly that as the unpriced HAND_SPEC hole.
   const anyFace = POLISH_FACES.some((f) => faceCols[f] !== undefined && faceCols[f] !== null && faceCols[f] !== "");
-  const hasPieceRate = mode !== null && mode !== "RUNNING_FOOT" && rate.value !== null;
-  if (!anyFace && override.value === null && !hasPieceRate) {
+  const hasPieceRate = priced.mode !== null && priced.mode !== "RUNNING_FOOT" && priced.rate !== null;
+  if (!anyFace && priced.override === null && !hasPieceRate) {
     return Response.json(
       {
-        error:
-          "Say what is being paid for: choose which faces are polished, or set " +
-          "Per piece / Lump sum with a rate, or enter an agreed total.",
+        error: mayPrice
+          ? "Say what is being paid for: choose which faces are polished, or set " +
+            "Per piece / Lump sum with a rate, or enter an agreed total."
+          : "Choose which faces the bench is polishing. The rate is the " +
+            "supervisor's to set, so a price on its own cannot send a piece to hand.",
       },
       { status: 400 },
     );
   }
 
   try {
-    const n = await prisma.$executeRaw`
-      UPDATE fab_piece
-         SET polish_by_hand        = true,
-             hand_edges_top        = ${faceCols.top ?? null},
-             hand_edges_bottom     = ${faceCols.bottom ?? null},
-             hand_edges_side       = ${faceCols.side ?? null},
-             hand_rate             = ${rate.value},
-             hand_pair_rate        = ${pairRate.value},
-             hand_rate_top         = ${rateTop.value},
-             hand_rate_bottom      = ${rateBottom.value},
-             hand_rate_side        = ${rateSide.value},
-             hand_pricing_mode     = ${mode},
-             hand_total_override   = ${override.value},
-             hand_assigned_by_id   = ${g.user.id as string},
-             hand_assigned_session_id = ${session?.id ?? null},
-             hand_assigned_at      = now()
-       WHERE id = ANY(${pieceIds}::text[])
-         AND status NOT IN ('PACKAGED','REJECTED')`;
+    // TWO WRITES, ONE ACT. The floor's statement does not mention the money
+    // columns at all — see the head of this file — so a rate a supervisor has
+    // already agreed on these pieces survives a cutter re-sending them.
+    const n = mayPrice
+      ? await prisma.$executeRaw`
+          UPDATE fab_piece
+             SET polish_by_hand        = true,
+                 hand_edges_top        = ${faceCols.top ?? null},
+                 hand_edges_bottom     = ${faceCols.bottom ?? null},
+                 hand_edges_side       = ${faceCols.side ?? null},
+                 hand_rate             = ${priced.rate},
+                 hand_pair_rate        = ${priced.pairRate},
+                 hand_rate_top         = ${priced.rateTop},
+                 hand_rate_bottom      = ${priced.rateBottom},
+                 hand_rate_side        = ${priced.rateSide},
+                 hand_pricing_mode     = ${priced.mode},
+                 hand_total_override   = ${priced.override},
+                 hand_assigned_by_id   = ${g.user.id as string},
+                 hand_assigned_session_id = ${session?.id ?? null},
+                 hand_assigned_at      = now()
+           WHERE id = ANY(${pieceIds}::text[])
+             AND status NOT IN ('PACKAGED','REJECTED')`
+      : await prisma.$executeRaw`
+          UPDATE fab_piece
+             SET polish_by_hand        = true,
+                 hand_edges_top        = ${faceCols.top ?? null},
+                 hand_edges_bottom     = ${faceCols.bottom ?? null},
+                 hand_edges_side       = ${faceCols.side ?? null},
+                 hand_assigned_by_id   = ${g.user.id as string},
+                 hand_assigned_session_id = ${session?.id ?? null},
+                 hand_assigned_at      = now()
+           WHERE id = ANY(${pieceIds}::text[])
+             AND status NOT IN ('PACKAGED','REJECTED')`;
     return Response.json({
       success: true,
       pieces: n,
       // Said back so the screen can show who it recorded rather than assuming.
       // On the floor this is the SESSION's worker, not the shared login.
       recordedFrom: session ? "floor" : "desk",
+      /** Was the figure in the dialog stored, or is the price still the
+       *  supervisor's? A send whose rate was quietly dropped is a price
+       *  somebody believes was agreed, so the reply says which happened. */
+      priceAccepted: mayPrice,
+      priceNote: mayPrice
+        ? null
+        : "Sent to the hand bench. The rate is the supervisor's to set — these pieces keep the terms they already had.",
     });
   } catch (e) {
     console.error("[fab/send-to-hand] update failed", e);

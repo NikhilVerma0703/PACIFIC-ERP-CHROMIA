@@ -34,6 +34,28 @@
 // rather than describe it down a phone to somebody who is not. A tier was never
 // standing in for a constraint here, so removing one does not remove the other.
 //
+// ────────────────── EXCEPT ONE, AND THE TIER WAS STANDING IN FOR IT ─────────
+// AN ALLOCATION IS ALSO A PRICE. Every pricing query keys the rate card on
+// MAX(fab_slab.thickness) across a row's allocations — /api/fab/manager/pos/
+// [poId]/rows, /api/fab/ceo and the packaging freeze all read it that way — so
+// putting a row on stone of a different thickness moves the sink rate, and for
+// a row priced off the card the edge rate too, for EVERY piece on it including
+// the ones already cut from the first slab. With scripts/0066 the new figure is
+// then frozen onto each piece as it is packed and cannot be rewritten.
+//
+// So a cutter allocating "the remaining 20 pieces" onto a 3 cm slab would
+// reprice a 2 cm row from ₹230 a sink to ₹300, without ever seeing a rate. That
+// is not the widening the owner asked for — "click +slab and enter the rows and
+// quantity and cut" is about placing work, not settling terms — so an
+// allocation that would change the thickness the row is already priced at is
+// refused for an EMPLOYEE and left to a SUPERVISOR, whose own login is the
+// record for a decision somebody has to own. The first slab on a row is free:
+// there is no price yet to move.
+//
+// THE CHECK IS ON WHAT IT COSTS, NOT ON THE MILLIMETRES. Two readings that land
+// on the same rate-card entry (rateFor tolerates the ±1 mm a gauge reports) buy
+// the same rate, so they are the same stone as far as this rule is concerned.
+//
 // ─────────────────────────────────────────────────────────────────────────────
 // OVER-ALLOCATION, AND WHERE THE TRANSACTION BOUNDARY SITS
 //
@@ -63,8 +85,9 @@
 
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { fabGate } from "@/lib/fab/access";
+import { fabGate, TIER_RANK, type FabTier } from "@/lib/fab/access";
 import { decideAllocation } from "@/lib/fab/slabAssignment";
+import { rateFor, thicknessLabel } from "@/lib/fab/pricing";
 import { describeRequirement } from "@/lib/fab/releasePlan";
 import { STANDARD_SLAB_MM } from "@/lib/fab/slabLoss";
 import { markQcSlabCts } from "@/lib/fab/markQcSlabCts";
@@ -98,6 +121,38 @@ function labelOf(r: NameableRequirement): string {
   });
 }
 
+/**
+ * DO THESE TWO SLABS BUY THE SAME RATE? — the question the thickness guard
+ * actually asks; see the head of this file.
+ *
+ * Same rate-card entry means the same money, whatever the gauge said, so 19.8
+ * and 20 are the same stone here. Off the card on either side there is no rate
+ * to compare, and "the same" can only mean the same measurement — a 35 mm slab
+ * on a 2 cm row makes the row unpriceable, which is a repricing to nothing.
+ * An unreadable thickness (NULL) matches only another unreadable one.
+ */
+function pricesTheSame(a: number | null | undefined, b: number | null | undefined): boolean {
+  const ra = rateFor(a);
+  const rb = rateFor(b);
+  if (ra && rb) return ra.nominalMm === rb.nominalMm;
+  const na = Number(a);
+  const nb = Number(b);
+  if (!Number.isFinite(na) || !Number.isFinite(nb) || a == null || b == null) {
+    return a == null && b == null;
+  }
+  return Math.abs(na - nb) <= 1;
+}
+
+/** The thickness a row is priced at right now: MAX over its allocated slabs,
+ *  which is the aggregate every pricing query uses. Null when nothing is
+ *  allocated yet, or when no allocated slab has a readable thickness. */
+function pricedThicknessOf(allocated: Array<{ slab: { thickness: number | null } }>): number | null {
+  const known = allocated
+    .map((a) => a.slab.thickness)
+    .filter((t): t is number => t != null && Number.isFinite(Number(t)));
+  return known.length ? Math.max(...known) : null;
+}
+
 const REQUIREMENT_SELECT = {
   id: true,
   projectId: true,
@@ -124,7 +179,10 @@ export async function POST(req: NextRequest) {
   // cts_conflict event — "fabrication" alone answers none of the questions a
   // conflict raises.
   if (action === "add-slab") return addSlab(body, g.user?.name ?? g.user?.email ?? null);
-  if (action === "assign") return assign(body);
+  // Whether this login may move the rate card the row is priced from, not
+  // whether he may allocate — see the head of this file. g.ok is true here, so
+  // the tier is set.
+  if (action === "assign") return assign(body, TIER_RANK[g.tier as FabTier] >= TIER_RANK.SUPERVISOR);
   return Response.json({ error: `Unknown action "${action}".` }, { status: 400 });
 }
 
@@ -215,7 +273,7 @@ async function addSlab(body: Record<string, unknown>, by: string | null) {
 
 /* -- Adding a row to a slab ------------------------------------------------ */
 
-async function assign(body: Record<string, unknown>) {
+async function assign(body: Record<string, unknown>, mayReprice: boolean) {
   const slabId = String(body.slabId ?? "").trim();
   const requirementId = String(body.requirementId ?? "").trim();
   const allocatedQuantity = Number(body.allocatedQuantity);
@@ -239,7 +297,9 @@ async function assign(body: Record<string, unknown>) {
 
       const slab = await tx.fabSlab.findUnique({
         where: { id: slabId },
-        select: { id: true, slabCode: true, projectId: true },
+        // thickness, because this row's rate card is keyed on it — see the
+        // head of this file.
+        select: { id: true, slabCode: true, projectId: true, thickness: true },
       });
       if (!slab) return { kind: "no-slab" as const };
       if (slab.projectId !== requirement.projectId) return { kind: "wrong-project" as const };
@@ -252,8 +312,29 @@ async function assign(body: Record<string, unknown>) {
 
       const existing = await tx.fabRequirementAllocation.findMany({
         where: { requirementId },
-        select: { id: true, allocatedQuantity: true },
+        // The slab's thickness rides along with the over-allocation read
+        // rather than in a second query, so both are seen under the one lock.
+        select: { id: true, allocatedQuantity: true, slab: { select: { thickness: true } } },
       });
+
+      // THE ROW IS PRICED FROM THE STONE. Refused before anything is written,
+      // and only for a login that may not settle terms — see the head of this
+      // file for what a silent thickness change costs once 0066 freezes it.
+      const rowThickness = pricedThicknessOf(existing);
+      // slab.thickness NULL is not a mismatch, it is an unknown. A slab whose
+      // thickness nobody recorded cannot raise the row's price, because the
+      // price is taken from the MAXIMUM thickness allocated and a null never
+      // wins that. Refusing it would block the cutter from a perfectly
+      // ordinary allocation for a field somebody forgot to fill on intake.
+      if (!mayReprice && rowThickness !== null && slab.thickness != null && !pricesTheSame(slab.thickness, rowThickness)) {
+        return {
+          kind: "thickness" as const,
+          slabCode: slab.slabCode,
+          slabThickness: slab.thickness,
+          rowThickness,
+          label: labelOf(requirement),
+        };
+      }
 
       const decision = decideAllocation({
         orderedQuantity: requirement.quantity,
@@ -467,6 +548,7 @@ type Outcome =
   | { kind: "ok"; allocation: { id: string; allocatedQuantity: number } | null; remaining: number | null }
   | { kind: "refused"; error: string; remaining: number }
   | { kind: "sent"; slabCode: string; status: string }
+  | { kind: "thickness"; slabCode: string; slabThickness: number | null; rowThickness: number; label: string }
   | { kind: "no-requirement" }
   | { kind: "no-allocation" }
   | { kind: "no-slab" }
@@ -488,6 +570,22 @@ function respond(outcome: Outcome): Response {
           error:
             `Slab ${outcome.slabCode} has already gone to the cutter (${outcome.status.replace(/_/g, " ").toLowerCase()}), ` +
             `so its rows can no longer be changed. Nothing was saved.`,
+        },
+        { status: 409 },
+      );
+    case "thickness":
+      // 409, like the over-allocation refusal: the request is well formed and
+      // the answer is about the state of the row, not the shape of the message.
+      // It names both thicknesses because the fix is either a different slab or
+      // a supervisor, and he cannot choose between them without knowing which
+      // stone the row is on.
+      return Response.json(
+        {
+          error:
+            `Slab ${outcome.slabCode} is ${thicknessLabel(outcome.slabThickness)} stone and ` +
+            `${outcome.label} is already being cut — and priced — from ${thicknessLabel(outcome.rowThickness)}. ` +
+            `Mixing them changes the rate for every piece on the row, so a supervisor has to make that call. ` +
+            `Nothing was saved.`,
         },
         { status: 409 },
       );

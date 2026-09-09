@@ -79,6 +79,50 @@ test("a rate per face — each bucket carries its OWN rate, and they still sum",
     "nothing is bottom-only here — front and back are shared and paired");
 });
 
+test("THE SAME AGREED FIGURE ON ALL THREE FACES IS CHARGED, NOT THE RATE CARD", () => {
+  // The customer agreed Rs12 a foot and the supervisor typed it into all three
+  // boxes. "All three faces agree" is also what an untouched row looks like, so
+  // the single-multiplication branch took it — and multiplied by the CARD.
+  // Row A on 2 cm stone billed 505 ft x Rs15 = Rs7,575 against an agreed
+  // Rs6,060: Rs1,515 the customer never accepted, on one row.
+  const agreed = priceRow({
+    ...A, faceEdges: { top: ALL_EDGES },
+    rateTop: 12, rateBottom: 12, rateSide: 12,
+  });
+  assert.equal(agreed.runningFeet, 505);
+  assert.equal(agreed.rateSource, "CARD", "no ROW rate — the card is still the fallback");
+  assert.equal(agreed.edgeRate, 15, "…and it is still reported, unchanged");
+  assert.equal(agreed.edgeCost, 6060, "505 ft x the agreed Rs12, not the card's Rs15");
+  assert.equal(agreed.unpriced, false);
+  // The panel beside the boxes shows the figure that was typed AND the money it
+  // bought. Before the fix it printed Rs12 against a cost of Rs7,575.
+  assert.equal(linesTotal(agreed.edgeLines), agreed.edgeCost);
+  assert.equal(agreed.edgeLines.find((l) => l.key === "TOP")?.rate, 12);
+
+  // AND THE ROW NOBODY HAS TOUCHED CANNOT MOVE. Every face empty falls back to
+  // the same card figure, which is the identical multiplication as before.
+  const untouched = priceRow({ ...A, faceEdges: { top: ALL_EDGES } });
+  assert.equal(untouched.edgeCost, 7575, "505 ft x Rs15 — no quote already sent moves");
+  assert.equal(untouched.rateTop, 15);
+});
+
+test("A ROW PRICED ONLY PER FACE STILL SHOWS ITS BUCKETS — off the card is not off the panel", () => {
+  // 35 mm stone, or simply a row not on a slab yet: there is no card rate and no
+  // row rate, so edgeRate is null while the top face carries Rs18 somebody
+  // typed. The charge went through the per-face path and the breakdown did not:
+  // an empty panel beside the box that priced it, and lines summing to 0 against
+  // a charge of Rs9,090 — the invariant this whole file tests.
+  const p = priceRow({ ...A, thicknessMm: 35, faceEdges: { top: ALL_EDGES }, rateTop: 18 });
+  assert.equal(p.edgeRate, null, "no row rate and no card");
+  assert.equal(p.rateTop, 18);
+  assert.equal(p.edgeCost, 9090, "505 ft x Rs18");
+  assert.equal(p.unpriced, false);
+  assert.equal(p.edgeLines.length, 1);
+  assert.equal(p.edgeLines[0].key, "TOP");
+  assert.equal(p.edgeLines[0].rate, 18);
+  assert.equal(linesTotal(p.edgeLines), p.edgeCost);
+});
+
 test("A SHARED SIDE APPEARS IN BOTH FACES' PANELS, because it belongs to both", () => {
   const p = priceRow({
     ...A,
@@ -140,6 +184,24 @@ test("an agreed total keeps the calculation's buckets beside it, not instead of 
   // rate card survives a year.
   assert.equal(linesTotal(p.edgeLines), p.calculatedEdgeCost);
   assert.notEqual(p.calculatedEdgeCost, 4000);
+});
+
+test("AN AGREED TOTAL ON A ROW WITH NO SIDES TICKED IS WORTH SOMETHING PER PIECE", () => {
+  // The override exists precisely so nobody has to tick anything: an L-shaped
+  // 60-piece row the module refuses to price, and a figure agreed on the phone.
+  // Under RUNNING_FOOT the divisor was edgePieces — zero here — so the row read
+  // Rs50,000 with every piece worth NOTHING, and packing froze that zero.
+  const p = priceRow({
+    ...A, shape: "L_SHAPE", edges: {}, faceEdges: {}, edgeTotalOverride: 50000,
+  });
+  assert.equal(p.edgeCost, 50000);
+  assert.equal(p.unpriced, false, "a figure a human agreed beats a gap");
+  assert.equal(p.edgePieces, 0, "no side is ticked — there are no feet to measure");
+  assert.equal(p.chargePieces, 60, "the agreed total covers the ORDERED pieces");
+  assert.equal(p.edgeCostPerPiece, 833.33);
+  // Sixty shares rebuild the agreed figure, which is the whole point of the
+  // divisor: what is frozen onto the pieces must add back up to what was agreed.
+  assert.ok(Math.abs((50000 / p.chargePieces) * 60 - 50000) < 1e-9);
 });
 
 test("what one piece earned — the divisor is chargePieces, not the sink count", () => {

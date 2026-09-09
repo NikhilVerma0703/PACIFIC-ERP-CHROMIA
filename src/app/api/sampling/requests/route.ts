@@ -44,6 +44,25 @@ import { rowSqft } from "@/lib/fab/requirementRow";
 
 export const dynamic = "force-dynamic";
 
+// ───────────────────── BOTH HALVES ARE THE DESK'S: "raiseRequest" ───────────
+// Not "addStock", which is what they were gated on. addStock is the action the
+// FABRICATION side holds — it exists so the man at the saw can put an offcut on
+// the shelf — and it was widened from INCHARGE to OPERATOR to reach him. This
+// route is not that errand twice over:
+//
+//   GET   lists the last 100 sample orders WITH the customer each was raised
+//         for (`requestedFor`) and the order remarks. The fab floor has never
+//         been able to see who a sample is for, and the reuse handed it over
+//         the moment the contributor floor dropped.
+//   POST  CREATES a fab_project — a production work order on the supervisor's
+//         board — against any customer name, and takes an SR- number that this
+//         route deliberately never reuses.
+//
+// So this route names its own action, listed for SAMPLING and ADMIN only, and
+// the offcut keeps addStock alone (intake, catalogue, sizes, slab-offcuts). The
+// two halves stay on ONE action because they are one duty: the desk's request
+// book, read and written by the same person on the same screen.
+
 function deny(status: number) {
   return Response.json(
     { error: status === 401 ? "Your session has ended — sign in again." : "Not authorized" },
@@ -73,7 +92,9 @@ interface LineInput {
 }
 
 export async function GET() {
-  const g = await samplingGate("addStock");
+  // "raiseRequest", NOT "addStock" — see the note below the imports. This
+  // answer carries the customer every sample was raised for.
+  const g = await samplingGate("raiseRequest");
   if (!g.ok) return deny(g.status);
 
   const orders = await prisma.fabProject.findMany({
@@ -135,7 +156,8 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const g = await samplingGate("addStock");
+  // This CREATES a production work order — see the note below the imports.
+  const g = await samplingGate("raiseRequest");
   if (!g.ok) return deny(g.status);
 
   let body: { requestedFor?: unknown; note?: unknown; lines?: unknown };

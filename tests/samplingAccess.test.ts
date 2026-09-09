@@ -1,9 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   SAMPLING_ACTIONS, SAMPLING_ACTORS,
   samplingActorOf, samplingCan, samplingActionsFor,
   isFabStockContributor, maySeeSamplingModule,
+  type SamplingAction,
 } from "../src/lib/sampling/actions.ts";
 import { ROLE_RANK, rankOf, ROLE_LABEL } from "../src/lib/roles.ts";
 import { homeFor, maySeeMis, samplingMayVisit, storeMayVisit, operatorMayVisit } from "../src/lib/routeCaps.ts";
@@ -77,6 +81,7 @@ test("A FABRICATION SUPERVISOR MAY ADD STOCK, AND NOTHING ELSE", () => {
   assert.deepEqual(samplingActionsFor(fabSup), ["addStock"]);
   assert.ok(samplingCan(fabSup, "addStock"));
   assert.ok(!samplingCan(fabSup, "view"), "the sample inventory is not his to read");
+  assert.ok(!samplingCan(fabSup, "raiseRequest"), "raising a sample order is the desk's duty");
   assert.ok(!samplingCan(fabSup, "release"));
   assert.ok(!samplingCan(fabSup, "dispatch"));
   assert.ok(!samplingCan(fabSup, "deliver"));
@@ -120,6 +125,16 @@ test("the fab tier admitted here is the one fabGate(\"EMPLOYEE\") admits", () =>
   assert.deepEqual(samplingActionsFor(u("OPERATOR", "FABRICATION")), ["addStock"]);
   assert.deepEqual(samplingActionsFor(u("INCHARGE", "FABRICATION")), ["addStock"]);
   assert.deepEqual(samplingActionsFor(u("LINE_MANAGER", "FABRICATION")), ["addStock"]);
+
+  // AND EXACTLY ["addStock"] IS THE ASSERTION, not "addStock is in there".
+  // This widening once reached further than the table said it did, because
+  // /api/sampling/requests gated its GET and POST on "addStock" as well: the
+  // cutter got the desk's request book — every sample order with the customer
+  // it was raised for — and the power to create SAMPLE projects. The route
+  // names "raiseRequest" now, and this is the list that says he has no such
+  // thing.
+  assert.ok(!samplingCan(u("OPERATOR", "FABRICATION"), "raiseRequest"),
+    "the offcut is his; the sample order book is not");
 
   // The seam is the BRANCH, because fabrication is still a department — unlike
   // Chromia, which stopped being one. The same rank elsewhere is nobody here,
@@ -289,4 +304,88 @@ test("the new role is in the shared role tables, not just in this module", () =>
   assert.equal(operatorMayVisit("/entry"), true);
   assert.equal(storeMayVisit("/sampling"), false, "the store incharge has no business here");
   assert.equal(operatorMayVisit("/sampling"), false);
+});
+
+// ---------------------------------------------------------------------------
+// WHICH ACTION EACH ROUTE GATES ON — the half of the rule that is not in the
+// table
+// ---------------------------------------------------------------------------
+//
+// The table above only decides what an action MEANS. Which action a route asks
+// for is written in the route, and that is where this module's one real leak
+// was: /api/sampling/requests gated its GET and its POST on "addStock" — the
+// FABRICATION side's action — so lowering isFabStockContributor from INCHARGE
+// to OPERATOR (a change about offcuts) also handed the shared floor login the
+// sample-order book, customer names included, and the ability to create SAMPLE
+// fab_projects that consume an SR- number for good.
+//
+// Nothing in a pure module could have caught that, because both halves were
+// individually right. So the mapping is pinned here, read out of the sources in
+// the style of tests/creditNoteRoleGate.test.ts: change a gate and this test
+// makes you say so.
+
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
+const SAMPLING_API = join(ROOT, "src", "app", "api", "sampling");
+
+/** Every `samplingGate("x")` literal in a source, in order, deduplicated. */
+function gatesIn(source: string): string[] {
+  const found = [...source.matchAll(/samplingGate\(\s*"([a-zA-Z]+)"\s*\)/g)].map((m) => m[1]);
+  return [...new Set(found)].sort();
+}
+
+/** The action each /api/sampling route gates on. Every route.ts under
+ *  src/app/api/sampling must appear here, and the next one added has to be
+ *  entered deliberately rather than inheriting whatever it copied. */
+const ROUTE_GATES: Record<string, SamplingAction[]> = {
+  // THE FABRICATION SIDE'S THREE-AND-A-HALF ROUTES — the offcut, and the
+  // catalogue/size lookups the intake form cannot be filled in without.
+  intake: ["addStock"],
+  catalogue: ["addStock"],
+  sizes: ["addStock"],
+  "slab-offcuts": ["addStock"],
+  // THE DESK'S OWN.
+  inventory: ["view"],
+  requests: ["raiseRequest"],
+  // dispatch also gates its PATCH on a value COMPUTED from the body —
+  // "dispatch" for DISPATCHED, "deliver" for DELIVERED — which is not a
+  // literal and so is not listed. Both are SAMPLING/ADMIN lines like these two.
+  dispatch: ["release", "view"],
+};
+
+test("EVERY /api/sampling ROUTE NAMES ITS ACTION, AND THE FAB SIDE ONLY REACHES addStock", () => {
+  const dirs = readdirSync(SAMPLING_API, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name)
+    .sort();
+  assert.deepEqual(dirs, Object.keys(ROUTE_GATES).sort(),
+    "a new /api/sampling route must be entered in ROUTE_GATES with the action it gates on");
+
+  for (const name of dirs) {
+    const src = readFileSync(join(SAMPLING_API, name, "route.ts"), "utf8");
+    assert.deepEqual(gatesIn(src), [...ROUTE_GATES[name]].sort(), `/api/sampling/${name}`);
+  }
+});
+
+test("THE OFFCUT AND THE ORDER BOOK ARE DIFFERENT ERRANDS — the leak, stated as a rule", () => {
+  // The cutter must reach exactly the routes his errand needs, and no other.
+  const cutter = u("OPERATOR", "FABRICATION");
+  const desk = u("SAMPLING", "SHOP_FLOOR");
+  const reachable = (who: unknown) =>
+    Object.entries(ROUTE_GATES)
+      .filter(([, actions]) => actions.some((a) => samplingCan(who, a)))
+      .map(([name]) => name)
+      .sort();
+
+  assert.deepEqual(reachable(cutter), ["catalogue", "intake", "sizes", "slab-offcuts"],
+    "he records an offcut; he does not read the order book or raise one");
+  assert.deepEqual(reachable(desk), Object.keys(ROUTE_GATES).sort(), "the desk owns the module");
+
+  // Said again at the action, because that is the sentence that broke: the
+  // request book must not be reachable by anything the fab widening admits.
+  for (const fabby of [u("OPERATOR", "FABRICATION"), u("INCHARGE", "FABRICATION"), u("LINE_MANAGER", "FABRICATION")]) {
+    assert.equal(samplingCan(fabby, "raiseRequest"), false);
+    assert.equal(samplingCan(fabby, "view"), false);
+    assert.equal(samplingCan(fabby, "addStock"), true);
+  }
+  assert.deepEqual([...SAMPLING_ACTORS.raiseRequest], ["SAMPLING", "ADMIN"]);
 });

@@ -360,9 +360,34 @@ export default auth((req) => {
       //
       // Planning screens (/fab/projects, /fab/supervisor, /fab/ceo) stay closed:
       // this list is opt-IN, so a fab page added later is not reachable by default.
+      //
+      // ...AND THAT IS WHY /fab/supervisor/slabs IS NAMED HERE, as ONE EXACT
+      // PATH and not as a "/fab/supervisor" prefix.
+      //
+      // The cutter does his own slab allocation now (the owner: "we have slab
+      // allocation page made for supervisor, that need to be included to the
+      // cutter as well"). Five gates were widened from SUPERVISOR to EMPLOYEE
+      // for it — the board, slab-assignment, approve-slab, whoami — and both
+      // the queue nav ("Pick a slab & cut") and the "Waiting for a slab" panel
+      // on /fab/cutting were given links to the board. Nobody added the PAGE.
+      // An opt-in list refuses what it does not name, so every one of those
+      // buttons redirected the operator to /no-access and not one of the five
+      // widened gates was reachable from the UI: the whole feature shipped to
+      // production dead. A widened API gate is not access — the page has to be
+      // opened here too, and the two must be changed together.
+      //
+      // EXACT, because the rest of /fab/supervisor is emphatically not his:
+      // /fab/supervisor (the planning board), /fab/supervisor/people (names,
+      // attendance) and /fab/supervisor/samples stay refused, and so does a
+      // /fab/supervisor/slabs/<something> added later. `p` is a pathname with
+      // no query string, so the panel's ?projectId=... link matches this entry.
+      // The board itself knows an operator is at it (/api/fab/whoami) and
+      // leaves out the step that is not his; that is a UI courtesy, and the
+      // real refusal stays on /api/fab/supervisor/finished-edges.
       const QUEUE_PAGES = [
         "/fab/cutting", "/fab/polishing", "/fab/sink-cutting",
         "/fab/fabrication", "/fab/packaging", "/fab/downtime",
+        "/fab/supervisor/slabs",
       ];
       const ok = QUEUE_PAGES.includes(p) || p === "/fab/session";
       if (!ok) return denied(p, nextUrl, role ?? "", branch ?? "");

@@ -525,6 +525,11 @@ export interface RowPricing {
    * THIS IS ALSO THE DIVISOR for the per-piece share (pieceCharge.rowShares).
    * Dividing a real row cost by edgePieces=0 gives every piece a share of zero,
    * and packaging then freezes that zero permanently.
+   *
+   * AND AN AGREED TOTAL FALLS BACK TO THE ORDERED QUANTITY, for that same
+   * reason: the override is typed on exactly the rows nothing could be ticked
+   * on — an L outline, a blank width — so under RUNNING_FOOT it would otherwise
+   * be spread over zero pieces and Rs0 frozen onto every one of them.
    */
   chargePieces: number;
   /**
@@ -812,15 +817,29 @@ export function priceRow(input: RowPricingInput): RowPricing {
       // no pair rate, so all three fall back to the same figure. Those rows go
       // down the identical code path they always did, and cannot move. Only a
       // row that actually uses the new feature takes the branch below.
-      // `edgeRate !== null` GUARDS THE MULTIPLICATION, not just the branch.
+      //
+      // AND IT MULTIPLIES BY rateTop, NOT edgeRate, WHICH IS THE WHOLE POINT.
+      // "All three faces agree" is ALSO true when a supervisor types the SAME
+      // agreed figure into all three boxes — top, bottom and side at Rs12 — and
+      // this line then charged edgeRate: the row rate falling back to the CARD.
+      // Row A of PO 10026 quoted at Rs12 a foot on every face billed 505 ft x
+      // Rs15 = Rs7,575 instead of Rs6,060, and the breakdown underneath it
+      // printed the customer's Rs12 beside the card's money. The agreed figure
+      // was collected, shown, and thrown away at the one line that charges.
+      //
+      // On every row already in the database this changes NOTHING: with all
+      // three boxes empty rateTop IS edgeRate (each face falls back to it), so
+      // the multiplication is byte-identical and no quote already sent moves.
+      //
+      // `rateTop !== null` GUARDS THE MULTIPLICATION, not just the branch.
       // uniformRate is true when no pair rate is set and the three faces agree
       // — which they also do at NULL/NULL/NULL on a row with no card. Taking
       // this branch then computed `feet * null` and returned NaN, so a row
       // priced per face at one uniform figure would have reported garbage
       // instead of the zero it used to. It falls through to the per-face path,
       // which multiplies each bucket by its own rate and needs no fallback.
-      : uniformRate && edgeRate !== null
-        ? money(feet * edgeRate)
+      : uniformRate && rateTop !== null
+        ? money(feet * rateTop)
         // The per-face path multiplies UNROUNDED feet and rounds once at the
         // end, which is the most accurate thing to do when the buckets really
         // are priced differently and there is no historical figure to match.
@@ -849,8 +868,23 @@ export function priceRow(input: RowPricingInput): RowPricing {
   // shows it.
   const facesWithWork = POLISH_FACES.filter((f) => faceCounts[f] > 0);
   const edgeLines: EdgeLine[] = (() => {
-    if (edgeRate === null || chargePieces === 0) return [];
+    // THE SAME QUESTION THE CHARGE ASKS — `rateAvailable`, not `edgeRate`.
+    //
+    // This guard used to read `edgeRate === null`, which is the ROW's rate
+    // falling back to the CARD, and that is the one thing a per-face row does
+    // not have: a row off the card (35 mm stone, or simply not on a slab yet)
+    // priced at Rs18 on the top charges Rs9,090 through the per-face path and
+    // returned NO buckets at all — empty on exactly the rows the breakdown was
+    // built for, with the panel beside the Rs18 box the supervisor had just
+    // typed showing nothing. It also broke the documented invariant above:
+    // the lines sum to calculatedEdgeCost EXACTLY, and 0 is not Rs9,090.
+    //
+    // PER_PIECE and LUMP_SUM below still need edgeRate itself for their `rate:`
+    // field, so they say so explicitly rather than leaning on this line — the
+    // same reason calculatedEdgeCost writes those two checks out.
+    if (!rateAvailable || chargePieces === 0) return [];
     if (mode === "PER_PIECE") {
+      if (edgeRate === null) return [];
       return [{
         key: "PIECES" as const,
         label: `${chargePieces} piece${chargePieces === 1 ? "" : "s"} by hand`,
@@ -858,6 +892,7 @@ export function priceRow(input: RowPricingInput): RowPricing {
       }];
     }
     if (mode === "LUMP_SUM") {
+      if (edgeRate === null) return [];
       return [{
         key: "LUMP" as const, label: "one figure for the whole row",
         feet: 0, rate: edgeRate, cost: calculatedEdgeCost, faces: facesWithWork,
@@ -909,8 +944,8 @@ export function priceRow(input: RowPricingInput): RowPricing {
   // Derived here rather than on a screen so the card, the PO page and the CEO
   // board cannot arrive at three answers, which is the rule this whole module
   // exists to hold.
-  const shares = (edgeCost: number, total: number) => ({
-    edgeCostPerPiece: chargePieces > 0 ? money(edgeCost / chargePieces) : 0,
+  const shares = (edgeCost: number, total: number, over: number = chargePieces) => ({
+    edgeCostPerPiece: over > 0 ? money(edgeCost / over) : 0,
     totalPerPiece: qty > 0 ? money(total / qty) : 0,
   });
 
@@ -943,10 +978,27 @@ export function priceRow(input: RowPricingInput): RowPricing {
   // The SINK is untouched by it — fixed, per piece, and needing no rescue.
   const override = usableRate(input.edgeTotalOverride);
   if (override !== null) {
+    // AN AGREED TOTAL ALWAYS HAS PIECES TO SPREAD OVER — the ORDERED ones.
+    //
+    // chargePieces is edgePieces under RUNNING_FOOT, and that is ZERO on the
+    // rows the override exists for: the L-shaped 60-piece row nobody ticked a
+    // side on, priced at Rs50,000 over the phone. The row then reported
+    // Rs50,000 with `unpriced: false` and a per-piece share of NOTHING, so
+    // rowShares handed every piece 0 with rowHasEdgeWork false while mayFreeze
+    // said yes — and packing froze Rs0 onto all sixty pieces permanently,
+    // because charged_at is written once and never rewritten. The period report
+    // then pays Rs0 on a row somebody agreed Rs50,000 for.
+    //
+    // The overridden figure covers THE ROW, so its divisor is the row's
+    // quantity whenever no narrower count applies. chargePieces is reported as
+    // the corrected count too, because it is what the money was spread over and
+    // pieceCharge/slabCosting divide by exactly that field.
+    const agreedOver = chargePieces > 0 ? chargePieces : qty;
     return {
       ...base,
+      chargePieces: agreedOver,
       runningFeet: feet, edgeCost: override, total: money(override + sinkCost),
-      ...shares(override, money(override + sinkCost)),
+      ...shares(override, money(override + sinkCost), agreedOver),
       edgeOverridden: true, calculatedEdgeCost,
       unpriced: false, unpricedReason: null,
     };

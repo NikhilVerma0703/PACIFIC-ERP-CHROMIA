@@ -83,7 +83,19 @@ export function storeMayVisit(p: string): boolean {
   );
 }
 
-/** Operators only use their station's entry forms, and the tables behind them. */
+/**
+ * Operators only use their station's entry forms, and the tables behind them.
+ *
+ * THIS IS THE SHOP-FLOOR OPERATOR, NOT THE FABRICATION ONE, and no /fab path
+ * belongs here. A FABRICATION operator never reaches this function: both gates
+ * hand that login to the fab branch allowlist and return before the role caps
+ * run — `if (branch === "FABRICATION") return true` in auth.config.ts's
+ * authorized(), and the `branch === "FABRICATION"` block's own `return` in
+ * middleware.ts, which is where his pages (the five station queues,
+ * /fab/session and /fab/supervisor/slabs) are listed. Adding one of them here
+ * would grant it to the wrong operator — the man on the production line — and
+ * would not grant the fab cutter anything, because he is already gone by then.
+ */
 export function operatorMayVisit(p: string): boolean {
   return alwaysOk(p) || p.startsWith("/entry") || p.startsWith("/tables");
 }
