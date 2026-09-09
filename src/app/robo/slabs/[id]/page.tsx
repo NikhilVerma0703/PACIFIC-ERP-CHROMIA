@@ -8,6 +8,7 @@ import { canEditRoboSetup } from "@/lib/rbac";
 import { slabStatusClass, slabStatusLabel, machineLabel } from "@/lib/robo/utils";
 import { productionDateOf } from "@/lib/robo/productionDate";
 import { roboThicknessOf } from "@/lib/robo/thickness";
+import { sequenceNumbersById } from "@/lib/robo/slabSequence";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Slab Details | Pacific ERP" };
@@ -52,6 +53,23 @@ export default async function SlabCompleteDetailsPage({ params }: { params: Prom
     },
   });
   if (!record) notFound();
+
+  /* S.No. is the slab's position within its batch by physical slab number — the
+     authoritative production order — not the stored serialNumber, which was
+     mistyped on old runs (see slabSequence.ts). Rank this slab among its batch's
+     slabs; a slab with no batch has no in-batch position. */
+  let seqNo: number | null = null;
+  if (record.batchRecipeId) {
+    const mates = await prisma.roboProductionRecord.findMany({
+      where: { batchRecipeId: record.batchRecipeId },
+      select: { id: true, slabNumber: true, createdAt: true },
+    });
+    seqNo =
+      sequenceNumbersById(
+        mates.map((m) => ({ id: m.id, slabNumber: m.slabNumber, createdAtMs: m.createdAt.getTime() })),
+        () => "batch",
+      ).get(record.id) ?? null;
+  }
 
   const setup = record.batchRecipe;
   /* Same gate the Edit setup tab uses, so this page cannot offer a button that
@@ -180,7 +198,7 @@ export default async function SlabCompleteDetailsPage({ params }: { params: Prom
         {/* ── 3. Slab Information ── */}
         <SectionCard title="3. Slab Information">
           <div className="grid grid-cols-1 gap-x-8 md:grid-cols-2">
-            <Field label="S.No." value={dash(record.serialNumber)} />
+            <Field label="S.No." value={dash(seqNo)} />
             <Field label="Slab Number" value={dash(record.slabNumber)} />
             <Field label="In Time" value={dash(record.inTime)} />
             <Field label="Out Time" value={dash(record.outTime)} />

@@ -17,6 +17,22 @@
 // EVERY VIEW RETURNS AN ARRAY. getJson() in lib/fab/postJson.ts hands back
 // `Array.isArray(j) ? j : []`, so an object body would arrive at the screen as
 // a successful empty list — the exact failure mode that helper exists to stop.
+//
+// ─────────────────────────── AND THE CUTTER READS IT TOO ────────────────────
+// The owner: "we have slab allocation page made for supervisor, that need to be
+// included to the cutter as well — but the flow is click +slab and enter the
+// rows and quantity and cut, and rest is same as now."
+//
+// So the gate is EMPLOYEE, not SUPERVISOR. Everyone this admits is already
+// inside the FABRICATION branch — fabTierOf returns null for anybody who is not
+// (lib/fab/access.ts), so "EMPLOYEE" here means a fabrication operator standing
+// at a saw, not the public. What he is being shown is which rows of which
+// project are still waiting for stone, which is the question he now answers
+// himself instead of waiting to be told.
+//
+// A READ, and the writes were widened with it — slab-assignment and
+// approve-slab. Widening only this one would have shown him the work and
+// refused every action on it.
 
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
@@ -34,7 +50,7 @@ const PLANNING_STATUSES = ["PLANNING", "ALLOCATED"] as const;
 const SENT_STATUSES = ["READY", "IN_PROGRESS", "COMPLETED"] as const;
 
 export async function GET(req: NextRequest) {
-  const g = await fabGate("SUPERVISOR");
+  const g = await fabGate("EMPLOYEE");
   if (!g.ok) {
     return Response.json(
       { error: g.status === 401 ? "Your session has ended — sign in again." : "Not authorized" },
@@ -101,6 +117,10 @@ export async function GET(req: NextRequest) {
         description: true,
         length: true,
         width: true,
+        // scripts/0068 — 'CM' or NULL/'IN'. DISPLAY ONLY: length/width above
+        // stay inches, because every running foot and every square foot is
+        // built on them. Selected here because the DTO below sends it on.
+        dimUnit: true,
         quantity: true,
         sinkQuantity: true,
         status: true,
@@ -142,6 +162,9 @@ export async function GET(req: NextRequest) {
           // beside them is in millimetres — see slabLoss.ts.
           lengthIn: r.length,
           widthIn: r.width,
+          // scripts/0068 — the unit the CUSTOMER ordered in. Display only; the
+          // inches above stay the basis of every foot and every square foot.
+          dimUnit: r.dimUnit,
           quantity: r.quantity,
           sinkQuantity: r.sinkQuantity,
           status: r.status,
@@ -178,6 +201,11 @@ export async function GET(req: NextRequest) {
                 description: true,
                 length: true,
                 width: true,
+                // scripts/0068 — 'CM' or NULL/'IN'. DISPLAY ONLY. The edge
+                // picker's drawing renders through it so the supervisor reads
+                // the size his purchase order prints; the running feet are
+                // still computed from the inches above.
+                dimUnit: true,
                 quantity: true,
                 // The sink decision belongs to the ORDER ROW, not to the slab,
                 // but it is made while prepping one — so the slab view carries
@@ -213,14 +241,70 @@ export async function GET(req: NextRequest) {
       slabs.flatMap(s => s.requirementAllocations.map(a => a.requirement.id))
     )];
     const edgesByRequirement = new Map<string, string | null>();
+    // SHAPE TRAVELS WITH THE EDGES, because it decides what the edges MEAN: a
+    // circle has one edge and a rectangle has four, and the picker must not
+    // offer sides to a shape that has none.
+    const shapeByRequirement = new Map<string, string | null>();
+    /** TOP / BOTTOM / BOTH — the other half of the edge charge (scripts/0065). */
+    const faceByRequirement = new Map<string, string | null>();
+    /** scripts/0067 — the three-face specification and this row's own terms.
+     *  Read in a query of its OWN, below, and not added to the select beside
+     *  finished_edges: that one is wrapped in a catch that leaves every row
+     *  "not chosen", so naming a column this database may not have would take
+     *  the entire edge board blank rather than losing one feature. */
+    const termsByRequirement = new Map<string, {
+      edgesTop: string | null; edgesBottom: string | null; edgesSide: string | null;
+      edgeRate: number | null; pairRate: number | null;
+      edgeRateTop: number | null; edgeRateBottom: number | null; edgeRateSide: number | null;
+      pricingMode: string | null; edgeTotalOverride: number | null;
+    }>();
     if (edgeIds.length) {
       try {
-        const edgeRows = await prisma.$queryRaw<Array<{ id: string; finished_edges: string | null }>>`
-          SELECT id, finished_edges FROM fab_requirement WHERE id = ANY(${edgeIds}::text[])
+        const edgeRows = await prisma.$queryRaw<Array<{ id: string; finished_edges: string | null; shape_type: string | null; edge_faces: string | null }>>`
+          SELECT id, finished_edges, shape_type::text AS shape_type, edge_faces
+          FROM   fab_requirement WHERE id = ANY(${edgeIds}::text[])
         `;
-        for (const r of edgeRows) edgesByRequirement.set(r.id, r.finished_edges ?? null);
+        for (const r of edgeRows) {
+          edgesByRequirement.set(r.id, r.finished_edges ?? null);
+          shapeByRequirement.set(r.id, r.shape_type ?? null);
+          faceByRequirement.set(r.id, r.edge_faces ?? null);
+        }
       } catch {
-        // scripts/0055 not applied. Every row reads as not chosen.
+        // scripts/0055 not applied. Every row reads as not chosen, and as a
+        // rectangle — which is what every row written before shapes really is.
+      }
+
+      try {
+        const termRows = await prisma.$queryRaw<Array<{
+          id: string; edges_top: string | null; edges_bottom: string | null;
+          edges_side: string | null; edge_rate: number | null; pair_rate: number | null;
+          edge_rate_top: number | null; edge_rate_bottom: number | null; edge_rate_side: number | null;
+          pricing_mode: string | null; edge_total_override: number | null;
+        }>>`
+          SELECT id, edges_top, edges_bottom, edges_side,
+                 edge_rate, pair_rate, edge_rate_top, edge_rate_bottom, edge_rate_side,
+               pricing_mode, edge_total_override
+          FROM   fab_requirement WHERE id = ANY(${edgeIds}::text[])
+        `;
+        for (const r of termRows) {
+          termsByRequirement.set(r.id, {
+            edgesTop: r.edges_top ?? null,
+            edgesBottom: r.edges_bottom ?? null,
+            edgesSide: r.edges_side ?? null,
+            edgeRate: r.edge_rate == null ? null : Number(r.edge_rate),
+            // scripts/0069 — the price for doing top and bottom together.
+            pairRate: r.pair_rate == null ? null : Number(r.pair_rate),
+            // scripts/0070 — each face's own rate. NULL falls back to edgeRate.
+            edgeRateTop: r.edge_rate_top == null ? null : Number(r.edge_rate_top),
+            edgeRateBottom: r.edge_rate_bottom == null ? null : Number(r.edge_rate_bottom),
+            edgeRateSide: r.edge_rate_side == null ? null : Number(r.edge_rate_side),
+            pricingMode: r.pricing_mode ?? null,
+            edgeTotalOverride: r.edge_total_override == null ? null : Number(r.edge_total_override),
+          });
+        }
+      } catch {
+        // scripts/0067 not applied. Every row keeps its legacy specification,
+        // which is the figure it is quoted at today.
       }
     }
 
@@ -257,12 +341,47 @@ export async function GET(req: NextRequest) {
             description: a.requirement.description,
             lengthIn: a.requirement.length,
             widthIn: a.requirement.width,
+            // scripts/0068 — display unit, so the edge picker's drawing shows the
+            // size the purchase order shows.
+            dimUnit: a.requirement.dimUnit,
             orderedQuantity: a.requirement.quantity,
             sinkQuantity: a.requirement.sinkQuantity,
             /** fab_requirement.finished_edges — canonical CSV, or NULL when
              *  nobody has marked this row's edges. NULL is not "no edges": one
              *  is an unanswered question and the other is an answer. */
             finishedEdges: edgesByRequirement.get(a.requirement.id) ?? null,
+            /** RECTANGLE / CIRCLE / OVAL. Null is a rectangle. A CIRCLE keeps
+             *  its DIAMETER in lengthIn; an OVAL keeps a in lengthIn and b in
+             *  widthIn — see lib/fab/shape.ts. */
+            shapeType: shapeByRequirement.get(a.requirement.id) ?? null,
+            /** TOP / BOTTOM / BOTH. Null is TOP. BOTH doubles the feet.
+             *  SUPERSEDED by the three faces below on any row that has them. */
+            edgeFaces: faceByRequirement.get(a.requirement.id) ?? null,
+            /** scripts/0067. All null on a row the new controls have not
+             *  touched, in which case the two legacy fields above decide. */
+            edgesTop: termsByRequirement.get(a.requirement.id)?.edgesTop ?? null,
+            edgesBottom: termsByRequirement.get(a.requirement.id)?.edgesBottom ?? null,
+            edgesSide: termsByRequirement.get(a.requirement.id)?.edgesSide ?? null,
+            edgeRate: termsByRequirement.get(a.requirement.id)?.edgeRate ?? null,
+            /** scripts/0069 and 0070 — THESE WERE READ AND THEN DROPPED HERE,
+             *  and that was the whole of "on refresh the pricing goes back to
+             *  zero". The query above has always selected pair_rate and the
+             *  three per-face rates, and this map has always held them; the
+             *  response simply did not carry them. So the supervisor typed a
+             *  bottom rate, it saved, and the very next read of this board
+             *  handed his card nulls — the boxes came back empty over a
+             *  database that had the numbers, and the card re-priced the row
+             *  at the card rate.
+             *
+             *  It also made the two screens disagree: the manager's PO route
+             *  (api/fab/manager/pos/[poId]/rows) has always sent all four, so
+             *  one row read one way there and another way here. */
+            pairRate: termsByRequirement.get(a.requirement.id)?.pairRate ?? null,
+            edgeRateTop: termsByRequirement.get(a.requirement.id)?.edgeRateTop ?? null,
+            edgeRateBottom: termsByRequirement.get(a.requirement.id)?.edgeRateBottom ?? null,
+            edgeRateSide: termsByRequirement.get(a.requirement.id)?.edgeRateSide ?? null,
+            pricingMode: termsByRequirement.get(a.requirement.id)?.pricingMode ?? null,
+            edgeTotalOverride: termsByRequirement.get(a.requirement.id)?.edgeTotalOverride ?? null,
             allocatedQuantity: a.allocatedQuantity,
           })),
         };

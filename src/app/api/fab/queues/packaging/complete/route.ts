@@ -21,12 +21,21 @@ import { requireProcessSession } from "@/lib/fab/processSessionServer";
 import { stampOperationWorker } from "@/lib/fab/stampWorker";
 import { isSampleProject, planSampleCredit } from "@/lib/fab/sampleOrder";
 import { isReadyForPackaging } from "@/lib/fab/routing";
+import { parseEdges } from "@/lib/fab/pricing";
+import {
+  rowShares, pieceChargeWithHand, type RowShares, type HandSpec,
+} from "@/lib/fab/pieceCharge";
+import { parseFaceEdges, faceEdgesUnset } from "@/lib/fab/shape";
 
 // Declared before use. They were below the handler, which works only because
 // the handler runs after module evaluation — a detail nobody should have to
 // know to read this file.
 class AlreadyPackaged { constructor(readonly n: number) {} }
 class MissingPieces { constructor(readonly n: number) {} }
+/** Somebody rejected a piece while this packing queue was open. Its own class
+ *  because the remedy differs: a rejected piece is not coming back, so telling
+ *  the packer to refresh and retry would send him round a loop. */
+class RejectedPieces { constructor(readonly n: number) {} }
 class DuplicateCode {}
 /** A piece the queue would not have offered: rejected, never cut, or still owing
  *  polish / sink / fabrication. The tablet holds its `selected` set across a queue
@@ -131,6 +140,248 @@ async function creditSampleStock(
   return out;
 }
 
+/**
+ * FREEZE WHAT THESE PIECES JUST EARNED.
+ *
+ * ─────────────────── WHY, AND WHY HERE ──────────────────────────────────────
+ * The period report re-prices from the LIVE ordered row every time it is
+ * opened, so editing a row in September changed what July earned — set
+ * edge_faces to BOTH and a closed month silently doubles. Nothing was re-done
+ * and nothing was re-billed; the number just moved. See scripts/0066.
+ *
+ * PACKING IS WHEN A PIECE EARNS — it is already the moment the report counts
+ * the money — so this is the moment to write the figure down.
+ *
+ * ─────────────────── OUTSIDE THE TRANSACTION, AND BEST EFFORT ───────────────
+ * DELIBERATELY. Packing a trolley of forty pieces is floor work that must not
+ * fail because a reporting column is missing, so this runs AFTER the package is
+ * committed and every path out of it is swallowed by the caller. A deploy
+ * running ahead of scripts/0066 packs pieces exactly as it does today and
+ * simply does not stamp them; the report then live-prices those pieces, which
+ * is the behaviour that shipped before this existed.
+ *
+ * The cost of that choice is a piece that is packed and unstamped if this
+ * throws. That is recoverable and visible — the last query in scripts/0066
+ * lists them — where a failed pack in the middle of a shift is neither.
+ *
+ * ─────────────────── WRITTEN ONCE, EVER ─────────────────────────────────────
+ * `AND charged_at IS NULL` in the UPDATE. A retried request, a re-scanned
+ * trolley or a re-run of this function cannot move a figure that has already
+ * been frozen — the same rule sampling_intake_id enforces for sample stock a
+ * few lines above.
+ */
+async function stampPieceCharges(pieceIds: string[]): Promise<void> {
+  const pieces = await prisma.fabPiece.findMany({
+    where: { id: { in: pieceIds } },
+    // hasSink decides the SINK share, and it is per PIECE — half a row can have
+    // one. The EDGE share is per ROW, because a row is homogeneous, so it is
+    // read from the requirement below rather than from the piece.
+    select: { id: true, hasSink: true, requirementId: true },
+  });
+  if (!pieces.length) return;
+
+  // ── WHAT WENT TO THE HAND BENCH, AND THE STONE IT WAS CUT FROM ──────────
+  //
+  // scripts/0067. A piece pulled off the machine carries its own faces, rate
+  // and mode, and they override its row for that piece alone. Wrapped, because
+  // a deploy running ahead of 0067 has no such columns and must still stamp the
+  // ordinary rows — losing the hand-bench refinement is a far smaller failure
+  // than stamping nothing.
+  const handByPiece = new Map<string, HandSpec>();
+  const stoneByPiece = new Map<string, { lengthIn: number | null; widthIn: number | null; thicknessMm: number | null; shape: string | null }>();
+  try {
+    const hand = await prisma.$queryRaw<Array<{
+      id: string;
+      hand_edges_top: string | null; hand_edges_bottom: string | null;
+      hand_edges_side: string | null; hand_rate: number | null;
+      // scripts/0069 + 0070 — the bench's own pair rate and per-face rates.
+      // MISSING THESE MEANT FREEZING A PIECE AT THE WRONG FIGURE: the spec was
+      // read without them, so priceRow fell back to the flat hand_rate and the
+      // discount the bench was quoted never reached the invoice.
+      hand_pair_rate: number | null;
+      hand_rate_top: number | null; hand_rate_bottom: number | null; hand_rate_side: number | null;
+      hand_pricing_mode: string | null; hand_total_override: number | null;
+      length: number | null; width: number | null; thickness: number | null;
+      shape_type: string | null;
+    }>>`
+      SELECT pc.id,
+             pc.hand_edges_top, pc.hand_edges_bottom, pc.hand_edges_side,
+             pc.hand_rate, pc.hand_pair_rate,
+             pc.hand_rate_top, pc.hand_rate_bottom, pc.hand_rate_side,
+             pc.hand_pricing_mode, pc.hand_total_override,
+             r.length, r.width, r.shape_type::text AS shape_type, s.thickness
+      FROM   fab_piece pc
+      LEFT   JOIN fab_requirement r ON r.id = pc.requirement_id
+      LEFT   JOIN fab_slab s        ON s.id = pc.slab_id
+      WHERE  pc.id = ANY(${pieces.map((p) => p.id)}::text[])
+        AND  pc.polish_by_hand = true
+    `;
+    for (const h of hand) {
+      const faces = { top: h.hand_edges_top, bottom: h.hand_edges_bottom, side: h.hand_edges_side };
+      handByPiece.set(h.id, {
+        byHand: true,
+        faceEdges: faceEdgesUnset(faces) ? null : parseFaceEdges(faces),
+        rate: h.hand_rate == null ? null : Number(h.hand_rate),
+        pairRate: h.hand_pair_rate == null ? null : Number(h.hand_pair_rate),
+        rateTop: h.hand_rate_top == null ? null : Number(h.hand_rate_top),
+        rateBottom: h.hand_rate_bottom == null ? null : Number(h.hand_rate_bottom),
+        rateSide: h.hand_rate_side == null ? null : Number(h.hand_rate_side),
+        pricingMode: h.hand_pricing_mode ?? null,
+        totalOverride: h.hand_total_override == null ? null : Number(h.hand_total_override),
+      });
+      stoneByPiece.set(h.id, {
+        lengthIn: h.length == null ? null : Number(h.length),
+        widthIn: h.width == null ? null : Number(h.width),
+        thicknessMm: h.thickness == null ? null : Number(h.thickness),
+        shape: h.shape_type ?? null,
+      });
+    }
+  } catch {
+    // scripts/0067 not applied — nothing has ever been sent to hand.
+  }
+
+  const reqIds = [...new Set(
+    pieces.map((p) => p.requirementId).filter((id): id is string => !!id),
+  )];
+
+  // Raw, and the same statement the CEO route prices from, so the stamp written
+  // here and the fallback computed there cannot disagree. edge_faces and
+  // shape_type arrive in scripts/0065 and 0063; if they are absent this throws
+  // and the caller logs it, which is the correct outcome — a charge frozen
+  // without the face multiplier would be half an invoice, permanently.
+  const shares = new Map<string, RowShares>();
+  if (reqIds.length) {
+    const priceInputs = await prisma.$queryRaw<Array<{
+      id: string; length: number | null; width: number | null; quantity: number;
+      sink_quantity: number | null; finished_edges: string | null;
+      thickness: number | null; shape_type: string | null; edge_faces: string | null;
+    }>>`
+      SELECT r.id, r.length, r.width, r.quantity, r.sink_quantity,
+             r.finished_edges, r.edge_faces,
+             r.shape_type::text AS shape_type,
+             -- The thickness of any slab this row is cut from. MAX rather than
+             -- an arbitrary pick, so the answer is stable.
+             MAX(s.thickness) AS thickness
+      FROM   fab_requirement r
+      LEFT   JOIN fab_requirement_allocation ra ON ra.requirement_id = r.id
+      LEFT   JOIN fab_slab s ON s.id = ra.slab_id
+      WHERE  r.id = ANY(${reqIds}::text[])
+      GROUP  BY r.id
+    `;
+    const spec0067 = new Map<string, {
+      edges_top: string | null; edges_bottom: string | null; edges_side: string | null;
+      edge_rate: number | null; pair_rate: number | null;
+        edge_rate_top: number | null; edge_rate_bottom: number | null; edge_rate_side: number | null;
+        pricing_mode: string | null;
+      edge_total_override: number | null;
+    }>();
+    try {
+      const rows = await prisma.$queryRaw<Array<{ id: string } & {
+        edges_top: string | null; edges_bottom: string | null; edges_side: string | null;
+        edge_rate: number | null; pair_rate: number | null;
+        edge_rate_top: number | null; edge_rate_bottom: number | null; edge_rate_side: number | null;
+        pricing_mode: string | null;
+        edge_total_override: number | null;
+      }>>`
+        SELECT id, edges_top, edges_bottom, edges_side,
+               edge_rate, pair_rate, edge_rate_top, edge_rate_bottom, edge_rate_side,
+               pricing_mode, edge_total_override
+        FROM   fab_requirement WHERE id = ANY(${reqIds}::text[])
+      `;
+      for (const r of rows) spec0067.set(r.id, r);
+    } catch { /* 0067 not applied — legacy specification stands */ }
+
+    for (const r of priceInputs) {
+      const x = spec0067.get(r.id);
+      const faces = { top: x?.edges_top ?? null, bottom: x?.edges_bottom ?? null, side: x?.edges_side ?? null };
+      shares.set(r.id, rowShares({
+        faceEdges: faceEdgesUnset(faces) ? null : parseFaceEdges(faces),
+        rate: x?.edge_rate ?? null,
+        // scripts/0069 — the pair rate is part of what this row is quoted at, so
+        // it must be here too: the figure frozen onto a packaged piece has to be
+        // the figure the board showed, not a version of it computed without the
+        // discount.
+        pairRate: x?.pair_rate ?? null,
+        // scripts/0070 — the frozen figure must be the figure the board showed,
+        // which means the per-face rates too.
+        rateTop: x?.edge_rate_top ?? null,
+        rateBottom: x?.edge_rate_bottom ?? null,
+        rateSide: x?.edge_rate_side ?? null,
+        pricingMode: x?.pricing_mode ?? null,
+        edgeTotalOverride: x?.edge_total_override ?? null,
+        lengthIn: r.length == null ? null : Number(r.length),
+        widthIn: r.width == null ? null : Number(r.width),
+        quantity: Number(r.quantity ?? 0),
+        sinkQuantity: r.sink_quantity == null ? null : Number(r.sink_quantity),
+        thicknessMm: r.thickness == null ? null : Number(r.thickness),
+        edges: parseEdges(r.finished_edges),
+        shape: r.shape_type,
+        edgeFace: r.edge_faces,
+      }));
+    }
+  }
+
+  // GROUPED BY THE FIGURE, not one UPDATE per piece. A package is usually one
+  // or two ordered rows, so forty pieces are one or two statements.
+  //
+  // ONLY ROWS THAT PRICED CLEANLY ARE FROZEN — see mayFreeze. A row with a blank
+  // width, an off-card thickness or an L-shaped outline prices to 0 with
+  // `unpriced: true`, and stamping that 0 would make it PERMANENT: the UPDATE
+  // below writes once and never rewrites, so the manager filling in the width
+  // next week could never reach it. scripts/0061 is the precedent — slab
+  // thicknesses of 120 and 70 mm were stored and repaired later, and a trolley
+  // packed in between would have been frozen at ₹0 for good.
+  //
+  // An unfrozen piece is not a lost piece: charged_at stays NULL and the report
+  // live-prices it, which is exactly the behaviour that shipped before any of
+  // this existed. The figure simply keeps correcting itself until the row is
+  // fixed and a later package freezes a real one.
+  const groups = new Map<string, { edge: number; sink: number; ids: string[] }>();
+  let skipped = 0;
+  for (const p of pieces) {
+    const rowShare = p.requirementId ? shares.get(p.requirementId) : null;
+    const stone = stoneByPiece.get(p.id)
+      ?? { lengthIn: null, widthIn: null, thicknessMm: null, shape: null };
+
+    // THE GATE IS THE PIECE'S OWN ANSWER, NOT ITS ROW'S — and that matters for
+    // exactly the piece this change is about. A hand-bench piece with an agreed
+    // figure is freezable even when its ROW cannot be priced (an odd outline, a
+    // blank width), because somebody settled the question for THIS piece. And a
+    // piece sent to hand with nothing agreed is refused even when its row is
+    // perfectly priceable, because the figure that would be frozen is not the
+    // one it will eventually be worth.
+    const c = pieceChargeWithHand(
+      rowShare ?? null, p.hasSink === true, handByPiece.get(p.id) ?? null, stone,
+    );
+    if (!rowShare || c.unpriced) { skipped++; continue; }
+
+    const key = `${c.edge}::${c.sink}`;
+    const g = groups.get(key) ?? { edge: c.edge, sink: c.sink, ids: [] };
+    g.ids.push(p.id);
+    groups.set(key, g);
+  }
+  if (skipped > 0) {
+    // Said out loud rather than swallowed: these pieces ARE packed and they DO
+    // still earn, they are just still being priced live. The last query in
+    // scripts/0066 lists them.
+    console.warn(
+      `[fab/packaging] ${skipped} piece(s) packed without a frozen charge — ` +
+      `their row could not be priced in full (blank size, off-card thickness, ` +
+      `or an outline with no perimeter). The report will live-price them.`,
+    );
+  }
+
+  for (const g of groups.values()) {
+    await prisma.$executeRaw`
+      UPDATE fab_piece
+         SET charged_edge = ${g.edge},
+             charged_sink = ${g.sink},
+             charged_at   = now()
+       WHERE id = ANY(${g.ids}::text[])
+         AND charged_at IS NULL`;
+  }
+}
+
 export async function POST(req: Request) {
   const g = await fabGate("EMPLOYEE");
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
@@ -175,6 +426,11 @@ export async function POST(req: Request) {
     // packaging throughput, and if it was a sample piece put rejected stone on
     // the sampling shelf. PENDING (never cut) walked in the same door on a
     // hand-made request.
+    //
+    // AND SINCE THE CHARGE IS FROZEN AT PACKING, the same stale tick would have
+    // stamped a hand-polish and sink charge onto stone that was scrapped. The
+    // claim is this route's concurrency guard, so the rule belongs in it:
+    // whoever updates 0 rows never had the pieces, for any of the three reasons.
     const claimed = await tx.fabPiece.updateMany({
       where: { id: { in: pieceIds }, status: { notIn: ["PACKAGED", "REJECTED", "PENDING"] } },
       data:  { status: "PACKAGED" },
@@ -185,6 +441,15 @@ export async function POST(req: Request) {
       // it first" or "that id does not exist", and telling an operator to
       // refresh when the real problem is a bad id sends them round a loop.
       const exists = await tx.fabPiece.count({ where: { id: { in: pieceIds } } });
+      // A THIRD REASON NOW: somebody rejected one while this queue was open.
+      // Named separately because the fix is different — a rejected piece is not
+      // coming back, so "refresh and try again" would send him round a loop.
+      const rejected = await tx.fabPiece.count({
+        where: { id: { in: pieceIds }, status: "REJECTED" },
+      });
+      if (rejected > 0) {
+        throw new RejectedPieces(rejected);
+      }
       if (exists < pieceIds.length) throw new MissingPieces(pieceIds.length - exists);
       // The claim has ALREADY flipped the rows it won, so this count is "packaged
       // before us" plus "packaged by us" — everything not in it is a piece the
@@ -254,11 +519,16 @@ export async function POST(req: Request) {
 
     return { pkg: p, sampleCredit };
   }).catch((e: unknown) => {
-    if (e instanceof AlreadyPackaged || e instanceof MissingPieces || e instanceof NotPackable) return e;
+    if (e instanceof AlreadyPackaged || e instanceof MissingPieces || e instanceof NotPackable || e instanceof RejectedPieces) return e;
     if (typeof e === "object" && e && (e as { code?: string }).code === "P2002") return new DuplicateCode();
     throw e;
   });
 
+  if (result instanceof RejectedPieces)
+    return Response.json(
+      { error: `${result.n} piece(s) were rejected while this queue was open — they cannot be packed. Refresh to drop them, then pack the rest.` },
+      { status: 409 },
+    );
   if (result instanceof AlreadyPackaged)
     return Response.json({ error: `${result.n} piece(s) already packaged — refresh and try again` }, { status: 409 });
   if (result instanceof MissingPieces)
@@ -269,6 +539,20 @@ export async function POST(req: Request) {
     return Response.json({ error: `Package code "${code}" is already used — choose another` }, { status: 409 });
 
   const { pkg, sampleCredit } = result;
+
+  // ---- AND WHAT THEY EARNED IS NOW A FACT, NOT A CALCULATION -------------
+  //
+  // After the commit and never blocking it — see stampPieceCharges. The pieces
+  // are packed whatever happens here; the only thing at stake is whether the
+  // report reads a frozen figure or re-computes one from the live row.
+  await stampPieceCharges(pieceIds).catch((e: unknown) => {
+    console.error(
+      "[fab/packaging] charge stamp failed — the pieces ARE packed; the period " +
+      "report will live-price them, which is the pre-scripts/0066 behaviour",
+      e,
+    );
+  });
+
   return Response.json({
     success: true,
     packageCode: pkg.packageCode,

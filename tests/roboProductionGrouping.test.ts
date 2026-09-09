@@ -3,11 +3,12 @@ import assert from "node:assert/strict";
 
 import { assembleContinuous, assembleByBatch, type ExportRecord } from "../src/lib/robo/productionGrouping.ts";
 
-/* The Complete Production sheet's two layouts (change 6):
-   • a batch chosen → one continuous list, stored S.No. preserved;
-   • only a date filter → grouped by batch, S.No. restarting per group with
-     blank rows and a total between them.
-   The S.No. reset is display-only — nothing here touches the stored value. */
+/* The Complete Production sheet's two layouts:
+   • a batch chosen → one continuous list;
+   • only a date filter → grouped by batch, with blank rows and a total between.
+   In BOTH, S.No. is computed 1..N per batch in slab-number order (change #3),
+   never read from the mistyped stored serialNumber. Nothing here touches the
+   stored value. */
 
 const rec = (o: Partial<ExportRecord>): ExportRecord => ({
   serialNumber: null,
@@ -27,27 +28,27 @@ const rec = (o: Partial<ExportRecord>): ExportRecord => ({
 
 /* ── continuous (a batch is selected) ─────────────────────────────────────── */
 
-test("continuous keeps the stored S.No. and flows dates together with no blanks", () => {
-  // One batch, 18 Jul then 19 Jul — the change (6) example: S.No. 121 → 18 Jul,
-  // 122 → 19 Jul, straight on.
-  const s121 = rec({ serialNumber: 121, slabNumber: "A121", productionDate: "2026-07-18", createdAtMs: 100 });
-  const s122 = rec({ serialNumber: 122, slabNumber: "A122", productionDate: "2026-07-19", createdAtMs: 200 });
-  const rows = assembleContinuous([s122, s121]); // deliberately out of order
+test("continuous numbers 1..N in slab-number order and flows dates together with no blanks", () => {
+  // One batch across 18→19 Jul. Slab numbers 148901/148902 are the real order;
+  // the operator's stored S.No. (500, 499) is mistyped and must be ignored.
+  const s1 = rec({ serialNumber: 500, slabNumber: "148901", productionDate: "2026-07-18", createdAtMs: 100 });
+  const s2 = rec({ serialNumber: 499, slabNumber: "148902", productionDate: "2026-07-19", createdAtMs: 200 });
+  const rows = assembleContinuous([s2, s1]); // deliberately out of order
 
   assert.equal(rows.length, 4); // two records, a blank, a total
-  assert.equal(rows[0]["S.No."], 121);
+  assert.equal(rows[0]["S.No."], 1); // 148901 first → S.No. 1, NOT the stored 500
   assert.equal(rows[0]["Production Date"], "2026-07-18");
-  assert.equal(rows[1]["S.No."], 122);
+  assert.equal(rows[1]["S.No."], 2); // 148902 → S.No. 2
   assert.equal(rows[1]["Production Date"], "2026-07-19");
-  // No blank row BETWEEN the two records, and no S.No. reset — continuous.
+  // No blank row BETWEEN the two records — continuous.
   assert.deepEqual(rows[2], {});
   assert.equal(rows[3]["Slab No."], "TOTAL");
   assert.equal(rows[3]["Remarks"], "2 records");
 });
 
-test("continuous shows a slab's own S.No. even when it carries none (position fallback)", () => {
+test("continuous numbers a lone slab 1, never blank", () => {
   const rows = assembleContinuous([rec({ serialNumber: null, slabNumber: "X", createdAtMs: 1 })]);
-  assert.equal(rows[0]["S.No."], 1); // fallback to position, never blank
+  assert.equal(rows[0]["S.No."], 1);
 });
 
 /* ── grouped by batch (only a date filter) ─────────────────────────────────── */

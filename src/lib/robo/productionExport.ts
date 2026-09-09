@@ -83,15 +83,18 @@ const dash = (v: string | number | null | undefined): string | number =>
 /**
  * One row, keyed by exactly the columns above.
  *
- * `fallbackSerial` is used only when the slab carries no S.No. of its own — the
- * row's position in the sheet, so the column is never blank.
+ * `seqNo` is the slab's S.No. — its 1…N position in its batch, computed by the
+ * caller from the authoritative slab-number order (see slabSequence.ts). The
+ * stored `serialNumber` is deliberately NOT used: it was mistyped on old runs
+ * (a batch numbered 1…36 then restarting at 24), so trusting it showed
+ * duplicates and stopped short of the real slab count.
  */
 export function productionRecordRow(
   r: ProductionRowInput,
-  fallbackSerial: number,
+  seqNo: number,
 ): ProductionRecordRow {
   return {
-    "S.No.":                  r.serialNumber ?? fallbackSerial,
+    "S.No.":                  seqNo,
     "Production Date":        dash(r.productionDate),
     "Design Name":            dash(r.designName),
     "Thickness (cm)":         dash(r.thickness),

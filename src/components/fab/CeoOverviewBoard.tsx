@@ -27,6 +27,7 @@ import {
   priceRow, sumPricing, parseEdges, describeEdges, thicknessLabel, formatRupees,
   type RowPricing,
 } from "@/lib/fab/pricing";
+import { describeShapeSize, parseFaceEdges, faceEdgesUnset, describeFaceEdges } from "@/lib/fab/shape";
 // GRADE AND MARK ARE TWO CHIPS — see components/fab/SlabChips.tsx.
 //
 // This file used to draw its own chip, colouring by first letter. 'CTS' — which
@@ -37,8 +38,17 @@ import {
 // (FULL_SLAB/CTS/SAMPLE) are separate columns now, drawn by separate chips in
 // deliberately unalike colours, and neither can be mistaken for the other.
 import { GradeChip, MarkChip } from "@/components/fab/SlabChips";
+import { ProjectTotalBox } from "@/components/fab/ProjectTotalBox";
+// WHAT EACH SLAB IS WORTH. The arithmetic is a pure module and the table is its
+// own component; this file only decides where they go, so the slab figures and
+// the row figures above them come from one priceRow call each and cannot drift.
+import { costPerSlab } from "@/lib/fab/slabCosting";
+import { SlabCostPanel } from "@/components/fab/SlabCostPanel";
 
 export interface PricingRow {
+  /** fab_requirement.id — how the per-slab panel tells two rows apart when it
+   *  counts how many contribute to a slab. The route has always sent it. */
+  requirementId: string;
   projectCode: string;
   rowLetter: string | null;
   pieceLabel: string | null;
@@ -48,6 +58,61 @@ export interface PricingRow {
   sinkQuantity: number | null;
   thicknessMm: number | null;
   finishedEdges: string | null;
+  /** RECTANGLE / CIRCLE / OVAL. Null is a rectangle — every row written before
+   *  shapes existed, which is nearly all of them. */
+  shapeType?: string | null;
+  /** scripts/0068 — fab_requirement.dim_unit: 'CM', or NULL/'IN'.
+   *
+   *  THE SAME OMISSION AS edgeFaces AND THE PER-FACE RATES, in the display
+   *  column instead of the money. describeShapeSize has taken a unit since
+   *  0068 and this board called it without one, so a purchase order written in
+   *  centimetres read back as "47.2441 x 4.7244 in" — the right piece, in a
+   *  unit nobody on that order uses, to four decimal places.
+   *
+   *  DISPLAY ONLY. lengthIn/widthIn stay inches and every foot is computed
+   *  from them, so nothing here moves a rupee. */
+  dimUnit?: string | null;
+  /** TOP / BOTTOM / BOTH. Null is TOP.
+   *
+   *  THIS FIELD WAS MISSING AND THE BOARD HALVED EVERY BOTH ROW. The route has
+   *  always sent it (ceo/route.ts); this type dropped it, so priceRow below
+   *  defaulted to one face while the period report on the SAME PAGE passed it
+   *  and charged two. One dashboard, two numbers 2x apart for one row. */
+  edgeFaces?: string | null;
+
+  /** scripts/0067 — the three-face specification and how this row is priced.
+   *
+   *  ALL NULL ON EVERY ROW THE NEW SCREENS HAVE NOT TOUCHED, and on any database
+   *  without 0067, in which case finishedEdges + edgeFaces above decide and the
+   *  row prices exactly as it always has. priceRow does that fallback itself —
+   *  see faceEdgesFromLegacy — so this component only has to pass what it has. */
+  edgesTop?: string | null;
+  edgesBottom?: string | null;
+  edgesSide?: string | null;
+  /** scripts/0069 — Rs per foot for a side done on BOTH faces. Null = the two
+   *  faces are summed at edgeRate, which is every row before 0069. */
+  pairRate?: number | null;
+  /** scripts/0070 — each face's OWN Rs per foot. Null falls back to edgeRate
+   *  and then to the card.
+   *
+   *  THE SAME OMISSION AS edgeFaces ABOVE, ONE FEATURE LATER. The route has
+   *  always sent these three; this type dropped them, so priceRow was called
+   *  without them and every face fell back to one figure. A row where the
+   *  underside is Rs8 and the top is Rs20 was billed at Rs20 on both faces
+   *  here and correctly on the supervisor's card — one row, two answers, on
+   *  two screens the same person reads. */
+  rateTop?: number | null;
+  rateBottom?: number | null;
+  rateSide?: number | null;
+  /** WHICH SLABS THIS ROW'S PIECES WERE CUT FROM. Empty on a row not yet put
+   *  on stone. Feeds the per-slab panel; see lib/fab/slabCosting.ts. */
+  allocations?: Array<{
+    slabId: string; slabCode: string | null; colour: string | null;
+    allocatedQuantity: number;
+  }>;
+  edgeRate?: number | null;
+  pricingMode?: string | null;
+  edgeTotalOverride?: number | null;
 }
 
 type Priced = PricingRow & { priced: RowPricing };
@@ -91,9 +156,55 @@ function WasteBar({ pct }: { pct: number }) {
 // (GradeChip used to be defined here, colouring by first letter — see the note
 // on the SlabChips import above for why it had to go.)
 
+/* -- WHAT EACH SLAB IS WORTH -- lives in components/fab/SlabCostPanel.tsx --- *
+ *
+ * The panel used to be defined here, commented out in full, with its mount
+ * commented out too. It is on now, in a file of its own, and each slab opens to
+ * the ordered rows that made its figure — the "subdivisions" the owner asked
+ * for. See that file for why the slab question is not the row question.
+ */
+
 function ProjectRow({ project, rows }: { project: OverviewProject; rows: Priced[] }) {
   const [open, setOpen] = useState(false);   // collapsed by default
   const money = useMemo(() => sumPricing(rows.map(r => r.priced)), [rows]);
+
+  // ── SLAB-WISE COST, WORKED OUT ONCE ─────────────────────────────────────
+  //
+  // "As we have project and slab wise, I need to see the slab-wise cost and
+  // the subdivisions also."
+  //
+  // Computed HERE and used TWICE — as a charge column on the slab table below,
+  // and as the cost panel under it. One call, so the figure beside a slab's
+  // wastage and the figure in the panel are the same number by construction
+  // rather than by coincidence.
+  //
+  // chargePieces, NOT edgePieces: a fully hand-fabricated row has no ticked
+  // edges and would give every slab a share of zero. pieceCharge.rowShares had
+  // exactly that bug.
+  const costing = useMemo(
+    () => costPerSlab(rows.map((r) => ({
+      requirementId: r.requirementId,
+      rowLetter: r.rowLetter,
+      // "Wherever you put row, put the L x width of that too next to it."
+      lengthIn: r.lengthIn,
+      widthIn: r.widthIn,
+      shapeType: r.shapeType ?? null,
+      dimUnit: r.dimUnit ?? null,
+      quantity: r.quantity,
+      edgeCost: r.priced.edgeCost,
+      sinkCost: r.priced.sinkCost,
+      chargePieces: r.priced.chargePieces,
+      sinkPieces: r.priced.sinkPieces,
+      unpriced: r.priced.unpriced,
+      allocations: r.allocations ?? [],
+    }))),
+    [rows],
+  );
+  /** slabId -> what that slab is worth, for the table's charge column. */
+  const chargeBySlab = useMemo(
+    () => new Map(costing.slabs.map((s) => [s.slabId, s])),
+    [costing],
+  );
 
   return (
     <div className="border border-slate-200 rounded-xl overflow-hidden bg-white">
@@ -140,6 +251,11 @@ function ProjectRow({ project, rows }: { project: OverviewProject; rows: Priced[
                     <th className="text-right font-medium py-1">Slab area</th>
                     <th className="text-right font-medium py-1">Used</th>
                     <th className="text-right font-medium py-1">Waste</th>
+                    {/* SLAB-WISE COST, ON THE SLAB LINE ITSELF. The panel under
+                        this table breaks it down; this column is so the
+                        question "which stone is the money on" can be answered
+                        without opening anything. */}
+                    <th className="text-right font-medium py-1">Charge</th>
                     <th className="text-right font-medium py-1 pl-4">Wastage</th>
                   </tr>
                 </thead>
@@ -160,6 +276,15 @@ function ProjectRow({ project, rows }: { project: OverviewProject; rows: Priced[
                       <td className="py-1.5 text-right tabular-nums text-slate-500">{s.slabAreaSqft}</td>
                       <td className="py-1.5 text-right tabular-nums text-slate-600">{s.usedSqft}</td>
                       <td className="py-1.5 text-right tabular-nums text-slate-600">{s.wasteSqft}</td>
+                      <td className="py-1.5 text-right tabular-nums font-semibold text-indigo-700">
+                        {/* A DASH, NOT ZERO, when this slab has no costed work
+                            on it. Zero reads as "this stone earned nothing",
+                            which is a claim; a dash says nobody has priced its
+                            rows yet, which is the truth. */}
+                        {chargeBySlab.has(s.slabId)
+                          ? formatRupees(chargeBySlab.get(s.slabId)!.total)
+                          : <span className="text-slate-300 font-normal">—</span>}
+                      </td>
                       <td className="py-1.5 pl-4"><WasteBar pct={s.wastePct} /></td>
                     </tr>
                   ))}
@@ -181,10 +306,13 @@ function ProjectRow({ project, rows }: { project: OverviewProject; rows: Priced[
                       <th className="text-left font-medium py-1">Row</th>
                       <th className="text-left font-medium py-1">Size</th>
                       <th className="text-right font-medium py-1">Qty</th>
-                      {/* The pieces that actually reach fabrication — the count
-                          the running feet are measured over. Without it, "252.5
-                          ft" beside a Qty of 60 reads as an arithmetic error. */}
-                      <th className="text-right font-medium py-1" title="Pieces that go to fabrication — the sink ones. The running feet are counted over these, not the ordered quantity.">Fab</th>
+                      {/* TWO COUNTS, NOT ONE. Hand edge polish and sink cutting
+                          are separate jobs on separate pieces since the owner
+                          split them, so one "Fab" column could only ever be
+                          right about one of them. The running feet are measured
+                          over Edge pc; the sink charge over Sink pc. */}
+                      <th className="text-right font-medium py-1" title="Pieces carrying HAND EDGE POLISH. A row is homogeneous, so this is the whole row or none of it — and it is the count the running feet are measured over.">Edge pc</th>
+                      <th className="text-right font-medium py-1" title="Pieces with a sink cutout. Charged per piece; the sink polish is included in that rate.">Sink pc</th>
                       <th className="text-left font-medium py-1 pl-3">Thk</th>
                       <th className="text-left font-medium py-1">Edges</th>
                       <th className="text-right font-medium py-1">Run ft</th>
@@ -199,19 +327,28 @@ function ProjectRow({ project, rows }: { project: OverviewProject; rows: Priced[
                       return (
                         <tr key={i} className={p.unpriced ? "bg-amber-50/60" : ""}>
                           <td className="py-1.5 font-mono font-bold text-slate-800">{r.rowLetter ?? r.pieceLabel ?? "—"}</td>
-                          <td className="py-1.5 text-slate-500 tabular-nums">{r.lengthIn ?? "?"} × {r.widthIn ?? "?"}</td>
+                          {/* "⌀ 24 in" for a circle, "36 × 24 in oval" for an
+                              oval. Printing 24 × 24 for a circle would read as a
+                              square and make the running feet look wrong. */}
+                          <td className="py-1.5 text-slate-500 tabular-nums">
+                            {describeShapeSize(r.shapeType, { lengthIn: r.lengthIn, widthIn: r.widthIn }, r.dimUnit)}
+                          </td>
                           <td className="py-1.5 text-right tabular-nums text-slate-700">{r.quantity}</td>
-                          <td className={`py-1.5 text-right tabular-nums ${p.fabricationPieces > 0 ? "text-slate-700 font-semibold" : "text-slate-300"}`}>
-                            {p.fabricationPieces > 0 ? p.fabricationPieces : "—"}
+                          <td className={`py-1.5 text-right tabular-nums ${p.edgePieces > 0 ? "text-slate-700 font-semibold" : "text-slate-300"}`}>
+                            {p.edgePieces > 0 ? p.edgePieces : "—"}
+                          </td>
+                          <td className={`py-1.5 text-right tabular-nums ${p.sinkPieces > 0 ? "text-slate-700 font-semibold" : "text-slate-300"}`}>
+                            {p.sinkPieces > 0 ? p.sinkPieces : "—"}
                           </td>
                           <td className="py-1.5 pl-3 text-slate-500">{thicknessLabel(r.thicknessMm)}</td>
                           <td className="py-1.5 text-slate-500">
-                            {/* A row with no sinks is not a fabrication row, so its
-                                edges are not a charge — saying "All four" there
-                                would look like ₹0 was a mistake. */}
-                            {p.fabricationPieces > 0
-                              ? describeEdges(parseEdges(r.finishedEdges))
-                              : <span className="text-slate-300" title="No sinks, so this row does not go to fabrication">no fab</span>}
+                            {/* A row nobody has been asked about is not the same
+                                as one answered "no edges" — the first is a
+                                question, the second an answer, and both cost ₹0
+                                until somebody looks. */}
+                            {r.finishedEdges === null && faceEdgesUnset({ top: r.edgesTop ?? null, bottom: r.edgesBottom ?? null, side: r.edgesSide ?? null })
+                              ? <span className="text-amber-600" title="Nobody has marked this row's edges yet — reported as unpriced, not as free">not chosen</span>
+                              : describeFaceEdges(r.shapeType, p.faceEdges)}
                           </td>
                           <td className="py-1.5 text-right tabular-nums text-slate-600">{p.runningFeet}</td>
                           <td className="py-1.5 text-right tabular-nums text-slate-600">{p.unpriced ? "—" : formatRupees(p.edgeCost)}</td>
@@ -219,8 +356,34 @@ function ProjectRow({ project, rows }: { project: OverviewProject; rows: Priced[
                             {p.unpriced ? "—" : p.sinkPieces > 0 ? formatRupees(p.sinkCost) : "—"}
                           </td>
                           <td className="py-1.5 text-right tabular-nums font-bold text-slate-800">
+                            {/* A TYPED FIGURE SAYS SO. The calculation is kept and
+                                shown in the tooltip rather than discarded — an
+                                override nobody can see past is how a wrong rate
+                                card survives a year. */}
+                            {p.edgeOverridden && (
+                              <span
+                                className="mr-1 text-[9px] font-semibold uppercase tracking-wide text-violet-700 bg-violet-50 border border-violet-200 rounded px-1 py-px align-middle"
+                                title={`Hand polish entered by hand. Calculated: ${formatRupees(p.calculatedEdgeCost)}`}>
+                                typed
+                              </span>
+                            )}
                             {p.unpriced
-                              ? <span className="text-amber-600 font-medium" title="No rate for this thickness — the card covers 2 cm and 3 cm">not priced</span>
+                              ? <span
+                                  className="text-amber-600 font-medium"
+                                  title={p.unpricedReason === "EDGES"
+                                    ? "This row names edges the shape does not have — a circle has one ring, a rectangle four sides"
+                                    : p.unpricedReason === "SHAPE"
+                                    ? "An L, a curve or a custom outline — there is no perimeter formula for it, so the hand polish is quoted by hand"
+                                    : p.unpricedReason === "DIMENSIONS"
+                                      ? "Edges are marked but the length or width they run along is missing — enter the size on the PO row"
+                                      : p.unpricedReason === "RATE"
+                                      ? "This row is charged per piece or as a lump sum but nobody has typed the figure. The rate card is quoted per FOOT, so it cannot stand in for one."
+                                      : "No rate for this thickness — the card covers 2 cm and 3 cm"}>
+                                  {p.unpricedReason === "EDGES" ? "edges"
+                                    : p.unpricedReason === "SHAPE" ? "shape"
+                                    : p.unpricedReason === "DIMENSIONS" ? "no size"
+                                    : p.unpricedReason === "RATE" ? "no rate" : "not priced"}
+                                </span>
                               : formatRupees(p.total)}
                           </td>
                         </tr>
@@ -229,7 +392,10 @@ function ProjectRow({ project, rows }: { project: OverviewProject; rows: Priced[
                   </tbody>
                   <tfoot className="border-t-2 border-slate-200 font-bold text-slate-800">
                     <tr>
-                      <td className="pt-2" colSpan={6}>Total</td>
+                      <td className="pt-2" colSpan={3}>Total</td>
+                      <td className="pt-2 text-right tabular-nums">{money.edgePieces || "—"}</td>
+                      <td className="pt-2 text-right tabular-nums">{money.sinkPieces || "—"}</td>
+                      <td className="pt-2" colSpan={2} />
                       <td className="pt-2 text-right tabular-nums">{money.runningFeet}</td>
                       <td className="pt-2 text-right tabular-nums">{formatRupees(money.edgeCost)}</td>
                       <td className="pt-2 text-right tabular-nums">{formatRupees(money.sinkCost)}</td>
@@ -238,10 +404,47 @@ function ProjectRow({ project, rows }: { project: OverviewProject; rows: Priced[
                   </tfoot>
                 </table>
               </div>
-              {money.unpricedRows > 0 && (
+              {/* SPLIT BY CAUSE, because they are fixed by different people and
+                  one amber line saying "not priced" sent everybody to argue
+                  about the rate card when the real problem was a blank width. */}
+              {money.unpricedThickness > 0 && (
                 <p className="mt-1.5 text-[11px] text-amber-700">
-                  {money.unpricedRows} row{money.unpricedRows !== 1 ? "s are" : " is"} not in the total —
+                  {money.unpricedThickness} row{money.unpricedThickness !== 1 ? "s are" : " is"} not in the total —
                   the rate card covers 2 cm and 3 cm, and these are cut from something else.
+                </p>
+              )}
+              {money.unpricedDimensions > 0 && (
+                <p className="mt-1.5 text-[11px] text-amber-700">
+                  {money.unpricedDimensions} row{money.unpricedDimensions !== 1 ? "s have" : " has"} edges marked
+                  with no size to measure them along — the length or width is blank on the order,
+                  so the hand polish on {money.unpricedDimensions !== 1 ? "them" : "it"} cannot be charged yet.
+                </p>
+              )}
+              {/* THE PHONE-CALL NUMBER FOR THE WHOLE PROJECT — the escape hatch
+                  of last resort, under the total it replaces so the two are
+                  read together and never one without the other. */}
+              <ProjectTotalBox projectCode={project.projectCode} calculated={money.total} />
+
+              {/* COST PER SLAB, AND WHAT MADE EACH ONE UP. Held back for one
+                  commit with its mount commented out; on now. Given the SAME
+                  costing the charge column above reads, so the two cannot
+                  disagree about a slab. */}
+              <SlabCostPanel costing={costing} />
+
+              {money.unpricedEdges > 0 && (
+                <p className="mt-1.5 text-[11px] text-amber-700">
+                  {money.unpricedEdges} row{money.unpricedEdges !== 1 ? "s name" : " names"} edges
+                  its shape does not have — a circle has one ring and a rectangle four sides, so
+                  the two halves of {money.unpricedEdges !== 1 ? "those rows" : "that row"} contradict
+                  each other. Re-pick the edges on the purchase-order row.
+                </p>
+              )}
+              {money.unpricedShape > 0 && (
+                <p className="mt-1.5 text-[11px] text-amber-700">
+                  {money.unpricedShape} row{money.unpricedShape !== 1 ? "s are" : " is"} an L, a curve or a
+                  custom outline. There is no perimeter formula for {money.unpricedShape !== 1 ? "those" : "that"} here,
+                  so the hand polish is quoted by hand — {money.unpricedShape !== 1 ? "their" : "its"} sink,
+                  if any, is already in the total above.
                 </p>
               )}
             </div>
@@ -265,10 +468,35 @@ export function CeoOverviewBoard({
   const pricedByProject = useMemo(() => {
     const map = new Map<string, Priced[]>();
     for (const r of pricingRows) {
+      // faceEdgesUnset tells "no three-face spec on this row" (all NULL → read
+      // the legacy pair) from "asked, and this face gets nothing" (an empty
+      // string, which is a real answer and must not resurrect the old
+      // selection). Getting that backwards would silently re-charge a row
+      // somebody had deliberately cleared.
+      const faces = { top: r.edgesTop ?? null, bottom: r.edgesBottom ?? null, side: r.edgesSide ?? null };
       const priced = priceRow({
         lengthIn: r.lengthIn, widthIn: r.widthIn, quantity: r.quantity,
         sinkQuantity: r.sinkQuantity, thicknessMm: r.thicknessMm,
         edges: parseEdges(r.finishedEdges),
+        shape: r.shapeType,
+        edgeFace: r.edgeFaces,
+        faceEdges: faceEdgesUnset(faces) ? null : parseFaceEdges(faces),
+        rate: r.edgeRate ?? null,
+        // scripts/0069 — WITHOUT THIS THE BOARD UNDERSTATES NOTHING AND
+        // OVERSTATES EVERY PAIRED ROW. The PO card prices with the pair rate
+        // and this page would have priced without it: one row, two figures,
+        // on two screens the same person reads. The same class of bug the
+        // edgeFaces comment above records.
+        pairRate: r.pairRate ?? null,
+        // scripts/0070 — and for exactly the same reason. Each face falls back
+        // to edgeRate and then to the card when null, so passing them changes
+        // nothing on the rows nobody has priced per face and everything on the
+        // rows somebody has.
+        rateTop: r.rateTop ?? null,
+        rateBottom: r.rateBottom ?? null,
+        rateSide: r.rateSide ?? null,
+        pricingMode: r.pricingMode ?? null,
+        edgeTotalOverride: r.edgeTotalOverride ?? null,
       });
       const list = map.get(r.projectCode) ?? [];
       list.push({ ...r, priced });

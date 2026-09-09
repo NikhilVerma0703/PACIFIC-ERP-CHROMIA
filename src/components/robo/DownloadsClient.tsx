@@ -11,11 +11,36 @@ interface Preview {
   delayEvents: number;
 }
 
+/** The Reference Sheet preview — the latest run's summary the API returns. */
+interface RefPreview {
+  found: boolean;
+  designName: string;
+  batchNo: string | null;
+  productionDate: string;
+  thickness: number | null;
+  totalSlabs: number;
+  productionTimeMinutes: number | null;
+  totalDelayMins: number;
+  avgSlabsPerHour: number | null;
+  programs: { robo: string; program: string }[];
+  robotDelays: { code: string; description: string; minutes: number; events: number }[];
+}
+
 function download(url: string) {
   const a = document.createElement("a");
   a.href = url;
   a.download = "";
   a.click();
+}
+
+/** One label/value pair in the Reference Sheet preview grid. */
+function Field({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-xs uppercase tracking-wide text-gray-500">{label}</p>
+      <p className="mt-0.5 font-semibold text-gray-800">{value}</p>
+    </div>
+  );
 }
 
 export function DownloadsClient() {
@@ -28,6 +53,28 @@ export function DownloadsClient() {
   const batchOptions = useRoboBatchOptions(setBatch);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // ── Reference Sheet: a design-name lookup independent of the filters above ──
+  const [refDesign, setRefDesign] = useState("");
+  const [refLoading, setRefLoading] = useState(false);
+  const [refResult, setRefResult] = useState<RefPreview | null>(null);
+  const [refSearched, setRefSearched] = useState(false);
+
+  const searchRef = useCallback(async () => {
+    const q = refDesign.trim();
+    if (!q) return;
+    setRefLoading(true);
+    setRefSearched(true);
+    try {
+      const res = await fetch(`/api/robo/reference/summary?design=${encodeURIComponent(q)}`);
+      const data: RefPreview | null = res.ok ? await res.json() : null;
+      setRefResult(data && data.found ? data : null);
+    } catch {
+      setRefResult(null);
+    } finally {
+      setRefLoading(false);
+    }
+  }, [refDesign]);
 
   const loadPreview = useCallback(async (qs: string) => {
     setLoading(true);
@@ -123,6 +170,64 @@ export function DownloadsClient() {
           )}
         </Card>
       </div>
+
+      {/* ── Reference Sheet: a design's latest run, summarised ──────────────── */}
+      <Card className="flex flex-col">
+        <div className="mb-2 flex items-center gap-2">
+          <span className="text-xl">📋</span>
+          <h2 className="font-semibold text-gray-800">Reference Sheet</h2>
+        </div>
+        <p className="mb-3 text-xs text-gray-500">
+          A one-page summary of a design&rsquo;s <span className="font-medium">latest production run</span> — the
+          reference to check before running it again. Matches by design name only; thickness is ignored
+          (&ldquo;Costa 2 cm&rdquo; and &ldquo;Costa 3 cm&rdquo; are the same design, but &ldquo;Bellagio Green&rdquo;
+          and &ldquo;Bellagio Grey&rdquo; are not).
+        </p>
+
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <input
+            type="text"
+            value={refDesign}
+            onChange={(e) => { setRefDesign(e.target.value); setRefSearched(false); setRefResult(null); }}
+            onKeyDown={(e) => { if (e.key === "Enter") searchRef(); }}
+            placeholder="Design Name (e.g. Costa)"
+            className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand focus:outline-none"
+          />
+          <button
+            onClick={searchRef}
+            disabled={!refDesign.trim() || refLoading}
+            className="rounded-lg bg-brand px-5 py-2.5 text-sm font-semibold tracking-wide text-white transition hover:bg-brand/90 disabled:cursor-not-allowed disabled:opacity-50">
+            {refLoading ? "Searching…" : "🔍 Search"}
+          </button>
+        </div>
+
+        {refSearched && !refLoading && !refResult && (
+          <p className="mt-4 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+            No previous production record found
+          </p>
+        )}
+
+        {refResult && (
+          <div className="mt-4 space-y-3">
+            <div className="rounded-lg border border-gray-100 bg-slate-50 p-3">
+              <p className="text-xs uppercase tracking-wide text-gray-500">Latest production run</p>
+              <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
+                <Field label="Design" value={refResult.designName} />
+                <Field label="Batch No." value={refResult.batchNo ?? "-"} />
+                <Field label="Production Date" value={refResult.productionDate ? formatDate(refResult.productionDate) : "-"} />
+                <Field label="Total Slabs" value={String(refResult.totalSlabs)} />
+                <Field label="Production Time" value={refResult.productionTimeMinutes != null ? fmtDurationLong(refResult.productionTimeMinutes) : "-"} />
+                <Field label="Avg Slabs/hour" value={refResult.avgSlabsPerHour != null ? String(refResult.avgSlabsPerHour) : "-"} />
+              </div>
+            </div>
+            <button
+              onClick={() => download(`/api/robo/exports/reference?design=${encodeURIComponent(refDesign.trim())}`)}
+              className="w-full rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold tracking-wide text-white transition hover:bg-indigo-700">
+              📥 DOWNLOAD REFERENCE SHEET
+            </button>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }

@@ -104,7 +104,7 @@ export function SampleIntakeForm({
   series, sizes, pickListError, reloadSizes,
   source, reason, sourceRef, sourceQcId, sourceSlabId, sourceRefLabel, lockSourceRef,
   colourHint, thicknessHint,
-  onSaved, compact,
+  onSaved, onDraftChange, compact,
 }: {
   series: CatalogueSeries[];
   sizes: SizeOption[];
@@ -133,6 +133,19 @@ export function SampleIntakeForm({
    *  by parseThicknessMm, so a unitless prefill would look complete and fail. */
   thicknessHint?: string;
   onSaved?: (message: string) => void;
+  /**
+   * WHAT IS TYPED, AS IT IS TYPED — length, width and quantity in inches.
+   *
+   * For a caller that has to price the entry BEFORE it is saved. The offcut
+   * screen uses it to say "this take is 10 sqft, 5.16 sqft would be left" while
+   * he is still deciding, rather than letting him press save and take a 409.
+   *
+   * The RAW STRINGS, not parsed numbers: "12." and "" are different states of
+   * a half-typed box and the caller decides what to do with them (Number("")
+   * is 0, which would read as a real zero-size take). Optional, and no caller
+   * that omits it is affected.
+   */
+  onDraftChange?: (draft: { length: string; width: string; quantity: string }) => void;
   compact?: boolean;
 }) {
   const askSource = !source;
@@ -207,6 +220,19 @@ export function SampleIntakeForm({
   // missing" at somebody who has not reached the length box yet is noise.
   const typedTouched = typing && [length, width, thickness].some((v) => v.trim() !== "");
   const sizeRefusal = typed && !typed.ok && typedTouched ? typed.reason : null;
+
+  // ── TELL THE CALLER WHAT IS IN THE BOXES ─────────────────────────────────
+  //
+  // Resolved to inches whichever way the size was given: a PICKED size carries
+  // its own dimensions, a TYPED one is whatever is in the three fields. So a
+  // caller pricing the entry gets the same numbers the route will, without
+  // having to know which branch the form is on.
+  const pickedSize = typing ? null : sizes.find((z) => z.id === sizeChoice) ?? null;
+  const draftLength = typing ? length : (pickedSize ? String(pickedSize.lengthIn) : "");
+  const draftWidth  = typing ? width  : (pickedSize ? String(pickedSize.widthIn)  : "");
+  useEffect(() => {
+    onDraftChange?.({ length: draftLength, width: draftWidth, quantity });
+  }, [draftLength, draftWidth, quantity, onDraftChange]);
 
   const wanted = Number(quantity);
   const qtyOk = Number.isInteger(wanted) && wanted > 0;

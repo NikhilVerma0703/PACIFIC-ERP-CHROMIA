@@ -48,6 +48,34 @@ export async function POST(req: Request) {
     if (piece.status !== status) {
       await tx.fabPiece.update({ where: { id: pieceId }, data: { status: status as never } });
     }
+
+    // ---- UNDOING A PACK ALSO UNDOES WHAT IT FROZE ------------------------
+    //
+    // scripts/0066 stamps charged_edge / charged_sink / charged_at when a piece
+    // is packed, and the packaging route writes that stamp ONCE — `AND
+    // charged_at IS NULL` — so a piece packed, undone, and packed again would
+    // silently keep the FIRST pack's figure and have it counted on the SECOND
+    // pack's day. Undo the pack and the freeze goes with it; the next pack
+    // writes a fresh one.
+    //
+    // The case this is really for: a row packed while edge_faces was still TOP,
+    // unpacked, corrected to BOTH — which doubles the running feet — and packed
+    // again. Without this the report keeps the single-face figure permanently,
+    // which is the exact "half an invoice" outcome 0066 exists to prevent.
+    //
+    // RAW AND WRAPPED, like every other read of a 0066 column: a deploy running
+    // ahead of the migration undoes the pack exactly as it does today and simply
+    // has no stamp to clear.
+    if (operationType === "PACKAGING") {
+      try {
+        await tx.$executeRaw`
+          UPDATE fab_piece
+             SET charged_edge = NULL, charged_sink = NULL, charged_at = NULL
+           WHERE id = ${pieceId}`;
+      } catch {
+        // scripts/0066 not applied yet. Nothing was frozen, nothing to clear.
+      }
+    }
     return true;
   });
 

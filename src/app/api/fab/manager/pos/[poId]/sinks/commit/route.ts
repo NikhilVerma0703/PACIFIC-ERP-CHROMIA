@@ -46,10 +46,14 @@ interface CommitRow {
   length: number | null;
   width: number | null;
   thickness: number | null;
-  // NOT nullable: fab_requirement.slab_code is NOT NULL in the schema and the
-  // database, so findMany can never return null here — and the split-row
-  // create() below requires the string. Typing it nullable was what failed
-  // the Vercel build.
+  /** NOT NULLABLE, and this line said it was — which is what broke `next build`.
+   *
+   *  fab_requirement.slab_code is NOT NULL (schema.prisma: `slabCode String`),
+   *  so findMany returns `string`. Widening it to `string | null` here did not
+   *  describe the query, it described a column that does not exist — and the
+   *  split below passes this straight into fabRequirement.create, which
+   *  correctly demands a string. Type-only: the value flowing through at
+   *  runtime is byte for byte what it always was. */
   slabCode: string;
   notes: string | null;
   quantity: number;

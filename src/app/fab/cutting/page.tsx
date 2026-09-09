@@ -1,18 +1,45 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
+import Link from "next/link";
 import { postJson, getJson } from "@/lib/fab/postJson";
 import { ProcessSessionGate } from "@/components/fab/ProcessSessionGate";
 import { rowLabel } from "@/lib/fab/pieceNaming";
+// scripts/0068 — the size AS THE CUSTOMER ORDERED IT. length/width are stored
+// in inches because the feet and the square feet are built on inches; this is
+// the only thing that turns them back into the centimetres a metric order was
+// written in. NULL unit = inches = unchanged.
+import { formatDimension, orderedSizeLabel, parseDimUnit } from "@/lib/fab/dimensions";
+
 
 interface Piece {
   id: string; pieceCode: string;
   project: { projectCode: string; customerName: string };
   drawing: { drawingNumber: string } | null;
-  requirement: { pieceLabel: string | null; rowLetter: string | null; description: string | null; length: number | null; width: number | null } | null;
+  requirement: { pieceLabel: string | null; rowLetter: string | null; description: string | null; length: number | null; width: number | null; dimUnit: string | null } | null;
   hasSink: boolean; polishRequired: boolean; fabricationRequired: boolean;
+  /** Hand edge polish. Optional because the column arrives in scripts/0063 and
+   *  a queue read against a database without it must still render. */
+  hasEdgePolish?: boolean;
 }
 interface LegacyGroup { type: "legacy"; slab: { id: string; slabCode: string; colour: string | null }; pieces: Piece[] }
-interface CloReq { requirementId: string; poNumber: string | null; drawingNumber: string | null; pieceLabel: string; description: string | null; lengthIn: number | null; widthIn: number | null; qty: number }
+/**
+ * WHAT UNIT TO PUT IN THE CUT LIST'S COLUMN HEADINGS.
+ *
+ * The cells now render in each row's own unit, so the heading must agree with
+ * them or it lies about a number a saw is set from. One slab job is one
+ * project's worth of pieces and they agree in practice; when they do not, the
+ * unit is DROPPED rather than asserted — "L" tells the operator to read the
+ * value, "L (in)" over a centimetre would tell him to cut the wrong piece.
+ */
+function cutListUnit(rows: CloReq[]): string {
+  if (rows.length === 0) return " (in)";
+  const first = parseDimUnit(rows[0].dimUnit);
+  return rows.every(r => parseDimUnit(r.dimUnit) === first)
+    ? (first === "CM" ? " (cm)" : " (in)")
+    : "";
+}
+
+interface CloReq { requirementId: string; poNumber: string | null; drawingNumber: string | null; pieceLabel: string; description: string | null; lengthIn: number | null; widthIn: number | null; /** scripts/0068 — 'CM' or NULL/'IN'. Display only; lengthIn/widthIn are always inches. */ dimUnit: string | null; qty: number }
 interface CloGroup {
   type: "clo"; slabJobId: string; jobStatus: string; startTime: string | null;
   operatorId: string | null; operatorName: string | null;
@@ -25,6 +52,19 @@ interface CloGroup {
   requirements: CloReq[]; totalPcs: number;
 }
 type QueueEntry = LegacyGroup | CloGroup;
+
+/** A project still being planned — rows ordered, no slab chosen yet. From
+ *  /api/fab/supervisor/board?view=projects, which the cutter may now read. */
+interface AwaitingProject {
+  id: string;
+  projectCode: string;
+  customerName: string | null;
+  /** PO or SAMPLE. The owner: "he sees the project CTS or sampling." A sample
+   *  order is cut, machine polished and packed with no sink and no hand polish,
+   *  so which it is changes what he is walking into. */
+  kind: string;
+  requirementCount: number;
+}
 
 interface LegacyDone { flowType: "legacy"; opId: string; pieceId: string; pieceCode: string; projectCode: string; drawingNumber: string | null; pieceLabel: string | null; length: number | null; width: number | null; slabCode: string | null; slabColour: string | null; machineName: string | null; operatorName: string | null; completedAt: string }
 interface CloDone { flowType: "clo"; slabJobId: string; projectCode: string; slabCode: string; qcSlabCode: string | null; qcColour: string | null; totalPcs: number; reqCount: number; machineName: string | null; operatorName: string | null; completedAt: string }
@@ -148,8 +188,12 @@ function CloCard({
             <th className="text-left px-5 py-2">PO</th>
             <th className="text-left px-5 py-2">Piece</th>
             <th className="text-left px-5 py-2">Description</th>
-            <th className="text-left px-5 py-2">L (in)</th>
-            <th className="text-left px-5 py-2">W (in)</th>
+            {/* scripts/0068 — the header follows the ROWS. One slab job is one
+                project's worth of pieces, so they agree in practice; if they ever
+                do not, the unit is dropped rather than asserted wrongly over a
+                column the saw is about to be set from. */}
+            <th className="text-left px-5 py-2">L{cutListUnit(entry.requirements)}</th>
+            <th className="text-left px-5 py-2">W{cutListUnit(entry.requirements)}</th>
             <th className="text-center px-5 py-2">Qty</th>
           </tr>
         </thead>
@@ -159,8 +203,8 @@ function CloCard({
               <td className="px-5 py-2.5 font-mono text-xs text-gray-400">{r.poNumber ?? r.drawingNumber ?? "—"}</td>
               <td className="px-5 py-2.5 font-semibold text-gray-800">{r.pieceLabel}</td>
               <td className="px-5 py-2.5 text-gray-500 max-w-xs truncate">{r.description ?? "-"}</td>
-              <td className="px-5 py-2.5 font-mono text-gray-600">{r.lengthIn ?? "-"}</td>
-              <td className="px-5 py-2.5 font-mono text-gray-600">{r.widthIn ?? "-"}</td>
+              <td className="px-5 py-2.5 font-mono text-gray-600">{formatDimension(r.lengthIn, r.dimUnit) ?? "-"}</td>
+              <td className="px-5 py-2.5 font-mono text-gray-600">{formatDimension(r.widthIn, r.dimUnit) ?? "-"}</td>
               <td className="px-5 py-2.5 text-center font-bold text-gray-800">{r.qty}</td>
             </tr>
           ))}
@@ -213,6 +257,9 @@ function CuttingQueue() {
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [actionError,   setActionError]  = useState<string | null>(null);
   const [loadError,     setLoadError]    = useState<string | null>(null);
+  /** Projects still being planned — work that has no slab on it yet. See the
+   *  panel further down for why the cut queue is where this belongs. */
+  const [awaiting,      setAwaiting]     = useState<AwaitingProject[]>([]);
 
   // Fetch current user's ID once for lock checks
   useEffect(() => {
@@ -235,10 +282,41 @@ function CuttingQueue() {
     if (r.ok) { setCompleted(r.data); setLoadError(null); } else setLoadError(r.error);
   }, []);
 
+  /**
+   * WORK THAT HAS NO SLAB YET.
+   *
+   * The owner, on samples: "when it's sample, sampling guy send request to
+   * supervisor — hereafter no need of send to cutter. It queued to cutter where
+   * he choose a slab and starts working. He sees the project CTS or sampling,
+   * then inside he add slab and start working."
+   *
+   * The send step did not need removing; it needed to stop being a HANDOVER.
+   * approve-slab is what puts a slab in this queue, and now that the cutter may
+   * call it himself, a sample no longer waits for a supervisor to pass it on —
+   * it waits for a cutter to pick up a slab. What was missing was somewhere for
+   * him to SEE that it was waiting, and the cut queue is that place: he is
+   * already standing here when he runs out of work.
+   *
+   * DELIBERATELY NOT MERGED INTO THE QUEUE ITSELF. A slab job is stone with rows
+   * on it that he can start; this is an order with no stone yet. Putting both in
+   * one list would mean two cards that look alike and do entirely different
+   * things when pressed.
+   *
+   * A FAILURE HERE IS SILENT, unlike loadOpen's. The queue below is the thing he
+   * must not be lied to about — an empty one means he can go home. This panel is
+   * a prompt, and an amber banner about a prompt that failed to load, stacked
+   * over a queue full of work, is noise at the top of the screen he actually
+   * needs.
+   */
+  const loadAwaiting = useCallback(async () => {
+    const r = await getJson<AwaitingProject>("/api/fab/supervisor/board?view=projects");
+    if (r.ok) setAwaiting(r.data.filter(p => (p.requirementCount ?? 0) > 0));
+  }, []);
+
   useEffect(() => {
     setLoading(true);
-    Promise.all([loadOpen(), loadDone(doneDate)]).finally(() => setLoading(false));
-  }, [loadOpen, loadDone, doneDate]);
+    Promise.all([loadOpen(), loadDone(doneDate), loadAwaiting()]).finally(() => setLoading(false));
+  }, [loadOpen, loadDone, loadAwaiting, doneDate]);
 
   // Poll open queue every 15s — but only while the tab is visible (a hidden
   // tab shows nothing, so polling it only burns a function call and a Neon
@@ -246,10 +324,15 @@ function CuttingQueue() {
   // again so a returned-to tab is current. Same pattern as components/AutoRefresh.
   useEffect(() => {
     const t = setInterval(() => { if (document.visibilityState === "visible") loadOpen(); }, 15000);
-    const onVisible = () => { if (document.visibilityState === "visible") loadOpen(); };
+    // The awaiting panel is refreshed on RETURN but not on the 15 s timer. A
+    // sample request appearing is a thing that happens a few times a day, not a
+    // few times a minute, and the queue below is what the poll exists for.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") { loadOpen(); loadAwaiting(); }
+    };
     document.addEventListener("visibilitychange", onVisible);
     return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVisible); };
-  }, [loadOpen]);
+  }, [loadOpen, loadAwaiting]);
 
   async function startClo(slabJobId: string) {
     setStarting(p => ({ ...p, [slabJobId]: true }));
@@ -341,9 +424,78 @@ function CuttingQueue() {
         </div>
       )}
 
+      {/* ── WAITING FOR A SLAB ──────────────────────────────────────────────
+          The owner: "when it's sample, sampling guy send request to supervisor —
+          hereafter no need of send to cutter. It queued to cutter where he
+          choose a slab and starts working. He sees the project CTS or sampling,
+          then inside he add slab and start working."
+
+          So this is the queue BEFORE the queue. Each of these is an order with
+          rows on it and no stone under them; opening one takes him to the same
+          slab board the supervisor uses, where he adds the slab he is standing
+          at, puts rows on it, and the last button drops it into the list below.
+
+          SAMPLES LEAD, and are coloured apart. A sample order is the one this
+          panel exists for — it used to sit waiting for a supervisor to pass it
+          on — and it behaves differently once he opens it: no sinks, no hand
+          polish, cut and polish and pack. */}
+      {tab === "open" && awaiting.length > 0 && (
+        <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50/60 px-4 py-3">
+          <div className="flex items-baseline justify-between gap-3 flex-wrap">
+            <h2 className="text-sm font-bold text-amber-900">
+              Waiting for a slab
+              <span className="ml-2 text-xs font-semibold text-amber-700">{awaiting.length}</span>
+            </h2>
+            {/* "STILL BEING PLANNED", not "has no slab at all". A project drops
+                off this list when its LAST slab goes to the floor, so one that
+                is half sent is legitimately still here with rows waiting — and
+                telling the cutter it has no stone on it when three slabs of it
+                are already cut is the kind of small lie that makes a man stop
+                believing the screen. */}
+            <p className="text-[11px] text-amber-700">
+              Rows still waiting for stone — open one, add the slab you are standing at, and it
+              drops into the queue below.
+            </p>
+          </div>
+          <ul className="mt-2 flex flex-wrap gap-2">
+            {[...awaiting]
+              .sort((a, b) => Number(b.kind === "SAMPLE") - Number(a.kind === "SAMPLE"))
+              .map(p => {
+                const sample = p.kind === "SAMPLE";
+                return (
+                  <li key={p.id}>
+                    <Link
+                      href={`/fab/supervisor/slabs?projectId=${encodeURIComponent(p.id)}`}
+                      className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition ${
+                        sample
+                          ? "border-violet-300 bg-violet-50 text-violet-800 hover:bg-violet-100"
+                          : "border-amber-300 bg-white text-amber-900 hover:bg-amber-100"}`}>
+                      <span className={`text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${
+                        sample ? "bg-violet-200 text-violet-800" : "bg-amber-200 text-amber-900"}`}>
+                        {sample ? "Sample" : "PO"}
+                      </span>
+                      <span className="font-mono">{p.projectCode}</span>
+                      {p.customerName && (
+                        <span className="font-normal opacity-70 truncate max-w-[12rem]">{p.customerName}</span>
+                      )}
+                      <span className="font-normal opacity-60">
+                        {p.requirementCount} row{p.requirementCount === 1 ? "" : "s"}
+                      </span>
+                    </Link>
+                  </li>
+                );
+              })}
+          </ul>
+        </div>
+      )}
+
       {tab === "open" && (
         queue.length === 0 ? (
-          <div className="text-center py-20 text-gray-400">No slabs in the cutting queue.</div>
+          <div className="text-center py-20 text-gray-400">
+            {awaiting.length > 0
+              ? "No slabs in the cutting queue — pick one from the list above to start."
+              : "No slabs in the cutting queue."}
+          </div>
         ) : (
           <div className="space-y-4">
             {queue.map(entry => {
@@ -388,14 +540,22 @@ function CuttingQueue() {
                           <td className="px-5 py-2.5 font-mono text-xs text-gray-700">{p.pieceCode}</td>
                           <td className="px-5 py-2.5 text-gray-600">{rowLabel(p.requirement?.rowLetter, p.requirement?.pieceLabel ?? p.requirement?.description)}</td>
                           <td className="px-5 py-2.5 text-gray-500">
-                            {p.requirement?.length && p.requirement?.width ? `${p.requirement.length} × ${p.requirement.width}` : "-"}
+                            {orderedSizeLabel(p.requirement?.length, p.requirement?.width, p.requirement?.dimUnit) ?? "-"}
                           </td>
                           <td className="px-5 py-2.5 text-gray-500">{p.project.projectCode}</td>
                           <td className="px-5 py-2.5">
                             <div className="flex gap-1">
-                              {p.polishRequired      && <FlagChip label="Polish" col="bg-violet-100 text-violet-700" />}
-                              {p.hasSink             && <FlagChip label="Sink"   col="bg-orange-100 text-orange-700" />}
-                              {p.fabricationRequired && <FlagChip label="Fab"    col="bg-rose-100 text-rose-700" />}
+                              {p.polishRequired && <FlagChip label="Polish" col="bg-violet-100 text-violet-700" />}
+                              {p.hasSink        && <FlagChip label="Sink"   col="bg-orange-100 text-orange-700" />}
+                              {/* EDGE, beside Fab and not instead of it.
+                                  Fab means "goes to the hand bench" and has
+                                  meant `has_sink OR has_edge_polish` since
+                                  scripts/0063 — so Fab with no Sink was the
+                                  only clue that a piece was going there for its
+                                  edges, and it was a clue by elimination. This
+                                  says it. */}
+                              {p.hasEdgePolish  && <FlagChip label="Edge"   col="bg-indigo-100 text-indigo-700" />}
+                              {p.fabricationRequired && <FlagChip label="Fab" col="bg-rose-100 text-rose-700" />}
                             </div>
                           </td>
                         </tr>

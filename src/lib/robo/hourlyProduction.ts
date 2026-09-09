@@ -24,6 +24,15 @@
  * last slabs); and a clock more than 12h behind the run has wrapped past
  * midnight whether or not the slab was re-dated.
  *
+ *   • The day advances only when the clock WRAPS past midnight, and continuity
+ *     is measured IN-to-IN, never off the previous slab's Out. A slab held
+ *     open for hours has a late Out; keying the next slab's wrap check off it
+ *     made a perfectly normal following slab look more than 12h earlier than
+ *     the run so far — a false crossing that fabricated an empty extra day (a
+ *     single-day batch spilling into the next date; batch 1386, 20 Jul 12:12 →
+ *     21 Jul 17:12, drawing a phantom third day). A slab whose own Out precedes
+ *     its In still crosses midnight, so an overnight 00:09 Out is the next day.
+ *
  * No wall clock is ever read — the timeline is built entirely from the stored
  * In/Out and the sequence — so the same records always produce the same chart,
  * and a historical hour never changes because time passed.

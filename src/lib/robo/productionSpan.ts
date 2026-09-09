@@ -27,7 +27,7 @@
  * never completed a slab has no Out Time, so no span, by design (not "up to now").
  */
 
-import { type PlaceableSlab, placeSlabs, registerOrder } from "./slabPlacement.ts";
+import { type PlaceableSlab, placeSlabs, registerOrder, dayNum, toMins } from "./slabPlacement.ts";
 
 /** A slab reduced to what the span needs: the day it was produced (already
  *  resolved through productionDateOf — a yyyy-mm-dd, or "" when unknown), its
@@ -38,6 +38,24 @@ export interface SpanSlab extends PlaceableSlab {
   /** Which run this slab is part of (the batch setup id). Slabs sharing a key
    *  are placed as one sequence; absent, every slab is one run. */
   runKey?: string | null;
+}
+
+/**
+ * Absolute minutes for a yyyy-mm-dd date + "HH:MM" time, the date treated as a
+ * UTC-midnight anchor. Used only for DIFFERENCES between two of these, so the
+ * anchor and any timezone cancel. Null when either part is missing or
+ * unparseable, so a slab with no date or no time is skipped rather than counted
+ * as midnight.
+ *
+ * Built on the shared helpers rather than parsing the strings again: the delay
+ * anchoring in referenceData.ts and the placement the chart and the KPIs share
+ * must agree about what a date and a clock time mean.
+ */
+export function stampMinutes(date: string, time: string | null | undefined): number | null {
+  const dn = dayNum(date);
+  const m = toMins(time);
+  if (dn === null || m === null) return null;
+  return dn * 1440 + m;
 }
 
 /**

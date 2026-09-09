@@ -1,4 +1,6 @@
 import NextAuth, { CredentialsSignin } from "next-auth";
+import type { User } from "next-auth";
+import type { JWT } from "next-auth/jwt";
 import Credentials from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
@@ -186,7 +188,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
      * When the user logs out, fabSignOut bumps user.sessionVersion in DB.
      * Any JWT with an older sv is rejected here, forcing re-login on all devices.
      */
-    async jwt(params) {
+    async jwt(params: { token: JWT; user?: User | null }) {
       const { token, user } = params;
 
       // Initial sign-in: user object present — set token fields

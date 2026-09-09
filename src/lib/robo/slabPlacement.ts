@@ -161,7 +161,16 @@ export function placeSlabs<T extends PlaceableSlab>(slabs: readonly T[]): Placed
     }
 
     placed.push({ slab, inAbs, outAbs });
-    prevRef = outAbs ?? (inAbs as number);
+    // CONTINUITY IS CARRIED ON THE IN TIME, NEVER THE OUT. A slab held open for
+    // hours — a long delay, or a hold across a shift — finishes with a late Out,
+    // and keying the next slab's wrap check off that Out made a perfectly normal
+    // following slab look more than 12h earlier than the run so far: a false
+    // midnight crossing that fabricated an empty extra day. In times move forward
+    // across a real run, so the only large backstep they carry is a true crossing
+    // (…23:55 → 00:04…), which still wraps. The Out still decides the RUN'S
+    // EXTENT (winEnd, and the span the KPI reports); it just no longer decides
+    // which day the next slab is on.
+    prevRef = inAbs ?? (outAbs as number);
   }
 
   return placed;

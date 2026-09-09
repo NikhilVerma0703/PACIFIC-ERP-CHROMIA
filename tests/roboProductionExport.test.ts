@@ -120,7 +120,11 @@ test("a blank cell is a dash, and zero is not blank", () => {
   assert.equal(productionRecordRow(input({ thickness: 0 }), 1)["Thickness (cm)"], 0);
 });
 
-test("a slab with no S.No. falls back to its row number", () => {
+test("S.No. is the computed sequence number, never the stored serialNumber", () => {
+  // change #3: the stored serialNumber was mistyped on old runs, so it is ignored
+  // entirely — the row shows the 1..N position the caller computed from the
+  // slab-number order (slabSequence.ts), whatever the old column said.
   assert.equal(productionRecordRow(input({ serialNumber: null }), 7)["S.No."], 7);
-  assert.equal(productionRecordRow(input({ serialNumber: 36 }), 7)["S.No."], 36);
+  assert.equal(productionRecordRow(input({ serialNumber: 36 }), 7)["S.No."], 7); // 36 ignored
+  assert.equal(productionRecordRow(input({ serialNumber: 999 }), 1)["S.No."], 1);
 });
