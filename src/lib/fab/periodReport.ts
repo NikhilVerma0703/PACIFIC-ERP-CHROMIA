@@ -201,26 +201,50 @@ export function buildPeriodReport(
 /**
  * WHAT ONE PACKED PIECE OF A ROW IS WORTH.
  *
- * A row's charge divided by the pieces that earn it — its FABRICATION pieces,
- * the sink ones, because edge work is fabrication work and a plain piece never
- * reaches the fabricator (see pricing.ts). So a row of 60 with 30 sinks spreads
- * its whole charge over those 30, and packing a plain piece earns nothing.
+ * TWO DIVISORS, NOT ONE — and that is the change the owner's split of edge work
+ * from sink work forced here.
  *
- * Zero when the row has no fabrication pieces, which is most rows: a plain
- * purchase-order row and every sample row are cut, polished, packed and not
- * charged for on this card.
+ * The two charges are earned by different pieces now. Sink money is earned by
+ * the sink pieces; hand edge polish money is earned by the pieces that carry
+ * edge work, which under the group rule is the whole row. Dividing both by one
+ * "fabrication pieces" count was right only while the two sets were identical:
+ *
+ *     A row of 60, 30 sinks, all four edges polished
+ *     OLD   both charges ÷ 30  ->  the 30 plain pieces earn nothing, and the
+ *                                  edge money on their own edges lands on the
+ *                                  sink pieces instead. The project total is
+ *                                  right; every per-piece and per-DAY figure
+ *                                  built from it is wrong.
+ *     NEW   edge ÷ 60, sink ÷ 30  -> a plain piece earns its edge share on the
+ *                                  day it was packed, and a sink piece earns
+ *                                  both.
+ *
+ * Zero for a count that is zero, which is the ordinary case for sink: most rows
+ * have no sink at all and their sink share is nothing.
  *
  * ROUNDED ONLY AT THE END, by the caller summing these. Rounding per piece and
  * then summing loses paise across a hundred pieces, and a project total that
  * does not equal the sum of its rows is the bug this whole module exists to
  * avoid repeating.
+ *
+ * BACKWARD COMPATIBLE ARGUMENT LIST. `sinkPieces` is optional and falls back to
+ * `edgePieces`, which is exactly the old single-divisor behaviour — so a caller
+ * not yet updated keeps its previous answer rather than silently getting a new
+ * one. The third argument was called `fabricationPieces`; it is the edge count
+ * now, because that is what the edge money divides by.
  */
 export function perPieceCharge(
   rowEdgeCost: number,
   rowSinkCost: number,
-  fabricationPieces: number,
+  edgePieces: number,
+  sinkPieces?: number,
 ): { edge: number; sink: number } {
-  const k = Math.max(0, Math.floor(n(fabricationPieces)));
-  if (k <= 0) return { edge: 0, sink: 0 };
-  return { edge: n(rowEdgeCost) / k, sink: n(rowSinkCost) / k };
+  const kEdge = Math.max(0, Math.floor(n(edgePieces)));
+  const kSink = sinkPieces === undefined
+    ? kEdge
+    : Math.max(0, Math.floor(n(sinkPieces)));
+  return {
+    edge: kEdge > 0 ? n(rowEdgeCost) / kEdge : 0,
+    sink: kSink > 0 ? n(rowSinkCost) / kSink : 0,
+  };
 }

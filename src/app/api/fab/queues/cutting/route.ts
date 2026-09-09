@@ -82,7 +82,7 @@ export async function GET() {
           include: {
             project:     { select: { projectCode: true, customerName: true } },
             drawing:     { select: { drawingNumber: true } },
-            requirement: { select: { pieceLabel: true, description: true, length: true, width: true } },
+            requirement: { select: { pieceLabel: true, description: true, length: true, width: true, dimUnit: true } },
             pieceOperations: { where: { operationType: "CUTTING" } },
           },
         },
@@ -128,6 +128,10 @@ export async function GET() {
       description:   a.requirement.description ?? null,
       lengthIn:      a.requirement.length ?? null,
       widthIn:       a.requirement.width  ?? null,
+      // scripts/0068 — the unit the CUSTOMER ordered in, so a metric order's
+      // cut list can print "103 × 3 cm" instead of the inches the maths needs.
+      // NULL is inches, which is every row of every US order.
+      dimUnit:       a.requirement.dimUnit ?? null,
       qty:           a.allocatedQuantity,
     }));
     const worker = jobWorkers.get(job.id);

@@ -25,6 +25,28 @@ export interface FabBoardProject {
   poCount: number;
 }
 
+/**
+ * THE PROJECT THE URL ASKED FOR, if it named one.
+ *
+ * ?projectId=... — the cutting queue's "waiting for a slab" panel links here
+ * with the project already picked, so a cutter who taps a sample order lands on
+ * that order instead of on whatever happened to be newest and then has to hunt
+ * for the one he tapped.
+ *
+ * Read off window rather than through useSearchParams deliberately: this hook is
+ * used by pages that are already client components, and useSearchParams would
+ * force every one of them inside a Suspense boundary to satisfy the Next build —
+ * a structural change to three screens to pass one optional default.
+ */
+function projectIdFromUrl(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return new URLSearchParams(window.location.search).get("projectId")?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
 /** Loads the projects still being planned, and remembers which one is open. */
 export function useFabBoardProjects() {
   const [projects, setProjects] = useState<FabBoardProject[]>([]);
@@ -41,9 +63,16 @@ export function useFabBoardProjects() {
       setProjects(r.data);
       setError(r.error);
       setLoading(false);
-      // Open the newest project by default — it is nearly always the one being
-      // worked — but never move off one the supervisor has already chosen.
-      setProjectId(prev => prev || r.data[0]?.id || "");
+      // The URL first, then the newest — which is nearly always the one being
+      // worked — but never move off one the person has already chosen.
+      //
+      // CHECKED AGAINST THE LIST BEFORE IT IS USED. A stale link to a project
+      // that has since been released would otherwise select an id the dropdown
+      // does not contain: the select would show blank and the board would sit
+      // empty, which reads as broken software rather than as a finished job.
+      const wanted = projectIdFromUrl();
+      const asked = wanted && r.data.some(p => p.id === wanted) ? wanted : "";
+      setProjectId(prev => prev || asked || r.data[0]?.id || "");
     }
 
     run();

@@ -41,6 +41,26 @@ export interface CeoSlabWastage {
   pieceCount: number;
   slabAreaMm2: number;
   piecesAreaMm2: number;
+  /**
+   * SQUARE FEET THAT LEFT THIS SLAB AS SAMPLE STOCK — and only what was
+   * actually taken.
+   *
+   * The owner: "not all the wastage to samples, only wastage taken to samples
+   * by the sample guy."
+   *
+   * That distinction was missing HERE. The supervisor's board and approve-slab
+   * have passed sampledAreaSqft to computeSlabLoss since it existed, so a
+   * sample cut showed there as stone CONSUMED. This module never asked for it,
+   * so the CEO board counted the same stone as WASTE — one slab, two wastage
+   * figures on two screens, which is the thing every other number here is
+   * arranged to prevent.
+   *
+   * SQFT, not mm², unlike the two above: it arrives already converted from
+   * sampling_intake x sampling_size by lib/fab/sampledArea.ts, which is the one
+   * place that conversion happens. Optional and defaulting to zero, so a
+   * database with no sample take-off reads exactly as it did before.
+   */
+  sampledAreaSqft?: number | null;
   /** polish_qc.quality_grade — A / B / C. Null when QC never graded it, which
    *  is a different fact from grade A and is shown as such. */
   qualityGrade?: string | null;
@@ -65,6 +85,9 @@ export interface OverviewSlab {
   pieceCount: number;
   slabAreaSqft: number;
   usedSqft: number;
+  /** Recovered off this slab as sample stock. Consumed, not wasted — and only
+   *  what was actually taken, never the whole offcut. */
+  sampledSqft: number;
   wasteSqft: number;
   wastePct: number;
   /** Above the 20% line the dashboard already draws in red. */
@@ -133,9 +156,14 @@ export function groupByProject(slabs: CeoSlabWastage[]): OverviewProject[] {
     const code = String(s?.projectCode ?? "").trim() || "(no project)";
     const slabAreaSqft = sqftFromSqMm(s?.slabAreaMm2 ?? 0);
     const usedSqft = sqftFromSqMm(s?.piecesAreaMm2 ?? 0);
+    // SAMPLES ARE SPENT, NOT SCRAPPED. Stone taken off this slab for sample
+    // stock was recovered and is on a shelf; counting it as waste both
+    // overstates the wastage and disagrees with the supervisor's board, which
+    // has always subtracted it (computeSlabLoss.committedAreaSqft).
+    const sampledSqft = Math.max(0, Number(s?.sampledAreaSqft) || 0);
     // Never negative: an over-committed slab is a real state, but "-3 sqft of
     // waste" in a total is worse than nothing.
-    const wasteSqft = Math.max(0, slabAreaSqft - usedSqft);
+    const wasteSqft = Math.max(0, slabAreaSqft - usedSqft - sampledSqft);
     const wastePct = slabAreaSqft > 0 ? (wasteSqft / slabAreaSqft) * 100 : 0;
 
     const list = byProject.get(code) ?? [];
@@ -149,6 +177,8 @@ export function groupByProject(slabs: CeoSlabWastage[]): OverviewProject[] {
       pieceCount: Math.max(0, Math.floor(Number(s?.pieceCount) || 0)),
       slabAreaSqft: round2(slabAreaSqft),
       usedSqft: round2(usedSqft),
+      /** Recovered as sample stock — consumed, not wasted. */
+      sampledSqft: round2(sampledSqft),
       wasteSqft: round2(wasteSqft),
       wastePct: round1(wastePct),
       highWaste: wastePct > HIGH_WASTE_PCT,

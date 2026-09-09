@@ -97,23 +97,42 @@ test("\"may add but may not view\" is why this is not a minimum-tier gate", () =
   assert.notEqual(samplingActorOf(fabSup), samplingActorOf(u("SAMPLING", "SHOP_FLOOR")));
 });
 
-test("the fab tier admitted here is the one fabGate(\"SUPERVISOR\") admits", () => {
+test("the fab tier admitted here is the one fabGate(\"EMPLOYEE\") admits", () => {
   // lib/fab/access.ts cannot be imported from a pure module (it reaches @/auth,
   // and middleware imports this file), so the test is where the two definitions
-  // are held together: fabTierOf gives SUPERVISOR at rank >= INCHARGE and
-  // MANAGER above it, and both clear a "SUPERVISOR" minimum.
+  // are held together: fabTierOf gives EMPLOYEE at rank >= OPERATOR, and every
+  // tier above it clears the same minimum.
+  //
+  // ─── THIS USED TO STOP AT INCHARGE ────────────────────────────────────────
+  // It asserted "the machine operator does not decide what is worth keeping",
+  // and the owner overruled it about his own floor: "I need space in cutter to
+  // add some extra pieces as well, need to select from which slab, so it will
+  // be added in the sample inventory as well." The man at the saw is the only
+  // one who can see the offcut — under the old rule it went in the bin or
+  // waited for somebody to walk over.
+  assert.ok(isFabStockContributor(u("OPERATOR", "FABRICATION")));
   assert.ok(isFabStockContributor(u("INCHARGE", "FABRICATION")));
   assert.ok(isFabStockContributor(u("LINE_MANAGER", "FABRICATION")));
+
+  // ADD ONLY, AND THAT DID NOT MOVE. Widening WHO may contribute must not
+  // widen WHAT they may do — the cutter gets exactly the one action the
+  // supervisor already had, and no sight of the inventory or the dispatch.
+  assert.deepEqual(samplingActionsFor(u("OPERATOR", "FABRICATION")), ["addStock"]);
+  assert.deepEqual(samplingActionsFor(u("INCHARGE", "FABRICATION")), ["addStock"]);
   assert.deepEqual(samplingActionsFor(u("LINE_MANAGER", "FABRICATION")), ["addStock"]);
-  // The machine operator does not decide what is worth keeping.
-  assert.ok(!isFabStockContributor(u("OPERATOR", "FABRICATION")));
-  assert.deepEqual(samplingActionsFor(u("OPERATOR", "FABRICATION")), []);
+
   // The seam is the BRANCH, because fabrication is still a department — unlike
-  // Chromia, which stopped being one. The same rank elsewhere is not a fab
-  // supervisor.
+  // Chromia, which stopped being one. The same rank elsewhere is nobody here,
+  // and THAT is what keeps the widening safe rather than the rank floor.
   assert.ok(!isFabStockContributor(u("INCHARGE", "SHOP_FLOOR")));
+  assert.ok(!isFabStockContributor(u("OPERATOR", "SHOP_FLOOR")));
+  assert.ok(!isFabStockContributor(u("OPERATOR", "OFFICE")));
+  assert.deepEqual(samplingActionsFor(u("OPERATOR", "SHOP_FLOOR")), []);
+  // A fabrication login below OPERATOR rank is still nobody.
+  assert.ok(!isFabStockContributor(u("", "FABRICATION")));
   // And the rank comparison it is built on is the shared one.
-  assert.equal(rankOf("INCHARGE"), ROLE_RANK.INCHARGE);
+  assert.equal(rankOf("OPERATOR"), ROLE_RANK.OPERATOR);
+  assert.ok(ROLE_RANK.INCHARGE > ROLE_RANK.OPERATOR);
   assert.ok(ROLE_RANK.LINE_MANAGER > ROLE_RANK.INCHARGE);
 });
 
@@ -174,7 +193,11 @@ test("the module door admits everyone with an errand, and nobody else", () => {
   assert.equal(maySeeSamplingModule(u("SAMPLING", "SHOP_FLOOR")), true);
   assert.equal(maySeeSamplingModule(u("ADMIN", "OFFICE")), true);
   assert.equal(maySeeSamplingModule(u("INCHARGE", "FABRICATION")), true, "he has to reach the intake route");
-  assert.equal(maySeeSamplingModule(u("OPERATOR", "FABRICATION")), false);
+  // The cutter reaches it too since the owner opened addStock to him — the door
+  // is defined as "can do at least one thing", so it followed the action table
+  // without needing its own edit. That is the property the next test pins.
+  assert.equal(maySeeSamplingModule(u("OPERATOR", "FABRICATION")), true, "he adds the offcuts he can see");
+  assert.equal(maySeeSamplingModule(u("OPERATOR", "SHOP_FLOOR")), false, "the branch is the door, not the rank");
   assert.equal(maySeeSamplingModule(u("STORE", "SHOP_FLOOR")), false);
   assert.equal(maySeeSamplingModule(u("INCHARGE", "SHOP_FLOOR")), false);
   assert.equal(maySeeSamplingModule(null), false);

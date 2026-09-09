@@ -17,6 +17,23 @@
 // slab and the wrong one when you are standing on a slab collecting rows. It
 // also has no over-allocation check at all. It is left exactly as it is.
 //
+// ─────────────────────────── WHO MAY WRITE HERE: THE CUTTER TOO ─────────────
+// The owner: "we have slab allocation page made for supervisor, that need to be
+// included to the cutter as well — but the flow is click +slab and enter the
+// rows and quantity and cut, and rest is same as now."
+//
+// So all three verbs are EMPLOYEE now, not SUPERVISOR. Everyone that admits is
+// already inside the FABRICATION branch: fabTierOf returns null for anybody who
+// is not (lib/fab/access.ts), so this is a fabrication operator standing at a
+// saw, not the public.
+//
+// NOTHING ELSE WAS RELAXED TO LET HIM IN, and that is the point. The
+// over-allocation rule, the FOR UPDATE row lock, the refusal to strip a slab
+// that has already gone to the floor — every check below is the check it was.
+// They are what make it safe for the man holding the stone to do this himself
+// rather than describe it down a phone to somebody who is not. A tier was never
+// standing in for a constraint here, so removing one does not remove the other.
+//
 // ─────────────────────────────────────────────────────────────────────────────
 // OVER-ALLOCATION, AND WHERE THE TRANSACTION BOUNDARY SITS
 //
@@ -92,7 +109,7 @@ const REQUIREMENT_SELECT = {
 } as const;
 
 export async function POST(req: NextRequest) {
-  const g = await fabGate("SUPERVISOR");
+  const g = await fabGate("EMPLOYEE");
   if (!g.ok) return deny(g.status);
 
   let body: Record<string, unknown>;
@@ -284,7 +301,7 @@ async function assign(body: Record<string, unknown>) {
 /* -- Changing an existing allocation --------------------------------------- */
 
 export async function PATCH(req: NextRequest) {
-  const g = await fabGate("SUPERVISOR");
+  const g = await fabGate("EMPLOYEE");
   if (!g.ok) return deny(g.status);
 
   let body: Record<string, unknown>;
@@ -363,7 +380,7 @@ export async function PATCH(req: NextRequest) {
 /* -- Taking a row, or an empty slab, off the board -------------------------- */
 
 export async function DELETE(req: NextRequest) {
-  const g = await fabGate("SUPERVISOR");
+  const g = await fabGate("EMPLOYEE");
   if (!g.ok) return deny(g.status);
 
   const params = req.nextUrl.searchParams;

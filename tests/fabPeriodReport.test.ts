@@ -139,18 +139,39 @@ test("an empty floor reports zero rather than nothing", () => {
   assert.equal(r.grain, "day");
 });
 
-test("A ROW'S CHARGE SPREADS OVER ITS FABRICATION PIECES ONLY", () => {
-  // Row A: 60 ordered, 30 with sinks, ₹3,787.50 edge + ₹6,900 sink.
-  // Edge work IS fabrication work, so only the 30 earn — a plain piece never
-  // reaches the fabricator and packing one is worth nothing on this card.
-  const per = perPieceCharge(3787.5, 6900, 30);
-  assert.equal(per.edge, 126.25);
-  assert.equal(per.sink, 230);
-  // Packing all thirty rebuilds the row exactly.
-  assert.equal(per.edge * 30, 3787.5);
-  assert.equal(per.sink * 30, 6900);
+test("TWO DIVISORS — edge money over edge pieces, sink money over sink pieces", () => {
+  // THIS TEST ASSERTED THE OPPOSITE and was left behind by the split: it said
+  // "edge work IS fabrication work, so only the 30 earn". Hand edge polish
+  // stopped following the sink, and the FOUR-argument form below — which the
+  // only production caller uses (api/fab/ceo) — had no coverage at all until an
+  // audit found it. The whole change turns on this arithmetic.
+  //
+  // Row A: 60 ordered, all four edges, 30 with sinks. ₹7,575 edge + ₹6,900 sink.
+  const per = perPieceCharge(7575, 6900, 60, 30);
+  assert.equal(per.edge, 126.25, "₹7,575 over the 60 that carry edge work");
+  assert.equal(per.sink, 230, "₹6,900 over the 30 that carry a sink");
 
-  // A row with no sinks is not a fabrication row and earns nothing.
+  // Packing the whole row rebuilds it exactly — no paise lost, nothing double
+  // counted. A sink piece earns BOTH shares; a plain piece earns only the edge.
+  assert.equal(per.edge * 60 + per.sink * 30, 7575 + 6900);
+
+  // THE OLD ANSWER, pinned as the thing this is not: one divisor gave the 30
+  // plain pieces nothing and landed their edge money on the sink pieces. The
+  // project total was right; every per-piece and per-DAY figure was wrong.
+  const wrong = perPieceCharge(7575, 6900, 30, 30);
+  assert.notEqual(wrong.edge, per.edge);
+  assert.equal(wrong.edge, 252.5, "double what a piece is actually worth");
+
+  // Each count guards its own share; a zero on one side does not zero the other.
+  assert.deepEqual(perPieceCharge(7575, 0, 60, 0), { edge: 126.25, sink: 0 });
+  assert.deepEqual(perPieceCharge(0, 6900, 0, 30), { edge: 0, sink: 230 });
+  assert.deepEqual(perPieceCharge(0, 0, 0, 0), { edge: 0, sink: 0 });
+  assert.deepEqual(perPieceCharge(500, 500, -3, -3), { edge: 0, sink: 0 });
+
+  // THE THREE-ARGUMENT FORM IS THE OLD BEHAVIOUR, deliberately: a caller that
+  // has not been updated keeps the answer it always had rather than silently
+  // getting a new one. sinkPieces falls back to edgePieces.
+  assert.deepEqual(perPieceCharge(3787.5, 6900, 30), perPieceCharge(3787.5, 6900, 30, 30));
   assert.deepEqual(perPieceCharge(0, 0, 0), { edge: 0, sink: 0 });
   assert.deepEqual(perPieceCharge(500, 0, 0), { edge: 0, sink: 0 });
   assert.deepEqual(perPieceCharge(500, 0, -3), { edge: 0, sink: 0 });

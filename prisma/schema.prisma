@@ -118,7 +118,19 @@ model User {
   updatedAt          DateTime            @updatedAt
   cuttingEntries     CuttingEntry[]
   fabMachineSessions FabMachineSession[]
-  fabSlabJobs        FabSlabJob[]
+  /// Slabs this login CUT. Named now that a second relation to FabSlabJob
+  /// exists — Prisma cannot tell two links to one model apart without it.
+  fabSlabJobs        FabSlabJob[]        @relation("FabSlabJobOperator")
+  /// Slabs this login SENT TO CUTTING. scripts/0064. A different act from the
+  /// one above, usually by a different person: the supervisor (or the cutter
+  /// himself) puts the slab up, and whoever is at the saw cuts it.
+  fabSlabJobsReleased FabSlabJob[]       @relation("FabSlabJobReleasedBy")
+  /// scripts/0067 — the three places a login can put a typed figure or a hand
+  /// reassignment on the record. Named relations, because Prisma cannot tell
+  /// two links to one model apart without them.
+  fabRowOverrides    FabRequirement[]   @relation("FabRequirementEdgeOverrideBy")
+  fabHandAssigned    FabPiece[]         @relation("FabPieceHandAssignedBy")
+  fabProjectTotals   FabProject[]       @relation("FabProjectManualTotalBy")
   fabOperations      FabOperation[]
   fabWorkersCreated  FabWorker[]
 
@@ -2418,8 +2430,20 @@ enum FabShapeType {
   RECTANGLE
   L_SHAPE
   CURVE
+  /// The original spelling of a circle, kept because live rows hold it.
+  /// lib/fab/shape.ts reads ROUND and CIRCLE as the same thing, so a row
+  /// written before scripts/0063 is still priced on a circumference rather
+  /// than quietly becoming a rectangle.
   ROUND
   CUSTOM
+  /// scripts/0063. `length` holds the DIAMETER; `width` is written equal to it,
+  /// so the bounding box the slab actually loses falls out of the existing
+  /// maths with no special case anywhere else.
+  CIRCLE
+  /// scripts/0063. `length` is a (the long axis), `width` is b (the short one)
+  /// — the owner: "if it's oval enter a, b, long length and long width".
+  /// Perimeter by Ramanujan II; see lib/fab/shape.ts.
+  OVAL
 }
 
 model FabMachine {
@@ -2468,6 +2492,13 @@ model FabMachineSession {
   loginTime  DateTime   @default(now()) @map("login_time")
   logoutTime DateTime?  @map("logout_time")
   isActive   Boolean    @default(true) @map("is_active")
+  /// Slabs released to cutting from this session. scripts/0064 — this is the
+  /// half that names the human, because the login above is shared by the whole
+  /// floor and `worker` is not.
+  releasedSlabJobs FabSlabJob[]
+  /// Pieces sent to the hand bench from this session. scripts/0067 — the half
+  /// that names the human, for the same reason releasedSlabJobs is.
+  handAssignedPieces FabPiece[]   @relation("FabPieceHandAssignedSession")
 
   @@index([machineId, isActive])
   @@map("fab_machine_session")
@@ -2507,6 +2538,19 @@ model FabProject {
   status         FabProjectStatus @default(PLANNING)
   numberOfPieces Int              @default(0) @map("number_of_pieces")
   drawingPdfUrl  String?          @map("drawing_pdf_url")
+  /// scripts/0067 — the whole project's fabrication charge, agreed by a human
+  /// and replacing every calculation under it. The escape hatch of last resort.
+  /// The calculated total is NOT destroyed: both are shown.
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  manualTotal    Float?           @map("manual_total")
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  manualTotalById String?         @map("manual_total_by")
+  manualTotalBy   User?           @relation("FabProjectManualTotalBy", fields: [manualTotalById], references: [id])
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  manualTotalAt  DateTime?        @map("manual_total_at")
+  /// Why. Worth more than the number six months later.
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  manualTotalNote String?         @map("manual_total_note")
   remarks        String?
   createdAt      DateTime         @default(now()) @map("created_at")
   slabs          FabSlab[]
@@ -2569,10 +2613,33 @@ model FabSlabJob {
   slab            FabSlab                 @relation(fields: [slabId], references: [id])
   machineId       String?                 @map("machine_id")
   machine         FabMachine?             @relation(fields: [machineId], references: [id])
+  /// Who is CUTTING this slab — written when the job STARTS, not when it is
+  /// created. The cutting board compares it (and machineId) to tell one
+  /// station's work from another's. For who RELEASED the slab, see
+  /// releasedById / releasedBySessionId below; they are two different acts, by
+  /// two different people more often than not.
   operatorId      String?                 @map("operator_id")
-  operator        User?                   @relation(fields: [operatorId], references: [id])
+  operator        User?                   @relation("FabSlabJobOperator", fields: [operatorId], references: [id])
   workerId        String?                 @map("worker_id")
   worker          FabWorker?              @relation(fields: [workerId], references: [id])
+
+  /// WHO SENT THIS SLAB TO CUTTING — the authenticated login. scripts/0064.
+  ///
+  /// A real name for a supervisor or manager, who each have their own login.
+  /// The SHARED operator account for a floor release, which names nobody — see
+  /// releasedBySessionId, which is the half that does. NULL on every job
+  /// created before 0064; those were all supervisor releases, and a guessed id
+  /// is indistinguishable from a recorded one the moment it is written.
+  releasedById        String?             @map("released_by_id")
+  releasedBy          User?               @relation("FabSlabJobReleasedBy", fields: [releasedById], references: [id])
+  /// The process session the release was made from — its worker names the
+  /// person, and it carries the machine and the shift with him. NULL for a desk
+  /// release with no station session open, which is the ordinary supervisor
+  /// case. The route REQUIRES it for an EMPLOYEE release: without it the record
+  /// would be empty for exactly the person it exists for.
+  releasedBySessionId String?             @map("released_by_session_id")
+  releasedBySession   FabMachineSession?  @relation(fields: [releasedBySessionId], references: [id])
+
   status          FabSlabProductionStatus @default(READY)
   startTime       DateTime?               @map("start_time")
   endTime         DateTime?               @map("end_time")
@@ -2661,10 +2728,97 @@ model FabRequirement {
   /// column times the row's dimensions and quantity is the whole edge charge.
   /// See lib/fab/pricing.ts, which owns the arithmetic and the rate card.
   finishedEdges       String?                    @map("finished_edges")
+  /// WHICH FACE(S) of the chosen edges get hand polish: TOP / BOTTOM / BOTH.
+  /// scripts/0065.
+  ///
+  /// The owner: "hand edge polish have like not only 4 direction N E S W, also
+  /// whether this on top or bottom or both as well." An edge is a band with two
+  /// arrises, and doing both is the same line walked TWICE — so this MULTIPLIES
+  /// the running feet rather than adding a fee. A 60-piece row at 505 ft is
+  /// 1,010 ft and ₹15,150 at 2 cm, against ₹7,575.
+  ///
+  /// NULL MEANS TOP, and that is deliberately different from finishedEdges,
+  /// where NULL is a real unanswered question. Every row that existed before
+  /// this column was charged as one face; if NULL were "not chosen" it would
+  /// take every one of them off the invoice the day the script ran. So NULL
+  /// keeps charging exactly what it charged yesterday, and BOTH must be
+  /// chosen — the expensive direction is never fallen into.
+  edgeFaces           String?                    @map("edge_faces")
+  /// scripts/0067 — THE THREE-FACE HAND-POLISH SPECIFICATION. Each holds the
+  /// same canonical CSV finishedEdges uses (front,back,left,right, or the
+  /// single word `round`), and each is INDEPENDENT: "top on 4 side, bottom on
+  /// 2, side on 4". Summed, never multiplied.
+  ///
+  /// ALL THREE NULL means this row has no three-face spec and is read from
+  /// finishedEdges + edgeFaces above — which is every row written before 0067,
+  /// and is why none of their figures moved. An EMPTY STRING is a real answer:
+  /// asked, and this face gets nothing.
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  edgesTop            String?                    @map("edges_top")
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  edgesBottom         String?                    @map("edges_bottom")
+  /// The BAND itself — the vertical thickness face, normally machine polished
+  /// and sometimes done by hand instead. Never produced from the legacy pair.
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  edgesSide           String?                    @map("edges_side")
+  /// This row's OWN rate, in the unit pricingMode implies. NULL FALLS BACK TO
+  /// THE RATE CARD (Rs15 at 2 cm, Rs20 at 3 cm), which is what every ordinary
+  /// row does — nobody types a rate unless the job is unusual. Zero is a real
+  /// rate and is honoured; NULL is not zero.
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  edgeRate            Float?                     @map("edge_rate")
+  /// scripts/0069 — RUPEES PER FOOT FOR A SIDE DONE ON BOTH TOP AND BOTTOM,
+  /// replacing two passes at edgeRate. The owner: "if per feet 10 rs then doing
+  /// top + bottom we will give them 15 not 20."
+  ///
+  /// NULL MEANS NO DISCOUNT and the two faces are simply summed at edgeRate,
+  /// which is what every row written before 0069 is charged — so nothing
+  /// already quoted moves. Zero is a real pair rate and is honoured.
+  /// Applies to the sides that share BOTH faces and to nothing else; the side
+  /// band never pairs. RUNNING_FOOT only. See facePairSplit in lib/fab/shape.ts.
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  pairRate            Float?                     @map("pair_rate")
+  /// scripts/0070 — A RATE PER FACE. The owner: "bottom edge have diff price
+  /// sometime, top have diff price sometime and side have different price
+  /// sometime." Each NULL falls back to edgeRate, which falls back to the rate
+  /// card — so a row with all three empty prices exactly as it did before 0070.
+  /// A side polished on both faces uses pairRate, or top + bottom when pairRate
+  /// is NULL. The side band never shares a rate with a flat face.
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  edgeRateTop         Float?                     @map("edge_rate_top")
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  edgeRateBottom      Float?                     @map("edge_rate_bottom")
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  edgeRateSide        Float?                     @map("edge_rate_side")
+  /// RUNNING_FOOT (default, and NULL means this) / PER_PIECE / LUMP_SUM.
+  /// HAND POLISH ONLY — the sink is fixed per piece off the card in every mode.
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  pricingMode         String?                    @map("pricing_mode")
+  /// A figure a human agreed, replacing this row's calculated hand-polish
+  /// charge — "when system feels heavy they call and enter the amount". Also
+  /// rescues a row the system refuses to price. Does NOT touch the sink.
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  edgeTotalOverride   Float?                     @map("edge_total_override")
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  edgeTotalOverrideById String?                  @map("edge_total_override_by")
+  edgeTotalOverrideBy   User?                    @relation("FabRequirementEdgeOverrideBy", fields: [edgeTotalOverrideById], references: [id])
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  edgeTotalOverrideAt DateTime?                  @map("edge_total_override_at")
   description         String?
   slabCode            String                     @map("slab_code")
   length              Float?
   width               Float?
+  /// scripts/0068 — THE UNIT THE CUSTOMER ORDERED IN, for display only: 'CM'
+  /// or 'IN'. NULL means IN and is not a missing answer — every row written
+  /// before 0068 came off a packing list in inches and square feet.
+  ///
+  /// length/width above are ALWAYS INCHES whatever this says, because
+  /// sqft_per_piece is length*width/144 and the running-foot edge charge is
+  /// perimeter/12. A centimetre in those columns is a 2.54x overcharge that
+  /// looks entirely ordinary on screen. src/lib/fab/dimensions.ts is the only
+  /// thing that reads this, and priceRow() must never learn about it.
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  dimUnit             String?                    @map("dim_unit")
   thickness           Float?
   quantity            Int
   shapeType           FabShapeType?              @map("shape_type")
@@ -2742,6 +2896,78 @@ model FabPiece {
   width                Float?
   remarks              String?
   hasSink              Boolean             @default(false) @map("has_sink")
+  /// HAND edge polish — the outsourced running-foot job, not the machine polish
+  /// the operator does, and not the sink polish (which is implied by the sink
+  /// cut and priced inside the per-piece sink rate).
+  ///
+  /// INDEPENDENT OF hasSink since scripts/0063. The owner: "any pieces can be
+  /// assigned the edge hand polish or not — this is chosen and done by
+  /// supervisor, or else the one manager who uploads the PO." A plain piece can
+  /// have it and a sink piece can go without.
+  ///
+  /// Stamped at release from the row's finished_edges, which under the group
+  /// rule applies to every piece of the row. Not backfilled — see 0063.
+  hasEdgePolish        Boolean             @default(false) @map("has_edge_polish")
+  /// scripts/0067 — THIS PIECE WAS MOVED FROM THE POLISHING MACHINE TO THE HAND
+  /// BENCH: the machine could not do the profile, was busy, or broke down.
+  ///
+  /// It OVERRIDES its row's edge charge for this piece alone, using the hand*
+  /// fields below. Every piece of the row that did not move keeps the row
+  /// price. THIS IS THE ONE PLACE THE HOMOGENEOUS-ROW RULE DOES NOT HOLD, and
+  /// it is deliberate: a machine failing at nine at night takes the pieces in
+  /// front of it, mid-row, and nobody renumbers an order around that.
+  ///
+  /// Pricing only — the piece still routes through the polishing queue.
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  polishByHand         Boolean             @default(false) @map("polish_by_hand")
+  /// WHAT THIS PIECE EARNED, frozen when it was packed (scripts/0066). The
+  /// period report reads these instead of re-pricing a closed month, so a rate
+  /// card edited later cannot rewrite what was already paid. Declared here
+  /// because the columns exist in the database and Prisma DROPS any column no
+  /// model describes: without these three lines a `db push` would delete every
+  /// frozen charge permanently.
+  chargedEdge    Float?    @map("charged_edge")
+  chargedSink    Float?    @map("charged_sink")
+  chargedAt      DateTime? @map("charged_at")
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  handEdgesTop         String?             @map("hand_edges_top")
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  handEdgesBottom      String?             @map("hand_edges_bottom")
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  handEdgesSide        String?             @map("hand_edges_side")
+  /// What was agreed for THIS piece — "it need to ask the cost on how much per
+  /// feet". NULL falls back to the card.
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  handRate             Float?              @map("hand_rate")
+  /// scripts/0069 — this piece's own pair rate at the hand bench: rupees per
+  /// foot for a side polished on both top and bottom. NULL means no discount.
+  /// The per-piece counterpart of FabRequirement.pairRate.
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  handPairRate         Float?              @map("hand_pair_rate")
+  /// scripts/0070 — this piece's own per-face rates at the hand bench. Each
+  /// NULL falls back to handRate.
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  handRateTop          Float?              @map("hand_rate_top")
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  handRateBottom       Float?              @map("hand_rate_bottom")
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  handRateSide         Float?              @map("hand_rate_side")
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  handPricingMode      String?             @map("hand_pricing_mode")
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  handTotalOverride    Float?              @map("hand_total_override")
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  handAssignedById     String?             @map("hand_assigned_by_id")
+  handAssignedBy       User?               @relation("FabPieceHandAssignedBy", fields: [handAssignedById], references: [id])
+  /// THE HALF THAT NAMES THE HUMAN. The floor shares one operator login, so
+  /// handAssignedById reads "operator@..." for every floor reassignment while
+  /// the session carries the worker, the machine and the shift. Same reasoning
+  /// as scripts/0064.
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  handAssignedSessionId String?            @map("hand_assigned_session_id")
+  handAssignedSession   FabMachineSession? @relation("FabPieceHandAssignedSession", fields: [handAssignedSessionId], references: [id])
+  /// DECLARED BECAUSE `prisma db push` DROPS UNDECLARED COLUMNS. Do not remove.
+  handAssignedAt       DateTime?           @map("hand_assigned_at")
   polishRequired       Boolean             @default(false) @map("polish_required")
   fabricationRequired  Boolean             @default(false) @map("fabrication_required")
   polishingCompleted   Boolean             @default(false) @map("polishing_completed")

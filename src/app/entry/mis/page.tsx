@@ -173,8 +173,8 @@ export default async function MisSheetPage({ searchParams }: { searchParams: Pro
   const [rows, options, me, loggedDay] = await Promise.all([shiftRows(date, shift), selectOptions("Mis"), currentUser(), dayLoggedHours(date)]);
   const operatorName = me?.name || me?.email || "operator";
   // design dropdown: collapse every "Trial …" variant into ONE "Trial" entry
-  if (options.design?.some((d) => /^trial\b/i.test(String(d).trim()))) {
-    options.design = ["Trial", ...options.design.filter((d) => !/^trial\b/i.test(String(d).trim()))];
+  if (options.design?.some((d: string) => /^trial\b/i.test(String(d).trim()))) {
+    options.design = ["Trial", ...options.design.filter((d: string) => !/^trial\b/i.test(String(d).trim()))];
   }
   const hourParam = /^\d{2} - \d{2}$/.test(sp.hour ?? "") ? sp.hour : undefined;
 

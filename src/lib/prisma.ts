@@ -35,3 +35,29 @@ if (cached && (cached as { fabWorker?: unknown }).fabWorker === undefined) {
 export const prisma = globalForPrisma.prisma ?? createPrisma();
 
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+
+/**
+ * THE CLIENT INSIDE AN INTERACTIVE $transaction — and NOT `typeof prisma`.
+ *
+ * Prisma hands the callback a client with the connection-lifecycle methods
+ * removed: you cannot connect, disconnect, extend or nest a transaction from
+ * inside one. Its type is therefore `Omit<PrismaClient, "$connect" |
+ * "$disconnect" | "$on" | "$transaction" | "$extends">`, which is NARROWER than
+ * the client exported above.
+ *
+ * THREE ROUTES ANNOTATED THAT PARAMETER AS `typeof prisma` — the wider type —
+ * and that is what broke `next build`. TypeScript rejected the callback against
+ * the interactive overload, fell back to the ARRAY overload of $transaction,
+ * and the result came back as `any[]`; every property read off it then failed
+ * with "Property 'kind' does not exist on type 'any[]'". Twelve compile errors
+ * from one wrong word, not one of them reported near the actual mistake.
+ *
+ * Derived from `typeof prisma` rather than imported as `Prisma.TransactionClient`
+ * so it follows THIS module's client — including the pooled datasource chosen in
+ * createPrisma above — and cannot drift when a client version bump reshapes the
+ * generated namespace, which is how these errors surfaced in the first place.
+ */
+export type TxClient = Omit<
+  typeof prisma,
+  "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends"
+>;
