@@ -221,9 +221,38 @@ test("AN UNPRICED THICKNESS IS SAID OUT LOUD, not charged at a neighbour's rate"
   assert.equal(p.edgeCost, 0);
   assert.equal(p.sinkCost, 0);
   assert.equal(p.total, 0);
-  // The feet are still counted — the work happened, only the rate is missing.
-  assert.equal(p.runningFeet, 505);
-  assert.equal(p.edgePieces, 60);
+  assert.equal(p.edgePieces, 60, "the pieces still reach the bench — the work is real");
+
+  // THE FEET ARE ZERO, AND THIS LINE ASSERTED 505 UNTIL AN AUDIT LOOKED AT IT.
+  //
+  // The old reasoning was "the work happened, only the rate is missing", which
+  // reads well and is wrong where it matters: sumPricing adds runningFeet across
+  // the project, so a row reporting feet it is not charging for made the CEO
+  // board's "run ft" tile disagree with the revenue tile beside it, by 55% on
+  // one row, with nothing on screen to explain the gap. Feet that no money
+  // corresponds to are not a measurement, they are a discrepancy.
+  //
+  // All four refusals now agree on this. The work is still counted — in
+  // edgePieces, which is what the bench reads.
+  assert.equal(p.runningFeet, 0);
+
+  // AND THE EDGE IS PAID IF THE ROW CAN RATE IT. scripts/0067: a row may carry
+  // its own figure, so 12 mm stone with an agreed Rs22/ft prices its edge
+  // perfectly well — only the SINK needs the card, and only the sink is lost.
+  // Withholding both would turn one unknown into two, which is the exact
+  // mistake the DIMENSIONS branch had to be fixed for.
+  const rated = priceRow({ lengthIn: 28, widthIn: 22.5, quantity: 60, sinkQuantity: 30, thicknessMm: 12, edges: ALL_EDGES, rate: 22 });
+  assert.equal(rated.unpricedReason, "THICKNESS", "the sink is still unpriceable");
+  assert.equal(rated.edgeCost, 11110, "505 ft x Rs22");
+  assert.equal(rated.runningFeet, 505, "and NOW the feet are real, because they are charged");
+  assert.equal(rated.sinkCost, 0);
+  assert.equal(rated.total, 11110);
+
+  // With no sink on the row there is nothing the card was needed for at all.
+  const clean = priceRow({ lengthIn: 28, widthIn: 22.5, quantity: 60, sinkQuantity: 0, thicknessMm: 12, edges: ALL_EDGES, rate: 22 });
+  assert.equal(clean.unpriced, false);
+  assert.equal(clean.total, 11110);
+  assert.equal(clean.rateSource, "ROW");
 });
 
 test("EDGES MARKED WITH NOTHING TO MEASURE THEM ALONG — the silent ₹0", () => {
@@ -436,8 +465,14 @@ test("totals: a project's charge is the sum of its rows, and says what it skippe
     priceRow({ lengthIn: 34, widthIn: 22.5, quantity: 60, sinkQuantity: 0,  thicknessMm: 12, edges: ALL_EDGES }),
   ];
   const t = sumPricing(rows);
-  //  row A  505 ft   row B  140 ft   row C  565 ft (counted, not charged)
-  assert.equal(t.runningFeet, 505 + 140 + 565);
+  //  row A  505 ft   row B  140 ft   row C  0 ft
+  //
+  // ROW C CONTRIBUTES NO FEET, and this assertion said 565 until an audit
+  // pointed out what that does to the footer: the feet column stopped
+  // reconciling with the money column beside it, because 565 of those feet were
+  // never charged for. An unpriceable row reports its PIECES (they are on the
+  // bench) and no feet (nothing was billed along them).
+  assert.equal(t.runningFeet, 505 + 140);
   assert.equal(t.edgeCost, 7575 + 2100);
   assert.equal(t.sinkCost, 6900 + 60 * 230);
   assert.equal(t.total, 7575 + 2100 + 6900 + 60 * 230);
@@ -449,6 +484,10 @@ test("totals: a project's charge is the sum of its rows, and says what it skippe
   assert.equal(t.unpricedRows, 1);
   assert.equal(t.unpricedThickness, 1);
   assert.equal(t.unpricedDimensions, 0);
+  // THE FEET COLUMN AND THE MONEY COLUMN NOW RECONCILE, which is the whole
+  // point of the change above: every foot in the total is a foot somebody was
+  // billed for, at the 2 cm rate the two priced rows share.
+  assert.equal(t.runningFeet * 15, t.edgeCost);
   // The total equals the sum of the column, to the paisa.
   assert.equal(t.total, rows.reduce((n, r) => n + r.total, 0));
   const empty = sumPricing([]);

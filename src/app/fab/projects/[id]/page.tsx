@@ -8,6 +8,12 @@ import Link from "next/link";
 // import { ExcelToCsvExport } from "../ExcelToCsvExport";
 import { SlabAllocationView } from "../SlabAllocationView";
 import { fabTierOf } from "@/lib/fab/access";
+// scripts/0068 — the size AS THE CUSTOMER ORDERED IT. length/width are stored
+// in inches because the feet and the square feet are built on inches; this is
+// the only thing that turns them back into the centimetres a metric order was
+// written in. NULL unit = inches = unchanged.
+import { orderedSizeLabel } from "@/lib/fab/dimensions";
+
 
 export default async function FabProjectDetailPage({
   params,
@@ -159,7 +165,7 @@ export default async function FabProjectDetailPage({
                       <tr key={req.id} className="hover:bg-gray-50">
                         <td className="px-5 py-2 text-gray-700">{req.pieceLabel ?? req.description ?? "—"}</td>
                         <td className="px-5 py-2 text-gray-500">
-                          {req.length && req.width ? `${req.length} x ${req.width}` : "—"}
+                          {orderedSizeLabel(req.length, req.width, req.dimUnit, "x") ?? "—"}
                         </td>
                         <td className="px-5 py-2 text-center">{req.quantity}</td>
                         <td className="px-5 py-2 text-center">

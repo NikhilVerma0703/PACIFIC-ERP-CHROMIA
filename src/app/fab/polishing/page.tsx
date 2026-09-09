@@ -6,13 +6,29 @@ import { ProcessSessionGate } from "@/components/fab/ProcessSessionGate";
 import { OtherStageChips, activityRowClass } from "@/components/fab/OtherStageChips";
 import { RejectPieceButton } from "@/components/fab/RejectPieceButton";
 import { rowLabel } from "@/lib/fab/pieceNaming";
+import { SendToHandDialog, type HandTarget } from "@/components/fab/SendToHandDialog";
+// scripts/0068 — the size AS THE CUSTOMER ORDERED IT. length/width are stored
+// in inches because the feet and the square feet are built on inches; this is
+// the only thing that turns them back into the centimetres a metric order was
+// written in. NULL unit = inches = unchanged.
+import { orderedSizeLabel } from "@/lib/fab/dimensions";
+
 
 interface Piece {
   id: string; pieceCode: string; hasSink: boolean;
+  /** scripts/0067 — needed to send this piece to the hand bench and to find
+   *  what the last piece off this row was quoted at. */
+  requirementId: string | null;
   project: { projectCode: string };
   drawing: { drawingNumber: string } | null;
-  requirement: { pieceLabel: string | null; rowLetter: string | null; po: { poNumber: string } | null; length: number | null; width: number | null } | null;
-  slab: { slabCode: string; colour: string | null } | null;
+  requirement: {
+    pieceLabel: string | null; rowLetter: string | null;
+    po: { poNumber: string } | null; length: number | null; width: number | null;
+    /** scripts/0068 — 'CM' or NULL/'IN'. Display only. */
+    dimUnit: string | null;
+    shapeType?: string | null; finishedEdges?: string | null; edgeFaces?: string | null;
+  } | null;
+  slab: { slabCode: string; colour: string | null; thickness?: number | null } | null;
   otherDone?: string[];
   recent?: boolean;
   lastActivityAt?: string | null;
@@ -20,7 +36,7 @@ interface Piece {
 interface CompletedPiece {
   opId: string; pieceId: string; pieceCode: string; projectCode: string;
   drawingNumber: string | null; pieceLabel: string | null;
-  length: number | null; width: number | null;
+  length: number | null; width: number | null; dimUnit: string | null;
   slabCode: string | null; slabColour: string | null; completedAt: string;
   operatorName?: string | null;
 }
@@ -40,10 +56,14 @@ function useElapsed(startMs: number | null) {
   return elapsed;
 }
 
-function PieceRow({ p, startMs, onStart, onComplete, completing, onRejected, onError }: {
+function PieceRow({ p, startMs, onStart, onComplete, completing, onRejected, onError, onSendToHand }: {
   p: Piece; startMs: number | null;
   onStart: () => void; onComplete: () => void; completing: boolean;
   onRejected: () => void; onError: (msg: string) => void;
+  /** scripts/0067 — "sent to hand later if machine doesn't support or busy or
+   *  breakdown". The man at the machine is the one who knows it just broke, so
+   *  the button is here as well as on the supervisor's board. */
+  onSendToHand: () => void;
 }) {
   const elapsed = useElapsed(startMs);
   const isStarted = startMs !== null;
@@ -56,7 +76,7 @@ function PieceRow({ p, startMs, onStart, onComplete, completing, onRejected, onE
       <td className="px-5 py-3 text-gray-500">{rowLabel(p.requirement?.rowLetter, p.requirement?.pieceLabel)}</td>
       <td className="px-5 py-3 text-gray-500">{p.requirement?.po?.poNumber ?? p.drawing?.drawingNumber ?? "—"}</td>
       <td className="px-5 py-3 text-gray-500">
-        {p.requirement?.length && p.requirement?.width ? `${p.requirement.length} × ${p.requirement.width}` : "—"}
+        {orderedSizeLabel(p.requirement?.length, p.requirement?.width, p.requirement?.dimUnit) ?? "—"}
       </td>
       <td className="px-5 py-3 text-gray-500">{p.slab?.slabCode ?? "—"}{p.slab?.colour ? ` · ${p.slab.colour}` : ""}</td>
       <td className="px-5 py-3 text-gray-500">{p.project.projectCode}</td>
@@ -68,6 +88,13 @@ function PieceRow({ p, startMs, onStart, onComplete, completing, onRejected, onE
               className="bg-violet-100 hover:bg-violet-200 text-violet-700 px-3 py-1.5 rounded-lg text-xs font-semibold transition">
               Start
             </button>
+            {p.requirementId && (
+              <button onClick={onSendToHand}
+                title="This machine cannot do it, is busy, or is down — send this piece to the hand bench and record what it costs"
+                className="border border-amber-300 text-amber-800 bg-amber-50 hover:bg-amber-100 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition">
+                To hand
+              </button>
+            )}
             <RejectPieceButton pieceId={p.id} processType="POLISHING" onDone={onRejected} onError={onError} />
           </div>
         ) : (
@@ -99,6 +126,9 @@ function PolishingQueue() {
   const [completed, setCompleted]   = useState<CompletedPiece[]>([]);
   const [loading, setLoading]       = useState(true);
   const [actionError, setActionError] = useState<string | null>(null);
+  /** scripts/0067 — the piece (or row) currently being sent to the hand bench,
+   *  or null when the dialog is closed. */
+  const [handTarget, setHandTarget] = useState<HandTarget | null>(null);
   const [loadError,   setLoadError]   = useState<string | null>(null);
   const [completing, setCompleting] = useState<Record<string, boolean>>({});
   const [undoing, setUndoing]       = useState<Record<string, boolean>>({});
@@ -209,7 +239,22 @@ function PolishingQueue() {
                     onComplete={() => complete(p.id)}
                     completing={!!completing[p.id]}
                     onRejected={() => { void loadOpen(); }}
-                    onError={setActionError} />
+                    onError={setActionError}
+                    onSendToHand={() => setHandTarget({
+                      pieceIds: [p.id],
+                      requirementId: p.requirementId!,
+                      pieceLabel: rowLabel(p.requirement?.rowLetter, p.requirement?.pieceLabel),
+                      lengthIn: p.requirement?.length ?? null,
+                      widthIn: p.requirement?.width ?? null,
+                      dimUnit: p.requirement?.dimUnit ?? null,
+                      thicknessMm: p.slab?.thickness ?? null,
+                      shapeType: p.requirement?.shapeType ?? null,
+                      finishedEdges: p.requirement?.finishedEdges ?? null,
+                      edgeFaces: p.requirement?.edgeFaces ?? null,
+                      // How many pieces of this row are on this queue right now
+                      // — what "send the whole row" would take.
+                      rowPieceCount: pieces.filter((x) => x.requirementId === p.requirementId).length,
+                    })} />
                 ))}
               </tbody>
             </table>
@@ -256,6 +301,16 @@ function PolishingQueue() {
           )}
         </div>
       )}
+
+      {/* scripts/0067 — asks which faces, which sides of each, and what it
+          costs, then writes the answer onto THIS PIECE. It overrides the row
+          for this piece alone: the machine took whatever was in front of it
+          when it broke, and nobody renumbers an order around that. */}
+      <SendToHandDialog
+        target={handTarget}
+        onClose={() => setHandTarget(null)}
+        onDone={() => { void loadOpen(); }}
+      />
     </div>
   );
 }

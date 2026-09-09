@@ -63,7 +63,7 @@ export async function GET(req: Request) {
           include: {
             project:     { select: { projectCode: true, customerName: true } },
             drawing:     { select: { drawingNumber: true } },
-            requirement: { select: { pieceLabel: true, rowLetter: true, description: true, length: true, width: true, po: { select: { poNumber: true } } } },
+            requirement: { select: { pieceLabel: true, rowLetter: true, description: true, length: true, width: true, dimUnit: true, po: { select: { poNumber: true } } } },
             slab:        { select: { slabCode: true, colour: true } },
           },
         },
@@ -181,6 +181,10 @@ export async function GET(req: Request) {
     poNumber:      op.piece.requirement?.po?.poNumber ?? null,
     length:        op.piece.requirement?.length ?? null,
     width:         op.piece.requirement?.width  ?? null,
+    // scripts/0068 — so the completed tab shows the same unit the open tab
+    // does. A queue that reads cm above and inches below is worse than one
+    // that reads inches everywhere.
+    dimUnit:       op.piece.requirement?.dimUnit ?? null,
     slabCode:      op.piece.slab?.slabCode ?? null,
     slabColour:    op.piece.slab?.colour   ?? null,
     machineName:   op.operation?.machine?.name ?? null,

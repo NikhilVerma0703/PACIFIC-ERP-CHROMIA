@@ -117,7 +117,7 @@ import { deriveRoutingFlags } from "@/lib/fab/requirement-derive";
 import { planPieceOperations } from "@/lib/fab/pieceOperations";
 import { assignRowLetters, formatPieceCode, nextPieceNumberInRow } from "@/lib/fab/pieceNaming";
 import { parseEdges } from "@/lib/fab/pricing";
-import { hasEdgeWork } from "@/lib/fab/shape";
+import { rowHasHandPolish } from "@/lib/fab/shape";
 import { readProcessSession } from "@/lib/fab/processSessionServer";
 
 /** Pieces per write chunk — the same ceiling release-project writes under, so a
@@ -268,7 +268,14 @@ export async function POST(req: NextRequest) {
                 // The row's hand edge polish decision. Under the group rule it
                 // applies to every piece of the row, so it is read once here and
                 // stamped on all of them — see the routing map below.
-                finishedEdges: true,
+                //
+                // ALL FIVE COLUMNS, NOT JUST finished_edges. This selected the
+                // legacy column alone, so a row specified with the three-face
+                // controls (which leave it NULL) was released with
+                // fabricationRequired FALSE and never reached the hand bench.
+                // rowHasHandPolish reads whichever generation the row is on.
+                finishedEdges: true, edgeFaces: true,
+                edgesTop: true, edgesBottom: true, edgesSide: true,
                 length: true, width: true, shapeType: true,
                 pieceLabel: true, description: true,
                 // The piece code's letter, and the tie-break the pre-0054
@@ -485,7 +492,7 @@ export async function POST(req: NextRequest) {
           // deriveRoutingFlags so the rule stays written down in one place.
           const routing = new Map<string, {
             polishRequired: boolean;
-            /** Hand edge polish, from the ROW's finished_edges. A row is
+            /** Hand edge polish, from the ROW's specification. A row is
              *  homogeneous — one where only some pieces want it is split — so
              *  this is every piece of the row's answer. */
             hasEdgePolish: boolean;
@@ -499,7 +506,7 @@ export async function POST(req: NextRequest) {
           }>();
           for (const [requirementId, r] of rows) {
             const { polishRequired } = deriveRoutingFlags(r.requirement);
-            const hasEdgePolish = hasEdgeWork(r.requirement.shapeType, parseEdges(r.requirement.finishedEdges));
+            const hasEdgePolish = rowHasHandPolish(r.requirement);
             routing.set(requirementId, {
               polishRequired,
               hasEdgePolish,

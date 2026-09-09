@@ -10,10 +10,18 @@ import { pieceStages, summarizeStages } from "@/lib/fab/pieceStages";
 import { downtimeLabel } from "@/lib/fab/downtimeReasons";
 import { FAB_PROCESS_LABEL, type FabProcessType } from "@/lib/fab/processSession";
 import { parseEdges } from "@/lib/fab/pricing";
+// SAMPLES ARE SPENT, NOT SCRAPPED — read through the one function the
+// supervisor's board reads, so the two screens cannot disagree about a slab.
+import { sampledAreaBySlab } from "@/lib/fab/sampledArea";
+import { SQ_MM_PER_SQ_FT } from "@/lib/fab/slabLoss";
 // The per-piece rule lives in ONE module now — the same one the packaging route
 // stamps from — so a charge frozen at packing and a charge computed here for an
 // older piece cannot be two different arithmetics. See lib/fab/pieceCharge.ts.
-import { rowShares, pieceCharge, frozenCharge, type RowShares } from "@/lib/fab/pieceCharge";
+import {
+  rowShares, pieceCharge, frozenCharge, pieceChargeWithHand,
+  type RowShares, type HandSpec,
+} from "@/lib/fab/pieceCharge";
+import { parseFaceEdges, faceEdgesUnset } from "@/lib/fab/shape";
 
 const IDLE_MS = 30 * 60 * 1000;
 
@@ -339,6 +347,9 @@ export async function GET(req: Request) {
   const slabWastage: Array<{
     slabId: string; slabCode: string; pacificQcId: string; projectCode: string;
     wastePct: number; pieceCount: number; slabAreaMm2: number; piecesAreaMm2: number;
+    /** Square feet recovered off this slab as sample stock. Consumed, not
+     *  wasted; subtracted from the waste by groupByProject. */
+    sampledAreaSqft: number;
     /** polish_qc.quality_grade — A / B / C, the polishing line's verdict. */
     qualityGrade: string | null;
     /** polish_qc.slab_mark — FULL_SLAB / CTS / SAMPLE. What became of the
@@ -353,6 +364,22 @@ export async function GET(req: Request) {
     design: string | null;
   }> = [];
 
+  // ── WHAT LEFT THESE SLABS AS SAMPLES ────────────────────────────────────
+  //
+  // "Not all the wastage to samples, only wastage taken to samples by the
+  // sample guy."
+  //
+  // THIS ROUTE NEVER ASKED. The supervisor's board and approve-slab have read
+  // sampledAreaBySlab since it existed, so a sample cut shows there as stone
+  // consumed; here the same stone was counted as waste. One slab, two wastage
+  // figures, on two screens the same person reads.
+  //
+  // Read through the SAME function, so "taken as samples" means one thing —
+  // and it is only what was actually booked against the slab, never the whole
+  // offcut. Wrapped by sampledAreaBySlab itself, which returns an empty map on
+  // a database without the sampling tables.
+  const sampledBySlab = await sampledAreaBySlab(projectSlabs.map((s) => s.id));
+
   for (const s of projectSlabs) {
     const slabArea = s.length && s.width ? s.length * s.width : STD_SLAB_AREA;
     let piecesArea = 0;
@@ -363,7 +390,16 @@ export async function GET(req: Request) {
       piecesArea += l * w * a.allocatedQuantity;
       pieceCount += a.allocatedQuantity;
     }
-    const wastePct = slabArea > 0 ? Math.max(0, ((slabArea - piecesArea) / slabArea) * 100) : 0;
+    // SAMPLES COME OFF THE WASTE HERE TOO, not just in groupByProject. This
+    // figure feeds wastageByProject (the avgWastagePct on the project list), so
+    // leaving it out would make the project list and the slab tree disagree
+    // about the same slab — the exact split this whole block exists to avoid.
+    // sampledAreaSqft is SQFT and slabArea is mm2, so it is converted here
+    // rather than compared across units.
+    const sampledMm2 = (sampledBySlab.get(s.id) ?? 0) * SQ_MM_PER_SQ_FT;
+    const wastePct = slabArea > 0
+      ? Math.max(0, ((slabArea - piecesArea - sampledMm2) / slabArea) * 100)
+      : 0;
     // Use the QC slab number as the display code; fall back to fab slabCode if not resolved
     const displayCode = qcSlabNumberMap.get(s.pacificQcId!) ?? s.slabCode;
     slabWastage.push({
@@ -371,6 +407,9 @@ export async function GET(req: Request) {
       projectCode: s.project.projectCode,
       wastePct: Math.round(wastePct * 10) / 10, pieceCount,
       slabAreaMm2: Math.round(slabArea), piecesAreaMm2: Math.round(piecesArea),
+      // SQFT, already converted — the one place that conversion happens is
+      // lib/fab/sampledArea.ts. groupByProject subtracts it from the waste.
+      sampledAreaSqft: sampledBySlab.get(s.id) ?? 0,
       qualityGrade: qcMetaMap.get(s.pacificQcId!)?.grade ?? null,
       slabMark: qcMetaMap.get(s.pacificQcId!)?.slabMark ?? null,
       gradeBeforeCts: qcMetaMap.get(s.pacificQcId!)?.gradeBeforeCts ?? null,
@@ -409,6 +448,39 @@ export async function GET(req: Request) {
      *  which perimeter the edge charge runs along. Null means rectangle, which
      *  is every row written before shapes existed. */
     shapeType: string | null;
+    /** scripts/0068 — 'CM', or NULL/'IN'. DISPLAY ONLY: length and width above
+     *  are inches everywhere and every foot is computed from them. */
+    dimUnit: string | null;
+    /** scripts/0067 — the three-face specification, its rate and its mode.
+     *  All null on a database without 0067 and on every row the new screens
+     *  have not touched, in which case the two legacy columns above decide and
+     *  the row prices exactly as it always has. */
+    edgesTop: string | null;
+    edgesBottom: string | null;
+    edgesSide: string | null;
+    edgeRate: number | null;
+    /** scripts/0069 — Rs per foot for a side done on BOTH faces. Null = the two
+     *  faces are summed at edgeRate, which is every row before 0069. */
+    pairRate: number | null;
+    /** scripts/0070 — each face's OWN Rs per foot. Null falls back to edgeRate
+     *  and then to the card.
+     *
+     *  DECLARED, because the mapping below was already writing them. They went
+     *  out on the wire untyped, so the board's own PricingRow type could drop
+     *  them without anything complaining — and it did. */
+    rateTop: number | null;
+    rateBottom: number | null;
+    rateSide: number | null;
+    pricingMode: string | null;
+    edgeTotalOverride: number | null;
+    /** WHICH SLABS THIS ROW'S PIECES WERE CUT FROM, and how many on each.
+     *  Empty on a row nobody has put on stone yet — which is most of a project
+     *  being planned, and is why the board shows an "not on stone yet" line
+     *  rather than quietly losing the money. See lib/fab/slabCosting.ts. */
+    allocations: Array<{
+      slabId: string; slabCode: string | null; colour: string | null;
+      allocatedQuantity: number;
+    }>;
   }> = [];
   try {
     const raw = await prisma.$queryRaw<Array<{
@@ -416,12 +488,19 @@ export async function GET(req: Request) {
       project_code: string; row_letter: string | null; piece_label: string | null;
       length: number | null; width: number | null; quantity: number;
       sink_quantity: number | null; thickness: number | null; finished_edges: string | null;
-      shape_type: string | null; edge_faces: string | null;
+      shape_type: string | null; edge_faces: string | null; dim_unit: string | null;
     }>>`
       SELECT r.id AS requirement_id,
              p.project_code, r.row_letter, r.piece_label,
              r.length, r.width, r.quantity, r.sink_quantity,
              r.finished_edges, r.edge_faces,
+             -- scripts/0068 — THE UNIT THE CUSTOMER ORDERED IN, and this board
+             -- never asked for it. Every row of PI 1200 is written in
+             -- centimetres and read back as "47.2441 x 4.7244 in", which is
+             -- 120 x 12 cm said in a unit nobody on that order uses, to four
+             -- decimal places. The supervisor's card has shown the ordered unit
+             -- since 0068; this query simply never selected the column.
+             r.dim_unit,
              -- ::text so this reads the same whether shape_type is a Postgres
              -- enum or a plain column, and so an unknown future value arrives
              -- as a word this code can fall back on rather than as a crash.
@@ -437,8 +516,13 @@ export async function GET(req: Request) {
       WHERE  p.status <> 'COMPLETED'
       GROUP  BY p.project_code, r.id, r.row_letter, r.piece_label,
                r.length, r.width, r.quantity, r.sink_quantity, r.finished_edges,
-               r.edge_faces, r.shape_type
-      ORDER  BY p.project_code, r.row_letter NULLS LAST, r.created_at
+               r.edge_faces, r.shape_type, r.dim_unit
+      -- SPREADSHEET ORDER, NOT ALPHABETICAL. Plain lexicographic sorting puts
+      -- AA, AB ... AJ BETWEEN A and B, so the ten window-sill rows at the end
+      -- of the purchase order surfaced immediately under row A and row B was
+      -- pushed below them. Shorter labels first, then alphabetical within a
+      -- length, which is A..Z then AA..AJ — the order the order was written in.
+      ORDER  BY p.project_code, length(r.row_letter) NULLS LAST, r.row_letter NULLS LAST, r.created_at
     `;
     pricingRows = raw.map(x => ({
       requirementId: String(x.requirement_id),
@@ -453,9 +537,115 @@ export async function GET(req: Request) {
       finishedEdges: x.finished_edges ?? null,
       edgeFaces: x.edge_faces ?? null,
       shapeType: x.shape_type ?? null,
+      dimUnit: x.dim_unit ?? null,
+      // Filled in below, from a query of their own.
+      edgesTop: null, edgesBottom: null, edgesSide: null,
+      edgeRate: null, pairRate: null,
+      rateTop: null, rateBottom: null, rateSide: null,
+      pricingMode: null, edgeTotalOverride: null,
+      allocations: [],
     }));
   } catch {
     pricingRows = [];   // scripts/0054 / 0055 not applied yet
+  }
+
+  // ── WHICH SLABS THE PIECES ARE ON — AGAIN, A QUERY OF ITS OWN ────────────
+  //
+  // The owner: "in the ceo dashboard, show per slab whats the cost as we
+  // calculate."
+  //
+  // Separate for the same reason as the block below: this board is the CEO's
+  // landing page, and one unavailable table must cost the per-slab panel and
+  // nothing else. On failure every row keeps `allocations: []`, the panel says
+  // nothing is on stone, and every other figure on the page is untouched.
+  //
+  // NO MONEY IS COMPUTED HERE. The board prices the rows with priceRow — the
+  // same call that renders each row's own line — and hands the answers to
+  // costPerSlab, which only divides them up. Two places that both decide a
+  // figure are two places that can disagree.
+  if (pricingRows.length) {
+    try {
+      const allocs = await prisma.$queryRaw<Array<{
+        requirement_id: string; slab_id: string;
+        slab_code: string | null; colour: string | null;
+        allocated_quantity: number;
+      }>>`
+        SELECT a.requirement_id, a.slab_id, s.slab_code, s.colour, a.allocated_quantity
+        FROM   fab_requirement_allocation a
+        JOIN   fab_slab s ON s.id = a.slab_id
+        WHERE  a.requirement_id = ANY(${pricingRows.map((r) => r.requirementId)}::text[])
+        ORDER  BY s.slab_code NULLS LAST, a.created_at
+      `;
+      const byRequirement = new Map<string, Array<{
+        slabId: string; slabCode: string | null; colour: string | null; allocatedQuantity: number;
+      }>>();
+      for (const a of allocs) {
+        const list = byRequirement.get(a.requirement_id) ?? [];
+        list.push({
+          slabId: String(a.slab_id),
+          slabCode: a.slab_code ?? null,
+          colour: a.colour ?? null,
+          allocatedQuantity: Number(a.allocated_quantity ?? 0),
+        });
+        byRequirement.set(a.requirement_id, list);
+      }
+      pricingRows = pricingRows.map((r) => ({
+        ...r,
+        allocations: byRequirement.get(r.requirementId) ?? [],
+      }));
+    } catch {
+      // No allocation table, or a database mid-migration. Every row keeps an
+      // empty list and the panel reports the whole project as not yet on stone,
+      // which is honest rather than wrong.
+    }
+  }
+
+  // ── AND THE scripts/0067 COLUMNS, IN A QUERY OF THEIR OWN ────────────────
+  //
+  // NOT ADDED TO THE SELECT ABOVE, and that is the whole point. That query is
+  // wrapped in a catch that empties pricingRows, so naming a column a database
+  // does not have yet would take the ENTIRE overview board blank rather than
+  // losing one feature. Read separately, a missing column costs nothing: the
+  // map stays empty, every row keeps its legacy specification, and the legacy
+  // specification prices identically. Same shape as the charge-freeze read
+  // further down, which has been in production since 0066.
+  if (pricingRows.length) {
+    try {
+      const extras = await prisma.$queryRaw<Array<{
+        id: string; edges_top: string | null; edges_bottom: string | null;
+        edges_side: string | null; edge_rate: number | null; pair_rate: number | null;
+          edge_rate_top: number | null; edge_rate_bottom: number | null; edge_rate_side: number | null;
+        pricing_mode: string | null; edge_total_override: number | null;
+      }>>`
+        SELECT id, edges_top, edges_bottom, edges_side,
+               edge_rate, pair_rate, edge_rate_top, edge_rate_bottom, edge_rate_side,
+               pricing_mode, edge_total_override
+        FROM   fab_requirement
+        WHERE  id = ANY(${pricingRows.map((r) => r.requirementId)}::text[])
+      `;
+      const byId = new Map(extras.map((e) => [e.id, e]));
+      pricingRows = pricingRows.map((r) => {
+        const e = byId.get(r.requirementId);
+        if (!e) return r;
+        return {
+          ...r,
+          edgesTop: e.edges_top ?? null,
+          edgesBottom: e.edges_bottom ?? null,
+          edgesSide: e.edges_side ?? null,
+          edgeRate: e.edge_rate == null ? null : Number(e.edge_rate),
+          pairRate: e.pair_rate == null ? null : Number(e.pair_rate),
+          rateTop: e.edge_rate_top == null ? null : Number(e.edge_rate_top),
+          rateBottom: e.edge_rate_bottom == null ? null : Number(e.edge_rate_bottom),
+          rateSide: e.edge_rate_side == null ? null : Number(e.edge_rate_side),
+          pricingMode: e.pricing_mode ?? null,
+          edgeTotalOverride:
+            e.edge_total_override == null ? null : Number(e.edge_total_override),
+        };
+      });
+    } catch {
+      // scripts/0067 not applied. Every row stays on its legacy specification,
+      // which is the figure it is quoted at today.
+    }
   }
 
   const projectProgress = projects.map(p => {
@@ -961,6 +1151,36 @@ export async function GET(req: Request) {
       // question, and asking it per piece is the same answer computed a thousand
       // times.
       //
+      // The scripts/0067 specification for these same rows, in a query of its
+      // own for the reason spelled out on the overview block above: naming a
+      // column this database may not have inside the try that guards the whole
+      // money card would replace one missing feature with a blank card.
+      const spec0067 = new Map<string, {
+        edges_top: string | null; edges_bottom: string | null; edges_side: string | null;
+        edge_rate: number | null; pair_rate: number | null;
+        edge_rate_top: number | null; edge_rate_bottom: number | null; edge_rate_side: number | null;
+        pricing_mode: string | null;
+        edge_total_override: number | null;
+      }>();
+      try {
+        const rows = await prisma.$queryRaw<Array<{ id: string } & {
+          edges_top: string | null; edges_bottom: string | null; edges_side: string | null;
+          edge_rate: number | null; pair_rate: number | null;
+        edge_rate_top: number | null; edge_rate_bottom: number | null; edge_rate_side: number | null;
+        pricing_mode: string | null;
+          edge_total_override: number | null;
+        }>>`
+          SELECT id, edges_top, edges_bottom, edges_side,
+                 edge_rate, pair_rate, edge_rate_top, edge_rate_bottom, edge_rate_side,
+               pricing_mode, edge_total_override
+          FROM   fab_requirement
+          WHERE  id = ANY(${reqIds}::text[])
+        `;
+        for (const r of rows) spec0067.set(r.id, r);
+      } catch {
+        // 0067 not applied — every row keeps its legacy specification.
+      }
+
       // TWO DIVISORS. Edge money spreads over the pieces that carry hand edge
       // polish — the whole row, under the group rule — and sink money over the
       // sink pieces. Dividing both by one count was right only while the two
@@ -968,7 +1188,23 @@ export async function GET(req: Request) {
       // the jobs. rowShares() is that rule, and the packaging route stamps from
       // the same function.
       for (const r of priceInputs) {
+        const x = spec0067.get(r.id);
+        // faceEdgesUnset is what tells "this row has no new-style spec" from
+        // "this row was asked and one face is empty" — an empty string is a
+        // real answer and must NOT send the reader back to finished_edges.
+        const faceEdges =
+          x && !faceEdgesUnset({ top: x.edges_top, bottom: x.edges_bottom, side: x.edges_side })
+            ? parseFaceEdges({ top: x.edges_top, bottom: x.edges_bottom, side: x.edges_side })
+            : null;
         perPiece.set(r.id, rowShares({
+          faceEdges,
+          rate: x?.edge_rate ?? null,
+          pairRate: x?.pair_rate ?? null,
+          rateTop: x?.edge_rate_top ?? null,
+          rateBottom: x?.edge_rate_bottom ?? null,
+          rateSide: x?.edge_rate_side ?? null,
+          pricingMode: x?.pricing_mode ?? null,
+          edgeTotalOverride: x?.edge_total_override ?? null,
           lengthIn: r.length == null ? null : Number(r.length),
           widthIn: r.width == null ? null : Number(r.width),
           quantity: Number(r.quantity ?? 0),
@@ -994,11 +1230,71 @@ export async function GET(req: Request) {
     // without scripts/0066 this leaves the map empty and every piece falls back
     // to live pricing, which is precisely the behaviour that shipped before the
     // column existed. Nothing to apply, nothing broken.
+    // ── PIECES THAT WENT TO THE HAND BENCH ───────────────────────────────
+    //
+    // scripts/0067. A piece pulled off the machine carries its own faces, rate
+    // and mode, and they override its ROW's edge charge for that piece alone —
+    // the one place the homogeneous-row rule does not hold, and the owner asked
+    // for it in those words. Wrapped, like every other 0067 read.
+    const handByPiece = new Map<string, HandSpec>();
+    const handDims = new Map<string, { lengthIn: number | null; widthIn: number | null; thicknessMm: number | null; shape: string | null }>();
+
     const frozen = new Map<string, { edge: number; sink: number }>();
     const packedIds = [...new Set(
       packed.map((op) => op.piece?.id).filter((id): id is string => !!id),
     )];
     if (packedIds.length) {
+      try {
+        const hand = await prisma.$queryRaw<Array<{
+          id: string; polish_by_hand: boolean;
+          hand_edges_top: string | null; hand_edges_bottom: string | null;
+          hand_edges_side: string | null; hand_rate: number | null;
+          // scripts/0069 + 0070 — the bench's own pair rate and per-face rates.
+          // Without them this board prices a hand-bench piece from the flat
+          // hand_rate while the screen that sent it there quoted a discount.
+          hand_pair_rate: number | null;
+          hand_rate_top: number | null; hand_rate_bottom: number | null; hand_rate_side: number | null;
+          hand_pricing_mode: string | null; hand_total_override: number | null;
+          length: number | null; width: number | null; thickness: number | null;
+          shape_type: string | null;
+        }>>`
+          SELECT pc.id, pc.polish_by_hand,
+                 pc.hand_edges_top, pc.hand_edges_bottom, pc.hand_edges_side,
+                 pc.hand_rate, pc.hand_pair_rate,
+                 pc.hand_rate_top, pc.hand_rate_bottom, pc.hand_rate_side,
+                 pc.hand_pricing_mode, pc.hand_total_override,
+                 r.length, r.width, r.shape_type::text AS shape_type,
+                 s.thickness
+          FROM   fab_piece pc
+          LEFT   JOIN fab_requirement r ON r.id = pc.requirement_id
+          LEFT   JOIN fab_slab s        ON s.id = pc.slab_id
+          WHERE  pc.id = ANY(${packedIds}::text[])
+            AND  pc.polish_by_hand = true
+        `;
+        for (const h of hand) {
+          const faces = { top: h.hand_edges_top, bottom: h.hand_edges_bottom, side: h.hand_edges_side };
+          handByPiece.set(h.id, {
+            byHand: true,
+            faceEdges: faceEdgesUnset(faces) ? null : parseFaceEdges(faces),
+            rate: h.hand_rate == null ? null : Number(h.hand_rate),
+            pairRate: h.hand_pair_rate == null ? null : Number(h.hand_pair_rate),
+            rateTop: h.hand_rate_top == null ? null : Number(h.hand_rate_top),
+            rateBottom: h.hand_rate_bottom == null ? null : Number(h.hand_rate_bottom),
+            rateSide: h.hand_rate_side == null ? null : Number(h.hand_rate_side),
+            pricingMode: h.hand_pricing_mode ?? null,
+            totalOverride: h.hand_total_override == null ? null : Number(h.hand_total_override),
+          });
+          handDims.set(h.id, {
+            lengthIn: h.length == null ? null : Number(h.length),
+            widthIn: h.width == null ? null : Number(h.width),
+            thicknessMm: h.thickness == null ? null : Number(h.thickness),
+            shape: h.shape_type ?? null,
+          });
+        }
+      } catch {
+        // scripts/0067 not applied — nothing was ever sent to hand.
+      }
+
       try {
         const stamps = await prisma.$queryRaw<Array<{
           id: string; charged_edge: number | null; charged_sink: number | null;
@@ -1056,10 +1352,25 @@ export async function GET(req: Request) {
       // and nothing recomputes it — that is what stops a September edit moving
       // July's total. A piece packed before it has no stamp and is priced live
       // from its row, which is the only honest thing left to do for it.
-      const stamp = op.piece?.id ? frozen.get(op.piece.id) : undefined;
-      const live = pieceCharge(
+      const pieceId = op.piece?.id ?? null;
+      const stamp = pieceId ? frozen.get(pieceId) : undefined;
+
+      // THE ORDER IS STAMP, THEN HAND BENCH, THEN ROW.
+      //
+      // A frozen figure is what this piece ACTUALLY earned on the day it was
+      // packed, hand bench included — the packaging route stamps through the
+      // same function — so nothing recomputes it and September cannot move July.
+      //
+      // Below that, a piece pulled off the machine is priced on its own; and
+      // below that, every piece that never moved takes its row's share.
+      const handSpec = pieceId ? handByPiece.get(pieceId) : undefined;
+      const stone = (pieceId ? handDims.get(pieceId) : undefined)
+        ?? { lengthIn: null, widthIn: null, thicknessMm: null, shape: null };
+      const live = pieceChargeWithHand(
         reqId ? perPiece.get(reqId) : null,
         op.piece?.hasSink === true,
+        handSpec ?? null,
+        stone,
       );
       const { edge: edgeShare, sink: sinkShare } = stamp ?? live;
 

@@ -4,19 +4,42 @@ import Link from "next/link";
 import { postJson, getJson } from "@/lib/fab/postJson";
 import { ProcessSessionGate } from "@/components/fab/ProcessSessionGate";
 import { rowLabel } from "@/lib/fab/pieceNaming";
+// scripts/0068 — the size AS THE CUSTOMER ORDERED IT. length/width are stored
+// in inches because the feet and the square feet are built on inches; this is
+// the only thing that turns them back into the centimetres a metric order was
+// written in. NULL unit = inches = unchanged.
+import { formatDimension, orderedSizeLabel, parseDimUnit } from "@/lib/fab/dimensions";
+
 
 interface Piece {
   id: string; pieceCode: string;
   project: { projectCode: string; customerName: string };
   drawing: { drawingNumber: string } | null;
-  requirement: { pieceLabel: string | null; rowLetter: string | null; description: string | null; length: number | null; width: number | null } | null;
+  requirement: { pieceLabel: string | null; rowLetter: string | null; description: string | null; length: number | null; width: number | null; dimUnit: string | null } | null;
   hasSink: boolean; polishRequired: boolean; fabricationRequired: boolean;
   /** Hand edge polish. Optional because the column arrives in scripts/0063 and
    *  a queue read against a database without it must still render. */
   hasEdgePolish?: boolean;
 }
 interface LegacyGroup { type: "legacy"; slab: { id: string; slabCode: string; colour: string | null }; pieces: Piece[] }
-interface CloReq { requirementId: string; poNumber: string | null; drawingNumber: string | null; pieceLabel: string; description: string | null; lengthIn: number | null; widthIn: number | null; qty: number }
+/**
+ * WHAT UNIT TO PUT IN THE CUT LIST'S COLUMN HEADINGS.
+ *
+ * The cells now render in each row's own unit, so the heading must agree with
+ * them or it lies about a number a saw is set from. One slab job is one
+ * project's worth of pieces and they agree in practice; when they do not, the
+ * unit is DROPPED rather than asserted — "L" tells the operator to read the
+ * value, "L (in)" over a centimetre would tell him to cut the wrong piece.
+ */
+function cutListUnit(rows: CloReq[]): string {
+  if (rows.length === 0) return " (in)";
+  const first = parseDimUnit(rows[0].dimUnit);
+  return rows.every(r => parseDimUnit(r.dimUnit) === first)
+    ? (first === "CM" ? " (cm)" : " (in)")
+    : "";
+}
+
+interface CloReq { requirementId: string; poNumber: string | null; drawingNumber: string | null; pieceLabel: string; description: string | null; lengthIn: number | null; widthIn: number | null; /** scripts/0068 — 'CM' or NULL/'IN'. Display only; lengthIn/widthIn are always inches. */ dimUnit: string | null; qty: number }
 interface CloGroup {
   type: "clo"; slabJobId: string; jobStatus: string; startTime: string | null;
   operatorId: string | null; operatorName: string | null;
@@ -162,8 +185,12 @@ function CloCard({
             <th className="text-left px-5 py-2">PO</th>
             <th className="text-left px-5 py-2">Piece</th>
             <th className="text-left px-5 py-2">Description</th>
-            <th className="text-left px-5 py-2">L (in)</th>
-            <th className="text-left px-5 py-2">W (in)</th>
+            {/* scripts/0068 — the header follows the ROWS. One slab job is one
+                project's worth of pieces, so they agree in practice; if they ever
+                do not, the unit is dropped rather than asserted wrongly over a
+                column the saw is about to be set from. */}
+            <th className="text-left px-5 py-2">L{cutListUnit(entry.requirements)}</th>
+            <th className="text-left px-5 py-2">W{cutListUnit(entry.requirements)}</th>
             <th className="text-center px-5 py-2">Qty</th>
           </tr>
         </thead>
@@ -173,8 +200,8 @@ function CloCard({
               <td className="px-5 py-2.5 font-mono text-xs text-gray-400">{r.poNumber ?? r.drawingNumber ?? "—"}</td>
               <td className="px-5 py-2.5 font-semibold text-gray-800">{r.pieceLabel}</td>
               <td className="px-5 py-2.5 text-gray-500 max-w-xs truncate">{r.description ?? "-"}</td>
-              <td className="px-5 py-2.5 font-mono text-gray-600">{r.lengthIn ?? "-"}</td>
-              <td className="px-5 py-2.5 font-mono text-gray-600">{r.widthIn ?? "-"}</td>
+              <td className="px-5 py-2.5 font-mono text-gray-600">{formatDimension(r.lengthIn, r.dimUnit) ?? "-"}</td>
+              <td className="px-5 py-2.5 font-mono text-gray-600">{formatDimension(r.widthIn, r.dimUnit) ?? "-"}</td>
               <td className="px-5 py-2.5 text-center font-bold text-gray-800">{r.qty}</td>
             </tr>
           ))}
@@ -508,7 +535,7 @@ function CuttingQueue() {
                           <td className="px-5 py-2.5 font-mono text-xs text-gray-700">{p.pieceCode}</td>
                           <td className="px-5 py-2.5 text-gray-600">{rowLabel(p.requirement?.rowLetter, p.requirement?.pieceLabel ?? p.requirement?.description)}</td>
                           <td className="px-5 py-2.5 text-gray-500">
-                            {p.requirement?.length && p.requirement?.width ? `${p.requirement.length} × ${p.requirement.width}` : "-"}
+                            {orderedSizeLabel(p.requirement?.length, p.requirement?.width, p.requirement?.dimUnit) ?? "-"}
                           </td>
                           <td className="px-5 py-2.5 text-gray-500">{p.project.projectCode}</td>
                           <td className="px-5 py-2.5">

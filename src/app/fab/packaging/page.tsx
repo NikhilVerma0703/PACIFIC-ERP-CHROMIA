@@ -6,13 +6,19 @@ import { RejectPieceButton } from "@/components/fab/RejectPieceButton";
 import { rowLabel } from "@/lib/fab/pieceNaming";
 import { getJson, postJson } from "@/lib/fab/postJson";
 import { FabAlerts } from "@/components/fab/FabAlerts";
+// scripts/0068 — the size AS THE CUSTOMER ORDERED IT. length/width are stored
+// in inches because the feet and the square feet are built on inches; this is
+// the only thing that turns them back into the centimetres a metric order was
+// written in. NULL unit = inches = unchanged.
+import { orderedSizeLabel } from "@/lib/fab/dimensions";
+
 
 interface Piece {
   id: string; pieceCode: string;
   projectId: string;
   project: { projectCode: string; customerName: string };
   drawing: { drawingNumber: string } | null;
-  requirement: { pieceLabel: string | null; rowLetter: string | null; po: { poNumber: string } | null; length: number | null; width: number | null } | null;
+  requirement: { pieceLabel: string | null; rowLetter: string | null; po: { poNumber: string } | null; length: number | null; width: number | null; dimUnit: string | null } | null;
   slab: { slabCode: string; colour: string | null } | null;
   otherDone?: string[];
   recent?: boolean;
@@ -24,7 +30,7 @@ interface Package {
   pieces: Array<{
     id: string; pieceCode: string; projectCode: string; customerName: string;
     drawingNumber: string | null; pieceLabel: string | null;
-    length: number | null; width: number | null;
+    length: number | null; width: number | null; dimUnit: string | null;
     slabCode: string | null; slabColour: string | null;
   }>;
 }
@@ -300,7 +306,7 @@ function PackagingQueue() {
                             <td className="px-3 py-2.5 text-gray-500">{p.requirement?.po?.poNumber ?? p.drawing?.drawingNumber ?? "—"}</td>
                             <td className="px-3 py-2.5 text-gray-500">
                               {p.requirement?.length && p.requirement?.width
-                                ? `${p.requirement.length} × ${p.requirement.width}` : "—"}
+                                ? (orderedSizeLabel(p.requirement.length, p.requirement.width, p.requirement.dimUnit) ?? "—") : "—"}
                             </td>
                             <td className="px-3 py-2.5 text-gray-500">
                               {p.slab?.slabCode ?? "—"}{p.slab?.colour ? ` · ${p.slab.colour}` : ""}
@@ -411,7 +417,7 @@ function PackagingQueue() {
                           <td className="px-5 py-2 text-gray-500">{p.pieceLabel ?? "—"}</td>
                           <td className="px-5 py-2 text-gray-500">{p.drawingNumber ?? "—"}</td>
                           <td className="px-5 py-2 text-gray-500">
-                            {p.length && p.width ? `${p.length} × ${p.width}` : "—"}
+                            {orderedSizeLabel(p.length, p.width, p.dimUnit) ?? "—"}
                           </td>
                           <td className="px-5 py-2 text-gray-500">
                             {p.slabCode ?? "—"}{p.slabColour ? ` · ${p.slabColour}` : ""}

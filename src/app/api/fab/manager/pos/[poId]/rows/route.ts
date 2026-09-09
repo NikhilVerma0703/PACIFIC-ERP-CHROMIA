@@ -38,6 +38,8 @@ export async function GET(
       rowLetter: true,
       length: true,
       width: true,
+      // scripts/0068 — 'CM' or NULL/'IN'. Display only.
+      dimUnit: true,
       quantity: true,
       // The sink decision now STARTS HERE rather than on the shop floor, and a
       // partial SPLITS the row in two — see rows/[id]/sink. The screen needs the
@@ -68,6 +70,12 @@ export async function GET(
   // than an arbitrary pick, so the answer is stable across refreshes.
   const edges = new Map<string, {
     finishedEdges: string | null; shapeType: string | null; edgeFaces: string | null; thicknessMm: number | null;
+    /** scripts/0067 — filled in by a second query below, and left null on any
+     *  database that does not have those columns yet. */
+    edgesTop?: string | null; edgesBottom?: string | null; edgesSide?: string | null;
+    edgeRate?: number | null; pairRate?: number | null;
+    edgeRateTop?: number | null; edgeRateBottom?: number | null; edgeRateSide?: number | null;
+    pricingMode?: string | null; edgeTotalOverride?: number | null;
   }>();
   if (rows.length) {
     try {
@@ -91,6 +99,45 @@ export async function GET(
           thicknessMm: r.thickness == null ? null : Number(r.thickness),
         });
       }
+      // ── AND THE scripts/0067 COLUMNS, IN A QUERY OF THEIR OWN ────────────
+      //
+      // NOT added to the SELECT above. That one is wrapped in a catch that
+      // leaves every row with no edges and no shape, so naming a column this
+      // database may not have yet would blank the manager's whole PO board
+      // rather than lose one feature. Read separately, a missing column costs
+      // nothing: the row keeps its legacy specification, and the legacy
+      // specification prices identically.
+      try {
+        const t = await prisma.$queryRaw<Array<{
+          id: string; edges_top: string | null; edges_bottom: string | null;
+          edges_side: string | null; edge_rate: number | null; pair_rate: number | null;
+          edge_rate_top: number | null; edge_rate_bottom: number | null; edge_rate_side: number | null;
+          pricing_mode: string | null; edge_total_override: number | null;
+        }>>`
+          SELECT id, edges_top, edges_bottom, edges_side,
+                 edge_rate, pair_rate, edge_rate_top, edge_rate_bottom, edge_rate_side,
+               pricing_mode, edge_total_override
+          FROM   fab_requirement WHERE id = ANY(${ids}::text[])
+        `;
+        for (const r of t) {
+          const cur = edges.get(r.id);
+          if (!cur) continue;
+          cur.edgesTop = r.edges_top ?? null;
+          cur.edgesBottom = r.edges_bottom ?? null;
+          cur.edgesSide = r.edges_side ?? null;
+          cur.edgeRate = r.edge_rate == null ? null : Number(r.edge_rate);
+          // scripts/0069 — the price for doing top and bottom together.
+          cur.pairRate = r.pair_rate == null ? null : Number(r.pair_rate);
+          // scripts/0070 — each face's own rate.
+          cur.edgeRateTop = r.edge_rate_top == null ? null : Number(r.edge_rate_top);
+          cur.edgeRateBottom = r.edge_rate_bottom == null ? null : Number(r.edge_rate_bottom);
+          cur.edgeRateSide = r.edge_rate_side == null ? null : Number(r.edge_rate_side);
+          cur.pricingMode = r.pricing_mode ?? null;
+          cur.edgeTotalOverride = r.edge_total_override == null ? null : Number(r.edge_total_override);
+        }
+      } catch {
+        // scripts/0067 not applied — legacy specification stands.
+      }
     } catch {
       // 0055 / 0063 not applied yet.
     }
@@ -108,6 +155,9 @@ export async function GET(
         rowLetter: r.rowLetter,
         length: r.length,
         width: r.width,
+        // scripts/0068 — the unit the customer ordered in, so the PO card's
+        // drawing reads back the size printed on the PO. Display only.
+        dimUnit: r.dimUnit,
         quantity: r.quantity,
         /** fab_requirement.sink_quantity. NULL = nobody has decided, which is a
          *  different fact from 0 and is drawn differently. After a split a row
@@ -126,6 +176,15 @@ export async function GET(
         /** TOP / BOTTOM / BOTH. NULL means TOP — see scripts/0065. BOTH doubles
          *  the running feet, because it is the same line walked twice. */
         edgeFaces: edge?.edgeFaces ?? null,
+        /** scripts/0067 — the three faces and this row's own terms. All null on
+         *  a row the new controls have not touched, in which case the legacy
+         *  pair above decides and the row prices exactly as it does today. */
+        edgesTop: edge?.edgesTop ?? null,
+        edgesBottom: edge?.edgesBottom ?? null,
+        edgesSide: edge?.edgesSide ?? null,
+        edgeRate: edge?.edgeRate ?? null,
+        pricingMode: edge?.pricingMode ?? null,
+        edgeTotalOverride: edge?.edgeTotalOverride ?? null,
         /** MILLIMETRES of the stone this row is on, or null before it has one.
          *  Decides the edge rate; null means the feet show and the charge waits. */
         thicknessMm: edge?.thicknessMm ?? null,

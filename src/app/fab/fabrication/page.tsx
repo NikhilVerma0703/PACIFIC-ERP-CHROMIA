@@ -6,12 +6,18 @@ import { ProcessSessionGate } from "@/components/fab/ProcessSessionGate";
 import { OtherStageChips, activityRowClass } from "@/components/fab/OtherStageChips";
 import { RejectPieceButton } from "@/components/fab/RejectPieceButton";
 import { rowLabel } from "@/lib/fab/pieceNaming";
+// scripts/0068 — the size AS THE CUSTOMER ORDERED IT. length/width are stored
+// in inches because the feet and the square feet are built on inches; this is
+// the only thing that turns them back into the centimetres a metric order was
+// written in. NULL unit = inches = unchanged.
+import { orderedSizeLabel } from "@/lib/fab/dimensions";
+
 
 interface Piece {
   id: string; pieceCode: string;
   project: { projectCode: string };
   drawing: { drawingNumber: string } | null;
-  requirement: { pieceLabel: string | null; rowLetter: string | null; po: { poNumber: string } | null; length: number | null; width: number | null; sinkModel: string | null } | null;
+  requirement: { pieceLabel: string | null; rowLetter: string | null; po: { poNumber: string } | null; length: number | null; width: number | null; dimUnit: string | null; sinkModel: string | null } | null;
   slab: { slabCode: string; colour: string | null } | null;
   /** WHY THIS PIECE IS HERE. Two jobs land at this bench and, since
    *  scripts/0063, neither implies the other — a piece can be here for a sink
@@ -70,7 +76,7 @@ function PieceRow({ p, startMs, onStart, onComplete, completing, onRejected, onE
         <td className="px-5 py-3 text-gray-500">{p.requirement?.po?.poNumber ?? p.drawing?.drawingNumber ?? "—"}</td>
       )}
       <td className={`${compact ? "px-4 py-2.5" : "px-5 py-3"} text-gray-500 whitespace-nowrap`}>
-        {p.requirement?.length && p.requirement?.width ? `${p.requirement.length} × ${p.requirement.width}` : "—"}
+        {orderedSizeLabel(p.requirement?.length, p.requirement?.width, p.requirement?.dimUnit) ?? "—"}
       </td>
       <td className={`${compact ? "px-4 py-2.5" : "px-5 py-3"} text-gray-500`}>{p.slab?.slabCode ?? "—"}{p.slab?.colour ? ` · ${p.slab.colour}` : ""}</td>
       {!compact && <td className="px-5 py-3 text-gray-500">{p.project.projectCode}</td>}

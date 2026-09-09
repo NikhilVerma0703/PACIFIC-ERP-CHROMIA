@@ -24,8 +24,9 @@ import { prisma } from "@/lib/prisma";
 import { fabGate } from "@/lib/fab/access";
 import { attachQueueActivity } from "@/lib/fab/queueActivity";
 import { isDroppedFromQueues } from "@/lib/fab/rejectPiece";
-import { parseEdges, describeEdges } from "@/lib/fab/pricing";
-import { hasEdgeWork } from "@/lib/fab/shape";
+// parseEdges/describeEdges are gone with the single-selection label above —
+// rowFaceEdges and describeFaceEdges read all three faces instead.
+import { rowFaceEdges, rowHasHandPolish, describeFaceEdges } from "@/lib/fab/shape";
 
 export async function GET() {
   const g = await fabGate("EMPLOYEE");
@@ -44,7 +45,7 @@ export async function GET() {
     include: {
       project: { select: { projectCode: true, customerName: true } },
       drawing: { select: { drawingNumber: true } },
-      requirement: { select: { pieceLabel: true, rowLetter: true, po: { select: { poNumber: true } }, description: true, length: true, width: true, sinkModel: true } },
+      requirement: { select: { pieceLabel: true, rowLetter: true, po: { select: { poNumber: true } }, description: true, length: true, width: true, dimUnit: true, sinkModel: true } },
       slab: { select: { slabCode: true, colour: true } },
       pieceOperations: { select: { operationType: true, isCompleted: true, completedAt: true } },
     },
@@ -57,20 +58,42 @@ export async function GET() {
   const edgeByReq = new Map<string, { label: string; hasEdgeWork: boolean }>();
   if (reqIds.length) {
     try {
+      // ALL FIVE COLUMNS. This selected finished_edges alone — the pre-0067
+      // selection — so a row specified with the three-face controls (which
+      // leave it NULL) reached the bench labelled "not marked" with
+      // edgeWork false. The fabricator was handed the piece and told there was
+      // nothing to do to it, on a row the invoice was charging for.
       const rows = await prisma.$queryRaw<Array<{
         id: string; finished_edges: string | null; shape_type: string | null;
+        edge_faces: string | null;
+        edges_top: string | null; edges_bottom: string | null; edges_side: string | null;
       }>>`
-        SELECT id, finished_edges, shape_type::text AS shape_type
+        SELECT id, finished_edges, shape_type::text AS shape_type, edge_faces,
+               edges_top, edges_bottom, edges_side
         FROM   fab_requirement WHERE id = ANY(${reqIds}::text[])
       `;
       for (const r of rows) {
-        const edges = parseEdges(r.finished_edges);
+        const row = {
+          shapeType: r.shape_type,
+          finishedEdges: r.finished_edges,
+          edgeFaces: r.edge_faces,
+          edgesTop: r.edges_top,
+          edgesBottom: r.edges_bottom,
+          edgesSide: r.edges_side,
+        };
+        const faces = rowFaceEdges(row);
+        // NOTHING STORED AT ALL is "not marked" — nobody has decided. An
+        // explicit empty specification is a decision and reads as "None".
+        const untouched = r.finished_edges === null
+          && r.edges_top === null && r.edges_bottom === null && r.edges_side === null;
         edgeByReq.set(r.id, {
-          // "All four" / "Front + Left" / "All round" / "None" — the same
+          // THREE FACES, NAMED — "top all four · bottom left + right". The same
           // vocabulary the picker and the CEO board use, from one function, so
-          // the bench and the invoice cannot describe one row two ways.
-          label: r.finished_edges === null ? "not marked" : describeEdges(edges, r.shape_type),
-          hasEdgeWork: hasEdgeWork(r.shape_type, edges),
+          // the bench and the invoice cannot describe one row two ways. It used
+          // to be describeEdges, which can only say ONE selection and so could
+          // not tell the bench that the underside is polished too.
+          label: untouched ? "not marked" : describeFaceEdges(r.shape_type, faces),
+          hasEdgeWork: rowHasHandPolish(row),
         });
       }
     } catch {

@@ -90,14 +90,24 @@ import {
   RECT_EDGES, ROUND_EDGE, DEFAULT_SHAPE, DEFAULT_EDGE_FACE,
   parseShape, isRound, hasEdgeWork, edgeDimensionsMissing, isUnpriceableShape,
   edgeVocabularyMismatch,
+  POLISH_FACES, faceEdgesFromLegacy, hasAnyFaceWork, faceSideCounts,
+  faceEdgeInchesPerPiece, faceEdgeDimensionsMissing, faceEdgeVocabularyMismatch,
+  facePairSplit,
+  describeFaceEdges, serializeFaceEdges, parseFaceEdges, faceEdgesUnset,
+  type FaceEdges, type PolishFace,
   parseEdgeFace, edgeFaceCount, describeEdgeFace,
   edgeInchesPerPiece as shapeEdgeInches,
   type RectEdge, type PieceShape, type EdgeFace,
   type EdgeSelection as ShapeEdgeSelection,
 } from "./shape.ts";
 
-export { parseEdgeFace, edgeFaceCount, describeEdgeFace, DEFAULT_EDGE_FACE, isUnpriceableShape };
-export type { EdgeFace };
+export {
+  parseEdgeFace, edgeFaceCount, describeEdgeFace, DEFAULT_EDGE_FACE, isUnpriceableShape,
+  POLISH_FACES, faceEdgesFromLegacy, hasAnyFaceWork, faceSideCounts,
+  faceEdgeInchesPerPiece, describeFaceEdges, serializeFaceEdges, parseFaceEdges,
+  faceEdgesUnset,
+};
+export type { EdgeFace, FaceEdges, PolishFace };
 
 /** The four edges of a rectangular piece, as a fabricator names them.
  *
@@ -275,6 +285,69 @@ export function describeEdges(edges: EdgeSelection | null | undefined, shape: un
   return nice.join(" + ");
 }
 
+/**
+ * HOW A ROW'S HAND POLISH IS CHARGED.
+ *
+ * The owner, on why one card cannot serve: "pricing differs and changeable and
+ * vary for each project." Some rows are quoted by the foot, some at a flat
+ * figure per piece, and some are one number agreed on a phone call.
+ *
+ *   RUNNING_FOOT  feet x rate. The default, and what every row already written
+ *                 is charged at. NULL means this.
+ *   PER_PIECE     quantity x rate. "some will be priced on number of piece —
+ *                 one piece this is the price."
+ *   LUMP_SUM      one figure for the whole row, entered as the rate.
+ *
+ * SINK CUTTING IS NOT ON THIS LIST and never will be: it is fixed at Rs230 for
+ * 2 cm and Rs300 for 3 cm, per piece, and the owner has said so twice. Only the
+ * hand polish is variable.
+ */
+export const PRICING_MODES = ["RUNNING_FOOT", "PER_PIECE", "LUMP_SUM"] as const;
+export type PricingMode = (typeof PRICING_MODES)[number];
+export const DEFAULT_PRICING_MODE: PricingMode = "RUNNING_FOOT";
+
+export function parsePricingMode(value: unknown): PricingMode {
+  const t = String(value ?? "").trim().toUpperCase();
+  return (PRICING_MODES as readonly string[]).includes(t)
+    ? (t as PricingMode)
+    : DEFAULT_PRICING_MODE;
+}
+
+/** How the mode reads on a screen, and what the rate box means under it. */
+export function describePricingMode(mode: unknown): { label: string; rateLabel: string } {
+  switch (parsePricingMode(mode)) {
+    case "PER_PIECE": return { label: "Per piece", rateLabel: "Rs per piece" };
+    case "LUMP_SUM":  return { label: "Lump sum",  rateLabel: "Rs for the whole row" };
+    default:          return { label: "Per running foot", rateLabel: "Rs per foot" };
+  }
+}
+
+/**
+ * A rate that is a real, usable number, or null.
+ *
+ * ZERO IS ALLOWED — a row can genuinely be quoted at nothing, and a customer
+ * who is not being charged for edge work is a real customer.
+ *
+ * ─────────────────── AND THAT IS WHY THE EMPTY CHECK COMES FIRST ────────────
+ * `Number(null)` is 0. `Number("")` is 0. `Number(false)` is 0. So a naive
+ * `Number.isFinite(Number(v))` reads EVERY ABSENT VALUE as a rate of zero — and
+ * every one of these fields is NULL on every row in the database, because that
+ * is what "nobody typed a rate" looks like coming out of Postgres.
+ *
+ * The first draft of this function did exactly that. It turned `rate: null`
+ * into a rate of Rs0 and `edgeTotalOverride: null` into an agreed total of Rs0,
+ * so a row of 60 pieces with all four edges marked priced its hand polish at
+ * NOTHING — silently, with unpriced:false, on every row the moment 0067 landed.
+ * It was caught by running the module, not by reading it.
+ */
+function usableRate(v: unknown): number | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v === "string" && v.trim() === "") return null;
+  if (typeof v === "boolean") return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 export interface RowPricingInput {
   lengthIn: number | null | undefined;
   widthIn: number | null | undefined;
@@ -292,8 +365,88 @@ export interface RowPricingInput {
   shape?: unknown;
   /** fab_requirement.edge_faces — TOP / BOTTOM / BOTH. Absent means TOP, which
    *  is what every row written before faces existed was charged as. BOTH is two
-   *  passes of the same line and doubles the feet. */
+   *  passes of the same line and doubles the feet.
+   *
+   *  SUPERSEDED BY faceEdges below, and kept because every row already written
+   *  holds it. Read only when faceEdges is absent. */
   edgeFace?: unknown;
+
+  /**
+   * THE THREE-FACE SPECIFICATION — top, bottom and side, each with its own
+   * sides. scripts/0067.
+   *
+   * WINS OVER edges + edgeFace WHEN PRESENT, and is ignored when absent, which
+   * is the whole compatibility story: a row nobody has touched with the new
+   * screens is read through faceEdgesFromLegacy and prices to the same rupee it
+   * always did.
+   *
+   * Summed across faces, never multiplied — "top on four sides and bottom on
+   * two" is a perimeter plus two sides, not a perimeter times something.
+   */
+  faceEdges?: FaceEdges | null;
+
+  /**
+   * THE ROW'S OWN RATE. Rupees per foot, per piece or for the row, depending on
+   * pricingMode. NULL falls back to the rate card by thickness — which is what
+   * every existing row does and what an ordinary row should keep doing, so
+   * nobody types a rate unless the job is unusual.
+   */
+  rate?: number | null;
+
+  /** RUNNING_FOOT / PER_PIECE / LUMP_SUM. Absent means RUNNING_FOOT. */
+  pricingMode?: unknown;
+
+  /**
+   * scripts/0069 — RUPEES PER FOOT FOR A SIDE DONE ON BOTH TOP AND BOTTOM.
+   *
+   * The owner: "if per feet 10 rs then doing top + bottom we will give them 15
+   * not 20." Both faces of one edge is a single trip with the piece flipped,
+   * not two jobs, so it is quoted as one number rather than charged twice.
+   *
+   * NULL MEANS NO DISCOUNT: the two faces are summed at `rate`, which is what
+   * every row written before 0069 does — so nothing already quoted moves. Zero
+   * is a real pair rate (the second face thrown in) and is honoured; NULL is
+   * not zero.
+   *
+   * RUNNING_FOOT ONLY. A rate per foot means nothing under PER_PIECE or
+   * LUMP_SUM, which price the piece or the row and have no per-face arithmetic
+   * to discount.
+   */
+  pairRate?: number | null;
+
+  /**
+   * scripts/0070 — A RATE PER FACE. The owner: "bottom edge have diff price
+   * sometime, top have diff price sometime and side have different price
+   * sometime."
+   *
+   * NULL FALLS BACK TO `rate`, which falls back to the card. So with all three
+   * empty every face takes the same figure and the arithmetic below collapses
+   * to the single multiplication it was before 0070 — identical to the paisa on
+   * every row already written.
+   *
+   * The SIDE BAND is a different surface, done in its own pass, and never
+   * shares a rate with a flat face except by falling back to the same default.
+   */
+  rateTop?: number | null;
+  rateBottom?: number | null;
+  rateSide?: number | null;
+
+  /**
+   * THE PHONE-CALL NUMBER. Replaces this row's HAND POLISH charge outright.
+   *
+   * The owner: "always have a custom free field for total so when system feels
+   * heavy they call and enter the amount." So it also RESCUES a row this module
+   * refuses to price — an L-shaped outline, a blank width, an off-card
+   * thickness — because a figure a human agreed is better than a gap, and the
+   * gap is exactly when somebody picks up the phone.
+   *
+   * It does NOT touch the sink, which is fixed and needs no rescuing.
+   *
+   * The calculated figure is returned beside it as calculatedEdgeCost, never
+   * discarded: an override that quietly replaces a number nobody can see again
+   * is how a wrong rate card survives for a year.
+   */
+  edgeTotalOverride?: number | null;
 }
 
 /** WHY A ROW COULD NOT BE PRICED. Null when it was priced fine.
@@ -316,177 +469,626 @@ export interface RowPricingInput {
  *                halves of the row contradict each other and one of them is
  *                wrong; which one is not for this module to guess.
  */
-export type UnpricedReason = "THICKNESS" | "DIMENSIONS" | "SHAPE" | "EDGES";
+export type UnpricedReason = "THICKNESS" | "DIMENSIONS" | "SHAPE" | "EDGES" | "RATE";
+
+/**
+ * ONE BUCKET OF THE EDGE CHARGE — scripts/0071.
+ *
+ * WHICH bucket, not which face, and the difference is the whole point. A side
+ * polished on BOTH faces is one bucket ("PAIR") priced once, because it is one
+ * trip with the piece flipped; a side polished on the top alone is a different
+ * bucket at a different rate. Reporting this per FACE would have to charge the
+ * shared sides to one of the two faces or to both, and either is a figure the
+ * arithmetic never used.
+ */
+export interface EdgeLine {
+  /** PAIR   sides done on top AND bottom, counted once
+   *  TOP    sides done on the top only
+   *  BOTTOM sides done on the bottom only
+   *  SIDE   the vertical band
+   *  PIECES a per-piece rate over the row's pieces
+   *  LUMP   one agreed figure for the row */
+  key: "PAIR" | "TOP" | "BOTTOM" | "SIDE" | "PIECES" | "LUMP";
+  /** Said in words, for a screen that has no room to explain the key. */
+  label: string;
+  /** Feet in this bucket. Zero under PER_PIECE and LUMP_SUM, which have none. */
+  feet: number;
+  /** The rate this bucket was charged at, in the unit its mode implies. */
+  rate: number | null;
+  /** What the bucket is worth. The lines sum to edgeCost exactly. */
+  cost: number;
+  /** WHICH FACES THIS BUCKET BELONGS TO, so a screen showing one face's panel
+   *  knows which lines to put in it. PAIR belongs to both. */
+  faces: PolishFace[];
+}
 
 export interface RowPricing {
   runningFeet: number;
   edgeCost: number;
   sinkPieces: number;
   /** The pieces carrying HAND EDGE POLISH, and the count the running feet are
-   *  measured over.
-   *
-   *  All of them or none of them — a row is homogeneous, and a row where only
-   *  some pieces want edge polish is split into two rows instead. So this is
-   *  the ordered quantity whenever any edge is marked, and 0 otherwise. See the
-   *  note at the top of the file on why there is no edge_quantity column. */
+   *  measured over. All of them or none of them — a row is homogeneous. */
   edgePieces: number;
+  /**
+   * THE PIECES THE EDGE MONEY IS CHARGED OVER, which is NOT always edgePieces.
+   *
+   * Under RUNNING_FOOT the two are the same: no ticked edges means no feet
+   * means no charge. Under PER_PIECE and LUMP_SUM they part company, because
+   * those rates are about the PIECE and not its edges —
+   *
+   *   "some pieces will be priced on number of piece, one piece this is the
+   *    price"  ... "some peices we give to the hand fabricated fully"
+   *
+   * A piece that goes to the bench whole has no edges to tick. It still has a
+   * price. Charging it through edgePieces returned a confident Rs0.
+   *
+   * THIS IS ALSO THE DIVISOR for the per-piece share (pieceCharge.rowShares).
+   * Dividing a real row cost by edgePieces=0 gives every piece a share of zero,
+   * and packaging then freezes that zero permanently.
+   */
+  chargePieces: number;
+  /**
+   * scripts/0069 — THE FEET OF EDGE DONE ON BOTH FACES, COUNTED ONCE.
+   *
+   * This is the length the pair rate multiplies, not the distance walked. A
+   * side polished top and bottom is ONE side of stone and TWO passes over it,
+   * and those are different numbers:
+   *
+   *     runningFeet  = pairedFeet × 2 + singleFeet     <- passes, the physical work
+   *     edgeCost     = pairedFeet × pairRate + singleFeet × edgeRate
+   *
+   * Row A of PO 10026 done on both faces: runningFeet 1,010, pairedFeet 505.
+   * Both are true and they answer different questions — how much walking, and
+   * how much stone. Do NOT assume they sum.
+   *
+   * Zero on every row without a pair rate, which is every row until somebody
+   * types one.
+   */
+  pairedFeet: number;
+  /** The feet charged at the ordinary rate — sides done on ONE face only, plus
+   *  the side band, which never pairs. With no pair rate this is the whole of
+   *  runningFeet and pairedFeet is zero, which is the pre-0069 behaviour. */
+  singleFeet: number;
+  /** The pair rate actually used, or null when the row has none — in which
+   *  case a shared side is charged rateTop + rateBottom. */
+  pairRate: number | null;
+  /** scripts/0070 — the rate each face was actually charged at, after the
+   *  fallback chain (own rate -> row rate -> card). A screen shows these rather
+   *  than what was typed, because what was typed is often nothing. */
+  rateTop: number | null;
+  rateBottom: number | null;
+  rateSide: number | null;
+  /** What a side polished on BOTH faces cost per foot: the pair rate when one
+   *  is set, otherwise rateTop + rateBottom. Null when neither face has a rate. */
+  pairEffectiveRate: number | null;
+  /** Feet on sides polished on the TOP only, at rateTop. */
+  topOnlyFeet: number;
+  /** Feet on sides polished on the BOTTOM only, at rateBottom. */
+  bottomOnlyFeet: number;
+  /** Feet of the vertical band, at rateSide. */
+  sideBandFeet: number;
   /** The pieces of this row that reach the fabricator's bench at all — the ones
-   *  with a sink, plus the ones with hand edge polish.
-   *
-   *  NO LONGER IDENTICAL TO sinkPieces. It used to be, because edge work was
-   *  read as the polish that comes with a sink cutout; the owner separated the
-   *  two, so a plain row with polished edges is now a fabrication row.
-   *
-   *  ZERO MEANS "NOT A FABRICATION ROW", which is a different thing from
-   *  `unpriced`. Nothing is owed and nothing is missing. */
+   *  with a sink, plus the ones with hand edge polish. ZERO MEANS "not a
+   *  fabrication row", which is a different thing from `unpriced`. */
   fabricationPieces: number;
-  /** TOP / BOTTOM / BOTH, as it was read. BOTH means the running feet above
-   *  already include the second pass — do not double them again downstream. */
+  /** TOP / BOTTOM / BOTH, as it was read. LEGACY: meaningful only when the row
+   *  had no three-face specification. Read faceEdges/faceCounts instead. */
   edgeFace: EdgeFace;
+  /** The three-face specification actually priced — either the row's own, or the
+   *  legacy pair read through faceEdgesFromLegacy. */
+  faceEdges: FaceEdges;
+  /** How many sides each face is polished on: the numbers the owner asked for
+   *  and the picker prints. { top: 4, bottom: 2, side: 4 }. */
+  faceCounts: Record<PolishFace, number>;
   sinkCost: number;
   total: number;
-  /** The rate card entry used, or null when the thickness is not on the card.
-   *  Null means BOTH costs are 0 and the row is reported as unpriced — never
-   *  silently charged at a neighbouring rate. */
   rate: { sinkPerPiece: number; edgePerFoot: number; nominalMm: PricedThicknessMm } | null;
-  /** True when something stopped this row being priced in full. The screen says
-   *  so rather than showing ₹0 as if it were free. */
+
+  /** RUNNING_FOOT / PER_PIECE / LUMP_SUM — how the edge charge was worked out. */
+  pricingMode: PricingMode;
+  /** The rate actually applied, in the unit the mode implies, or null when none
+   *  was available. */
+  edgeRate: number | null;
+  /** Where that rate came from. "ROW" is a figure somebody agreed for this row;
+   *  "CARD" is the standing 2 cm / 3 cm card. Null when the row could not be
+   *  rated at all. Worth showing: a project quoted at Rs22/ft looks identical to
+   *  one on the card until you can see which is which. */
+  rateSource: "ROW" | "CARD" | null;
+
+  /** True when a human typed the edge total and it replaced the calculation. */
+  edgeOverridden: boolean;
+  /** WHAT THE CALCULATION SAID, kept beside the override rather than discarded.
+   *  Equal to edgeCost when nothing was overridden. */
+  calculatedEdgeCost: number;
+
+  /**
+   * scripts/0071 — THE MONEY, BUCKET BY BUCKET.
+   *
+   * The owner, on the supervisor's card: "now it's like showing the full
+   * quantity price at below when doing this — no, I need the price only for
+   * that particular quantity, because sometimes price differs, we may enter
+   * different prices."
+   *
+   * A row total is the wrong feedback while somebody is typing a rate for ONE
+   * face. He types Rs1 against the bottom and the only number that moves is a
+   * figure covering three faces and a hundred and fifty pieces, so he cannot
+   * tell whether the Rs1 landed where he meant it to.
+   *
+   * So the charge is returned already split into the buckets it was computed
+   * from — the shared sides, top only, bottom only, the band — each with the
+   * feet, the rate and the money that bucket is worth. A screen shows the
+   * bucket beside the box that priced it.
+   *
+   * THEY SUM TO calculatedEdgeCost EXACTLY — which is edgeCost on every row
+   * nobody has overridden. The last paise of rounding is put on the biggest
+   * line rather than left over, because a breakdown that does not add up to
+   * the total above it is an afternoon somebody spends on nothing. On an
+   * overridden row they still describe the CALCULATION, beside the agreed
+   * figure that beat it, for the same reason calculatedEdgeCost is kept.
+   *
+   * Empty on a row that could not be priced, and on a row with no edge work.
+   * Under PER_PIECE and LUMP_SUM there are no feet to bucket, so it is the one
+   * line those modes charge.
+   */
+  edgeLines: EdgeLine[];
+  /** The hand-polish charge divided by the pieces it was charged over — what
+   *  one piece of this row earns the bench. Zero when nothing is charged. */
+  edgeCostPerPiece: number;
+  /** Edge plus sink, per ordered piece. Zero on a row with no quantity. */
+  totalPerPiece: number;
+
+  /** True when something stopped this row being priced in full. */
   unpriced: boolean;
-  /** Which of the two holes it was. Null when the row priced cleanly. */
+  /** Which of the holes it was. Null when the row priced cleanly. */
   unpricedReason: UnpricedReason | null;
 }
 
 /** One ordered row's charge. */
 export function priceRow(input: RowPricingInput): RowPricing {
-  const rate = rateFor(input.thicknessMm);
+  const card = rateFor(input.thicknessMm);
   const shape = parseShape(input.shape);
   const qty = Math.max(0, Math.floor(positive(input.quantity)));
   // A sink count larger than the order cannot charge for pieces that do not
   // exist — the same clamp planSlabRelease applies to a stale sink_quantity.
   const sinkPieces = Math.min(qty, Math.max(0, Math.floor(positive(input.sinkQuantity))));
-
-  // THE FEET ARE MEASURED OVER THE EDGE PIECES — WHICH IS THE WHOLE ROW.
-  //
-  // This used to be `fabricationPieces = sinkPieces`, on the rule that edge work
-  // was the hand-polish accompanying a sink. The owner separated them: hand edge
-  // polish is chosen independently, on sink rows and plain rows alike. So a row
-  // of 60 with 30 sinks and all four edges marked is 60 pieces of edge work and
-  // 30 of sink — two counts, two answers, and neither gates the other.
-  //
-  // The group rule is what makes this a derivation rather than a stored number:
-  // a row where only some pieces want edge polish is SPLIT, so any row that has
-  // edge work has it on every piece.
-  const edgePieces = hasEdgeWork(shape, input.edges) ? qty : 0;
-  // AND THE FACES. Polishing top and bottom is the same line walked twice, so
-  // it doubles the feet rather than adding a fee — see shape.ts. A row charged
-  // for one face when the bench did two is half an invoice.
+  const mode = parsePricingMode(input.pricingMode);
   const edgeFace = parseEdgeFace(input.edgeFace);
-  const feet = runningFeet(input.lengthIn, input.widthIn, edgePieces, input.edges, shape, edgeFace);
+
+  // ── WHICH SPECIFICATION IS THIS ROW USING? ───────────────────────────────
+  //
+  // The row's own three faces when it has them; otherwise the legacy pair read
+  // through faceEdgesFromLegacy, which returns EXACTLY what edges + edgeFace
+  // charged before scripts/0067. That single line is the whole compatibility
+  // story, and it is why no quote already sent moves by a paisa.
+  const faceEdges: FaceEdges =
+    input.faceEdges && Object.keys(input.faceEdges).length > 0
+      ? input.faceEdges
+      : faceEdgesFromLegacy(input.edges, input.edgeFace);
+
+  // THE RAW VALUE, NOT `shape`, GOES TO EVERY HELPER BELOW — and getting this
+  // wrong cost a real figure. parseShape FLATTENS L_SHAPE, CURVE and CUSTOM to
+  // RECTANGLE (deliberately: "what shape is this" and "can this be charged" are
+  // two questions), so handing the parsed value on loses the one bit that says
+  // the outline is unmeasurable. An L-shaped row with an agreed override then
+  // reported 505 running feet it does not have — the refusal path forces feet to
+  // zero, so it only surfaced on the path that does not refuse.
+  //
+  // Every helper parses for itself, so the raw value is safe everywhere.
+  const faceCounts = faceSideCounts(input.shape, faceEdges);
+  const dims = { lengthIn: input.lengthIn, widthIn: input.widthIn };
+
+  // Summed across the three faces, never multiplied — top on four sides and
+  // bottom on two is a perimeter plus two sides.
+  const edgePieces = hasAnyFaceWork(input.shape, faceEdges) ? qty : 0;
+  const inchesPerPiece = faceEdgeInchesPerPiece(input.shape, dims, faceEdges);
+  const feet = round2((inchesPerPiece * edgePieces) / INCHES_PER_FOOT);
   const fabricationPieces = Math.max(sinkPieces, edgePieces);
 
-  // AN OUTLINE THIS MODULE CANNOT MEASURE — L_SHAPE, CURVE, CUSTOM.
+  // ── THE RATE ─────────────────────────────────────────────────────────────
   //
-  // FIRST, before the dimensions and before the rate, because it is the most
-  // fundamental of the three holes: there is no point asking whether the width
-  // is filled in when nothing here knows which edges the width belongs to.
+  // The row's own figure wins; the card is the fallback. LUMP_SUM has no rate
+  // card equivalent — a lump sum is by definition a number somebody typed — so
+  // it is never filled in from the card.
+  const rowRate = usableRate(input.rate);
+  // THE CARD IS QUOTED PER FOOT — Rs15 at 2 cm, Rs20 at 3 cm — so it is the
+  // fallback for RUNNING_FOOT and for nothing else. Letting PER_PIECE fall back
+  // to it charged Rs15 A PIECE on a row nobody had quoted, which reads as a
+  // plausible small number and is not a rate anyone agreed. A lump sum is by
+  // definition a figure somebody typed; so, now, is a per-piece rate.
+  const perFoot = mode === "RUNNING_FOOT";
+  const cardRate = perFoot && card ? card.edgePerFoot : null;
+  const edgeRate = rowRate !== null ? rowRate : cardRate;
+  const rateSource: "ROW" | "CARD" | null =
+    rowRate !== null ? "ROW" : (cardRate !== null ? "CARD" : null);
+
+  // FACES DECIDE THE FEET. THEY DO NOT DECIDE WHETHER A PRICE APPLIES.
   //
-  // These three fell through parseShape's default and were PRICED AS RECTANGLES
-  // with `unpriced: false`. An L-shaped top marked on all four edges was
-  // charged a rectangle's perimeter and every screen showed the figure in
-  // black, indistinguishable from one that had been measured. See
-  // UNPRICEABLE_SHAPES in shape.ts.
+  // Under RUNNING_FOOT they are the same question — no edges, no feet, nothing
+  // to charge. Under the other two they are not, and conflating them is what
+  // made "35 pieces, fully by hand, Rs150 each" come out as Rs0 with
+  // `unpriced: false` — a silent zero on an invoice, which is the one failure
+  // this module exists to prevent.
+  const chargePieces = perFoot ? edgePieces : (rowRate !== null ? qty : 0);
+
+  // ── ONE TRIP, FLIPPED — scripts/0069 ─────────────────────────────────────
   //
-  // THE SINK IS STILL OWED, exactly as in the DIMENSIONS branch below. A sink
-  // cutout is a flat ₹230 or ₹300 per piece and has nothing whatever to do with
-  // the outline it sits in; withholding it would turn one unknown into two.
+  // "If per feet 10 rs then doing top + bottom we will give them 15 not 20."
   //
-  // AND THE PIECES STILL REACH THE BENCH. edgePieces and fabricationPieces are
-  // reported unchanged, so an L-shaped row with edges marked still queues for
-  // hand polish — the work is real and somebody has to do it. What is withheld
-  // is the money, and only until somebody agrees a figure.
-  if (isUnpriceableShape(input.shape)) {
-    const sinkOnly = rate ? money(sinkPieces * rate.sinkPerPiece) : 0;
+  // A side polished on both faces is ONE pass with the piece turned over, so it
+  // is quoted as one number instead of being charged twice. The discount lands
+  // on THE SIDES THAT ACTUALLY SHARE BOTH FACES and nowhere else: top on four
+  // with bottom on two pairs the two and charges the other two at the ordinary
+  // rate. facePairSplit owns that rule.
+  //
+  // A pair rate is a rate PER FOOT, so it applies under RUNNING_FOOT only —
+  // per piece and lump sum have no per-face arithmetic to discount.
+  //
+  // NULL PAIR RATE MEANS THE OLD BEHAVIOUR EXACTLY. `split` is still computed,
+  // because the screens show the breakdown, but the money falls through to
+  // feet × rate — the same single multiplication as before 0069, over the same
+  // feet, which is why no row already quoted moves by a paisa.
+  const usePair = perFoot ? usableRate(input.pairRate) : null;
+  const split = facePairSplit(input.shape, dims, faceEdges);
+  const pairedFeet = round2((split.pairedInches * edgePieces) / INCHES_PER_FOOT);
+  const singleFeet = round2((split.singleInches * edgePieces) / INCHES_PER_FOOT);
+  // RAW AND ROUNDED ARE BOTH KEPT ON PURPOSE. The rounded ones are what a
+  // screen prints; the raw ones are what the per-face money is computed from,
+  // because rounding four buckets and then adding them is not the same number
+  // as adding them and rounding once.
+  const pairedRawFeet = (split.pairedInches * edgePieces) / INCHES_PER_FOOT;
+  const topOnlyRawFeet = (split.topOnlyInches * edgePieces) / INCHES_PER_FOOT;
+  const bottomOnlyRawFeet = (split.bottomOnlyInches * edgePieces) / INCHES_PER_FOOT;
+  const sideBandRawFeet = (split.sideInches * edgePieces) / INCHES_PER_FOOT;
+  const topOnlyFeet = round2(topOnlyRawFeet);
+  const bottomOnlyFeet = round2(bottomOnlyRawFeet);
+  const sideBandFeet = round2(sideBandRawFeet);
+
+  // ── A RATE PER FACE — scripts/0070 ───────────────────────────────────────
+  //
+  // "Top have their rate, bottom have their rate. If pair rate is empty use the
+  //  sum, if something is written use this new rate, that's it. Side is diff."
+  //
+  // Each face falls back to the row's rate, which falls back to the card. With
+  // every box empty all three are the same number and this whole block reduces
+  // to `feet x edgeRate` — the single multiplication that priced every row
+  // before 0070, giving the identical answer. That equivalence is asserted in
+  // tests/fabHandPolish.test.ts, not just claimed here.
+  const rateTop    = perFoot ? (usableRate(input.rateTop)    ?? edgeRate) : null;
+  const rateBottom = perFoot ? (usableRate(input.rateBottom) ?? edgeRate) : null;
+  const rateSide   = perFoot ? (usableRate(input.rateSide)   ?? edgeRate) : null;
+
+  // A SHARED SIDE IS ONE TRIP WITH THE PIECE FLIPPED. An explicit pair rate is
+  // the quoted figure for that trip; with none, it costs what the two faces
+  // cost — which is precisely the old "sum the faces" behaviour, arrived at
+  // from the other direction.
+  const pairEffectiveRate =
+    usePair !== null ? usePair
+    : (rateTop === null && rateBottom === null) ? null
+    : (rateTop ?? 0) + (rateBottom ?? 0);
+
+  // "Nobody has used the new feature on this row" — no pair rate, and all three
+  // faces on the same figure, which is what NULL/NULL/NULL falling back to the
+  // row rate or the card always produces.
+  const uniformRate =
+    usePair === null && rateTop === rateBottom && rateBottom === rateSide;
+
+  // IS THERE A RATE FOR THIS ROW ANYWHERE? — and scripts/0070 left this behind
+  // too, in the same way the refusal below did.
+  //
+  // The guard used to read `edgeRate === null`, which is the ROW's rate falling
+  // back to the CARD. A row priced entirely PER FACE has neither, so the whole
+  // calculation short-circuited to zero before any of the per-face arithmetic
+  // underneath it ran — and because the money was already 0, fixing the refusal
+  // alone changed nothing. Under RUNNING_FOOT a face's own rate counts.
+  //
+  // Per piece and lump sum are unchanged: they have no per-face arithmetic, so
+  // for them the only rate that exists is still edgeRate.
+  const rateAvailable = perFoot
+    ? (edgeRate !== null || rateTop !== null || rateBottom !== null || rateSide !== null)
+    : edgeRate !== null;
+
+  const calculatedEdgeCost =
+    !rateAvailable || chargePieces === 0
+      ? 0
+      // THESE TWO STILL NEED edgeRate ITSELF, and now they have to say so.
+      // The old outer guard was `edgeRate === null`, which narrowed it for
+      // every branch below; `rateAvailable` is a broader question (it counts
+      // per-face rates) and cannot narrow it. Unreachable at null in practice —
+      // rateAvailable is exactly `edgeRate !== null` under these two modes —
+      // but written out rather than asserted, because a `!` here would be a
+      // crash on any future path that widens the guard again.
+      : mode === "PER_PIECE" ? (edgeRate === null ? 0 : money(chargePieces * edgeRate))
+      : mode === "LUMP_SUM"  ? (edgeRate === null ? 0 : money(edgeRate))
+      // ── ONE RATE FOR EVERYTHING TAKES THE OLD LINE, UNCHANGED ──────────
+      //
+      // Not an optimisation — a GUARANTEE. Splitting the feet into four buckets
+      // and rounding each before multiplying is not the same arithmetic as
+      // rounding the total once and multiplying that, and the difference is
+      // real money: a 10-piece circle done on both faces came to Rs1,885.05 the
+      // old way (125.67 ft x Rs15) and Rs1,884.90 the new one (62.83 ft x Rs30).
+      // Fifteen paise, on a row nobody had touched.
+      //
+      // EVERY ROW IN THE DATABASE IS THIS CASE — all three face rates NULL and
+      // no pair rate, so all three fall back to the same figure. Those rows go
+      // down the identical code path they always did, and cannot move. Only a
+      // row that actually uses the new feature takes the branch below.
+      // `edgeRate !== null` GUARDS THE MULTIPLICATION, not just the branch.
+      // uniformRate is true when no pair rate is set and the three faces agree
+      // — which they also do at NULL/NULL/NULL on a row with no card. Taking
+      // this branch then computed `feet * null` and returned NaN, so a row
+      // priced per face at one uniform figure would have reported garbage
+      // instead of the zero it used to. It falls through to the per-face path,
+      // which multiplies each bucket by its own rate and needs no fallback.
+      : uniformRate && edgeRate !== null
+        ? money(feet * edgeRate)
+        // The per-face path multiplies UNROUNDED feet and rounds once at the
+        // end, which is the most accurate thing to do when the buckets really
+        // are priced differently and there is no historical figure to match.
+        : money(
+            pairedRawFeet     * (pairEffectiveRate ?? 0) +
+            topOnlyRawFeet    * (rateTop    ?? 0) +
+            bottomOnlyRawFeet * (rateBottom ?? 0) +
+            sideBandRawFeet   * (rateSide   ?? 0)
+          );
+
+  // ── THE MONEY, BUCKET BY BUCKET — scripts/0071 ───────────────────────────
+  //
+  // "I need the price only for that particular quantity, because sometimes
+  // price differs, we may enter different prices."
+  //
+  // The same arithmetic as calculatedEdgeCost above, kept as its parts instead
+  // of collapsed into one figure, so the screen that asked for a rate can show
+  // what that rate bought. NOT A SECOND CALCULATION: the buckets, the feet and
+  // the rates are the ones the charge was computed from, and the total is
+  // reconciled back onto them below.
+  //
+  // BUCKETS, NOT FACES. A side polished top and bottom is ONE bucket priced
+  // once — one trip with the piece flipped — so it cannot be charged to "top"
+  // or to "bottom" without inventing a figure the arithmetic never used. It
+  // carries both faces in `faces` and a screen showing either face's panel
+  // shows it.
+  const facesWithWork = POLISH_FACES.filter((f) => faceCounts[f] > 0);
+  const edgeLines: EdgeLine[] = (() => {
+    if (edgeRate === null || chargePieces === 0) return [];
+    if (mode === "PER_PIECE") {
+      return [{
+        key: "PIECES" as const,
+        label: `${chargePieces} piece${chargePieces === 1 ? "" : "s"} by hand`,
+        feet: 0, rate: edgeRate, cost: calculatedEdgeCost, faces: facesWithWork,
+      }];
+    }
+    if (mode === "LUMP_SUM") {
+      return [{
+        key: "LUMP" as const, label: "one figure for the whole row",
+        feet: 0, rate: edgeRate, cost: calculatedEdgeCost, faces: facesWithWork,
+      }];
+    }
+    const buckets = [
+      { key: "PAIR" as const,   label: "sides done top and bottom",
+        feet: pairedFeet,     raw: pairedRawFeet,     rate: pairEffectiveRate,
+        faces: ["top", "bottom"] as PolishFace[] },
+      { key: "TOP" as const,    label: "sides done on the top only",
+        feet: topOnlyFeet,    raw: topOnlyRawFeet,    rate: rateTop,
+        faces: ["top"] as PolishFace[] },
+      { key: "BOTTOM" as const, label: "sides done on the bottom only",
+        feet: bottomOnlyFeet, raw: bottomOnlyRawFeet, rate: rateBottom,
+        faces: ["bottom"] as PolishFace[] },
+      { key: "SIDE" as const,   label: "the vertical side band",
+        feet: sideBandFeet,   raw: sideBandRawFeet,   rate: rateSide,
+        faces: ["side"] as PolishFace[] },
+    ].filter((b) => b.raw > 0);
+
+    const out: EdgeLine[] = buckets.map((b) => ({
+      key: b.key, label: b.label, feet: b.feet, rate: b.rate,
+      cost: money(b.raw * (b.rate ?? 0)), faces: b.faces,
+    }));
+
+    // ONE RATE FOR EVERYTHING took the single-multiplication branch above, and
+    // four rounded buckets do not always add up to it — fifteen paise on a
+    // 10-piece circle, which is the very drift that branch exists to avoid.
+    // The remainder goes on the DEAREST line, where it is proportionally
+    // smallest, so the breakdown reconciles with the charge to the paisa.
+    if (out.length) {
+      const drift = money(calculatedEdgeCost - out.reduce((t, l) => t + l.cost, 0));
+      if (drift !== 0) {
+        let biggest = 0;
+        for (let i = 1; i < out.length; i += 1) if (out[i].cost > out[biggest].cost) biggest = i;
+        out[biggest] = { ...out[biggest], cost: money(out[biggest].cost + drift) };
+      }
+    }
+    return out;
+  })();
+
+  // ── AND WHAT ONE PIECE OF IT IS WORTH — scripts/0071 ─────────────────────
+  //
+  // Divided by the pieces the money was actually charged over, which is
+  // chargePieces for the edge and the ORDERED quantity for the row: a row with
+  // sinks on some pieces and edge work on all of them has two divisors, and
+  // using one for both would misreport whichever it was not.
+  //
+  // Derived here rather than on a screen so the card, the PO page and the CEO
+  // board cannot arrive at three answers, which is the rule this whole module
+  // exists to hold.
+  const shares = (edgeCost: number, total: number) => ({
+    edgeCostPerPiece: chargePieces > 0 ? money(edgeCost / chargePieces) : 0,
+    totalPerPiece: qty > 0 ? money(total / qty) : 0,
+  });
+
+  // The sink is FIXED and comes only from the card. It is never rated by the
+  // row, never by the mode, and the owner has said so twice.
+  const sinkCost = card ? money(sinkPieces * card.sinkPerPiece) : 0;
+
+  const base = {
+    sinkPieces, edgePieces, chargePieces, fabricationPieces, edgeFace, faceEdges, faceCounts,
+    // ALWAYS REPORTED NOW, not only when a pair rate is set: the split is what
+    // the arithmetic actually uses, so hiding it would leave a screen unable to
+    // explain a figure it is showing.
+    pairedFeet, singleFeet, topOnlyFeet, bottomOnlyFeet, sideBandFeet,
+    pairRate: usePair,
+    rateTop, rateBottom, rateSide, pairEffectiveRate,
+    sinkCost, rate: card, pricingMode: mode, edgeRate, rateSource,
+    // scripts/0071 — the parts the charge was computed from. refuse() blanks
+    // them for the same reason it blanks the feet.
+    edgeLines,
+  };
+
+  // ── THE PHONE-CALL NUMBER WINS, AND IT WINS FIRST ────────────────────────
+  //
+  // "Always have a custom free field for total so when system feels heavy they
+  // call and enter the amount." Checked before every refusal below, because the
+  // refusals are exactly when somebody picks up the phone: an L-shaped outline,
+  // a blank width, a thickness nobody has a rate for. A figure a human agreed
+  // beats a gap.
+  //
+  // The SINK is untouched by it — fixed, per piece, and needing no rescue.
+  const override = usableRate(input.edgeTotalOverride);
+  if (override !== null) {
     return {
-      // ZERO FEET, not the rectangle's answer. A running-foot figure on a row
-      // that cannot be measured is the wrong number wearing the right units,
-      // and it would be summed into the project total by sumPricing.
-      runningFeet: 0, edgeCost: 0, sinkPieces, edgePieces, fabricationPieces,
-      edgeFace, sinkCost: sinkOnly, total: sinkOnly, rate,
-      unpriced: true, unpricedReason: "SHAPE",
+      ...base,
+      runningFeet: feet, edgeCost: override, total: money(override + sinkCost),
+      ...shares(override, money(override + sinkCost)),
+      edgeOverridden: true, calculatedEdgeCost,
+      unpriced: false, unpricedReason: null,
     };
   }
 
-  // THE ROW NAMES EDGES THIS SHAPE DOES NOT HAVE.
+  // ── AND OTHERWISE, THE FOUR WAYS A ROW CANNOT BE PRICED ──────────────────
   //
-  // A circle carrying "front,back,left,right", or a rectangle carrying "round".
-  // hasEdgeWork answers each shape in its own vocabulary and says FALSE to both,
-  // so edgePieces came out 0 and the row priced at ₹0 with `unpriced: false` —
-  // four edges marked on the order, nothing charged, and no flag anywhere. The
-  // row plainly asked for edge work; what it did not do is say which edges of
-  // the shape it claims to be. See edgeVocabularyMismatch in shape.ts.
+  // Each returns ZERO FEET, because a measurement that is not charged for is
+  // not a measurement — it would be summed into the project total by sumPricing
+  // and the feet column would stop reconciling with the money beside it.
   //
-  // The sink is still owed, and the feet are zero, for the same reasons as the
-  // branch above.
-  if (edgeVocabularyMismatch(shape, input.edges)) {
-    const sinkOnly = rate ? money(sinkPieces * rate.sinkPerPiece) : 0;
+  // THE SINK IS OWED IN EVERY ONE OF THEM. It is a flat per-piece rate with
+  // nothing to do with the outline, the size or the edge rate; withholding it
+  // turns one unknown into two, which is a bug this file has already had once.
+  const refuse = (reason: UnpricedReason): RowPricing => ({
+    ...base,
+    // pairedFeet and singleFeet go to zero WITH runningFeet, for the same
+    // reason: a measurement that is not charged for is not a measurement, and
+    // a breakdown that still shows 280 ft beside a charge of nothing is a
+    // reconciliation somebody will waste an afternoon on.
+    runningFeet: 0, pairedFeet: 0, singleFeet: 0,
+    topOnlyFeet: 0, bottomOnlyFeet: 0, sideBandFeet: 0,
+    edgeCost: 0, total: sinkCost,
+    // The breakdown goes with the feet. A row showing "280 ft of top at Rs15"
+    // beside a charge of nothing is the same reconciliation trap, itemised.
+    edgeLines: [],
+    ...shares(0, sinkCost),
+    edgeOverridden: false, calculatedEdgeCost: 0,
+    unpriced: true, unpricedReason: reason,
+  });
+
+  // An L, a curve or a custom outline. FIRST, because there is no point asking
+  // whether the width is filled in when nothing here knows which edges it
+  // belongs to.
+  if (isUnpriceableShape(input.shape)) return refuse("SHAPE");
+
+  // A face names sides the shape does not have — a circle marked front/back, a
+  // rectangle marked round. The two halves of the row contradict each other.
+  if (faceEdgeVocabularyMismatch(input.shape, faceEdges)) return refuse("EDGES");
+
+  // Edges marked, and the dimension they run along is missing.
+  if (faceEdgeDimensionsMissing(input.shape, dims, faceEdges)) return refuse("DIMENSIONS");
+
+  // NO RATE AT ALL, and this is the one that changed shape in scripts/0067.
+  //
+  // It used to be "the thickness is not on the card", full stop. Now a row can
+  // carry its OWN rate, so an off-card thickness with an agreed figure prices
+  // perfectly well and only the sink is affected. The refusal is therefore
+  // about the RATE being missing, not the thickness being odd — and it fires
+  // only when the row actually has edge work to charge for.
+  //
+  // ── AND scripts/0070 LEFT THIS CHECK BEHIND ──────────────────────────────
+  //
+  // It asked `edgeRate === null`, which is the ROW's rate falling back to the
+  // card. 0070 then gave every FACE its own rate — and this line never learned
+  // about them. So a row priced entirely per face, with no row-level figure and
+  // no card to fall back on, was refused outright even though every face it
+  // uses carries a number somebody typed.
+  //
+  // "No card to fall back on" is not an edge case: a row is off the card
+  // whenever it is NOT ON A SLAB YET, because the thickness comes from the
+  // stone. Found on PO 1612104578, where the owner's spec prices ten rows per
+  // face — Rs10 top, Rs10 bottom, Rs25 side band. On a 2 cm slab they came to
+  // Rs3,58,497.92. Off stone, every one reported ZERO and "not priced", so
+  // Rs2,78,497.92 of agreed hand polish vanished from the board until somebody
+  // happened to allocate the row.
+  //
+  // So the question is asked per face: is there a rate for the work this row
+  // actually has? All of them missing is still a refusal — which is exactly
+  // today's behaviour for a row nobody has priced, so nothing already quoted
+  // moves. SOME missing pays what is known and says so, below.
+  const faceHasWork: Record<PolishFace, boolean> = {
+    top: faceCounts.top > 0, bottom: faceCounts.bottom > 0, side: faceCounts.side > 0,
+  };
+  const faceRateUsed: Record<PolishFace, number | null> = {
+    top: rateTop, bottom: rateBottom, side: rateSide,
+  };
+  const facesSelected = POLISH_FACES.filter((f) => faceHasWork[f]);
+  const facesRated = facesSelected.filter((f) => faceRateUsed[f] !== null);
+
+  if (perFoot && edgePieces > 0 && facesRated.length === 0) return refuse("THICKNESS");
+
+  // PER PIECE OR LUMP SUM WITH NO RATE TYPED.
+  //
+  // Neither can fall back to the card, so an untyped rate leaves nothing to
+  // charge with. It REFUSES rather than returning zero: somebody deliberately
+  // chose a mode here, which is a half-finished answer, and a half-finished
+  // answer must look different from "this row is free".
+  if (!perFoot && rowRate === null) return refuse("RATE");
+
+  // A ROW WITH SINKS ON STONE THE CARD DOES NOT COVER.
+  //
+  // The sink cannot be priced — it is a card rate and there is no card. But the
+  // EDGE can, if the row carries its own figure, and withholding it would repeat
+  // the mistake the DIMENSIONS branch had to be fixed for: turning one unknown
+  // into two, and taking money off the invoice that nobody was unsure about.
+  //
+  // So this pays the edge, zeroes the sink, and says THICKNESS out loud.
+  if (sinkPieces > 0 && !card) {
     return {
-      runningFeet: 0, edgeCost: 0, sinkPieces, edgePieces, fabricationPieces,
-      edgeFace, sinkCost: sinkOnly, total: sinkOnly, rate,
-      unpriced: true, unpricedReason: "EDGES",
+      ...base,
+      runningFeet: feet, edgeCost: calculatedEdgeCost,
+      total: calculatedEdgeCost,           // sinkCost is 0 with no card
+      ...shares(calculatedEdgeCost, calculatedEdgeCost),
+      edgeOverridden: false, calculatedEdgeCost,
+      unpriced: true, unpricedReason: "THICKNESS",
     };
   }
 
-  // EDGES MARKED, BUT NOTHING TO MEASURE THEM ALONG.
+  // SOME FACES RATED AND SOME NOT — pay what is known, flag the rest.
   //
-  // A row with `left` polished and a NULL width returned 0 ft, ₹0 and
-  // `unpriced: false` — indistinguishable on every screen from a customer who
-  // asked for raw edges. One is an answer, the other is a hole in the order, and
-  // the invoice was short either way. Now it says which.
+  // The same shape as the sink branch above and for the same reason: turning
+  // one unknown into two takes money off the invoice that nobody was unsure
+  // about. A row with Rs10 on the top and nothing on the side band is worth the
+  // top; the band contributes zero and the screen must say why rather than
+  // presenting the short figure as final.
   //
-  // Checked BEFORE the rate, because a row can have both problems and the
-  // missing dimension is the one somebody can actually go and fix.
-  if (edgeDimensionsMissing(shape, { lengthIn: input.lengthIn, widthIn: input.widthIn }, input.edges)) {
-    // THE SINK IS STILL OWED, and zeroing it here was a bug that cost real
-    // money. A sink is charged PER PIECE at a flat rate — Rs230 or Rs300 — and
-    // has nothing whatever to do with the row's length or width. A row with 30
-    // sinks and a blank width used to report a total of Rs0 rather than Rs6,900,
-    // and perPieceCharge then gave those 30 packed pieces a Rs0 share forever.
-    //
-    // Only the EDGE half is unknown, so only the edge half is withheld. The row
-    // is still flagged unpriced so nobody reads the total as complete.
-    const sinkOnly = rate ? money(sinkPieces * rate.sinkPerPiece) : 0;
+  // Only reachable with NO CARD (an unknown or off-card thickness), because a
+  // card rate is the fallback for every face — so on any row whose stone is
+  // known this cannot fire, and nothing already quoted moves.
+  if (perFoot && edgePieces > 0 && facesRated.length < facesSelected.length) {
     return {
-      // ZERO FEET, like the SHAPE branch above — and this line used to report
-      // `feet`, the partial measurement taken along whichever dimension the row
-      // DOES have. It read as a real figure and sumPricing added it to the
-      // project total: a 60-piece row with a blank width contributed 280 ft to
-      // a column whose money said 505 ft, so the CEO's "run ft" tile and its
-      // revenue tile stopped reconciling by 55% with nothing on screen to say
-      // why. A measurement that is not charged for is not a measurement.
-      runningFeet: 0, edgeCost: 0, sinkPieces, edgePieces, fabricationPieces,
-      edgeFace, sinkCost: sinkOnly, total: sinkOnly, rate,
-      unpriced: true, unpricedReason: "DIMENSIONS",
+      ...base,
+      runningFeet: feet,
+      edgeCost: calculatedEdgeCost,
+      total: money(calculatedEdgeCost + sinkCost),
+      ...shares(calculatedEdgeCost, money(calculatedEdgeCost + sinkCost)),
+      edgeOverridden: false,
+      calculatedEdgeCost,
+      unpriced: true,
+      unpricedReason: "THICKNESS",
     };
   }
 
-  if (!rate) {
-    return {
-      runningFeet: feet, edgeCost: 0, sinkPieces, edgePieces, fabricationPieces,
-      edgeFace, sinkCost: 0, total: 0, rate: null, unpriced: true, unpricedReason: "THICKNESS",
-    };
-  }
-  const edgeCost = money(feet * rate.edgePerFoot);
-  const sinkCost = money(sinkPieces * rate.sinkPerPiece);
   return {
+    ...base,
     runningFeet: feet,
-    edgeCost,
-    sinkPieces,
-    edgePieces,
-    fabricationPieces,
-    edgeFace,
-    sinkCost,
-    total: money(edgeCost + sinkCost),
-    rate,
+    edgeCost: calculatedEdgeCost,
+    total: money(calculatedEdgeCost + sinkCost),
+    ...shares(calculatedEdgeCost, money(calculatedEdgeCost + sinkCost)),
+    edgeOverridden: false,
+    calculatedEdgeCost,
     unpriced: false,
     unpricedReason: null,
   };
@@ -512,6 +1114,10 @@ export interface PricingTotals {
   unpricedDimensions: number;
   unpricedShape: number;
   unpricedEdges: number;
+  /** Rows whose hand-polish charge is a figure somebody typed rather than one
+   *  this module worked out. Surfaced so a project total that is half manual
+   *  says so on the screen instead of looking fully calculated. */
+  overriddenRows: number;
 }
 
 /** Sum a set of priced rows. Money is added at 2dp and rounded once at the
@@ -530,6 +1136,7 @@ export function sumPricing(rows: RowPricing[]): PricingTotals {
     unpricedDimensions: list.filter((r) => r.unpricedReason === "DIMENSIONS").length,
     unpricedShape: list.filter((r) => r.unpricedReason === "SHAPE").length,
     unpricedEdges: list.filter((r) => r.unpricedReason === "EDGES").length,
+    overriddenRows: list.filter((r) => r.edgeOverridden).length,
   };
 }
 

@@ -124,6 +124,10 @@ interface BoardSlabRow {
   description: string | null;
   lengthIn: number | null;
   widthIn: number | null;
+  /** scripts/0068 — fab_requirement.dim_unit: 'CM', or NULL/'IN' for the inches
+   *  every US order is written in. DISPLAY ONLY — lengthIn/widthIn above stay
+   *  inches, because the running feet and the square feet are built on them. */
+  dimUnit: string | null;
   orderedQuantity: number;
   /** fab_requirement.sink_quantity — the ORDER ROW's decision, carried on the
    *  slab view so step 3 sits under step 2. NULL = not looked at yet. */
@@ -135,8 +139,32 @@ interface BoardSlabRow {
   /** RECTANGLE / CIRCLE / OVAL. Null is a rectangle. Decides whether the picker
    *  offers four sides or one ring, and which perimeter the feet run along. */
   shapeType: string | null;
-  /** TOP / BOTTOM / BOTH. Null is TOP; BOTH doubles the feet. */
+  /** TOP / BOTTOM / BOTH. Null is TOP; BOTH doubles the feet.
+   *  SUPERSEDED by the three faces below on any row that has them. */
   edgeFaces: string | null;
+  /** scripts/0067 — the three-face specification (top / bottom / side, each
+   *  with its own sides) and this row's own rate, mode and agreed total. All
+   *  null on a row the new controls have not touched, in which case the legacy
+   *  pair above decides and the row prices exactly as it does today. */
+  edgesTop: string | null;
+  edgesBottom: string | null;
+  edgesSide: string | null;
+  edgeRate: number | null;
+  /** scripts/0069 — Rs per foot for a side done on BOTH faces. NULL = no
+   *  discount, the two faces are summed.
+   *
+   *  scripts/0070 — each face's OWN Rs per foot. NULL falls back to edgeRate
+   *  and then to the card.
+   *
+   *  ALL FOUR WERE MISSING FROM THIS TYPE, and the mapping below could not pass
+   *  what it did not know about — the second half of "on refresh the pricing
+   *  goes back to zero". The route sends them now; this carries them. */
+  pairRate: number | null;
+  edgeRateTop: number | null;
+  edgeRateBottom: number | null;
+  edgeRateSide: number | null;
+  pricingMode: string | null;
+  edgeTotalOverride: number | null;
   allocatedQuantity: number;
 }
 interface BoardSlab {
@@ -461,25 +489,71 @@ function SlabCard({
   // what stone it will be cut from until it is on one, and the rate card is
   // keyed on the stone (2 cm ₹15/ft, 3 cm ₹20/ft). Folded the same way, for the
   // same reason: one card per requirement, never two.
+  //
+  // ── AND PRICED OVER WHAT IS ON *THIS* SLAB ───────────────────────────────
+  //
+  // The owner: "the price there should be of the quantity, not of the full row.
+  // Only in the PO should we see the row with its full price — because some
+  // pieces, if the price is different, or sent to hand polish from the machine
+  // late, then prices are different. So just show the price of the quantity we
+  // are working on."
+  //
+  // This card used to price the ORDERED quantity. Row I of PI1200 is 150 pieces
+  // with 42 on slab 146801 and 42 on 146802, so the identical card showed
+  // ₹1,772.50 for 150 pieces under BOTH slabs — the same money twice, and
+  // neither figure was the stone the supervisor was standing at. Adding the
+  // slabs up double-counted the row.
+  //
+  // A requirement can hold MORE THAN ONE allocation to the same slab (allocate,
+  // release part, add some back), so the count is SUMMED per requirement rather
+  // than taken from the first row — the fold below already collapses the cards.
+  const onThisSlabByRequirement = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const row of slab.rows) {
+      m.set(row.requirementId, (m.get(row.requirementId) ?? 0) + row.allocatedQuantity);
+    }
+    return m;
+  }, [slab.rows]);
+
   const edgeRows = useMemo<EdgePickerRow[]>(() => {
     const byRequirement = new Map<string, EdgePickerRow>();
     for (const row of slab.rows) {
       if (byRequirement.has(row.requirementId)) continue;
       byRequirement.set(row.requirementId, {
+        /** THE PIECES OF THIS ROW ON THIS SLAB — what the card charges for.
+         *  The ordered total travels beside it, for context only. */
+        slabQuantity: onThisSlabByRequirement.get(row.requirementId) ?? 0,
         requirementId: row.requirementId,
         pieceLabel: row.pieceLabel,
         lengthIn: row.lengthIn,
         widthIn: row.widthIn,
+        // scripts/0068 — the unit the CUSTOMER ordered in, so the drawing this
+        // supervisor clicks shows the size his purchase order shows.
+        dimUnit: row.dimUnit ?? null,
         orderedQuantity: row.orderedQuantity,
         sinkQuantity: row.sinkQuantity,
         finishedEdges: row.finishedEdges,
         thicknessMm: slab.thicknessMm,
         shapeType: row.shapeType,
         edgeFaces: row.edgeFaces,
+        edgesTop: row.edgesTop,
+        edgesBottom: row.edgesBottom,
+        edgesSide: row.edgesSide,
+        edgeRate: row.edgeRate,
+        // scripts/0069 / 0070 — the pair rate and the three per-face rates.
+        // Without these the card seeded its rate boxes from nothing on every
+        // read, so a rate saved a second ago came back empty and the row
+        // re-priced itself off the rate card.
+        pairRate: row.pairRate,
+        edgeRateTop: row.edgeRateTop,
+        edgeRateBottom: row.edgeRateBottom,
+        edgeRateSide: row.edgeRateSide,
+        pricingMode: row.pricingMode,
+        edgeTotalOverride: row.edgeTotalOverride,
       });
     }
     return [...byRequirement.values()];
-  }, [slab.rows, slab.thicknessMm]);
+  }, [slab.rows, slab.thicknessMm, onThisSlabByRequirement]);
 
   const picked = outstanding.find(r => r.id === pickedId) ?? null;
   const wanted = Number(qty);

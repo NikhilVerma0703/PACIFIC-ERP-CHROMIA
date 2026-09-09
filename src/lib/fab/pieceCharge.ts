@@ -38,8 +38,9 @@
 // which are themselves pure. Explicit .ts extensions, as the house rule
 // requires: node's strict ESM resolver does not add one.
 
-import { priceRow, type RowPricingInput, type UnpricedReason } from "./pricing.ts";
+import { priceRow, parsePricingMode, type RowPricingInput, type UnpricedReason } from "./pricing.ts";
 import { perPieceCharge } from "./periodReport.ts";
+import { type FaceEdges } from "./shape.ts";
 
 /** What ONE piece of a row is worth, split by the two jobs. */
 export interface RowShares {
@@ -91,8 +92,19 @@ export interface RowShares {
 export function rowShares(input: RowPricingInput): RowShares {
   const priced = priceRow(input);
   return {
-    ...perPieceCharge(priced.edgeCost, priced.sinkCost, priced.edgePieces, priced.sinkPieces),
-    rowHasEdgeWork: priced.edgePieces > 0,
+    // chargePieces, NOT edgePieces — THE DIVISOR IS WHAT THE MONEY IS SPREAD
+    // OVER, and on a per-piece or lump-sum row those are not the same count.
+    //
+    // A row of 35 sent to the hand bench whole at Rs150 each has NO ticked
+    // edges, so edgePieces is 0 while edgeCost is Rs5,250. Dividing by 0 hits
+    // perPieceCharge's `k > 0 ? cost/k : 0` guard and hands every piece a share
+    // of ZERO — and stampPieceCharges then freezes that zero onto each piece
+    // permanently, because charged_at is written once and never rewritten.
+    // The row total would still read Rs5,250 and every piece under it Rs0.
+    ...perPieceCharge(priced.edgeCost, priced.sinkCost, priced.chargePieces, priced.sinkPieces),
+    // "Does this row carry hand work that is charged for" — again the charged
+    // count, so a fully-hand-fabricated row is not reported as having none.
+    rowHasEdgeWork: priced.chargePieces > 0,
     unpriced: priced.unpriced,
     unpricedReason: priced.unpricedReason,
   };
@@ -166,4 +178,196 @@ export function frozenCharge(row: {
     return Number.isFinite(n) ? n : 0;
   };
   return { edge: num(row.charged_edge), sink: num(row.charged_sink) };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  A PIECE PULLED OFF THE MACHINE AND GIVEN TO THE HAND BENCH
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The owner: "already decided is also sent to hand later if machine doesn't
+// support or busy or breakdown." And on what happens then: "it need to ask the
+// cost on how much per feet, which all the side — top or bottom or side or any
+// combo — and choose the number of side for top, no of side for bottom, and no
+// of side for side. And this can be per piece."
+//
+// ─────────────────────── THIS BREAKS THE HOMOGENEOUS-ROW RULE, DELIBERATELY ──
+// Everything else in this module rests on "a row is homogeneous — if half the
+// pieces need something different, SPLIT the row". That rule is right for the
+// ORDER, which is a decision made once at a desk with time to think.
+//
+// A machine breaking at nine at night is not that. It takes the pieces that
+// happen to be in front of it, mid-row, and there is nobody to renumber an
+// order around it. So the reassignment is recorded PER PIECE, with its own
+// specification and its own rate, and it OVERRIDES its row's edge charge for
+// that piece only. The row keeps its price for every piece that never moved.
+//
+// The owner asked for it in exactly those words, and it is the one place the
+// group rule does not hold.
+//
+// ─────────────────────── PRICED AS A ROW OF ONE ─────────────────────────────
+// Not by a second copy of the arithmetic. handPieceCharge builds a
+// RowPricingInput with quantity 1 and hands it to priceRow, so the piece gets
+// the same three-face summing, the same four refusals, the same override rescue
+// and the same rate resolution as anything else. A separate code path here
+// would be a second answer to one question, and this file exists because that
+// already happened once.
+//
+// THE SINK IS NOT PART OF IT. A sink is cut on the saw at a fixed per-piece
+// rate and has nothing to do with who polished the edge; the piece keeps its
+// row's sink share exactly as before.
+
+
+/** What a piece sent to the hand bench carries of its own. Every field is
+ *  nullable because a piece that was never reassigned has none of them. */
+export interface HandSpec {
+  /** fab_piece.polish_by_hand — the flag that makes the rest of this apply. */
+  byHand: boolean;
+  /** scripts/0069 — fab_piece.hand_pair_rate. Rs per foot for a side done on
+   *  BOTH faces at the bench. NULL = no discount, the faces are summed. */
+  pairRate?: number | null;
+  /** scripts/0070 — fab_piece.hand_rate_top / _bottom / _side. Each NULL falls
+   *  back to `rate`, so an untouched spec prices exactly as before. */
+  rateTop?: number | null;
+  rateBottom?: number | null;
+  rateSide?: number | null;
+  /** Its own three faces. Absent means "sent to hand but nobody specified
+   *  what", which is a hole and is reported, not guessed at. */
+  faceEdges?: FaceEdges | null;
+  /** Its own rate, in the unit its mode implies. NULL falls back to the card. */
+  rate?: number | null;
+  pricingMode?: unknown;
+  /** The phone-call number for this one piece. */
+  totalOverride?: number | null;
+}
+
+export interface PieceDimsAndStone {
+  lengthIn: number | null | undefined;
+  widthIn: number | null | undefined;
+  thicknessMm: number | null | undefined;
+  shape?: unknown;
+}
+
+/**
+ * WHAT ONE HAND-REASSIGNED PIECE'S EDGE WORK IS WORTH.
+ *
+ * Returns null when the piece was never sent to hand, so the caller falls
+ * through to its row's share — `handPieceCharge(...) ?? rowShare` reads as the
+ * rule it is.
+ *
+ * A piece that WAS sent to hand but carries no specification returns a charge
+ * of zero flagged unpriced, rather than nothing: it is on the bench, somebody
+ * is polishing it, and the figure is missing. That is a question for a screen
+ * to ask, not a gap to swallow.
+ */
+export function handPieceCharge(
+  spec: HandSpec | null | undefined,
+  piece: PieceDimsAndStone,
+): { edge: number; unpriced: boolean; unpricedReason: string | null; runningFeet: number } | null {
+  if (!spec || !spec.byHand) return null;
+
+  // SENT TO HAND, AND NOBODY SAID WHAT FOR.
+  //
+  // Somebody is standing at a bench polishing this piece right now and the
+  // specification is empty. Falling through to priceRow would report a clean
+  // Rs0 with unpriced:false — the piece would look like one nobody was charging
+  // for, which is exactly what it is not. The hole is named instead, and the
+  // screen that sent it to hand is the screen that has to come back and fill it.
+  const hasSpec =
+    !!spec.faceEdges && Object.keys(spec.faceEdges).length > 0;
+  const hasFigure =
+    spec.totalOverride !== null && spec.totalOverride !== undefined;
+  // A PIECE DONE WHOLE BY HAND HAS NO EDGES TO NAME — it has a price.
+  //
+  // The owner: "for some peice group we give to the hand fabricated fully for
+  // peice rate." There is nothing to tick on the drawing for that piece, so
+  // requiring faces made his actual case impossible to enter. A per-piece or
+  // lump-sum rate IS a complete answer; only RUNNING_FOOT needs to know which
+  // edges, because only feet are measured along them.
+  const mode = parsePricingMode(spec.pricingMode);
+  const hasPieceRate =
+    mode !== "RUNNING_FOOT" && spec.rate !== null && spec.rate !== undefined;
+  if (!hasSpec && !hasFigure && !hasPieceRate) {
+    return { edge: 0, unpriced: true, unpricedReason: "HAND_SPEC", runningFeet: 0 };
+  }
+
+  const priced = priceRow({
+    lengthIn: piece.lengthIn,
+    widthIn: piece.widthIn,
+    quantity: 1,
+    sinkQuantity: 0,               // the sink is the row's, never the bench's
+    thicknessMm: piece.thicknessMm,
+    shape: piece.shape,
+    faceEdges: spec.faceEdges ?? null,
+    // scripts/0069 — the bench is quoted the same way the row is: a piece
+    // flipped once is a piece flipped once, whoever is holding it.
+    pairRate: spec.pairRate ?? null,
+    // scripts/0070 — and each face at its own rate, same as the row.
+    rateTop: spec.rateTop ?? null,
+    rateBottom: spec.rateBottom ?? null,
+    rateSide: spec.rateSide ?? null,
+    rate: spec.rate ?? null,
+    pricingMode: spec.pricingMode,
+    edgeTotalOverride: spec.totalOverride ?? null,
+  });
+
+  return {
+    edge: priced.edgeCost,
+    unpriced: priced.unpriced,
+    unpricedReason: priced.unpricedReason,
+    runningFeet: priced.runningFeet,
+  };
+}
+
+/**
+ * WHAT ONE PACKED PIECE EARNS, WITH THE HAND BENCH TAKEN INTO ACCOUNT.
+ *
+ * The same two questions pieceCharge asks, plus the one the reassignment adds:
+ *
+ *   EDGE  the piece's OWN hand charge if it was sent to hand; otherwise its
+ *         row's share, as before.
+ *   SINK  always the row's share. Untouched by any of this.
+ */
+export function pieceChargeWithHand(
+  shares: RowShares | null | undefined,
+  hasSink: boolean,
+  spec: HandSpec | null | undefined,
+  piece: PieceDimsAndStone,
+): PieceCharge & { fromHandBench: boolean; unpriced: boolean } {
+  const rowShare = pieceCharge(shares, hasSink);
+  const hand = handPieceCharge(spec, piece);
+  if (!hand) {
+    return { ...rowShare, fromHandBench: false, unpriced: !!shares?.unpriced };
+  }
+  return {
+    edge: hand.edge,
+    sink: rowShare.sink,
+    fromHandBench: true,
+    unpriced: hand.unpriced,
+  };
+}
+
+/** The specification to PREFILL the next piece of this row with.
+ *
+ *  The owner: "if in same row again a piece is sent like that, same applicable
+ *  and prefilled for everything." So the first piece sent to hand on a row sets
+ *  the pattern and every one after it opens already filled — the machine that
+ *  broke is still broken and the next piece needs the same treatment.
+ *
+ *  The flag itself is NOT carried, only the specification: prefilling `byHand`
+ *  would mean opening the dialog had already made the decision. */
+export function prefillFrom(spec: HandSpec | null | undefined): Omit<HandSpec, "byHand"> | null {
+  if (!spec) return null;
+  return {
+    faceEdges: spec.faceEdges ?? null,
+    // The pair rate and the per-face rates travel with the rate, for the same
+    // reason: each is Rs per foot and scales to whatever the next piece is.
+    // Only the agreed TOTAL is dropped.
+    pairRate: spec.pairRate ?? null,
+    rateTop: spec.rateTop ?? null,
+    rateBottom: spec.rateBottom ?? null,
+    rateSide: spec.rateSide ?? null,
+    rate: spec.rate ?? null,
+    pricingMode: spec.pricingMode,
+    totalOverride: null,   // never carried: a lump sum is for ONE piece, by definition
+  };
 }

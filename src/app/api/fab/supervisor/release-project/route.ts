@@ -5,7 +5,7 @@ import { buildReleasePlan, describeUnresolvedRequirements } from "@/lib/fab/rele
 import { deriveRoutingFlags, resolveSinkQuantity } from "@/lib/fab/requirement-derive";
 import { planPieceOperations } from "@/lib/fab/pieceOperations";
 import { parseEdges } from "@/lib/fab/pricing";
-import { hasEdgeWork } from "@/lib/fab/shape";
+import { rowHasHandPolish } from "@/lib/fab/shape";
 
 // Release turns a planned project into physical work: one fab_piece per ordered
 // piece, the slab it comes off, and its route sheet.
@@ -173,11 +173,30 @@ export async function POST(req: Request) {
     // The owner: "any pieces can be assigned the edge hand polish or not."
     // Under the group rule a row is homogeneous — a row where only some pieces
     // want it is SPLIT into two rows — so every piece of this row gets the same
-    // answer, and the answer is whether finished_edges holds anything.
+    // answer.
     //
     // Not the same question as the sink, which really is per piece: sink_quantity
     // is a count and the first N pieces carry it.
-    const hasEdgePolish = hasEdgeWork(r.shapeType, parseEdges(r.finishedEdges));
+    //
+    // -- AND IT ASKED THE WRONG COLUMN -------------------------------------
+    //
+    // This read `finished_edges` ALONE, which is the pre-0067 selection. Every
+    // row specified with the three-face controls leaves that column NULL and
+    // writes edges_top / edges_bottom / edges_side instead, so hasEdgePolish
+    // came back FALSE on exactly the rows somebody had just finished pricing.
+    //
+    // The consequence was not a wrong number, it was NO WORK ORDER: the piece
+    // got `fabricationRequired: false`, took the plain route sheet (cut,
+    // machine polish, pack) and never appeared in the hand bench queue at all.
+    // On PO 1612104578 that is Rs3,58,497.92 of hand polish invoiced and never
+    // scheduled -- the same failure the comment below says the old
+    // `fabricationRequired = sinkRequired` rule caused, through another door.
+    //
+    // THE FALLBACK IS THE PRICING ENGINE'S, EXACTLY. faceEdgesUnset decides
+    // which specification a row is on and faceEdgesFromLegacy reads the old
+    // pair when there is no new one, so this asks the same question priceRow
+    // answers -- and a row cannot be charged for work it is never sent to do.
+    const hasEdgePolish = rowHasHandPolish(r);
 
     // THREE ROUTE SHEETS NOW, not two. The third is the row that goes to the
     // hand bench for its EDGES with no sink to cut — impossible under the old

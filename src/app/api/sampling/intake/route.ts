@@ -56,6 +56,12 @@ import { parseSampleSize, sampleSizeLabel } from "@/lib/sampling/size";
 import { checkIntake } from "@/lib/sampling/lifecycle";
 import { isIntakeSource } from "@/lib/sampling/fabIntake";
 import { markQcSlabSample } from "@/lib/fab/markQcSlabSample";
+// THE OFFCUT DRAW-DOWN. decideOffcutTake is the one place that answers "may he
+// take this, and what is left" — the offcut screen calls it too, so the screen
+// cannot offer a take this route refuses.
+import { decideOffcutTake } from "@/lib/sampling/slabOffcut";
+import { sampledAreaForSlab } from "@/lib/fab/sampledArea";
+import { sqftFromInches, sqftFromSqMm } from "@/lib/fab/slabLoss";
 import { FINISHES, canonicalFinish } from "@/lib/catalogue/colours";
 
 export const dynamic = "force-dynamic";
@@ -232,6 +238,11 @@ export async function POST(req: NextRequest) {
   let sizeId: string;
   let sizeLabel: string;
   let sizeCreated = false;
+  /** THE RESOLVED SIZE IN INCHES, kept out here so the offcut draw-down below
+   *  can measure the take. Both branches set it; it is the same size the shelf
+   *  is credited with, so the area checked is the area booked. */
+  let takeLengthIn = 0;
+  let takeWidthIn = 0;
 
   if (pickedSizeId) {
     const existing = await prisma.samplingSize.findUnique({
@@ -240,6 +251,8 @@ export async function POST(req: NextRequest) {
     });
     if (!existing) return bad("That size is no longer in the list — reload the page.");
     sizeId = existing.id;
+    takeLengthIn = Number(existing.lengthIn);
+    takeWidthIn = Number(existing.widthIn);
     sizeLabel = sampleSizeLabel({
       lengthIn: Number(existing.lengthIn),
       widthIn: Number(existing.widthIn),
@@ -254,6 +267,8 @@ export async function POST(req: NextRequest) {
     // VERBATIM. See the note at the head of this file.
     if (!parsed.ok) return bad(parsed.reason);
     const { lengthIn, widthIn, thicknessMm } = parsed.size;
+    takeLengthIn = lengthIn;
+    takeWidthIn = widthIn;
     sizeLabel = sampleSizeLabel(parsed.size);
 
     const key = { lengthIn, widthIn, thicknessMm };
@@ -282,6 +297,72 @@ export async function POST(req: NextRequest) {
     }
     if (!row) return Response.json({ error: "Could not save that size — try again." }, { status: 500 });
     sizeId = row.id;
+  }
+
+  // ---- CAN THIS SLAB ACTUALLY GIVE IT? — the offcut draw-down ------------
+  //
+  // The owner: "he should see slab wastage on used slab, then he can click the
+  // slab and enter the size and quantity, then take from that until it empties."
+  //
+  // THIS CHECK DID NOT EXIST. The source slab was verified to EXIST (above) and
+  // then whatever quantity arrived was written, so forty 12 x 12 pieces could be
+  // booked against a slab with three square feet left. computeSlabLoss then
+  // reported the stone consumed twice over and the slab's wastage went negative
+  // — a figure that outlives the mistake, exactly what SlabLossResult warns
+  // about for over-committed allocations.
+  //
+  // Only applies when the stock came OFF A SLAB. Sample stock also arrives from
+  // a QC slab or a residual bag with no fab_slab behind it, and those have no
+  // area to draw against.
+  //
+  // ONE MODULE DECIDES — lib/sampling/slabOffcut.ts — and the offcut screen
+  // calls the same function to grey the slab and show what is left, so the
+  // screen cannot offer a take this route will refuse.
+  if (sourceSlabId) {
+    const slab = await prisma.fabSlab.findUnique({
+      where: { id: sourceSlabId },
+      select: {
+        length: true, width: true,
+        // The purchase order's claim on this stone. Its own pieces, in INCHES,
+        // against the slab's MILLIMETRES — sqftFromInches and sqftFromSqMm are
+        // the one pair of conversions allowed to put them in the same sum.
+        requirementAllocations: {
+          select: {
+            allocatedQuantity: true,
+            requirement: { select: { length: true, width: true } },
+          },
+        },
+      },
+    });
+    if (!slab) return bad("That slab is no longer on the board — reload and try again.");
+
+    const slabAreaSqft = slab.length && slab.width
+      ? sqftFromSqMm(slab.length * slab.width)
+      : 0;
+    const usedAreaSqft = slab.requirementAllocations.reduce(
+      (sum, a) => sum + sqftFromInches(
+        Number(a.requirement?.length ?? 0),
+        Number(a.requirement?.width ?? 0),
+      ) * Number(a.allocatedQuantity ?? 0),
+      0,
+    );
+    // What has ALREADY gone as samples. Read through the same function the
+    // fabrication board reads, so "already taken" means one thing.
+    const alreadySampled = await sampledAreaForSlab(sourceSlabId);
+
+    const verdict = decideOffcutTake(
+      { slabAreaSqft, usedAreaSqft, sampledAreaSqft: alreadySampled },
+      [{ lengthIn: takeLengthIn, widthIn: takeWidthIn, quantity }],
+    );
+    // 409, not 400: the request was well formed and was true when he read the
+    // screen. Somebody else took the stone, or the supervisor allocated more of
+    // it. The remedy is to look again, which is what a conflict means.
+    if (!verdict.ok) {
+      return Response.json(
+        { error: verdict.error, reason: verdict.reason, availableSqft: verdict.availableSqft },
+        { status: 409 },
+      );
+    }
   }
 
   // ---- the shelf and the ledger, together ----

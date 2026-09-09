@@ -121,6 +121,9 @@ interface StageCounts { cutting: number; polishing: number; sinkCutting: number;
 interface StageDayRow extends StageCounts { date: string }
 /** Ordered rows with everything lib/fab/pricing.ts needs — see the CEO route. */
 interface PricingRowDto {
+  /** fab_requirement.id — the per-slab panel counts distinct rows per slab.
+   *  The route has always sent it; this DTO dropped it. */
+  requirementId: string;
   projectCode: string; rowLetter: string | null; pieceLabel: string | null;
   lengthIn: number | null; widthIn: number | null; quantity: number;
   sinkQuantity: number | null; thicknessMm: number | null; finishedEdges: string | null;
@@ -130,6 +133,24 @@ interface PricingRowDto {
   /** TOP / BOTTOM / BOTH. Null is TOP; BOTH doubles the feet. Dropping this
    *  from the DTO is what made the board disagree with the period report. */
   edgeFaces?: string | null;
+  /** scripts/0067 — the three-face specification and this row's own terms.
+   *  ALL OF THESE WERE MISSING FROM THIS DTO, which is the same mistake
+   *  edgeFaces records above: the route sent them, the board's type dropped
+   *  them, and the board priced from the legacy pair while the PO card priced
+   *  from the new one. One row, two figures. */
+  edgesTop?: string | null;
+  edgesBottom?: string | null;
+  edgesSide?: string | null;
+  edgeRate?: number | null;
+  /** scripts/0069 — the price for doing top and bottom together. */
+  pairRate?: number | null;
+  pricingMode?: string | null;
+  edgeTotalOverride?: number | null;
+  /** Which slabs this row's pieces were cut from — feeds the per-slab panel. */
+  allocations?: Array<{
+    slabId: string; slabCode: string | null; colour: string | null;
+    allocatedQuantity: number;
+  }>;
 }
 /** Date-wise, stage-wise completions. `rows` always covers every calendar day
  *  in [from, to] — a day nothing happened on is a row of zeros, not a gap.

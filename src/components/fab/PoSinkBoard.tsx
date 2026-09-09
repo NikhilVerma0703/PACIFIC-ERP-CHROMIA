@@ -76,7 +76,7 @@
 // always written edges on click) and this one disagreed about when a decision
 // counts. The board says which is which rather than hiding the difference.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FabAlerts } from "@/components/fab/FabAlerts";
 import { postJson } from "@/lib/fab/postJson";
 import { rowLabel } from "@/lib/fab/pieceNaming";
@@ -92,8 +92,12 @@ import {
 import {
   isRound, describeShapeSize, ROUND_EDGE,
   PIECE_SHAPES, EDGE_FACES, parseShape, parseEdgeFace, dimensionLabels,
-  type PieceShape, type EdgeFace,
+  faceEdgesFromLegacy, parseFaceEdges, faceEdgesUnset, serializeFaceEdges,
+  describeFaceEdges, faceSideCounts, POLISH_FACES,
+  type PieceShape, type EdgeFace, type FaceEdges,
 } from "@/lib/fab/shape";
+import { HandPolishPicker } from "@/components/fab/HandPolishPicker";
+import { type PolishTermsValue } from "@/components/fab/PolishTerms";
 
 /** How each shape reads on a button. The enum values are for the database. */
 const SHAPE_LABEL: Record<PieceShape, string> = {
@@ -124,9 +128,31 @@ export interface PoSinkRow {
   finishedEdges?: string | null;
   /** RECTANGLE / CIRCLE / OVAL. Null is a rectangle. */
   shapeType?: string | null;
+  /** scripts/0068 — fab_requirement.dim_unit: 'CM', or NULL/'IN'. Display only.
+   *  length/width above stay inches, because the running feet are built on them. */
+  dimUnit?: string | null;
+  /** scripts/0069 — Rs per foot for a side done on BOTH faces. NULL = the two
+   *  faces are summed at edgeRate, which is every row before 0069. */
+  pairRate?: number | null;
+  /** scripts/0070 — each face's own Rs per foot. NULL falls back to edgeRate,
+   *  then to the card. */
+  edgeRateTop?: number | null;
+  edgeRateBottom?: number | null;
+  edgeRateSide?: number | null;
   /** TOP / BOTTOM / BOTH — how many times each chosen edge is walked. NULL is
-   *  TOP. BOTH doubles the running feet; see scripts/0065. */
+   *  TOP. BOTH doubles the running feet; see scripts/0065.
+   *  SUPERSEDED by the three faces below on any row that has them. */
   edgeFaces?: string | null;
+  /** scripts/0067 — top / bottom / side, each with its OWN sides, plus this
+   *  row's own rate, mode and agreed total. All null on a row the new controls
+   *  have not touched, in which case the legacy pair above decides and the row
+   *  prices exactly as it does today. */
+  edgesTop?: string | null;
+  edgesBottom?: string | null;
+  edgesSide?: string | null;
+  edgeRate?: number | null;
+  pricingMode?: string | null;
+  edgeTotalOverride?: number | null;
   /** MILLIMETRES, when the row is already on a slab — the rate depends on it.
    *  Null on an order not yet given stone, and the feet still show. */
   thicknessMm?: number | null;
@@ -196,7 +222,7 @@ function dims(r: PoSinkRow): string {
   // 24 × 24 for a circle reads as a square and makes its running feet — which
   // are π·24, not 4·24 — look like an arithmetic error.
   if (r.length == null) return "—";
-  return describeShapeSize(r.shapeType, { lengthIn: r.length, widthIn: r.width });
+  return describeShapeSize(r.shapeType, { lengthIn: r.length, widthIn: r.width }, r.dimUnit);
 }
 
 /* -- HAND EDGE POLISH, on the card ----------------------------------------- *
@@ -226,7 +252,65 @@ function EdgeChoice({
   const round = isRound(shape);
   const face = parseEdgeFace(row.edgeFaces);
   const edges = useMemo(() => parseEdges(row.finishedEdges ?? null), [row.finishedEdges]);
-  const chosen = (row.finishedEdges ?? null) !== null;
+  const stored0067 = { top: row.edgesTop ?? null, bottom: row.edgesBottom ?? null, side: row.edgesSide ?? null };
+  const chosen = (row.finishedEdges ?? null) !== null || !faceEdgesUnset(stored0067);
+
+  // SEEDED THROUGH faceEdgesFromLegacy WHEN THE ROW HAS NO NEW SPEC, so a card
+  // opened on a row already quoted shows exactly what it is quoted at — the
+  // manager is editing the same decision, not starting a fresh one.
+  const seedFaces = useMemo<FaceEdges>(
+    () => (faceEdgesUnset(stored0067)
+      ? faceEdgesFromLegacy(parseEdges(row.finishedEdges ?? null), row.edgeFaces)
+      : parseFaceEdges(stored0067)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [row.edgesTop, row.edgesBottom, row.edgesSide, row.finishedEdges, row.edgeFaces],
+  );
+  const seedTerms = useMemo<PolishTermsValue>(() => ({
+    pricingMode: row.pricingMode ?? null,
+    rate: row.edgeRate ?? null,
+    totalOverride: row.edgeTotalOverride ?? null,
+    pairRate: row.pairRate ?? null,
+    rateTop: row.edgeRateTop ?? null,
+    rateBottom: row.edgeRateBottom ?? null,
+    rateSide: row.edgeRateSide ?? null,
+  }), [row.pricingMode, row.edgeRate, row.edgeTotalOverride, row.pairRate,
+       row.edgeRateTop, row.edgeRateBottom, row.edgeRateSide]);
+
+  const [faces, setFaces] = useState<FaceEdges>(seedFaces);
+  const [terms, setTerms] = useState<PolishTermsValue>(seedTerms);
+
+  // ── AND FOLLOW THE ROW WHEN IT IS RE-READ ────────────────────────────────
+  //
+  // "On refresh, or changing tabs, the pricing and all numbers are getting back
+  // to zero."
+  //
+  // These two were seeded ONCE, by useState, and nothing ever seeded them
+  // again — so a card mounted before the fetch landed went on showing the empty
+  // state it was born with over a database that held the rates. Keyed on WHAT
+  // IS STORED rather than on the props object, so a poll returning the same
+  // values cannot reset a card somebody is working in.
+  const storedSignature = JSON.stringify([
+    row.edgesTop, row.edgesBottom, row.edgesSide, row.finishedEdges, row.edgeFaces,
+    row.pricingMode, row.edgeRate, row.edgeTotalOverride, row.pairRate,
+    row.edgeRateTop, row.edgeRateBottom, row.edgeRateSide,
+  ]);
+  //
+  // AND ONLY WHILE THE CARD IS UNTOUCHED. saveTerms writes the three edges_*
+  // columns and leaves the legacy finished_edges alone, so after one edit the
+  // props hold a MIXTURE — the new spec in one place and the row's old legacy
+  // answer in the other — and re-seeding off that would resurrect the old
+  // selection. The server's answer wins until somebody starts working; after
+  // that this card is authoritative for its own lifetime.
+  const applied = useRef(storedSignature);
+  const touched = useRef(false);
+  useEffect(() => {
+    if (touched.current || applied.current === storedSignature) return;
+    applied.current = storedSignature;
+    setFaces(seedFaces);
+    setTerms(seedTerms);
+  }, [storedSignature, seedFaces, seedTerms]);
+
+  const faceCounts = useMemo(() => faceSideCounts(shape, faces), [shape, faces]);
   const n = edgeCount(edges, shape);
   const capacity = edgeCapacity(shape);
   const labels = dimensionLabels(shape);
@@ -239,7 +323,51 @@ function EdgeChoice({
     lengthIn: row.length, widthIn: row.width, quantity: row.quantity,
     sinkQuantity: row.sinkQuantity, thicknessMm: row.thicknessMm ?? null,
     edges, shape, edgeFace: face,
-  }), [row.length, row.width, row.quantity, row.sinkQuantity, row.thicknessMm, edges, shape, face]);
+    faceEdges: faces,
+    rate: terms.rate,
+    pricingMode: terms.pricingMode,
+    edgeTotalOverride: terms.totalOverride,
+    pairRate: terms.pairRate,
+    rateTop: terms.rateTop,
+    rateBottom: terms.rateBottom,
+    rateSide: terms.rateSide,
+  }), [row.length, row.width, row.quantity, row.sinkQuantity, row.thicknessMm, edges, shape, face, faces, terms]);
+
+  /** The three faces and the terms, through the scripts/0067 route. The legacy
+   *  finished_edges / edge_faces pair is left untouched, so any screen still
+   *  reading it keeps working and the old answer stays underneath. */
+  const saveTerms = useCallback(async (nextFaces: FaceEdges, nextTerms: PolishTermsValue) => {
+    setSaving(true);
+    // From here on this card holds the answer, not the props — see `touched`.
+    touched.current = true;
+    const wire = serializeFaceEdges(nextFaces);
+    const res = await postJson("/api/fab/supervisor/polish-terms", {
+      requirementId: row.id,
+      faces: {
+        top: wire.top ? wire.top.split(",") : [],
+        bottom: wire.bottom ? wire.bottom.split(",") : [],
+        side: wire.side ? wire.side.split(",") : [],
+      },
+      rate: nextTerms.rate,
+      pairRate: nextTerms.pairRate,
+      rateTop: nextTerms.rateTop,
+      rateBottom: nextTerms.rateBottom,
+      rateSide: nextTerms.rateSide,
+      pricingMode: nextTerms.pricingMode,
+      totalOverride: nextTerms.totalOverride,
+    });
+    setSaving(false);
+    if (!res.ok) {
+      // Back exactly where it was — a card showing a specification the database
+      // refused is an invoice nobody agreed to.
+      // Back where it was, so the props are authoritative again and this card
+      // should resume following them.
+      setFaces(seedFaces);
+      setTerms(seedTerms);
+      touched.current = false;
+      onError(res.error ?? "That change was not saved.");
+    }
+  }, [row.id, seedFaces, seedTerms, onError]);
 
   const save = useCallback(async (next: EdgeSelection | null) => {
     const previous = row.finishedEdges ?? null;
@@ -343,87 +471,81 @@ function EdgeChoice({
         {saving && <span className="text-[10px] text-slate-400">saving…</span>}
       </div>
 
-      <div className="mt-1 flex items-center gap-1 flex-wrap">
-        {round ? (
-          // ONE EDGE, ONE BUTTON. A circle has no sides, so offering four with
-          // three greyed out would invite somebody to look for the missing ones.
-          <button type="button" disabled={disabled}
-            onClick={() => save(edges.round ? {} : allEdgesFor(shape))}
-            aria-pressed={!!edges.round}
-            className={`text-[11px] font-semibold px-2 py-1 rounded border transition disabled:opacity-40 ${
-              edges.round
-                ? "border-indigo-300 bg-indigo-50 text-indigo-700"
-                : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}>
-            Whole edge
-          </button>
-        ) : (
-          EDGES.map(e => (
-            <button key={e} type="button" disabled={disabled} onClick={() => toggle(e)}
-              aria-pressed={!!edges[e]}
-              title={`${e} edge — ${e === "front" || e === "back" ? "runs the length" : "runs the width"}`}
-              className={`text-[11px] font-semibold px-2 py-1 rounded border capitalize transition disabled:opacity-40 ${
-                edges[e]
-                  ? "border-indigo-300 bg-indigo-50 text-indigo-700"
-                  : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}>
-              {e}
-            </button>
-          ))
-        )}
-        {!round && (
-          <button type="button" disabled={disabled || n === capacity}
-            onClick={() => save(allEdgesFor(shape))}
-            className="text-[11px] font-semibold px-2 py-1 rounded border border-indigo-200 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-40 transition">
-            All four
-          </button>
-        )}
-        <button type="button" disabled={disabled || (chosen && n === 0)}
-          onClick={() => save({})}
-          className="text-[11px] font-semibold px-2 py-1 rounded border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-40 transition">
-          None
-        </button>
-        {chosen && (
-          // Back to "nobody has chosen". Not the same as "no edges", and the
-          // only way to undo having looked at a row by mistake.
-          <button type="button" disabled={disabled} onClick={() => save(null)}
-            title="Put this row back to 'not chosen' — different from 'no edges'"
-            className="text-[11px] px-2 py-1 rounded text-slate-400 hover:text-slate-600 disabled:opacity-40 transition">
-            Clear
-          </button>
-        )}
+      {/* ── WHICH FACES, THEN WHICH SIDES OF EACH ─────────────────────────────
+          scripts/0067, and it replaces two controls that used to live here: a
+          row of four edge buttons, and a TOP / BOTTOM / BOTH strip under it.
+
+          Those asked ONE question for all faces at once, which is exactly what
+          the owner said the job is not: "choose the number of side for top, no
+          of side for bottom, and no of side for side." Three counts that move
+          independently cannot come out of one selection and a multiplier.
+
+          So: chips to pick the faces, then one diagram at a time for the face
+          being edited — WITH THAT FACE'S OWN RATE beside its drawing, and what
+          that face costs under the box that set it.
+
+          Same control the supervisor's board uses, so the two screens cannot
+          draw the same piece differently OR quote it differently. The separate
+          <PolishTerms> block that used to sit below is gone: its per-face rate
+          band was four inches from the face it priced, which is the layout the
+          owner called clumsy. */}
+      <div className="mt-1">
+        <HandPolishPicker
+          shape={shape}
+          lengthIn={row.length}
+          widthIn={row.width}
+          unit={row.dimUnit}
+          faces={faces}
+          terms={terms}
+          priced={priced}
+          cardRate={priced.rate?.edgePerFoot ?? null}
+          disabled={disabled}
+          onChange={(nextFaces, nextTerms) => {
+            setFaces(nextFaces);
+            setTerms(nextTerms);
+            void saveTerms(nextFaces, nextTerms);
+          }}
+        />
       </div>
 
-      {/* ── FACE ── only once there is edge work to have a face.
-          The owner: "also whether this on top or bottom or both as well." An
-          edge is a band with two arrises and doing both is the same line walked
-          twice — so BOTH multiplies the feet, and the button says ×2 rather
-          than making somebody discover it in the total. */}
-      {n > 0 && (
-        <div className="mt-2 flex items-center gap-2 flex-wrap">
-          <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Face</span>
-          <div className="flex items-center gap-1">
-            {EDGE_FACES.map(f => (
-              <button key={f} type="button" disabled={disabled} onClick={() => setFace(f)}
-                aria-pressed={face === f}
-                title={f === "BOTH"
-                  ? "Top and bottom — the same edge walked twice, so twice the running feet"
-                  : `${f === "TOP" ? "Top" : "Bottom"} face only`}
-                className={`text-[11px] font-semibold px-2 py-1 rounded border transition disabled:opacity-40 ${
-                  face === f
-                    ? f === "BOTH"
-                      ? "border-amber-400 bg-amber-50 text-amber-800"
-                      : "border-indigo-300 bg-indigo-50 text-indigo-700"
-                    : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}>
-                {FACE_LABEL[f]}
-              </button>
-            ))}
-          </div>
+      {chosen && (
+        <div className="mt-1 flex items-center gap-2 flex-wrap">
+          {/* The one state the picker cannot express: back to "nobody has
+              chosen", which is not the same as "no edges" and is the only way
+              to undo having opened a row by mistake. */}
+          <button type="button" disabled={disabled}
+            onClick={() => { setFaces({}); void saveTerms({}, terms); void save(null); }}
+            title="Put this row back to 'not chosen' — different from 'no edges'"
+            className="text-[11px] px-2 py-1 rounded border border-slate-200 text-slate-500 hover:text-slate-700 disabled:opacity-40 transition">
+            Not chosen
+          </button>
+          {!round && POLISH_FACES.some((f) => faceCounts[f] > 0) && (
+            <span className="text-[10px] text-slate-400 tabular-nums">
+              {POLISH_FACES.filter((f) => faceCounts[f] > 0)
+                .map((f) => `${f} ${faceCounts[f]} of ${capacity}`)
+                .join(" · ")}
+            </span>
+          )}
         </div>
       )}
 
-      {n > 0 && (
+      {/* THE RATE BOXES USED TO BE HERE. They are inside the control above now,
+          each beside the face it prices — see the note on that mount. */}
+
+      {POLISH_FACES.some((f) => faceCounts[f] > 0) && (
         <p className="mt-1 text-[11px] text-slate-500 tabular-nums">
-          {describeEdges(edges, shape)} on all {row.quantity} pc{row.quantity === 1 ? "" : "s"}
-          {face === "BOTH" && <span className="text-amber-700 font-semibold"> · both faces</span>}
+          {describeFaceEdges(shape, faces)} on all {row.quantity} pc{row.quantity === 1 ? "" : "s"}
+          {POLISH_FACES.filter((f) => faceCounts[f] > 0).length > 1 && (
+            <span className="text-amber-700 font-semibold">
+              {" "}· {POLISH_FACES.filter((f) => faceCounts[f] > 0).length} faces, walked separately
+            </span>
+          )}
+          {priced.rateSource === "ROW" && (
+            <span className="text-indigo-600 font-semibold"> · own rate</span>
+          )}
+          {priced.edgeOverridden && (
+            <span className="text-violet-700 font-semibold"> · total typed</span>
+          )}
           {" · "}<strong className="text-slate-700">{priced.runningFeet} ft</strong>
           {priced.unpriced
             ? priced.unpricedReason === "EDGES"
@@ -432,6 +554,8 @@ function EdgeChoice({
               ? <span className="text-amber-700"> · L / curve / custom outline — quote the hand polish by hand</span>
               : priced.unpricedReason === "DIMENSIONS"
                 ? <span className="text-amber-700"> · no size on this row, so nothing to charge yet</span>
+                : priced.unpricedReason === "RATE"
+                ? <span className="text-amber-700"> · per piece / lump sum needs its own rate — the card is per foot</span>
                 : <span className="text-slate-400"> · rate once it is on 2 cm or 3 cm stone</span>
             : <> · <strong className="text-indigo-700">{formatRupees(priced.edgeCost)}</strong></>}
         </p>
@@ -596,6 +720,8 @@ function Card({
             className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-500 hover:border-slate-300 disabled:opacity-40 transition"
           >
             Merge into {rowLabel(mergeInto.rowLetter, mergeInto.pieceLabel)}
+            {/* The size, so the button names the row it is merging into. */}
+            <span className="font-normal opacity-70"> {dims(mergeInto)}</span>
           </button>
         )}
       </div>
