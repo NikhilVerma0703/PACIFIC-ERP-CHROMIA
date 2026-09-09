@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { inventoryGate } from "@/lib/inventory/access";
 import { changeSlabStatus } from "@/lib/inventory/finishedSlab";
 import { getUnapprovedSlabNumbers } from "@/lib/inventory/searchWhere";
-import { isAdmin as isAdminCheck } from "@/lib/rbac";
+import { isAdmin as isAdminCheck, isCommercialRole } from "@/lib/rbac";
 
 const db = prisma as any;
 const MAX_FILE = 8 * 1024 * 1024;
@@ -16,7 +16,7 @@ export async function POST(request: Request) {
   const g = await inventoryGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   const role = String((g.user as any)?.role ?? "");
-  if (role !== "ADMIN" && role !== "COMMERCIAL")
+  if (role !== "ADMIN" && !isCommercialRole(role))
     return Response.json({ error: "Only Commercial or Admin can dispatch" }, { status: 403 });
   try {
     const fd = await request.formData();
@@ -38,14 +38,14 @@ export async function POST(request: Request) {
     if (!pi) return Response.json({ error: "PI number is required" }, { status: 400 });
     if (!customer) return Response.json({ error: "Customer name is required" }, { status: 400 });
     const hasFile = file instanceof File && file.size > 0;
-    if (!hasFile && role === "COMMERCIAL") return Response.json({ error: "Attach the invoice file" }, { status: 400 });
+    if (!hasFile && isCommercialRole(role)) return Response.json({ error: "Attach the invoice file" }, { status: 400 });
     if (hasFile) {
       const f = file as File;
       if (f.size > MAX_FILE) return Response.json({ error: "Invoice file too large (max 8 MB)" }, { status: 400 });
       if (!MIMES.has(f.type)) return Response.json({ error: "Invoice must be a PDF or image" }, { status: 400 });
     }
     const by = (g.user as any)?.name ?? null;
-    const res = await changeSlabStatus(slabs, "dispatch", { pi, customer, by, source: role === "COMMERCIAL" ? "Commercial dispatch" : "Dispatch" });
+    const res = await changeSlabStatus(slabs, "dispatch", { pi, customer, by, source: isCommercialRole(role) ? "Commercial dispatch" : "Dispatch" });
     // store the invoice only when something actually dispatched (no orphans)
     let invoiceId: string | null = null;
     if (hasFile && res.updated > 0) {

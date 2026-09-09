@@ -34,6 +34,7 @@ test("the capped shop-floor roles whose allowlists omit /mis are refused", () =>
 
 test("commercial and sales stay refused, as before", () => {
   assert.equal(maySeeMis("COMMERCIAL", "OFFICE"), false);
+  assert.equal(maySeeMis("COMMERCIAL_MANAGER", "OFFICE"), false);
   assert.equal(maySeeMis("SALES", "OFFICE"), false);
 });
 

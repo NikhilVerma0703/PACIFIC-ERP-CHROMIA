@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { inventoryGate } from "@/lib/inventory/access";
 import { getUnapprovedSlabNumbers } from "@/lib/inventory/searchWhere";
 import { photosForRecord } from "@/lib/entryPhoto";
-import { isAdmin } from "@/lib/rbac";
+import { isAdmin, isCommercialRole } from "@/lib/rbac";
 
 const db = prisma as any;
 const SQFT_TO_SQM = 0.092903;
@@ -68,7 +68,7 @@ export async function GET(request: Request) {
     let invoice = null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const role = String((g.user as any)?.role ?? "");
-    if (role === "ADMIN" || role === "COMMERCIAL") {
+    if (role === "ADMIN" || isCommercialRole(role)) {
       const inv: any[] = await db.$queryRaw`SELECT id, pi, customer, filename, at FROM fg_dispatch_invoice WHERE ${n} = ANY(slab_numbers) ORDER BY at DESC LIMIT 1`.catch(() => []);
       if (inv.length) invoice = inv[0];
     }

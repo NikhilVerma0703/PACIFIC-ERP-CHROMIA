@@ -37,7 +37,13 @@ function routes(dir = "src/app", out: string[] = []): string[] {
 }
 
 const ROUTES = routes();
-const NAV = readFileSync("src/components/Nav.tsx", "utf8");
+// The Commercial rows moved out of Nav.tsx on 2026-09-08: they are built from
+// the area table now (nav-rules.commercialNavRows), so the audit reads both
+// files. Same reason as before: the hrefs are what rot, wherever they sit.
+const NAV = [
+  readFileSync("src/components/Nav.tsx", "utf8"),
+  readFileSync("src/lib/commercial/nav-rules.ts", "utf8"),
+].join("\n");
 
 /** Every href the sidebar can render, with whether its row carries `exact`.
  *  Both spellings appear in Nav.tsx: object items (`{ href: "/x", … }`) and the
@@ -120,6 +126,8 @@ test("a nested nav row still lights its parent unless the parent says exact", ()
                          // Floor against SHOP_PATHS instead. Also wrong, and in
                          // the other direction: that arm is a raw startsWith, so
                          // /slab-intake lights Shop Floor via "/slab".
+    "/office/commercial", // exact — the Commercial module's Overview row sits
+                         // above eight /office/commercial/* rows (scripts/0076).
     "/report",           // exact
     "/robo",             // exact
     "/sales",            // special-cased alongside "/" in NavLink: matched exactly

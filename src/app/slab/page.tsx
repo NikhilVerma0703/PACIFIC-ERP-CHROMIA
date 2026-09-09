@@ -2,7 +2,7 @@ import { Shell } from "@/components/Shell";
 import { Card, Empty, Badge } from "@/components/ui";
 import { getSlabReport, type StationStop } from "@/lib/slabReport";
 import { LookupTabs, showLookupTabs } from "@/components/LookupTabs";
-import { currentRole, currentUser } from "@/lib/rbac";
+import { currentRole, currentUser, isCommercialRole } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +28,7 @@ export default async function SlabLookup({ searchParams }: { searchParams: Promi
   // Commercial is a read-only finished-goods role: basic slab details only — no machine
   // settings / recipe, no RM. `basic` is passed into the report so none of it is even
   // fetched (see slabReport.ts), rather than fetched and then hidden here.
-  const basic = (await currentRole()) === "COMMERCIAL";
+  const basic = isCommercialRole(await currentRole());
   let r = null;
   let error: string | null = null;
   if (query) {

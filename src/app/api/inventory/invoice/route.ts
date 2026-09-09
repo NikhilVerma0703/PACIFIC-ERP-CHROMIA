@@ -1,5 +1,6 @@
 // Invoice download — COMMERCIAL and ADMIN only. ?id=<invoice id>
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { isCommercialRole } from "@/lib/roles";
 import { prisma } from "@/lib/prisma";
 import { inventoryGate } from "@/lib/inventory/access";
 
@@ -9,7 +10,7 @@ export async function GET(request: Request) {
   const g = await inventoryGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   const role = String((g.user as any)?.role ?? "");
-  if (role !== "ADMIN" && role !== "COMMERCIAL") return Response.json({ error: "Not available" }, { status: 403 });
+  if (role !== "ADMIN" && !isCommercialRole(role)) return Response.json({ error: "Not available" }, { status: 403 });
   try {
     const id = (new URL(request.url).searchParams.get("id") ?? "").trim();
     if (!id) return Response.json({ error: "id required" }, { status: 400 });

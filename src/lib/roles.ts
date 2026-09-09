@@ -9,7 +9,7 @@
 //
 // Role hierarchy (low -> high). Kept as string-typed so this compiles even
 // before `prisma generate` refreshes the @prisma/client enum.
-export type RoleName = "OPERATOR" | "INCHARGE" | "LINE_MANAGER" | "ADMIN" | "FINANCE" | "ACCOUNTS" | "SALES" | "COMMERCIAL" | "STORE" | "MAINTENANCE" | "ROBO" | "CHROMIA" | "SAMPLING";
+export type RoleName = "OPERATOR" | "INCHARGE" | "LINE_MANAGER" | "ADMIN" | "FINANCE" | "ACCOUNTS" | "SALES" | "COMMERCIAL" | "COMMERCIAL_MANAGER" | "COMMERCIAL_EXEC" | "COMMERCIAL_DOCS" | "COMMERCIAL_LOGISTICS" | "STORE" | "MAINTENANCE" | "ROBO" | "CHROMIA" | "SAMPLING";
 
 // FINANCE and ACCOUNTS are flat office roles directly under ADMIN (rank 2:
 // they may edit office tables, but user management stays admin-only in Office).
@@ -17,9 +17,24 @@ export type RoleName = "OPERATOR" | "INCHARGE" | "LINE_MANAGER" | "ADMIN" | "FIN
 // STORE, MAINTENANCE): below every rank test in the ERP, so it inherits
 // nothing and is named explicitly wherever it is wanted. Its own module gates
 // on the ACTION rather than on a rank — see lib/sampling/actions.ts.
-export const ROLE_RANK: Record<string, number> = { OPERATOR: 1, STORE: 1, MAINTENANCE: 1, SALES: 1, COMMERCIAL: 1, ROBO: 1, CHROMIA: 1, SAMPLING: 1, INCHARGE: 2, FINANCE: 2, ACCOUNTS: 2, LINE_MANAGER: 3, ADMIN: 4 };
+export const ROLE_RANK: Record<string, number> = { OPERATOR: 1, STORE: 1, MAINTENANCE: 1, SALES: 1, COMMERCIAL: 1, COMMERCIAL_MANAGER: 1, COMMERCIAL_EXEC: 1, COMMERCIAL_DOCS: 1, COMMERCIAL_LOGISTICS: 1, ROBO: 1, CHROMIA: 1, SAMPLING: 1, INCHARGE: 2, FINANCE: 2, ACCOUNTS: 2, LINE_MANAGER: 3, ADMIN: 4 };
 
 export function rankOf(role?: string | null): number { return ROLE_RANK[String(role ?? "")] ?? 0; }
+
+/** The Commercial module's two roles (owner, 2026-09-07, answer 9: "a
+ *  commercial manager role"). OUTSIDE the module they are one thing — the
+ *  office login that lands on /office/commercial, sees the finished-goods
+ *  slab table and the read-only production lookups, and writes nothing else —
+ *  so every seam that used to ask `role === "COMMERCIAL"` asks this instead
+ *  and a third commercial role (the per-task roles the owner also asked for)
+ *  is one entry here. INSIDE the module lib/commercial/access-rules.ts tells
+ *  them apart: the manager approves the checklist, cancels a PI and edits the
+ *  production plan; Commercial does not. The manager sits on rank 1 with
+ *  Commercial deliberately: its extra powers are on the module's action
+ *  table, not on the ladder, so it inherits none of the shop-floor rank
+ *  tests (canRectify and the like). */
+export const COMMERCIAL_ROLES: ReadonlySet<string> = new Set(["COMMERCIAL", "COMMERCIAL_MANAGER", "COMMERCIAL_EXEC", "COMMERCIAL_DOCS", "COMMERCIAL_LOGISTICS"]);
+export function isCommercialRole(role?: string | null): boolean { return COMMERCIAL_ROLES.has(String(role ?? "")); }
 
 // Station and role LABELS, here with the rank table for the same two reasons:
 // node --test can reach them, and a client component can import them without
@@ -36,7 +51,11 @@ export const STATION_LABEL: Record<string, string> = {
 
 export const ROLE_LABEL: Record<string, string> = {
   OPERATOR: "Operator", INCHARGE: "Incharge", LINE_MANAGER: "Line Manager", ADMIN: "Administrator",
-  FINANCE: "Finance", ACCOUNTS: "Accounts", SALES: "Sales", COMMERCIAL: "Commercial", STORE: "Store Incharge", MAINTENANCE: "Maintenance Manager",
+  FINANCE: "Finance", ACCOUNTS: "Accounts", SALES: "Sales", COMMERCIAL: "Commercial", COMMERCIAL_MANAGER: "Commercial Manager",
+  // One role per set of tasks, named for the desk rather than the person
+  // (owner, 2026-09-08): Setumani, Raghav and Murali respectively.
+  COMMERCIAL_EXEC: "Commercial Executive", COMMERCIAL_DOCS: "Commercial Documentation", COMMERCIAL_LOGISTICS: "Commercial Logistics",
+  STORE: "Store Incharge", MAINTENANCE: "Maintenance Manager",
   ROBO: "Robo Operator",
   CHROMIA: "Chromia Operator",
   // The owner's own word for this person. Not "Sampling Operator": there is one

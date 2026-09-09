@@ -1,4 +1,11 @@
 "use client";
+import { isCommercialRole } from "@/lib/roles";
+// The area table, not the role string, decides which Commercial rows exist
+// (round two, answers 1, 2 and 6). Both modules are pure and edge-safe — no
+// auth, no Prisma — which is what lets this CLIENT component import them.
+import { commercialAreasFor } from "@/lib/commercial/access-rules";
+import { commercialNavRows } from "@/lib/commercial/nav-rules";
+import type { CommercialArea } from "@/lib/commercial/access-rules";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -24,6 +31,19 @@ const I = {
   sink:        "M5 9V5h14v4M2 9h20v2a5 5 0 01-5 5H7a5 5 0 01-5-5V9z",
   fabrication: "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z",
   packaging:   "M21 16V8l-9-5-9 5v8l9 5 9-5z",
+  commercial:  "M3 3h18v4H3zM3 7v13h18V7M9 12h6",
+};
+
+// The icon for each Commercial row. Keyed by AREA rather than by href so it
+// cannot drift from lib/commercial/nav-rules.ts, which owns the row itself —
+// the label, the path and whether the login gets it at all. Icons live here
+// because they are the sidebar's business and nothing else's.
+const COMMERCIAL_ICON: Record<CommercialArea, string> = {
+  overview: I.overview, enquiries: I.entry, orders: I.commercial, clients: I.users,
+  packing: I.packaging, dispatchCheck: I.live, invoices: I.report, challans: I.tables,
+  designCodes: I.samples, planning: I.planning, settings: I.spanner,
+  // Reached through the Orders row: a tab on the order, not a screen.
+  checklist: I.report, stock: I.box, proforma: I.report,
 };
 
 const SHOP_PATHS = ["/", "/live", "/batch", "/slab", "/tables", "/report", "/office", "/silo", "/resin", "/store"];
@@ -198,7 +218,20 @@ export function Nav({
   // International Sales context is FOCUSED: whoever is signed into that
   // branch (admins included, via the sales login card) sees only the sales
   // section + Admin — production/fab nav stays in the other branches.
-  const isFab   = isAdmin || branch === "FABRICATION";               // fabrication section
+  // FABRICATION, and the two questions about it are not the same question.
+  //   isFabDash  may this login see the fabrication NUMBERS (one row, on the
+  //              overview) — an admin may, from anywhere.
+  //   isFab      does this login WORK the cut-to-size benches, and so need the
+  //              dozen rows of Purchase Orders, Cut Queue, Cutting, Polishing,
+  //              Sink Cutting, Fabrication, Packaging and Samples.
+  // The owner, 2026-09-09: "reduce cut to size section in shop floor in admin —
+  // we don't need as admin." An admin standing on the shop floor is not at a
+  // fabrication bench, so the section goes and the dashboard stays. An admin
+  // whose own branch IS Fabrication still gets the whole section, and every
+  // page remains reachable by URL — middleware admits admins everywhere; what
+  // changed is what the sidebar offers.
+  const isFabDash = isAdmin || branch === "FABRICATION";
+  const isFab   = branch === "FABRICATION";                          // fabrication section
   const isProd  = isAdmin || (!office && branch !== "FABRICATION" && branch !== "INTERNATIONAL_SALES");  // production section
   const mgmt    = fabTier === "ADMIN" || fabTier === "MANAGER";
   const supPlus = mgmt || fabTier === "SUPERVISOR";
@@ -257,6 +290,20 @@ export function Nav({
     { href: "/sampling/dispatch",   icon: I.packaging, label: "Dispatch" },
   ];
 
+  // The robo line. ONE list, for the same reason chromiaItems below is one: it
+  // is the ROBO operator's entire nav AND a section on the admin's shop-floor
+  // nav (owner, 2026-09-09: "add robo module and chromia module in admin shop
+  // floor login as well"), and two hand-kept copies of a module's rows drift
+  // the first time a page is added to one of them.
+  const roboItems = [
+    { href: "/robo",           icon: I.factory, label: "Robo Entry", exact: true },
+    { href: "/robo/slabs",     icon: I.batch,   label: "Slab Records" },
+    { href: "/robo/reports",   icon: I.ceo,     label: "Reports" },
+    { href: "/robo/downloads", icon: I.box,     label: "Downloads" },
+    { href: "/robo/import",    icon: I.entry,   label: "Import" },
+    { href: "/robo/masters",   icon: I.tables,  label: "Master Lists" },
+  ];
+
   const chromiaItems = [
     { href: "/chromia/dashboard",              icon: I.overview, label: "Dashboard" },
     { href: "/chromia/operator",               icon: I.factory,  label: "Operator Entry" },
@@ -268,6 +315,24 @@ export function Nav({
     { href: "/chromia/downloads",              icon: I.box,      label: "Downloads" },
     { href: "/chromia/import",                 icon: I.entry,    label: "Import" },
   ];
+
+  // Commercial module — enquiry → internal sales order → stock hold → PI →
+  // packing list → dispatch check → invoice. ONE list, built from the area
+  // table for THIS login (round two, answers 1, 2 and 6), and used everywhere
+  // the module appears: as the whole nav for the five Commercial roles, as the
+  // one Verification row a dispatch checker gets, and as a section on both the
+  // office and the shop-floor nav for admins (an admin's nav follows the login
+  // card, so the section has to exist on both).
+  //
+  // THE THREE HAND-KEPT LISTS THIS REPLACES WERE ALREADY WRONG the day the
+  // desk was split: they gave every Commercial login the Production Queue that
+  // answer 16 had just made the admin's alone, and they decided the manager's
+  // extra rows by `role === "COMMERCIAL_MANAGER"`, which says nothing about
+  // Raghav (no enquiries) or Murali (no dispatch check). commercialNavRows
+  // asks the same table middleware asks, so a row can no longer promise a
+  // screen the request will be refused.
+  const commercialItems = commercialNavRows(commercialAreasFor({ role, branch }))
+    .map((r) => ({ href: r.href, icon: COMMERCIAL_ICON[r.area], label: r.label, ...(r.exact ? { exact: true } : {}) }));
 
   if (role === "STORE")
     // Batch Sign-off is the ONE office path this role reaches (middleware caps
@@ -282,15 +347,34 @@ export function Nav({
         <Section label="Overview" items={STORE_TABS.filter(t => t.href === "/live")} path={path} />
         <Section label="Raw Material" items={STORE_TABS.filter(t => t.href.startsWith("/store") || t.href === "/tables")} path={path} />
         <Section label="Consumables" items={STORE_TABS.filter(t => t.href === "/consumables")} path={path} />
-        {batchVerify && <Section label="Verification" items={[{ href: "/office/batch-verify", icon: I.report, label: "Batch Sign-off" }]} path={path} />}
+        {/* Dispatch Check is the Commercial module's packing-list verification.
+            Round two, answer 6: the dispatch team gets NO new role — they sign
+            in as they do now, in bay 5, and get this ONE tab. It comes from the
+            same area table as every other Commercial row, which is also what
+            drops it for a STORE login sitting on a branch that has its own
+            middleware block: that login is refused the page, and a row leading
+            to a refusal is worse than no row. */}
+        <Section label="Verification" items={[
+          ...(batchVerify ? [{ href: "/office/batch-verify", icon: I.report, label: "Batch Sign-off" }] : []),
+          ...commercialItems,
+        ]} path={path} />
       </nav>
     );
-  if (role === "COMMERCIAL")
+  if (isCommercialRole(role))
+    // The module first, then the two things this role had before it existed:
+    // the finished-goods slab table and the read-only production lookups.
     return (
-      <nav className="flex flex-col gap-1">
-        <NavLink href="/inventory" icon={I.box} label="Finished Goods" path={path} />
-        {/* Office-branch Commercial also gets the read-only production lookups. */}
-        {office && <NavLink href="/office" icon={I.factory} label="Shop Floor" path={path} office />}
+      <nav className="flex flex-col">
+        <Section label="Commercial" items={commercialItems} path={path} />
+        <Section label="Inventory" items={[{ href: "/inventory", icon: I.box, label: "Finished Goods" }]} path={path} />
+        {office && (
+          <div className="mt-4">
+            <p className="mb-1 px-3 text-[10px] font-bold uppercase tracking-[0.12em] text-gray-400">Office</p>
+            <div className="flex flex-col gap-0.5">
+              <NavLink href="/office" icon={I.factory} label="Shop Floor" path={path} office />
+            </div>
+          </div>
+        )}
       </nav>
     );
   if (role === "SALES")
@@ -308,18 +392,9 @@ export function Nav({
     // robo line operator — the robo module is their whole ERP
     return (
       <nav className="flex flex-col">
-        <Section label="Production" items={[
-          { href: "/robo", icon: I.factory, label: "Robo Entry", exact: true },
-          { href: "/robo/slabs", icon: I.batch, label: "Slab Records" },
-        ]} path={path} />
-        <Section label="Reports" items={[
-          { href: "/robo/reports", icon: I.ceo, label: "Reports" },
-          { href: "/robo/downloads", icon: I.box, label: "Downloads" },
-        ]} path={path} />
-        <Section label="Setup" items={[
-          { href: "/robo/import", icon: I.entry, label: "Import" },
-          { href: "/robo/masters", icon: I.tables, label: "Master Lists" },
-        ]} path={path} />
+        <Section label="Production" items={roboItems.filter(t => t.href === "/robo" || t.href === "/robo/slabs")} path={path} />
+        <Section label="Reports" items={roboItems.filter(t => t.href === "/robo/reports" || t.href === "/robo/downloads")} path={path} />
+        <Section label="Setup" items={roboItems.filter(t => t.href === "/robo/import" || t.href === "/robo/masters")} path={path} />
       </nav>
     );
   if (role === "CHROMIA" || (!isAdmin && branch === "CHROMIA"))
@@ -380,13 +455,17 @@ export function Nav({
           // Admins see the intake form where the stock it feeds lives.
           ...(slabIntake ? [{ href: "/slab-intake", icon: I.entry, label: "Slab Intake" }] : []),
         ]} path={path} />}
+        {/* Office -> Commercial. Admins only here: the COMMERCIAL roles get the
+            whole-nav takeover above, and no other office role may open the
+            module (the block in middleware.ts refuses FINANCE and ACCOUNTS). */}
+        {isAdmin && <Section label="Commercial" items={commercialItems} path={path} />}
         {showAdmin && <Section label="Admin" items={[{ href: "/admin/users", icon: I.users, label: "Users & Roles" }]} path={path} />}
       </nav>
     );
 
   const overview = [
     ...(isProd ? [{ href: "/", icon: I.overview, label: "Production Dashboard" }] : []),
-    ...(isFab  ? [{ href: "/fab/ceo", icon: I.ceo, label: "Fabrication Dashboard" }] : []),
+    ...(isFabDash ? [{ href: "/fab/ceo", icon: I.ceo, label: "Fabrication Dashboard" }] : []),
   ];
   const production = [
     { href: "/live",   icon: I.live,   label: "Live Status" },
@@ -474,13 +553,33 @@ export function Nav({
       {isProd && <Section label="Production" items={production} path={path} />}
       {isProd && <Section label="Lookups &amp; Reports" items={reports} path={path} />}
       {isFab  && <Section label="Fabrication" items={fabrication} path={path} />}
-      {/* Shop Floor -> Chromia. Admins only: the CHROMIA role gets the whole-nav
-          takeover above, and no other role may open the module (middleware). */}
+      {/* Shop Floor -> Robo and Chromia. Admins only: each module's own role
+          gets the whole-nav takeover above, and no other role may open them
+          (middleware). The owner asked for both here on 2026-09-09; Chromia was
+          already present and Robo was reachable only by typing the URL. */}
+      {isAdmin && <Section label="Robo" items={roboItems} path={path} />}
       {isAdmin && <Section label="Chromia" items={chromiaItems} path={path} />}
       {/* Shop Floor -> Sampling. Admins only, for the same reason as Chromia
           above: the SAMPLING role gets the whole-nav takeover, and the only
           other login middleware admits to these pages is an admin. */}
       {isAdmin && <Section label="Sampling" items={samplingItems} path={path} />}
+      {/* Shop Floor -> the dispatch check, and NOTHING ELSE of Commercial.
+          The owner, 2026-09-09: "make sure commercial is only in office not in
+          shopfloor." So the admin's full Commercial section is gone from this
+          nav — it is on his OFFICE nav, which is where the desk works, and an
+          admin's sidebar follows the login card he came in on.
+
+          The ONE row that stays is the dispatch check, and it stays because it
+          is not really an office screen: bay 5 is on the shop floor (round two,
+          answer 6), and a line manager standing there needs the tab. It keeps
+          the "Verification" heading the store incharge's arm above uses, so the
+          two logins that stand in for the dispatch team read alike. filter, not
+          a second list — commercialItems is still the area table's answer, so a
+          login with no dispatch area gets an empty list and Section renders
+          nothing at all. */}
+      <Section label="Verification"
+        items={commercialItems.filter((r) => r.href.startsWith("/office/commercial/dispatch-check"))}
+        path={path} />
       {(inventory || (slabIntake && isAdmin)) && <Section label="Inventory" items={[
         ...(inventory ? [{ href: "/inventory", icon: I.box, label: "Finished Goods" }] : []),
         // Admins only here: a named intake person on the shop floor already

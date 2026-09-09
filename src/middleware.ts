@@ -1,6 +1,7 @@
 import NextAuth from "next-auth";
 import { authConfig } from "./auth.config";
 import { storeMayVisit, operatorMayVisit, maintenanceMayVisit, samplingMayVisit, homeFor, isPublicAsset, isCronRoute } from "./lib/routeCaps.ts";
+import { isCommercialRole } from "./lib/roles.ts";
 // The sampling module's audience, imported rather than restated here. It is a
 // pure module (its only import is lib/roles.ts, which imports nothing), so it
 // is edge-safe — and it has to be imported rather than copied because the same
@@ -18,6 +19,13 @@ import { ROLE_CONTEXT_COOKIE, activeContextOf, type GrantedContexts } from "./li
 // the SAME rule the page gate runs — the carve-out below and the gate cannot
 // drift apart.
 import { canUseSlabIntake } from "./lib/inventory/intakeAccess.ts";
+// The Commercial module's audience — pure and import-free like the two above,
+// so it is edge-safe, and the SAME rule the route gate runs (lib/commercial/
+// access.ts imports it). This block is what keeps the uncapped office roles
+// (FINANCE, ACCOUNTS) and the shop-floor INCHARGE/LINE_MANAGER out of
+// /office/commercial: middleware caps work by exception, and without an
+// explicit block a path nobody named is a path everybody reaches.
+import { maySeeCommercialModule } from "./lib/commercial/access-rules.ts";
 
 // Edge-safe middleware (Prisma-free config). IMPORTANT: with the auth(fn)
 // wrapper form, Auth.js does NOT auto-redirect — ALL gating is explicit here.
@@ -251,6 +259,23 @@ export default auth((req) => {
     }
   }
 
+  // ---- Commercial module: enquiries, internal sales orders, stock holds,
+  // production requests, proforma invoices, packing lists, the dispatch check,
+  // invoices and delivery challans. Role.COMMERCIAL, Role.COMMERCIAL_MANAGER and
+  // admins reach all of it;
+  // the dispatch team (STORE / LINE_MANAGER until it has a role of its own)
+  // reaches ONLY the dispatch-check paths, exact-or-subpath. Before the branch
+  // blocks for the same reason as the finance block: Commercial's own `/office`
+  // allowance would otherwise be the only thing deciding, and it says nothing
+  // about FINANCE, ACCOUNTS, INCHARGE or LINE_MANAGER, who are uncapped and
+  // would fall straight through. This is the coarse gate; WHICH ACTION a
+  // request is allowed is decided in the route by commercialGate(action). ----
+  if (p.startsWith("/office/commercial") || p.startsWith("/api/office/commercial")) {
+    if (!maySeeCommercialModule({ role, branch }, p)) {
+      return denied(p, nextUrl, role ?? "", branch ?? "");
+    }
+  }
+
   // ---- Per-batch material rates: the ONE costing-admin surface the two batch
   // verifiers reach (owner, 2026-08-19). They enter the supplier splits, the
   // prices and the doses for a batch themselves now — on their own page,
@@ -432,8 +457,8 @@ export default auth((req) => {
   if (role === "STORE" && !storeMayVisit(p)) return denied(p, nextUrl, role ?? "", branch ?? "");
   if (role === "OPERATOR" && !operatorMayVisit(p)) return denied(p, nextUrl, role ?? "", branch ?? "");
 
-  if (role === "COMMERCIAL") {
-    // Commercial: finished-goods slabs, plus READ-ONLY production lookups from the
+  if (isCommercialRole(role)) {
+    // Commercial (and its manager): finished-goods slabs, plus READ-ONLY production lookups from the
     // Office branch's Shop Floor tab (slab, and the Office-side batch view). Live
     // Status, Tables and the Production Report stay blocked — /report is gated here,
     // not merely unlinked from the Shop Floor card grid.
