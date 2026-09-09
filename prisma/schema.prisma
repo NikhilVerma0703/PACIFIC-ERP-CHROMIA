@@ -3598,6 +3598,7 @@ model SalesClient {
   commercialEnquiries CommercialEnquiry[]
   commercialOrders    CommercialOrder[]
   commercialChallans  CommercialDeliveryChallan[]
+  commercialArticles  CommercialCustomerArticle[]
 
   @@map("sales_clients")
 }
@@ -6692,6 +6693,8 @@ model CommercialOrder {
   invoices           CommercialInvoice[]
   challans           CommercialDeliveryChallan[]
   receipts           CommercialReceipt[]
+  /// The work around the order this module does not do itself (answers 7, 8).
+  tasks              CommercialOrderTask[]
 
   /// The orders board: by stage, newest first.
   @@index([status, createdAt])
@@ -6924,6 +6927,9 @@ model CommercialPackingList {
 
   crates   CommercialCrate[]
   slabs    CommercialPackedSlab[]
+  /// Cut-to-size lines (answer 5). A list packs slabs, pieces, or both: a
+  /// piece is not a slab and does not fit commercial_packed_slab.
+  pieces   CommercialPackedPiece[]
   invoices CommercialInvoice[]
 
   @@index([orderId])
@@ -6945,6 +6951,7 @@ model CommercialCrate {
   widthCm       Decimal?              @map("width_cm") @db.Decimal(8, 1)
   heightCm      Decimal?              @map("height_cm") @db.Decimal(8, 1)
   remarks       String?
+  pieces        CommercialPackedPiece[]
   createdAt     DateTime              @default(now()) @map("created_at")
 
   slabs CommercialPackedSlab[]
@@ -7002,6 +7009,10 @@ model CommercialInvoice {
   invoiceDate   DateTime               @map("invoice_date") @db.Date
   status        CommercialDocStatus    @default(DRAFT)
   currency      String
+  /// Answer 10 of round three: WHEN the rate was typed. The rate itself has
+  /// been on this model since scripts/0076; what was missing is the stamp,
+  /// because a rate with no date cannot be defended six months later.
+  exchangeRateAt DateTime? @map("exchange_rate_at")
   exchangeRate  Decimal?               @map("exchange_rate") @db.Decimal(12, 4)
   /// lib/commercial/types.ts InvoiceSnapshot.
   snapshot      Json
@@ -7177,4 +7188,106 @@ model CommercialProductionPlanChange {
   /// The "not planned" panel: open reductions, newest first.
   @@index([status, changedAt])
   @@map("commercial_production_plan_change")
+}
+
+/// THE CUSTOMER'S OWN ARTICLE - one design at one size, as HIS label names it
+/// (answer 4, read off "Desert Silk Crate BARCODE.docx"):
+///
+///     CQBE 101x19.5x2  /  WINDOW SILLS 101x19.5x2  /  BARCODE: 8720847172228
+///
+/// The item code, the description and the EAN-13 belong to the article, not to
+/// our slab and not to our piece, so every crate of it prints the same barcode.
+/// Keyed by client as well as design and size: two customers may sell the same
+/// stone at the same size under different codes.
+model CommercialCustomerArticle {
+  id           String       @id @default(cuid())
+  clientId     String?      @map("client_id")
+  client       SalesClient? @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  design       String
+  /// The size AS THE LABEL PRINTS IT, in centimetres.
+  lengthCm     Decimal      @map("length_cm") @db.Decimal(8, 2)
+  widthCm      Decimal      @map("width_cm") @db.Decimal(8, 2)
+  thicknessCm  Decimal      @map("thickness_cm") @db.Decimal(6, 2)
+  itemCode     String?      @map("item_code")
+  description  String?
+  /// EAN-13. Thirteen digits by CHECK; the check digit is verified in
+  /// lib/commercial/barcode.ts, which can say which digit is wrong.
+  ean          String?
+  notes        String?
+  updatedById  String?      @map("updated_by_id")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+
+  @@index([design])
+  @@index([ean])
+  @@map("commercial_customer_article")
+}
+
+/// A packed PIECE, beside CommercialPackedSlab's packed slab (answer 5). Read
+/// off the three cut-to-size workbooks: crate, drawing, piece, material, size,
+/// thickness, sqft, quantity, room, weight.
+///
+/// SIZES ARE MILLIMETRES. Those sheets head the column "SIZE(Inches)" on one
+/// block and "SIZE(IN CM)" on another and the numbers are millimetres in both,
+/// so the stored unit is explicit here and the PRINTED unit follows the packing
+/// list's measurementUnit - the header can never again disagree with the
+/// numbers under it.
+model CommercialPackedPiece {
+  id            String                @id @default(cuid())
+  packingListId String                @map("packing_list_id")
+  packingList   CommercialPackingList @relation(fields: [packingListId], references: [id], onDelete: Cascade)
+  crateId       String?               @map("crate_id")
+  crate         CommercialCrate?      @relation(fields: [crateId], references: [id], onDelete: SetNull)
+  /// As printed, for a sheet whose crates are not rows of their own yet.
+  crateNo       String?               @map("crate_no")
+  drawingNo     String?               @map("drawing_no")
+  pieceNo       String?               @map("piece_no")
+  design        String
+  lengthMm      Decimal?              @map("length_mm") @db.Decimal(10, 2)
+  widthMm       Decimal?              @map("width_mm") @db.Decimal(10, 2)
+  thicknessMm   Decimal?              @map("thickness_mm") @db.Decimal(8, 2)
+  sqft          Decimal?              @db.Decimal(12, 4)
+  quantity      Int                   @default(1)
+  /// BUILDING / AREA on his sheets: "KITCHEN", "BATH ROOM VANITY".
+  room          String?
+  weightKg      Decimal?              @map("weight_kg") @db.Decimal(12, 3)
+  notes         String?
+  createdAt     DateTime              @default(now()) @map("created_at")
+  updatedAt     DateTime              @updatedAt @map("updated_at")
+
+  @@index([packingListId])
+  @@index([crateId])
+  @@map("commercial_packed_piece")
+}
+
+/// The work around an order this module does not do itself (answers 7, 8):
+/// container booking, CHA, the BL draft, COO and CEFA, the Daltile upload,
+/// TiO2, the RFID lock, container pictures, fumigation, the ETA sheet.
+/// "For now if we cannot add anything we'll add a tickbox" - so a tick, a date,
+/// a name and a note, and the ones that are really ours grow into screens later.
+model CommercialOrderTask {
+  id         String               @id @default(cuid())
+  orderId    String               @map("order_id")
+  order      CommercialOrder      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  taskKey    String               @map("task_key")
+  label      String
+  status     CommercialTaskStatus @default(PENDING)
+  doneAt     DateTime?            @map("done_at")
+  doneById   String?              @map("done_by_id")
+  doneByName String?              @map("done_by_name")
+  note       String?
+  sortOrder  Int                  @default(0) @map("sort_order")
+  createdAt  DateTime             @default(now()) @map("created_at")
+  updatedAt  DateTime             @updatedAt @map("updated_at")
+
+  @@unique([orderId, taskKey])
+  @@map("commercial_order_task")
+}
+
+enum CommercialTaskStatus {
+  PENDING
+  DONE
+  NOT_REQUIRED
+
+  @@map("commercial_task_status")
 }
