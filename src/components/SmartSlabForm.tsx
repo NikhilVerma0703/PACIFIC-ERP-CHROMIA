@@ -14,6 +14,7 @@ import { secondsToHHMM } from "@/lib/time";
 import type { SlabMode } from "@/lib/smartEntry";
 import { isRequiredField } from "@/lib/requiredFields";
 import { PhotoField, type PhotoFieldState } from "./PhotoField";
+import { shouldReloadDefaults } from "@/lib/entryReload";
 import {
   PHOTO_SLOTS, hasPhotoPair, PAIR_TARGET, PAIR_HARD_MAX, PHOTO_WARN_PREFIX,
   REJECT_GRADE_FIELD, REJECT_PHOTOS_RULE, isRejectGrade, rejectPhotosRequired, photoProblem,
@@ -194,12 +195,26 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
   // refuses it), but the operator lost the queue's time reading "already
   // entered" and wondering which of the two saves counted.
   const slabBox = useRef<HTMLInputElement | null>(null);
+  // WHAT WAS LAST LOADED, so a blur that changed nothing does nothing. Both
+  // boxes below re-fetch on blur, and a blur fires whenever anything else is
+  // tapped — the camera button above all (lib/entryReload says what that cost).
+  // Refs and not state: nothing on screen depends on these, and a re-render
+  // between the blur and the answer would lose them.
+  const loadedBatch = useRef<string | null>(null);
+  const resolvedSlab = useRef<string | null>(null);
   // After every successful save: toast, then RELOAD the batch defaults so the
   // slab number auto-advances (+1) and parameters re-fill for the next slab.
   useEffect(() => {
     if (pending || msg !== "ok") return;
     setSavedCount((c) => c + 1);
-    if (batch.trim()) void loadDefaults();
+    // FORCED, and it is the one reload that must ignore the guard below: this
+    // is the same batch on purpose, reloaded so the slab number advances and
+    // the row just entered is cleared off the screen.
+    if (batch.trim()) void loadDefaults({ force: true });
+    // The box is emptied below, so the next number typed must resolve even if
+    // it is the one just saved (which the duplicate guard will then refuse, by
+    // name, instead of the form silently doing nothing).
+    resolvedSlab.current = null;
     if (slabMode !== "increment") {
       // SAVED MEANS DONE, the slab-intake rule: empty the box and take the
       // cursor back, because the next thing this person does is the next slab.
@@ -266,23 +281,37 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
   const slabF = [...slabF0.filter((f) => f.prismaField !== "remarks"), ...slabF0.filter((f) => f.prismaField === "remarks")];
   const slabNumberField = editable.find((f) => f.prismaField === "slabNumber");
 
-  async function loadDefaults() {
+  async function loadDefaults(opts?: { force?: boolean }) {
     if (!batch.trim()) return;
+    // An identical answer cannot change what is on screen, so remounting the
+    // fields to apply it can only throw away typing. Only `force` (the reload
+    // after a save) goes round this.
+    if (!opts?.force && !shouldReloadDefaults(loadedBatch.current, batch)) return;
     setLoading(true);
     const r = await getSmartDefaults(model, batch);
     if (!r) { setLoading(false); return; } // no access to this form
+    // Recorded only on success, so a failed lookup can be retried by blurring
+    // the box again rather than being remembered as done.
+    loadedBatch.current = batch.trim();
     setDefaults(r); setUnlocked(new Set()); setVersion((v) => v + 1); setLoading(false);
   }
 
   // Polish stations: slab number drives the batch (looked up from Press).
+  //
+  // THE GUARD IS THE WHOLE FIX for "the already filled form clears". This runs
+  // on the slab box's blur, and the camera button blurs it — so without the
+  // check it re-resolved the number already showing and remounted every field
+  // under it, wiping the entry the operator had just finished typing.
   async function resolveFromSlab(slabVal: string) {
-    if (!slabVal.trim()) return;
+    if (!shouldReloadDefaults(resolvedSlab.current, slabVal)) return;
     setLoading(true);
     const r = await getBatchForSlab(model, slabVal.trim());
     setLoading(false);
     if (!r) return;
+    resolvedSlab.current = slabVal.trim();
     if (r.batch) {
       setBatch(r.batch); setBatchLocked(true);
+      loadedBatch.current = r.batch.trim();
       setDefaults(r.defaults ?? null); setUnlocked(new Set()); setVersion((v) => v + 1);
     } else {
       setBatchLocked(false); // not in Press — operator enters the batch
@@ -299,6 +328,9 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
 
   function clearForm() {
     setBatch(""); setDefaults(null); setUnlocked(new Set()); setBatchLocked(false); setVersion((v) => v + 1);
+    // Forget what was loaded, or the batch just cleared would be refused a
+    // reload when it is typed again.
+    loadedBatch.current = null; resolvedSlab.current = null;
   }
 
   return (
@@ -336,7 +368,7 @@ export function SmartSlabForm({ model, tableName, fields, paramFieldSet, options
         <div className="grid grid-cols-1 gap-x-5 gap-y-4 sm:grid-cols-3">
           <label className={`block ${slabFirst ? "sm:order-2" : ""}`}>
             <span className="mb-1 flex items-center gap-1.5 text-xs font-medium text-gray-600">Batch{slabFirst && batchLocked && <span className="rounded bg-brand/10 px-1.5 py-0.5 text-[10px] text-brand">from Press</span>}</span>
-            <input name={batchField} value={batch} onChange={(e) => setBatch(e.target.value)} onBlur={batchLocked ? undefined : loadDefaults} readOnly={batchLocked} required placeholder="e.g. D1310" className={inputCls + (batchLocked ? " border-brand/30 bg-brand/[0.04] text-gray-700" : "")} />
+            <input name={batchField} value={batch} onChange={(e) => setBatch(e.target.value)} onBlur={batchLocked ? undefined : () => loadDefaults()} readOnly={batchLocked} required placeholder="e.g. D1310" className={inputCls + (batchLocked ? " border-brand/30 bg-brand/[0.04] text-gray-700" : "")} />
             <span className="mt-1 block text-[11px] text-gray-400">{loading ? "Loading…" : slabFirst ? (batchLocked ? "auto-filled from Press for this slab" : "not in Press — enter the batch") : "Enter batch, then Tab — parameters auto-fill"}</span>
           </label>
           {slabNumberField && (
