@@ -1,12 +1,22 @@
-// GET /api/office/commercial/packing-lists/[plId]/labels?kind=crate|piece
-//     → the label PDF (round three, answer 4)
+// GET /api/office/commercial/packing-lists/[plId]/labels?kind=crate|piece|edge
+//     → the label PDF (round three, answer 4; the edge label is round four,
+//       answer 3)
 // GET .../labels?kind=crate&format=json
-//     → { crates, missing, missingBarcodes, pieceCount, truncated } for the screen
+//     → { crates, missing, missingBarcodes, pieceCount, blocked, … } for the screen
 //
-// Two label kinds off one packing list: a CRATE label per crate and article,
-// and a PIECE label per piece. What goes on each is decided in
+// Three label kinds off one packing list: a CRATE label per crate and article,
+// a PIECE label per piece, and an EDGE label per piece — the barcode on a strip
+// that fits the 2 cm edge of the stone. What goes on each is decided in
 // lib/commercial/articles-rules (pure, tested) and drawn in
 // lib/commercial/pdf/labels.
+//
+// TWO OF THE THREE CARRY A BARCODE AND SO CAN BE STOPPED. While any article
+// this list could print out of carries a blocked reason, the crate and edge
+// labels refuse with the sentence naming the articles that collide — the same
+// sentence the allocate route refuses with (round four, answer 2: "don't
+// generate barcodes till it's fixed"). Out of, not belonging to: a line whose
+// customer has no row of their own prints OUR row's code, so the question is
+// asked of this customer's articles AND of ours together.
 //
 // `format=json` is the same answer without the paper. The screen asks for it
 // so it can say WHICH lines have no article on file before anybody prints —
@@ -21,10 +31,21 @@ import { prisma } from "@/lib/prisma";
 import { commercialGate } from "@/lib/commercial/access";
 import { deny, json } from "@/lib/commercial/http";
 import {
-  crateLabels, pieceLabels, missingArticles, missingBarcodes, parseLabelKind,
-  type LabelsInput, type ArticleRow,
+  crateLabels, pieceLabels, edgeLabels, missingArticles, missingBarcodes, parseLabelKind,
+  type LabelsInput, type ArticleRow, type LabelKind,
 } from "@/lib/commercial/articles-rules";
-import { generateCrateLabelsPdf, generatePieceLabelsPdf, PIECE_LABELS_PER_PAGE } from "@/lib/commercial/pdf/labels";
+import { loadSettings } from "@/lib/commercial/settings";
+// The block is the ARTICLES desk's rule and its query, read here rather than
+// restated: "while any article of a client carries a blocked reason, that
+// client's barcodes are neither generated nor printed" has to mean the same
+// thing at the allocate button and at the printer, and a second copy of the
+// condition is the one that will one day disagree. The helper is the LABEL one
+// because a label prints out of two sets, this customer's and ours.
+import { labelBarcodeBlock } from "@/app/api/office/commercial/articles/_lib";
+import {
+  generateCrateLabelsPdf, generatePieceLabelsPdf, generateEdgeLabelsPdf,
+  PIECE_LABELS_PER_PAGE,
+} from "@/lib/commercial/pdf/labels";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -119,6 +140,18 @@ async function loadForLabels(plId: string) {
 const filenameOf = (number: string, kind: string): string =>
   `${String(number).replace(/[\\/:*?"<>|]/g, "-")} ${kind} labels.pdf`;
 
+/**
+ * The kinds that carry a barcode, and are therefore stopped while one of this
+ * customer's articles is blocked (round four, answer 2).
+ *
+ * THE PIECE LABEL IS NOT ONE OF THEM. It carries the item code and the size and
+ * nothing else — there is no barcode on it to be wrong — so stopping it would
+ * hold up the packing of a container to punish a duplicate it cannot express.
+ * The owner's sentence was "don't generate BARCODES till it's fixed", and this
+ * is where that line is drawn.
+ */
+const CARRIES_A_BARCODE: ReadonlyArray<LabelKind> = ["crate", "edge"];
+
 export async function GET(req: Request, { params }: Ctx) {
   const g = await commercialGate("view", "packing");
   if (!g.ok) return deny(g);
@@ -128,7 +161,7 @@ export async function GET(req: Request, { params }: Ctx) {
 
     const sp = new URL(req.url).searchParams;
     const kind = parseLabelKind(sp.get("kind"));
-    if (!kind) return json({ error: 'Which labels — kind=crate or kind=piece?' }, 400);
+    if (!kind) return json({ error: "Which labels — kind=crate, kind=piece or kind=edge?" }, 400);
 
     const src = await loadForLabels(plId);
     if (!src) return json({ error: "Packing list not found" }, 404);
@@ -138,9 +171,24 @@ export async function GET(req: Request, { params }: Ctx) {
     // customer, or fix the digit somebody mistyped". Both print a crate label
     // without bars, and they are chased by different people.
     const missing = missingArticles(src.input);
+    const settings = await loadSettings();
+    // Answer 2, the printing half: a customer with a duplicate on file prints
+    // no barcode at all until somebody settles it. Asked here and not inside
+    // the label rules because it is a question about the ARTICLE MASTER, not
+    // about this packing list — a list can be perfect and still be unprintable
+    // because of a row nobody on it has looked at.
+    //
+    // ASKED OF BOTH SETS, and this is the whole of why labelBarcodeBlock
+    // exists. The articles above are fetched by DESIGN and resolved by
+    // articleFor, which falls back to the client-less row, so the EAN on this
+    // list's crates can come off a row of ours; a block question filtered on
+    // the list's own customer would answer "nothing is stopped" while the
+    // collision sat in the set the code was actually printed from.
+    const block = await labelBarcodeBlock(src.input.clientId ?? null);
 
     if (sp.get("format") === "json") {
       const pieces = pieceLabels(src.input);
+      const edges = edgeLabels(src.input, settings.labels.edge);
       return json({
         number: src.number,
         orderNumber: src.orderNumber,
@@ -151,11 +199,30 @@ export async function GET(req: Request, { params }: Ctx) {
         pieceCount: pieces.labels.length,
         pieceLabelsPerPage: PIECE_LABELS_PER_PAGE,
         truncated: pieces.truncated,
+        // The screen shows the refusal BEFORE the button is pressed, with the
+        // articles named, because the person who can fix it is the one sitting
+        // in front of it.
+        blocked: block.blocked,
+        blockedMessage: block.message,
+        blockedArticles: block.articles,
+        edgeCount: edges.labels.length,
+        edgeSkipped: edges.skipped,
+        edgeTruncated: edges.truncated,
+        edgeLabel: edges.labels[0]?.layout ?? null,
       });
+    }
+
+    if (block.blocked && CARRIES_A_BARCODE.includes(kind)) {
+      return json({ error: block.message }, 409);
     }
 
     const buf = kind === "crate"
       ? await generateCrateLabelsPdf({ listNumber: src.number, labels: crateLabels(src.input) })
+      : kind === "edge"
+      ? await (async () => {
+          const { labels, truncated } = edgeLabels(src.input, settings.labels.edge);
+          return generateEdgeLabelsPdf({ listNumber: src.number, labels, truncated });
+        })()
       : await (async () => {
           const { labels, truncated } = pieceLabels(src.input);
           return generatePieceLabelsPdf({ listNumber: src.number, labels, truncated });

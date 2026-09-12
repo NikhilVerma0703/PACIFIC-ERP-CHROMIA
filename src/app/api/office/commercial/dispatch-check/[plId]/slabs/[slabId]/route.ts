@@ -5,6 +5,11 @@
 // order to PACKING, and "no reason given" is not something Commercial can act
 // on at eight in the evening with a container booked.
 //
+// The cut-to-size lines are checked the same way by ../pieces/[pieceId] (round
+// four, answer 1). Two routes, because two tables and two id spaces, but one
+// verdict body and one set of gates — both out of packing-rules, so they cannot
+// come to mean different things.
+//
 // A LATE VERDICT (answer 30). On a VERIFIED or FINAL list the check is over,
 // but the loading bay is where a slab passed last week turns out to be cracked.
 // The checker marks it UNFIT here — the list keeps its status, nothing is
@@ -58,9 +63,15 @@ export async function PATCH(req: Request, { params }: Ctx) {
         payload: { packingListId: plId, slabId, slabNumber: slab.slabNumber, fit: patch.fit, unfitReason: patch.unfitReason, late: true },
       });
     }
-    const slabs: Array<{ fit: string }> = await db.commercialPackedSlab.findMany({ where: { packingListId: plId }, select: { fit: true } });
+    // The count is over BOTH kinds of line (round four, answer 1): the screen's
+    // progress bar and its Verify button read it, and a count of slabs alone on
+    // a list that also packs pieces says the check is finished when it is not.
+    const [slabs, pieces]: [Array<{ fit: string }>, Array<{ fit: string }>] = await Promise.all([
+      db.commercialPackedSlab.findMany({ where: { packingListId: plId }, select: { fit: true } }),
+      db.commercialPackedPiece.findMany({ where: { packingListId: plId }, select: { fit: true } }),
+    ]);
     // The slab as the floor screen reads it, not the row as it is stored: this
     // segment answers a login that may check slabs and nothing else.
-    return json(plain({ slab: checkerSlabView(plain<Record<string, unknown>>(updated)), fit: fitCounts(slabs) }));
+    return json(plain({ slab: checkerSlabView(plain<Record<string, unknown>>(updated)), fit: fitCounts(slabs, pieces) }));
   });
 }

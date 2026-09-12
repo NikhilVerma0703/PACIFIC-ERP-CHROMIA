@@ -3599,6 +3599,7 @@ model SalesClient {
   commercialOrders    CommercialOrder[]
   commercialChallans  CommercialDeliveryChallan[]
   commercialArticles  CommercialCustomerArticle[]
+  commercialBarcode   CommercialClientBarcode?
 
   @@map("sales_clients")
 }
@@ -6993,6 +6994,7 @@ model CommercialPackedSlab {
   @@unique([packingListId, slabNumber])
   @@index([slabNumber])
   @@index([crateId])
+  @@index([packingListId, fit])
   @@map("commercial_packed_slab")
 }
 
@@ -7199,6 +7201,29 @@ model CommercialProductionPlanChange {
 /// our slab and not to our piece, so every crate of it prints the same barcode.
 /// Keyed by client as well as design and size: two customers may sell the same
 /// stone at the same size under different codes.
+/// The CUSTOMER'S own GS1 company prefix, so a new article's barcode is
+/// allocated in the same series as the ones they already sent (round four,
+/// answer 2: "how are barcodes made? make in similar way only. autogenerate").
+/// 8720847 is the Dutch prefix on every code in Desert Silk Crate BARCODE.docx;
+/// the next customer will have a different one, of a different length.
+model CommercialClientBarcode {
+  clientId    String      @id @map("client_id")
+  client      SalesClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  /// 6 to 11 digits by CHECK. The item reference takes whatever is left of the
+  /// twelve: a 7-digit prefix leaves 5 digits, a 9-digit prefix leaves 3.
+  gs1Prefix   String      @map("gs1_prefix")
+  /// A FLOOR, not a counter. The allocator takes the greater of this and the
+  /// highest reference actually in use, so a hand-entered code can never be
+  /// handed out twice and a deleted row cannot rewind the series.
+  nextRef     BigInt      @default(0) @map("next_ref")
+  notes       String?
+  updatedById String?     @map("updated_by_id")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  @@map("commercial_client_barcode")
+}
+
 model CommercialCustomerArticle {
   id           String       @id @default(cuid())
   clientId     String?      @map("client_id")
@@ -7212,7 +7237,22 @@ model CommercialCustomerArticle {
   description  String?
   /// EAN-13. Thirteen digits by CHECK; the check digit is verified in
   /// lib/commercial/barcode.ts, which can say which digit is wrong.
-  ean          String?
+  ///
+  /// UNIQUE ACROSS THE TABLE, scripts/0082 (round four, answer 2: "do not let
+  /// duplicate barcodes be entered"). An EAN-13 is globally unique by
+  /// construction — the company prefix inside it already says whose it is — so
+  /// scoping this per client would permit exactly the collision the standard
+  /// exists to prevent. The index is partial: "no code yet" is an ordinary
+  /// state and NULLs must not collide with one another.
+  ean          String?      @unique
+  /// Why this article has NO code. NULL is the ordinary case; a sentence here
+  /// means one was offered and refused because another article owns it, and
+  /// that is what stops this client's labels until a human settles it.
+  eanBlockedReason String?  @map("ean_blocked_reason")
+  /// CUSTOMER (off their own file, never regenerated) or GENERATED (allocated
+  /// by us under their GS1 prefix). Text with a CHECK rather than an enum: two
+  /// values that may gain a third are not worth a migration to extend.
+  eanSource    String?      @map("ean_source")
   notes        String?
   updatedById  String?      @map("updated_by_id")
   createdAt    DateTime     @default(now()) @map("created_at")
@@ -7252,11 +7292,21 @@ model CommercialPackedPiece {
   room          String?
   weightKg      Decimal?              @map("weight_kg") @db.Decimal(12, 3)
   notes         String?
+  /// THE DISPATCH CHECK'S VERDICT, scripts/0082 — the same four fields
+  /// CommercialPackedSlab carries, on the same enum. Round four, answer 1:
+  /// "a cut to size also gets a physical check piece by piece". One job, one
+  /// enum; two enums with the same three labels would drift the first time a
+  /// label was added to one of them.
+  fit           CommercialFitStatus   @default(PENDING)
+  unfitReason   String?               @map("unfit_reason")
+  checkedById   String?               @map("checked_by_id") // -> users.id (no hard FK)
+  checkedAt     DateTime?             @map("checked_at")
   createdAt     DateTime              @default(now()) @map("created_at")
   updatedAt     DateTime              @updatedAt @map("updated_at")
 
   @@index([packingListId])
   @@index([crateId])
+  @@index([packingListId, fit])
   @@map("commercial_packed_piece")
 }
 

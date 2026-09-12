@@ -26,6 +26,12 @@ export interface PieceRow extends PieceLike {
   pieceNo: string | null;
   room: string | null;
   notes: string | null;
+  /** The dispatch check's verdict on this line (round four, answer 1: a cut
+   *  piece is checked exactly like a slab). The row carries it so the editor
+   *  can count it and this table can show a refused line as refused; without
+   *  it a piece the check turned down looked no different from one it passed. */
+  fit: "PENDING" | "FIT" | "UNFIT";
+  unfitReason: string | null;
 }
 
 const cell = "w-full rounded border border-gray-200 bg-white px-1.5 py-1 text-sm transition focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand/20 disabled:border-transparent disabled:bg-transparent disabled:text-gray-500";
@@ -168,7 +174,10 @@ export function PiecesTable({ pieces, unit, editable, busy, onAdd, onPatch, onRe
                 const p = byId.get(r.id);
                 if (!p) return null;
                 return (
-                  <tr key={r.id}>
+                  // A refused line is tinted the way a refused slab is on the
+                  // slab table, so the sentence in the amber banner above has a
+                  // row to point at.
+                  <tr key={r.id} className={p.fit === "UNFIT" ? "bg-red-50/50" : undefined}>
                     <td className="py-1.5 pr-2 w-16"><Cell value={p.crateNo ?? ""} disabled={!editable} onCommit={(v) => onPatch(r.id, { crateNo: v })} /></td>
                     <td className="py-1.5 pr-2 w-24"><Cell value={p.drawingNo ?? ""} disabled={!editable} onCommit={(v) => onPatch(r.id, { drawingNo: v })} /></td>
                     <td className="py-1.5 pr-2 w-20"><Cell value={p.pieceNo ?? ""} disabled={!editable} onCommit={(v) => onPatch(r.id, { pieceNo: v })} /></td>

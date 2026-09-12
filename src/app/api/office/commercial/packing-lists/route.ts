@@ -41,6 +41,11 @@ export async function GET(req: Request) {
           order: { select: { id: true, number: true, kind: true, status: true, client: { select: { id: true, name: true, country: true } } } },
           crates: { select: { id: true } },
           slabs: { select: { fit: true, sqm: true } },
+          // The verdicts only, for the row's check count. A cut-to-size line is
+          // checked exactly as a slab is (round four, answer 1), so a register
+          // that counted the slabs alone told the floor a pieces-only list had
+          // nothing left to check.
+          pieces: { select: { fit: true } },
         },
       }),
       db.commercialPackingList.count({ where }),
@@ -52,13 +57,14 @@ export async function GET(req: Request) {
 
     const items = (rows as Array<Record<string, unknown>>).map((r) => {
       const slabs = (r.slabs as Array<{ fit: string; sqm: unknown }>) ?? [];
+      const pieces = (r.pieces as Array<{ fit: string }>) ?? [];
       const crates = (r.crates as Array<unknown>) ?? [];
-      const { slabs: _s, crates: _c, ...rest } = r; void _s; void _c;
+      const { slabs: _s, pieces: _p, crates: _c, ...rest } = r; void _s; void _p; void _c;
       return {
         ...rest,
         crateCount: crates.length,
         slabCount: slabs.length,
-        fit: fitCounts(slabs),
+        fit: fitCounts(slabs, pieces),
         sqm: slabs.reduce((a, s) => a + (Number(s.sqm) || 0), 0),
       };
     });

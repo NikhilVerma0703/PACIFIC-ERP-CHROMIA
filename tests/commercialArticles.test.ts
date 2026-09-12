@@ -345,10 +345,14 @@ test("pieceLabels falls back to the design and the size, and stops a runaway run
   assert.equal(runaway.truncated, 500, "the caller is told, rather than the PDF quietly being short");
 });
 
-test("parseLabelKind: the two kinds and nothing else", () => {
-  assert.deepEqual([...LABEL_KINDS], ["crate", "piece"]);
+// Round four, answer 3 added a third: the EDGE label, the barcode alone on a
+// strip that fits the edge of the stone. Its own rules are in
+// tests/commercialArticleBarcodes.test.ts.
+test("parseLabelKind: the three kinds and nothing else", () => {
+  assert.deepEqual([...LABEL_KINDS], ["crate", "piece", "edge"]);
   assert.equal(parseLabelKind("crate"), "crate");
   assert.equal(parseLabelKind(" PIECE "), "piece");
+  assert.equal(parseLabelKind("edge"), "edge");
   assert.equal(parseLabelKind("both"), null);
   assert.equal(parseLabelKind(""), null);
   assert.equal(parseLabelKind(null), null);

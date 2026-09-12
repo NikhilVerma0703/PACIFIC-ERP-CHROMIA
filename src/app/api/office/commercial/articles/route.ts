@@ -10,9 +10,12 @@
 // seen from the customer's side (see ./_lib).
 import { commercialGate, actorStamp } from "@/lib/commercial/access";
 import { json, deny, fail, handle, plain, str, readBody } from "@/lib/commercial/http";
-import { validateArticle, sizeLabel } from "@/lib/commercial/articles-rules";
+import { validateArticle, sizeLabel, claimEan, parseEanSource } from "@/lib/commercial/articles-rules";
 import { pageParams } from "@/lib/commercial/clients-rules";
-import { db, areaRefusal, ARTICLE_SELECT, ARTICLE_ORDER, findClash, requireClient, eanWarning, isUniqueViolation, clashMessage } from "./_lib";
+import {
+  db, areaRefusal, ARTICLE_SELECT, ARTICLE_ORDER, findClash, requireClient,
+  findEanOwner, isUniqueViolation, isEanUniqueViolation, eanTakenMessage, clashMessage,
+} from "./_lib";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -70,16 +73,46 @@ export async function POST(req: Request) {
     const clash = await findClash(v);
     if (clash) fail(409, clashMessage(v.design, size, clash.itemCode));
 
+    // ROUND FOUR, ANSWER 2. The barcode is refused before the row is written,
+    // with the article that owns it named — and the person is asked rather
+    // than overruled: `withoutBarcode` is them answering "store it anyway,
+    // I'll settle the duplicate", which is the state the column
+    // eanBlockedReason exists for and the state that stops this customer's
+    // label run until somebody does settle it.
+    const claim = claimEan({
+      ean: v.ean,
+      source: parseEanSource(body.eanSource) ?? "CUSTOMER",
+      self: v,
+      owner: await findEanOwner(v.ean),
+    });
+    // A 409 WITH A FLAG, not a bare sentence. The screen has a second button to
+    // offer — "store it without the barcode" — and it may only offer it for
+    // THIS refusal, not for the (client, design, size) clash, which is a
+    // different 409 with a different answer (open the row that is already
+    // there). The flag is what tells the two apart without reading the prose.
+    if (claim.refused && body.withoutBarcode !== true) {
+      return json({ error: claim.message, eanTaken: true }, 409);
+    }
+
     try {
-      const warning = await eanWarning(v.ean);
       const row = await db.commercialCustomerArticle.create({
-        data: { ...v, updatedById: actorStamp(g.user).id },
+        data: {
+          ...v,
+          ean: claim.ean,
+          eanSource: claim.eanSource,
+          eanBlockedReason: claim.eanBlockedReason,
+          updatedById: actorStamp(g.user).id,
+        },
         select: ARTICLE_SELECT,
       });
-      return json(plain({ ...row, warning }), 201);
+      return json(plain({ ...row, blocked: claim.eanBlockedReason }), 201);
     } catch (e) {
-      // Two clerks typing the same size at the same moment: the database's
-      // unique index catches what findClash could not see yet.
+      // Two clerks saving in the same instant: the database's indexes catch
+      // what the two lookups above could not see yet. WHICH index matters —
+      // the key's answer is "that size is already on the list", the EAN's is
+      // "another article owns that barcode", and they send the person to two
+      // different rows.
+      if (isEanUniqueViolation(e)) fail(409, await eanTakenMessage(v, v.ean));
       if (isUniqueViolation(e)) fail(409, clashMessage(v.design, size));
       throw e;
     }

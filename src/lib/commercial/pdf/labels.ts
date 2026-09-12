@@ -10,6 +10,12 @@
 //   PIECE label   the item code and the size alone, once per piece, on an A4
 //                 sheet of 24 to be guillotined. His DS-Thresholds file is 360
 //                 of them off a single line.
+//   EDGE label    round four, answer 3: the barcode alone, on a strip that
+//                 fits the EDGE of the piece — under 20 mm on a 2 cm slab, as
+//                 long as it needs to be. Its size is not chosen here either:
+//                 articles-rules.edgeLabelFor lays it out from the article's
+//                 thickness and the owner's settings, and this file prints it
+//                 at the millimetre it gives.
 //
 // EVERY DECISION about WHAT is on a label — which lines, which quantity, which
 // article, what a line with no article prints — is in ../articles-rules, which
@@ -23,7 +29,7 @@ import {
   ean13Bars, ean13Text, ean13ModuleMm,
   EAN13_LABEL_MAGNIFICATION, EAN13_QUIET_LEFT_MODULES, EAN13_DRAWN_MODULES,
 } from "@/lib/commercial/barcode";
-import type { CrateLabel, PieceLabel } from "@/lib/commercial/articles-rules";
+import type { CrateLabel, PieceLabel, EdgeLabelRow } from "@/lib/commercial/articles-rules";
 
 const MM = 2.834645669;   // points per millimetre
 
@@ -266,6 +272,134 @@ export async function generatePieceLabelsPdf(input: PieceLabelsPdfInput): Promis
         { text: `Page ${page} of ${count}`, fontSize: 6, color: "#888888", alignment: "right", margin: [0, 0, 24, 0] },
       ],
     }),
+    content,
+  };
+  return buildPdf(docDef);
+}
+
+// ───────────── the label on the edge of the piece (answer 3) ────────────────
+// This one is NOT a page with a label on it; it IS the label. The stone's edge
+// is 20 mm, the sticker has to sit inside that with clearance, and everything
+// on it — 1 mm of margin, 13.4 mm of bars, 2.6 mm of digits, 1 mm of margin —
+// is measured in millimetres off the piece, not laid out to look right on a
+// page. So every number below comes from articles-rules.edgeLabelFor (over
+// barcode.edgeLabelLayout) and nothing here decides a size.
+//
+// WHY THE PAGE IS THE BIGGEST LABEL IN THE RUN AND NOT EACH LABEL'S OWN SIZE.
+// A pdfmake document carries ONE page size, and a run that mixes 2 cm and 3 cm
+// stock mixes two label heights. The page is therefore the largest label in the
+// run and every label is drawn at its own true size in the top-left corner with
+// its own cut outline, so the guillotine still follows the label rather than the
+// paper. In the ordinary run — one thickness, which is what a packing list
+// usually is — every page is exactly the label and the file is a roll.
+
+/** One label per page: the label IS the page, so there is nothing to fit. */
+export const EDGE_LABELS_PER_PAGE = 1;
+
+export interface EdgeLabelsPdfInput {
+  listNumber: string;
+  labels: ReadonlyArray<EdgeLabelRow>;
+  /** Labels asked for beyond PIECE_LABEL_MAX. */
+  truncated?: number;
+}
+
+/**
+ * The bars, the digits and the cut outline of one edge label, in points,
+ * positioned from the top-left of the page.
+ *
+ * THE GUARD BARS RUN INTO THE DIGIT BAND, as they do on every EAN-13 ever
+ * printed: they are what a scanner finds the ends of the symbol by, and they
+ * are the last thing to give up height. They take four tenths of the band and
+ * the digits sit between them, which is the standard arrangement and is why the
+ * band does not have to be as tall as the digits plus the guards.
+ */
+function edgeCanvas(row: EdgeLabelRow): any[] {
+  const L = row.layout;
+  const w = L.lengthMm * MM;
+  const h = L.heightMm * MM;
+  const margin = L.marginMm * MM;
+  const module = L.moduleMm * MM;
+  const barH = L.barHeightMm * MM;
+  const digits = L.digitsHeightMm * MM;
+  const guardExtra = digits * 0.4;
+
+  const bits = ean13Bars(row.ean);
+  const text = ean13Text(row.ean);
+  if (!bits || !text) return [];
+
+  const rects: any[] = [
+    // The label itself: white paper, and a hairline somebody cuts to. The
+    // outline is the LABEL'S size even when the page is taller, which is the
+    // whole point of drawing it.
+    { type: "rect", x: 0, y: 0, w, h, color: "#ffffff", lineWidth: 0.25, lineColor: "#bbbbbb" },
+  ];
+
+  const left = margin + EAN13_QUIET_LEFT_MODULES * module;
+  let i = 0;
+  while (i < bits.length) {
+    if (!bits[i]) { i++; continue; }
+    const start = i;
+    const tall = isGuard(i);
+    while (i < bits.length && bits[i] === 1 && isGuard(i) === tall) i++;
+    rects.push({
+      type: "rect",
+      x: left + start * module, y: margin,
+      w: (i - start) * module, h: barH + (tall ? guardExtra : 0),
+      color: "#000000",
+    });
+  }
+
+  // The digits, between the guard bars. The leading digit sits in the left
+  // quiet zone — that is where EAN-13 prints it, and human-readable text is the
+  // one thing allowed in there. The size is the band's, so a taller label
+  // (thicker stone) does not get bigger text: the millimetres go to the bars.
+  const fontSize = Math.max(3.5, digits * 0.85);
+  return [
+    { canvas: rects },
+    {
+      text: `${text.lead}  ${text.left}  ${text.right}`,
+      fontSize,
+      characterSpacing: Math.max(0, (module * 7 - fontSize * 0.62)),
+      absolutePosition: { x: margin, y: margin + barH + guardExtra * 0.15 },
+    },
+  ];
+}
+
+/**
+ * The edge labels, one per page, each at the size its article's thickness
+ * allows.
+ *
+ * A run with nothing in it still produces a page saying so rather than a
+ * zero-page PDF, which most viewers refuse to open at all — and on this label
+ * that page is 58 mm wide, so the sentence is short.
+ */
+export async function generateEdgeLabelsPdf(input: EdgeLabelsPdfInput): Promise<Buffer> {
+  const labels = input.labels ?? [];
+  const widest = Math.max(58, ...labels.map((l) => l.layout.lengthMm)) * MM;
+  const tallest = Math.max(18, ...labels.map((l) => l.layout.heightMm)) * MM;
+
+  const content: any[] = [];
+  if (!labels.length) {
+    content.push({
+      text: `No edge label can be printed for ${input.listNumber} yet.`,
+      fontSize: 5, margin: [2, 2, 2, 2],
+    });
+  }
+
+  labels.forEach((l, i) => {
+    content.push({
+      stack: edgeCanvas(l),
+      ...(i < labels.length - 1 ? { pageBreak: "after" } : {}),
+    });
+  });
+
+  const docDef: any = {
+    pageSize: { width: widest, height: tallest },
+    // NO PAGE MARGIN. The label's own margin is inside the label (it is one of
+    // the owner's settings), and a page margin on top of it would push the
+    // symbol off a sticker that is 18 mm tall in total.
+    pageMargins: [0, 0, 0, 0],
+    defaultStyle: { font: "Roboto", fontSize: 6 },
     content,
   };
   return buildPdf(docDef);

@@ -18,7 +18,8 @@ import { Card, Empty } from "@/components/ui";
 import { readJson } from "@/lib/readJson";
 import { postJson, deleteJson } from "@/lib/fab/postJson";
 import { describeEan } from "@/lib/commercial/barcode";
-import { sizeLabel } from "@/lib/commercial/articles-rules";
+import { sizeLabel, eanSourceForSave } from "@/lib/commercial/articles-rules";
+import Gs1PrefixCard from "./Gs1PrefixCard";
 
 const inp = "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm transition focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20 disabled:bg-gray-50 disabled:text-gray-400";
 const lbl = "mb-1 block text-xs font-medium text-gray-600";
@@ -39,6 +40,12 @@ export interface ArticleDto {
   description: string | null;
   ean: string | null;
   notes: string | null;
+  /** CUSTOMER (off their file, never regenerated) or GENERATED (ours). */
+  eanSource: string | null;
+  /** Why this row has NO code: another article owns it. While any row of a
+   *  customer carries one, that customer's barcodes are neither generated nor
+   *  printed (round four, answer 2). */
+  eanBlockedReason: string | null;
   client?: { id: string; name: string } | null;
 }
 
@@ -55,11 +62,23 @@ interface Form {
   description: string;
   ean: string;
   notes: string;
+  /** The reason stored on the row being edited, so the form can show it and
+   *  offer to clear it. Never sent back as itself. */
+  blockedReason: string | null;
+  /** The code the row held when this form was opened, and the source recorded
+   *  against it. They are not shown and not edited — they are what lets a save
+   *  tell a code somebody typed from a code this form merely pre-filled. */
+  heldEan: string;
+  heldSource: string | null;
+  /** "The duplicate is settled" — the one deliberate way a block goes away
+   *  without a code being taken. */
+  clearBlock: boolean;
 }
 
 const EMPTY: Form = {
   id: null, clientId: "", design: "", lengthCm: "", widthCm: "", thicknessCm: "",
-  itemCode: "", description: "", ean: "", notes: "",
+  itemCode: "", description: "", ean: "", notes: "", blockedReason: null,
+  heldEan: "", heldSource: null, clearBlock: false,
 };
 
 const formOf = (a: ArticleDto): Form => ({
@@ -73,9 +92,13 @@ const formOf = (a: ArticleDto): Form => ({
   description: a.description ?? "",
   ean: a.ean ?? "",
   notes: a.notes ?? "",
+  blockedReason: a.eanBlockedReason ?? null,
+  heldEan: a.ean ?? "",
+  heldSource: a.eanSource ?? null,
+  clearBlock: false,
 });
 
-const bodyOf = (f: Form) => ({
+const bodyOf = (f: Form, withoutBarcode = false) => ({
   clientId: f.clientId || null,
   design: f.design,
   lengthCm: f.lengthCm,
@@ -85,6 +108,21 @@ const bodyOf = (f: Form) => ({
   description: f.description,
   ean: f.ean,
   notes: f.notes,
+  clearBlock: f.clearBlock,
+  // WHOSE CODE THIS IS, claimed only where this form has grounds to claim it.
+  // A code typed here is the CUSTOMER'S — ours only ever arrives through the
+  // allocator, which writes GENERATED itself — but an edit re-sends whatever
+  // the row already held, and a generated code pre-filled into the box and
+  // handed straight back is nobody's statement about where it came from.
+  // Saying CUSTOMER over it would badge a code we minted as the customer's and
+  // leave the allocator afterwards refusing to touch it in those words, which
+  // is the one thing eanSource is there to tell us (round four, answer 2). So
+  // the source that came with the code travels back with it, by the same rule
+  // the save route settles it by.
+  eanSource: eanSourceForSave({ ean: f.ean, prior: { ean: f.heldEan, source: f.heldSource } }),
+  /** "Store the row anyway, without the code" — answered by the person, after
+   *  the refusal has named the article that owns it. */
+  withoutBarcode,
 });
 
 /** One screenful. The route pages (clients-rules.pageParams), and this is the
@@ -109,6 +147,10 @@ export default function ArticlesEditor({ readOnly }: { readOnly: boolean }) {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+  /** Set when a save was refused because another article owns the barcode.
+   *  It is what puts the second button on the screen — the row can still be
+   *  stored, without the code and saying why (round four, answer 2). */
+  const [eanTaken, setEanTaken] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -146,23 +188,43 @@ export default function ArticlesEditor({ readOnly }: { readOnly: boolean }) {
   // under the cursor.
   const eanVerdict = useMemo(() => describeEan(form.ean), [form.ean]);
 
-  async function save(e: React.FormEvent) {
-    e.preventDefault();
+  async function save(e: React.FormEvent | null, withoutBarcode = false) {
+    e?.preventDefault();
     setSaving(true);
     setSaveError(null);
     setNotice(null);
     setWarning(null);
+    setEanTaken(false);
+    const body = bodyOf(form, withoutBarcode);
     const res = form.id
-      ? await postJsonAsPut(`/api/office/commercial/articles/${form.id}`, bodyOf(form))
-      : await postJson("/api/office/commercial/articles", bodyOf(form));
+      ? await postJsonAsPut(`/api/office/commercial/articles/${form.id}`, body)
+      : await postJson("/api/office/commercial/articles", body);
     setSaving(false);
-    if (!res.ok) { setSaveError(res.error ?? "Could not save the article"); return; }
-    // One barcode on two sizes is the customer's business, not a refusal
-    // (DECISIONS-3.md 4) — so it comes back as a warning on a saved row.
-    setWarning((res.data as { warning?: string } | null)?.warning ?? null);
-    setNotice(`${form.design} ${sizeLabel(Number(form.lengthCm), Number(form.widthCm), Number(form.thicknessCm))} was saved.`);
+    if (!res.ok) {
+      setSaveError(res.error ?? "Could not save the article");
+      // ONE BARCODE, ONE ARTICLE (round four, answer 2). The duplicate is
+      // refused, not warned about as it was before — and the row is still
+      // storable without the code, which is the button this flag turns on.
+      setEanTaken((res.data as { eanTaken?: boolean } | null)?.eanTaken === true);
+      return;
+    }
+    const saved = res.data as { blocked?: string | null } | null;
+    setWarning(saved?.blocked ?? null);
+    setNotice(`${form.design} ${sizeLabel(Number(form.lengthCm), Number(form.widthCm), Number(form.thicknessCm))} was saved${saved?.blocked ? ", without a barcode" : ""}.`);
     setForm(EMPTY);
     setOpen(false);
+    await load();
+  }
+
+  /** The allocator, on one row. It only ever fills a BLANK article — a code
+   *  the customer sent is never overwritten — and it refuses outright while
+   *  any article of this customer carries a blocked reason. */
+  async function generateFor(a: ArticleDto) {
+    setSaveError(null); setNotice(null); setWarning(null); setEanTaken(false);
+    const res = await postJson("/api/office/commercial/articles/allocate", { clientId: a.clientId, ids: [a.id] });
+    if (!res.ok) { setSaveError(res.error ?? "Could not generate a barcode"); return; }
+    const made = (res.data as { allocations?: Array<{ label: string; ean: string }> } | null)?.allocations ?? [];
+    setNotice(made.length ? `${made[0].label} was given ${made[0].ean}.` : "Nothing was generated.");
     await load();
   }
 
@@ -183,7 +245,21 @@ export default function ArticlesEditor({ readOnly }: { readOnly: boolean }) {
     <div className="flex flex-col gap-4">
       {notice && <div className={okBox}>{notice}</div>}
       {warning && <div className={warnBox}>{warning}</div>}
-      {saveError && <div className={errBox}>{saveError}</div>}
+      {saveError && (
+        <div className={errBox}>
+          <p>{saveError}</p>
+          {eanTaken && (
+            // The row is not lost with the code. Answer 2 refuses the
+            // DUPLICATE, and says the losing article is still storable —
+            // without a barcode and with the sentence above saved against it,
+            // which is what stops this customer's labels until it is settled.
+            <button type="button" className={`${btnGhost} mt-2`} disabled={saving}
+              onClick={() => void save(null, true)}>
+              Store it without the barcode
+            </button>
+          )}
+        </div>
+      )}
 
       <Card>
         <div className="flex flex-wrap items-end gap-3">
@@ -217,6 +293,13 @@ export default function ArticlesEditor({ readOnly }: { readOnly: boolean }) {
           </button>
         </div>
       </Card>
+
+      {/* THE SERIES IS PER CUSTOMER, so it appears when one is chosen and not
+          before: there is no such thing as "the GS1 prefix" in general, and the
+          OURS rows (clientId none) have no prefix at all to generate from. */}
+      {clientFilter && clientFilter !== "none" && (
+        <Gs1PrefixCard clientId={clientFilter} readOnly={readOnly} onChanged={() => void load()} />
+      )}
 
       {open && !readOnly && (
         <Card>
@@ -285,6 +368,21 @@ export default function ArticlesEditor({ readOnly }: { readOnly: boolean }) {
               </p>
             )}
 
+            {form.blockedReason && (
+              <div className={warnBox}>
+                <p>{form.blockedReason}</p>
+                <label className="mt-2 flex items-center gap-2 text-xs">
+                  <input type="checkbox" checked={form.clearBlock} disabled={saving}
+                    onChange={(e) => setForm({ ...form, clearBlock: e.target.checked })} />
+                  {/* The block survives an ordinary edit on purpose: it is the
+                      thing that stops this customer's whole label run, and it
+                      goes away when somebody says it is settled or when this
+                      row is given a code — not because its notes were fixed. */}
+                  This duplicate is settled — clear it and let this customer&apos;s barcodes print again.
+                </label>
+              </div>
+            )}
+
             <div className="flex items-center gap-3">
               <button type="submit" className={btnPrimary} disabled={saving || !eanVerdict.ok}>
                 {saving ? "Saving…" : form.id ? "Save changes" : "Add article"}
@@ -329,9 +427,30 @@ export default function ArticlesEditor({ readOnly }: { readOnly: boolean }) {
                       {a.ean
                         ? <span className={v.ok ? "text-gray-700" : "text-red-600"} title={v.message ?? undefined}>{a.ean}</span>
                         : <span className="text-gray-400">no barcode</span>}
+                      {/* WHOSE CODE IT IS decides whether it may ever be
+                          replaced: a customer's is never overwritten, ours was
+                          allocated out of their series and is already on a
+                          label somewhere. */}
+                      {a.ean && a.eanSource && (
+                        <span className="ml-2 text-[11px] uppercase tracking-wide text-gray-400">
+                          {a.eanSource === "GENERATED" ? "ours" : "customer"}
+                        </span>
+                      )}
+                      {a.eanBlockedReason && (
+                        <p className="mt-1 max-w-xs text-xs font-normal text-red-600">{a.eanBlockedReason}</p>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex justify-end gap-2">
+                        {!a.ean && (
+                          <button type="button" className={btnGhost} disabled={readOnly || !a.clientId}
+                            title={
+                              readOnly ? "Item codes and barcodes are changed by the Commercial Manager or an admin."
+                                : !a.clientId ? "An article of ours has no GS1 prefix to generate from — the series belongs to a customer."
+                                : "The next code in this customer's own series."
+                            }
+                            onClick={() => void generateFor(a)}>Generate</button>
+                        )}
                         <button type="button" className={btnGhost} disabled={readOnly}
                           title={readOnly ? "Item codes and barcodes are changed by the Commercial Manager or an admin." : undefined}
                           onClick={() => { setForm(formOf(a)); setOpen(true); setSaveError(null); }}>Edit</button>

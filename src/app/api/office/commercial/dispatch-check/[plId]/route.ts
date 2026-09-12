@@ -1,5 +1,8 @@
 // GET /api/office/commercial/dispatch-check/[plId] — one list to check.
-// Crates, slabs and just enough of the order to know what is being shipped.
+// Crates, slabs, cut-to-size lines and just enough of the order to know what is
+// being shipped. Both kinds of line since round four, answer 1: a cut-to-size
+// list is checked piece by piece exactly as a slab list is checked slab by
+// slab, and the screen groups them together under the crate they are in.
 //
 // TWO GATES, NOT ONE. `verify` says the login may check slabs; it does not say
 // which lists. A list Commercial is still building (DRAFT), or one that has
@@ -34,6 +37,10 @@ export async function GET(_req: Request, { params }: Ctx) {
         order: { select: { number: true, kind: true, customerPoNumber: true, client: { select: { name: true, country: true } } } },
         crates: { orderBy: { crateNo: "asc" } },
         slabs: { orderBy: { sortOrder: "asc" } },
+        // The crate number is TYPED on a piece line, so the database sorts it
+        // as text ("10" before "2"); the order the screen shows is decided in
+        // packing-rules (checkerGroups), which knows what the numbers mean.
+        pieces: { orderBy: [{ crateNo: "asc" }, { createdAt: "asc" }] },
       },
     });
     if (!row || !checkerMaySee(String(row.status))) fail(404, "Packing list not found");

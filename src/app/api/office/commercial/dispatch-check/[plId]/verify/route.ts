@@ -1,8 +1,11 @@
 // POST /api/office/commercial/dispatch-check/[plId]/verify — the dispatch
 // team's conclusion. { note? }
 //
-// Refused while any slab is still PENDING: a list is verified because every
-// slab was looked at, not because the checker reached the bottom of the screen.
+// Refused while any line is still PENDING: a list is verified because every
+// line was looked at, not because the checker reached the bottom of the screen.
+// BOTH KINDS OF LINE since round four, answer 1 — a cut-to-size list is checked
+// piece by piece, so a piece nobody ticked stops the conclusion exactly as an
+// unticked slab does.
 //
 //   all FIT  → VERIFIED, and the order moves DISPATCH_CHECK → READY.
 //   any UNFIT → REJECTED. The unfit slabs go back to AVAILABLE and come OFF
@@ -10,6 +13,15 @@
 //               nobody is unpacking a good slab), the note names each one and
 //               why, and the order is pulled back to PACKING so Commercial
 //               sees it as work to do rather than as ready to ship.
+//
+// AN UNFIT PIECE IS A THIRD CASE, and the one the bridge must never be told
+// about. An unfit slab is returned through the inventory bridge because a slab
+// IS a row in finished goods; a cut piece was cut to a customer's size and
+// there is no row and no shelf to put it back on. So the bridge is called with
+// the unfit SLAB numbers only — and not called at all when there are none —
+// and the unfit pieces stay on the list, still flagged with the reason the
+// checker gave, named in the rejection note as staying. Handing unpackSlabs a
+// piece would be a release attempted against a slab number that does not exist.
 //
 // A ROW IS ONLY DELETED FOR A SLAB THAT CAME BACK. The packed-slab row is the
 // only thing in the module that points at the slab; deleting it for a slab the
@@ -65,16 +77,30 @@ export async function POST(req: Request, { params }: Ctx) {
     const body = await readBody<{ note?: unknown }>(req);
     const note = str(body.note);
 
-    const outcome = verifyOutcome(list.slabs.map((s) => ({ id: s.id, slabNumber: Number(s.slabNumber), fit: String(s.fit), unfitReason: (s.unfitReason as string | null) ?? null })));
+    const pieceLines = list.pieces ?? [];
+    const outcome = verifyOutcome(
+      list.slabs.map((s) => ({ id: s.id, slabNumber: Number(s.slabNumber), fit: String(s.fit), unfitReason: (s.unfitReason as string | null) ?? null })),
+      pieceLines.map((p) => ({
+        id: p.id, crateNo: p.crateNo, pieceNo: (p.pieceNo as string | null) ?? null, design: p.design,
+        fit: String(p.fit), unfitReason: (p.unfitReason as string | null) ?? null,
+      })),
+    );
     if (outcome.pending > 0) {
-      return json({ error: `${outcome.pending} slab(s) have not been checked yet`, pending: outcome.pending }, 409);
+      // Which KIND is outstanding, because the two are checked on different
+      // parts of the screen and "3 line(s) not checked" would send the man
+      // looking down a list of slabs he has already done.
+      const left = [
+        outcome.slabs.pending ? `${outcome.slabs.pending} slab(s)` : "",
+        outcome.pieces.pending ? `${outcome.pieces.pending} cut-to-size line(s)` : "",
+      ].filter(Boolean).join(" and ");
+      return json({ error: `${left} have not been checked yet`, pending: outcome.pending }, 409);
     }
 
     const now = new Date();
     const stamp = actorStamp(g.user);
 
     if (outcome.ok) {
-      const text = verificationNote(list.slabs.length, note);
+      const text = verificationNote(list.slabs.length, note, pieceLines.length);
       await db.commercialPackingList.update({
         where: { id: plId },
         data: { status: "VERIFIED", verifiedAt: now, verifiedById: stamp.id, verifiedByName: stamp.name, verificationNote: text },
@@ -84,14 +110,23 @@ export async function POST(req: Request, { params }: Ctx) {
       await logOrderEvent(list.orderId, "packing_verified", {
         note: `Packing list ${list.number} verified — ${text}`,
         by: g.user,
-        payload: { packingListId: plId, number: list.number, slabs: list.slabs.length },
+        payload: { packingListId: plId, number: list.number, slabs: list.slabs.length, pieces: pieceLines.length },
       });
       return json(plain({ list: await view(plId), verified: true, removed: [] }));
     }
 
     // Rejected.
+    //
+    // ONLY THE SLABS GO NEAR THE BRIDGE — see the head note. outcome.unfit is
+    // the slabs and outcome.unfitPieces is the pieces, two fields rather than
+    // one, so there is no shape of this code in which a piece reaches
+    // unpackSlabs. A list rejected on its pieces alone has no slab to return,
+    // and the bridge is not called at all rather than being asked to release
+    // nothing.
     const unfitNumbers = outcome.unfit.map((u) => u.slabNumber);
-    const back = await unpackSlabs({ slabNumbers: unfitNumbers, by: byOf(g), isAdmin: isAdminOf(g) });
+    const back = unfitNumbers.length
+      ? await unpackSlabs({ slabNumbers: unfitNumbers, by: byOf(g), isAdmin: isAdminOf(g) })
+      : { updated: 0, missing: [], skipped: [] };
     const { restored, failed } = restoredSlabs(unfitNumbers, back);
     const stranded = new Map(failed.map((f) => [f.slab, f.reason]));
 
@@ -109,8 +144,13 @@ export async function POST(req: Request, { params }: Ctx) {
       });
     }
 
+    // THE UNFIT PIECES ARE NOT TOUCHED HERE. They keep their row, their UNFIT
+    // and the reason the checker typed, which is the whole record of what is
+    // wrong with them; there is no inventory call to make and no row to delete,
+    // so the only thing left to do about them is to say so, and rejectionNote
+    // names each one as staying on the list.
     const strandedText = strandedNote(failed);
-    const text = [rejectionNote(outcome.unfit, note), strandedText].filter(Boolean).join(". ");
+    const text = [rejectionNote(outcome.unfit, note, outcome.unfitPieces), strandedText].filter(Boolean).join(". ");
     await db.commercialPackingList.update({
       where: { id: plId },
       data: { status: "REJECTED", verifiedAt: now, verifiedById: stamp.id, verifiedByName: stamp.name, verificationNote: text },
@@ -123,12 +163,14 @@ export async function POST(req: Request, { params }: Ctx) {
     await logOrderEvent(list.orderId, "packing_rejected", {
       note: `Packing list ${list.number}: ${text}`,
       by: g.user,
-      payload: { packingListId: plId, number: list.number, unfit: outcome.unfit, returnedToStock: back.updated, stranded: failed },
+      payload: { packingListId: plId, number: list.number, unfit: outcome.unfit, unfitPieces: outcome.unfitPieces, returnedToStock: back.updated, stranded: failed },
     });
     return json(plain({
       list: await view(plId),
       verified: false,
       removed: outcome.unfit.filter((u) => !stranded.has(u.slabNumber)).map((u) => ({ slab: u.slabNumber, reason: u.reason })),
+      // Named apart from `removed` because they were not: nothing left the list.
+      unfitPieces: outcome.unfitPieces,
       stranded: failed,
       returnedToStock: restored.length,
     }));

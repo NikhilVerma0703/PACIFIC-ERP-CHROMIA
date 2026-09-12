@@ -25,10 +25,15 @@
 // TWO MORE REFUSALS SINCE THE OWNER'S ANSWERS OF 2026-09-07, both before
 // anything is read from finished goods:
 //
-//   answers 2 and 31 — NOTHING SHIPS UNTIL THE LIST IS CORRECTED. A slab the
-//   dispatch check marked UNFIT (on a FINAL list, at loading) and a slab nobody
-//   has checked (a replacement swapped in since) both stop the list; the reason
-//   names them (dispatchBlockers).
+//   answers 2 and 31, and round four answer 1 — NOTHING SHIPS UNTIL THE LIST
+//   IS CORRECTED. A slab the dispatch check marked UNFIT (on a FINAL list, at
+//   loading) and a slab nobody has checked (a replacement swapped in since)
+//   both stop the list, and since the check now covers cut-to-size lines on
+//   the same terms, an unfit or unchecked PIECE stops it too; the reason names
+//   every one of them (dispatchBlockers). The piece route's own refusal says
+//   "nothing ships until it is recut and repacked", and this is where that
+//   promise is kept: a refused piece is recut rather than swapped, so a mixed
+//   list waits for it.
 //
 //   answer 2, and round two answers 11 and 12 — THE TRUCK DOES NOT LEAVE
 //   BEFORE THE ADVANCE. The one payment gate in the module, and since round
@@ -83,10 +88,30 @@ export async function POST(req: Request, { params }: Ctx) {
     const numbers = list.slabs.map((s) => Number(s.slabNumber));
     if (!numbers.length) fail(409, `${list.number} has no slabs`);
 
-    // Answers 2 and 31: every slab FIT, or nothing goes.
-    const blockers = dispatchBlockers(list.slabs.map((s) => ({ slabNumber: Number(s.slabNumber), fit: String(s.fit), unfitReason: (s.unfitReason as string | null) ?? null })));
+    // Answers 2 and 31, and round four answer 1: every line FIT, of BOTH
+    // kinds, or nothing goes. The pieces come off the same list the slabs do
+    // (PL_INCLUDE loads them together); handing this only the slabs is how a
+    // mixed container left with a cut-to-size line the checker had refused,
+    // while the packing list customs reads said it shipped.
+    const blockers = dispatchBlockers(
+      list.slabs.map((s) => ({ slabNumber: Number(s.slabNumber), fit: String(s.fit), unfitReason: (s.unfitReason as string | null) ?? null })),
+      (list.pieces ?? []).map((p) => ({
+        id: p.id, crateNo: p.crateNo, pieceNo: (p.pieceNo as string | null) ?? null, design: p.design,
+        fit: String(p.fit), unfitReason: (p.unfitReason as string | null) ?? null,
+      })),
+    );
     if (!blockers.ok) {
-      return json({ error: `${list.number} was not dispatched. ${blockers.reason}`, dispatched: 0, unfit: blockers.unfit, unchecked: blockers.unchecked }, 409);
+      // The pieces are reported beside the slabs and not folded into them: the
+      // screen offers a swap for a refused slab and must not offer one for a
+      // piece, which has no shelf to be swapped off.
+      return json({
+        error: `${list.number} was not dispatched. ${blockers.reason}`,
+        dispatched: 0,
+        unfit: blockers.unfit,
+        unchecked: blockers.unchecked,
+        unfitPieces: blockers.unfitPieces,
+        uncheckedPieces: blockers.uncheckedPieces,
+      }, 409);
     }
 
     // Answer 2 and round two answer 11: the advance opens the gate. Read off

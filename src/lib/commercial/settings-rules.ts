@@ -29,6 +29,7 @@ import { DEFAULT_SETTINGS, mergeSettings, NUMBERING_KINDS, type CommercialSettin
 import { parseGstinLine } from "./settings-defaults.ts";
 import { documentNumber, sequenceKey } from "./numbering.ts";
 import { looksLikeGstin } from "./tax.ts";
+import { isEan13Magnification, EAN13_MAGNIFICATION_MIN, EAN13_MAGNIFICATION_MAX } from "./barcode.ts";
 
 export interface SettingsIssue { path: string; message: string }
 
@@ -135,6 +136,20 @@ export function leafIssue(path: string, v: string | number | boolean | string[])
     case "planning.lightMinL": return numberIn(v as number, 0, 100, "Lightness");
     case "dispatch.advancePctDomestic":
     case "dispatch.advancePctExport": return numberIn(v as number, 0, 100, "Advance percentage");
+    // The edge label (round four, answer 3). The magnification is the one that
+    // has a right answer outside this building: below 0.80 or above 2.00 the
+    // symbol is not a specified EAN-13 at all and a scanner may refuse to
+    // acquire it, at the customer's gate where nobody here can see it. The
+    // other three are bounded only against a typo — a 30 mm margin on an 18 mm
+    // label, a minimum bar height taller than the bars ever are — because what
+    // they should be is a question about glue and stone, not about the standard.
+    case "labels.edge.magnification":
+      return isEan13Magnification(v) ? null
+        : `An EAN-13 is only specified between magnification ${EAN13_MAGNIFICATION_MIN} and ${EAN13_MAGNIFICATION_MAX}`;
+    case "labels.edge.clearanceMm": return numberIn(v as number, 0, 10, "Edge clearance");
+    case "labels.edge.marginMm": return numberIn(v as number, 0, 5, "Label margin");
+    case "labels.edge.digitsMm": return numberIn(v as number, 0, 10, "Digit height");
+    case "labels.edge.minBarMm": return numberIn(v as number, 1, 25, "Minimum bar height");
     case "company.alternateGstins": {
       const bad = (v as string[]).filter((x) => !parseGstinLine(x));
       return bad.length ? `Not "Label | GSTIN" lines: ${bad.join("; ")}` : null;
@@ -201,6 +216,19 @@ function crossIssues(merged: CommercialSettings, errors: SettingsIssue[], warnin
   }
   if (merged.planning.cleaningHoursAbrupt < merged.planning.cleaningHoursDefault) {
     warnings.push({ path: "planning.cleaningHoursAbrupt", message: `The dark-to-light cleaning (${merged.planning.cleaningHoursAbrupt} h) is shorter than the ordinary cleaning (${merged.planning.cleaningHoursDefault} h)` });
+  }
+  // THE 20 MM EDGE IS THE CASE THE ANSWER WAS ABOUT, so it is worth saying at
+  // the moment the numbers are typed that they no longer fit it. Four values
+  // that each look reasonable alone can add up to a label that refuses to
+  // print on every 2 cm piece in the building, and the place that discovers
+  // that is otherwise the label run on the morning a container is loading.
+  const edge = merged.labels.edge;
+  const roomOn20 = 20 - edge.clearanceMm - 2 * edge.marginMm - edge.digitsMm;
+  if (roomOn20 < edge.minBarMm) {
+    warnings.push({
+      path: "labels.edge.clearanceMm",
+      message: `On a 20 mm edge these leave ${Math.round(roomOn20 * 100) / 100} mm for the bars, under the ${edge.minBarMm} mm minimum — every 2 cm piece would be refused an edge label and have to go on the crate label instead`,
+    });
   }
   const half = Math.round((merged.tax.cgstRate + merged.tax.sgstRate) * 100) / 100;
   if (half !== merged.tax.igstRate) {

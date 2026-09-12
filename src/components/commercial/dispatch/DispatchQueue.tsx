@@ -18,7 +18,7 @@ interface Row {
   finalisedAt: string | null;
   containerNo: string | null; vehicleNo: string | null; packagesSummary: string | null;
   orderNumber: string; kind: string; clientName: string;
-  crateCount: number; slabCount: number;
+  crateCount: number; slabCount: number; pieceCount: number;
   fit: { total: number; fit: number; unfit: number; pending: number };
 }
 interface Payload { items: Row[]; total: number; page: number; limit: number; counts: Record<string, number> }
@@ -99,8 +99,14 @@ export function DispatchQueue() {
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="text-3xl font-semibold tracking-tight text-gray-900">{r.slabCount}</div>
-                    <div className="text-sm text-gray-400">slabs</div>
+                    {/* The lines to check, of BOTH kinds (round four, answer 1).
+                        A cut-to-size list has no slab on it and showed a 0 here,
+                        which read as a list with nothing to do — the one row the
+                        checker would skip. */}
+                    <div className="text-3xl font-semibold tracking-tight text-gray-900">{r.slabCount + r.pieceCount}</div>
+                    <div className="text-sm text-gray-400">
+                      {r.pieceCount === 0 ? "slabs" : r.slabCount === 0 ? "cut-to-size lines" : `${r.slabCount} slabs · ${r.pieceCount} cut to size`}
+                    </div>
                     {r.status === "SUBMITTED" && (
                       <div className="mt-1 text-sm">
                         <span className="text-green-700">{r.fit.fit} fit</span>

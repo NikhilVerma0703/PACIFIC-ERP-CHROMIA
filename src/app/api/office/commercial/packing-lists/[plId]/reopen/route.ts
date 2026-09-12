@@ -3,8 +3,9 @@
 //
 // Every slab still PACKED goes back to AVAILABLE: while the list is being
 // rebuilt those slabs are not in a crate, and leaving them PACKED hides them
-// from the next stock check. The per-slab verdicts are cleared with it — a
-// list that is about to change is not a list the dispatch team has checked.
+// from the next stock check. The verdicts are cleared with it, on the cut-to-
+// size lines as well as on the slabs — a list that is about to change is not a
+// list the dispatch team has checked.
 import { commercialGate } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain, str } from "@/lib/commercial/http";
 import { logOrderEvent } from "@/lib/commercial/events";
@@ -39,10 +40,16 @@ export async function POST(req: Request, { params }: Ctx) {
     // list is the only person in a position to chase it.
     const { failed } = restoredSlabs(numbers, back);
 
-    await db.commercialPackedSlab.updateMany({
-      where: { packingListId: plId },
-      data: { fit: "PENDING", unfitReason: null, checkedById: null, checkedAt: null },
-    });
+    // Both kinds of line lose their verdict, and one statement each says so.
+    // A piece row is never deleted here, so a verdict left on it outlives the
+    // whole rebuild: an UNFIT one rejects the next check over a fault that was
+    // recut before resubmitting, and nothing but a per-line mark can clear it
+    // because the bulk marks touch PENDING lines only. A FIT one is worse — the
+    // size can be edited on the DRAFT list and the line still reads checked, so
+    // the next verify passes on stone nobody looked at.
+    const cleared = { fit: "PENDING" as const, unfitReason: null, checkedById: null, checkedAt: null };
+    await db.commercialPackedSlab.updateMany({ where: { packingListId: plId }, data: cleared });
+    await db.commercialPackedPiece.updateMany({ where: { packingListId: plId }, data: cleared });
     await db.commercialPackingList.update({
       where: { id: plId },
       data: { status: "DRAFT", submittedAt: null, submittedById: null, verifiedAt: null, verifiedById: null, verifiedByName: null },

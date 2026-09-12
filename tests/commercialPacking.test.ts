@@ -186,11 +186,18 @@ test("the notes a conclusion writes", () => {
   assert.equal(verificationNote(47), "All 47 slab(s) checked fit");
   assert.equal(verificationNote(47, "loaded 18:40"), "All 47 slab(s) checked fit. loaded 18:40");
 
-  // A cut-to-size list has no slab line to tick (answer 5), and a piece carries
-  // no fit column: the note says what was actually in front of the checker
-  // rather than recording "All 0 slab(s) checked fit".
-  assert.match(verificationNote(0), /no slab line to check/i);
-  assert.doesNotMatch(verificationNote(0), /All 0 slab/);
+  // The note names both kinds of line, because since round four's answer 1 the
+  // checker ticked both. A piece-only list used to be passed with "no slab line
+  // to check", which recorded a check nobody had performed.
+  assert.equal(verificationNote(0, null, 40), "All 40 cut-to-size line(s) checked fit");
+  assert.equal(verificationNote(12, null, 40), "All 12 slab(s) and 40 cut-to-size line(s) checked fit");
+  assert.equal(verificationNote(0, "crates 01 to 06 sealed", 40), "All 40 cut-to-size line(s) checked fit. crates 01 to 06 sealed");
+  assert.doesNotMatch(verificationNote(0, null, 40), /All 0 slab/);
+
+  // Neither kind is a list that lost its last line while the checker had it —
+  // canSubmit refuses to send an empty one — and it says so rather than
+  // claiming a check.
+  assert.equal(verificationNote(0), "Nothing on this list to check");
   assert.match(verificationNote(0, "crates 01 to 06 sealed"), /crates 01 to 06 sealed$/);
 });
 
@@ -958,7 +965,7 @@ test("canSetUnit follows canEdit: the sheet does not change unit under the check
 
 test("dispatchBlockers: an unfit or unchecked slab stops the whole list (answers 2, 31)", () => {
   const clean = dispatchBlockers([{ slabNumber: 1, fit: "FIT" }, { slabNumber: 2, fit: "FIT" }]);
-  assert.deepEqual(clean, { ok: true, unfit: [], unchecked: [], reason: "" });
+  assert.deepEqual(clean, { ok: true, unfit: [], unchecked: [], unfitPieces: [], uncheckedPieces: 0, reason: "" });
 
   const mixed = dispatchBlockers([
     { slabNumber: 150905, fit: "FIT" },

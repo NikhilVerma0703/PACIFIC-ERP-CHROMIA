@@ -28,6 +28,12 @@ interface CrateLabelDto {
 }
 interface MissingDto { design: string; size: string; crateNos: string[]; quantity: number }
 interface MissingBarcodeDto extends MissingDto { itemCode: string | null; rejectedEan: string | null }
+interface EdgeSkipDto extends MissingDto { reason: string }
+interface EdgeLabelDto {
+  thicknessMm: number; heightMm: number; lengthMm: number;
+  barHeightMm: number; digitsHeightMm: number; marginMm: number;
+  truncated: boolean; percentOfNominalHeight: number;
+}
 interface LabelsDto {
   number: string;
   crates: CrateLabelDto[];
@@ -36,6 +42,18 @@ interface LabelsDto {
   pieceCount: number;
   pieceLabelsPerPage: number;
   truncated: number;
+  /** Round four, answer 2: while any article of this customer carries a
+   *  blocked reason, the labels that carry a barcode do not print. */
+  blocked: boolean;
+  blockedMessage: string | null;
+  blockedArticles: Array<{ id: string; label: string; reason: string }>;
+  edgeCount: number;
+  edgeSkipped: EdgeSkipDto[];
+  edgeTruncated: number;
+  /** The geometry of the first edge label in the run — the millimetres the
+   *  stone's thickness leaves, which is what somebody wants to see before
+   *  putting a roll of stickers through the printer. */
+  edgeLabel: EdgeLabelDto | null;
 }
 
 /** "in crate 1, 2" / ", not yet in a crate" — the same tail on both lists. */
@@ -71,7 +89,7 @@ export default function LabelsPanel() {
 
   useEffect(() => { void load(plId); }, [plId, load]);
 
-  const href = (kind: "crate" | "piece") => `/api/office/commercial/packing-lists/${plId}/labels?kind=${kind}`;
+  const href = (kind: "crate" | "piece" | "edge") => `/api/office/commercial/packing-lists/${plId}/labels?kind=${kind}`;
 
   return (
     <Card>
@@ -88,17 +106,39 @@ export default function LabelsPanel() {
               ))}
             </select>
           </label>
-          <a className={btnGhost} href={plId ? href("crate") : undefined} target="_blank" rel="noreferrer"
-            aria-disabled={!plId}
-            onClick={(e) => { if (!plId) e.preventDefault(); }}
-            title={plId ? undefined : "Pick a packing list first."}>Crate labels (PDF)</a>
+          {/* THE TWO THAT CARRY A BARCODE ARE STOPPED BY THE BLOCK and the
+              piece label is not: it has no barcode on it to be wrong, and
+              holding up the packing of a container would punish a duplicate the
+              label cannot even express. A stopped button is disabled WITH the
+              sentence, never hidden. */}
+          <a className={btnGhost} href={plId && !data?.blocked ? href("crate") : undefined} target="_blank" rel="noreferrer"
+            aria-disabled={!plId || Boolean(data?.blocked)}
+            onClick={(e) => { if (!plId || data?.blocked) e.preventDefault(); }}
+            title={!plId ? "Pick a packing list first." : data?.blocked ? (data.blockedMessage ?? undefined) : undefined}>Crate labels (PDF)</a>
           <a className={btnGhost} href={plId ? href("piece") : undefined} target="_blank" rel="noreferrer"
             aria-disabled={!plId}
             onClick={(e) => { if (!plId) e.preventDefault(); }}
             title={plId ? undefined : "Pick a packing list first."}>Piece labels (PDF)</a>
+          <a className={btnGhost} href={plId && !data?.blocked ? href("edge") : undefined} target="_blank" rel="noreferrer"
+            aria-disabled={!plId || Boolean(data?.blocked)}
+            onClick={(e) => { if (!plId || data?.blocked) e.preventDefault(); }}
+            title={!plId ? "Pick a packing list first." : data?.blocked ? (data.blockedMessage ?? undefined) : "The barcode alone, sized to the edge of the piece."}>Edge labels (PDF)</a>
         </div>
 
         {error && <div className={errBox}>{error}</div>}
+
+        {data?.blocked && (
+          <div className={errBox}>
+            <p className="font-medium">{data.blockedMessage}</p>
+            <ul className="mt-1 list-inside list-disc">
+              {data.blockedArticles.map((a) => <li key={`${a.id}-${a.reason}`}>{a.label}</li>)}
+            </ul>
+            <p className="mt-1 text-xs">
+              Settle it on the article list above — give one of them a different code, or clear the block once the
+              customer has said which article the code belongs to. Piece labels still print; they carry no barcode.
+            </p>
+          </div>
+        )}
 
         {data && data.missing.length > 0 && (
           <div className={warnBox}>
@@ -192,6 +232,28 @@ export default function LabelsPanel() {
               {" "}They carry the item code and the size alone, one per piece.
               {" "}<Link className="underline" href="/office/commercial/packing-lists">Packing lists</Link>
             </p>
+
+            {/* THE EDGE LABEL'S SIZE IS THE STONE'S, so it is worth saying in
+                millimetres before a roll goes through the printer: a 2 cm piece
+                gets 13.4 mm of bars, 59% of the nominal height, and that
+                truncation is deliberate (DECISIONS-4.md 3). A thicker piece
+                gets a taller label and less of it, without anybody choosing. */}
+            <p className="mt-2 text-xs text-gray-500">
+              Edge labels: {data.edgeCount} label(s), one per piece
+              {data.edgeTruncated > 0 ? ` — ${data.edgeTruncated} more were asked for than one run prints` : ""}.
+              {data.edgeLabel
+                ? ` ${data.edgeLabel.lengthMm} × ${data.edgeLabel.heightMm} mm on a ${data.edgeLabel.thicknessMm} mm edge, with ${data.edgeLabel.barHeightMm} mm of bars${data.edgeLabel.truncated ? ` — ${data.edgeLabel.percentOfNominalHeight}% of the nominal height, shortened on purpose to fit the stone` : ""}.`
+                : ""}
+            </p>
+            {(data.edgeSkipped ?? []).length > 0 && (
+              <ul className="mt-1 list-inside list-disc text-xs text-amber-700">
+                {data.edgeSkipped.map((s) => (
+                  <li key={`${s.design}|${s.size}`}>
+                    {s.design} {s.size} — {s.quantity} piece(s){whereIs(s)}: {s.reason}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
 

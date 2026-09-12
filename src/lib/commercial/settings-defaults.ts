@@ -4,6 +4,10 @@
 // document on 2026-09-05 (the 1404 PI, the JB Homes DTA invoice, the PGI
 // delivery challan, the CIOT export workbook) or off the owner's answers.
 import type { NumberingSpec } from "./numbering.ts";
+import {
+  EAN13_LABEL_MAGNIFICATION, EDGE_LABEL_CLEARANCE_MM, EDGE_LABEL_MARGIN_MM,
+  EDGE_LABEL_DIGITS_MM, EDGE_LABEL_MIN_BAR_MM,
+} from "./barcode.ts";
 
 export interface BankDetails {
   name: string;
@@ -43,6 +47,38 @@ export interface CompanyMaster {
   alternateGstins: string[];
   email: string;
   phone: string;
+}
+
+/**
+ * The four numbers the barcode label pasted on the EDGE of a piece is laid out
+ * from (round four, answer 3), plus the magnification it is drawn at.
+ *
+ * WHY THESE ARE SETTINGS AND THE REST OF THE GEOMETRY IS NOT. Everything else
+ * about an EAN-13 — the 95 modules, the 0.33 mm nominal, the quiet zones, the
+ * 22.85 mm nominal bar height — is the standard and is not ours to move; it
+ * lives in lib/commercial/barcode.ts as constants. These five are OURS: how
+ * much stone we leave bare above and below the sticker, how much white paper
+ * sits inside it, how tall the human-readable line is, and how short a bar we
+ * are willing to print before refusing. They are the ones a fussy scanner or a
+ * different glue actually changes, and changing them should not need a deploy.
+ *
+ * The defaults ARE barcode.ts's constants, imported rather than retyped, so
+ * the shipped label is exactly the one edgeLabelLayout lays out and the two
+ * cannot drift apart.
+ */
+export interface EdgeLabelSettings {
+  /** Of the 0.33 mm nominal module. The symbol is only specified between 0.80
+   *  and 2.00 and the label's LENGTH is free, so there is nothing to be bought
+   *  by going below 1.50 — the height is what gets cut instead. */
+  magnification: number;
+  /** Stone left bare above and below the label on a 20 mm edge. */
+  clearanceMm: number;
+  /** White paper between the edge of the label and anything printed on it. */
+  marginMm: number;
+  /** The band the thirteen human-readable digits get. */
+  digitsMm: number;
+  /** Bars shorter than this are refused rather than printed. */
+  minBarMm: number;
 }
 
 export interface CommercialSettings {
@@ -94,6 +130,10 @@ export interface CommercialSettings {
     challanNote: string;
     challanApprox: string;
   };
+  /** The barcode labels. Only the EDGE label is tunable: the 100 × 70 mm crate
+   *  label is cut to a sleeve on a wooden crate and is not a size anybody here
+   *  chooses. */
+  labels: { edge: EdgeLabelSettings };
   /** alwaysIgst (answer 22): domestic is IGST whatever the buyer's state. */
   tax: { igstRate: number; cgstRate: number; sgstRate: number; supplierStateCode: string; alwaysIgst: boolean };
   /** telegramPrivate: send to TELEGRAM_COMMERCIAL_CHAT_ID (one person) rather
@@ -189,6 +229,19 @@ export const DEFAULT_SETTINGS: CommercialSettings = {
     eoe: "E. & O. E",
     challanNote: "Note: Please note that these items are for display purposes only and not for sale",
     challanApprox: "Amount Declared is approximate value of the goods",
+  },
+  // Round four, answer 3: the arithmetic of these five is in barcode.ts and
+  // the reasoning in DECISIONS-4.md. On a 20 mm edge they come to a label
+  // 18.0 mm tall — 1.0 margin, 13.4 of bars, 2.6 of digits, 1.0 margin — and
+  // 58.0 mm long, with the bars at 59% of their nominal height, deliberately.
+  labels: {
+    edge: {
+      magnification: EAN13_LABEL_MAGNIFICATION,
+      clearanceMm: EDGE_LABEL_CLEARANCE_MM,
+      marginMm: EDGE_LABEL_MARGIN_MM,
+      digitsMm: EDGE_LABEL_DIGITS_MM,
+      minBarMm: EDGE_LABEL_MIN_BAR_MM,
+    },
   },
   tax: { igstRate: 18, cgstRate: 9, sgstRate: 9, supplierStateCode: "33", alwaysIgst: true },   // answer 22
   // 2026-09-07 answer 13 asked for a mail from Santosh's ID and a private

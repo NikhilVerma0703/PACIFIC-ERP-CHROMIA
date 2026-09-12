@@ -16,7 +16,7 @@ import { readJson } from "@/lib/readJson";
 import { postJson, patchJson, deleteJson } from "@/lib/fab/postJson";
 import {
   canEdit, canEditHeader, canSubmit, canReopen, canFinalise, canDispatch, canRecheck,
-  PACKING_STATUS_LABEL, CRATE_KINDS, parseSlabNumbers, fitCounts, packagesSummary,
+  PACKING_STATUS_LABEL, CRATE_KINDS, parseSlabNumbers, fitCounts, recheckBanner, packagesSummary,
   crateGroups, measurementRows, type PackingStatus,
 } from "@/lib/commercial/packing-rules";
 import { sizeInUnit, sizeToCm, MEASUREMENT_UNITS, type MeasurementUnit } from "@/lib/commercial/measure";
@@ -130,7 +130,13 @@ export function PackingListEditor({ plId, actions }: { plId: string; actions: st
   const editable = !!list && canEdit(list.status) && mayWrite;
   const headerEditable = !!list && canEditHeader(list.status) && mayWrite;
 
-  const counts = useMemo(() => fitCounts(list?.slabs ?? []), [list]);
+  // BOTH KINDS OF LINE CARRY A VERDICT (round four, answer 1): a cut-to-size
+  // line is checked piece by piece exactly as a slab is, so the check this
+  // screen reports is the check over the whole list. Counting the slabs alone
+  // told Commercial "all fit" on a list the dispatch team had refused a piece
+  // on, which is the one message this screen exists to carry.
+  const counts = useMemo(() => fitCounts(list?.slabs ?? [], list?.pieces ?? []), [list]);
+  const banner = useMemo(() => (list ? recheckBanner(list.status, list.slabs, list.pieces ?? []) : null), [list]);
   const pieceSums = useMemo(() => pieceTotals(list?.pieces ?? []).total, [list]);
   const groups = useMemo(() => crateGroups(list?.slabs ?? [], list?.crates ?? []), [list]);
   const sheet = useMemo(() => measurementRows(list?.slabs ?? [], list?.crates ?? []), [list]);
@@ -269,11 +275,9 @@ export function PackingListEditor({ plId, actions }: { plId: string; actions: st
             {list.verificationNote}
           </div>
         )}
-        {canRecheck(list.status) && (counts.unfit > 0 || counts.pending > 0) && (
+        {banner && (
           <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            {counts.unfit > 0
-              ? `${counts.unfit} slab(s) refused by the dispatch check — nothing ships until each is swapped for a slab of the same design and thickness (Swap beside the slab).`
-              : `${counts.pending} swapped-in slab(s) await the dispatch check — nothing ships until they are marked fit.`}
+            {banner}
           </div>
         )}
         {error && <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}

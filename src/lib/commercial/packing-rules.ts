@@ -6,7 +6,9 @@
 //   which statuses may be edited / submitted / reopened / finalised / dispatched
 //   which inventory rows may go on a list at all (slabEligibility)
 //   what a packed-slab row is built from an inventory row (buildPackedSlab)
-//   what the dispatch check concludes from the per-slab verdicts (verifyOutcome)
+//   what the dispatch check concludes from the verdicts on BOTH kinds of line
+//     (fitCounts, verifyOutcome) and what one "mark crate correct" touches
+//     (checkerGroups, bulkFitPlan)
 //   how the Packing List sheet groups crates into lines (crateGroups)
 //   how the Measurement List orders slabs and subtotals crates (measurementRows)
 //   "07 Wooden Crate(S) + 08 Sample Box" (packagesSummary), "01 to 15" (marksAndNos)
@@ -14,13 +16,14 @@
 //     (restoredSlabs) — the two places where believing the bridge without
 //     reading its answer loses a slab
 //   what a verify-only login may list, open and be told (CHECKER_STATUSES,
-//     parseCheckerStatus, checkerMaySee, checkerListView)
+//     parseCheckerStatus, checkerMaySee, checkerListView, checkerPieceView)
 //
-// Imports only other pure modules (measure.ts, thickness.ts), by relative path
-// with the extension, exactly as access-rules.ts imports roles.ts — node --test
-// loads these without Next.
+// Imports only other pure modules (measure.ts, thickness.ts, pieces-rules.ts),
+// by relative path with the extension, exactly as access-rules.ts imports
+// roles.ts — node --test loads these without Next.
 import { canonThickness } from "../thickness.ts";
 import { sumTo, slabMeasure, sqmFromCm, sqftFromSqm, parseMeasurementUnit, type MeasurementUnit } from "./measure.ts";
+import { compareCrateNo, pieceLabel } from "./pieces-rules.ts";
 
 export type PackingStatus = "DRAFT" | "SUBMITTED" | "VERIFIED" | "REJECTED" | "FINAL" | "DISPATCHED";
 export type FitStatus = "PENDING" | "FIT" | "UNFIT";
@@ -152,48 +155,116 @@ export function marksAndNos(crates: ReadonlyArray<unknown>): string {
 }
 
 // ───────────────────────────── the dispatch check ───────────────────────────
+// TWO KINDS OF LINE, ONE CHECK (round four, answer 1: "a cut to size also gets
+// a physical check piece by piece"). A packed PIECE carries the same fit,
+// unfitReason, checkedById and checkedAt a packed slab has carried since 0076,
+// on the same enum, so everything below counts and concludes over both. The
+// verdict is per ROW, which on the piece side is per LINE: a line of 360
+// thresholds of one size in one crate is one thing the checker looks at, and it
+// is the row the database gives a verdict column to.
 
-export function fitCounts(slabs: ReadonlyArray<{ fit: string }>): { total: number; fit: number; unfit: number; pending: number } {
+export interface FitCount { total: number; fit: number; unfit: number; pending: number }
+
+/** The verdicts on a list, slabs and cut-to-size lines together. `pieces` is
+ *  optional so a caller that only ever has slabs in its hand — the packing-list
+ *  register's own row count — asks the question it used to ask. */
+export function fitCounts(slabs: ReadonlyArray<{ fit: string }>, pieces: ReadonlyArray<{ fit: string }> = []): FitCount {
   let fit = 0, unfit = 0, pending = 0;
-  for (const s of slabs) {
+  for (const s of [...slabs, ...pieces]) {
     if (s.fit === "FIT") fit++;
     else if (s.fit === "UNFIT") unfit++;
     else pending++;
   }
-  return { total: slabs.length, fit, unfit, pending };
+  return { total: slabs.length + pieces.length, fit, unfit, pending };
+}
+
+/** A cut-to-size line the check refused. It has no slab number, because it is
+ *  not a slab — see verifyOutcome on why that distinction is load-bearing. */
+export interface UnfitPiece { id: string; label: string; reason: string }
+
+export interface PieceFitLike {
+  id?: string;
+  crateNo?: string | null;
+  pieceNo?: string | null;
+  design?: string | null;
+  fit: string;
+  unfitReason?: string | null;
 }
 
 export interface VerifyOutcome {
-  /** True when every slab is FIT — the list may be VERIFIED. */
+  /** True when every line of both kinds is FIT — the list may be VERIFIED. */
   ok: boolean;
+  /** Unlooked-at lines of both kinds; the list cannot be concluded above nought. */
   pending: number;
+  /** The two kinds separately, so a refusal can say which of them is outstanding. */
+  slabs: FitCount;
+  pieces: FitCount;
+  /**
+   * THE UNFIT SLABS, AND ONLY THE SLABS. This is the list the verify route
+   * hands unpackSlabs, so nothing that is not a row in finished goods may ever
+   * reach it — see unfitPieces.
+   */
   unfit: Array<{ id: string; slabNumber: number; reason: string }>;
   /**
-   * THERE WAS NOTHING FOR THE FLOOR TO TICK. A cut-to-size list may carry no
-   * slab at all (round three, answer 5), and a piece line has no fit column to
-   * carry a verdict — so such a list passes the check the moment it is opened.
-   *
-   * It is a FACT here, not a refusal: refusing would leave a cut-to-size list
-   * unshippable, which is the dead end answer 5 exists to remove. What it needs
-   * to stop being a rubber stamp is a fit + unfit_reason on commercial_packed_
-   * piece and the piece verdicts folded in here — a schema change, so it is an
-   * owner question, not a fixer's. Until then the check says what it did:
-   * verificationNote() below writes no "all N slabs checked fit" for N = 0.
+   * THE UNFIT CUT-TO-SIZE LINES, WHICH DO NOT GO BACK TO STOCK (answer 1: "an
+   * unfit piece does not go back to stock"). An unfit slab is returned through
+   * the inventory bridge because a slab is a row in finished goods; a piece was
+   * cut to a customer's size and there is nothing to return it to. They are a
+   * separate field rather than the same one with a null slab number precisely
+   * so that the bridge call cannot be handed one by accident — that would be a
+   * release against a slab number that does not exist.
+   */
+  unfitPieces: UnfitPiece[];
+  /**
+   * THERE WAS NOTHING FOR THE FLOOR TO TICK — no slab and no piece. canSubmit
+   * refuses to send such a list for a check at all, so this is the list that
+   * lost its last line after it was sent; it is a fact the note records rather
+   * than a refusal, because there is nothing for the checker to do about it.
    */
   nothingToVerify: boolean;
 }
 
 /** What the verdicts add up to. `ok` is only true with nothing PENDING and
- *  nothing UNFIT; a caller refuses to conclude while pending > 0. */
-export function verifyOutcome(slabs: ReadonlyArray<{ id?: string; slabNumber: number; fit: string; unfitReason?: string | null }>): VerifyOutcome {
-  const c = fitCounts(slabs);
-  const unfit = slabs.filter((s) => s.fit === "UNFIT").map((s) => ({ id: s.id ?? "", slabNumber: s.slabNumber, reason: (s.unfitReason ?? "").trim() || "no reason given" }));
-  return { ok: c.pending === 0 && unfit.length === 0, pending: c.pending, unfit, nothingToVerify: c.total === 0 };
+ *  nothing UNFIT of either kind; a caller refuses to conclude while pending > 0. */
+export function verifyOutcome(
+  slabs: ReadonlyArray<{ id?: string; slabNumber: number; fit: string; unfitReason?: string | null }>,
+  pieces: ReadonlyArray<PieceFitLike> = [],
+): VerifyOutcome {
+  const why = (v: string | null | undefined): string => (v ?? "").trim() || "no reason given";
+  const slabCounts = fitCounts(slabs);
+  const pieceCounts = fitCounts(pieces);
+  const unfit = slabs.filter((s) => s.fit === "UNFIT").map((s) => ({ id: s.id ?? "", slabNumber: s.slabNumber, reason: why(s.unfitReason) }));
+  const unfitPieces = pieces.filter((p) => p.fit === "UNFIT").map((p) => ({ id: p.id ?? "", label: pieceLabel(p), reason: why(p.unfitReason) }));
+  const pending = slabCounts.pending + pieceCounts.pending;
+  return {
+    ok: pending === 0 && unfit.length === 0 && unfitPieces.length === 0,
+    pending,
+    slabs: slabCounts,
+    pieces: pieceCounts,
+    unfit,
+    unfitPieces,
+    nothingToVerify: slabCounts.total + pieceCounts.total === 0,
+  };
 }
 
-/** The verification note written on a rejected list. */
-export function rejectionNote(unfit: ReadonlyArray<{ slabNumber: number; reason: string }>, note?: string | null): string {
-  const head = `Rejected — ${unfit.length} unfit: ${unfit.map((u) => `#${fmtSlabNo(u.slabNumber)} (${u.reason})`).join("; ")}`;
+/**
+ * The verification note written on a rejected list.
+ *
+ * The unfit cut-to-size lines are named and said to be STAYING, because that is
+ * the one thing Commercial cannot work out from the list itself: the unfit
+ * slabs have gone off it and back into finished goods, and a line that is still
+ * sitting there with a red flag on it would otherwise read as one the rejection
+ * missed rather than one there is nowhere to send.
+ */
+export function rejectionNote(
+  unfit: ReadonlyArray<{ slabNumber: number; reason: string }>,
+  note?: string | null,
+  pieces: ReadonlyArray<UnfitPiece> = [],
+): string {
+  const parts: string[] = [];
+  if (unfit.length) parts.push(`${unfit.length} unfit: ${unfit.map((u) => `#${fmtSlabNo(u.slabNumber)} (${u.reason})`).join("; ")}`);
+  if (pieces.length) parts.push(`${pieces.length} unfit cut-to-size line(s), still on the list: ${pieces.map((p) => `${p.label} (${p.reason})`).join("; ")}`);
+  const head = parts.length ? `Rejected — ${parts.join(". ")}` : "Rejected";
   const extra = (note ?? "").trim();
   return extra ? `${head}. ${extra}` : head;
 }
@@ -852,6 +923,15 @@ export interface CheckerSlabView {
   fit: string; unfitReason: string | null; checkedAt: string | null; sortOrder: number;
 }
 
+export interface CheckerPieceView {
+  id: string; crateId: string | null; crateNo: string | null;
+  drawingNo: string | null; pieceNo: string | null; design: string;
+  lengthMm: number | null; widthMm: number | null; thicknessMm: number | null;
+  sqft: number | null; quantity: number; room: string | null; weightKg: number | null;
+  notes: string | null;
+  fit: string; unfitReason: string | null; checkedAt: string | null;
+}
+
 export interface CheckerCrateView {
   id: string; crateNo: number; kind: string;
   grossKg: number | null; netKg: number | null;
@@ -866,10 +946,15 @@ export interface CheckerListView {
   packagesSummary: string | null; grossWeightKg: number | null; netWeightKg: number | null; notes: string | null;
   orderNumber: string; kind: string; customerPoNumber: string | null;
   clientName: string; clientCountry: string | null;
-  /** cm | in — the floor reads sizes in the unit the sheet prints (answer 17). */
+  /** cm | in — the floor reads sizes in the unit the sheet prints (answer 17).
+   *  The piece lines are the exception the module already lives with: they are
+   *  stored in millimetres whatever this says (round three, answer 5), and the
+   *  screen converts them the same way the two sheets do. */
   measurementUnit: MeasurementUnit;
-  crates: CheckerCrateView[]; slabs: CheckerSlabView[];
-  fit: { total: number; fit: number; unfit: number; pending: number };
+  crates: CheckerCrateView[]; slabs: CheckerSlabView[]; pieces: CheckerPieceView[];
+  /** Both kinds of line together — what the progress bar and the Verify button
+   *  read, and a list is only verified when this has nothing pending. */
+  fit: FitCount;
 }
 
 const vStr = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
@@ -899,6 +984,37 @@ export function checkerSlabView(s: Record<string, unknown>): CheckerSlabView {
 }
 
 /**
+ * One packed PIECE as the floor screen reads it — a WHITELIST, for the same
+ * reason checkerSlabView is one and not a spread of the row: commercial_packed_
+ * piece is a young table and the next column somebody puts on it (a rate per
+ * square foot on the cut-to-size line is the obvious one) must not appear on a
+ * store login's screen merely because it was added.
+ *
+ * Sizes stay in the MILLIMETRES the row stores; the screen converts them to the
+ * list's unit with pieces-rules' own sizeFromMm, so the floor and the two
+ * printed sheets can never show one piece at two sizes.
+ */
+export function checkerPieceView(p: Record<string, unknown>): CheckerPieceView {
+  return {
+    id: String(p.id ?? ""),
+    crateId: vStr(p.crateId),
+    crateNo: vStr(p.crateNo),
+    drawingNo: vStr(p.drawingNo),
+    pieceNo: vStr(p.pieceNo),
+    design: String(p.design ?? ""),
+    lengthMm: vNum(p.lengthMm), widthMm: vNum(p.widthMm), thicknessMm: vNum(p.thicknessMm),
+    sqft: vNum(p.sqft),
+    quantity: Number(p.quantity ?? 1),
+    room: vStr(p.room),
+    weightKg: vNum(p.weightKg),
+    notes: vStr(p.notes),
+    fit: String(p.fit ?? "PENDING"),
+    unfitReason: vStr(p.unfitReason),
+    checkedAt: vDate(p.checkedAt),
+  };
+}
+
+/**
  * A packing list as the DISPATCH CHECK is allowed to see it — a WHITELIST, not
  * a deletion of the sensitive fields, because the loader keeps growing and the
  * next field somebody adds to it must not appear on a store login's screen by
@@ -915,6 +1031,7 @@ export function checkerListView(list: Record<string, unknown>): CheckerListView 
   const client = (order.client as Record<string, unknown> | null) ?? null;
   const crates = (list.crates as Array<Record<string, unknown>> | undefined) ?? [];
   const slabs = (list.slabs as Array<Record<string, unknown>> | undefined) ?? [];
+  const pieces = (list.pieces as Array<Record<string, unknown>> | undefined) ?? [];
   return {
     id: String(list.id ?? ""),
     number: String(list.number ?? ""),
@@ -946,22 +1063,190 @@ export function checkerListView(list: Record<string, unknown>): CheckerListView 
       remarks: vStr(c.remarks),
     })),
     slabs: slabs.map(checkerSlabView),
-    fit: fitCounts(slabs.map((s) => ({ fit: String(s.fit ?? "PENDING") }))),
+    pieces: pieces.map(checkerPieceView),
+    fit: fitCounts(
+      slabs.map((s) => ({ fit: String(s.fit ?? "PENDING") })),
+      pieces.map((p) => ({ fit: String(p.fit ?? "PENDING") })),
+    ),
   };
 }
 
 /**
- * The dispatch check's verdict body: `fit` must be FIT or UNFIT (PENDING is
- * where a slab starts, not something the floor sets), and UNFIT must say why —
- * a rejected list sends slabs back to stock and moves the order backwards, so
- * "no reason given" is not good enough to do that on.
+ * The dispatch check's verdict body, for a slab and for a cut-to-size line
+ * alike: `fit` must be FIT or UNFIT (PENDING is where a line starts, not
+ * something the floor sets), and UNFIT must say why — a rejected list sends
+ * slabs back to stock and moves the order backwards, so "no reason given" is
+ * not good enough to do that on. One function for both kinds because it is one
+ * verdict on one enum; a second copy for pieces would be the place the two
+ * rules quietly stopped agreeing.
  */
 export function fitPatch(fit: unknown, unfitReason: unknown): { ok: true; fit: "FIT" | "UNFIT"; unfitReason: string | null } | { ok: false; reason: string } {
   const f = String(fit ?? "").trim().toUpperCase();
   if (f !== "FIT" && f !== "UNFIT") return { ok: false, reason: "fit must be FIT or UNFIT" };
   const why = String(unfitReason ?? "").trim();
-  if (f === "UNFIT" && !why) return { ok: false, reason: "Say what is wrong with the slab" };
+  if (f === "UNFIT" && !why) return { ok: false, reason: "Say what is wrong with it" };
   return { ok: true, fit: f, unfitReason: f === "UNFIT" ? why : null };
+}
+
+// ────────────────── the crate a line is checked under, and the bulk marks ────
+// Answer 1 gives the checker three ways to say "correct": one line, one crate,
+// the whole list. The crate is therefore not just a heading on the screen any
+// more — it is the thing an action is aimed at, so what belongs to it has to be
+// decided once, here, and the screen and the route both read that same answer.
+// A "mark crate as correct" that marked a line the checker could not see under
+// that heading would be the worst kind of wrong: silent and plausible.
+
+/**
+ * WHICH CRATE IS THIS LINE IN? A slab is in a crate row of this list or in none.
+ * A piece carries the crate number AS PRINTED on the customer's sheet as well,
+ * and that number need not be a crate of ours — "1A", or crate 7 of a sheet
+ * whose crates nobody has entered (pieces-rules matchCrate drops the link when
+ * it does not match). Such lines are still a crate the man on the floor is
+ * standing in front of, so they group under their own heading rather than being
+ * tipped in with the lines that are in no crate at all.
+ *
+ *   "crate:<id>"  a crate row of this list
+ *   "no:<number>" a crate number printed on a piece line, with no row of ours
+ *   ""            in no crate
+ */
+export function checkerCrateKey(line: { crateId?: string | null; crateNo?: string | null }): string {
+  const id = (line.crateId ?? "").trim();
+  if (id) return `crate:${id}`;
+  const no = (line.crateNo ?? "").trim();
+  return no ? `no:${no}` : "";
+}
+
+export interface CheckerGroup<S, P> {
+  /** What a "mark this crate correct" names — checkerCrateKey. */
+  key: string;
+  crateId: string | null;
+  /** As printed: the crate row's number, or the number the piece lines type. */
+  crateNo: string | null;
+  /** False for a crate number that is not a crate row of this list. */
+  onList: boolean;
+  slabs: S[];
+  pieces: P[];
+  fit: FitCount;
+}
+
+/**
+ * The screen's crates, in the order it shows them: the list's own crates by
+ * crate number, then the crate numbers only the piece lines know about, then
+ * whatever is in no crate. Empty crates are left out — a crate row with nothing
+ * in it is a heading with no work under it, and the bulk mark on it would be a
+ * button that does nothing.
+ */
+export function checkerGroups<
+  S extends { crateId?: string | null; fit: string },
+  P extends { crateId?: string | null; crateNo?: string | null; fit: string },
+>(
+  crates: ReadonlyArray<{ id: string; crateNo: number | string }>,
+  slabs: ReadonlyArray<S>,
+  pieces: ReadonlyArray<P>,
+): Array<CheckerGroup<S, P>> {
+  const order = new Map<string, number>();
+  const numberOf = new Map<string, string>();
+  crates.forEach((c, i) => { order.set(`crate:${c.id}`, i); numberOf.set(`crate:${c.id}`, String(c.crateNo)); });
+
+  const groups = new Map<string, CheckerGroup<S, P>>();
+  const group = (key: string): CheckerGroup<S, P> => {
+    let g = groups.get(key);
+    if (!g) {
+      g = {
+        key,
+        crateId: key.startsWith("crate:") ? key.slice(6) : null,
+        crateNo: key.startsWith("crate:") ? (numberOf.get(key) ?? null) : key.startsWith("no:") ? key.slice(3) : null,
+        onList: order.has(key),
+        slabs: [], pieces: [],
+        fit: { total: 0, fit: 0, unfit: 0, pending: 0 },
+      };
+      groups.set(key, g);
+    }
+    return g;
+  };
+  for (const s of slabs) group(checkerCrateKey(s)).slabs.push(s);
+  for (const p of pieces) group(checkerCrateKey(p)).pieces.push(p);
+
+  const rank = (g: CheckerGroup<S, P>): number => (g.key.startsWith("crate:") ? 0 : g.key ? 1 : 2);
+  return Array.from(groups.values())
+    .map((g) => ({ ...g, fit: fitCounts(g.slabs, g.pieces) }))
+    .sort((a, b) =>
+      rank(a) - rank(b)
+      || (rank(a) === 0 ? (order.get(a.key) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.key) ?? Number.MAX_SAFE_INTEGER) : 0)
+      || compareCrateNo(a.crateNo ?? "", b.crateNo ?? ""));
+}
+
+export type BulkFitScope = { kind: "all" } | { kind: "crate"; key: string };
+
+export interface BulkFitPlan {
+  /** Exactly the rows to set FIT — nothing else is touched. */
+  slabIds: string[];
+  pieceIds: string[];
+  marked: number;
+  /** Lines left alone because the checker had already found something wrong. */
+  skippedUnfit: number;
+  /** Lines already passed. Counted apart from `marked` so the answer does not
+   *  claim work the action did not do. */
+  alreadyFit: number;
+}
+
+/**
+ * WHAT A BULK "MARK CORRECT" TOUCHES: the PENDING lines of the scope, of both
+ * kinds, and nothing else (answer 1).
+ *
+ * IT NEVER OVERWRITES AN UNFIT. A line already marked unfit is a deliberate
+ * finding with a reason attached — it is the one thing the whole check exists
+ * to produce — and a "mark all as correct" that quietly erased it would send a
+ * cracked slab to a customer with the record saying it was looked at and
+ * passed. So an UNFIT line is skipped and COUNTED, because a bulk action that
+ * says "38 marked correct" while silently walking past two findings is telling
+ * the checker the crate is clear when it is not. Clearing an unfit line is a
+ * deliberate single tap on that line, which is honest about what it is doing.
+ */
+export function bulkFitPlan<
+  S extends { id?: string; crateId?: string | null; fit: string },
+  P extends { id?: string; crateId?: string | null; crateNo?: string | null; fit: string },
+>(
+  slabs: ReadonlyArray<S>,
+  pieces: ReadonlyArray<P>,
+  scope: BulkFitScope = { kind: "all" },
+): BulkFitPlan {
+  const inScope = (line: { crateId?: string | null; crateNo?: string | null }): boolean =>
+    scope.kind === "all" || checkerCrateKey(line) === scope.key;
+
+  const plan: BulkFitPlan = { slabIds: [], pieceIds: [], marked: 0, skippedUnfit: 0, alreadyFit: 0 };
+  const take = (line: { id?: string; fit: string }, into: string[]): void => {
+    if (line.fit === "UNFIT") { plan.skippedUnfit++; return; }
+    if (line.fit === "FIT") { plan.alreadyFit++; return; }
+    if (line.id) into.push(line.id);
+    plan.marked++;
+  };
+  for (const s of slabs) if (inScope(s)) take(s, plan.slabIds);
+  for (const p of pieces) if (inScope(p)) take(p, plan.pieceIds);
+  return plan;
+}
+
+/** "38 marked correct, 2 left unfit" — what the bulk action reports. Both
+ *  halves always, because the skipped half is the half that matters. */
+export function bulkFitNote(plan: BulkFitPlan): string {
+  if (!plan.marked && !plan.skippedUnfit && !plan.alreadyFit) return "Nothing here to mark";
+  const bits = [`${plan.marked} marked correct`];
+  if (plan.skippedUnfit) bits.push(`${plan.skippedUnfit} left unfit`);
+  if (plan.alreadyFit) bits.push(`${plan.alreadyFit} already correct`);
+  return bits.join(", ");
+}
+
+/** The bulk action's body: `scope` is "crate" or "all", and a crate scope names
+ *  the group (checkerCrateKey) — including "" for the lines in no crate, which
+ *  is a real heading on the screen and not a missing field. */
+export function parseBulkFitScope(body: { scope?: unknown; crate?: unknown }): { ok: true; scope: BulkFitScope } | { ok: false; reason: string } {
+  const s = String(body.scope ?? "").trim().toLowerCase();
+  if (s === "all") return { ok: true, scope: { kind: "all" } };
+  if (s === "crate") {
+    if (body.crate === undefined || body.crate === null) return { ok: false, reason: "Say which crate to mark" };
+    return { ok: true, scope: { kind: "crate", key: String(body.crate) } };
+  }
+  return { ok: false, reason: "scope must be crate or all" };
 }
 
 /**
@@ -1026,15 +1311,18 @@ export function dispatchNote(number: string, dispatched: number, skipped: Readon
 
 /** The note a verified list carries.
  *
- *  A LIST WITH NO SLAB ON IT SAYS SO. A cut-to-size list carries pieces alone
- *  (round three, answer 5) and a piece has no fit column, so the checker ticked
- *  nothing; "All 0 slab(s) checked fit" would put a check in the record that
- *  nobody performed. The note names what was actually in front of them, and the
- *  checker's own words follow it. */
-export function verificationNote(slabs: number, note?: string | null): string {
-  const head = slabs === 0
-    ? "No slab line to check — the cut-to-size lines were passed on the sheet"
-    : `All ${slabs} slab(s) checked fit`;
+ *  IT NAMES WHAT WAS ACTUALLY IN FRONT OF THE CHECKER, both kinds of line. A
+ *  cut-to-size list carries pieces alone and used to be passed with "no slab
+ *  line to check", which recorded a check nobody performed; since answer 1 of
+ *  round four the pieces were ticked one by one and the note has to say so, or
+ *  the record of a piece-only shipment reads as a rubber stamp for ever. A list
+ *  with neither kind on it still says there was nothing — which after canSubmit
+ *  means a list that lost its last line while the checker had it. */
+export function verificationNote(slabs: number, note?: string | null, pieces = 0): string {
+  const bits: string[] = [];
+  if (slabs > 0) bits.push(`${slabs} slab(s)`);
+  if (pieces > 0) bits.push(`${pieces} cut-to-size line(s)`);
+  const head = bits.length ? `All ${bits.join(" and ")} checked fit` : "Nothing on this list to check";
   const extra = (note ?? "").trim();
   return extra ? `${head}. ${extra}` : head;
 }
@@ -1075,23 +1363,40 @@ export interface DispatchBlockers {
   ok: boolean;
   unfit: number[];
   unchecked: number[];
-  /** Names every slab, ready for the 409. "" when ok. */
+  /** Cut-to-size lines the check refused, named rather than numbered — they
+   *  have no slab number, and there is no swap for them either. */
+  unfitPieces: string[];
+  /** Cut-to-size lines nobody has looked at yet. */
+  uncheckedPieces: number;
+  /** Names every line, ready for the 409. "" when ok. */
   reason: string;
 }
 
 /**
- * NOTHING SHIPS UNTIL THE LIST IS CORRECTED (answers 2 and 31). Every packed
- * slab must carry a FIT verdict at the moment of dispatch: an UNFIT one is a
- * slab the dispatch team refused, and a PENDING one is a slab nobody has looked
- * at — a replacement swapped in after the check, say. Both stop the whole
- * list, because a packing list cannot be split and a FINAL list's slabs cannot
- * be edited: the honest answer is "not this list, not yet", with the slabs
- * named so Commercial knows which to swap or which to send the checker back to.
+ * NOTHING SHIPS UNTIL THE LIST IS CORRECTED (answers 2 and 31, and answer 1 of
+ * round four for the second kind of line). Every packed line must carry a FIT
+ * verdict at the moment of dispatch: an UNFIT one is a line the dispatch team
+ * refused, and a PENDING one is a line nobody has looked at — a replacement
+ * swapped in after the check, say. Both stop the whole list, because a packing
+ * list cannot be split and a FINAL list's lines cannot be edited: the honest
+ * answer is "not this list, not yet", with the lines named so Commercial knows
+ * which to swap or which to send the checker back to.
+ *
+ * A REFUSED CUT-TO-SIZE LINE IS NOT SWAPPED, IT IS RECUT. The swap that clears
+ * an unfit slab takes another slab of the same design and thickness out of
+ * finished goods; there is no such shelf for a piece cut to a customer's size,
+ * so the sentence for a piece does not offer one.
  */
-export function dispatchBlockers(slabs: ReadonlyArray<{ slabNumber: number; fit: string; unfitReason?: string | null }>): DispatchBlockers {
+export function dispatchBlockers(
+  slabs: ReadonlyArray<{ slabNumber: number; fit: string; unfitReason?: string | null }>,
+  pieces: ReadonlyArray<PieceFitLike> = [],
+): DispatchBlockers {
   const unfit = slabs.filter((s) => s.fit === "UNFIT").map((s) => Number(s.slabNumber)).sort((a, b) => a - b);
   const unchecked = slabs.filter((s) => s.fit !== "UNFIT" && s.fit !== "FIT").map((s) => Number(s.slabNumber)).sort((a, b) => a - b);
-  if (!unfit.length && !unchecked.length) return { ok: true, unfit, unchecked, reason: "" };
+  const unfitPieces = pieces.filter((p) => p.fit === "UNFIT").map((p) => pieceLabel(p));
+  const uncheckedPieces = pieces.filter((p) => p.fit !== "UNFIT" && p.fit !== "FIT").length;
+  const clear = { unfit, unchecked, unfitPieces, uncheckedPieces };
+  if (!unfit.length && !unchecked.length && !unfitPieces.length && !uncheckedPieces) return { ok: true, ...clear, reason: "" };
   const parts: string[] = [];
   if (unfit.length) {
     const why = new Map(slabs.filter((s) => s.fit === "UNFIT").map((s) => [Number(s.slabNumber), (s.unfitReason ?? "").trim()]));
@@ -1100,7 +1405,68 @@ export function dispatchBlockers(slabs: ReadonlyArray<{ slabNumber: number; fit:
   if (unchecked.length) {
     parts.push(`${unchecked.length} slab(s) not yet checked: ${unchecked.map((n) => `#${fmtSlabNo(n)}`).join(", ")} — the dispatch team has to pass them first`);
   }
-  return { ok: false, unfit, unchecked, reason: `Nothing ships until the list is corrected. ${parts.join(". ")}.` };
+  if (unfitPieces.length) {
+    const why = new Map(pieces.filter((p) => p.fit === "UNFIT").map((p) => [pieceLabel(p), (p.unfitReason ?? "").trim()]));
+    parts.push(`${unfitPieces.length} cut-to-size line(s) marked unfit: ${unfitPieces.map((l) => `${l}${why.get(l) ? ` (${why.get(l)})` : ""}`).join("; ")} — each one has to be recut and repacked`);
+  }
+  if (uncheckedPieces) {
+    parts.push(`${uncheckedPieces} cut-to-size line(s) not yet checked — the dispatch team has to pass them first`);
+  }
+  return { ok: false, ...clear, reason: `Nothing ships until the list is corrected. ${parts.join(". ")}.` };
+}
+
+/**
+ * WHAT THE PACKING LIST'S OWN SCREEN SAYS AFTER A LATE VERDICT (answers 30 and
+ * 31, and answer 1 of round four for the second kind of line). The dispatch
+ * check may refuse a line on a list it has already concluded — canRecheck is
+ * true on a VERIFIED or a FINAL list, and the check screen writes the verdict
+ * without moving the list's status or its verification note. Commercial does
+ * not sit on the check screen, so the packing list is where that news has to
+ * land, and it has to land for BOTH kinds of line: the count behind this
+ * banner was taken over the slabs alone, so a list whose twelve slabs all
+ * passed and whose one cut-to-size line was refused at loading read "12/12,
+ * all fit" with nothing amber on it, and the recut nobody was told about never
+ * started.
+ *
+ * A REFUSED PIECE IS RECUT, NOT SWAPPED, so it gets a sentence of its own: it
+ * has no Swap beside it and no shelf to take a replacement from (answer 1 —
+ * "it was cut to a customer's size and there is nothing to return it to"). Its
+ * lines are named rather than counted, because a cut-to-size line has no slab
+ * number to look up and the table under the banner may hold forty of them.
+ *
+ * Nothing outstanding, or a list no longer open to a late verdict, answers
+ * null — the caller draws no banner at all.
+ */
+export function recheckBanner(
+  listStatus: string,
+  slabs: ReadonlyArray<{ fit: string }>,
+  pieces: ReadonlyArray<PieceFitLike> = [],
+): string | null {
+  if (!canRecheck(listStatus)) return null;
+  const s = fitCounts(slabs);
+  const p = fitCounts(pieces);
+  if (!s.unfit && !p.unfit && !s.pending && !p.pending) return null;
+
+  const parts: string[] = [];
+  if (s.unfit) {
+    parts.push(`${s.unfit} slab(s) refused by the dispatch check — nothing ships until each is swapped for a slab of the same design and thickness (Swap beside the slab)`);
+  }
+  if (p.unfit) {
+    const named = pieces.filter((x) => x.fit === "UNFIT").map((x) => {
+      const why = (x.unfitReason ?? "").trim();
+      return `${pieceLabel(x)}${why ? ` (${why})` : ""}`;
+    });
+    parts.push(`${p.unfit} cut-to-size line(s) refused by the dispatch check: ${named.join("; ")} — nothing ships until each is recut and repacked`);
+  }
+  // A pending line is the swap that has come in and not been looked at yet, so
+  // it is only news while nothing worse is outstanding: on a list that still
+  // carries a refusal, the refusal is what has to be cleared first and saying
+  // both at once buries it.
+  if (!parts.length) {
+    if (s.pending) parts.push(`${s.pending} swapped-in slab(s) await the dispatch check — nothing ships until they are marked fit`);
+    if (p.pending) parts.push(`${p.pending} cut-to-size line(s) await the dispatch check — nothing ships until they are marked fit`);
+  }
+  return `${parts.join(". ")}.`;
 }
 
 /**

@@ -41,6 +41,11 @@ export async function GET(req: Request) {
           order: { select: { number: true, kind: true, client: { select: { name: true, country: true } } } },
           crates: { select: { id: true } },
           slabs: { select: { fit: true } },
+          // The second kind of line (round four, answer 1). A cut-to-size list
+          // carries no slab at all, and a queue counting slabs alone showed it
+          // as an empty list with nothing to do on it — which is the one row
+          // the checker would then walk past.
+          pieces: { select: { fit: true } },
         },
       }),
       db.commercialPackingList.count({ where }),
@@ -53,6 +58,7 @@ export async function GET(req: Request) {
     const items = (rows as Array<Record<string, unknown>>).map((r) => {
       const order = r.order as { number: string; kind: string; client: { name: string; country: string | null } | null };
       const slabs = (r.slabs as Array<{ fit: string }>) ?? [];
+      const pieces = (r.pieces as Array<{ fit: string }>) ?? [];
       return {
         id: r.id, number: r.number, status: r.status,
         submittedAt: r.submittedAt, verifiedAt: r.verifiedAt, verifiedByName: r.verifiedByName, finalisedAt: r.finalisedAt,
@@ -61,7 +67,8 @@ export async function GET(req: Request) {
         orderNumber: order?.number ?? "", kind: order?.kind ?? "", clientName: order?.client?.name ?? "",
         crateCount: ((r.crates as Array<unknown>) ?? []).length,
         slabCount: slabs.length,
-        fit: fitCounts(slabs),
+        pieceCount: pieces.length,
+        fit: fitCounts(slabs, pieces),
       };
     });
     return json(plain({ items, total, page, limit, counts }));
