@@ -662,13 +662,6 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
         <option value="office">Finance / Accounts</option>
         <option value="sales">Sales</option>
         <option value="commercial">Commercial</option>
-        {/* The 2026-09-14 view grant — chromia@ and gibin@, who see the whole
-            module and may press none of it. Here for the same reason Finance /
-            Accounts is: the owner asked for that screen and is entitled to look
-            at it without signing in as somebody else. It previews as the office
-            view with every control that posts removed, which is precisely what
-            those two logins get. */}
-        <option value="viewer">Finished-goods viewer</option>
       </select>
     </label>
   ) : null;

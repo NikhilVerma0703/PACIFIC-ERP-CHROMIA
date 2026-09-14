@@ -294,10 +294,18 @@ test("the production timeline button is not drawn for a viewer", () => {
   assert.equal(inventoryDashboardView(asAdmin, "viewer").readOnly, true);
 });
 
-test("the owner can preview the viewer's screen without signing in as one", () => {
-  assert.match(DASHBOARD, /<option value="viewer">/);
-  // The select's four existing options are untouched — the new one is an
-  // addition to that list and not a rearrangement of it.
+test("the view-as dropdown is EXACTLY what it was before the grant — no viewer option", () => {
+  // The first cut of the grant added a fifth option here so the owner could
+  // preview the viewer's screen. He saw it the same day and asked for the
+  // screen to be put back ("Why has the UI changed for finished goods. Please
+  // revert it back", 2026-09-14): for every login that already had finished
+  // goods, that option was the ONLY visible change the grant made, and it was
+  // not asked for. So it is pinned absent. inventoryDashboardView still
+  // understands "viewer" (the test above relies on it) — that is a pure rule
+  // with no control attached to it, and the grant's own rendering does not go
+  // through the dropdown at all.
+  assert.doesNotMatch(DASHBOARD, /<option value="viewer">/, "the viewer preview option was reverted at the owner's request");
+  // And the four that were always there still are, in the same select.
   for (const v of ["admin", "office", "sales", "commercial"]) {
     assert.ok(DASHBOARD.includes(`<option value="${v}">`), `the ${v} preview option must survive`);
   }
