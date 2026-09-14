@@ -2,7 +2,7 @@
 // grade, slab number, bay, status. Gated to inventory roles.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
-import { inventoryGate } from "@/lib/inventory/access";
+import { inventoryReadGate } from "@/lib/inventory/access";
 import { sweepExpiredReservations } from "@/lib/inventory/finishedSlab";
 import { buildInventoryWhere, approvedOnlyWhere, getUnapprovedSlabNumbers } from "@/lib/inventory/searchWhere";
 import { isAdmin } from "@/lib/rbac";
@@ -17,10 +17,16 @@ function withDerived(r: any) {
 }
 
 export async function GET(request: Request) {
-  const g = await inventoryGate();
+  const g = await inventoryReadGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   try {
-    await sweepExpiredReservations(); // lapsed PI holds -> AVAILABLE before we report
+    // Lapsed PI holds -> AVAILABLE before we report. This is the one write
+    // behind inventoryReadGate, and the gate's own comment in
+    // src/lib/inventory/access.ts is where it is argued for and where it has to
+    // stay named: the clock picks the rows, not the caller, so a view-grant
+    // login triggers it and cannot aim it. Nothing else in this handler writes,
+    // and nothing added to it may.
+    await sweepExpiredReservations();
     const { searchParams } = new URL(request.url);
     let where: any = await buildInventoryWhere(searchParams);
     // Unapproved stock is ADMIN-only, and only when explicitly requested.

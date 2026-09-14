@@ -21,13 +21,14 @@
 //     terms that would return nothing. The list is mapped through DesignAlias and
 //     deduped, which is also what makes it a usable length.
 //
-// Gate: inventoryGate() -- the same gate as the table these values filter, which SALES
-// fails and COMMERCIAL passes. PI and customer are already present on every row the list
+// Gate: inventoryReadGate() -- the same gate as the table these values filter, which SALES
+// fails and COMMERCIAL passes, and which a finished-goods view grant passes for the same
+// reason it passes the table. PI and customer are already present on every row the list
 // API returns (it applies no `select`), so those two are not new information; the
 // approval filter above is what keeps the rest honest.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
-import { inventoryGate } from "@/lib/inventory/access";
+import { inventoryReadGate } from "@/lib/inventory/access";
 import { approvedOnlyWhere, slabMarkAvailable, isMissingSlabMarkError } from "@/lib/inventory/searchWhere";
 import { customerKey } from "@/lib/inventory/filterValues";
 import { CUT_GRADES } from "@/lib/inventory/grading";
@@ -97,7 +98,7 @@ const clean = (xs: any[], field: string): string[] =>
   xs.map((r) => r[field]).filter((v: unknown): v is string => typeof v === "string" && v.trim() !== "");
 
 export async function GET() {
-  const g = await inventoryGate();
+  const g = await inventoryReadGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   try {
     // Same visibility rule as the slab list: admins may see pending stock, nobody else.

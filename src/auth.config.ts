@@ -1,10 +1,13 @@
 import type { NextAuthConfig, Session, User } from "next-auth";
 import type { JWT } from "next-auth/jwt";
 import type { NextRequest } from "next/server";
-import { storeMayVisit, operatorMayVisit, isPublicAsset, isCronRoute, STORE_HOME, OPERATOR_HOME } from "./lib/routeCaps.ts";
+import { storeMayVisit, operatorMayVisit, fgViewMayVisit, isPublicAsset, isCronRoute, STORE_HOME, OPERATOR_HOME } from "./lib/routeCaps.ts";
 // The active role context. Pure and import-free, exactly like routeCaps above —
 // it must be, because this file is edge-safe and Prisma-free.
 import { ROLE_CONTEXT_COOKIE, activeContextOf, type GrantedContexts } from "./lib/roleContext.ts";
+// The finished-goods view grant (users.fg_view), from the same import-free
+// module middleware.ts and every inventory route gate read it from.
+import { hasFgView } from "./lib/inventory/accessRules.ts";
 import type { Role } from "@prisma/client";
 
 /**
@@ -133,6 +136,25 @@ export const authConfig = {
       // nowhere to land at all; that is a configuration to reject in Users &
       // Roles, not something a landing page can paper over.
       const p = nextUrl.pathname;
+      // THE FINISHED-GOODS VIEW GRANT, admitted here as well as in
+      // middleware.ts and out of the same two functions (hasFgView, and
+      // fgViewMayVisit for the paths it reaches: /inventory, /api/inventory and
+      // the /api/photo endpoint the slab detail panel loads its shots from).
+      //
+      // It changes no decision today, and is here anyway. Both logins the owner
+      // named on 2026-09-14 are LINE_MANAGER, a role with no cap below, so both
+      // already fall through to `return true` and leave the routing to
+      // middleware. The day the flag is put on a CAPPED login — a store
+      // incharge, an operator — this gate would refuse the page while the route
+      // gates cheerfully answered its API, which is the page-refused-while-the-
+      // API-is-open failure lib/commercial/access-rules.ts records. It costs one
+      // line to be unable to have that argument with middleware.
+      //
+      // An ADMISSION, exactly like the FABRICATION and CHROMIA escapes above:
+      // it opens a door and decides nothing about what is behind it. Whether a
+      // viewer may change anything is settled in the route, by inventoryGate()
+      // refusing them.
+      if (hasFgView(activeUser) && fgViewMayVisit(p)) return true;
       if (role === "STORE" && !storeMayVisit(p)) return refuse(p, nextUrl, STORE_HOME);
       if (role === "OPERATOR" && !operatorMayVisit(p)) return refuse(p, nextUrl, OPERATOR_HOME);
       return true;
@@ -145,6 +167,11 @@ export const authConfig = {
         token.branch = (user as { branch?: string | null }).branch ?? null;
         token.altRole = (user as { altRole?: string | null }).altRole ?? null;
         token.altBranch = (user as { altBranch?: string | null }).altBranch ?? null;
+        // The finished-goods view grant. `=== true` rather than `?? false`, so
+        // the claim is a boolean whatever authorize() handed over — and so a
+        // token minted before this line existed carries false rather than
+        // undefined. A missing grant is not a grant; see hasFgView.
+        token.fgView = (user as { fgView?: boolean | null }).fgView === true;
         token.sv = (user as { sv?: number }).sv ?? 1;
       }
       return token;
@@ -163,6 +190,19 @@ export const authConfig = {
         // their primary while every server render judged them by the alternate.
         session.user.altRole = (token.altRole as string | null) ?? null;
         session.user.altBranch = (token.altBranch as string | null) ?? null;
+        // THE VIEW GRANT MUST BE COPIED HERE TOO, for the reason the paragraph
+        // above gives about the second pair, and rather more sharply: the gate
+        // that has to admit these two logins THROUGH their branch caps is
+        // middleware.ts, and middleware builds its `req.auth` from
+        // NextAuth(authConfig) — this callback. A flag that reached the token
+        // and stopped there would leave the owner's grant invisible to the one
+        // rule standing between chromia@ and the page he was granted.
+        //
+        // It also reaches every server render this way: currentUser() returns
+        // this same session user, so hasFgView() in the route gates and
+        // hasFgView() at the edge read one value. `=== true` again — an old
+        // token carries no such claim, and no claim is no grant.
+        session.user.fgView = token.fgView === true;
         (session.user as { sv?: number }).sv = (token.sv as number | undefined) ?? 1;
       }
       return session;

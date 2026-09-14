@@ -1,7 +1,7 @@
 // Finished-goods dashboard KPIs. Gated to inventory roles.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
-import { inventoryGate, SLABS_ONLY_ROLES } from "@/lib/inventory/access";
+import { inventoryReadGate, SLABS_ONLY_ROLES } from "@/lib/inventory/access";
 import { sweepExpiredReservations } from "@/lib/inventory/finishedSlab";
 import { buildInventoryWhere, approvedOnlyWhere, andWhere, anyCutWhere, slabMarkAvailable, isMissingSlabMarkError } from "@/lib/inventory/searchWhere";
 import { isAdmin } from "@/lib/rbac";
@@ -9,12 +9,16 @@ import { isAdmin } from "@/lib/rbac";
 const db = prisma as any;
 
 export async function GET(request: Request) {
-  const g = await inventoryGate();
+  const g = await inventoryReadGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   if (SLABS_ONLY_ROLES.has(String((g.user as any)?.role ?? ""))) return Response.json({ error: "Not available for this login" }, { status: 403 });
   try {
-    await sweepExpiredReservations(); // lapsed PI holds -> AVAILABLE before we count
+    // Lapsed PI holds -> AVAILABLE before we count. The one write behind
+    // inventoryReadGate, the same one the slabs list makes; the gate's comment
+    // in src/lib/inventory/access.ts is the argument for it. Nothing else here
+    // writes, and nothing added here may.
+    await sweepExpiredReservations();
     // Cards follow the SAME filters as the slab table (empty filters = global).
     const sp = new URL(request.url).searchParams;
     let w: any = await buildInventoryWhere(sp);

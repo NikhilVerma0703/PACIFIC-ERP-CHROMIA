@@ -1,12 +1,14 @@
 // Excel export of the full polishing report for a date range — every polish
 // entry in the window with the QC outcome of that same slab beside it.
 //
-// Audience = inventoryGate: Commercial (who asked for it), Finance, Accounts and
-// Admin. Sales is summary-only and is refused by that gate, same as the Slabs
-// search it sits above.
+// Audience = inventoryReadGate: Commercial (who asked for it), Finance, Accounts,
+// Admin and a finished-goods view grant, which reads this workbook like any other
+// read. Sales is summary-only and is refused by that gate, same as the Slabs
+// search it sits above. It is a report, not a change: nothing here writes, which
+// is why it belongs on the read gate rather than the one the dispatch route uses.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
-import { inventoryGate } from "@/lib/inventory/access";
+import { inventoryReadGate } from "@/lib/inventory/access";
 import { slabLabel } from "@/lib/slabLabel";
 import { displayBatch } from "@/lib/batchDisplay";
 import { canonicalGrade } from "@/lib/inventory/grading";
@@ -21,7 +23,7 @@ const ist = (d: Date | null | undefined) =>
   d ? new Date(new Date(d).getTime() + 330 * 60000).toISOString().slice(0, 16).replace("T", " ") : "";
 
 export async function GET(request: Request) {
-  const g = await inventoryGate();
+  const g = await inventoryReadGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
 
   const sp = new URL(request.url).searchParams;

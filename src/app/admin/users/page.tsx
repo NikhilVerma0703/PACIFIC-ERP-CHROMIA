@@ -82,7 +82,15 @@ export default async function UsersPage() {
       })),
     );
   /* eslint-disable @typescript-eslint/no-explicit-any */
-  let rows: { id: string; email: string; name: string | null; role: string; station: string | null; active: boolean; branch: string; createdAt: string; createdByName: string | null; altRole: string | null; altBranch: string | null }[] = [];
+  // THE SAME SHAPE listUsersRows RETURNS, WITH THE DATE MADE SERIALISABLE — the
+  // form the sales list above already uses, rather than a second hand-written
+  // column list. The hand-written one was a closed list in the middle of an open
+  // pipe: the map below spreads every field the query fetched, so the literal
+  // only ever narrowed what the client was ALLOWED to see, and a column added at
+  // both ends (users.fg_view, whose whole point is being visible here) fell
+  // silently through this one line. Deriving the type means this hop cannot be
+  // the thing that forgets a column again.
+  let rows: (Omit<UserRow, "createdAt"> & { createdAt: string })[] = [];
   let migrateNeeded = false;
   try {
     const users = await listUsersRows(visible);

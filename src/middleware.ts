@@ -1,6 +1,6 @@
 import NextAuth from "next-auth";
 import { authConfig } from "./auth.config";
-import { storeMayVisit, operatorMayVisit, maintenanceMayVisit, samplingMayVisit, homeFor, isPublicAsset, isCronRoute } from "./lib/routeCaps.ts";
+import { storeMayVisit, operatorMayVisit, maintenanceMayVisit, samplingMayVisit, fgViewMayVisit, homeFor, isPublicAsset, isCronRoute } from "./lib/routeCaps.ts";
 import { isCommercialRole } from "./lib/roles.ts";
 // The sampling module's audience, imported rather than restated here. It is a
 // pure module (its only import is lib/roles.ts, which imports nothing), so it
@@ -26,6 +26,14 @@ import { canUseSlabIntake } from "./lib/inventory/intakeAccess.ts";
 // /office/commercial: middleware caps work by exception, and without an
 // explicit block a path nobody named is a path everybody reaches.
 import { maySeeCommercialModule } from "./lib/commercial/access-rules.ts";
+// The finished-goods VIEW GRANT (users.fg_view) — pure and import-free like the
+// four above, so it is edge-safe, and the SAME function the route gates read
+// (lib/inventory/access.ts imports and re-exports it). Imported rather than
+// written out here as `user.fgView === true`, because a door and a gate that
+// each decide for themselves what the flag means are two rules, and two rules
+// drift. WHERE the grant reaches is the other half of the question and lives
+// with the other caps, in lib/routeCaps.ts.
+import { hasFgView } from "./lib/inventory/accessRules.ts";
 
 // Edge-safe middleware (Prisma-free config). IMPORTANT: with the auth(fn)
 // wrapper form, Auth.js does NOT auto-redirect — ALL gating is explicit here.
@@ -343,6 +351,44 @@ export default auth((req) => {
     const email = (req.auth.user as { email?: string | null }).email;
     if (canUseSlabIntake(role, email, process.env.SLAB_INTAKE_EMAILS)) return;
   }
+
+  // ---- Finished goods, for a login carrying the VIEW GRANT. ANOTHER
+  // ADMISSION, NOT A REFUSAL, and it sits here for precisely the reason the
+  // slab-intake carve-out directly above does: it has to run BEFORE the branch
+  // caps, because the two people it was granted to sign in on capped branches.
+  //
+  // The owner, 2026-09-14: "Please add finished good's visibility for
+  // chromia@thepacific.group, gibin@thepacific.group (full visibility but no
+  // edit options)". Both are LINE_MANAGER off the OFFICE branch — chromia@ on
+  // CHROMIA, gibin@ on FABRICATION — and THREE separate rules below refuse them
+  // the module today: the CHROMIA block's narrow allowlist (the Chromia screens
+  // and their APIs, then a terminal `return`), the FABRICATION block, which
+  // passes /api straight through but names no page outside /fab, and the
+  // `branch !== "OFFICE" && /inventory` refusal further down. One admission
+  // above all three answers all three at once. Widening any of them in place
+  // would have been the wrong shape of answer — it would hand a whole branch,
+  // and everybody put on it afterwards, something that was granted to one
+  // login; and the CHROMIA allowlist in particular is narrow on purpose.
+  //
+  // TWO PREFIXES AND ONE ENDPOINT, AND NOTHING ELSE. fgViewMayVisit
+  // (lib/routeCaps) names them: /inventory and /api/inventory exact-or-subpath,
+  // plus the exact path /api/photo, which is where the slab detail panel loads
+  // a slab's far/near shots from and is the one URL in that panel that does not
+  // live under /api/inventory. auth.config.ts's authorized() admits the same
+  // three from the same function, which matters more than it looks: that
+  // callback runs FIRST and a Response it returns replaces this whole file, so
+  // a viewer admitted only here could still be bounced by the gate standing in
+  // front of it.
+  //
+  // AND PASSING THIS DOOR GRANTS NOTHING BEYOND IT. Middleware matches a path;
+  // it cannot tell a slab lookup from a slab edit, because both are POSTs under
+  // /api/inventory, and it cannot tell a slab photo from a downtime photo,
+  // because /api/photo carries an id and not a model. What a viewer may DO is
+  // decided inside the route, by inventoryReadGate() (which admits the flag)
+  // against inventoryGate() (which refuses it, and guards every write), and in
+  // /api/photo by a check scoped to the model "FinishedSlab". The fence and the
+  // gates cannot drift apart about who holds the grant: both ask hasFgView.
+  if (hasFgView(activeUser) && fgViewMayVisit(p)) return;
 
   if (role === "CHROMIA" || (!isAdmin && branch === "CHROMIA")) {
     // Chromia line tablet: the Chromia screens and THEIR APIs — nothing else.

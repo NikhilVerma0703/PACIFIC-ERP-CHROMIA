@@ -5,7 +5,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { inventoryGate, SLABS_ONLY_ROLES } from "@/lib/inventory/access";
+import { inventoryGate, inventoryReadGate, SLABS_ONLY_ROLES } from "@/lib/inventory/access";
 import { isAdmin } from "@/lib/rbac";
 
 const db = prisma as any;
@@ -15,8 +15,15 @@ const mergeSchema = z.object({
   canonical: z.string().trim().min(1, "Both variant and canonical are required").max(120),
 });
 
+// The listing is a read, so it is on the read gate like every other read —
+// but it stays Admin-only behind it, which is the rule that actually decides
+// this handler and the reason a view-grant login sees nothing new here. The
+// gate is still moved, deliberately: leaving one GET on the write gate would
+// have made "reads use inventoryReadGate" a rule with an exception nobody
+// could see the reason for, and the day the Admin check is relaxed the gate
+// underneath it would be the wrong one.
 export async function GET() {
-  const g = await inventoryGate();
+  const g = await inventoryReadGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   if (!(await isAdmin())) return Response.json({ error: "Admin only" }, { status: 403 });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

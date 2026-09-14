@@ -3,7 +3,11 @@
 
 import { revalidatePath } from "next/cache";
 import { currentUser, currentRole, canManageUsers, creatableRoles, assignableBranches, rankOf, ROLE_RANK, STATIONS, roleLabelFor } from "@/lib/rbac";
-import { createUserRecord, setActiveRecord, resetPasswordRecord, setStationRecord, getUserRoles, getUserPrimary, setAltContextRecord, bumpSessionVersion, bumpAllSessionVersions } from "@/lib/users";
+import { createUserRecord, setActiveRecord, resetPasswordRecord, setStationRecord, getUserRoles, getUserPrimary, setAltContextRecord, setFgViewRecord, bumpSessionVersion, bumpAllSessionVersions } from "@/lib/users";
+// The one sentence about who may move the finished-goods view grant, imported
+// rather than restated: UserAdmin.tsx draws the control from the same function,
+// so the button and the check behind it cannot drift apart.
+import { mayGrantFgView } from "@/lib/inventory/access";
 import { contextKey } from "@/lib/roleContext";
 import { isAdmin } from "@/lib/rbac";
 import { salesTierOf } from "@/lib/sales/access";
@@ -306,6 +310,79 @@ export async function setAltContext(id: string, key: string): Promise<Res> {
   await bumpSessionVersion(id).catch(() => { /* session_version not migrated */ });
   revalidatePath("/admin/users");
   return { ok: true, message: `Second role: ${roleLabelFor(pair.role, pair.branch)}.` + signedOut };
+}
+
+/**
+ * Grant — or take back — THE FINISHED-GOODS VIEW GRANT on one login
+ * (users.fg_view, scripts/0083).
+ *
+ * The owner, 2026-09-14: "Please add finished good's visibility for
+ * chromia@thepacific.group, gibin@thepacific.group (full visibility but no edit
+ * options)". Both are LINE_MANAGERs off the OFFICE branch, so the grant is a
+ * per-login boolean rather than a role, and 0083 gives the argument at length.
+ * Read it before changing anything here.
+ *
+ * THIS IS WHERE THE SCRIPT STOPPED ON PURPOSE. 0083 writes no UPDATE — "the two
+ * grants are made separately and verified, because handing out access is a thing
+ * to do with the names in front of you" — and it says in the same breath that
+ * the flag is meant to be "visible in Users & Roles next to the person it
+ * belongs to". A boolean that only hand-written SQL can set is the state the
+ * Second role column was in before it got a cell: ungrantable except by SQL,
+ * unrevokable except by SQL, and unanswerable when somebody asks who holds it.
+ *
+ * WHO MAY MOVE IT IS NOT canManageTarget's ANSWER. That gate lets anybody manage
+ * the ranks below their own inside their own department, which is right for a
+ * password reset and too wide for this: finished goods is an OFFICE module, and
+ * a shop-floor LINE_MANAGER could otherwise hand it to their own INCHARGEs one
+ * grant at a time. mayGrantFgView() narrows it to an admin, and refuses an
+ * International Sales target the way setAltContext does. canManageTarget still
+ * runs FIRST, so "not yourself" and the department rule hold here too.
+ *
+ * IT SIGNS THE TARGET OUT OF EVERY DEVICE, and for this flag that is the whole
+ * difference between a revocation and a note-to-self. The grant rides in the
+ * JWT — both edge gates are Prisma-free and have nowhere else to read it — and
+ * this app refreshes a token's claims only at sign-in, so a flag taken away
+ * without a sessionVersion bump keeps opening finished goods for the rest of an
+ * 8-hour token. src/auth.ts says the same thing from the other end. The bump is
+ * therefore REPORTED rather than swallowed: if session_version is missing, the
+ * write still stands but the admin is told the old sessions outlive it, because
+ * a revocation that silently does not take effect is worse than a failed one.
+ */
+export async function setFgView(id: string, on: boolean): Promise<Res> {
+  const guard = await canManageTarget(id);
+  if (!guard.ok) return guard;
+
+  const target = await getUserPrimary(id);
+  if (!target) return { ok: false, message: "That login no longer exists." };
+
+  // The refusal is the rule's; the sentence below only says WHICH clause
+  // refused, so an admin is not left guessing at a flat "no".
+  if (!mayGrantFgView(await currentRole(), target.branch)) {
+    return target.branch === "INTERNATIONAL_SALES"
+      ? { ok: false, message: "International Sales logins cannot be given finished-goods visibility." }
+      : { ok: false, message: "Only an admin can change finished-goods visibility." };
+  }
+
+  // `on` arrives over the wire like every other server-action argument, so it
+  // is narrowed to a real boolean rather than trusted to be one — and narrowed
+  // in the direction the rest of this grant already goes: only an exact `true`
+  // grants, anything else revokes. hasFgView(), the two jwt callbacks and the
+  // column's own DEFAULT false all read absent-or-odd as "no grant"; a fourth
+  // reader that let a truthy string through would be the one that disagreed.
+  const grant = on === true;
+  const written = await setFgViewRecord(id, grant);
+  if (!written.ok) return { ok: false, message: written.reason };
+
+  let signedOut = true;
+  try { await bumpSessionVersion(id); } catch { signedOut = false; }
+  revalidatePath("/admin/users");
+  const what = grant ? "Finished goods: view only." : "Finished-goods visibility removed.";
+  return {
+    ok: true,
+    message: what + (signedOut
+      ? " That login is signed out of every device and signs in again."
+      : " WARNING: that login could not be signed out (session_version column missing), so its open sessions keep the old answer until they expire."),
+  };
 }
 
 /** Sign one user out of all their devices (phones, tablets, PCs). */

@@ -48,7 +48,18 @@ export async function Shell({ children }: { children: ReactNode }) {
   const stationLabel = (user as { station?: string | null } | undefined)?.station;
   const branch = ((user as { branch?: string | null } | undefined)?.branch as string | undefined) ?? "SHOP_FLOOR";
   const fabTier = fabTierOf(user) ?? "";
-  const inventory = hasInventoryAccess(String(user?.role ?? ""), branch);
+  // THE WHOLE USER, NOT THE ROLE AND THE BRANCH. Finished goods gained a
+  // per-login view grant on 2026-09-14 (users.fg_view, carried on the session as
+  // `fgView`), and a pair of strings cannot carry it: hasInventoryAccess's older
+  // two-argument form answers the pre-grant rule and is @deprecated for exactly
+  // this reason, so a viewer passed through it got the module by URL and no
+  // sidebar link to it. Same value as before for everybody else — the object
+  // form asks the office role+branch rule first and only then the flag.
+  //
+  // `user` here is already the ACTIVE role context (currentUser), so a login
+  // that switched jobs is asked about the job it is standing in, which is the
+  // same user every gate behind the link will ask about.
+  const inventory = hasInventoryAccess(user);
   const consumables = consumablesTierOf(user) !== null;
   const salesTier = salesTierOf(user);
   const intlSales = salesTier !== null;

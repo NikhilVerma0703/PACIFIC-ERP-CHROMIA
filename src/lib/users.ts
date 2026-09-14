@@ -24,6 +24,16 @@ export interface UserRow {
   // and null for everybody until that script is applied.
   altRole: string | null;
   altBranch: string | null;
+  // The FINISHED-GOODS VIEW GRANT (users.fg_view, scripts/0083). False for
+  // everybody but the handful who hold it, and false for everybody until that
+  // script is applied. It is carried on this row — rather than left in the
+  // database for a psql session to answer — because 0083 states the grant's
+  // shape as "one boolean, it defaults to false, and it is visible in Users &
+  // Roles next to the person it belongs to rather than buried in a role table
+  // that somebody later widens for an unrelated reason". That visibility is the
+  // argument the script makes for a per-login column over a role, so a column
+  // this screen cannot show is the column not doing the job it was chosen for.
+  fgView: boolean;
 }
 
 /** EXACTLY THE COLUMNS THIS LIST MAPS, AND NOT ONE MORE.
@@ -59,6 +69,10 @@ export async function listUsersRows(branch?: string | string[] | null): Promise<
   // own guard: an empty map (script 0052 not applied) reads as "nobody holds a
   // second job", which is what the screen showed before this feature.
   const alts = await listAltContexts();
+  // And the view grant, in ONE more query on the same terms — see
+  // listFgViewGrants below for why it is a set of ids rather than a column on
+  // the select above.
+  const fgViewers = await listFgViewGrants();
   return rows.map((u) => ({
     id: u.id,
     email: u.email,
@@ -73,6 +87,7 @@ export async function listUsersRows(branch?: string | string[] | null): Promise<
     salesFactory: u.salesFactory ?? null,
     altRole: alts.get(u.id)?.altRole ?? null,
     altBranch: alts.get(u.id)?.altBranch ?? null,
+    fgView: fgViewers.has(u.id),
   }));
 }
 
@@ -307,3 +322,83 @@ export function explainAltContextError(
     : "The database refused the change, and gave no reason.";
 }
 
+// ---------------------------------------------------------------------------
+// THE FINISHED-GOODS VIEW GRANT (users.fg_view, scripts/0083).
+//
+// RAW SQL AND GUARDED, on the same terms as the alternate pair above, and
+// prisma/schema.prisma already argues the pair of it in its own words: declaring
+// the field makes the column SURVIVE `db push`, and reading it raw makes its
+// absence SURVIVABLE. Both are wanted, and this is the second half.
+//
+// A SEPARATE QUERY, NOT ONE MORE COLUMN ON USER_LIST_SELECT, and the reason is
+// worth writing down because the cheap version looks obviously better. That
+// select is the one query the whole screen depends on: a column this database or
+// this generated client does not know turns it into a throw, page.tsx catches
+// the throw and renders "Database migration required" INSTEAD OF the user list,
+// and an unrelated flag would have replaced Users & Roles with a migration
+// notice. A query of its own fails on its own and degrades to "nobody holds the
+// grant" — which is exactly what the screen showed the day before this feature.
+//
+// It also happens to be the query scripts/0083 built an index for. That script
+// creates `users_fg_view_idx ON users (fg_view) WHERE fg_view`, justified as
+// making "who has this" one lookup rather than a scan of every login. A partial
+// index is no use to the per-login check in authorize(), which reads one row by
+// id; `SELECT id FROM users WHERE fg_view` is the lookup it was shaped for, and
+// until this list existed the index had no consumer at all.
+// ---------------------------------------------------------------------------
+
+/** Every login holding the view grant, as a set of ids — one query for the
+ *  Users & Roles list rather than one per row. An empty set when scripts/0083
+ *  has not been applied here, which reads as "nobody holds it". Never throws. */
+export async function listFgViewGrants(): Promise<Set<string>> {
+  const out = new Set<string>();
+  try {
+    const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM users WHERE fg_view
+    `;
+    for (const r of rows) out.add(r.id);
+  } catch {
+    /* column not applied yet — nobody holds the grant */
+  }
+  return out;
+}
+
+export type FgViewWrite = { ok: true } | { ok: false; reason: string };
+
+/**
+ * Give one login the view grant, or take it back.
+ *
+ * A BOOLEAN AND NOTHING ELSE, which is the whole reason this is four lines
+ * where setAltContextRecord is forty: there is no pair to keep whole, no enum
+ * for Postgres to reject, and no value an admin could post that is not already
+ * one of two. The caller decides WHO may move it (mayGrantFgView in
+ * lib/inventory/accessRules.ts) and remembers what a revocation additionally
+ * needs (a sessionVersion bump — see admin/users/actions.ts setFgView); this
+ * writes the column and reports honestly whether it managed to.
+ *
+ * IT REPORTS WHY IT FAILED for the reason its neighbour does: a bare `false`
+ * made one message stand for every possible fault, so an admin who had applied
+ * the script was told to apply it again. The two codes worth naming are the two
+ * that are actually reachable here — the column missing, and no users table at
+ * all — and anything else is handed back verbatim rather than guessed at.
+ */
+export async function setFgViewRecord(id: string, on: boolean): Promise<FgViewWrite> {
+  try {
+    await prisma.$executeRaw`UPDATE users SET fg_view = ${on} WHERE id = ${id}`;
+    return { ok: true };
+  } catch (e) {
+    const err = e as { code?: string; meta?: { code?: string }; message?: string };
+    const sqlstate = String(err?.meta?.code ?? err?.code ?? "");
+    const message = String(err?.message ?? "").trim();
+    if (sqlstate === "42703" || /fg_view/.test(message)) {
+      return { ok: false, reason:
+        "The fg_view column is missing from THIS database. Apply " +
+        "scripts/0083-fg-view-grant.sql to the database DATABASE_URL points at " +
+        "(check you are not pointed at Neon while testing locally, or the reverse)." };
+    }
+    if (sqlstate === "42P01") {
+      return { ok: false, reason: "There is no users table in this database — DATABASE_URL is pointing somewhere unexpected." };
+    }
+    return { ok: false, reason: message ? `The database refused the change: ${message}` : "The database refused the change, and gave no reason." };
+  }
+}

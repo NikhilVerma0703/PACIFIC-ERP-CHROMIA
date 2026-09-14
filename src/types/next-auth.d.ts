@@ -9,6 +9,15 @@ import type { DefaultSession } from "next-auth";
 // list. They ride in the JWT because middleware and auth.config.ts have nothing
 // else to read: both are Prisma-free, and a gate that could not see the granted
 // pairs could not agree with currentUser() about which one is active.
+//
+// fgView — users.fg_view, "may LOOK at finished goods, whatever branch this
+// login is on, and may change nothing in it" (the owner, 2026-09-14; the
+// argument is scripts/0083-fg-view-grant.sql). It rides in the JWT for exactly
+// the reason the pair above does, and it is OPTIONAL here because a token
+// minted before the claim existed does not carry it. Absent is not a grant:
+// every reader tests `=== true` — the two jwt callbacks, the session callback,
+// and hasFgView() in lib/inventory/accessRules.ts, which is what the route
+// gates and both edge gates actually ask.
 
 declare module "next-auth" {
   interface Session {
@@ -19,6 +28,7 @@ declare module "next-auth" {
       branch?: string | null;
       altRole?: string | null;
       altBranch?: string | null;
+      fgView?: boolean;
     } & DefaultSession["user"];
   }
 
@@ -34,6 +44,7 @@ declare module "next-auth" {
     branch?: string | null;
     altRole?: string | null;
     altBranch?: string | null;
+    fgView?: boolean;
   }
 }
 
@@ -51,5 +62,6 @@ declare module "next-auth/jwt" {
     branch?: string | null;
     altRole?: string | null;
     altBranch?: string | null;
+    fgView?: boolean;
   }
 }

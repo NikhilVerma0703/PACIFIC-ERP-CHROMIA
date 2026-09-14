@@ -2,7 +2,7 @@
 // QC record, and its full event history. Gated to inventory roles.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
-import { inventoryGate } from "@/lib/inventory/access";
+import { inventoryReadGate } from "@/lib/inventory/access";
 import { getUnapprovedSlabNumbers } from "@/lib/inventory/searchWhere";
 import { photosForRecord } from "@/lib/entryPhoto";
 import { isAdmin, isCommercialRole } from "@/lib/rbac";
@@ -11,7 +11,7 @@ const db = prisma as any;
 const SQFT_TO_SQM = 0.092903;
 
 export async function GET(request: Request) {
-  const g = await inventoryGate();
+  const g = await inventoryReadGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   try {
     const raw = (new URL(request.url).searchParams.get("number") ?? "").trim();

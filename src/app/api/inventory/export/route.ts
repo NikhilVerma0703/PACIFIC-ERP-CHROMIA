@@ -1,7 +1,12 @@
 // Excel export of the Slabs search — same filters as the table, ADMIN only.
+//
+// On the read gate because the handler only reads; the ADMIN check under it is
+// what decides the audience, and it is unchanged, so a finished-goods view
+// grant gets the table on screen and not the spreadsheet — the same answer
+// Finance and Accounts have always had here.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from "@/lib/prisma";
-import { inventoryGate } from "@/lib/inventory/access";
+import { inventoryReadGate } from "@/lib/inventory/access";
 import { buildInventoryWhere, approvedOnlyWhere, isMissingSlabMarkError } from "@/lib/inventory/searchWhere";
 import { isAdmin } from "@/lib/rbac";
 import { slabLabel } from "@/lib/slabLabel";
@@ -12,7 +17,7 @@ import * as XLSX from "xlsx";
 const db = prisma as any;
 
 export async function GET(request: Request) {
-  const g = await inventoryGate();
+  const g = await inventoryReadGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   if (!(await isAdmin())) return Response.json({ error: "Admin only" }, { status: 403 });
   try {

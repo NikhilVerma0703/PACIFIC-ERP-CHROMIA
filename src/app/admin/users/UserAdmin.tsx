@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useActionState } from "react";
 import { useRouter } from "next/navigation";
-import { createUser, setActive, resetPassword, setStation, setAltContext, signOutEverywhere, signOutEveryone } from "./actions";
+import { createUser, setActive, resetPassword, setStation, setAltContext, setFgView, signOutEverywhere, signOutEveryone } from "./actions";
 // From the import-free modules, not lib/rbac / lib/branch: those import
 // @/auth, and a "use client" import of them shipped next-auth, jose, bcryptjs,
 // zod, a crypto polyfill and the Prisma browser stub to this page (≈240 kB
@@ -13,6 +13,13 @@ import { BRANCH_LABEL } from "@/lib/branchNames";
 // Also import-free, and for the same reason: it is the module both edge gates
 // share, so it cannot pull anything server-side into this bundle.
 import { contextKey } from "@/lib/roleContext";
+// The finished-goods rules module, NOT lib/inventory/access — same distinction
+// as the two imports above. accessRules.ts imports nothing at all (it is the
+// file node --test loads bare); access.ts next to it imports lib/rbac and would
+// drag the whole auth chain into this bundle. This is the same sentence the
+// server action checks, so the control is drawn exactly where the write is
+// allowed.
+import { mayGrantFgView } from "@/lib/inventory/accessRules";
 
 export interface UserRow {
   id: string; email: string; name: string | null; role: string; station: string | null;
@@ -23,6 +30,12 @@ export interface UserRow {
   // scripts/0052). Both null for everybody else — and a row with only one of
   // them set is no grant at all, which is why they are always read together.
   altRole?: string | null; altBranch?: string | null;
+  // THE FINISHED-GOODS VIEW GRANT (users.fg_view, scripts/0083): "may LOOK at
+  // finished goods, whatever branch this login is on, and may change nothing in
+  // it". False for everybody but the handful who hold it. Optional, because a
+  // caller rendering a list built before the column existed passes nothing —
+  // and absent reads as no grant, the same direction hasFgView() takes.
+  fgView?: boolean | null;
 }
 
 /** One grantable second job: the pair's key (what the server matches against)
@@ -141,6 +154,14 @@ export function UserAdmin({ users, creatable, creatableByBranch = {}, stations, 
                 {/* One person, two jobs, one login. Empty for everybody who
                     holds one — which is everybody but a handful. */}
                 {!sales && <th className="py-2 pr-4">Second role</th>}
+                {/* THE FINISHED-GOODS VIEW GRANT, and the reason it is a column
+                    on this screen rather than a row in the database only:
+                    scripts/0083 chose a per-login boolean over a role BECAUSE it
+                    would be "visible in Users & Roles next to the person it
+                    belongs to rather than buried in a role table that somebody
+                    later widens for an unrelated reason". Empty for everybody
+                    but the two logins it was asked for. */}
+                {!sales && <th className="py-2 pr-4">Finished goods</th>}
                 <th className="py-2 pr-4">Status</th>
                 <th className="py-2 pr-4">Created by</th>
                 <th className="py-2">Actions</th>
@@ -187,6 +208,14 @@ function Row({ u, stations, sales = false, myRole, myId, altGrantable = [], onCh
   // hand out or something to revoke.
   const canGrantAlt = manageable && !sales && (altGrantable.length > 0 || altKey !== "");
 
+  // THE VIEW GRANT IS SHOWN TO EVERY ADMIN WHO CAN SEE THE ROW AND MOVED BY
+  // FEWER. mayGrantFgView() is the same function admin/users/actions.ts asks
+  // before it writes — admin only, and never an International Sales login — so
+  // no control is drawn next to a row the server would refuse. Everybody else
+  // reads the cell, which is the half scripts/0083 actually argued for: an admin
+  // asked six months from now who can see finished goods answers it from here.
+  const canGrantFg = manageable && !sales && mayGrantFgView(myRole, u.branch);
+
   return (
     <tr className={`border-t border-gray-100 align-top ${u.active ? "" : "opacity-60"}`}>
       <td className="py-2 pr-4">
@@ -228,6 +257,22 @@ function Row({ u, stations, sales = false, myRole, myId, altGrantable = [], onCh
           </select>
         ) : (
           <span className={altKey ? "text-gray-600" : "text-gray-400"}>{altKey ? altLabel : "—"}</span>
+        )}
+      </td>}
+      {!sales && <td className="py-2 pr-4">
+        {canGrantFg ? (
+          <select value={u.fgView ? "view" : ""} disabled={pending}
+            onChange={(e) => act(() => setFgView(u.id, e.target.value === "view"))}
+            className="rounded-md border border-gray-300 px-2 py-1 text-xs">
+            <option value="">— none —</option>
+            {/* "View only" and not "Access": the grant reads everything in the
+                module and writes nothing, and inventoryGate() refuses it on
+                every route that changes a row. Saying "access" here would be
+                the first place that stops being true. */}
+            <option value="view">View only</option>
+          </select>
+        ) : (
+          <span className={u.fgView ? "text-gray-600" : "text-gray-400"}>{u.fgView ? "View only" : "—"}</span>
         )}
       </td>}
       <td className="py-2 pr-4">{u.active ? <span className="text-green-600">Active</span> : <span className="text-gray-400">Disabled</span>}</td>

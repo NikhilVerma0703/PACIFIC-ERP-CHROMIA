@@ -4,6 +4,10 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { displaySlab } from "@/lib/slabLabel";
 import { displayBatch } from "@/lib/batchDisplay";
 import { NONE } from "@/lib/inventory/filterValues";
+// Which of the four flags below are on, decided in a module of its own so the
+// decision can be tested without rendering anything. See its header for why
+// readOnly removes controls rather than disabling them.
+import { inventoryDashboardView, type InventoryViewAs } from "@/lib/inventory/dashboardView";
 // THE MARK, BESIDE THE GRADE. Both imports are pure and import-free themselves
 // (slabMark.ts states that rule in its own header), so a client component may
 // take them. MarkChip is the fab module's chip, reused rather than re-drawn:
@@ -278,14 +282,28 @@ const fmtAt = (iso: string) => {
   return d.toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 };
 
-export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: roleSummaryOnly = false, slabsOnly: roleSlabsOnly = false }: { admin?: boolean; summaryOnly?: boolean; slabsOnly?: boolean }) {
+export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: roleSummaryOnly = false, slabsOnly: roleSlabsOnly = false, readOnly: roleReadOnly = false }: { admin?: boolean; summaryOnly?: boolean; slabsOnly?: boolean;
+  /** This login may LOOK at finished goods and change nothing in it — the
+   *  2026-09-14 view grant (users.fg_view), which chromia@ and gibin@ hold.
+   *  The page sets it to `!canWriteInventory(user)`, the same rule the write
+   *  gate on every /api/inventory route runs, so what is hidden below is
+   *  exactly what the server would refuse. Every control that posts is NOT
+   *  RENDERED for such a login; nothing that merely shows a number, a row or a
+   *  photo is touched, because the grant was "full visibility". */
+  readOnly?: boolean }) {
   // ADMIN preview: view the module exactly as a Sales or Commercial login would
   // Admin-only preview of the module as each role that can reach it sees it.
   // "office" is Finance/Accounts: everything except the admin-only controls.
-  const [viewAs, setViewAs] = useState<"admin" | "office" | "sales" | "commercial">("admin");
-  const admin = isRealAdmin && viewAs === "admin";
-  const summaryOnly = roleSummaryOnly || (isRealAdmin && viewAs === "sales");
-  const slabsOnly = roleSlabsOnly || (isRealAdmin && viewAs === "commercial");
+  const [viewAs, setViewAs] = useState<InventoryViewAs>("admin");
+  // The four flags, resolved in lib/inventory/dashboardView.ts rather than here.
+  // They were three lines of && and || in this spot until the view grant made a
+  // fourth, and the rule that a preview can only ever take things away is worth
+  // more as something a test can hold than as something a reader has to verify
+  // by eye every time a flag is added.
+  const { admin, summaryOnly, slabsOnly, readOnly } = inventoryDashboardView(
+    { admin: isRealAdmin, summaryOnly: roleSummaryOnly, slabsOnly: roleSlabsOnly, readOnly: roleReadOnly },
+    viewAs,
+  );
   const [kpi, setKpi] = useState<Kpi | null>(null);
   const [rows, setRows] = useState<Slab[]>([]);
   const [showPending, setShowPending] = useState(false); // ADMIN: include unapproved stock everywhere
@@ -626,7 +644,7 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
         className="rounded-lg border border-gray-300 px-2 py-1 text-xs"
         value={viewAs}
         onChange={(e) => {
-          const v = e.target.value as "admin" | "office" | "sales" | "commercial";
+          const v = e.target.value as InventoryViewAs;
           setViewAs(v);
           showPendingRef.current = showPending && v === "admin";
           // Land on the view that role actually opens on. Commercial has no
@@ -644,6 +662,13 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
         <option value="office">Finance / Accounts</option>
         <option value="sales">Sales</option>
         <option value="commercial">Commercial</option>
+        {/* The 2026-09-14 view grant — chromia@ and gibin@, who see the whole
+            module and may press none of it. Here for the same reason Finance /
+            Accounts is: the owner asked for that screen and is entitled to look
+            at it without signing in as somebody else. It previews as the office
+            view with every control that posts removed, which is precisely what
+            those two logins get. */}
+        <option value="viewer">Finished-goods viewer</option>
       </select>
     </label>
   ) : null;
@@ -1198,7 +1223,19 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
             </div>
           )}
 
-          {sel.size > 0 && (
+          {/* EVERYTHING IN THIS PANEL POSTS, so a view-grant login gets none of
+              it. The move fields write /api/inventory/location; the action
+              select writes /api/inventory/status, or /api/inventory/dispatch
+              once an invoice is attached. Not rendered rather than disabled: a
+              greyed Apply still tells somebody the action is theirs to ask for,
+              and still hands their browser the handler that asks.
+
+              THE BASKET ABOVE STAYS, and that is not an oversight. Ticking a
+              slab writes nothing anywhere — it gathers rows into a list that
+              survives the next search, which is how anybody compares eight
+              slabs found across three searches. It is a reading tool, and the
+              grant is "full visibility". What it gathered FOR is what goes. */}
+          {sel.size > 0 && !readOnly && (
             <div className="rounded-xl border border-brand/30 bg-brand/5 p-4">
               <div className="flex flex-wrap items-end gap-3">
                 <div className="text-sm font-medium text-gray-900">{sel.size} slab(s) selected</div>
@@ -1500,8 +1537,47 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
                 {/* A hand-entered slab has no production timeline to open: it
                     exists BECAUSE the line never recorded it, so /slab would
                     answer with an empty page. The button is for slabs the
-                    plant actually made rows for. */}
-                {detail.slab?.source !== "MANUAL_ENTRY" && (
+                    plant actually made rows for.
+
+                    AND IT IS NOT FOR A VIEWER, because /slab is not theirs to
+                    open. The 2026-09-14 grant reaches finished goods and the
+                    whole of finished goods and nothing else — fgViewMayVisit
+                    admits /inventory, /api/inventory and the panel's own photo
+                    endpoint, and stops there — so chromia@ and gibin@ are
+                    refused this page by their own
+                    branch caps in middleware.ts and land on
+                    /no-access?from=/slab. Drawing the button for them anyway is
+                    the failure the fab-OPERATOR block of that file records at
+                    length: a widened API gate is not access, the page has to be
+                    reachable too, and a control that leads to a refusal is
+                    worse than no control.
+
+                    HIDDEN HERE RATHER THAN OPENED AT THE FENCE, and that
+                    direction is the decision rather than the lazier of two
+                    fixes. The photo endpoint beside it went the other way and
+                    was let through fgViewMayVisit, which is right for what it
+                    is: /api/photo is drawn BY this panel, and the route behind
+                    it can still scope a viewer to FinishedSlab and refuse every
+                    other model. /slab can do neither. It is another module's
+                    page rather than a part of this one, and it cannot narrow
+                    itself for a viewer — its `basic` stripping, the thing that
+                    keeps machine settings and RM composition off the copy
+                    Commercial reads, is keyed on isCommercialRole. A
+                    LINE_MANAGER viewer sent there would therefore be handed
+                    MORE of that page than the role the module actually shares
+                    it with, out of a grant whose words were "finished good's
+                    visibility". Widening the fence that far is the owner's
+                    decision to take and not a button's to assume.
+
+                    ON readOnly RATHER THAN ON THE FLAG ITSELF, like every other
+                    control on this screen. readOnly is `!canWriteInventory(user)`,
+                    which is false for every login that can actually follow this
+                    link — an admin on any branch, Finance and Accounts on
+                    OFFICE, and Commercial, which carries its own under("/slab")
+                    allowance in middleware — and true for exactly the two that
+                    cannot. Sales is read-only here as well and loses nothing:
+                    it is summary-only and never opens this panel. */}
+                {!readOnly && detail.slab?.source !== "MANUAL_ENTRY" && (
                   <div className="flex justify-end">
                     <a href={`/slab?s=${detail.slabNumber}`} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-dark">Full production timeline →</a>
                   </div>

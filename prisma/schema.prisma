@@ -113,6 +113,17 @@ model User {
   /// the columns are absent, which keeps a stale deploy from 500-ing the whole
   /// Users screen. Declaring the fields makes the columns SURVIVE; the raw
   /// reads make their absence SURVIVABLE. Both are wanted.
+  /// MAY LOOK AT FINISHED GOODS, whatever branch this login is on, and may
+  /// change nothing in it (owner, 2026-09-14; scripts/0083). A per-login grant
+  /// and not a role, because both people who have it are LINE_MANAGERs on
+  /// CHROMIA and FABRICATION: there is no role+branch pair meaning "these two
+  /// and nobody else", and adding LINE_MANAGER to INVENTORY_ROLES would hand
+  /// finished goods to every line manager ever created.
+  ///
+  /// DECLARED HERE for the reason the block above gives at length: `db push`
+  /// drops a column this file does not describe, and it would take every grant
+  /// with it.
+  fgView             Boolean             @default(false) @map("fg_view")
   altRole            Role?               @map("alt_role")
   altBranch          Branch?             @map("alt_branch")
   createdById        String?

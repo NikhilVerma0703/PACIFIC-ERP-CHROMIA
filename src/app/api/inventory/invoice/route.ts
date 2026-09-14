@@ -1,13 +1,20 @@
 // Invoice download — COMMERCIAL and ADMIN only. ?id=<invoice id>
+//
+// On the read gate because it reads, and still refused to a finished-goods view
+// grant by the role check below — which is not an exception to "a viewer sees
+// what a full office login sees". Finance and Accounts, who hold this module
+// outright, cannot download a dispatch invoice either; it is Commercial's
+// paperwork. A viewer is not being shown less than the office, so widening this
+// line is its own decision with its own person to ask.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { isCommercialRole } from "@/lib/roles";
 import { prisma } from "@/lib/prisma";
-import { inventoryGate } from "@/lib/inventory/access";
+import { inventoryReadGate } from "@/lib/inventory/access";
 
 const db = prisma as any;
 
 export async function GET(request: Request) {
-  const g = await inventoryGate();
+  const g = await inventoryReadGate();
   if (!g.ok) return Response.json({ error: "Not authorized" }, { status: g.status });
   const role = String((g.user as any)?.role ?? "");
   if (role !== "ADMIN" && !isCommercialRole(role)) return Response.json({ error: "Not available" }, { status: 403 });

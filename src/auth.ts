@@ -176,6 +176,27 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           branch: effectiveBranch,
           altRole: alt.altRole,
           altBranch: alt.altBranch,
+          // THE FINISHED-GOODS VIEW GRANT (users.fg_view), read here so it can
+          // ride in the JWT for the same reason the alternate pair above does:
+          // middleware.ts and auth.config.ts are Prisma-free and have nothing
+          // else to read it from, and the sidebar asks about it on every render.
+          //
+          // STRICTLY `=== true`, and cast rather than read off the typed row so
+          // this still compiles against a generated client that predates
+          // scripts/0083 — where the property is simply absent, and `undefined`
+          // has to mean NO GRANT rather than "unknown, let them in". That is the
+          // direction the column's own DEFAULT false takes and the test
+          // hasFgView() applies at the far end; all three agree, deliberately.
+          //
+          // A REVOKED GRANT LIVES UNTIL THE NEXT SIGN-IN, exactly as a changed
+          // role, branch or second job already does here — the jwt callback
+          // below revalidates sessionVersion and nothing else. Take the flag
+          // away and bump users.session_version in the same breath: that signs
+          // the login out of every device and the next token is minted without
+          // it. Worth stating because the grant is made by hand today
+          // (scripts/0083 deliberately writes no UPDATE), so nothing bumps the
+          // version on your behalf the way Users & Roles does for a role.
+          fgView: (user as { fgView?: boolean | null }).fgView === true,
           sv: (user as { sessionVersion?: number }).sessionVersion ?? 1,
         } as never;
       },
@@ -201,6 +222,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // cookie against these two values and fall back to role/branch above.
         token.altRole   = (user as any).altRole ?? null;
         token.altBranch = (user as any).altBranch ?? null;
+        // The finished-goods view grant, carried on the same terms as the pair
+        // above: never derived, because neither edge gate can reach the column,
+        // and `=== true` so that a token minted before this line carries false
+        // rather than undefined. This callback replaces auth.config.ts's jwt for
+        // the main auth() instance — the two set the same claims on purpose.
+        token.fgView    = (user as any).fgView === true;
         token.sv        = (user as any).sv ?? 1;
         return token;
       }

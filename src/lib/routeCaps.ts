@@ -151,6 +151,77 @@ export function samplingMayVisit(p: string): boolean {
 }
 
 /**
+ * THE FINISHED-GOODS VIEW GRANT, AS A PATH - what a login carrying
+ * users.fg_view is let through to, and the whole of what it is let through to.
+ *
+ * The owner, 2026-09-14: "Please add finished good's visibility for
+ * chromia@thepacific.group, gibin@thepacific.group (full visibility but no edit
+ * options)". Neither of them sits on the OFFICE branch that owns the module -
+ * chromia@ is on CHROMIA, gibin@ on FABRICATION - so both are refused finished
+ * goods by a branch cap long before any route gate gets a chance to admit them.
+ * scripts/0083-fg-view-grant.sql is the argument for answering that with a
+ * per-login boolean instead of a role, and lib/inventory/accessRules.ts holds
+ * the rule that reads the flag. This file answers only the other half: WHERE.
+ *
+ * IT SAYS NOTHING ABOUT WHAT THE VIEWER MAY DO, and it cannot: a slab lookup
+ * and a slab edit are both POSTs under /api/inventory, and a path match cannot
+ * tell them apart. The split is made in the route by inventoryReadGate(), which
+ * admits the flag, against inventoryGate(), which refuses it and guards every
+ * write. Those gates are the enforcement; this is the outer fence, and the two
+ * have to agree - a page refused while its API is open is the failure
+ * lib/commercial/access-rules.ts records at length. The reverse of that failure
+ * is what the /api/photo clause below fixes: a page admitted while one endpoint
+ * it renders stays refused, which does not read as a refusal to the person
+ * looking at it. It reads as the feature being broken.
+ *
+ * BOTH EDGE GATES IMPORT IT, like every other cap in this file, so middleware.ts
+ * cannot come to admit a path that auth.config.ts's authorized() refuses. That
+ * disagreement would be especially quiet here, because authorized() runs FIRST
+ * and a Response it returns replaces middleware wholesale: the viewer would be
+ * bounced off the page by the gate in front of the one that admitted them.
+ *
+ * Exact-or-subpath rather than a bare prefix, for the reason samplingMayVisit
+ * gives: an /inventory-admin page or an /api/inventory-export added later is a
+ * new decision to take, not one to inherit from the spelling of its name.
+ */
+export function fgViewMayVisit(p: string): boolean {
+  // Strip a query string once, as maintenanceMayVisit and samplingMayVisit do,
+  // so /inventory?status=IN_STOCK cannot be answered differently from /inventory.
+  const q = p.indexOf("?");
+  const path = q === -1 ? p : p.slice(0, q);
+  const under = (base: string) => path === base || path.startsWith(base + "/");
+  const exact = (base: string) => path === base;
+  return (
+    under("/inventory") ||
+    under("/api/inventory") ||
+    // AND THE SLAB PHOTOS, which the detail panel does not load from
+    // /api/inventory at all. It renders one <img src="/api/photo?id=..."> per
+    // photo row and Lightbox opens the same URL, while the rows themselves come
+    // from /api/inventory/slab - which is on inventoryReadGate and therefore
+    // hands a viewer the ids. Leaving the picture endpoint outside this fence
+    // did not hide the Photos strip, it drew it: a row of broken tiles and a
+    // lightbox that opens on a blank frame, for exactly the two logins the
+    // grant was made for. maintenanceMayVisit names this same path for the same
+    // reason, and its comment records that the first cut of THAT allowlist
+    // silently broke the photo evidence for the one role that files it. This is
+    // the same omission, so it gets the same line.
+    //
+    // A PATH, AND THE ROUTE STILL DECIDES WHICH PICTURE. /api/photo serves
+    // every model in the ERP and the id in the query string does not say which
+    // one, so a fence cannot scope this to finished goods and must not pretend
+    // to. The scoping lives in the route, which answers a view-grant login for
+    // model "FinishedSlab" and refuses it the rest - including, since this line
+    // was added, the Chromia tablet's own photos, which its branch cap used to
+    // refuse on this fence's behalf.
+    //
+    // exact(), not under(): a pathname, optionally carrying a query string, and
+    // there is no /api/photo/<something> to reach. The form maintenanceMayVisit
+    // settled on after a bare startsWith let /api/mis/exporter through.
+    exact("/api/photo")
+  );
+}
+
+/**
  * THE MACHINE ROUTES: hit by a scheduler, never by a browser, so they carry no
  * session and must pass the login gate to reach their own secret check.
  *

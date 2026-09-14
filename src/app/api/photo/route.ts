@@ -39,9 +39,21 @@ export async function GET(request: Request) {
     // carve-out above — model "FinishedSlab" only, and decided by the module's
     // own gate (hasInventoryAccess), so the panel and the picture agree on who
     // may look. No other model is reachable through it.
-    const inventoryPhotoViewer =
-      r.model === "FinishedSlab" &&
-      hasInventoryAccess(role, String((me as { branch?: string | null }).branch ?? ""));
+    //
+    // THE WHOLE USER, NOT THE ROLE AND THE BRANCH. This asked hasInventoryAccess
+    // with a pair of strings until 2026-09-14, and a pair of strings cannot
+    // carry users.fg_view: that form is @deprecated because it answers the
+    // pre-grant rule, so a view-grant login failed it. The symptom was not a
+    // missing feature but a worse one — /api/inventory/slab is on
+    // inventoryReadGate and hands a viewer the photo rows, so the detail panel
+    // drew a Photos strip, every tile 403'd, and the lightbox behind them opened
+    // empty. That is strictly less than the office login the owner's "full
+    // visibility" was measured against. The object form asks the office
+    // role+branch rule first and only then the flag, so it returns exactly what
+    // the pair returned for everybody who already had an answer, and `me` is
+    // already the ACTIVE role context (currentUser), the same user every gate in
+    // front of this one was asked about.
+    const inventoryPhotoViewer = r.model === "FinishedSlab" && hasInventoryAccess(me);
     if (!intakePhotoViewer && !inventoryPhotoViewer) {
       if (!(await canSeeModel(r.model))) return Response.json({ error: "Not authorized" }, { status: 403 });
       // "Can SEE the record's table" is decided in two places for the tables
@@ -55,8 +67,25 @@ export async function GET(request: Request) {
       // /tables record page and on /mis and /maintenance (DowntimeRespond), none
       // of which these logins can open, so no working flow changes; admins span
       // every department, as everywhere.
+      //
+      // THE CHROMIA TABLET JOINS THAT LIST, and it joins it because of the view
+      // grant rather than in spite of it. fgViewMayVisit now admits /api/photo
+      // so the two granted logins can see a slab's far/near shots, and a fence
+      // matches a path: the id in the query string does not say which model it
+      // belongs to, so the admission opens this route for every model and the
+      // scoping has to happen here. Without this line it would have handed a
+      // Chromia login every non-office model's photos by id — downtime
+      // evidence, QC photos — because canSeeModel answers yes to all of them for
+      // a line manager off the OFFICE branch, which is the same by-id leak the
+      // paragraph above closed for operators. It subtracts from nobody: the
+      // Chromia cap in middleware is a narrow allowlist with a terminal return,
+      // so no Chromia login could reach this route at all before the admission,
+      // and the grant holders never enter this block because FinishedSlab is
+      // answered above. Written as middleware's own cap is written — the role
+      // OR the retired branch — so the door and the room cannot drift apart.
       if (rankOf(role) < ROLE_RANK.ADMIN) {
         if (branch === "FABRICATION" || branch === "INTERNATIONAL_SALES") return Response.json({ error: "Not authorized" }, { status: 403 });
+        if (role === "CHROMIA" || branch === "CHROMIA") return Response.json({ error: "Not authorized" }, { status: 403 });
         if (role === "OPERATOR" && !operatorTableModels((me as { station?: string | null }).station).has(r.model)) {
           return Response.json({ error: "Not authorized" }, { status: 403 });
         }

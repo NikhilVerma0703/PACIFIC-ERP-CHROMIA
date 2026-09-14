@@ -407,11 +407,26 @@ export function Nav({
         <Section label="Recalibration" items={chromiaItems.filter(t => t.href.startsWith("/chromia/recalibration"))} path={path} />
         <Section label="Reports" items={chromiaItems.filter(t => t.href === "/chromia/reports" || t.href === "/chromia/downloads")} path={path} />
         <Section label="Setup" items={chromiaItems.filter(t => t.href === "/chromia/import")} path={path} />
-        {/* The ONE page outside /chromia this login can hold: the Chromia
-            manager is a named slab-intake person (printed slabs enter finished
-            goods by hand), and middleware carves /slab-intake through this
-            login's own cap for exactly the people this flag is true for. */}
-        {slabIntake && <Section label="Inventory" items={[{ href: "/slab-intake", icon: I.entry, label: "Slab Intake" }]} path={path} />}
+        {/* THE PAGES OUTSIDE /chromia THIS LOGIN CAN HOLD, and there are two.
+            The Chromia manager is a named slab-intake person (printed slabs
+            enter finished goods by hand), and middleware carves /slab-intake
+            through this login's own cap for exactly the people that flag is
+            true for.
+
+            Finished Goods is the 2026-09-14 view grant. chromia@ is a
+            LINE_MANAGER on the CHROMIA branch, so it lands on THIS arm and not
+            on the office or shop-floor navs further down that already carry the
+            row — without a row here the owner's "add finished good's
+            visibility" would have shipped as a page reachable only by typing
+            the URL. `inventory` is hasInventoryAccess(user) in Shell, which on
+            this arm can only be true for a grant holder: no CHROMIA-branch
+            login satisfies the office role+branch rule, and an admin never
+            reaches this arm. Same shape as the office nav's Inventory section —
+            one section, two conditional rows — so the two do not drift. */}
+        {(inventory || slabIntake) && <Section label="Inventory" items={[
+          ...(inventory ? [{ href: "/inventory", icon: I.box, label: "Finished Goods" }] : []),
+          ...(slabIntake ? [{ href: "/slab-intake", icon: I.entry, label: "Slab Intake" }] : []),
+        ]} path={path} />}
       </nav>
     );
   if (role === "SAMPLING")
