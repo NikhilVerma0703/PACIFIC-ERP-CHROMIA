@@ -132,22 +132,23 @@ test("the page hands the whole row on rather than a second column list", () => {
   );
 });
 
-test("Users & Roles shows the grant, and offers a way to take it back", () => {
-  assert.match(ADMIN_UI, /<th className="py-2 pr-4">Finished goods<\/th>/, "the list needs a column for the grant — that visibility is why scripts/0083 chose a column over a role");
-  assert.match(ADMIN_UI, /u\.fgView/, "and a body cell that actually reads it");
-  // The revoke half. A control that can only ever say yes leaves the screen
-  // exactly as unable to take the grant back as hand-written SQL was.
-  // Bounded by the Status cell that follows it. Both anchors are chosen to be
-  // unique: `{u.active ?` also matches the row's own `${u.active ?` template
-  // higher up, and `text-green-600` the create form's message, and either would
-  // slice backwards into an empty string that matches nothing and proves it.
-  const cell = ADMIN_UI.slice(ADMIN_UI.indexOf("canGrantFg ? ("), ADMIN_UI.indexOf(">Active<"));
-  assert.ok(cell.length > 0, "the finished-goods cell must sit before the Status cell");
-  assert.match(cell, /setFgView\(u\.id, /, "the control must call the server action");
-  assert.match(cell, /value=""/, "and must offer 'none', which is the revoke");
-  // Drawn exactly where the server would accept it — the same function, not a
-  // second copy of the rule. The Row used to render buttons the server refused.
-  assert.match(ADMIN_UI, /mayGrantFgView\(myRole, u\.branch\)/, "the control must be gated by the same rule the action checks");
+test("Users & Roles shows NO finished-goods column — the owner had it taken out", () => {
+  // The first cut drew a "Finished goods" column with a none / View-only select
+  // on every row, on the reasoning scripts/0083 gives for choosing a column
+  // over a role. The owner saw it the same day and asked for the screen to be
+  // put back — "Why has the UI changed for finished goods. Please revert it
+  // back", then "Only fix the UI as it was previously" (2026-09-14). "Only" is
+  // the operative word: the grant itself stays, the server action stays (the
+  // test below still pins it), the row still carries the flag; it is the
+  // DRAWING that goes. Pinned absent so it is not quietly redrawn.
+  assert.doesNotMatch(ADMIN_UI, /Finished goods<\/th>/, "no header");
+  assert.doesNotMatch(ADMIN_UI, /canGrantFg/, "no cell, no gate const");
+  assert.doesNotMatch(ADMIN_UI, /setFgView\(/, "nothing on this screen calls the action");
+  assert.doesNotMatch(ADMIN_UI, /mayGrantFgView/, "and it no longer asks the rule it has no control for");
+  // The consequence, stated where the next person will look: until a control
+  // is asked for again, the grant is changed by SQL, and a change made that
+  // way must bump users.session_version in the same statement or the old
+  // token keeps its answer until the person next signs in.
 });
 
 test("every column this table adds has a header AND a cell", () => {
