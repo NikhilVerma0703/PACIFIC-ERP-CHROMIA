@@ -163,10 +163,20 @@ test("unitLabel: the printed unit per UOM code, from settings", () => {
   assert.equal(unitLabel(null, "EXPORT", S), "");
 });
 
-test("numbers: quantity and amount at 3 dp, the rate exactly as typed, slabs whole", () => {
+// A THIRD DECIMAL ONLY WHEN IT SAYS SOMETHING (the owner, 2026-09-15, against
+// the proforma Monolith sent him). Both of the customer's own documents settle
+// this and they do not disagree: the reference prints 1052.24 and 51559.76, and
+// the older one 17324.657. So the rule is not "two places" and not "three" — it
+// is three places with a single trailing zero trimmed off, which is two places
+// for money that lands on the cent and three for a quantity that does not.
+// Never fewer than two: 17300 is money and prints 17300.00, not 17300.0.
+test("numbers: two decimals, or three when the third is significant", () => {
   assert.equal(fmtQty(3208.273), "3208.273");
-  assert.equal(fmtQty(3208.2), "3208.200");
-  assert.equal(fmtAmount(17324.657), "17324.657");
+  assert.equal(fmtQty(3208.2), "3208.20", "no padded third decimal");
+  assert.equal(fmtQty(1052.24), "1052.24", "the reference's own figure, as it prints it");
+  assert.equal(fmtAmount(17324.657), "17324.657", "their older proforma keeps its third place");
+  assert.equal(fmtAmount(51559.76), "51559.76");
+  assert.equal(fmtAmount(17300), "17300.00", "a round figure still reads as money");
   assert.equal(fmtRate(5.4), "5.4", "not 5.4000");
   assert.equal(fmtRate(55.9728), "55.9728");
   assert.equal(fmtRate(5), "5");
@@ -328,10 +338,11 @@ function rupeesFromWords(s: string): number {
 }
 
 test("a domestic PI's total in words is the figure it prints — paise and all", () => {
-  // The bug this pins: whole-rupee words under a 3-dp figure both LOSE the
-  // paise ("138686.250" over "…Eighty Six Rupees Only") and can round the
-  // words ABOVE the figure ("138686.750" over "…Eighty Seven Rupees Only"),
-  // so one PI would state two different totals.
+  // The bug this pins: whole-rupee words under the printed figure both LOSE the
+  // paise ("138686.25" over "…Eighty Six Rupees Only") and can round the words
+  // ABOVE the figure ("138686.75" over "…Eighty Seven Rupees Only"), so one PI
+  // would state two different totals. The assertions compare the words against
+  // Number(totalAmount), so they hold whatever the figure's decimal places.
   const of = (amount: number) =>
     buildProformaSnapshot({ ...domesticOrder, items: [{ ...domesticOrder.items![0], amount }] }, S, { number: PI_NO, revision: 0, date: "2026-07-12" });
 
@@ -344,7 +355,7 @@ test("a domestic PI's total in words is the figure it prints — paise and all",
   assert.equal(of(138686.25).amountInWords, "One Lakh Thirty Eight Thousand Six Hundred Eighty Six Rupees and Twenty Five Paise Only.");
   assert.equal(of(138686.75).amountInWords, "One Lakh Thirty Eight Thousand Six Hundred Eighty Six Rupees and Seventy Five Paise Only.");
   assert.equal(of(6000).amountInWords, "Six Thousand Rupees Only.", "a round total still reads as whole rupees");
-  assert.equal(piPrintFields(of(138686.25)).totalAmount, "138686.250");
+  assert.equal(piPrintFields(of(138686.25)).totalAmount, "138686.25");
 });
 
 test("piAmountInWords: rupees name their paise, a foreign currency keeps the PI's own style", () => {
@@ -1118,7 +1129,7 @@ test("piRow / piTotalRow: nine cells, in the header's order", () => {
     "CARRARA ROYALE-Polish-Super Jumbo-30mm-Premium",
     "30mm", "43", "68101990", "Square Foot", "3208.273", "5.4", "17324.657",
   ]);
-  assert.deepEqual(piRow(s.lines[1]), ["", "FREE TRADE SAMPLES", "30mm", "25", "68101990", "Nos", "0.000", "0", "0.000"]);
+  assert.deepEqual(piRow(s.lines[1]), ["", "FREE TRADE SAMPLES", "30mm", "25", "68101990", "Nos", "0.00", "0", "0.00"]);
   assert.deepEqual(piTotalRow(s), ["", "Total", "", "68", "", "", "", "", "17324.657"]);
   assert.equal(piRow(s.lines[0]).length, piTableHeader("USD").top.length);
 });
@@ -1158,7 +1169,7 @@ test("piPrintFields: everything the PI prints, formatted — and a blank is blan
   assert.equal(f.grossWeight, "24,500 KGS");
   assert.equal(f.netWeight, "23,100 KGS");
   assert.equal(f.discount, "24.657");
-  assert.equal(f.totalAmount, "17300.000");
+  assert.equal(f.totalAmount, "17300.00");
   assert.equal(f.totalSlabs, "68");
   assert.equal(f.currency, "USD");
   assert.equal(f.amountInWords, "USD Seventeen Thousand, Three Hundred only.");
@@ -1612,7 +1623,7 @@ test("the discount line is withheld when there is no discount, and kept when the
   assert.notEqual(withDiscount.discount, "", "and is therefore still drawn");
 
   // A zero is not a discount — it is the absence of one, and must not print a
-  // line reading "0.000" on a customer's invoice.
+  // line reading "0.00" on a customer's invoice.
   assert.equal(piPrintFields({ ...buildProformaSnapshot(order, S, opts), discount: 0 }).discount, "");
 });
 
@@ -1635,9 +1646,12 @@ test("no vessel / flight number on a proforma, and the remaining ports still rea
   // Gone, not blanked: the snapshot still CARRIES a vessel (the packing list and
   // the export invoice print one), so a test that only checked the value would
   // pass with an empty box still on the page.
-  assert.match(src, /pairRow\(field\("Port of Loading", f\.portOfLoading\), field\("Port of Discharge", f\.portOfDischarge\)\)/,
+  // fieldOrNull, not field: a port with nothing in it is withheld rather than
+  // printed as an empty labelled box, and pairRow then gives the survivor the
+  // whole row instead of leaving a blank half beside it.
+  assert.match(src, /pairRow\(fieldOrNull\("Port of Loading", f\.portOfLoading\), fieldOrNull\("Port of Discharge", f\.portOfDischarge\)\)/,
     "the two ports pair up where the vessel used to sit, so no half-width cell is left behind");
-  assert.match(src, /fullRow\(field\("Final Destination", f\.finalDestination\)\)/,
+  assert.match(src, /fullRow\(fieldOrNull\("Final Destination", f\.finalDestination\)\)/,
     "and Final Destination takes the full width below them");
 });
 
@@ -1993,7 +2007,7 @@ test("the PDF drops the Indian rows whole — absent, not an empty labelled box"
   // pair that must NOT be conditional — not to the next "]" in the file, since
   // the GSTIN line inside carries a conditional of its own.
   const guardStart = src.indexOf("...(indian");
-  const guardEnd = src.indexOf('pairRow(field("Country of Origin', guardStart);
+  const guardEnd = src.indexOf('pairRow(fieldOrNull("Country of Origin', guardStart);
   const guarded = src.slice(guardStart, guardEnd);
   assert.ok(guardStart !== -1 && guardEnd > guardStart);
   assert.ok(guarded.includes('text: "RBI Code No.: "'), "the RBI code row is inside the guard");
@@ -2013,9 +2027,12 @@ test("the PDF drops the Indian rows whole — absent, not an empty labelled box"
   assert.match(src, /\.\.\.\(indian\s*\?\s*\[\s*\{ text: "Declaration"/,
     "a bold Declaration heading over nothing is worse than no declaration");
 
-  // And the row that must NOT become conditional stays exactly as it is.
-  assert.match(src, /fullRow\(field\("Terms & Conditions", f\.termsAndConditions\)\)/,
-    "the Terms & Conditions box is labelled and prints empty — it is not tidied away");
+  // And Terms & Conditions, which USED to be the row that must never become
+  // conditional, now is one — reversed by the owner on 2026-09-15 after he had
+  // emptied the box and then had the empty boxes taken off the page. It still
+  // prints whatever a human typed; it no longer prints a label over nothing.
+  assert.match(src, /fullRow\(fieldOrNull\("Terms & Conditions", f\.termsAndConditions\)\)/,
+    "Terms & Conditions carries what was typed, and is withheld when nothing was");
 });
 
 test("the wire route and the ACH route are printed apart, and carry different account numbers", () => {

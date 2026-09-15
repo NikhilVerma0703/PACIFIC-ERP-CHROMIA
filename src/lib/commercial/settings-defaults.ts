@@ -347,6 +347,19 @@ export const DEFAULT_SETTINGS: CommercialSettings = {
       label: "Monolith Surfaces Inc (USA)",
       indianExporter: false,
       legalName: "MONOLITH SURFACES INC",
+      // OFF MONOLITH'S OWN PROFORMA (SAL-ORD/25-26/01718, sent back by them on
+      // 2026-09-15), which is the only sight anyone here has had of how they
+      // write their own address. The Tomball, TX address this entry was first
+      // built with came from a message about M & G's addresses and appears on
+      // neither party in Monolith's document; it was almost certainly never
+      // theirs. Corrected because the alternative was two of our own documents
+      // giving the same company two different addresses in the same week.
+      // THE OWNER'S ADDRESS, NOT THE ONE ON THEIR PAPER. Monolith's own
+      // proforma writes 1300 Mark St, Elk Grove Village IL — the address this
+      // was briefly corrected to — but the owner asked on 2026-09-15 for the
+      // one our documents already carry, and where our own subsidiary is
+      // registered is his to say and not a thing to infer from a document
+      // somebody sent back.
       addressLines: [
         "25298 FM 2978 Rd, Unit A,",
         "Tomball, TX 77375, USA",

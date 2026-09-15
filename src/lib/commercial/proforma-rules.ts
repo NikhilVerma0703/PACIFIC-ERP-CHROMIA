@@ -230,11 +230,30 @@ export function trimNumber(n: number): string {
   return n.toFixed(4).replace(/\.?0+$/, "");
 }
 
+/**
+ * THREE DECIMALS WHEN THE THIRD SAYS SOMETHING, TWO WHEN IT DOES NOT.
+ *
+ * Both of the customer's own reference proformas are matched by this one rule
+ * and neither is matched by a flat toFixed(3). SAL-ORD/25-26/01718, the
+ * document Monolith sent back on 2026-09-15, prints 1052.24, 12889.94 and a
+ * total of 51559.76; SAL-ORD/26-27/01642 prints 3208.273 and 17324.657, where
+ * the third decimal is real. Padding everything to three put a trailing zero on
+ * every figure of the first — "51559.760" against their "51559.76" — on a
+ * document the owner asked to match exactly.
+ *
+ * Never fewer than two: money with one decimal reads as a typo, and a quantity
+ * is money here because it is multiplied by a rate on the same line.
+ */
+function fixedTrim(n: number): string {
+  const s = n.toFixed(3);
+  return s.endsWith("0") ? s.slice(0, -1) : s;
+}
+
 export function fmtQty(n: number | null | undefined): string {
-  return n === null || n === undefined || !Number.isFinite(n) ? "" : n.toFixed(3);
+  return n === null || n === undefined || !Number.isFinite(n) ? "" : fixedTrim(n);
 }
 export function fmtAmount(n: number | null | undefined): string {
-  return n === null || n === undefined || !Number.isFinite(n) ? "" : n.toFixed(3);
+  return n === null || n === undefined || !Number.isFinite(n) ? "" : fixedTrim(n);
 }
 export function fmtRate(n: number | null | undefined): string {
   return n === null || n === undefined || !Number.isFinite(n) ? "" : trimNumber(n);
