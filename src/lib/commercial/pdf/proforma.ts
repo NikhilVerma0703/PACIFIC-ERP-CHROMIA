@@ -67,11 +67,20 @@ import { piPrintFields, piRow, piTotalRow, piTableHeader, partyBlock, printsPart
 // something print, 7pt labels on a third of a page read as a fragment rather
 // than as a document.
 //
-// EVERY VALUE HERE IS BOUNDED BY ONE THING: the page. A proforma must stay on a
-// single sheet, and these are the largest sizes at which a TEN-line invoice
-// still does — checked by rendering one, not by eye. Raising them further is
-// not free: it costs a second page on a long order, and a two-page proforma
-// with the signature block stranded alone is worse than small type.
+// EVERY VALUE HERE IS BOUNDED BY ONE THING: the page, and the true bound is
+// FIVE item lines, not the ten this comment claimed until it was measured. A
+// full Pacific export proforma — delivery terms, both ports, final destination,
+// the Indian registration rows and the declaration — fits five lines on one
+// sheet and goes to two at six. A Monolith US proforma, which drops the whole
+// Indian block, is far lighter and fits more.
+//
+// The ten was never rendered; it was asserted. It is recorded here because the
+// next person to raise these sizes needs the real number to trade against, and
+// because the same comment went on to say a stranded signature block is worse
+// than small type — which was true, and was happening at six lines. The layout
+// now keeps the total and the signatures together (see the end of this file),
+// so a long order breaks in the item table, under repeated column headings,
+// instead of through the footer.
 const FS = { body: 9, label: 8.5, value: 10, head: 9.5, title: 16, big: 11 } as const;
 const GREY = "#f2f2f2";
 
@@ -85,10 +94,12 @@ const gridLayout = {
   // guessed. Vertical padding is the expensive dimension: it is paid on every
   // one of the fifteen-odd rows, so raising it from 2 to 4 costs more height
   // than growing every font on the page. Rendering a Pacific proforma at four
-  // scales showed the largest type at padding 2 fits SIX item lines on one
-  // sheet, while a middling type at padding 4 fits only four — the same page
-  // for smaller words. So the height went into the type and the breathing room
-  // went sideways, where it costs nothing.
+  // scales showed the largest type at padding 2 fits more item lines on one
+  // sheet than a middling type at padding 4 — the same page for smaller words.
+  // So the height went into the type and the breathing room went sideways,
+  // where it costs nothing. (The absolute count that comparison quoted was
+  // wrong by one; the ordering it established was not. See FS above for the
+  // measured figure.)
   paddingLeft: () => 6,
   paddingRight: () => 6,
   paddingTop: () => 2,
@@ -505,8 +516,15 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
   };
 
   // ── weights, discount, declaration and the signatures ─────────────────────
+  // dontBreakRows, because this whole block is ONE table row and pdfmake will
+  // otherwise slice it horizontally when it runs out of page. Measured on a
+  // six-line Pacific export PI: the declaration split mid-sentence and
+  // "Authorised Signatory & Stamp" was left standing alone at the top of page
+  // two, under nothing. A signature block that has been cut in half is worse
+  // than one that starts a fresh page whole.
   const footer: any = {
     table: {
+      dontBreakRows: true,
       widths: ["44%", "28%", "28%"],
       body: [[
         {
@@ -577,9 +595,15 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
       ...(carriage ? [carriage] : []),
       bankBlock,
       itemTable,
-      totalLine,
-      footer,
-      ...validity,
+      // THE TOTAL AND THE SIGNATURES TRAVEL TOGETHER. The type scale keeps a
+      // FIVE-line proforma on one sheet — measured, not assumed, and less than
+      // the ten this file used to claim. Past that the document legitimately
+      // runs to a second page, and the only question is where it breaks. A
+      // total stranded above a page break, with the amount in words and the
+      // signatures overleaf, reads as an unfinished document; kept together
+      // they read as a footer. The item table carries headerRows: 2, so its
+      // continuation on page two arrives under its own column headings.
+      { stack: [totalLine, footer, ...validity], unbreakable: true },
     ],
   };
 
