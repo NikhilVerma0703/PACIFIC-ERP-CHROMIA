@@ -139,7 +139,22 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
       body: [
         pairRow(field("Invoice No", f.invoiceNo, { bold: true }), field("Invoice Date", f.invoiceDate, { bold: true })),
         pairRow(field("Buyer's PO No", f.buyerPoNo), field("Delivery Date", f.deliveryDate)),
-        fullRow(field("RBI Code No.", `${f.rbiCode}${f.gstin ? `        GSTIN : ${f.gstin}` : ""}`)),
+        // RBI CODE AND GSTIN READ AS "label: value", ONE PER LINE (owner,
+        // 2026-09-15). field() stacks a small grey label above its value, which
+        // is right for a box somebody fills in and wrong for two registration
+        // numbers that never change: it printed "RBI Code No." on one line and
+        // then "678        GSTIN : 33AALCP2750N1Z3" run together on the next,
+        // so the GSTIN had a label and the 678 appeared to have none. Their own
+        // reference proforma prints them as "RBI Code No.:678" and
+        // "GSTIN NO: 33AALCP2750N1Z3", each complete on its own line, and that
+        // is what this is. The GSTIN line is dropped rather than left dangling
+        // when there is none, the way every other conditional row here behaves.
+        fullRow({
+          stack: [
+            { text: [{ text: "RBI Code No.: ", fontSize: FS.label, color: "#444" }, { text: f.rbiCode || " ", fontSize: FS.value }] },
+            ...(f.gstin ? [{ text: [{ text: "GSTIN : ", fontSize: FS.label, color: "#444" }, { text: f.gstin, fontSize: FS.value }] }] : []),
+          ],
+        }),
         fullRow({
           stack: [
             { text: "Jurisdictional Central Excise Division Office Address", fontSize: FS.label, color: "#444" },
@@ -168,8 +183,29 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
       widths: ["50%", "50%"],
       body: [
         pairRow(field("Pre-Carriage By", f.preCarriageBy), field("Place of Receipt By Pre-Carrier", f.placeOfReceipt)),
-        pairRow(field("Vessel / Flight No", f.vessel), field("Port of Loading", f.portOfLoading)),
-        pairRow(field("Port of Discharge", f.portOfDischarge), field("Final Destination", f.finalDestination)),
+        // NO VESSEL / FLIGHT NUMBER ON A PROFORMA (owner, 2026-09-15: "not
+        // required in any PI"), and it is not merely blanked — the cell is
+        // gone. A proforma is raised before anything is booked, so the vessel
+        // is never known when this document is written; printing an empty box
+        // for it invited somebody to treat the PI as the place that answer
+        // belongs.
+        //
+        // AND NOTHING DOWNSTREAM LOSES A VESSEL BY THIS, which is worth stating
+        // because the obvious worry is wrong in an unobvious way: there is no
+        // vessel column on commercial_order at all. The PI's box was typed on
+        // the PI and fed nothing. The one place this module records a vessel is
+        // the INVOICE's frozen snapshot, and the packing list reads it from
+        // there (packing-rules.vesselFromSnapshot, which says so in its own
+        // header). Both are untouched. The PI snapshot keeps carrying `vessel`
+        // so a proforma frozen before today still round-trips; it simply is not
+        // drawn any more.
+        //
+        // The two ports pair up in its place rather than leaving Port of
+        // Loading alone in a half-width cell, and Final Destination takes the
+        // full width below them: loading, discharge, destination still read in
+        // that order down the block.
+        pairRow(field("Port of Loading", f.portOfLoading), field("Port of Discharge", f.portOfDischarge)),
+        fullRow(field("Final Destination", f.finalDestination)),
       ],
     },
     layout: gridLayout,

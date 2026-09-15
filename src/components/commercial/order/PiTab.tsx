@@ -46,9 +46,14 @@ import {
 // the button disabled with this beside it, never a screen missing a button.
 const CANCEL_HINT = "Only the Commercial Manager or an admin cancels a PI";
 
+// NO VESSEL BOX. The proforma stopped printing a vessel on 2026-09-15 (the
+// owner: "not required in any PI"), so offering somewhere to type one would
+// be a field that reaches no document. The snapshot still CARRIES `vessel` —
+// a PI frozen before that date round-trips unchanged, and the API still
+// accepts it — this screen simply no longer asks for it. The vessel is
+// recorded on the INVOICE, which is where the packing list reads it from.
 interface DraftForm {
   deliveryDate: string;
-  vessel: string;
   grossWeight: string;
   netWeight: string;
   discount: string;
@@ -61,7 +66,6 @@ interface DraftForm {
 function formOf(s: ProformaSnapshot | null | undefined, kind: string, ownGstin: string): DraftForm {
   return {
     deliveryDate: dateInputValue(s?.deliveryDate),
-    vessel: s?.vessel ?? "",
     grossWeight: s?.grossWeight ?? "",
     netWeight: s?.netWeight ?? "",
     discount: s?.discount ? String(s.discount) : "",
@@ -176,7 +180,6 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
   async function saveDraft(pi: ProformaDto) {
     const ok = await run(`save:${pi.id}`, () => patchJson(`/api/office/commercial/proformas/${pi.id}`, {
       deliveryDate: form.deliveryDate || null,
-      vessel: form.vessel || null,
       grossWeight: form.grossWeight || null,
       netWeight: form.netWeight || null,
       discount: form.discount.trim() === "" ? 0 : Number(form.discount),
@@ -334,7 +337,6 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
                       <SelectField label="GSTIN on the PI" value={form.gstinKey} options={gstinOptions}
                         onChange={(v) => setForm({ ...form, gstinKey: v })} hint="Defaults to the company's own." />
                       <TextField label="Delivery date" type="date" value={form.deliveryDate} onChange={(v) => setForm({ ...form, deliveryDate: v })} />
-                      <TextField label="Vessel / flight no" value={form.vessel} onChange={(v) => setForm({ ...form, vessel: v })} />
                       <TextField label={`Discount (${pi.currency})`} value={form.discount} onChange={(v) => setForm({ ...form, discount: v })}
                         hint="Comes off the total; the amount in words is rewritten." />
                       <TextField label="Gross weight" value={form.grossWeight} onChange={(v) => setForm({ ...form, grossWeight: v })} placeholder="e.g. 24,500 KGS" />
@@ -375,7 +377,6 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
                       <div><span className="text-gray-400">Payment terms: </span>{s.paymentTerms || "—"}</div>
                       <div><span className="text-gray-400">Port of loading: </span>{s.portOfLoading || "—"}</div>
                       <div><span className="text-gray-400">Port of discharge: </span>{s.portOfDischarge || "—"}</div>
-                      <div><span className="text-gray-400">Vessel: </span>{s.vessel || "—"}</div>
                       <div><span className="text-gray-400">Gross / net: </span>{s.grossWeight || "—"} / {s.netWeight || "—"}</div>
                       <div><span className="text-gray-400">Bank: </span>{s.bank?.name || "—"}{s.bankKey ? ` (${s.bankKey})` : ""}</div>
                       <div><span className="text-gray-400">GSTIN: </span>{s.company?.gstin || "—"}</div>

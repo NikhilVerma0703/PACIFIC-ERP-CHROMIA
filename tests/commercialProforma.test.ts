@@ -1617,3 +1617,53 @@ test("the PDF draws the discount row only for a non-blank discount", () => {
   assert.match(src, /\.\.\.\(f\.discount \? \[\{ text: \[\{ text: "DISCOUNT AMOUNT : "/,
     "the DISCOUNT AMOUNT row must be spread in behind a truthiness test on f.discount");
 });
+
+// ───────────────────── the header and the carriage grid ──────────────────────
+// Two corrections the owner made on 2026-09-15, looking at a printed PI.
+
+test("no vessel / flight number on a proforma, and the remaining ports still read in order", () => {
+  const src = readFileSync(new URL("../src/lib/commercial/pdf/proforma.ts", import.meta.url), "utf8");
+  assert.equal(src.includes('field("Vessel / Flight No"'), false,
+    'the vessel cell is gone from the proforma — "not required in any PI"');
+  // Gone, not blanked: the snapshot still CARRIES a vessel (the packing list and
+  // the export invoice print one), so a test that only checked the value would
+  // pass with an empty box still on the page.
+  assert.match(src, /pairRow\(field\("Port of Loading", f\.portOfLoading\), field\("Port of Discharge", f\.portOfDischarge\)\)/,
+    "the two ports pair up where the vessel used to sit, so no half-width cell is left behind");
+  assert.match(src, /fullRow\(field\("Final Destination", f\.finalDestination\)\)/,
+    "and Final Destination takes the full width below them");
+});
+
+test("dropping the vessel box loses no vessel, because the PI never held the only one", () => {
+  // The obvious worry, and it is wrong in an unobvious way. There is NO vessel
+  // column on commercial_order: the PI's box was typed on the PI and fed
+  // nothing downstream. The one place this module records a vessel is the
+  // INVOICE's frozen snapshot, and the packing list reads it from there.
+  const inv = readFileSync(new URL("../src/lib/commercial/invoice-rules.ts", import.meta.url), "utf8");
+  assert.match(inv, /vessel: clean\(opts\.vessel\)/, "the invoice still takes and freezes a vessel");
+  const pack = readFileSync(new URL("../src/lib/commercial/packing-rules.ts", import.meta.url), "utf8");
+  assert.match(pack, /export function vesselFromSnapshot/, "and the packing list still reads one off that snapshot");
+
+  // The PI snapshot keeps the key so a proforma frozen before today round-trips
+  // unchanged — it is simply not drawn any more.
+  const snap = buildProformaSnapshot(exportOrder, S, opts);
+  assert.equal("vessel" in snap, true, "the key survives for legacy snapshots");
+  assert.equal(snap.vessel, null, "and was always null at build time — it was never read off the order");
+
+  // The screen stops asking for it, or it would be a box reaching no document.
+  const tab = readFileSync(new URL("../src/components/commercial/order/PiTab.tsx", import.meta.url), "utf8");
+  assert.equal(tab.includes('label="Vessel / flight no"'), false, "no vessel input on the PI draft");
+});
+
+test("RBI code and GSTIN print as label-and-value, one complete line each", () => {
+  // They used to share one field(): the label "RBI Code No." sat alone on a
+  // line and the value line read "678        GSTIN : 33AALCP2750N1Z3", so the
+  // GSTIN had a label and the 678 appeared to have none. Their own reference
+  // proforma prints "RBI Code No.:678" then "GSTIN NO: 33AALCP2750N1Z3".
+  const src = readFileSync(new URL("../src/lib/commercial/pdf/proforma.ts", import.meta.url), "utf8");
+  assert.match(src, /text: "RBI Code No\.: "/, "RBI code carries its own inline label");
+  assert.match(src, /text: "GSTIN : "/, "and the GSTIN carries its own");
+  assert.equal(src.includes('field("RBI Code No."'), false,
+    "and neither goes through field(), which stacks the label above the value");
+  assert.match(src, /\.\.\.\(f\.gstin \?/, "the GSTIN line is dropped, not left dangling, when there is none");
+});

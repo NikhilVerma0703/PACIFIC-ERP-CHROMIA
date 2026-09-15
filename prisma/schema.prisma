@@ -6680,6 +6680,14 @@ model CommercialOrder {
   /// the DTA proforma only; an export order may hold one and simply does not
   /// print it.
   salespersonName       String?                @map("salesperson_name")
+  /// WHICH GROUP COMPANY SELLS THIS ORDER — a key into the selling entities in
+  /// commercial settings (owner, 2026-09-15; scripts/0085). NULL means the
+  /// default, Pacific Engineered Surfaces, so every order raised before this
+  /// column existed prints exactly as it did. A key and not an address,
+  /// because everything printed about an entity belongs in settings where it
+  /// can be corrected once for every future document. Copied into the PI
+  /// snapshot at draft time: a printed document keeps the identity it carried.
+  sellerKey             String?                @map("seller_key")
   /// The SOP sheet's points: [{ key, no, label, value, ok }] (lib/commercial/checklist.ts).
   checklist             Json                   @default("[]")
   checkedById           String?                @map("checked_by_id") // -> users.id (no hard FK)
