@@ -8,6 +8,16 @@
 // `revision` column is the order's PI ordinal (0 first) for the row's unique
 // key and the tab's ordering; it is not part of the number. The snapshot is
 // frozen here — nothing downstream recomputes an amount.
+//
+// The salesperson the PI is raised for (owner, 2026-09-15; scripts/0084) is
+// read off the ORDER by buildProformaSnapshot and frozen with the rest, which
+// is why it is not an option below: it is not the clerk's to choose per PI, and
+// a printed PI must keep the name it carried when the order is reassigned. The
+// draft's own copy is editable from the PI tab afterwards (EDITABLE_TEXT_FIELDS).
+//
+// `notes` is the Terms & Conditions box and is what the caller TYPED, never
+// anything this route works out: no container size, no tonnage, no weight. A
+// body without it leaves the box empty, which is a correct printed PI.
 import { commercialGate, actorStamp } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain, str, paramId } from "@/lib/commercial/http";
 import { loadSettings } from "@/lib/commercial/settings";

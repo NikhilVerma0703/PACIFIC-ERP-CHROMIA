@@ -20,10 +20,27 @@
 // issued, never today's settings. A PI with no validUntil (answer 24: valid
 // forever) prints no validity line at all.
 //
+// THREE ROWS OF THE RIGHT-HAND COLUMN ARE NOT ON EVERY PI (owner, 2026-09-15):
+//
+//  * "Buyer if Not Consignee" is printed only when that party has something on
+//    it (printsParty). One customer — Surfaces by Pacific — buys through a
+//    second party; every other PI used to print an empty labelled box.
+//  * "Sales Person" is printed only when piSalesperson names one, which it does
+//    on a DOMESTIC PI and never on an export one.
+//  * "Terms & Conditions" is the opposite case and must STAY UNCONDITIONAL: the
+//    box is labelled and prints empty, exactly as the customer's reference PI
+//    shows it. It carries snapshot.notes — what a human typed — and nothing
+//    derived; do not "tidy" it away for being blank, and do not fill it.
+//
+// Every one of those rows spans both columns, which in pdfmake means a cell
+// carrying colSpan: 2 followed by an empty filler cell. fullRow() below builds
+// the pair, so a row can be added or dropped whole and there is no way to leave
+// a colSpan without its filler and shear every row beneath it.
+//
 // pdfmake, Roboto (the only font installed), A4 portrait. Do NOT reach for
 // puppeteer: it is not installed and the deployment has no Chrome.
 import { buildPdf } from "@/lib/sales/pdf/common";
-import { piPrintFields, piRow, piTotalRow, piTableHeader, partyBlock, type PiSnapshot } from "@/lib/commercial/proforma-rules";
+import { piPrintFields, piRow, piTotalRow, piTableHeader, partyBlock, printsParty, type PiSnapshot } from "@/lib/commercial/proforma-rules";
 
 // ── the reference's type scale ───────────────────────────────────────────────
 const FS = { body: 7.5, label: 7, value: 8, head: 8, title: 12, big: 9 } as const;
@@ -63,6 +80,13 @@ function field(label: string, value: string, opts: { bold?: boolean; upper?: boo
 /** Two fields side by side inside one row of a bordered table. */
 function pairRow(a: any, b: any): any[] {
   return [a, b];
+}
+
+/** One cell across both columns of a two-column table: the colSpan and the
+ *  filler cell pdfmake needs behind it, built together so neither can be left
+ *  behind when a row is added or dropped. */
+function fullRow(cell: any): any[] {
+  return [{ colSpan: 2, ...cell }, {}];
 }
 
 /** A named party: bold name, then its printed lines. */
@@ -115,18 +139,24 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
       body: [
         pairRow(field("Invoice No", f.invoiceNo, { bold: true }), field("Invoice Date", f.invoiceDate, { bold: true })),
         pairRow(field("Buyer's PO No", f.buyerPoNo), field("Delivery Date", f.deliveryDate)),
-        [{ colSpan: 2, ...field("RBI Code No.", `${f.rbiCode}${f.gstin ? `        GSTIN : ${f.gstin}` : ""}`) }, {}],
-        [{
-          colSpan: 2,
+        fullRow(field("RBI Code No.", `${f.rbiCode}${f.gstin ? `        GSTIN : ${f.gstin}` : ""}`)),
+        fullRow({
           stack: [
             { text: "Jurisdictional Central Excise Division Office Address", fontSize: FS.label, color: "#444" },
             { text: f.customsOffice || " ", fontSize: 6.5 },
           ],
-        }, {}],
-        [{ colSpan: 2, ...partyCell("Buyer if Not Consignee", buyer) }, {}],
+        }),
+        // Only where there IS a second buyer — SBP's PI prints its customer code
+        // and US address here; every other PI has this row absent, not empty.
+        ...(printsParty(snapshot.buyerIfNotConsignee) ? [fullRow(partyCell("Buyer if Not Consignee", buyer))] : []),
         pairRow(field("Country of Origin of goods", f.countryOfOrigin), field("Country of Final Destination", f.countryOfDestination)),
-        [{ colSpan: 2, ...field("Terms & Conditions", f.termsAndConditions) }, {}],
-        [{ colSpan: 2, ...field("Delivery Terms", f.deliveryTerms, { bold: true }) }, {}],
+        // Whatever was typed into the box, or an empty box. Never conditional.
+        fullRow(field("Terms & Conditions", f.termsAndConditions)),
+        fullRow(field("Delivery Terms", f.deliveryTerms, { bold: true })),
+        // The DTA salesperson (owner, 2026-09-15): who asked for this PI for
+        // his customer. piSalesperson blanks it on an export PI, so the row is
+        // not on that paper at all.
+        ...(f.salesperson ? [fullRow(field("Sales Person", f.salesperson, { bold: true }))] : []),
       ],
     },
     layout: gridLayout,

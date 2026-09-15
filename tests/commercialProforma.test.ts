@@ -34,7 +34,7 @@ import {
   replacementOf, registerOrder, type RegisterRow,
   revisesAtIssue, refreezeAtIssue, revisionDraftFor, refuseRevise,
   statusTone, pageArgs, parseProformaStatus, partyBlock, piTableHeader, piRow, piTotalRow,
-  piPrintFields, orderWarnings,
+  piPrintFields, orderWarnings, piSalesperson, printsParty,
   EDITABLE_TEXT_FIELDS,
   type SnapshotOrderInput, type SnapshotItemInput, type PiSnapshot,
 } from "../src/lib/commercial/proforma-rules.ts";
@@ -1335,4 +1335,250 @@ test("registerOrder: two PIs retired by one issue are both listed under it", () 
     row("new", "N0003", 2, "ISSUED"),
   ];
   assert.deepEqual(registerOrder(rows).map((r) => r.id), ["new", "old2", "old1"]);
+});
+
+// ─────────────── the owner's three changes of 2026-09-15 ─────────────────────
+//
+//  1  "terms and confitions me tonnage nahi dikhana (make it empty unless
+//     stated clearly to fill in it)"
+//  2  "for dta a small section for salesperson (who has asked for the PI for
+//     his customer/consignee)"
+//  3  "buyer if not consignee section (only applicable for SBP)"
+//
+// The first two are rules about a field, so they are pinned on the field. The
+// third is a rule about whether a cell is rendered at all, which the PDF asks
+// printsParty — the predicate lives in the rules module so the answer is
+// testable without rendering a document.
+
+test("Terms & Conditions carries what a human typed and NOTHING else (owner, 2026-09-15)", () => {
+  // An order carrying every fact a well-meaning later hand might be tempted to
+  // compose a "25 ton container" line out of: weights, packing, a delivery
+  // schedule, the order's own internal notes.
+  const loaded = {
+    ...domesticOrder,
+    notes: "Internal: customer wants a 25 ton container, stuff at the factory.",
+    deliverySchedule: "One 25 ton container a week from 01-08-2026",
+    specialPacking: "25 TON CONTAINER, fumigated pallets",
+    grossWeight: "24,500 KGS",
+    netWeight: "23,100 KGS",
+  } as SnapshotOrderInput;
+
+  const blank = buildProformaSnapshot(loaded, S, opts);
+  assert.equal(blank.notes, null, "nothing on the order reaches the Terms & Conditions box");
+  assert.equal(piPrintFields(blank).termsAndConditions, "", "a blank box prints blank — the PDF still prints the labelled box");
+  assert.equal(blank.grossWeight, null, "and the weights are their own fields, still empty");
+  assert.equal(blank.netWeight, null);
+
+  // The one way anything gets in there: somebody types it.
+  const typed = buildProformaSnapshot(loaded, S, { ...opts, notes: "Rate valid for 30 days. Prices exclusive of GST." });
+  assert.equal(typed.notes, "Rate valid for 30 days. Prices exclusive of GST.");
+  assert.equal(piPrintFields(typed).termsAndConditions, "Rate valid for 30 days. Prices exclusive of GST.");
+
+  // …and the one way it comes back out: somebody clears it.
+  const cleared = applyDraftPatch(typed, { notes: null }, S);
+  assert.equal(cleared.changed, true, "clearing the box is an edit the route must write");
+  assert.equal(cleared.snapshot.notes, null);
+  assert.equal(piPrintFields(cleared.snapshot).termsAndConditions, "");
+
+  // A draft edit cannot smuggle it in under another name either: only `notes`
+  // is the Terms & Conditions box.
+  const sneaky = applyDraftPatch(blank, {
+    termsAndConditions: "25 ton container",
+    specialPacking: "25 TON CONTAINER",
+  }, S);
+  assert.equal(sneaky.snapshot.notes, null, "only `notes` is the box");
+  assert.equal(piPrintFields(sneaky.snapshot).termsAndConditions, "");
+
+  // And the serialiser's leftovers are not content.
+  assert.equal(piPrintFields({ ...blank, notes: "None" }).termsAndConditions, "");
+  assert.equal(piPrintFields({ ...blank, notes: "   " }).termsAndConditions, "");
+});
+
+test("the salesperson is frozen off the ORDER at draft time, and is never the desk that typed the PI (scripts/0084)", () => {
+  const order: SnapshotOrderInput = { ...domesticOrder, salespersonName: "Gibin Thomas" };
+  const s = buildProformaSnapshot(order, S, opts);
+  assert.equal(s.salespersonName, "Gibin Thomas");
+
+  // reassigning the order does not touch paper already printed
+  const reassigned = buildProformaSnapshot({ ...order, salespersonName: "Chromia Raj" }, S, { ...opts, number: "SAL-ORD/26-27/N5" });
+  assert.equal(reassigned.salespersonName, "Chromia Raj");
+  assert.equal(s.salespersonName, "Gibin Thomas", "the PI already frozen keeps the name it carried");
+
+  // an order with nobody recorded freezes null — not "None", not a blank
+  // string, and above all not a fallback to whoever built the draft
+  const none = buildProformaSnapshot(domesticOrder, S, opts);
+  assert.equal(none.salespersonName, null);
+  const junk = buildProformaSnapshot({ ...domesticOrder, salespersonName: "  None " }, S, opts);
+  assert.equal(junk.salespersonName, null, "the serialiser's None is nobody");
+});
+
+test("the salesperson block is DOMESTIC only — an export PI prints none, not an empty one (owner, 2026-09-15)", () => {
+  const dta = buildProformaSnapshot({ ...domesticOrder, salespersonName: "Gibin Thomas" }, S, opts);
+  assert.equal(piSalesperson(dta), "Gibin Thomas");
+  assert.equal(piPrintFields(dta).salesperson, "Gibin Thomas", "the PDF prints the block for a non-blank, as it does the validity line");
+
+  // An export order MAY hold one (scripts/0084 keeps the column kindless, so
+  // moving an order between the two kinds loses nothing) and the PI simply
+  // does not print it.
+  const exp = buildProformaSnapshot({ ...exportOrder, salespersonName: "Gibin Thomas" }, S, opts);
+  assert.equal(exp.salespersonName, "Gibin Thomas", "carried in the snapshot…");
+  assert.equal(piSalesperson(exp), "", "…and printed nowhere on an export PI");
+  assert.equal(piPrintFields(exp).salesperson, "");
+
+  // a domestic PI with nobody recorded prints no block either: the block names
+  // a person, and an empty labelled box names nobody
+  assert.equal(piSalesperson(buildProformaSnapshot(domesticOrder, S, opts)), "");
+  assert.equal(piSalesperson({ ...dta, salespersonName: "   " }), "");
+  assert.equal(piSalesperson({ ...dta, salespersonName: "None" }), "");
+  assert.equal(piSalesperson({ ...dta, salespersonName: null }), "");
+
+  // a PI frozen before 2026-09-15 has no such key at all and still prints
+  const legacy = { ...dta } as PiSnapshot;
+  delete legacy.salespersonName;
+  assert.equal(piSalesperson(legacy), "");
+  assert.equal(piPrintFields(legacy).salesperson, "");
+});
+
+test("the salesperson survives every step between drafting and printed paper", () => {
+  const draft = buildProformaSnapshot({ ...domesticOrder, salespersonName: "Gibin Thomas" }, S, opts);
+
+  // the draft edit (EDITABLE_TEXT_FIELDS — the PI tab's own box)
+  assert.ok((EDITABLE_TEXT_FIELDS as readonly string[]).includes("salespersonName"));
+  const corrected = applyDraftPatch(draft, { salespersonName: "Chromia Raj" }, S);
+  assert.equal(corrected.changed, true, "a correction must reach the database — the route writes on this flag");
+  assert.equal(corrected.snapshot.salespersonName, "Chromia Raj");
+  assert.equal(applyDraftPatch(corrected.snapshot, { salespersonName: "Chromia Raj" }, S).changed, false, "the same name twice is a no-op");
+  assert.equal(applyDraftPatch(corrected.snapshot, { salespersonName: null }, S).snapshot.salespersonName, null, "and it can be cleared");
+
+  // issue: the bank and the GSTIN are re-read, the name is the paper's
+  const issued = refreezeAtIssue(corrected.snapshot, S);
+  assert.equal(issued.salespersonName, "Chromia Raj", "refreezeAtIssue must not drop it");
+  assert.equal(piPrintFields(issued).salesperson, "Chromia Raj");
+
+  // the Json column
+  const back = JSON.parse(JSON.stringify(issued)) as PiSnapshot;
+  assert.deepEqual(back, issued);
+  assert.equal(back.salespersonName, "Chromia Raj");
+  assert.equal(piPrintFields(back).salesperson, "Chromia Raj");
+
+  // a revision reads the ORDER again rather than copying the old paper, so a
+  // reassignment cannot be silently undone by revising
+  assert.equal("salespersonName" in carriedIntoRevision(issued), false, "not carried: the fresh snapshot reads the order");
+  const revision = buildProformaSnapshot({ ...domesticOrder, salespersonName: "Murali S" }, S, { ...opts, number: "SAL-ORD/26-27/N6", revises: { id: "x", number: PI_NO } });
+  const { snapshot: revised } = applyDraftPatch(revision, carriedIntoRevision(issued), S);
+  assert.equal(revised.salespersonName, "Murali S", "the order as it stands, not the retired paper");
+});
+
+test("the PI tab's save body carries the salesperson, and still reports changed honestly", () => {
+  // exactly what PiTab.saveDraft posts, on a domestic draft that has none of it
+  const base = buildProformaSnapshot(domesticOrder, S, opts);
+  const body = {
+    deliveryDate: "2026-08-20",
+    vessel: null,
+    grossWeight: null,
+    netWeight: null,
+    discount: 0,
+    notes: null,
+    salespersonName: "Gibin Thomas",
+    bankKey: "domestic",
+    gstinKey: OWN_GSTIN,
+  };
+  const first = applyDraftPatch(base, body, S);
+  assert.equal(first.changed, true);
+  assert.equal(first.snapshot.salespersonName, "Gibin Thomas");
+  assert.equal(piPrintFields(first.snapshot).salesperson, "Gibin Thomas");
+  assert.equal(applyDraftPatch(first.snapshot, body, S).changed, false, "saving the same form again is the one honest no-op");
+  assert.equal(applyDraftPatch(first.snapshot, { ...body, salespersonName: "Chromia Raj" }, S).changed, true);
+});
+
+test("a draft frozen before the salesperson existed saves unchanged: an absent key is nobody, not an edit", () => {
+  // The commercial module has been live since 2026-09-09, so the register
+  // already holds DRAFT PIs whose snapshots carry no `salespersonName` key at
+  // all — the column is a day old and scripts/0084 backfills nothing on
+  // purpose. PiTab.saveDraft posts the field on EVERY save, blank as null, so
+  // an absent key and an empty box have to read here as the same nobody. If
+  // they do not, the first save of every draft already in the register reports
+  // `changed`, and the PATCH route — which keys both its write and its
+  // `pi_edited` event off that flag — rewrites the row and puts "draft edited"
+  // on the order's timeline for an edit nobody made. That timeline is the
+  // module's audit trail; an entry nobody can account for costs more than the
+  // write it records, which is a null over an absent key and changes nothing.
+  //
+  // This is the only field on EDITABLE_TEXT_FIELDS where the case arises:
+  // buildProformaSnapshot writes every other one unconditionally, as null at
+  // worst, so for those the comparison has always been null against null.
+  const legacy = { ...buildProformaSnapshot(domesticOrder, S, opts) } as PiSnapshot;
+  delete legacy.salespersonName;
+  assert.equal("salespersonName" in legacy, false, "the fixture is a pre-2026-09-15 snapshot");
+
+  // exactly what PiTab.saveDraft posts when the clerk opens the draft, types
+  // nothing and presses Save
+  const untouched = {
+    deliveryDate: null,
+    vessel: null,
+    grossWeight: null,
+    netWeight: null,
+    discount: 0,
+    notes: null,
+    salespersonName: null,
+    bankKey: legacy.bankKey,
+    gstinKey: legacy.gstinKey,
+  };
+  assert.equal(applyDraftPatch(legacy, untouched, S).changed, false, "nothing was typed, so nothing was edited");
+
+  // and the new box still works on that same legacy draft: typing a name is an
+  // edit, saving it again is not, and clearing it lands as null rather than
+  // going back to an absent key
+  const typed = applyDraftPatch(legacy, { ...untouched, salespersonName: "Gibin Thomas" }, S);
+  assert.equal(typed.changed, true);
+  assert.equal(typed.snapshot.salespersonName, "Gibin Thomas");
+  assert.equal(piPrintFields(typed.snapshot).salesperson, "Gibin Thomas");
+  assert.equal(applyDraftPatch(typed.snapshot, { ...untouched, salespersonName: "Gibin Thomas" }, S).changed, false);
+
+  const cleared = applyDraftPatch(typed.snapshot, untouched, S);
+  assert.equal(cleared.changed, true);
+  assert.equal(cleared.snapshot.salespersonName, null);
+  assert.equal(applyDraftPatch(cleared.snapshot, untouched, S).changed, false, "and the cleared draft saves unchanged too");
+});
+
+test("printsParty: the buyer-if-not-consignee cell is printed only where there is one (owner, 2026-09-15)", () => {
+  // SBP's own PI, as the owner supplied it: a customer code and a US address.
+  const sbp = buildProformaSnapshot({
+    ...exportOrder,
+    consignee: { name: "Surfaces by Pacific", lines: ["1300 Mark Street", "Elk Grove Village ILLINOIS 60007"], country: "United States" },
+    buyerIfNotConsignee: {
+      name: "USA-001,xxxxx",
+      lines: ["1300 Mark Street, Elk Grove Village ILLINOIS 60007, Other Territory"],
+      country: "United States",
+    },
+  }, S, opts);
+  assert.equal(printsParty(sbp.buyerIfNotConsignee), true);
+  assert.deepEqual(partyBlock(sbp.buyerIfNotConsignee), {
+    name: "USA-001,xxxxx",
+    lines: ["1300 Mark Street, Elk Grove Village ILLINOIS 60007, Other Territory", "United States"],
+  });
+
+  // every other PI: no buyer, so no cell at all — not an empty labelled box
+  const plain = buildProformaSnapshot(exportOrder, S, opts);
+  assert.equal(plain.buyerIfNotConsignee, null);
+  assert.equal(printsParty(plain.buyerIfNotConsignee), false);
+  assert.equal(printsParty(buildProformaSnapshot(domesticOrder, S, opts).buyerIfNotConsignee), false);
+
+  // the same party as the consignee is not a second party, so still no cell
+  const same = buildProformaSnapshot({
+    ...exportOrder,
+    consignee: { name: "Surfaces by Pacific", lines: [] },
+    billTo: { name: "surfaces by pacific", lines: [] },
+  }, S, opts);
+  assert.equal(printsParty(same.buyerIfNotConsignee), false);
+
+  // the predicate answers for what partyBlock would RENDER, never for the raw
+  // object: a party of blanks and Nones prints nothing and so is not printed,
+  // and one carrying only a country or a telephone number still is
+  assert.equal(printsParty(null), false);
+  assert.equal(printsParty(undefined), false);
+  assert.equal(printsParty({ name: "  ", lines: ["", "None"] }), false);
+  assert.equal(printsParty({ name: "", lines: [], country: "United States" }), true);
+  assert.equal(printsParty({ name: "", lines: [], tel: "+1 847 555 0100" }), true);
+  assert.equal(printsParty({ name: "USA-001,xxxxx", lines: [] }), true);
 });

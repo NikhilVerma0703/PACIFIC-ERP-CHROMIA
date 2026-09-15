@@ -6671,6 +6671,15 @@ model CommercialOrder {
   forwarderDetails      String?                @map("forwarder_details")
   receiverDetails       String?                @map("receiver_details")
   customerContact       String?                @map("customer_contact")
+  /// THE SALESPERSON THIS ORDER'S PI IS RAISED FOR — who asked for it on
+  /// behalf of his customer (owner, 2026-09-15; scripts/0084). Not
+  /// createdByName: the desk types the PI, the salesperson owns the customer,
+  /// and on a domestic invoice those are routinely two different people. The
+  /// PI copies it into its frozen snapshot at draft time, so a printed PI
+  /// keeps the name it carried even if the order is reassigned. Printed on
+  /// the DTA proforma only; an export order may hold one and simply does not
+  /// print it.
+  salespersonName       String?                @map("salesperson_name")
   /// The SOP sheet's points: [{ key, no, label, value, ok }] (lib/commercial/checklist.ts).
   checklist             Json                   @default("[]")
   checkedById           String?                @map("checked_by_id") // -> users.id (no hard FK)

@@ -53,6 +53,7 @@ interface HeaderDraft {
   forwarderDetails: string;
   receiverDetails: string;
   customerContact: string;
+  salespersonName: string;
   notes: string;
 }
 
@@ -85,6 +86,7 @@ function draftOf(o: OrderTabProps["order"]): HeaderDraft {
     forwarderDetails: t(o.forwarderDetails),
     receiverDetails: t(o.receiverDetails),
     customerContact: t(o.customerContact),
+    salespersonName: t(o.salespersonName),
     notes: t(o.notes),
   };
 }
@@ -212,6 +214,16 @@ export default function OverviewTab({ order, actions, refresh }: OrderTabProps) 
               </div>
             )}
           </div>
+          {/* Owner, 2026-09-15: the salesperson who asked for the PI for his
+              customer. Beside the client because that is what it names — whose
+              customer this is — and not the desk that typed the order. */}
+          <TextField
+            label="Salesperson"
+            value={h.salespersonName}
+            onChange={set("salespersonName")}
+            hint="Who asked for the PI, for his customer. Prints on a domestic (DTA) proforma; an export order may still record one."
+            disabled={!mayWrite}
+          />
         </div>
       </Card>
 

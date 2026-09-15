@@ -47,6 +47,7 @@ interface HeaderDraft {
   forwarderDetails: string;
   receiverDetails: string;
   customerContact: string;
+  salespersonName: string;
   notes: string;
   numberOverride: string;
 }
@@ -56,7 +57,7 @@ const blankHeader = (): HeaderDraft => ({
   deliveryTerms: "", paymentTerms: "", paymentMode: "", advancePct: "", preCarriageBy: "", placeOfReceipt: "",
   portOfLoading: "", portOfDischarge: "", finalDestination: "", countryOfOrigin: "", countryOfDestination: "",
   deliverySchedule: "", specialPacking: "", forwarderDetails: "", receiverDetails: "", customerContact: "",
-  notes: "", numberOverride: "",
+  salespersonName: "", notes: "", numberOverride: "",
 });
 
 export function NewOrderForm() {
@@ -153,6 +154,11 @@ export function NewOrderForm() {
               <ClientPicker onPick={pick} />
             )}
           </div>
+          {/* Owner, 2026-09-15: the salesperson the PI will be raised for — the
+              man whose customer this is, not the desk typing the order. Asked
+              here so the first PI already carries it. */}
+          <TextField label="Salesperson" value={h.salespersonName} onChange={set("salespersonName")}
+            hint="Who asked for the PI, for his customer. Prints on a domestic (DTA) proforma; an export order may still record one." />
         </div>
       </Card>
 

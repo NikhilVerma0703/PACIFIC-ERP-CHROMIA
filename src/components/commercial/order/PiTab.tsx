@@ -53,6 +53,7 @@ interface DraftForm {
   netWeight: string;
   discount: string;
   notes: string;
+  salespersonName: string;
   bankKey: BankKey;
   gstinKey: string;
 }
@@ -65,6 +66,11 @@ function formOf(s: ProformaSnapshot | null | undefined, kind: string, ownGstin: 
     netWeight: s?.netWeight ?? "",
     discount: s?.discount ? String(s.discount) : "",
     notes: s?.notes ?? "",
+    // Copied off the order when the draft was built (scripts/0084); correctable
+    // here because the desk that typed the order and the salesperson the PI is
+    // for are routinely two different people. A PI frozen before 2026-09-15
+    // carries no such key at all, hence the blank.
+    salespersonName: s?.salespersonName ?? "",
     bankKey: s?.bankKey ?? defaultBankKey(kind),
     gstinKey: s?.gstinKey ?? s?.company?.gstin ?? ownGstin,
   };
@@ -175,6 +181,7 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
       netWeight: form.netWeight || null,
       discount: form.discount.trim() === "" ? 0 : Number(form.discount),
       notes: form.notes || null,
+      salespersonName: form.salespersonName || null,
       bankKey: form.bankKey,
       gstinKey: form.gstinKey,
     }), "Draft saved.");
@@ -332,8 +339,20 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
                         hint="Comes off the total; the amount in words is rewritten." />
                       <TextField label="Gross weight" value={form.grossWeight} onChange={(v) => setForm({ ...form, grossWeight: v })} placeholder="e.g. 24,500 KGS" />
                       <TextField label="Net weight" value={form.netWeight} onChange={(v) => setForm({ ...form, netWeight: v })} placeholder="e.g. 23,100 KGS" />
+                      {/* Owner, 2026-09-15: the salesperson block on a DTA PI.
+                          Offered on an export draft too and simply not printed
+                          there — the order may carry the name either way — so
+                          nothing is hidden and the hint says what happens. */}
+                      <TextField label="Salesperson" value={form.salespersonName} onChange={(v) => setForm({ ...form, salespersonName: v })}
+                        hint={order.kind === "EXPORT"
+                          ? "Kept on the PI but not printed: the salesperson block is on the domestic (DTA) proforma only."
+                          : "Who asked for this PI, for his customer. Prints as a small block on the PI."} />
+                      {/* The box prints exactly what is typed here and nothing
+                          else — no container size, no tonnage, no weight is
+                          ever put in it for you (owner, 2026-09-15). Left
+                          empty, the PI prints the labelled box empty. */}
                       <AreaField label={"Terms & conditions"} value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} rows={2}
-                        hint={"Prints on the PI under Terms & Conditions."} className="sm:col-span-2 lg:col-span-1" />
+                        hint={"Prints on the PI under Terms & Conditions — only what you type here; blank prints an empty box."} className="sm:col-span-2 lg:col-span-1" />
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button className={BTN_PRIMARY} disabled={busy === `save:${pi.id}`} onClick={() => void saveDraft(pi)}>
@@ -361,6 +380,12 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
                       <div><span className="text-gray-400">Bank: </span>{s.bank?.name || "—"}{s.bankKey ? ` (${s.bankKey})` : ""}</div>
                       <div><span className="text-gray-400">GSTIN: </span>{s.company?.gstin || "—"}</div>
                       <div><span className="text-gray-400">Valid until: </span>{s.validUntil ? formatPiDate(s.validUntil) : "—"}</div>
+                      {/* Frozen with the rest of the snapshot; printed on a DTA
+                          PI only, so the export note says why it is not there. */}
+                      <div>
+                        <span className="text-gray-400">Salesperson: </span>{s.salespersonName || "—"}
+                        {s.kind === "EXPORT" && s.salespersonName ? <span className="text-gray-400"> (not printed on an export PI)</span> : null}
+                      </div>
                     </div>
                     <div className="overflow-x-auto">
                       <table className="min-w-full text-sm">

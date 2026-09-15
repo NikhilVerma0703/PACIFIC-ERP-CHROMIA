@@ -96,6 +96,11 @@ export interface SnapshotOrderInput {
   finalDestination?: string | null;
   countryOfOrigin?: string | null;
   countryOfDestination?: string | null;
+  /** The salesperson this order's PI is raised for (scripts/0084). Read here
+   *  and nowhere else: it is the ORDER's column, not the PI's, so every PI of
+   *  an order — including a revision — names the same person, and the PI's own
+   *  copy is frozen the moment the draft is built. */
+  salespersonName?: string | null;
   client?: SnapshotClientInput | null;
   items?: SnapshotItemInput[] | null;
 }
@@ -111,6 +116,13 @@ export interface SnapshotOptions {
   date: string;
   validUntil?: string | null;
   deliveryDate?: string | null;
+  /**
+   * The Terms & Conditions box, TYPED BY A HUMAN and by nothing else (owner,
+   * 2026-09-15). The route passes what the clerk wrote in the box and nothing
+   * it worked out for itself; absent or blank means the PI prints an empty
+   * Terms & Conditions box, which is a correct printed document. There is
+   * deliberately no fallback here — see buildProformaSnapshot.
+   */
   notes?: string | null;
   /** Defaults by kind when absent (answer 23). */
   bankKey?: BankKey | null;
@@ -520,6 +532,26 @@ function sameParty(a: Party | null, b: Party | null): boolean {
  * else the client's shipping address, else the client master. Notify: the
  * order's, else the client's. Buyer if not consignee: the order's, else
  * bill-to when it is a different party.
+ *
+ * TWO FIELDS HAVE NO FALLBACK AT ALL, and that is the rule rather than an
+ * omission (owner, 2026-09-15):
+ *
+ *  * `notes` — the Terms & Conditions box — is opts.notes, which is what a
+ *    human typed, or null. Nothing on the order may be derived into it. The
+ *    owner found "25 ton container" printed there and asked for the box to
+ *    carry only what someone deliberately wrote, so a container size, a
+ *    tonnage, a gross or net weight, a packing note or a stuffing instruction
+ *    must never be composed into this field from the order, the packing list
+ *    or the settings. A blank box is the correct printed answer: the box is
+ *    labelled and still prints, empty, the way the customer's reference PI
+ *    shows it.
+ *  * `salespersonName` is the ORDER's column and only that (scripts/0084). It
+ *    is emphatically NOT the login that typed the PI: the desk types it, the
+ *    salesperson owns the customer, and on a domestic order those are two
+ *    different people — falling back to the stamp would print the desk's own
+ *    name and answer nobody's question. Frozen here so a printed PI keeps the
+ *    name it carried when the order is later reassigned. An export order may
+ *    carry one; piSalesperson simply does not print it.
  */
 export function buildProformaSnapshot(order: SnapshotOrderInput, settings: CommercialSettings, opts: SnapshotOptions): PiSnapshot {
   const kind: "DOMESTIC" | "EXPORT" = order.kind === "DOMESTIC" ? "DOMESTIC" : "EXPORT";
@@ -581,6 +613,7 @@ export function buildProformaSnapshot(order: SnapshotOrderInput, settings: Comme
     },
     declaration: settings.texts.piDeclaration,
     notes: clean(opts.notes),
+    salespersonName: clean(order.salespersonName),
     revises: opts.revises ?? null,
   };
   return recomputeTotals(base);
@@ -588,11 +621,19 @@ export function buildProformaSnapshot(order: SnapshotOrderInput, settings: Comme
 
 // ───────────────────────────── draft edits ───────────────────────────────────
 
-/** Snapshot fields a DRAFT may have edited from the PI tab. */
+/**
+ * Snapshot fields a DRAFT may have edited from the PI tab.
+ *
+ * `salespersonName` is here for the same reason every other name on this list
+ * is: the order carries it, but the clerk building the paper must be able to
+ * correct it on the draft without editing the order — the order was raised by
+ * one desk and the PI is asked for by another (owner, 2026-09-15). It stays a
+ * DRAFT edit like the rest: once the PI is issued the snapshot is the paper.
+ */
 export const EDITABLE_TEXT_FIELDS = [
   "date", "deliveryDate", "buyerPoNo", "deliveryTerms", "paymentTerms", "preCarriageBy", "placeOfReceipt",
   "vessel", "portOfLoading", "portOfDischarge", "finalDestination", "countryOfOrigin", "countryOfDestination",
-  "grossWeight", "netWeight", "notes",
+  "grossWeight", "netWeight", "notes", "salespersonName",
 ] as const;
 export const EDITABLE_PARTY_FIELDS = ["consignee", "notifyParty", "buyerIfNotConsignee"] as const;
 
@@ -607,9 +648,27 @@ export const EDITABLE_PARTY_FIELDS = ["consignee", "notifyParty", "buyerIfNotCon
  * changed.
  */
 export function applyDraftPatch(snapshot: PiSnapshot, patch: unknown, settings?: CommercialSettings): { snapshot: PiSnapshot; changed: boolean } {
-  if (typeof patch !== "object" || patch === null) return { snapshot, changed: false };
+  // A snapshot frozen before 2026-09-15 has no `salespersonName` key at all,
+  // and an absent key is NOBODY — not an edit. It is read with its default
+  // here, before anything is compared, the way invoice-rules reads a row
+  // written before its own extras existed.
+  //
+  // Without this the field would be the one member of EDITABLE_TEXT_FIELDS
+  // whose comparison below is `undefined !== null`, because it is the one
+  // member buildProformaSnapshot does not always write; every other one is on
+  // every snapshot, as null at worst. The PI tab posts the field on EVERY save
+  // (blank as null), so the first save of every draft already in the register
+  // would report `changed` for a blank box nobody touched, and the PATCH route
+  // — which keys both its write and its `pi_edited` event off that flag —
+  // would rewrite the row and put "draft edited" on the order's timeline for
+  // an edit that never happened. The write itself would store null over an
+  // absent key and change nothing; the false line in the audit trail is the
+  // damage, and a reader of that timeline years later cannot tell it apart
+  // from a real one.
+  const base: PiSnapshot = { ...snapshot, salespersonName: snapshot.salespersonName ?? null };
+  if (typeof patch !== "object" || patch === null) return { snapshot: base, changed: false };
   const p = patch as Record<string, unknown>;
-  const next: PiSnapshot = { ...snapshot };
+  const next: PiSnapshot = { ...base };
   let changed = false;
   let totalsDirty = false;
 
@@ -835,6 +894,12 @@ export function refuseRevise(old: { id: string; status: string }, siblings: Revi
  * hold and would otherwise be retyped. Parties, lines and rates are NOT
  * carried — they come from the order as it stands, which is the whole reason
  * a revision is being made. Fed to applyDraftPatch on the fresh snapshot.
+ *
+ * `salespersonName` is deliberately NOT carried, and that is not the same
+ * omission as forgetting it: the order holds it, so the fresh snapshot has
+ * already read it from the order along with the parties and the lines. Copying
+ * the old PI's value over the top would make a revision the one place an
+ * order's reassignment could be silently undone.
  */
 export function carriedIntoRevision(old: PiSnapshot): Record<string, unknown> {
   return {
@@ -958,6 +1023,48 @@ export function partyBlock(p: Party | null | undefined): { name: string; lines: 
   return { name: printable(p.name), lines };
 }
 
+/**
+ * Whether a party block has anything on it to print — asked of the ONE party
+ * cell that is not on every PI, "Buyer if Not Consignee".
+ *
+ * The owner, 2026-09-15: "buyer if not consignee section (only applicable for
+ * SBP)". Exactly one customer — Surfaces by Pacific, the group's own US arm —
+ * ever buys through a second party, and the cell was rendered unconditionally,
+ * so every other PI printed an empty labelled box asking the customer a
+ * question about themselves that nobody had an answer to. The block is
+ * therefore printed only where there IS one, and is simply absent everywhere
+ * else — absent, not blank.
+ *
+ * Asked through partyBlock rather than of the Party itself so the answer can
+ * never disagree with what the cell would actually render: a party that is all
+ * blanks and "None"s reduces to nothing printable and does not print, and one
+ * that carries only a country or a telephone number still does.
+ */
+export function printsParty(p: Party | null | undefined): boolean {
+  const block = partyBlock(p);
+  return Boolean(block.name) || block.lines.length > 0;
+}
+
+/**
+ * The salesperson named on the printed PI, or "" when the PI does not name one
+ * (owner, 2026-09-15: "for dta a small section for salesperson — who has asked
+ * for the PI for his customer/consignee").
+ *
+ * DOMESTIC ONLY. An export PI prints no such block at all, not even an empty
+ * label: an export order is shipped against paperwork the buyer's bank and
+ * customs read, and an internal name on it answers nobody. The order may still
+ * CARRY a salesperson on an export order (scripts/0084 keeps the column kindless
+ * so reassigning an order between the two kinds loses nothing) — it is this
+ * function that refuses to print it.
+ *
+ * A domestic PI with no name recorded prints no block either. The block names
+ * a person; an empty labelled box naming nobody is the same empty box on the
+ * customer's paper that "Buyer if Not Consignee" was just cut for.
+ */
+export function piSalesperson(s: PiSnapshot): string {
+  return s.kind === "DOMESTIC" ? printable(s.salespersonName) : "";
+}
+
 /** The printed invoice number is the PI's own number, whole. There is no
  *  revision suffix: a revision is a new number (answer 24). */
 export function printedNumber(number: string): string {
@@ -1006,7 +1113,13 @@ export interface PiPrintFields {
   customsOffice: string;
   countryOfOrigin: string;
   countryOfDestination: string;
+  /** The Terms & Conditions box: snapshot.notes, and only ever that. The PDF
+   *  prints the labelled box whether or not there is anything in it. */
   termsAndConditions: string;
+  /** The DTA salesperson block, "" when the PI prints none (piSalesperson).
+   *  The PDF renders the block only for a non-blank, the way it renders the
+   *  validity line only for a non-blank validUntil. */
+  salesperson: string;
   deliveryTerms: string;
   paymentTerms: string;
   preCarriageBy: string;
@@ -1053,7 +1166,11 @@ export function piPrintFields(s: PiSnapshot): PiPrintFields {
     customsOffice: printable(s.company.customsOffice).toUpperCase(),
     countryOfOrigin: printable(s.countryOfOrigin),
     countryOfDestination: printable(s.countryOfDestination),
+    // The box carries what a human typed and nothing else (owner, 2026-09-15).
+    // Nothing is composed in here, and nothing falls back to a weight, a
+    // tonnage or a packing note off the order: a blank prints a blank.
     termsAndConditions: printable(s.notes),
+    salesperson: piSalesperson(s),
     deliveryTerms: printable(s.deliveryTerms),
     paymentTerms: printable(s.paymentTerms),
     preCarriageBy: printable(s.preCarriageBy),

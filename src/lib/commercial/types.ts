@@ -73,7 +73,24 @@ export interface ProformaSnapshot {
   bank: { name: string; address: string; accountNo: string; ifsc: string; swift: string; adCode?: string; routingBank?: string; routingSwift?: string };
   company: { legalName: string; addressLines: string[]; gstin: string; rbiCode: string; customsOffice: string };
   declaration: string;
+  /**
+   * The Terms & Conditions box, and NOTHING BUT what a human typed into it
+   * (owner, 2026-09-15: "terms and conditions me tonnage nahi dikhana — make
+   * it empty unless stated clearly to fill in it"). Nothing derives it: not the
+   * container, not the tonnage, not the weights, not the packing. A blank one
+   * prints as an empty labelled box, which is what the customer's own reference
+   * PI shows, so null here is a printable answer and not a missing value.
+   */
   notes: string | null;
+  /**
+   * The salesperson the PI was raised for — who asked for it on behalf of his
+   * customer (owner, 2026-09-15; scripts/0084). Copied off the order at draft
+   * time and frozen like everything else here, so a printed PI keeps the name
+   * it carried even after the order is reassigned. Printed on a DOMESTIC (DTA)
+   * PI only; an export snapshot may hold one and simply does not print it.
+   * Optional because PIs frozen before 2026-09-15 have no such key at all.
+   */
+  salespersonName?: string | null;
 }
 
 /** The invoice snapshot — DTA or export. */
@@ -580,6 +597,11 @@ export interface OrderDetail {
   forwarderDetails: string | null;
   receiverDetails: string | null;
   customerContact: string | null;
+  /** The salesperson this order's PI is raised for (scripts/0084). Held on the
+   *  order because every PI of it is raised for the same person and a revision
+   *  must not be able to change who that was; the PI copies it into its frozen
+   *  snapshot at draft time. Printed on a domestic (DTA) PI only. */
+  salespersonName: string | null;
   /** Always the full 22-point list (parseChecklist), never raw JSON. */
   checklist: Array<{ key: string; no: string; label: string; value: string; ok: boolean }>;
   checkedByName: string | null;

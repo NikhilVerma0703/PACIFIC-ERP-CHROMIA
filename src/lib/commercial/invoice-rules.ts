@@ -820,6 +820,9 @@ export interface InvoiceOrderInput {
   countryOfOrigin?: string | null;
   countryOfDestination?: string | null;
   createdByName?: string | null;
+  /// scripts/0084 — the salesperson the order belongs to, preferred over
+  /// createdByName for the invoice's "Sales Person" line.
+  salespersonName?: string | null;
   client?: InvoiceClientInput | null;
   items?: InvoiceItemInput[] | null;
 }
@@ -1270,7 +1273,18 @@ export function buildInvoiceSnapshot(
     piNumber: clean(opts.piNumber) ?? clean(order.number),
     piDate: clean(opts.piDate),
     buyerPoRef: buyerPoRef(order),
-    salesPerson: clean(order.createdByName),
+    // THE SALESPERSON, NOT THE CLERK — and falling back to the clerk only
+    // because that is who this line named before the column existed.
+    // scripts/0084 added commercial_order.salesperson_name for the PI's own
+    // "Sales Person" block, on the reasoning that the desk TYPES the document
+    // and the salesperson OWNS the customer, and that on a domestic sale those
+    // are routinely two different people. This line has printed createdByName
+    // under that same label since the invoice was written. Left alone, one
+    // order would go out with two documents naming two different people under
+    // one heading, which is worse than either answer on its own — so the
+    // invoice reads the column when the order carries one and keeps its old
+    // behaviour when it does not.
+    salesPerson: clean(order.salespersonName) ?? clean(order.createdByName),
     commodity: COMMODITY,
     currency,
     exchangeRate: opts.exchangeRate ?? (order.exchangeRate === null || order.exchangeRate === undefined ? null : round4(toNumber(order.exchangeRate, 0))),

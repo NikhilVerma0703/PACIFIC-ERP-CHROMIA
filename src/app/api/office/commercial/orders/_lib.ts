@@ -123,6 +123,15 @@ export function headerPatchFromBody(body: Record<string, unknown>, opts: { allow
   const data: Record<string, unknown> = {};
   for (const k of HEADER_TEXT_FIELDS) if (has(body, k)) data[k] = str(body[k]);
   for (const k of HEADER_PARTY_FIELDS) if (has(body, k)) data[k] = normalizeParty(body[k]);
+  // The salesperson the order's PI is raised for (owner, 2026-09-15;
+  // scripts/0084). Plain nullable text, parsed exactly like the fields above —
+  // a blank box clears it — but not a member of HEADER_TEXT_FIELDS, because
+  // that list is the order header the SOP checklist reads and prefills from
+  // (checklistSourceFromOrder) and this column answers none of its 22 points.
+  // It is the PROFORMA's field that happens to live on the order row, so that
+  // every PI of an order names the same person and a revision cannot change
+  // who that was.
+  if (has(body, "salespersonName")) data.salespersonName = str(body.salespersonName);
   if (has(body, "customerPoDate")) {
     const raw = str(body.customerPoDate);
     const d = dateOnly(raw);
