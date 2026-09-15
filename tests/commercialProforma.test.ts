@@ -22,6 +22,7 @@
 // loads it bare: no Next, no Prisma, no session.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   printable, round3, round2, printThickness, unitLabel, trimNumber, fmtQty, fmtAmount, fmtRate, fmtSlabs,
   formatPiDate, isoDate, validUntilFor, piFilename, printedNumber,
@@ -1581,4 +1582,38 @@ test("printsParty: the buyer-if-not-consignee cell is printed only where there i
   assert.equal(printsParty({ name: "", lines: [], country: "United States" }), true);
   assert.equal(printsParty({ name: "", lines: [], tel: "+1 847 555 0100" }), true);
   assert.equal(printsParty({ name: "USA-001,xxxxx", lines: [] }), true);
+});
+
+// ─────────────────────────── the discount line ───────────────────────────────
+// The owner, 2026-09-15, looking at the two proformas raised that day: "remove
+// discount amount ... in these two". Neither carried a discount, so what he was
+// looking at was a bold "DISCOUNT AMOUNT :" with nothing after it — the same
+// complaint as the empty Buyer-if-Not-Consignee box directly above it.
+//
+// So the line is WITHHELD, not removed. Their own earlier export PI
+// (SAL-ORD/26-27/01642) does carry one: it is how a total is rounded to a clean
+// figure, the 24.657 remainder sitting on this line. Deleting the row outright
+// would have taken that away to fix a blank label.
+
+test("the discount line is withheld when there is no discount, and kept when there is (owner, 2026-09-15)", () => {
+  const order = { ...exportOrder };
+  const none = piPrintFields(buildProformaSnapshot(order, S, opts));
+  assert.equal(none.discount, "", "no discount: the field is blank, which is what withholds the row");
+
+  const withDiscount = piPrintFields({ ...buildProformaSnapshot(order, S, opts), discount: 24.657 });
+  assert.equal(withDiscount.discount, fmtAmount(24.657), "a real discount still prints, formatted like every other amount");
+  assert.notEqual(withDiscount.discount, "", "and is therefore still drawn");
+
+  // A zero is not a discount — it is the absence of one, and must not print a
+  // line reading "0.000" on a customer's invoice.
+  assert.equal(piPrintFields({ ...buildProformaSnapshot(order, S, opts), discount: 0 }).discount, "");
+});
+
+test("the PDF draws the discount row only for a non-blank discount", () => {
+  // Pinned on the source because no test renders a PDF: the guard is what makes
+  // the field above mean anything, and an unconditional row would put the label
+  // back without failing a single assertion here.
+  const src = readFileSync(new URL("../src/lib/commercial/pdf/proforma.ts", import.meta.url), "utf8");
+  assert.match(src, /\.\.\.\(f\.discount \? \[\{ text: \[\{ text: "DISCOUNT AMOUNT : "/,
+    "the DISCOUNT AMOUNT row must be spread in behind a truthiness test on f.discount");
 });

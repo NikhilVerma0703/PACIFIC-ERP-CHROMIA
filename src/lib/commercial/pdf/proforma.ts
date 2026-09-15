@@ -265,7 +265,14 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
           stack: [
             { text: [{ text: "Gross Wt : ", bold: true }, f.grossWeight], fontSize: FS.body },
             { text: [{ text: "Net Wt : ", bold: true }, f.netWeight], fontSize: FS.body },
-            { text: [{ text: "DISCOUNT AMOUNT : ", bold: true }, f.discount], fontSize: FS.body },
+            // THE DISCOUNT LINE IS DRAWN ONLY WHEN THERE IS A DISCOUNT (owner,
+            // 2026-09-15), for the same reason the Buyer-if-Not-Consignee cell
+            // above it is conditional: a bold label with nothing after it reads
+            // to a customer as a figure somebody forgot to fill in. Their own
+            // earlier export PI (SAL-ORD/26-27/01642) does carry one — it is
+            // how a total is rounded to a clean figure, the 24.657 remainder
+            // sitting on this line — so the line is withheld, never removed.
+            ...(f.discount ? [{ text: [{ text: "DISCOUNT AMOUNT : ", bold: true }, f.discount], fontSize: FS.body }] : []),
             { text: "Declaration", fontSize: FS.label, bold: true, margin: [0, 3, 0, 0] },
             { text: f.declaration, fontSize: 6.5, color: "#333" },
           ],
