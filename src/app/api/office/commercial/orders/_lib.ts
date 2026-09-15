@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { fail, str, num, dateOnly } from "@/lib/commercial/http";
 import { parseChecklist, prefillChecklist, type ChecklistItem, type ChecklistSource } from "@/lib/commercial/checklist";
 import { loadSettings } from "@/lib/commercial/settings";
+import { parseSellerKey, sellerChoices, SELLER_KEYS } from "@/lib/commercial/settings-defaults";
 import { advanceStatus, effectiveAdvancePct, pctOf, type AdvanceStatus } from "@/lib/commercial/receipts-rules";
 import { advanceRateFor } from "@/lib/commercial/advance-rate";
 import {
@@ -102,6 +103,11 @@ export async function loadOrderDetail(id: string): Promise<Record<string, unknow
     // with only the effective percentage it printed the order's own figure and
     // called it the default.
     advanceDefaultPct: effectiveAdvancePct(null, String(row.kind ?? ""), await advanceDefaults()),
+    // The selling entities, for the header's dropdown (owner, 2026-09-15;
+    // scripts/0085). Derived here rather than shipped in the client bundle so
+    // a label corrected in Settings is the label the desk reads, and so the
+    // screen can never offer a key the server would refuse.
+    sellerChoices: sellerChoices(await loadSettings()),
   };
 }
 
@@ -132,6 +138,24 @@ export function headerPatchFromBody(body: Record<string, unknown>, opts: { allow
   // every PI of an order names the same person and a revision cannot change
   // who that was.
   if (has(body, "salespersonName")) data.salespersonName = str(body.salespersonName);
+  // WHICH GROUP COMPANY SELLS THIS ORDER (owner, 2026-09-15; scripts/0085).
+  // Kept off HEADER_TEXT_FIELDS for the same reason the salesperson is: that
+  // list is the order header the SOP checklist prefills from, and this answers
+  // none of its 22 points.
+  //
+  // CHECKED HERE AND NOWHERE ELSE. Everywhere a DOCUMENT is built, an unknown
+  // seller key reads as the default — it has to, because the column is
+  // nullable and every order that predates it says nothing. But this is the
+  // one place a person is TYPING the answer, and a typed key that names no
+  // company is a mistake to refuse now, not a proforma that quietly goes out
+  // under the wrong name. A blank box clears the column back to NULL, which is
+  // the default seller.
+  if (has(body, "sellerKey")) {
+    const raw = str(body.sellerKey);
+    const key = raw ? parseSellerKey(raw) : null;
+    if (raw && !key) fail(400, `Seller must be one of ${SELLER_KEYS.join(", ")}`);
+    data.sellerKey = key;
+  }
   if (has(body, "customerPoDate")) {
     const raw = str(body.customerPoDate);
     const d = dateOnly(raw);

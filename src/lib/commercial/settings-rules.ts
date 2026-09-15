@@ -51,6 +51,7 @@ const join = (path: string, k: string): string => (path ? `${path}.${k}` : k);
 export const NUMBERING_LABELS: Record<NumberingKind, string> = {
   order: "Internal sales order",
   proforma: "Proforma invoice (PI)",
+  monolithProforma: "Proforma invoice (PI) — Monolith Surfaces Inc",
   enquiry: "Enquiry",
   exportInvoice: "Export invoice",
   dtaInvoice: "DTA invoice",

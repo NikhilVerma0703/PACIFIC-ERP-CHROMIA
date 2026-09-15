@@ -19,6 +19,7 @@ import { patchJson, postJson } from "@/lib/fab/postJson";
 import { readJson } from "@/lib/readJson";
 import { groupTasks, taskProgress, progressNote, statusFromTick } from "@/lib/commercial/tasks-rules";
 import type { OrderTabProps, OrderTaskDto, Party } from "@/lib/commercial/types";
+import { DEFAULT_SELLER_KEY } from "@/lib/commercial/settings-defaults";
 import { partiesFromClient, clientDefaults, type ClientLike } from "@/lib/commercial/orders-rules";
 import { advanceBadge, fmtPct } from "@/lib/commercial/receipts-rules";
 import { ClientPicker, type ClientRow } from "../orders/ClientPicker";
@@ -54,6 +55,7 @@ interface HeaderDraft {
   receiverDetails: string;
   customerContact: string;
   salespersonName: string;
+  sellerKey: string;
   notes: string;
 }
 
@@ -87,6 +89,11 @@ function draftOf(o: OrderTabProps["order"]): HeaderDraft {
     receiverDetails: t(o.receiverDetails),
     customerContact: t(o.customerContact),
     salespersonName: t(o.salespersonName),
+    // The default seller is the NULL column (scripts/0085), so the dropdown's
+    // blank option IS Pacific and an order that happens to name it explicitly
+    // reads back onto that same option rather than looking like a third
+    // choice. Nothing else in this form has to know which key is the default.
+    sellerKey: o.sellerKey === DEFAULT_SELLER_KEY ? "" : t(o.sellerKey),
     notes: t(o.notes),
   };
 }
@@ -107,6 +114,13 @@ export default function OverviewTab({ order, actions, refresh }: OrderTabProps) 
   const mayApprove = actions.includes("approve");   // ADMIN / COMMERCIAL_MANAGER (canApprove, access-rules)
   const base = useMemo(() => draftOf(order), [order]);
   const baseParties = useMemo(() => partyDraftsOf(order), [order]);
+  // The default seller's option carries the EMPTY value, which clears the
+  // column back to NULL — the answer every order raised before this existed
+  // gives, and the one the documents read as Pacific.
+  const sellerOptions = useMemo(
+    () => (order.sellerChoices ?? []).map((c) => ({ value: c.key === DEFAULT_SELLER_KEY ? "" : c.key, label: c.label })),
+    [order.sellerChoices],
+  );
 
   const [h, setH] = useState<HeaderDraft>(base);
   const [p, setP] = useState<PartyDrafts>(baseParties);
@@ -222,6 +236,23 @@ export default function OverviewTab({ order, actions, refresh }: OrderTabProps) 
             value={h.salespersonName}
             onChange={set("salespersonName")}
             hint="Who asked for the PI, for his customer. Prints on a domestic (DTA) proforma; an export order may still record one."
+            disabled={!mayWrite}
+          />
+          {/* WHICH OF THE GROUP'S COMPANIES IS SELLING (owner, 2026-09-15;
+              scripts/0085). It sits in the header, beside Kind and the client,
+              because it is a fact about the DEAL and not about a piece of
+              paper: every proforma of this order — a revision included — goes
+              out under the company chosen here, and each one freezes it at the
+              moment its draft is built. Change it and build a fresh draft; a
+              proforma already drafted keeps the company it was drafted under.
+              The options come from the server (order.sellerChoices) so a label
+              corrected in Settings is the label read here. */}
+          <SelectField
+            label="Selling company"
+            value={h.sellerKey}
+            onChange={set("sellerKey")}
+            options={sellerOptions}
+            hint="Whose proforma this order raises. Monolith's is a US invoice — its own address and bank, and no GSTIN, RBI code, customs office or Indian-origin declaration on it."
             disabled={!mayWrite}
           />
         </div>

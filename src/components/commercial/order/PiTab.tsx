@@ -32,7 +32,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Card, Badge, Empty } from "@/components/ui";
 import { postJson, patchJson } from "@/lib/fab/postJson";
 import { readJson } from "@/lib/readJson";
-import { statusTone, orderWarnings, formatPiDate, defaultBankKey, revisionDraftFor, refuseCancel, registerOrder, replacementOf, piWriteRefusal, BANK_KEYS, type BankKey, type PiChoices } from "@/lib/commercial/proforma-rules";
+import { statusTone, orderWarnings, formatPiDate, defaultBankKey, revisionDraftFor, refuseCancel, registerOrder, replacementOf, piWriteRefusal, printsIndianBlock, piBankLine, piBankOptions, piGstinOptions, BANK_KEYS, type BankKey, type PiChoices } from "@/lib/commercial/proforma-rules";
 import type { AreaAccess } from "@/lib/commercial/access-rules";
 import type { GstinChoice } from "@/lib/commercial/settings-defaults";
 import type { OrderTabProps, ProformaDto, ProformaSnapshot } from "@/lib/commercial/types";
@@ -198,9 +198,20 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
     setError(null);
   }
 
-  const gstinOptions = gstins.length
-    ? gstins.map((c) => ({ value: c.gstin, label: `${c.gstin} — ${c.label}` }))
-    : [{ value: form.gstinKey, label: form.gstinKey || "Company GSTIN" }];
+  // WHICH PROFORMA THE EDIT PANEL IS OPEN ON, because the two dropdowns'
+  // options are that proforma's and not Settings' — the lists off
+  // /proformas/choices are Pacific's two accounts and Pacific's registrations,
+  // and on a draft sold by anyone else neither list has an entry meaning what
+  // the draft holds. piBankOptions / piGstinOptions decide it; a select handed
+  // a value none of its options carries shows the FIRST one, which is how the
+  // greyed GSTIN box came to state Pacific's registration above the hint
+  // saying none prints.
+  const editingSnapshot = useMemo(
+    () => proformas.find((p) => p.id === editing)?.snapshot ?? null,
+    [proformas, editing],
+  );
+  const bankOptions = piBankOptions(editingSnapshot, banks, form.bankKey);
+  const gstinOptions = piGstinOptions(editingSnapshot, gstins, form.gstinKey);
 
   return (
     <div className="flex flex-col gap-4">
@@ -239,6 +250,14 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
         <div className="flex flex-col gap-3">
           {proformas.map((pi) => {
             const s: ProformaSnapshot | null = pi.snapshot ?? null;
+            // WHICH COMPANY THIS PAPER IS FOR, off the snapshot it was frozen
+            // with. The two dropdowns below answer questions only an Indian
+            // exporter has — which of our two Indian accounts, and under which
+            // GST registration — so on a proforma that is not one they are
+            // disabled WITH THE REASON rather than hidden (DESIGN.md §9),
+            // because a clerk who sets a GSTIN and then cannot find it on the
+            // printed page has been told nothing.
+            const indianSeller = s ? printsIndianBlock(s) : true;
             const isOpen = open === pi.id;
             const isEditing = editing === pi.id;
             const cancelledAt = pi.cancelledAt ?? null;
@@ -331,11 +350,16 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
                 {isEditing && (
                   <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50/60 p-4">
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                      <SelectField label="Bank on the PI" value={form.bankKey} options={banks}
+                      <SelectField label="Bank on the PI" value={form.bankKey} options={bankOptions} disabled={!indianSeller}
                         onChange={(v) => setForm({ ...form, bankKey: v === "domestic" ? "domestic" : "export" })}
-                        hint="Kotak on export, ICICI on domestic by default." />
-                      <SelectField label="GSTIN on the PI" value={form.gstinKey} options={gstinOptions}
-                        onChange={(v) => setForm({ ...form, gstinKey: v })} hint="Defaults to the company's own." />
+                        hint={indianSeller
+                          ? "Kotak on export, ICICI on domestic by default."
+                          : `${s?.seller?.label ?? "This seller"} has one account of its own, and this PI prints it.`} />
+                      <SelectField label="GSTIN on the PI" value={form.gstinKey} options={gstinOptions} disabled={!indianSeller}
+                        onChange={(v) => setForm({ ...form, gstinKey: v })}
+                        hint={indianSeller
+                          ? "Defaults to the company's own."
+                          : `${s?.seller?.label ?? "This seller"} is not an Indian exporter — no GSTIN, RBI code, customs office or Indian-origin declaration prints on this PI.`} />
                       <TextField label="Delivery date" type="date" value={form.deliveryDate} onChange={(v) => setForm({ ...form, deliveryDate: v })} />
                       <TextField label={`Discount (${pi.currency})`} value={form.discount} onChange={(v) => setForm({ ...form, discount: v })}
                         hint="Comes off the total; the amount in words is rewritten." />
@@ -378,7 +402,20 @@ export default function PiTab({ order, actions, refresh }: OrderTabProps) {
                       <div><span className="text-gray-400">Port of loading: </span>{s.portOfLoading || "—"}</div>
                       <div><span className="text-gray-400">Port of discharge: </span>{s.portOfDischarge || "—"}</div>
                       <div><span className="text-gray-400">Gross / net: </span>{s.grossWeight || "—"} / {s.netWeight || "—"}</div>
-                      <div><span className="text-gray-400">Bank: </span>{s.bank?.name || "—"}{s.bankKey ? ` (${s.bankKey})` : ""}</div>
+                      {/* WHICH COMPANY THIS PAPER WENT OUT UNDER, off the
+                          frozen snapshot and not off the order: the order can
+                          be moved to another company afterwards and this PI
+                          still went out as it went out. A proforma frozen
+                          before the seller existed shows the legal name it
+                          froze, which is Pacific's. */}
+                      <div><span className="text-gray-400">Seller: </span>{s.seller?.label || s.company?.legalName || "—"}</div>
+                      {/* The account, and the slot it was chosen from only
+                          where that slot names it: every snapshot carries an
+                          export/domestic key so a revision can pick an Indian
+                          account with one, but a seller with an account of its
+                          own is paid into that account whatever the key says
+                          (piBankLine). */}
+                      <div><span className="text-gray-400">Bank: </span>{piBankLine(s) || "—"}</div>
                       <div><span className="text-gray-400">GSTIN: </span>{s.company?.gstin || "—"}</div>
                       <div><span className="text-gray-400">Valid until: </span>{s.validUntil ? formatPiDate(s.validUntil) : "—"}</div>
                       {/* Frozen with the rest of the snapshot; printed on a DTA

@@ -530,11 +530,17 @@ test("the counters table lists every kind including the PI, under the label the 
   const at = new Date(2026, 8, 7);
   const p = previewCounters(DEFAULT_SETTINGS, [], at);
   const rows = NUMBERING_KINDS.map((kind) => ({ label: NUMBERING_LABELS[kind], key: p[kind].key, next: p[kind].next, preview: p[kind].preview }));
-  assert.equal(rows.length, 7);
+  assert.equal(rows.length, 8);
   const pi = rows.find((r) => r.label === "Proforma invoice (PI)");
   assert.ok(pi, "the PI has its own row");
   assert.deepEqual(pi, { label: "Proforma invoice (PI)", key: "SAL-ORD:26-27", next: 1, preview: "SAL-ORD/26-27/N0001" });
-  assert.equal(new Set(rows.map((r) => r.key)).size, 7, "no two kinds draw from one counter");
+  // The eighth is Monolith's own PI counter (2026-09-15). It is on this table
+  // for the same reason every other kind is: an admin looking for a series has
+  // to find it here whether or not it has ever issued.
+  const msi = rows.find((r) => r.label === "Proforma invoice (PI) — Monolith Surfaces Inc");
+  assert.ok(msi, "Monolith's PI has its own row");
+  assert.deepEqual(msi, { label: "Proforma invoice (PI) — Monolith Surfaces Inc", key: "MSI-INV", next: 1, preview: "INV-1" });
+  assert.equal(new Set(rows.map((r) => r.key)).size, 8, "no two kinds draw from one counter");
 });
 
 test("the dispatch advance percentages are editable and land as numbers (answer 11)", () => {

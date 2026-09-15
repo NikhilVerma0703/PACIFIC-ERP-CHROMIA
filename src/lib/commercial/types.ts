@@ -70,8 +70,30 @@ export interface ProformaSnapshot {
   grossWeight: string | null;
   netWeight: string | null;
   discount: number;
-  bank: { name: string; address: string; accountNo: string; ifsc: string; swift: string; adCode?: string; routingBank?: string; routingSwift?: string };
+  bank: {
+    name: string; address: string; accountNo: string; ifsc: string; swift: string;
+    adCode?: string; routingBank?: string; routingSwift?: string;
+    /** The beneficiary's account with the correspondent bank, on an account
+     *  whose wire route names one (Monolith). Absent on both Indian accounts. */
+    routingAccountNo?: string;
+    /** The ACH route, kept apart from the wire route above because they carry
+     *  DIFFERENT account numbers (settings-defaults AchRoute). */
+    ach?: { bank: string; routingNo: string; accountNo: string };
+  };
   company: { legalName: string; addressLines: string[]; gstin: string; rbiCode: string; customsOffice: string };
+  /**
+   * WHICH GROUP COMPANY SOLD THIS ORDER, frozen at draft time off the order's
+   * seller_key (owner, 2026-09-15; scripts/0085). `indianExporter` is the fact
+   * the PDF asks: false drops the whole Indian block — GSTIN, IEC, RBI code,
+   * the customs office, the AD code and the Indian-origin declaration — from
+   * the printed paper.
+   *
+   * OPTIONAL, AND ABSENT MEANS PACIFIC. Every proforma frozen before
+   * 2026-09-15 carries no such key and must keep printing exactly as it did;
+   * piSeller() reads that absence as the default seller in one place, so no
+   * reader of a snapshot has to remember the rule.
+   */
+  seller?: { key: string; label: string; indianExporter: boolean } | null;
   declaration: string;
   /**
    * The Terms & Conditions box, and NOTHING BUT what a human typed into it
@@ -602,6 +624,16 @@ export interface OrderDetail {
    *  must not be able to change who that was; the PI copies it into its frozen
    *  snapshot at draft time. Printed on a domestic (DTA) PI only. */
   salespersonName: string | null;
+  /** WHICH GROUP COMPANY SELLS THIS ORDER (scripts/0085). NULL is the default
+   *  seller, Pacific — the answer every order raised before the column existed
+   *  gives, and the one the whole module gave before there was a second
+   *  company. Copied into each proforma's frozen snapshot at draft time. */
+  sellerKey: string | null;
+  /** Derived: the selling entities Settings knows, for the header's dropdown
+   *  (sellerChoices). Sent with the order the way advanceDefaultPct is, so the
+   *  screen can name them without a second round trip and without carrying a
+   *  copy of the list that Settings could move under it. */
+  sellerChoices: Array<{ key: string; label: string }>;
   /** Always the full 22-point list (parseChecklist), never raw JSON. */
   checklist: Array<{ key: string; no: string; label: string; value: string; ok: boolean }>;
   checkedByName: string | null;

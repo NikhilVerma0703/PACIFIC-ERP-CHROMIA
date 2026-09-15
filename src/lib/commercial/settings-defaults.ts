@@ -9,6 +9,32 @@ import {
   EDGE_LABEL_DIGITS_MM, EDGE_LABEL_MIN_BAR_MM,
 } from "./barcode.ts";
 
+/**
+ * The ACH route into an American account, which is a DIFFERENT ROUTE with a
+ * DIFFERENT ACCOUNT NUMBER from the wire route above it, not a second spelling
+ * of the same one (Monolith's bank sheet, 2026-09-15).
+ *
+ * WHY IT IS ITS OWN SHAPE AND NOT THREE MORE FIELDS ON BankDetails. A payer
+ * choosing ACH must use the nine-digit routing number and the ACH-only account
+ * number TOGETHER; a payer wiring must use the SWIFT and the ordinary account
+ * number together. Mixing one line from each is the whole failure mode this
+ * group of fields exists to prevent — a wire sent to the ACH account number
+ * bounces days later at the correspondent bank. Keeping the route in its own
+ * object means the document can print it as its own labelled block and there
+ * is nowhere for a line to be read out of the wrong route.
+ *
+ * Pacific's two accounts have no ACH route — there is no such thing on an
+ * Indian account — so both simply leave it off.
+ */
+export interface AchRoute {
+  /** The intermediary bank the ACH is routed through, as the sheet names it. */
+  bank: string;
+  /** The ABA routing number, as printed on the sheet (021-000-018). */
+  routingNo: string;
+  /** The account number ACH — and ONLY ACH — is sent to. */
+  accountNo: string;
+}
+
 export interface BankDetails {
   name: string;
   branch: string;
@@ -19,6 +45,16 @@ export interface BankDetails {
   adCode?: string;
   routingBank?: string;
   routingSwift?: string;
+  /**
+   * The beneficiary's own account AT the correspondent bank, which the wire
+   * has to name as well as the correspondent's SWIFT. Kotak's sheet gives no
+   * such number and Kotak's block therefore prints none; Monolith's does
+   * (8900676973), and a wire that omits it is returned. Optional because the
+   * two Indian accounts do not have one — not because it is decorative.
+   */
+  routingAccountNo?: string;
+  /** The ACH route, on the accounts that have one. See AchRoute. */
+  ach?: AchRoute;
 }
 
 export interface CompanyMaster {
@@ -48,6 +84,74 @@ export interface CompanyMaster {
   email: string;
   phone: string;
 }
+
+/**
+ * WHICH OF THE GROUP'S COMPANIES IS SELLING — the named set the order's
+ * seller_key chooses from (owner, 2026-09-15; scripts/0085).
+ *
+ * Until today the module knew one seller and never asked: Pacific Engineered
+ * Surfaces Private Limited, an Indian exporter, whose identity is the company
+ * master above and whose accounts are `banks` below. A second company now
+ * sells — MONOLITH SURFACES INC, the group's US subsidiary, selling to a US
+ * buyer inside the United States — and the owner asked for a genuine US
+ * invoice rather than the Indian one with a different name at the top.
+ *
+ * PACIFIC HAS NO IDENTITY AND NO BANK OF ITS OWN ON THIS LIST, AND THAT IS
+ * THE POINT. Its entry carries the label the dropdown shows and the one fact
+ * that decides the layout, and nothing else: its legal name, its address, its
+ * GSTIN, its RBI code, its customs office and its two accounts stay in the
+ * company master and in `banks`, where they have always been and where there
+ * is exactly ONE copy of each. Repeating them here would mean an admin
+ * correcting the company address in Settings corrected it for every document
+ * EXCEPT the proforma, which is precisely the bug a "seller" list invites. So
+ * the default seller resolves to the company master by its KEY, in one place
+ * (proforma-rules.sellerIdentity), and every Pacific PI — every one already
+ * issued and every one issued from now on — is built from the same values it
+ * always was.
+ */
+export interface SellingEntity {
+  /** What the order header's seller dropdown says. A screen string: it prints
+   *  on no document, so it may read however is clearest to the desk. */
+  label: string;
+  /**
+   * THE ONE FACT THAT DECIDES THE LAYOUT. An Indian exporter's proforma prints
+   * the Indian block — the GSTIN, the IEC, the RBI code number, the
+   * jurisdictional customs office, the AD code on the bank, and the "goods of
+   * Indian Origin" declaration. None of that is true of a US company selling
+   * inside the US, so for a seller that is not an Indian exporter every one of
+   * those is ABSENT from the printed paper — absent, not an empty labelled box
+   * with nothing after the colon.
+   */
+  indianExporter: boolean;
+  /** The identity it prints. Absent on the default seller, which prints the
+   *  company master; present and complete on every other. */
+  legalName?: string;
+  addressLines?: string[];
+  country?: string;
+  /**
+   * Blank, deliberately, where the owner has not given one: Monolith's bank
+   * sheet carries no telephone and no EIN, and inventing either onto a
+   * customer's invoice is worse than leaving it off. They are present as empty
+   * strings rather than missing keys so that an admin can fill them in from
+   * Settings the day they exist — mergeSettings only overrides keys the
+   * defaults already carry — and the layout prints no box for a blank.
+   */
+  email?: string;
+  phone?: string;
+  /** The single account it is paid into. Absent on the default seller, which
+   *  is paid into `banks` by the order's kind (answer 23). */
+  bank?: BankDetails;
+}
+
+/** The seller the order's NULL seller_key means, and the one every proforma
+ *  frozen before 2026-09-15 is. Named once; the code asks for it by this name
+ *  rather than spelling "PESPL" at each decision. */
+export const DEFAULT_SELLER_KEY = "PESPL";
+
+/** The named set. A key not on this list is not a seller, and is read as the
+ *  default rather than as an error — see sellerEntity. */
+export const SELLER_KEYS = ["PESPL", "MONOLITH"] as const;
+export type SellerKey = (typeof SELLER_KEYS)[number];
 
 /**
  * The four numbers the barcode label pasted on the EDGE of a piece is laid out
@@ -92,6 +196,14 @@ export interface CommercialSettings {
      *  revision is a new number and the old one is cancelled, so it cannot be
      *  the order number any more. */
     proforma: NumberingSpec;
+    /** THE SAME DOCUMENT FROM THE OTHER COMPANY. A Monolith proforma is a US
+     *  company's own paper, so it cannot take a number out of Pacific's series:
+     *  two legal entities sharing one run of invoice numbers leaves each set of
+     *  books with gaps it cannot explain. Plain and without a financial year,
+     *  which is how a US company numbers (the owner, 2026-09-15), and starting
+     *  at 1001 because a first invoice numbered 0001 tells a customer exactly
+     *  how much business the seller has done. */
+    monolithProforma: NumberingSpec;
     enquiry: NumberingSpec;
     exportInvoice: NumberingSpec;
     dtaInvoice: NumberingSpec;
@@ -112,6 +224,10 @@ export interface CommercialSettings {
   dispatch: { advancePctDomestic: number; advancePctExport: number };
   company: CompanyMaster;
   banks: { export: BankDetails; domestic: BankDetails };
+  /** The group companies that may sell an order (owner, 2026-09-15;
+   *  scripts/0085). Keyed by commercial_order.seller_key; SELLER_KEYS is the
+   *  whole set and DEFAULT_SELLER_KEY is what a NULL column means. */
+  sellers: Record<SellerKey, SellingEntity>;
   defaults: {
     portOfLoading: string;
     preCarriageBy: string;
@@ -154,6 +270,7 @@ export const DEFAULT_SETTINGS: CommercialSettings = {
   numbering: {
     order:         { key: "ORD",       template: "ORD/{fy}/N{seq:4}",       perFy: true },
     proforma:      { key: "SAL-ORD",   template: "SAL-ORD/{fy}/N{seq:4}",   perFy: true },
+    monolithProforma: { key: "MSI-INV", template: "INV-{seq}",               perFy: false },
     enquiry:       { key: "ENQ",       template: "ENQ/{fy}/N{seq:4}",       perFy: true },
     exportInvoice: { key: "PESPL-EXP", template: "PESPL/N{seq:4}",          perFy: false },
     dtaInvoice:    { key: "PESPL-DTA", template: "PESPL/N{seq:4}/{fy}",     perFy: true },
@@ -210,6 +327,60 @@ export const DEFAULT_SETTINGS: CommercialSettings = {
       accountNo: "020405012473",
       ifsc: "ICIC0000204",
       swift: "ICICINBBCTS",
+    },
+  },
+  // THE SELLING ENTITIES (owner, 2026-09-15). Pacific carries a label and the
+  // Indian-exporter flag and NOTHING ELSE, on purpose: see SellingEntity.
+  sellers: {
+    PESPL: {
+      label: "Pacific Engineered Surfaces Private Limited (India)",
+      indianExporter: true,
+    },
+    // MONOLITH SURFACES INC, the group's US subsidiary, selling to a US buyer
+    // inside the United States: "Nothing related to pacific surfaces. We are
+    // selling it to monolith (which is our company) then they are selling it
+    // to someone in US." Every value below is off the owner's own bank sheet
+    // and his address answer of 2026-09-15. No EIN and no telephone were
+    // given; they are blank rather than guessed, and nothing prints a box for
+    // a blank.
+    MONOLITH: {
+      label: "Monolith Surfaces Inc (USA)",
+      indianExporter: false,
+      legalName: "MONOLITH SURFACES INC",
+      addressLines: [
+        "25298 FM 2978 Rd, Unit A,",
+        "Tomball, TX 77375, USA",
+      ],
+      country: "USA",
+      email: "",
+      phone: "",
+      bank: {
+        // The branch is part of the name a payer must write, so it is in the
+        // name: the PI prints the bank's name and its address and nothing
+        // else, and "ICICI Bank Limited" alone would send a wire to the wrong
+        // ICICI. `branch` is kept beside it for any document that wants the
+        // two apart.
+        name: "ICICI Bank Limited, New York Branch",
+        branch: "New York Branch",
+        address: "575 Fifth Avenue, Suite 2600, New York, NY 10017, USA",
+        accountNo: "840000004202",
+        // An IFSC is an Indian code and a US account has none. Blank, and the
+        // proforma prints no IFSC cell at all rather than an empty one.
+        ifsc: "",
+        swift: "ICICUS3N",
+        // The WIRE route: through Bank of New York Mellon, naming both the
+        // correspondent's SWIFT and the beneficiary's account with it.
+        routingBank: "Bank of New York Mellon, New York",
+        routingSwift: "IRVTUS3N",
+        routingAccountNo: "8900676973",
+        // The ACH route: the same intermediary, its own routing number, and an
+        // account number that is NOT the one above and is for ACH only.
+        ach: {
+          bank: "Bank of New York Mellon",
+          routingNo: "021-000-018",
+          accountNo: "30000840000004202",
+        },
+      },
     },
   },
   defaults: {
@@ -280,6 +451,51 @@ export function gstinChoices(company: Pick<CompanyMaster, "legalName" | "gstin" 
   return out;
 }
 
+/**
+ * A seller key off an order row or a request body, or null when it names no
+ * seller. Null is not a failure: the column is nullable and NULL is the
+ * default seller (scripts/0085), so a caller that sends nothing, sends a
+ * blank, or sends a key this build does not know gets Pacific — which is what
+ * every order raised before today gets, and what the whole module did before
+ * there was a second company at all.
+ */
+export function parseSellerKey(raw: unknown): SellerKey | null {
+  const s = String(raw ?? "").trim().toUpperCase();
+  return (SELLER_KEYS as readonly string[]).includes(s) ? (s as SellerKey) : null;
+}
+
+/**
+ * The entity a key names, and the key it actually resolved to — always a real
+ * one, so callers never carry a "maybe this key exists" doubt into the
+ * document. An unknown key falls back to the default seller rather than
+ * throwing, for the same reason gstinChoiceFor does: a PI must print.
+ *
+ * The record itself can never go missing — mergeSettings copies the defaults
+ * and only overwrites keys they already carry, so a settings row can correct
+ * Monolith's address or its account number but can neither delete the entity
+ * nor invent one. That is why nothing downstream has to handle a hole here.
+ */
+export function sellerEntity(settings: CommercialSettings, key: unknown): { key: SellerKey; entity: SellingEntity } {
+  const k = parseSellerKey(key) ?? (DEFAULT_SELLER_KEY as SellerKey);
+  // THE WHOLE MAP IS RESOLVED ONCE, and that is the fix for a guard that used
+  // to contradict itself: the lookup optional-chained `settings.sellers?.[k]`,
+  // declaring the map might be absent, and then read
+  // `settings.sellers[DEFAULT_SELLER_KEY]` for its fallback without the same
+  // guard — so a settings object without `sellers` threw on precisely the case
+  // the `?.` was there for. Today nothing reaches it that way (loadSettings
+  // merges over DEFAULT_SETTINGS, which has the map), but a hand-built
+  // settings object in a test or a stale row from an older deploy would, and a
+  // guard that only works when it is not needed is worse than no guard.
+  const sellers = settings.sellers ?? DEFAULT_SETTINGS.sellers;
+  const entity = sellers[k] ?? sellers[DEFAULT_SELLER_KEY as SellerKey];
+  return { key: k, entity };
+}
+
+/** The seller dropdown on the order header: every entity, the default first. */
+export function sellerChoices(settings: CommercialSettings): Array<{ key: SellerKey; label: string }> {
+  return SELLER_KEYS.map((key) => ({ key, label: sellerEntity(settings, key).entity.label }));
+}
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -307,4 +523,11 @@ export function mergeSettings(base: CommercialSettings, overrides: unknown): Com
 }
 
 export type NumberingKind = keyof CommercialSettings["numbering"];
-export const NUMBERING_KINDS: NumberingKind[] = ["order", "proforma", "enquiry", "exportInvoice", "dtaInvoice", "challan", "packingList"];
+export const NUMBERING_KINDS: NumberingKind[] = ["order", "proforma", "monolithProforma", "enquiry", "exportInvoice", "dtaInvoice", "challan", "packingList"];
+
+/** Which counter a proforma draws on: the seller's own, so Pacific's series and
+ *  Monolith's never interleave. Absent or unknown seller means Pacific, the
+ *  same default every other seller-aware rule takes. */
+export function proformaNumberingKind(sellerKey: unknown): NumberingKind {
+  return parseSellerKey(sellerKey) === "MONOLITH" ? "monolithProforma" : "proforma";
+}

@@ -23,6 +23,7 @@ import {
   exchangeRateRefusal, exchangeRateNote,
   type InvoiceKind,
 } from "@/lib/commercial/invoice-rules";
+import { piOwnsBankKey, type PiSnapshot } from "@/lib/commercial/proforma-rules";
 import type { DocLine } from "@/lib/commercial/types";
 import { db, INVOICE_INCLUDE, rowPatchFor, livePiFor, marksForCrates, weightText, isUniqueViolation, designCodesLookup } from "../../../invoices/_lib";
 
@@ -232,9 +233,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     // alternate registration spread across the whole workbook (answer 19) are
     // the two things a reader of the log would otherwise have to open the
     // snapshot to discover.
+    // …and the slot is named as the PI's only when the PI names it. A proforma
+    // whose seller is not an Indian exporter was paid into its own company's
+    // account and carries an export/domestic key only so that a revision
+    // following the order back to Pacific can pick an account with one
+    // (piOwnsBankKey). The key still decides THIS invoice's bank — the invoice
+    // module has one seller and draws on settings.banks[bankKey] whoever sold
+    // — so the note goes on naming the slot; it stops telling the reader the
+    // proforma asked to be paid into it, which that proforma never did.
+    const piNamesBank = piOwnsBankKey((pi?.snapshot ?? null) as PiSnapshot | null);
     const bankNote = bankKey === inheritedBankKey
-      ? (pi ? `, on the PI's ${bankKey} bank` : `, on the ${bankKey} bank`)
-      : `, bank changed to ${bankKey} from the PI's ${inheritedBankKey}`;
+      ? (piNamesBank ? `, on the PI's ${bankKey} bank` : `, on the ${bankKey} bank`)
+      : (piNamesBank ? `, bank changed to ${bankKey} from the PI's ${inheritedBankKey}` : `, bank changed to ${bankKey} from ${inheritedBankKey}`);
     const gstinNote = snapshot.gstinLabel ? `, under ${snapshot.gstin} (${snapshot.gstinLabel}) on ${gstinScopeWord(snapshot.gstinApplyAll)}` : "";
     // Answer 10: the rate this invoice starts life with, BY VALUE, and whether
     // it was typed or came off the order — a rate the clerk never saw typed is

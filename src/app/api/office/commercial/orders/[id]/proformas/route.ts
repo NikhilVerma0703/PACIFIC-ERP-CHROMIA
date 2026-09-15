@@ -22,6 +22,7 @@ import { commercialGate, actorStamp } from "@/lib/commercial/access";
 import { json, deny, fail, handle, readBody, plain, str, paramId } from "@/lib/commercial/http";
 import { loadSettings } from "@/lib/commercial/settings";
 import { issueNumber } from "@/lib/commercial/sequence";
+import { proformaNumberingKind } from "@/lib/commercial/settings-defaults";
 import { logOrderEvent } from "@/lib/commercial/events";
 import {
   buildProformaSnapshot, nextRevision, isoDate, pageArgs, parseBankKey,
@@ -69,7 +70,16 @@ export async function POST(req: Request, { params }: Ctx) {
     // The counter is taken before the row exists: a draft that then fails to
     // save leaves a gap in the series, which is the honest outcome — a number
     // once handed out is never handed out again (answer 24).
-    const issued = await issueNumber("proforma", now, body.numberOverride);
+    // WHOSE COUNTER, which follows from whose paper it is: a Monolith proforma
+    // is a US company's own document and cannot take a number out of Pacific's
+    // series, or each company's books carry gaps it cannot account for. The
+    // seller lives on the ORDER, so the kind is read from there and an order
+    // with no seller takes Pacific's, exactly as every other seller-aware rule
+    // defaults.
+    const issued = await issueNumber(
+      proformaNumberingKind((order as { sellerKey?: unknown }).sellerKey),
+      now, body.numberOverride,
+    );
 
     const snapshot = buildProformaSnapshot(order as unknown as SnapshotOrderInput, settings, {
       number: issued.number,

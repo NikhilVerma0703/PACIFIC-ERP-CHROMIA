@@ -23,6 +23,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { documentNumber } from "../src/lib/commercial/numbering.ts";
 import {
   printable, round3, round2, printThickness, unitLabel, trimNumber, fmtQty, fmtAmount, fmtRate, fmtSlabs,
   formatPiDate, isoDate, validUntilFor, piFilename, printedNumber,
@@ -36,10 +37,16 @@ import {
   revisesAtIssue, refreezeAtIssue, revisionDraftFor, refuseRevise,
   statusTone, pageArgs, parseProformaStatus, partyBlock, piTableHeader, piRow, piTotalRow,
   piPrintFields, orderWarnings, piSalesperson, printsParty,
+  piSeller, piSellerFrom, printsIndianBlock, piGstinFor, sellerIdentity, sellerCompanyBlock, piDeclarationFor,
+  piBankLine, piOwnsBankKey, piBankOptions, piGstinOptions, PI_NO_GSTIN_OPTION, PI_SELLER_BANK_OPTION,
   EDITABLE_TEXT_FIELDS,
   type SnapshotOrderInput, type SnapshotItemInput, type PiSnapshot,
 } from "../src/lib/commercial/proforma-rules.ts";
-import { DEFAULT_SETTINGS, gstinChoices, type CommercialSettings } from "../src/lib/commercial/settings-defaults.ts";
+import {
+  DEFAULT_SETTINGS, gstinChoices, sellerChoices, sellerEntity, parseSellerKey,
+  proformaNumberingKind,
+  DEFAULT_SELLER_KEY, SELLER_KEYS, type CommercialSettings,
+} from "../src/lib/commercial/settings-defaults.ts";
 import { canEnter } from "../src/lib/commercial/stages.ts";
 
 const S = DEFAULT_SETTINGS;
@@ -1666,4 +1673,720 @@ test("RBI code and GSTIN print as label-and-value, one complete line each", () =
   assert.equal(src.includes('field("RBI Code No."'), false,
     "and neither goes through field(), which stacks the label above the value");
   assert.match(src, /\.\.\.\(f\.gstin \?/, "the GSTIN line is dropped, not left dangling, when there is none");
+});
+
+
+// ══════════════ which of the group's companies is selling (scripts/0085) ═════
+// The owner, 2026-09-15: "Im supposed to make a PI from monolith to M&G
+// imports. Nothing related to pacific surfaces. We are selling it to monolith
+// (which is our company) then they are selling it to someone in US. We just
+// need PI for them selling it to someone else. It is completely different from
+// the general PI."
+//
+// So a SECOND kind of proforma: MONOLITH SURFACES INC, the group's US
+// subsidiary, selling to a US buyer inside the United States. What these tests
+// are really guarding is the FIRST kind — every proforma this module has ever
+// produced — because the way a change like this goes wrong is not that the new
+// document comes out badly, it is that the old one quietly moves.
+
+/**
+ * THE PACIFIC EXPORT PROFORMA, FIELD FOR FIELD, AS THE CODE PRODUCED IT BEFORE
+ * A SECOND SELLER EXISTED.
+ *
+ * Captured by running buildProformaSnapshot(exportOrder, S, opts) on the
+ * commit before the seller was added and pasted here whole — not written by
+ * reading the new code and agreeing with it, which would pin nothing. Every
+ * value below is therefore the OLD behaviour, and the test under it compares
+ * the whole document against it with one key excused: `seller`, which is new,
+ * is additional information about the same paper and changes nothing printed.
+ *
+ * If a future change to the selling entities moves so much as the order of an
+ * address line on a Pacific PI, this is what fails.
+ */
+const PACIFIC_EXPORT_BEFORE_THE_SELLER = {
+  number: "SAL-ORD/26-27/N3",
+  revision: 0,
+  date: "2026-07-10",
+  deliveryDate: null,
+  validUntil: null,
+  kind: "EXPORT",
+  currency: "USD",
+  buyerPoNo: "PO-4068622",
+  exporter: {
+    name: "Pacific Engineered Surfaces Private Limited",
+    lines: [
+      "SY.NO.73/2B, Nallaganakotapalli Village, N.H.7,",
+      "Hosur, Krishnagiri, Tamil Nadu - 635 117, India",
+    ],
+    country: "India",
+    tel: "+91 8870008798",
+    email: "customs@pacific-surfaces.com",
+    gstin: "33AALCP2750N1Z3",
+    stateCode: "33",
+    code: null,
+  },
+  consignee: {
+    name: "Surfaces by Pacific",
+    lines: [
+      "4141 Blue Star Street",
+      "Dallas, TX 75201, USA",
+    ],
+    country: "USA",
+    tel: null,
+    email: "orders@surfacesbypacific.example",
+    gstin: null,
+    stateCode: null,
+    code: "USA-041",
+  },
+  notifyParty: null,
+  buyerIfNotConsignee: null,
+  countryOfOrigin: "India",
+  countryOfDestination: "USA",
+  deliveryTerms: "FOB CHENNAI",
+  paymentTerms: "50% Advance, 50% Against Scanned BL",
+  preCarriageBy: "By Road",
+  placeOfReceipt: null,
+  vessel: null,
+  portOfLoading: "CHENNAI",
+  portOfDischarge: "HOUSTON",
+  finalDestination: "DALLAS, TX",
+  lines: [
+    {
+      lineNo: 1,
+      itemCode: "VGWT10301A-Polish-Super Jumbo-30mm-Premium",
+      description: "CARRARA ROYALE-Polish-Super Jumbo-30mm-Premium",
+      design: "Carrara Royale",
+      thickness: "30mm",
+      slabs: 43,
+      hsn: "68101990",
+      unit: "Square Foot",
+      qty: 3208.273,
+      rate: 5.4,
+      amount: 17324.657,
+      isSample: false,
+    },
+    {
+      lineNo: 2,
+      itemCode: null,
+      description: "FREE TRADE SAMPLES",
+      design: "Carrara Royale",
+      thickness: "30mm",
+      slabs: 25,
+      hsn: "68101990",
+      unit: "Nos",
+      qty: 0,
+      rate: 0,
+      amount: 0,
+      isSample: true,
+    },
+  ],
+  totalSlabs: 68,
+  totalAmount: 17324.657,
+  amountInWords: "USD Seventeen Thousand, Three Hundred And Twenty Four and Sixty Six Cent only.",
+  grossWeight: null,
+  netWeight: null,
+  discount: 0,
+  bankKey: "export",
+  bank: {
+    name: "Kotak Mahindra Bank Limited",
+    address: "10/7, Umiya Landmark, Lavelle Road, Next to Chancery Hotel, Bangalore 560001 Karnataka, India",
+    accountNo: "3214292773",
+    ifsc: "KKBK0000422",
+    swift: "KKBKINBBXXX",
+    adCode: "0180038-8400009",
+    routingBank: "The Bank of Newyork Mellon, No.1, Wall St. Newyork, NY 10015",
+    routingSwift: "IRVTUS3NXXX",
+  },
+  gstinKey: "33AALCP2750N1Z3",
+  company: {
+    legalName: "Pacific Engineered Surfaces Private Limited",
+    addressLines: [
+      "SY.NO.73/2B, Nallaganakotapalli Village, N.H.7,",
+      "Hosur, Krishnagiri, Tamil Nadu - 635 117, India",
+    ],
+    gstin: "33AALCP2750N1Z3",
+    rbiCode: "678",
+    customsOffice: "OFFICE OF THE ASSISTANT COMMISSIONER OF CUSTOMS, CUSTOMS PREVENTIVE UNIT, 21B, RAAGAVIS CENTER, I-FLOOR, NETHAJI NAGAR, NANJUNDAPURAM MAIN ROAD, RAMANATHAPURAM, COIMBATORE-641045.",
+  },
+  declaration: "We certify that the above goods are of Indian Origin and we also declare that this invoice shows the actual price of the Goods dispatched that all particulars are true and correct.",
+  notes: null,
+  salespersonName: null,
+  revises: null,
+};
+
+test("PACIFIC IS UNCHANGED: the export proforma is field for field the document it was before there was a second seller", () => {
+  const built = buildProformaSnapshot(exportOrder, S, opts);
+  // `seller` is the one key that did not exist before. Taken off and checked
+  // separately rather than added to the fixture, so the fixture stays what it
+  // says it is: the output of the old code.
+  const { seller, ...asItWasBefore } = built;
+  assert.deepEqual(asItWasBefore, PACIFIC_EXPORT_BEFORE_THE_SELLER);
+  assert.deepEqual(seller, { key: "PESPL", label: S.sellers.PESPL.label, indianExporter: true });
+});
+
+test("PACIFIC IS UNCHANGED: the domestic proforma still banks with ICICI, under the company master, with the declaration", () => {
+  const { seller, ...dta } = buildProformaSnapshot(domesticOrder, S, opts);
+  assert.equal(seller?.key, DEFAULT_SELLER_KEY);
+  assert.deepEqual(dta.exporter, exporterParty(S, OWN_GSTIN), "the exporter block is the one exporterParty has always built");
+  assert.deepEqual(dta.bank, bankBlock(S.banks.domestic), "answer 23: ICICI on a domestic PI");
+  assert.equal(dta.bankKey, "domestic");
+  assert.equal(dta.gstinKey, OWN_GSTIN);
+  assert.deepEqual(dta.company, {
+    legalName: S.company.legalName,
+    addressLines: [...S.company.addressLines],
+    gstin: OWN_GSTIN,
+    rbiCode: S.company.rbiCode,
+    customsOffice: S.company.customsOffice,
+  });
+  assert.equal(dta.declaration, S.texts.piDeclaration);
+  // The two new bank fields must not appear on an account that has neither —
+  // bankBlock leaves a key OUT rather than writing undefined, because the Json
+  // column would drop it and the snapshot in memory has to be the stored one.
+  assert.equal("routingAccountNo" in dta.bank, false);
+  assert.equal("ach" in dta.bank, false);
+});
+
+test("PACIFIC IS UNCHANGED: every field the Indian block prints is still on the printed page", () => {
+  const f = piPrintFields(buildProformaSnapshot(exportOrder, S, opts));
+  assert.equal(f.exporterLabel, "Exporter", "the first party cell is what it has always been called");
+  assert.equal(f.rbiCode, S.company.rbiCode);
+  assert.equal(f.gstin, OWN_GSTIN);
+  assert.equal(f.customsOffice, S.company.customsOffice.toUpperCase());
+  assert.equal(f.adCode, S.banks.export.adCode);
+  assert.equal(f.declaration, S.texts.piDeclaration);
+  assert.equal(f.routingBank, S.banks.export.routingBank);
+  assert.equal(f.routingSwift, S.banks.export.routingSwift);
+  // New fields, blank on a Pacific PI: nothing about the US routes leaks onto
+  // the paper of an account that has no such route.
+  assert.equal(f.routingAccountNo, "");
+  assert.equal(f.achBank, "");
+  assert.equal(f.achRoutingNo, "");
+  assert.equal(f.achAccountNo, "");
+  assert.equal(f.sellerKey, "PESPL");
+});
+
+test("Pacific keeps no second copy of its own identity in the seller list", () => {
+  // The whole point of the default seller resolving to the company master. An
+  // address repeated here would be an address that stops following Settings,
+  // and the proforma would be the one document that kept printing the old one.
+  assert.equal("legalName" in S.sellers.PESPL, false, "Pacific's legal name lives in company.legalName");
+  assert.equal("addressLines" in S.sellers.PESPL, false, "and its address in company.addressLines");
+  assert.equal("bank" in S.sellers.PESPL, false, "and its accounts in banks.export / banks.domestic");
+  assert.equal(S.sellers.PESPL.indianExporter, true);
+  // Proof rather than assertion: move the company master and the default
+  // seller's proforma moves with it, exactly as it did before this existed.
+  const renamed: CommercialSettings = { ...S, company: { ...S.company, legalName: "Pacific Engineered Surfaces Pvt Ltd (Unit II)" } };
+  const s = buildProformaSnapshot(exportOrder, renamed, opts);
+  assert.equal(s.company.legalName, "Pacific Engineered Surfaces Pvt Ltd (Unit II)");
+  assert.equal(s.exporter.name, "Pacific Engineered Surfaces Pvt Ltd (Unit II)");
+});
+
+// ───────────────────────────── the Monolith proforma ─────────────────────────
+
+/** The order the owner described: Monolith selling on to a US buyer. */
+const monolithOrder: SnapshotOrderInput = {
+  number: "ORD/26-27/N11",
+  kind: "EXPORT",
+  currency: "USD",
+  sellerKey: "MONOLITH",
+  customerPoNumber: "MG-5512",
+  deliveryTerms: "DAP HOUSTON",
+  paymentTerms: "50% Advance, 50% Before Dispatch",
+  client: { name: "M&G Imports LLC", address: "1200 Post Oak Blvd", city: "Houston, TX 77056", country: "USA" },
+  items: [quartzLine],
+};
+const MONOLITH_BANK = S.sellers.MONOLITH.bank!;
+
+test("a Monolith proforma is Monolith's own paper: its name, its address, its bank", () => {
+  const s = buildProformaSnapshot(monolithOrder, S, opts);
+  assert.deepEqual(s.seller, { key: "MONOLITH", label: S.sellers.MONOLITH.label, indianExporter: false });
+  assert.equal(s.exporter.name, "MONOLITH SURFACES INC");
+  assert.deepEqual(s.exporter.lines, ["25298 FM 2978 Rd, Unit A,", "Tomball, TX 77375, USA"]);
+  assert.equal(s.exporter.country, "USA");
+  assert.equal(s.company.legalName, "MONOLITH SURFACES INC");
+  assert.deepEqual(s.company.addressLines, ["25298 FM 2978 Rd, Unit A,", "Tomball, TX 77375, USA"]);
+  // The bank is Monolith's whatever the order's kind says: the export /
+  // domestic pair is Pacific's arrangement with two Indian banks, not a rule
+  // about banking, and Monolith has one account.
+  assert.equal(s.bankKey, "export");
+  assert.equal(s.bank.name, "ICICI Bank Limited, New York Branch");
+  assert.equal(s.bank.address, "575 Fifth Avenue, Suite 2600, New York, NY 10017, USA");
+  assert.equal(s.bank.accountNo, "840000004202");
+  assert.equal(s.bank.swift, "ICICUS3N");
+  assert.deepEqual(buildProformaSnapshot({ ...monolithOrder, kind: "DOMESTIC" }, S, opts).bank, s.bank,
+    "the same account whichever kind the order is");
+
+  // "Nothing related to pacific surfaces." Said as a property of the whole
+  // frozen document rather than of the fields anyone thought to check.
+  const json = JSON.stringify(s);
+  assert.equal(/pacific/i.test(json), false, "Pacific appears nowhere on a Monolith proforma");
+  assert.equal(json.includes(S.company.gstin), false);
+  assert.equal(json.includes(S.company.customsOffice), false);
+  assert.equal(json.includes(S.banks.export.accountNo), false, "and neither does Pacific's account number");
+  assert.equal(json.includes(S.texts.piDeclaration), false);
+});
+
+test("no EIN and no telephone were given, so neither is invented and neither prints", () => {
+  const s = buildProformaSnapshot(monolithOrder, S, opts);
+  assert.equal(s.exporter.tel, null, "a telephone nobody gave is absent, not a placeholder");
+  assert.equal(s.exporter.email, null);
+  // partyBlock is what the PDF draws the cell from: no line at all, rather
+  // than "Tel: " with nothing after it.
+  const block = partyBlock(s.exporter);
+  assert.equal(block.lines.some((l) => l.startsWith("Tel:")), false);
+  assert.equal(block.lines.some((l) => l.startsWith("Email:")), false);
+  assert.equal(block.lines.some((l) => l.startsWith("GSTIN:")), false);
+  assert.deepEqual(block.lines, ["25298 FM 2978 Rd, Unit A,", "Tomball, TX 77375, USA"],
+    "the address, and nothing the sheet does not give");
+  // There is no EIN field anywhere to leave blank: it was never added.
+  assert.equal(JSON.stringify(s).toLowerCase().includes("ein"), false);
+});
+
+test("EVERY item of the Indian block is absent for Monolith and present for Pacific", () => {
+  const mono = buildProformaSnapshot(monolithOrder, S, opts);
+  const pac = buildProformaSnapshot(exportOrder, S, opts);
+
+  // …in the frozen snapshot, so even a layout that forgot to ask has nothing
+  // Indian to print.
+  assert.equal(mono.company.gstin, "");
+  assert.equal(mono.company.rbiCode, "");
+  assert.equal(mono.company.customsOffice, "");
+  assert.equal(mono.declaration, "");
+  assert.equal(mono.gstinKey, null);
+  assert.equal(mono.exporter.gstin, null);
+  assert.equal(mono.exporter.stateCode, null, "a GST state code is the first two digits of a GSTIN it does not have");
+  assert.equal("adCode" in mono.bank, false, "an AD code is an Indian authorised-dealer code");
+  assert.equal(mono.bank.ifsc, "", "and an IFSC is an Indian branch code");
+
+  assert.ok(pac.company.gstin && pac.company.rbiCode && pac.company.customsOffice && pac.declaration);
+  assert.equal(pac.bank.adCode, S.banks.export.adCode);
+  assert.ok(pac.exporter.gstin && pac.exporter.stateCode);
+
+  // …and in the strings the PDF puts in cells.
+  const mf = piPrintFields(mono);
+  const pf = piPrintFields(pac);
+  for (const k of ["gstin", "rbiCode", "customsOffice", "adCode", "declaration"] as const) {
+    assert.equal(mf[k], "", `${k} must be blank on a Monolith PI`);
+    assert.ok(pf[k], `${k} must still print on a Pacific PI`);
+  }
+  assert.equal(mf.exporterLabel, "Seller", "a US company selling in the US is not an exporter");
+  assert.equal(pf.exporterLabel, "Exporter");
+
+  // …and the one question the layout asks.
+  assert.equal(printsIndianBlock(mono), false);
+  assert.equal(printsIndianBlock(pac), true);
+});
+
+test("the PDF drops the Indian rows whole — absent, not an empty labelled box", () => {
+  // Pinned on the source because no test renders a PDF, and because the
+  // failure this guards against is exactly a row that still draws with nothing
+  // in it: every value above would stay blank and every assertion would pass
+  // while the customer reads "GSTIN :" on a US invoice.
+  const src = readFileSync(new URL("../src/lib/commercial/pdf/proforma.ts", import.meta.url), "utf8");
+  assert.match(src, /const indian = printsIndianBlock\(snapshot\);/,
+    "the layout asks the snapshot once, not each field whether it came out blank");
+
+  // The two registration rows live inside one `...(indian ? [...] : [])`, and
+  // nowhere else in the file — fullRow() carries its own filler cell, so the
+  // pair is dropped whole and no colSpan is left to shear the rows beneath.
+  // The region runs from the guard to the next row of the table, which is the
+  // pair that must NOT be conditional — not to the next "]" in the file, since
+  // the GSTIN line inside carries a conditional of its own.
+  const guardStart = src.indexOf("...(indian");
+  const guardEnd = src.indexOf('pairRow(field("Country of Origin', guardStart);
+  const guarded = src.slice(guardStart, guardEnd);
+  assert.ok(guardStart !== -1 && guardEnd > guardStart);
+  assert.ok(guarded.includes('text: "RBI Code No.: "'), "the RBI code row is inside the guard");
+  assert.ok(guarded.includes("Jurisdictional Central Excise Division Office Address"), "and so is the customs office row");
+  assert.equal(src.split('text: "RBI Code No.: "').length - 1, 1, "and it is drawn in one place only");
+  assert.equal(src.split("Jurisdictional Central Excise Division Office Address").length - 1, 1);
+  assert.match(guarded, /fullRow\(\{/, "dropped as fullRow pairs, never as a bare colSpan");
+
+  // The AD code and the IFSC go with the row they share, and the Indian branch
+  // keeps its three-column geometry to the percentage.
+  assert.match(src, /const accountRow: any = indian/);
+  assert.match(src, /width: "34%", text: \[\{ text: "AD Code : ", bold: true \}, f\.adCode\]/);
+  assert.equal(src.split('"AD Code : "').length - 1, 1, "the AD code cell exists once, in the Indian branch");
+  assert.equal(src.split('"IFSC : "').length - 1, 1);
+
+  // The declaration and its heading are dropped together.
+  assert.match(src, /\.\.\.\(indian\s*\?\s*\[\s*\{ text: "Declaration"/,
+    "a bold Declaration heading over nothing is worse than no declaration");
+
+  // And the row that must NOT become conditional stays exactly as it is.
+  assert.match(src, /fullRow\(field\("Terms & Conditions", f\.termsAndConditions\)\)/,
+    "the Terms & Conditions box is labelled and prints empty — it is not tidied away");
+});
+
+test("the wire route and the ACH route are printed apart, and carry different account numbers", () => {
+  const s = buildProformaSnapshot(monolithOrder, S, opts);
+  // The wire route: the correspondent, its SWIFT, and the beneficiary's
+  // account WITH it — a wire that omits the last is returned.
+  assert.equal(s.bank.routingBank, "Bank of New York Mellon, New York");
+  assert.equal(s.bank.routingSwift, "IRVTUS3N");
+  assert.equal(s.bank.routingAccountNo, "8900676973");
+  // The ACH route: same intermediary, its own routing number, and an account
+  // number that is NOT the wire's and NOT the beneficiary's own.
+  assert.deepEqual(s.bank.ach, { bank: "Bank of New York Mellon", routingNo: "021-000-018", accountNo: "30000840000004202" });
+  assert.notEqual(s.bank.ach?.accountNo, s.bank.accountNo);
+  assert.notEqual(s.bank.ach?.accountNo, s.bank.routingAccountNo);
+
+  const f = piPrintFields(s);
+  assert.equal(f.routingAccountNo, "8900676973");
+  assert.equal(f.achBank, "Bank of New York Mellon");
+  assert.equal(f.achRoutingNo, "021-000-018");
+  assert.equal(f.achAccountNo, "30000840000004202");
+
+  const src = readFileSync(new URL("../src/lib/commercial/pdf/proforma.ts", import.meta.url), "utf8");
+  assert.match(src, /const routingLines: any\[\] = indian/, "two shapes, chosen by the seller");
+  const routing = src.slice(src.indexOf("const routingLines"));
+  // The Indian branch first, unchanged; the two US blocks after it, each with
+  // its own heading so no line can be read out of the wrong route.
+  assert.ok(routing.indexOf('text: "Routing Bank"') < routing.indexOf('text: "Wire Transfer"'),
+    "the Indian correspondent block is the ternary's first branch and is untouched");
+  assert.ok(routing.includes('text: "Wire Transfer"') && routing.includes('text: "ACH Transfer"'),
+    "the two routes are two labelled blocks");
+  assert.ok(routing.includes('"A/c No (ACH only) : "'),
+    "and the ACH account number says on the paper that it is ACH only");
+});
+
+// ───────────────────── absent means Pacific, for ever ────────────────────────
+
+test("a proforma frozen before the seller existed has no seller key and still prints as Pacific", () => {
+  const legacy: PiSnapshot = { ...buildProformaSnapshot(exportOrder, S, opts) };
+  delete legacy.seller;
+  assert.equal("seller" in legacy, false, "the fixture is a pre-2026-09-15 snapshot");
+
+  assert.equal(printsIndianBlock(legacy), true, "absent is not unknown — it is the default seller");
+  assert.deepEqual(piSeller(legacy), { key: "PESPL", label: S.company.legalName, indianExporter: true });
+  const f = piPrintFields(legacy);
+  assert.equal(f.exporterLabel, "Exporter");
+  assert.equal(f.gstin, OWN_GSTIN);
+  assert.equal(f.rbiCode, S.company.rbiCode);
+  assert.equal(f.declaration, S.texts.piDeclaration);
+  assert.equal(f.sellerKey, "PESPL");
+
+  // Issuing it re-freezes the bank and the GSTIN as it always did, and does
+  // NOT invent a seller block on paper that never had one.
+  const issued = refreezeAtIssue(legacy, S);
+  assert.equal("seller" in issued, false, "nothing is written onto a legacy snapshot that did not ask for it");
+  assert.deepEqual(issued.bank, bankBlock(S.banks.export));
+  assert.equal(issued.gstinKey, OWN_GSTIN);
+  assert.equal(issued.company.gstin, OWN_GSTIN);
+  assert.deepEqual(issued, { ...legacy, bankKey: "export" }, "and nothing else about it moves");
+
+  // And a save of that draft still reports honestly: an absent key is not an edit.
+  assert.equal(applyDraftPatch(legacy, { notes: legacy.notes, salespersonName: legacy.salespersonName }, S).changed, false);
+});
+
+test("an unknown or blank seller key is the default seller, not an error", () => {
+  // The column is nullable and thousands of orders predate it; a document must
+  // print. The one place a person TYPES the key — the order header route — is
+  // where a wrong one is refused.
+  for (const key of [null, undefined, "", "   ", "None", "PESPL", "pespl", "NOT-A-COMPANY"]) {
+    const s = buildProformaSnapshot({ ...exportOrder, sellerKey: key as string | null }, S, opts);
+    assert.equal(s.seller?.key, "PESPL", `${String(key)} reads as the default seller`);
+    assert.equal(s.declaration, S.texts.piDeclaration);
+    assert.equal(s.company.gstin, OWN_GSTIN);
+  }
+  assert.equal(buildProformaSnapshot({ ...exportOrder, sellerKey: "monolith" }, S, opts).seller?.key, "MONOLITH",
+    "a lower-case key is the same company, not a stranger");
+});
+
+// ───────────────────── the seller survives the whole journey ─────────────────
+
+test("the seller survives a draft edit, the issue, a JSON round trip and a revision", () => {
+  const draft = buildProformaSnapshot(monolithOrder, S, opts);
+
+  // A draft edit cannot move it: it is the ORDER's column, and two proformas
+  // of one order may not go out under two companies.
+  assert.equal((EDITABLE_TEXT_FIELDS as readonly string[]).includes("sellerKey"), false);
+  assert.equal((EDITABLE_TEXT_FIELDS as readonly string[]).includes("seller"), false);
+  const poked = applyDraftPatch(draft, { seller: { key: "PESPL", label: "x", indianExporter: true }, sellerKey: "PESPL" }, S);
+  assert.deepEqual(poked.snapshot.seller, draft.seller, "a PATCH naming the seller changes nothing");
+  assert.equal(poked.changed, false);
+
+  // Changing the bank choice on a Monolith draft leaves the account alone —
+  // it has one — and choosing a GSTIN cannot stamp one onto a seller with none.
+  const banked = applyDraftPatch(draft, { bankKey: "domestic" }, S);
+  assert.deepEqual(banked.snapshot.bank, draft.bank, "still Monolith's account");
+  const gst = applyDraftPatch(draft, { gstinKey: ALT_GSTIN }, S);
+  assert.equal(gst.snapshot.gstinKey, null, "no registration lands on a US seller's proforma");
+  assert.equal(gst.snapshot.company.gstin, "");
+  assert.equal(gst.snapshot.exporter.gstin, null);
+  assert.equal(gst.changed, false);
+
+  // Issue: the bank re-freezes from Settings for the RIGHT company, and the
+  // seller itself is read off the snapshot rather than re-chosen.
+  const issued = refreezeAtIssue(draft, S);
+  assert.deepEqual(issued.seller, draft.seller);
+  assert.deepEqual(issued.bank, bankBlock(MONOLITH_BANK));
+  assert.equal(issued.gstinKey, null);
+  assert.equal(issued.company.gstin, "");
+  assert.equal(printsIndianBlock(issued), false, "still a US document at the moment it goes out");
+  // An account number corrected in Settings while the draft sat DOES land.
+  const corrected: CommercialSettings = {
+    ...S,
+    sellers: { ...S.sellers, MONOLITH: { ...S.sellers.MONOLITH, bank: { ...MONOLITH_BANK, accountNo: "840000004999" } } },
+  };
+  assert.equal(refreezeAtIssue(draft, corrected).bank.accountNo, "840000004999");
+
+  // The Json column: what goes in comes out, including the ACH route.
+  const roundTripped = JSON.parse(JSON.stringify(issued)) as PiSnapshot;
+  assert.deepEqual(roundTripped, issued);
+  assert.deepEqual(roundTripped.bank.ach, MONOLITH_BANK.ach);
+
+  // A REVISION rebuilds from the order, which still names Monolith, and
+  // carriedIntoRevision deliberately does not carry the seller: the order
+  // holds it, so carrying it would pin a replacement to a company the order
+  // might no longer claim.
+  assert.equal("sellerKey" in carriedIntoRevision(issued), false);
+  assert.equal("seller" in carriedIntoRevision(issued), false);
+  const fresh = buildProformaSnapshot(monolithOrder, S, { ...opts, number: "SAL-ORD/26-27/N12", revises: { id: "x", number: PI_NO } });
+  const revision = applyDraftPatch(fresh, carriedIntoRevision(issued), S).snapshot;
+  assert.deepEqual(revision.seller, draft.seller, "the revision goes out under the same company");
+  assert.deepEqual(revision.bank, draft.bank);
+  assert.equal(revision.company.gstin, "");
+  assert.equal(revision.declaration, "");
+
+  // And an order MOVED back to Pacific revises as Pacific — the order is the
+  // authority, which is the whole reason the seller is not carried across.
+  const movedBack = buildProformaSnapshot({ ...monolithOrder, sellerKey: null }, S, { ...opts, number: "SAL-ORD/26-27/N13" });
+  const back = applyDraftPatch(movedBack, carriedIntoRevision(issued), S).snapshot;
+  assert.equal(back.seller?.key, "PESPL");
+  assert.equal(back.company.gstin, OWN_GSTIN);
+  assert.equal(back.declaration, S.texts.piDeclaration);
+  assert.deepEqual(back.bank, bankBlock(S.banks.export));
+});
+
+// ─────────────── what the PI tab may say about a Monolith PI ────────────────
+// The screen cannot be rendered here — it is a React component and this file
+// loads pure modules bare — so what it may SAY is decided in this module and
+// pinned here, and the component's source is read to prove it asks. That is
+// the same treatment the PDF layout gets above, and for the same reason: the
+// failure being guarded against is a box that still draws, with Pacific in it.
+
+const TAB_BANKS = piChoices(S, "write").banks.map((b) => ({ value: b.key, label: b.label }));
+const TAB_GSTINS = piChoices(S, "write").gstins;
+const PI_TAB_SRC = readFileSync(new URL("../src/components/commercial/order/PiTab.tsx", import.meta.url), "utf8");
+
+test("neither draft dropdown names Pacific on a Monolith draft", () => {
+  const mono = buildProformaSnapshot(monolithOrder, S, opts);
+  const pac = buildProformaSnapshot(exportOrder, S, opts);
+  // What the tab seeds the form with, exactly as formOf does it: the snapshot's
+  // own keys, which on a Monolith PI are a null GSTIN — piGstinFor gives none —
+  // and the order kind's bank slot.
+  const monoGstinValue = mono.gstinKey ?? mono.company.gstin ?? OWN_GSTIN;
+  assert.equal(monoGstinValue, "", "the fixture is the value the form really holds");
+  assert.equal(mono.bankKey, "export");
+
+  // THE DEFECT, stated as the property that was false: a <select> shows its
+  // first option when the value it is given matches none of them, so every
+  // option list must carry the value the form holds.
+  const monoGstins = piGstinOptions(mono, TAB_GSTINS, monoGstinValue);
+  const monoBanks = piBankOptions(mono, TAB_BANKS, mono.bankKey ?? "export");
+  assert.ok(monoGstins.some((o) => o.value === monoGstinValue), "the GSTIN box can show what the draft holds");
+  assert.ok(monoBanks.some((o) => o.value === mono.bankKey), "and so can the bank box");
+
+  // And what those single entries say. "Nothing related to pacific surfaces."
+  assert.deepEqual(monoGstins, [{ value: "", label: PI_NO_GSTIN_OPTION }]);
+  assert.deepEqual(monoBanks, [{ value: "export", label: "ICICI Bank Limited, New York Branch" }]);
+  const said = JSON.stringify([monoGstins, monoBanks]);
+  assert.equal(/pacific/i.test(said), false, "Pacific is not named on a box explaining that Pacific prints nowhere");
+  assert.equal(said.includes(OWN_GSTIN), false, "least of all its registration, which was what the greyed box showed");
+  assert.equal(said.includes(ALT_GSTIN), false);
+  assert.equal(/kotak/i.test(said), false, "nor Kotak's name beside Monolith's New York account");
+  // Asked as "no entry Settings offers survives", not as a substring: Pacific's
+  // domestic account is named "ICICI Bank" and Monolith's is an ICICI account
+  // too, which is precisely why the label has to be the one this PI froze.
+  assert.equal(TAB_BANKS.some((b) => b.label === monoBanks[0].label), false);
+  assert.equal(monoBanks[0].label, mono.bank.name);
+  // A domestic Monolith order is the sharper case — "domestic" names Pacific's
+  // own ICICI account, and Monolith's is an ICICI account too.
+  const monoDta = buildProformaSnapshot({ ...monolithOrder, kind: "DOMESTIC" }, S, opts);
+  assert.deepEqual(piBankOptions(monoDta, TAB_BANKS, monoDta.bankKey ?? "domestic"),
+    [{ value: "domestic", label: "ICICI Bank Limited, New York Branch" }]);
+  assert.equal(monoDta.bank.accountNo !== S.banks.domestic.accountNo, true);
+
+  // PACIFIC IS UNTOUCHED: both lists are Settings' own, in Settings' order.
+  assert.deepEqual(piBankOptions(pac, TAB_BANKS, "export"), TAB_BANKS);
+  assert.deepEqual(piGstinOptions(pac, TAB_GSTINS, OWN_GSTIN),
+    TAB_GSTINS.map((c) => ({ value: c.gstin, label: `${c.gstin} — ${c.label}` })));
+  assert.ok(piGstinOptions(pac, TAB_GSTINS, OWN_GSTIN).some((o) => o.value === OWN_GSTIN));
+
+  // No draft open, and a proforma frozen before the seller existed: the lists
+  // whole, because absent means Pacific.
+  const legacy: PiSnapshot = { ...pac };
+  delete legacy.seller;
+  assert.deepEqual(piBankOptions(null, TAB_BANKS, "export"), TAB_BANKS);
+  assert.deepEqual(piGstinOptions(legacy, TAB_GSTINS, OWN_GSTIN), piGstinOptions(pac, TAB_GSTINS, OWN_GSTIN));
+
+  // The choices route is a mount effect and the click comes later, but it can
+  // also fail: with no lists at all a Pacific draft still offers what it holds,
+  // exactly as before, and a Monolith draft still says none.
+  assert.deepEqual(piGstinOptions(pac, [], OWN_GSTIN), [{ value: OWN_GSTIN, label: OWN_GSTIN }]);
+  assert.deepEqual(piGstinOptions(pac, [], ""), [{ value: "", label: "Company GSTIN" }]);
+  assert.deepEqual(piGstinOptions(mono, [], ""), [{ value: "", label: PI_NO_GSTIN_OPTION }]);
+  assert.deepEqual(piBankOptions(mono, [], "export"), [{ value: "export", label: "ICICI Bank Limited, New York Branch" }]);
+  // And a seller whose account was left unnamed still labels its own box.
+  const nameless: PiSnapshot = { ...mono, bank: { ...mono.bank, name: "" } };
+  assert.deepEqual(piBankOptions(nameless, TAB_BANKS, "export"), [{ value: "export", label: PI_SELLER_BANK_OPTION }]);
+
+  // …and that the tab asks, rather than building either list for itself.
+  assert.match(PI_TAB_SRC, /piBankOptions\(editingSnapshot, banks, form\.bankKey\)/);
+  assert.match(PI_TAB_SRC, /piGstinOptions\(editingSnapshot, gstins, form\.gstinKey\)/);
+  assert.match(PI_TAB_SRC, /options=\{bankOptions\}/, "the bank select is given the proforma's list, not Settings'");
+  assert.match(PI_TAB_SRC, /options=\{gstinOptions\}/);
+  assert.equal(PI_TAB_SRC.includes("gstins.map("), false, "and builds neither list inline any more");
+});
+
+test("a Monolith PI's bank is never labelled with one of Pacific's two slots", () => {
+  const mono = buildProformaSnapshot(monolithOrder, S, opts);
+  const pac = buildProformaSnapshot(exportOrder, S, opts);
+
+  assert.equal(piBankLine(mono), "ICICI Bank Limited, New York Branch", "no slot name after a US account");
+  assert.equal(piBankLine(buildProformaSnapshot({ ...monolithOrder, kind: "DOMESTIC" }, S, opts)),
+    "ICICI Bank Limited, New York Branch", "and not on a domestic order either, where the slot is Pacific's own ICICI");
+  assert.equal(piBankLine(refreezeAtIssue(mono, S)), "ICICI Bank Limited, New York Branch",
+    "the paper says the same the moment it goes out");
+
+  // PACIFIC IS UNTOUCHED: the slot is what the clerk chose and still shows.
+  assert.equal(piBankLine(pac), `${S.banks.export.name} (export)`);
+  assert.equal(piBankLine(buildProformaSnapshot({ ...exportOrder, kind: "DOMESTIC" }, S, opts)),
+    `${S.banks.domestic.name} (domestic)`);
+  const legacy: PiSnapshot = { ...pac };
+  delete legacy.seller;
+  assert.equal(piBankLine(legacy), `${S.banks.export.name} (export)`, "absent means Pacific, so its slot still prints");
+  assert.equal(piBankLine({ ...pac, bank: { ...pac.bank, name: "" } }), "", "no bank, no slot in brackets — the screen's dash stands");
+
+  // THE KEY ITSELF STAYS ON THE SNAPSHOT. Only the label was ever wrong, and a
+  // revision that follows the order back to Pacific picks its account with it.
+  assert.equal(mono.bankKey, "export");
+  assert.equal(carriedIntoRevision(refreezeAtIssue(mono, S)).bankKey, "export");
+
+  // The same question, for the prose that credits a PI with a bank.
+  assert.equal(piOwnsBankKey(mono), false);
+  assert.equal(piOwnsBankKey(pac), true);
+  assert.equal(piOwnsBankKey(legacy), true);
+  assert.equal(piOwnsBankKey(null), false);
+  assert.equal(piOwnsBankKey(undefined), false);
+  assert.equal(piOwnsBankKey({ ...pac, bankKey: null }), false, "a PI frozen before answer 23 named no slot to credit it with");
+
+  // The two readers, pinned on their source for the reason given above.
+  assert.match(PI_TAB_SRC, /\{piBankLine\(s\) \|\| "—"\}/);
+  assert.equal(PI_TAB_SRC.includes("(${s.bankKey})"), false, "the tab appends no slot of its own");
+  const invoiceRoute = readFileSync(new URL("../src/app/api/office/commercial/orders/[id]/invoices/route.ts", import.meta.url), "utf8");
+  assert.match(invoiceRoute, /const piNamesBank = piOwnsBankKey\(/, "the invoice's log note asks before saying 'the PI's'");
+  assert.equal(invoiceRoute.includes("(pi ? `, on the PI's"), false, "and no longer asks only whether there was a PI");
+});
+
+// ───────────────────────────── the settings themselves ───────────────────────
+
+test("the selling entities: the named set, its default, and what an unknown key resolves to", () => {
+  assert.deepEqual([...SELLER_KEYS], ["PESPL", "MONOLITH"]);
+  assert.equal(DEFAULT_SELLER_KEY, "PESPL");
+  assert.deepEqual(sellerChoices(S), [
+    { key: "PESPL", label: S.sellers.PESPL.label },
+    { key: "MONOLITH", label: S.sellers.MONOLITH.label },
+  ], "the default first, because it is what a blank column means");
+
+  assert.equal(parseSellerKey("MONOLITH"), "MONOLITH");
+  assert.equal(parseSellerKey(" monolith "), "MONOLITH");
+  assert.equal(parseSellerKey(""), null);
+  assert.equal(parseSellerKey(null), null);
+  assert.equal(parseSellerKey("PACIFIC"), null, "a key that names no company is null, and null is the default seller");
+  assert.equal(sellerEntity(S, "PACIFIC").key, DEFAULT_SELLER_KEY);
+  assert.equal(sellerEntity(S, null).key, DEFAULT_SELLER_KEY);
+
+  // The resolved identity of each, and the declaration that goes with it.
+  assert.deepEqual(sellerIdentity(S, null), {
+    legalName: S.company.legalName,
+    addressLines: [...S.company.addressLines],
+    country: "India",
+    email: S.company.email,
+    phone: S.company.phone,
+  });
+  assert.equal(sellerIdentity(S, "MONOLITH").legalName, "MONOLITH SURFACES INC");
+  assert.equal(sellerIdentity(S, "MONOLITH").phone, "", "blank, because none was given");
+  assert.equal(piDeclarationFor(S, null), S.texts.piDeclaration);
+  assert.equal(piDeclarationFor(S, "MONOLITH"), "");
+  assert.equal(piGstinFor(S, null, ALT_GSTIN)?.gstin, ALT_GSTIN, "the GSTIN dropdown still works for Pacific");
+  assert.equal(piGstinFor(S, "MONOLITH", ALT_GSTIN), null);
+  assert.deepEqual(sellerCompanyBlock(S, "MONOLITH", null), {
+    legalName: "MONOLITH SURFACES INC",
+    addressLines: ["25298 FM 2978 Rd, Unit A,", "Tomball, TX 77375, USA"],
+    gstin: "",
+    rbiCode: "",
+    customsOffice: "",
+  });
+  assert.deepEqual(piSellerFrom(S, "MONOLITH"), { key: "MONOLITH", label: S.sellers.MONOLITH.label, indianExporter: false });
+});
+
+test("the gate on issuing a PI is untouched by any of this", () => {
+  // The owner has insisted twice: the stock check before the PI, and the
+  // refusals round it, are not what this change is about. Asked here again
+  // with a Monolith order in hand so that a future edit to the seller cannot
+  // quietly reach the one rule that must not move.
+  const mono = buildProformaSnapshot(monolithOrder, S, opts);
+  assert.equal(refuseIssue({ status: "DRAFT", snapshot: mono }), null);
+  assert.match(String(refuseIssue({ status: "ISSUED", snapshot: mono })), /Only a draft can be issued/);
+  assert.match(String(refuseIssue({ status: "DRAFT", snapshot: { lines: [] } })), /no lines/);
+  assert.equal(piIssueRefusal({ status: "STOCK_CHECKED", stockCheckedAt: "2026-09-15", activeHolds: 1 }), null);
+  assert.ok(piIssueRefusal({ status: "STOCK_CHECKED", stockCheckedAt: null, activeHolds: 0 }));
+});
+
+// ─────────────────────── whose invoice number is it ──────────────────────────
+// A Monolith proforma is a US company's own paper and cannot draw on Pacific's
+// series: two legal entities sharing one run of invoice numbers leaves each set
+// of books with gaps it cannot account for (the owner, 2026-09-15, choosing
+// "plain numbers" over continuing SAL-ORD).
+
+test("each seller draws on its own proforma counter, and no seller means Pacific's", () => {
+  assert.equal(proformaNumberingKind("MONOLITH"), "monolithProforma");
+  assert.equal(proformaNumberingKind("PESPL"), "proforma");
+  // Absent, blank, unknown and wrong-typed all land on Pacific — the same
+  // default every other seller-aware rule takes, so a document can never end up
+  // without a number because somebody mistyped a key.
+  for (const v of [null, undefined, "", "   ", "NOPE", 7, {}]) {
+    assert.equal(proformaNumberingKind(v as unknown), "proforma", String(v) + " must fall back to Pacific");
+  }
+});
+
+test("the two proforma series cannot collide", () => {
+  const p = DEFAULT_SETTINGS.numbering.proforma;
+  const m = DEFAULT_SETTINGS.numbering.monolithProforma;
+  assert.notEqual(p.key, m.key, "separate counter keys, or one increments the other");
+  assert.notEqual(p.template, m.template);
+  // Monolith's carries no financial year: a US company does not number by an
+  // Indian FY, and perFy would silently restart the series every April.
+  assert.equal(m.perFy, false);
+  assert.equal(m.template.includes("{fy}"), false);
+  // And the numbers they produce cannot be confused for one another.
+  const at = new Date("2026-09-15T00:00:00Z");
+  assert.equal(documentNumber(m, at, 1001), "INV-1001");
+  assert.match(documentNumber(p, at, 1), /^SAL-ORD\//);
+});
+
+test("Pacific's shipping defaults do not fill themselves in on a Monolith proforma", () => {
+  // settings.defaults holds PACIFIC's shipping habits — "CHENNAI", "By Road".
+  // They used to fill an empty field on any EXPORT order, which put an Indian
+  // port of loading and an Indian pre-carriage leg on a US company's invoice
+  // whose order had deliberately left both blank. "Nothing related to pacific
+  // surfaces" (the owner, 2026-09-15), and a silent default is exactly how it
+  // gets back on.
+  const bare = { ...exportOrder, sellerKey: "MONOLITH", portOfLoading: null, preCarriageBy: null };
+  const m = buildProformaSnapshot(bare, S, opts);
+  assert.equal(m.portOfLoading, null, "no Indian port of loading by default");
+  assert.equal(m.preCarriageBy, null, "and no Indian pre-carriage leg");
+
+  // Pacific is untouched: the same empty order still takes the defaults.
+  const p = buildProformaSnapshot({ ...exportOrder, portOfLoading: null, preCarriageBy: null }, S, opts);
+  assert.equal(p.portOfLoading, S.defaults.portOfLoading);
+  assert.equal(p.preCarriageBy, S.defaults.preCarriageBy);
+
+  // And what a clerk actually TYPES still prints, whoever sells — these goods
+  // do leave from Chennai, and somebody who writes that means it.
+  const typed = buildProformaSnapshot({ ...bare, portOfLoading: "CHENNAI", preCarriageBy: "By Road" }, S, opts);
+  assert.equal(typed.portOfLoading, "CHENNAI");
+  assert.equal(typed.preCarriageBy, "By Road");
 });

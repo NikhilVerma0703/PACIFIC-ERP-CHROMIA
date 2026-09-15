@@ -20,6 +20,22 @@
 // issued, never today's settings. A PI with no validUntil (answer 24: valid
 // forever) prints no validity line at all.
 //
+// AND NOT EVERY PI IS AN INDIAN EXPORTER'S (owner, 2026-09-15; scripts/0085).
+// A proforma from MONOLITH SURFACES INC, the group's US subsidiary, to a US
+// buyer is a US invoice: the GSTIN, the RBI code number, the jurisdictional
+// customs office, the AD code on the bank block and the "goods of Indian
+// Origin" declaration are not blanked on it, they are NOT ON IT — a labelled
+// box with nothing after the colon asks the customer a question about a
+// country the sale never touched. printsIndianBlock(snapshot) is that one
+// question, asked of the frozen snapshot the way printsParty is, so a
+// proforma frozen as a US document keeps printing as one for ever and a
+// proforma frozen before any of this existed prints as Pacific, unchanged.
+//
+// Its bank block is the other half: a US account is paid by WIRE or by ACH,
+// the two routes carry DIFFERENT account numbers, and a payer who reads one
+// line out of the wrong route has the money returned a week later. They print
+// as two labelled blocks and are never merged into one.
+//
 // THREE ROWS OF THE RIGHT-HAND COLUMN ARE NOT ON EVERY PI (owner, 2026-09-15):
 //
 //  * "Buyer if Not Consignee" is printed only when that party has something on
@@ -40,7 +56,7 @@
 // pdfmake, Roboto (the only font installed), A4 portrait. Do NOT reach for
 // puppeteer: it is not installed and the deployment has no Chrome.
 import { buildPdf } from "@/lib/sales/pdf/common";
-import { piPrintFields, piRow, piTotalRow, piTableHeader, partyBlock, printsParty, type PiSnapshot } from "@/lib/commercial/proforma-rules";
+import { piPrintFields, piRow, piTotalRow, piTableHeader, partyBlock, printsParty, printsIndianBlock, type PiSnapshot } from "@/lib/commercial/proforma-rules";
 
 // ── the reference's type scale ───────────────────────────────────────────────
 const FS = { body: 7.5, label: 7, value: 8, head: 8, title: 12, big: 9 } as const;
@@ -113,6 +129,11 @@ function termLine(label: string, value: string): any {
 
 export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer> {
   const f = piPrintFields(snapshot);
+  // Asked once, of the snapshot, and never of whether a field came out blank:
+  // an empty RBI code on a Pacific PI is a mistake somebody made in Settings
+  // and should be visible as the empty box it is, while a US seller has no RBI
+  // code to leave empty and its paper must not carry the label at all.
+  const indian = printsIndianBlock(snapshot);
   const header = piTableHeader(snapshot.currency);
   const exporter = partyBlock(snapshot.exporter);
   const consignee = partyBlock(snapshot.consignee);
@@ -124,7 +145,9 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
     table: {
       widths: ["*"],
       body: [
-        [partyCell("Exporter", exporter)],
+        // "Exporter" on an Indian exporter's paper and "Seller" on anyone
+        // else's — decided in proforma-rules like every other string here.
+        [partyCell(f.exporterLabel, exporter)],
         [partyCell("Consignee", consignee)],
         [partyCell("Notify Party", notify)],
       ],
@@ -149,18 +172,32 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
         // "GSTIN NO: 33AALCP2750N1Z3", each complete on its own line, and that
         // is what this is. The GSTIN line is dropped rather than left dangling
         // when there is none, the way every other conditional row here behaves.
-        fullRow({
-          stack: [
-            { text: [{ text: "RBI Code No.: ", fontSize: FS.label, color: "#444" }, { text: f.rbiCode || " ", fontSize: FS.value }] },
-            ...(f.gstin ? [{ text: [{ text: "GSTIN : ", fontSize: FS.label, color: "#444" }, { text: f.gstin, fontSize: FS.value }] }] : []),
-          ],
-        }),
-        fullRow({
-          stack: [
-            { text: "Jurisdictional Central Excise Division Office Address", fontSize: FS.label, color: "#444" },
-            { text: f.customsOffice || " ", fontSize: 6.5 },
-          ],
-        }),
+        //
+        // AND THE WHOLE PAIR IS AN INDIAN EXPORTER'S — both rows together or
+        // neither (owner, 2026-09-15; scripts/0085). The RBI code number is
+        // issued by the Reserve Bank, the GSTIN by an Indian state, and the
+        // office named below is the customs division whose jurisdiction the
+        // goods leave through. A US company selling inside the US has none of
+        // the three, so the two rows are dropped whole rather than printed
+        // with nothing in them. fullRow() carries its own filler cell, so
+        // dropping them cannot leave a colSpan behind and shear every row
+        // beneath it.
+        ...(indian
+          ? [
+              fullRow({
+                stack: [
+                  { text: [{ text: "RBI Code No.: ", fontSize: FS.label, color: "#444" }, { text: f.rbiCode || " ", fontSize: FS.value }] },
+                  ...(f.gstin ? [{ text: [{ text: "GSTIN : ", fontSize: FS.label, color: "#444" }, { text: f.gstin, fontSize: FS.value }] }] : []),
+                ],
+              }),
+              fullRow({
+                stack: [
+                  { text: "Jurisdictional Central Excise Division Office Address", fontSize: FS.label, color: "#444" },
+                  { text: f.customsOffice || " ", fontSize: 6.5 },
+                ],
+              }),
+            ]
+          : []),
         // Only where there IS a second buyer — SBP's PI prints its customer code
         // and US address here; every other PI has this row absent, not empty.
         ...(printsParty(snapshot.buyerIfNotConsignee) ? [fullRow(partyCell("Buyer if Not Consignee", buyer))] : []),
@@ -213,26 +250,74 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
   };
 
   // ── payment terms and the banks ───────────────────────────────────────────
+  // HOW THE ACCOUNT IS QUOTED. An Indian exporter's is quoted by its AD code,
+  // its number and its IFSC across three columns, and that row prints whether
+  // or not each cell has something in it — the ICICI account has never had an
+  // AD code and has always printed the label empty, and that is the box the
+  // owner is used to reading. An AD code is an authorised-dealer code issued
+  // in India and an IFSC is an Indian branch code: a US account has neither,
+  // so on its paper those cells are absent and the account number takes the
+  // width they used to share.
+  const accountRow: any = indian
+    ? {
+        columns: [
+          { width: "34%", text: [{ text: "AD Code : ", bold: true }, f.adCode], fontSize: FS.body },
+          { width: "33%", text: [{ text: "A/c No : ", bold: true }, f.accountNo], fontSize: FS.body },
+          { width: "33%", text: [{ text: "IFSC : ", bold: true }, f.ifsc], fontSize: FS.body },
+        ],
+      }
+    : { text: [{ text: "A/c No : ", bold: true }, f.accountNo], fontSize: FS.body };
+
+  // WHERE THE MONEY IS ROUTED — two shapes, because two different things are
+  // being told to the payer.
+  //
+  // An Indian exporter names ONE correspondent: "Routing Bank", its name, its
+  // SWIFT. That is the block every Pacific proforma has carried and it is
+  // reproduced here to the line.
+  //
+  // A US account is paid two ways and the two are NOT interchangeable: a wire
+  // goes through the intermediary bank's SWIFT to the beneficiary's account
+  // WITH that intermediary, and an ACH goes by routing number to an
+  // ACH-ONLY account number that is a different number entirely. Printing them
+  // as one run of lines is how a payer ends up wiring to the ACH number and
+  // learning about it a week later when the money comes back, so each route is
+  // its own labelled block. Every line is withheld when the sheet gives no
+  // value for it — nothing here is invented and nothing prints an empty label.
+  const routingLines: any[] = indian
+    ? (f.routingBank || f.routingSwift
+        ? [
+            { text: "Routing Bank", fontSize: FS.body, bold: true, margin: [0, 2, 0, 0] },
+            { text: f.routingBank, fontSize: FS.body },
+            { text: [{ text: "Swift Code : ", bold: true }, f.routingSwift], fontSize: FS.body },
+          ]
+        : [])
+    : [
+        ...(f.routingBank || f.routingSwift || f.routingAccountNo
+          ? [
+              { text: "Wire Transfer", fontSize: FS.body, bold: true, margin: [0, 2, 0, 0] },
+              ...(f.routingBank ? [{ text: [{ text: "Intermediary Bank : ", bold: true }, f.routingBank], fontSize: FS.body }] : []),
+              ...(f.routingAccountNo ? [{ text: [{ text: "Beneficiary's Correspondent A/c : ", bold: true }, f.routingAccountNo], fontSize: FS.body }] : []),
+              ...(f.routingSwift ? [{ text: [{ text: "Correspondent Swift Code : ", bold: true }, f.routingSwift], fontSize: FS.body }] : []),
+            ]
+          : []),
+        ...(f.achRoutingNo || f.achAccountNo
+          ? [
+              { text: "ACH Transfer", fontSize: FS.body, bold: true, margin: [0, 2, 0, 0] },
+              ...(f.achBank ? [{ text: [{ text: "Intermediary Bank : ", bold: true }, f.achBank], fontSize: FS.body }] : []),
+              ...(f.achRoutingNo ? [{ text: [{ text: "Routing No : ", bold: true }, f.achRoutingNo], fontSize: FS.body }] : []),
+              ...(f.achAccountNo ? [{ text: [{ text: "A/c No (ACH only) : ", bold: true }, f.achAccountNo], fontSize: FS.body }] : []),
+            ]
+          : []),
+      ];
+
   const bankLines: any[] = [
     termLine("Payment Terms", f.paymentTerms),
     { text: "Our Bank Details", fontSize: FS.body, bold: true, margin: [0, 2, 0, 0] },
     { text: f.bankName, fontSize: FS.body },
     ...(f.bankAddress ? [{ text: f.bankAddress, fontSize: FS.body }] : []),
-    {
-      columns: [
-        { width: "34%", text: [{ text: "AD Code : ", bold: true }, f.adCode], fontSize: FS.body },
-        { width: "33%", text: [{ text: "A/c No : ", bold: true }, f.accountNo], fontSize: FS.body },
-        { width: "33%", text: [{ text: "IFSC : ", bold: true }, f.ifsc], fontSize: FS.body },
-      ],
-    },
+    accountRow,
     { text: [{ text: "Swift Code : ", bold: true }, f.swift], fontSize: FS.body },
-    ...(f.routingBank || f.routingSwift
-      ? [
-          { text: "Routing Bank", fontSize: FS.body, bold: true, margin: [0, 2, 0, 0] },
-          { text: f.routingBank, fontSize: FS.body },
-          { text: [{ text: "Swift Code : ", bold: true }, f.routingSwift], fontSize: FS.body },
-        ]
-      : []),
+    ...routingLines,
   ];
 
   const bankBlock: any = {
@@ -309,8 +394,19 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
             // how a total is rounded to a clean figure, the 24.657 remainder
             // sitting on this line — so the line is withheld, never removed.
             ...(f.discount ? [{ text: [{ text: "DISCOUNT AMOUNT : ", bold: true }, f.discount], fontSize: FS.body }] : []),
-            { text: "Declaration", fontSize: FS.label, bold: true, margin: [0, 3, 0, 0] },
-            { text: f.declaration, fontSize: 6.5, color: "#333" },
+            // THE DECLARATION IS AN INDIAN EXPORTER'S CERTIFICATE — "we certify
+            // that the above goods are of Indian Origin…" — and a US company
+            // selling inside the US cannot certify it. The heading goes with
+            // it: a bold "Declaration" over nothing is worse than no
+            // declaration, and there is no US wording to put underneath
+            // because the owner gave none and writing a certification for
+            // somebody else to sign is not ours to do.
+            ...(indian
+              ? [
+                  { text: "Declaration", fontSize: FS.label, bold: true, margin: [0, 3, 0, 0] },
+                  { text: f.declaration, fontSize: 6.5, color: "#333" },
+                ]
+              : []),
           ],
         },
         {

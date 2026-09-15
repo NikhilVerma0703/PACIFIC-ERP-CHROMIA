@@ -17,7 +17,10 @@
 import { amountInWords, inrWords } from "./words.ts";
 import { canonThickness } from "../thickness.ts";
 import { canEnter } from "./stages.ts";
-import { gstinChoices, type BankDetails, type CommercialSettings, type GstinChoice } from "./settings-defaults.ts";
+import {
+  gstinChoices, sellerEntity, parseSellerKey, DEFAULT_SELLER_KEY,
+  type BankDetails, type CommercialSettings, type GstinChoice,
+} from "./settings-defaults.ts";
 import type { AreaAccess } from "./access-rules.ts";
 import type { DocLine, Party, ProformaSnapshot } from "./types.ts";
 
@@ -101,6 +104,13 @@ export interface SnapshotOrderInput {
    *  an order — including a revision — names the same person, and the PI's own
    *  copy is frozen the moment the draft is built. */
   salespersonName?: string | null;
+  /** WHICH GROUP COMPANY SELLS THIS ORDER (scripts/0085). Read here and
+   *  nowhere else, for the same reason the salesperson is: it is the ORDER's
+   *  column, so every proforma of one order — a revision included — goes out
+   *  under one company, and the PI's own copy is frozen the moment the draft
+   *  is built. NULL, blank, or a key this build does not know all mean the
+   *  default seller, Pacific. */
+  sellerKey?: string | null;
   client?: SnapshotClientInput | null;
   items?: SnapshotItemInput[] | null;
 }
@@ -408,9 +418,20 @@ export function parseBankKey(raw: unknown): BankKey | null {
   return (BANK_KEYS as string[]).includes(s) ? (s as BankKey) : null;
 }
 
-/** The account a PI prints: settings.banks[bankKey] (answer 23). */
-export function piBank(settings: CommercialSettings, bankKey: BankKey): BankDetails {
-  return settings.banks[bankKey];
+/**
+ * The account a PI prints. The default seller is paid into
+ * settings.banks[bankKey] exactly as it always has been (answer 23: Kotak on
+ * export, ICICI on domestic); a seller that carries a bank of its OWN is paid
+ * into that one whatever the order's kind, because one account per company is
+ * the ordinary case and the export/domestic pair is Pacific's arrangement
+ * rather than a rule about banking.
+ *
+ * `sellerKey` is optional and its absence means the default seller, so every
+ * call written before there was a second company — and every test pinning the
+ * two Indian accounts — keeps its meaning to the letter.
+ */
+export function piBank(settings: CommercialSettings, bankKey: BankKey, sellerKey?: string | null): BankDetails {
+  return sellerEntity(settings, sellerKey).entity.bank ?? settings.banks[bankKey];
 }
 
 /** The bank as the snapshot freezes it — a copy, so a later edit in Settings
@@ -429,6 +450,14 @@ export function bankBlock(bank: BankDetails): ProformaSnapshot["bank"] {
   if (bank.adCode) block.adCode = bank.adCode;
   if (bank.routingBank) block.routingBank = bank.routingBank;
   if (bank.routingSwift) block.routingSwift = bank.routingSwift;
+  // The rest of the wire route and the whole ACH route, on the accounts that
+  // have them — the same "absent rather than undefined" discipline, and the
+  // ACH route copied as a NEW object so a later edit in Settings cannot reach
+  // inside a snapshot the customer already holds.
+  if (bank.routingAccountNo) block.routingAccountNo = bank.routingAccountNo;
+  if (bank.ach && (bank.ach.routingNo || bank.ach.accountNo)) {
+    block.ach = { bank: bank.ach.bank, routingNo: bank.ach.routingNo, accountNo: bank.ach.accountNo };
+  }
   return block;
 }
 
@@ -503,16 +532,269 @@ export function gstinChoiceFor(settings: CommercialSettings, gstinKey: string | 
   return choices.find((c) => c.gstin === key) ?? choices[0];
 }
 
-export function exporterParty(settings: CommercialSettings, gstin?: string | null): Party {
+// ───────────────────────────── which company is selling ─────────────────────
+// The owner, 2026-09-15: "Im supposed to make a PI from monolith to M&G
+// imports. Nothing related to pacific surfaces." A second company sells now —
+// MONOLITH SURFACES INC, the group's US subsidiary, selling to a US buyer
+// inside the United States — and its proforma is not Pacific's proforma with a
+// different name at the top: it is a US invoice, with none of the Indian
+// export block on it.
+//
+// EVERY DECISION THAT DEPENDS ON THE SELLER IS IN THIS SECTION, and every one
+// of them reads an absent, blank or unknown key as the default seller. That is
+// not leniency, it is the rule scripts/0085 wrote down: the column is
+// nullable, NULL means Pacific, and every order and every proforma that
+// predates the column must go on printing exactly as it did.
+
+/** The seller as a frozen snapshot carries it. */
+export type PiSellerBlock = NonNullable<ProformaSnapshot["seller"]>;
+
+/**
+ * The descriptor a DRAFT freezes for a seller key — the key for the record,
+ * the label for the screens, and the one fact the layout asks.
+ *
+ * `indianExporter` reads a MISSING flag as true, so a settings object built by
+ * hand without the seller list still describes Pacific the way this whole
+ * module did before the list existed. A second seller cannot reach that path:
+ * the flag is required on SellingEntity, so leaving it off a new entity is a
+ * compile error rather than a US invoice that quietly prints a GSTIN.
+ */
+export function piSellerFrom(settings: CommercialSettings, key: unknown): PiSellerBlock {
+  const { key: resolved, entity } = sellerEntity(settings, key);
+  return { key: resolved, label: entity?.label ?? resolved, indianExporter: entity?.indianExporter !== false };
+}
+
+/**
+ * The seller a FROZEN snapshot was printed under. An absent block is the
+ * default seller — every PI frozen before 2026-09-15 has none — and its label
+ * is the legal name that snapshot already carries, which on those PIs is
+ * Pacific's own. Read the seller through this and never off `snapshot.seller`
+ * directly, so the absence rule is stated in one place.
+ */
+export function piSeller(s: PiSnapshot): PiSellerBlock {
+  const frozen = s.seller;
+  const fallbackLabel = printable(s.company?.legalName);
+  if (frozen && printable(frozen.key)) {
+    return {
+      key: printable(frozen.key),
+      label: printable(frozen.label) || fallbackLabel,
+      indianExporter: frozen.indianExporter !== false,
+    };
+  }
+  return { key: DEFAULT_SELLER_KEY, label: fallbackLabel, indianExporter: true };
+}
+
+/**
+ * Does this PI print the INDIAN EXPORT BLOCK — the GSTIN, the RBI code number,
+ * the jurisdictional customs office, the AD code on the bank, and the "goods
+ * of Indian Origin" declaration?
+ *
+ * The question is asked of the SELLER and not of whether those fields happen
+ * to be blank. An admin who empties the RBI code in Settings has made a
+ * mistake on a Pacific PI and should see the empty box he made; a US company
+ * selling inside the US has no RBI code to empty, and its paper must not carry
+ * the label at all. Two different things, and only the seller tells them apart.
+ */
+export function printsIndianBlock(s: PiSnapshot): boolean {
+  return piSeller(s).indianExporter;
+}
+
+/**
+ * The bank line the PI tab's detail block shows: the account the proforma was
+ * frozen with, and — only where the key means something — which of the two
+ * slots in Settings that account was chosen from.
+ *
+ * EVERY snapshot carries an export/domestic key, whoever sold, and that is
+ * deliberate: a revision of a PI whose order has been moved back to Pacific
+ * needs a key to pick one of the two Indian accounts with, which is why
+ * carriedIntoRevision keeps it while carrying no seller at all. But piBank
+ * ignores that key the moment the seller has an account of its own, so on a
+ * Monolith proforma the key names a slot the paper was never paid into.
+ * Printed beside Monolith's New York account it labels a US account with the
+ * name of one of Pacific's two INDIAN ones — and on a domestic order it does
+ * it with Pacific's own ICICI account, two different ICICI accounts one tagged
+ * with the other's slot, which is the reading a person could believe. So the
+ * key stays on the snapshot, where the revision path needs it, and simply is
+ * not shown where it says nothing true.
+ *
+ * Blank when the snapshot froze no bank name at all, so the screen's own dash
+ * stands rather than a slot name in brackets with nothing in front of it.
+ */
+export function piBankLine(s: PiSnapshot): string {
+  const name = printable(s.bank?.name);
+  if (!name) return "";
+  const slot = printsIndianBlock(s) ? printable(s.bankKey) : "";
+  return slot ? `${name} (${slot})` : name;
+}
+
+/**
+ * Whether the export/domestic key on a frozen snapshot NAMES the account that
+ * proforma was paid into — the same question piBankLine asks, for the prose
+ * anywhere else that credits a PI with a bank.
+ *
+ * The invoice a live PI lends its key to is the caller this exists for. That
+ * invoice really is drawn on settings.banks[bankKey], because the invoice
+ * module has one seller and prints Pacific's account whoever sold, so its log
+ * note must go on naming the slot; what the note may not say is that the
+ * proforma asked to be paid into it, which a Monolith proforma never did.
+ */
+export function piOwnsBankKey(s: PiSnapshot | null | undefined): boolean {
+  if (!s || !printable(s.bankKey)) return false;
+  return printsIndianBlock(s);
+}
+
+/** One entry of either of the PI tab's two draft dropdowns. */
+export interface PiSelectOption {
+  value: string;
+  label: string;
+}
+
+/** What the GSTIN box offers on a proforma that has no registration to name,
+ *  and what the bank box falls back to when the snapshot froze no bank name. */
+export const PI_NO_GSTIN_OPTION = "None — this PI prints no GSTIN";
+export const PI_SELLER_BANK_OPTION = "The seller's own account";
+
+// THE TWO DRAFT DROPDOWNS' OPTIONS, FOR THE PROFORMA IN HAND.
+//
+// GET /proformas/choices is not seller-aware and is not going to become so: it
+// serves what Settings holds — Pacific's two accounts and the registrations on
+// the company master. On a proforma whose seller is NOT an Indian exporter
+// neither list holds an entry that means what the draft holds. The GSTIN is
+// null, because none prints at all; the bank key is the order kind's default,
+// a slot naming an account this paper is not paid into.
+//
+// A <select> handed a value no option carries does not show a blank — React
+// leaves the first enabled option selected — so both boxes would state
+// Pacific's registration and Pacific's bank directly above the hint explaining
+// that neither prints on this PI, on the one document the owner asked that
+// Pacific appear nowhere on. The paper was always right (piGstinFor drops the
+// posted choice); the screen was stating the opposite of the rule beneath it.
+//
+// So for such a proforma each list is ONE entry carrying exactly the value the
+// form holds, labelled with what is true. Nothing is hidden: the box stays on
+// screen, greyed, with its reason beside it (DESIGN.md §9). It just stops
+// naming a company that is not selling.
+//
+// A snapshot of null — no draft is open — and a proforma frozen before the
+// seller existed both take the lists whole, because absent means Pacific.
+
+export function piBankOptions(s: PiSnapshot | null | undefined, banks: readonly PiSelectOption[], current: string): PiSelectOption[] {
+  if (s && !printsIndianBlock(s)) return [{ value: current, label: printable(s.bank?.name) || PI_SELLER_BANK_OPTION }];
+  return banks.map((b) => ({ value: b.value, label: b.label }));
+}
+
+export function piGstinOptions(s: PiSnapshot | null | undefined, gstins: readonly GstinChoice[], current: string): PiSelectOption[] {
+  if (s && !printsIndianBlock(s)) return [{ value: current, label: PI_NO_GSTIN_OPTION }];
+  // Until the choices land the box offers only what the draft already carries,
+  // exactly as it did before there was a second seller.
+  return gstins.length
+    ? gstins.map((c) => ({ value: c.gstin, label: `${c.gstin} — ${c.label}` }))
+    : [{ value: current, label: current || "Company GSTIN" }];
+}
+
+/** The identity a seller prints. The default seller IS the company master —
+ *  not a copy of it — so correcting the address in Settings corrects it on
+ *  every document, proformas included, exactly as before. */
+export function sellerIdentity(settings: CommercialSettings, sellerKey?: string | null): {
+  legalName: string; addressLines: string[]; country: string; email: string; phone: string;
+} {
+  const { key, entity } = sellerEntity(settings, sellerKey);
   const c = settings.company;
+  if (key === DEFAULT_SELLER_KEY) {
+    return {
+      legalName: c.legalName,
+      addressLines: [...c.addressLines],
+      country: settings.defaults.countryOfOrigin || "India",
+      email: c.email,
+      phone: c.phone,
+    };
+  }
   return {
-    name: c.legalName,
-    lines: [...c.addressLines],
-    country: settings.defaults.countryOfOrigin || "India",
-    tel: c.phone || null,
-    email: c.email || null,
-    gstin: clean(gstin) ?? c.gstin ?? null,
-    stateCode: c.stateCode || null,
+    legalName: entity.legalName ?? "",
+    addressLines: [...(entity.addressLines ?? [])],
+    country: entity.country ?? "",
+    email: entity.email ?? "",
+    phone: entity.phone ?? "",
+  };
+}
+
+/**
+ * The registration this PI is issued under (answer 21) — or NULL when the
+ * seller is not an Indian exporter, because there is then nothing of the kind
+ * to choose and the GSTIN must be absent from the paper rather than blank on
+ * it. Every place that used to call gstinChoiceFor on the way into a snapshot
+ * asks this instead, so a Monolith PI cannot be stamped with Pacific's
+ * registration by a route that simply forgot.
+ */
+export function piGstinFor(settings: CommercialSettings, sellerKey: string | null | undefined, gstinKey: string | null | undefined): GstinChoice | null {
+  const { entity } = sellerEntity(settings, sellerKey);
+  return entity?.indianExporter !== false ? gstinChoiceFor(settings, gstinKey) : null;
+}
+
+/** The `company` block the snapshot freezes: who sold, and the three Indian
+ *  registrations that print beside the invoice's own facts — every one of them
+ *  empty for a seller that is not an Indian exporter, so the snapshot alone is
+ *  enough to know that none of them may be printed. */
+export function sellerCompanyBlock(settings: CommercialSettings, sellerKey: string | null | undefined, gstin: string | null): ProformaSnapshot["company"] {
+  const { entity } = sellerEntity(settings, sellerKey);
+  const indian = entity?.indianExporter !== false;
+  const id = sellerIdentity(settings, sellerKey);
+  return {
+    legalName: id.legalName,
+    addressLines: [...id.addressLines],
+    gstin: printable(gstin),
+    rbiCode: indian ? settings.company.rbiCode : "",
+    customsOffice: indian ? settings.company.customsOffice : "",
+  };
+}
+
+/** The declaration under the totals. The Indian-origin certificate is a
+ *  statement only an Indian exporter can make, so a seller that is not one
+ *  prints no declaration at all — not a heading with nothing under it. There
+ *  is no US wording to put in its place: the owner gave none, and writing a
+ *  certification for somebody else to sign is not ours to do. */
+export function piDeclarationFor(settings: CommercialSettings, sellerKey?: string | null): string {
+  const { entity } = sellerEntity(settings, sellerKey);
+  return entity?.indianExporter !== false ? settings.texts.piDeclaration : "";
+}
+
+/**
+ * The seller as the PI's "Exporter" cell prints it.
+ *
+ * The signature grew a THIRD argument rather than changing its first two: the
+ * default seller's block — name, address, country, telephone, email, GSTIN and
+ * state code, in that order and out of those exact settings — is the one this
+ * function has always returned, and every existing caller and test keeps
+ * asking for it by asking for nothing.
+ *
+ * A seller that is not an Indian exporter carries no GSTIN and no GST state
+ * code, whatever was chosen on the draft: a state code is the first two digits
+ * of a GSTIN, so one printed without the other states nothing true.
+ */
+export function exporterParty(settings: CommercialSettings, gstin?: string | null, sellerKey?: string | null): Party {
+  const { key, entity } = sellerEntity(settings, sellerKey);
+  const c = settings.company;
+  if (key === DEFAULT_SELLER_KEY) {
+    return {
+      name: c.legalName,
+      lines: [...c.addressLines],
+      country: settings.defaults.countryOfOrigin || "India",
+      tel: c.phone || null,
+      email: c.email || null,
+      gstin: clean(gstin) ?? c.gstin ?? null,
+      stateCode: c.stateCode || null,
+      code: null,
+    };
+  }
+  const id = sellerIdentity(settings, key);
+  return {
+    name: id.legalName,
+    lines: [...id.addressLines],
+    country: id.country || null,
+    tel: clean(id.phone),
+    email: clean(id.email),
+    gstin: entity.indianExporter ? clean(gstin) : null,
+    stateCode: null,
     code: null,
   };
 }
@@ -545,6 +827,14 @@ function sameParty(a: Party | null, b: Party | null): boolean {
  *    or the settings. A blank box is the correct printed answer: the box is
  *    labelled and still prints, empty, the way the customer's reference PI
  *    shows it.
+ * The SELLER is the order's too (scripts/0085), and is frozen here for the
+ * same reason and with a sharper edge: it decides the identity at the top of
+ * the paper, the bank at the bottom, and whether the Indian export block is on
+ * it at all. Reading it at draft time means a proforma printed a year from now
+ * is the document that was issued, even if the order is later moved to another
+ * company; and because the key comes off the ORDER, every proforma of one
+ * order — revisions included — goes out under one company.
+ *
  *  * `salespersonName` is the ORDER's column and only that (scripts/0084). It
  *    is emphatically NOT the login that typed the PI: the desk types it, the
  *    salesperson owns the customer, and on a domestic order those are two
@@ -567,9 +857,14 @@ export function buildProformaSnapshot(order: SnapshotOrderInput, settings: Comme
   const buyerIfNotConsignee = partyOrNull(order.buyerIfNotConsignee) ?? (billTo && !sameParty(billTo, consignee) ? billTo : null);
 
   const lines = (order.items ?? []).map((it, i) => buildLine(it, i, kind, settings));
+  // The seller is settled FIRST, because the bank, the registration, the
+  // identity at the top and the declaration at the bottom all hang off it.
+  const seller = piSellerFrom(settings, order.sellerKey);
   const bankKey = opts.bankKey ?? defaultBankKey(kind);
-  const bank = piBank(settings, bankKey);
-  const gstin = gstinChoiceFor(settings, opts.gstinKey);
+  const bank = piBank(settings, bankKey, seller.key);
+  // Null for a seller that is not an Indian exporter — there is no
+  // registration to choose and none may print (piGstinFor).
+  const gstin = piGstinFor(settings, seller.key, opts.gstinKey);
 
   const base: PiSnapshot = {
     number: printable(opts.number),
@@ -580,7 +875,7 @@ export function buildProformaSnapshot(order: SnapshotOrderInput, settings: Comme
     kind,
     currency,
     buyerPoNo: clean(order.customerPoNumber),
-    exporter: exporterParty(settings, gstin.gstin),
+    exporter: exporterParty(settings, gstin ? gstin.gstin : null, seller.key),
     consignee,
     notifyParty,
     buyerIfNotConsignee,
@@ -588,10 +883,22 @@ export function buildProformaSnapshot(order: SnapshotOrderInput, settings: Comme
     countryOfDestination: clean(order.countryOfDestination) ?? consignee.country ?? clean(client?.country) ?? (isExport ? null : "India"),
     deliveryTerms: clean(order.deliveryTerms) ?? clean(order.incoterm) ?? (isExport ? null : clean(settings.defaults.domesticDeliveryTerms)),
     paymentTerms: clean(order.paymentTerms) ?? (isExport ? clean(settings.defaults.exportPaymentTerms) : clean(settings.defaults.domesticPaymentTerms)),
-    preCarriageBy: clean(order.preCarriageBy) ?? (isExport ? clean(settings.defaults.preCarriageBy) : null),
+    // THE INDIAN SHIPPING DEFAULTS BELONG TO THE INDIAN EXPORTER, and both of
+    // them are asked of the SELLER as well as the kind. settings.defaults holds
+    // Pacific's own shipping habits — "CHENNAI", "By Road" — and until this was
+    // qualified they filled themselves in on a Monolith proforma whose order
+    // had deliberately left them empty: a US company selling inside the US,
+    // printing an Indian port of loading and an Indian pre-carriage leg it has
+    // no part in. The owner's words were "nothing related to pacific surfaces",
+    // and a default is exactly the kind of thing that puts it back quietly.
+    //
+    // What the order SAYS still prints, whoever sells: these goods do leave
+    // from Chennai, and a clerk who types that on a Monolith order means it.
+    // Only the silent fallback is withheld.
+    preCarriageBy: clean(order.preCarriageBy) ?? (isExport && seller.indianExporter ? clean(settings.defaults.preCarriageBy) : null),
     placeOfReceipt: clean(order.placeOfReceipt),
     vessel: null,
-    portOfLoading: clean(order.portOfLoading) ?? (isExport ? clean(settings.defaults.portOfLoading) : null),
+    portOfLoading: clean(order.portOfLoading) ?? (isExport && seller.indianExporter ? clean(settings.defaults.portOfLoading) : null),
     portOfDischarge: clean(order.portOfDischarge),
     finalDestination: clean(order.finalDestination),
     lines,
@@ -603,15 +910,10 @@ export function buildProformaSnapshot(order: SnapshotOrderInput, settings: Comme
     discount: 0,
     bankKey,
     bank: bankBlock(bank),
-    gstinKey: gstin.gstin,
-    company: {
-      legalName: settings.company.legalName,
-      addressLines: [...settings.company.addressLines],
-      gstin: gstin.gstin,
-      rbiCode: settings.company.rbiCode,
-      customsOffice: settings.company.customsOffice,
-    },
-    declaration: settings.texts.piDeclaration,
+    gstinKey: gstin ? gstin.gstin : null,
+    seller,
+    company: sellerCompanyBlock(settings, seller.key, gstin ? gstin.gstin : null),
+    declaration: piDeclarationFor(settings, seller.key),
     notes: clean(opts.notes),
     salespersonName: clean(order.salespersonName),
     revises: opts.revises ?? null,
@@ -672,17 +974,28 @@ export function applyDraftPatch(snapshot: PiSnapshot, patch: unknown, settings?:
   let changed = false;
   let totalsDirty = false;
 
+  // WHO IS SELLING IS NOT EDITABLE HERE, and its absence from the lists below
+  // is deliberate (scripts/0085). The seller is the ORDER's column: it decides
+  // the identity at the top of the paper, the account at the bottom and
+  // whether the Indian block is on it at all, and letting a draft edit move it
+  // would let two proformas of one order go out under two companies. To sell
+  // an order under a different company, change the ORDER and build a fresh
+  // draft. It is read here only so the two choices that DO re-freeze from
+  // Settings re-freeze against the right company.
+  const seller = piSeller(base);
   if (settings && "bankKey" in p) {
     const key = parseBankKey(p.bankKey);
     if (key && key !== snapshot.bankKey) {
       next.bankKey = key;
-      next.bank = bankBlock(piBank(settings, key));
+      // A seller with an account of its own has only that one, so the key is
+      // recorded as the clerk left it and the block below it does not move.
+      next.bank = bankBlock(piBank(settings, key, seller.key));
       changed = true;
     }
   }
   if (settings && "gstinKey" in p) {
-    const choice = gstinChoiceFor(settings, printable(p.gstinKey));
-    if (choice.gstin !== snapshot.gstinKey) {
+    const choice = piGstinFor(settings, seller.key, printable(p.gstinKey));
+    if (choice && choice.gstin !== snapshot.gstinKey) {
       next.gstinKey = choice.gstin;
       next.company = { ...snapshot.company, gstin: choice.gstin };
       next.exporter = { ...snapshot.exporter, gstin: choice.gstin };
@@ -848,15 +1161,23 @@ export function revisesAtIssue(
  * After issue nothing re-freezes — an ISSUED snapshot is the paper.
  */
 export function refreezeAtIssue(snapshot: PiSnapshot, settings: CommercialSettings): PiSnapshot {
+  // THE SELLER IS READ OFF THE SNAPSHOT, NEVER OFF THE ORDER OR THE SETTINGS.
+  // What re-freezes at issue is the DETAIL behind a choice — an account number
+  // corrected in Settings while the draft sat — and never the choice itself.
+  // The order could have been moved to another company in the meantime, and
+  // the paper about to go out is the one that was drafted; the seller also has
+  // to be known here so the account below is re-read from the right company
+  // and the registration is not stamped onto a seller that has none.
+  const seller = piSeller(snapshot);
   const bankKey = snapshot.bankKey ?? defaultBankKey(snapshot.kind);
-  const gstin = gstinChoiceFor(settings, snapshot.gstinKey);
+  const gstin = piGstinFor(settings, seller.key, snapshot.gstinKey);
   return {
     ...snapshot,
     bankKey,
-    bank: bankBlock(piBank(settings, bankKey)),
-    gstinKey: gstin.gstin,
-    company: { ...snapshot.company, gstin: gstin.gstin },
-    exporter: { ...snapshot.exporter, gstin: gstin.gstin },
+    bank: bankBlock(piBank(settings, bankKey, seller.key)),
+    gstinKey: gstin ? gstin.gstin : null,
+    company: { ...snapshot.company, gstin: gstin ? gstin.gstin : "" },
+    exporter: { ...snapshot.exporter, gstin: gstin ? gstin.gstin : null },
   };
 }
 
@@ -900,6 +1221,14 @@ export function refuseRevise(old: { id: string; status: string }, siblings: Revi
  * already read it from the order along with the parties and the lines. Copying
  * the old PI's value over the top would make a revision the one place an
  * order's reassignment could be silently undone.
+ *
+ * THE SELLER IS NOT CARRIED EITHER, for exactly that reason and with more at
+ * stake: the order holds it, buildProformaSnapshot has already read it, and a
+ * revision therefore goes out under the same company as the paper it replaces
+ * — as long as nobody has moved the order in between, in which case the
+ * revision is the company the order now names, which is what a revision is
+ * for. Carrying it would pin a replacement to a company the order no longer
+ * claims, and `bankKey` beside it would then name an account of the wrong one.
  */
 export function carriedIntoRevision(old: PiSnapshot): Record<string, unknown> {
   return {
@@ -1103,6 +1432,15 @@ export function piTotalRow(s: ProformaSnapshot): string[] {
 
 export interface PiPrintFields {
   title: string;
+  /**
+   * WHAT THE FIRST PARTY CELL IS CALLED. "Exporter" on an Indian exporter's
+   * proforma, which is every proforma this module has ever produced and every
+   * Pacific one it will produce. A US company selling to a US buyer is not
+   * exporting anything — and on the group's own arrangement it may not even be
+   * the party that ships — so its paper calls that cell "Seller", which is the
+   * one thing the party in it certainly is.
+   */
+  exporterLabel: string;
   invoiceNo: string;
   invoiceDate: string;
   buyerPoNo: string;
@@ -1136,6 +1474,16 @@ export interface PiPrintFields {
   swift: string;
   routingBank: string;
   routingSwift: string;
+  /** The beneficiary's account with the correspondent bank — blank on both
+   *  Indian accounts, which give none. */
+  routingAccountNo: string;
+  /** The ACH route, kept apart from the wire route above: its account number
+   *  is NOT the account number a wire is sent to, and a payer who mixes the
+   *  two lines has the payment returned days later. Blank throughout on an
+   *  account with no ACH route, and the layout prints no ACH block at all. */
+  achBank: string;
+  achRoutingNo: string;
+  achAccountNo: string;
   grossWeight: string;
   netWeight: string;
   discount: string;
@@ -1147,6 +1495,13 @@ export interface PiPrintFields {
   /** "Kotak" / "ICICI" — which of the two accounts this is (answer 23),
    *  for the screen; the PDF prints the block itself. */
   bankKey: string;
+  /** WHICH COMPANY SOLD (scripts/0085), for the screens and the register. The
+   *  LAYOUT does not ask these: whether the Indian block is printed is
+   *  printsIndianBlock(snapshot), asked of the snapshot the way
+   *  printsParty(snapshot.buyerIfNotConsignee) is — every value on THIS
+   *  interface is a formatted string, and a yes-or-no is not one. */
+  sellerKey: string;
+  sellerLabel: string;
 }
 
 /** Every scalar the PI prints, already formatted. A blank field is "" — the PI
@@ -1156,6 +1511,7 @@ export interface PiPrintFields {
 export function piPrintFields(s: PiSnapshot): PiPrintFields {
   return {
     title: "PROFORMA INVOICE",
+    exporterLabel: printsIndianBlock(s) ? "Exporter" : "Seller",
     invoiceNo: printedNumber(s.number),
     invoiceDate: formatPiDate(s.date),
     buyerPoNo: printable(s.buyerPoNo),
@@ -1187,6 +1543,10 @@ export function piPrintFields(s: PiSnapshot): PiPrintFields {
     swift: printable(s.bank.swift),
     routingBank: printable(s.bank.routingBank),
     routingSwift: printable(s.bank.routingSwift),
+    routingAccountNo: printable(s.bank.routingAccountNo),
+    achBank: printable(s.bank.ach?.bank),
+    achRoutingNo: printable(s.bank.ach?.routingNo),
+    achAccountNo: printable(s.bank.ach?.accountNo),
     grossWeight: printable(s.grossWeight),
     netWeight: printable(s.netWeight),
     discount: s.discount ? fmtAmount(s.discount) : "",
@@ -1196,6 +1556,8 @@ export function piPrintFields(s: PiSnapshot): PiPrintFields {
     declaration: printable(s.declaration),
     currency: printable(s.currency).toUpperCase(),
     bankKey: s.bankKey ?? defaultBankKey(s.kind),
+    sellerKey: piSeller(s).key,
+    sellerLabel: piSeller(s).label,
   };
 }
 
