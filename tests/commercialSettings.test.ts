@@ -530,7 +530,7 @@ test("the counters table lists every kind including the PI, under the label the 
   const at = new Date(2026, 8, 7);
   const p = previewCounters(DEFAULT_SETTINGS, [], at);
   const rows = NUMBERING_KINDS.map((kind) => ({ label: NUMBERING_LABELS[kind], key: p[kind].key, next: p[kind].next, preview: p[kind].preview }));
-  assert.equal(rows.length, 8);
+  assert.equal(rows.length, 9);
   const pi = rows.find((r) => r.label === "Proforma invoice (PI)");
   assert.ok(pi, "the PI has its own row");
   assert.deepEqual(pi, { label: "Proforma invoice (PI)", key: "SAL-ORD:26-27", next: 1, preview: "SAL-ORD/26-27/N0001" });
@@ -540,7 +540,17 @@ test("the counters table lists every kind including the PI, under the label the 
   const msi = rows.find((r) => r.label === "Proforma invoice (PI) — Monolith Surfaces Inc");
   assert.ok(msi, "Monolith's PI has its own row");
   assert.deepEqual(msi, { label: "Proforma invoice (PI) — Monolith Surfaces Inc", key: "MSI-INV", next: 1, preview: "INV-1" });
-  assert.equal(new Set(rows.map((r) => r.key)).size, 8, "no two kinds draw from one counter");
+  // The ninth is Monolith's COMMERCIAL INVOICE counter (2026-09-15, the owner:
+  // "integrate these types on invoices too"). It exists separately from the
+  // row above because a proforma and an invoice are two documents, and from
+  // "Export invoice" because two legal entities must not draw one run of
+  // numbers — which is what happened until today, silently, a US company
+  // taking a number out of Pacific's PESPL/N#### series.
+  const msiInv = rows.find((r) => r.label === "Export invoice — Monolith Surfaces Inc");
+  assert.ok(msiInv, "Monolith's commercial invoice has its own row");
+  assert.deepEqual(msiInv, { label: "Export invoice — Monolith Surfaces Inc", key: "MSI-CINV", next: 1, preview: "MSI-1" });
+  assert.notEqual(msiInv!.key, msi!.key, "the invoice and the proforma never share a counter");
+  assert.equal(new Set(rows.map((r) => r.key)).size, 9, "no two kinds draw from one counter");
 });
 
 test("the dispatch advance percentages are editable and land as numbers (answer 11)", () => {

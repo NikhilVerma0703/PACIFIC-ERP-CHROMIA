@@ -17,7 +17,7 @@ import { loadSettings } from "@/lib/commercial/settings";
 import { issueNumber } from "@/lib/commercial/sequence";
 import { logOrderEvent } from "@/lib/commercial/events";
 import {
-  INVOICE_KINDS, defaultKindFor, sequenceKindFor, buildInvoiceLines, buildInvoiceSnapshot, sanitiseLine,
+  INVOICE_KINDS, defaultKindFor, sequenceKindFor, refuseInvoiceForSeller, buildInvoiceLines, buildInvoiceSnapshot, sanitiseLine,
   isoDate, istIsoDate, unpricedWarning, pageArgs, refuseCreate, isBankKey, gstinChoiceFor,
   bankKeyForInvoice, mayChangeInvoiceBank, BANK_FOLLOWS_PI, gstinScopeWord,
   exchangeRateRefusal, exchangeRateNote,
@@ -74,6 +74,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const rawKind = str(body.kind)?.toUpperCase();
     const kind: InvoiceKind = rawKind ? (rawKind as InvoiceKind) : defaultKindFor(order.kind);
     if (!INVOICE_KINDS.includes(kind)) fail(400, "kind must be DTA or EXPORT");
+
+    // MAY THIS SELLER RAISE THIS KIND AT ALL (owner, 2026-09-15)? A DTA
+    // invoice is an Indian domestic tax document, so a group company that is
+    // not an Indian exporter has none to raise. Refused here, at draft time,
+    // rather than branched inside the renderer: there is no hollowed-out
+    // version of that sheet worth printing, and defaultKindFor reads only
+    // order.kind, so without this a DOMESTIC order carrying a US seller became
+    // an Indian tax invoice with nothing standing in the way. The message
+    // names both exits and leaves the choice to a person — guessing which of
+    // the two is wrong would put a real document out under the other.
+    const sellerRefusal = refuseInvoiceForSeller(settings, (order as { sellerKey?: unknown }).sellerKey as string | null | undefined, kind);
+    if (sellerRefusal) fail(409, sellerRefusal);
 
     // The two dropdowns (answers 21, 23). A GSTIN that is not on the settings
     // list is refused here rather than printed on a tax document unvouched.
@@ -193,7 +205,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       const blockedNow = refuseCreate(open ? [open as { status: string; number: string | null }] : []);
       if (blockedNow) fail(409, blockedNow);
 
-      const issued = await issueNumber(sequenceKindFor(kind), invoiceDate, body.numberOverride);
+      // WHOSE SERIES, NOT JUST WHICH KIND. Until today a Monolith export order
+      // drew from Pacific's exportInvoice counter and printed PESPL/N####: a
+      // US company consuming a number out of the Indian company's run, which
+      // nothing refused because commercial_invoice.number is unique globally
+      // rather than per-entity.
+      const issued = await issueNumber(sequenceKindFor(kind, (order as { sellerKey?: unknown }).sellerKey), invoiceDate, body.numberOverride);
       snapshot.number = issued.number;
       const created: { id: string } = await tx.commercialInvoice.create({
         data: {

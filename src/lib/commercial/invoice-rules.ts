@@ -18,7 +18,18 @@ import { amountInWords } from "./words.ts";
 import { computeTax, stateCodeFromGstin, type TaxResult } from "./tax.ts";
 import { slabMeasure, sumTo } from "./measure.ts";
 import { canonThickness } from "../thickness.ts";
-import { gstinChoices, type CommercialSettings, type GstinChoice } from "./settings-defaults.ts";
+import { gstinChoices, invoiceNumberingKind, type CommercialSettings, type GstinChoice, type NumberingKind } from "./settings-defaults.ts";
+// THE SELLER QUESTION IS ASKED THROUGH THE PROFORMA'S OWN FUNCTIONS, never a
+// second copy of them (owner, 2026-09-15: "integrate these types on invoices
+// too"). scripts/0085 asks for the "absent means Pacific" rule to live in one
+// place; a parallel implementation here is precisely how the two documents
+// would come to disagree about who sold an order. Cycle-free and checked:
+// proforma-rules imports words/thickness/stages/settings-defaults/access-rules
+// and types, and never imports this file.
+import {
+  piSeller, piSellerFrom, printsIndianBlock, piBank, bankBlock, sellerIdentity,
+  piGstinFor, piDeclarationFor, exporterParty as sellerExporterParty, type PiSellerBlock,
+} from "./proforma-rules.ts";
 import type { DocLine, Party, InvoiceSnapshot } from "./types.ts";
 
 // ───────────────────────────── kinds & status ────────────────────────────────
@@ -44,9 +55,18 @@ export function defaultKindFor(orderKind: string | null | undefined): InvoiceKin
   return String(orderKind ?? "").toUpperCase() === "DOMESTIC" ? "DTA" : "EXPORT";
 }
 
-/** The numbering counter this kind draws from. */
-export function sequenceKindFor(kind: InvoiceKind): "dtaInvoice" | "exportInvoice" {
-  return kind === "DTA" ? "dtaInvoice" : "exportInvoice";
+/**
+ * The numbering counter this kind draws from — and, since 2026-09-15, WHOSE.
+ *
+ * The second argument is optional so every existing caller keeps compiling and
+ * keeps its answer: without a seller the result is exactly what this function
+ * returned when it took one argument. A Monolith EXPORT invoice draws from its
+ * own series instead of consuming a number out of Pacific's, which it did
+ * silently until today because commercial_invoice.number is unique globally
+ * and nothing refused it.
+ */
+export function sequenceKindFor(kind: InvoiceKind, sellerKey?: unknown): NumberingKind {
+  return invoiceNumberingKind(kind, sellerKey);
 }
 
 export function canEditInvoice(status: string): boolean { return status === "DRAFT"; }
@@ -823,6 +843,11 @@ export interface InvoiceOrderInput {
   /// scripts/0084 — the salesperson the order belongs to, preferred over
   /// createdByName for the invoice's "Sales Person" line.
   salespersonName?: string | null;
+  /// scripts/0085 — which group company sells this order; absent means Pacific.
+  /// The value already reaches this builder (the create route loads the order
+  /// with `include:`, so every scalar is on the object); it was simply never
+  /// read, and an `as never` cast hid the omission from tsc.
+  sellerKey?: string | null;
   client?: InvoiceClientInput | null;
   items?: InvoiceItemInput[] | null;
 }
@@ -924,18 +949,16 @@ export function clientParty(client: InvoiceClientInput | null | undefined): Part
 
 /** The company as a Party. `gstin` is the registration the document is issued
  *  under (answer 21) — the company's own unless the dropdown chose another. */
-export function exporterParty(settings: CommercialSettings, gstin?: string | null): Party {
-  const c = settings.company;
-  return {
-    name: c.legalName,
-    lines: [...c.addressLines],
-    country: settings.defaults.countryOfOrigin || "India",
-    tel: c.phone || null,
-    email: c.email || null,
-    gstin: printable(gstin) || c.gstin || null,
-    stateCode: c.stateCode || null,
-    code: null,
-  };
+/**
+ * DELEGATES rather than duplicates (2026-09-15). proforma-rules' own
+ * exporterParty already takes a seller and already answers identically for the
+ * default one — verified field by field — so keeping a second body here would
+ * be a second place for Pacific's own address to drift. The name and the
+ * two-argument shape are kept because tests/commercialInvoices.test.ts imports
+ * this by name and several callers pass two arguments.
+ */
+export function exporterParty(settings: CommercialSettings, gstin?: string | null, sellerKey?: string | null): Party {
+  return sellerExporterParty(settings, gstin, sellerKey);
 }
 
 function sameParty(a: Party | null, b: Party | null): boolean {
@@ -1237,6 +1260,93 @@ export function invoiceTotals(
  * export only. Totals are worked out here and written into the snapshot, so
  * the PDF renders from one frozen object and never from the live order.
  */
+/**
+ * WHO SOLD THIS INVOICE, read off the frozen snapshot — the one door the rest
+ * of the invoice code uses, so nothing downstream ever touches
+ * `snapshot.seller` and has to remember that absent means Pacific.
+ */
+export function invoiceSeller(s: InvoiceSnapshot): PiSellerBlock {
+  return piSeller(s);
+}
+
+/** Does this invoice print Indian facts — GSTIN, IEC, the LUT remark, the AD
+ *  code, the Indian-origin declaration? Asked of the SELLER, never of whether
+ *  those fields came out blank. */
+export function invoicePrintsIndianBlock(s: InvoiceSnapshot): boolean {
+  return printsIndianBlock(s);
+}
+
+/**
+ * The company block an invoice freezes. The Indian branch returns exactly what
+ * this builder has always returned, field for field, so a Pacific invoice is
+ * unchanged; a non-Indian seller gets its own name and address and EMPTY
+ * strings for every Indian registration, because the type declares them
+ * required and a US company has none of them to give.
+ *
+ * Empty rather than absent, and rather than Pacific's: a renderer that asks
+ * `printsIndianBlock` first never reads them, and anything that slips through
+ * prints nothing instead of printing an Indian exporter's IEC under an
+ * American company's name.
+ */
+export function invoiceCompanyBlock(
+  settings: CommercialSettings,
+  seller: PiSellerBlock,
+  gstin: string | null,
+): InvoiceSnapshot["company"] {
+  const c = settings.company;
+  if (seller.indianExporter) {
+    return {
+      legalName: c.legalName, shortName: c.shortName, addressLines: [...c.addressLines],
+      gstin: printable(gstin), iec: c.iec, pan: c.pan, tan: c.tan,
+      stateCode: c.stateCode, districtCode: c.districtCode,
+      customsOffice: c.customsOffice, commissionerate: c.commissionerate,
+      division: c.division, range: c.range, locationCode: c.locationCode,
+      hsnQuartz: c.hsnQuartz,
+    };
+  }
+  const id = sellerIdentity(settings, seller.key);
+  return {
+    legalName: id.legalName, shortName: id.legalName, addressLines: [...id.addressLines],
+    gstin: "", iec: "", pan: "", tan: "",
+    stateCode: "", districtCode: "",
+    customsOffice: "", commissionerate: "", division: "", range: "", locationCode: "",
+    // The HSN is a property of the GOODS, not of the seller: quartz slabs are
+    // 68101990 whoever sells them, and a US invoice still states a commodity
+    // code for its own customs entry. This one stays.
+    hsnQuartz: c.hsnQuartz,
+  };
+}
+
+/**
+ * MAY THIS SELLER RAISE THIS KIND OF INVOICE? Returns null when it may, and
+ * the sentence to refuse with when it may not.
+ *
+ * A DTA invoice is not "a domestic invoice that happens to be Indian" — DTA is
+ * Domestic Tariff Area, and the sheet IS the Indian instrument: computeTax
+ * admits only IGST / CGST+SGST / none, the currency is forced to INR, the
+ * amount is spelt in lakh and crore, the Round Off line exists because GST law
+ * wants a whole rupee, and "Time of removal of goods" is a Central Excise
+ * field. Take those away and there is no document left, so a non-Indian seller
+ * is REFUSED one rather than given a hollowed-out version of it.
+ *
+ * AND THE KIND IS NOT SILENTLY PROMOTED. defaultKindFor reads only
+ * order.kind, so a DOMESTIC order carrying a Monolith seller becomes an Indian
+ * tax invoice today with nothing standing in the way. The refusal names both
+ * exits and leaves the choice to a person: either the order is not Monolith's,
+ * or it is not domestic. Guessing which would put a real document out under
+ * the wrong one.
+ */
+export function refuseInvoiceForSeller(
+  settings: CommercialSettings,
+  sellerKey: string | null | undefined,
+  kind: InvoiceKind,
+): string | null {
+  if (kind !== "DTA") return null;
+  const seller = piSellerFrom(settings, sellerKey);
+  if (seller.indianExporter) return null;
+  return `A DTA invoice is an Indian domestic tax document and ${seller.label} does not raise one. This order is marked DOMESTIC and sold by ${seller.label}; correct whichever is wrong — the selling company on the order, or its kind — and raise the invoice again.`;
+}
+
 export function buildInvoiceSnapshot(
   order: InvoiceOrderInput,
   settings: CommercialSettings,
@@ -1245,6 +1355,11 @@ export function buildInvoiceSnapshot(
   opts: InvoiceSnapshotOptions,
 ): InvoiceDocSnapshot {
   const isExport = kind === "EXPORT";
+  // WHO SELLS, SETTLED FIRST, because identity, bank, GSTIN, declaration and
+  // the Indian shipping defaults all hang off it. Frozen into the snapshot
+  // below so a reprint years from now keeps the company it was printed with,
+  // exactly as the proforma does.
+  const seller = piSellerFrom(settings, order.sellerKey);
   const currency = invoiceCurrencyFor(kind, order.currency);
   const client = order.client ?? null;
   const ext = client?.commercialExt ?? null;
@@ -1258,15 +1373,20 @@ export function buildInvoiceSnapshot(
   const bankKey = isBankKey(opts.bankKey) ? opts.bankKey : defaultBankKeyFor(kind);
   // A GSTIN the settings do not offer falls back to the company's own here;
   // the route has already refused it, so this only guards a direct caller.
-  const gstinChoice = gstinChoiceFor(settings, opts.gstin) ?? gstinChoiceFor(settings, null)!;
+  // piGstinFor answers null for a seller that is not an Indian exporter — it
+  // has no GSTIN to choose between — and the company block prints an empty
+  // string rather than borrowing Pacific's.
+  const gstinChoice = seller.indianExporter
+    ? (piGstinFor(settings, seller.key, opts.gstin) ?? gstinChoiceFor(settings, null)!)
+    : null;
   const c = settings.company;
 
   return {
     kind,
-    gstin: gstinChoice.gstin,
-    gstinLabel: gstinLabelFor(settings, gstinChoice),
+    gstin: gstinChoice?.gstin ?? "",
+    gstinLabel: gstinChoice ? gstinLabelFor(settings, gstinChoice) : "",
     // round two, answer 19: the answer to the one question the screen asked
-    gstinApplyAll: gstinApplyAllFor(settings, gstinChoice.gstin, opts.gstinApplyAll),
+    gstinApplyAll: gstinChoice ? gstinApplyAllFor(settings, gstinChoice.gstin, opts.gstinApplyAll) : false,
     bankKey,
     number: "",                                   // stamped by the route once issueNumber has run
     date: opts.date,
@@ -1288,7 +1408,7 @@ export function buildInvoiceSnapshot(
     commodity: COMMODITY,
     currency,
     exchangeRate: opts.exchangeRate ?? (order.exchangeRate === null || order.exchangeRate === undefined ? null : round4(toNumber(order.exchangeRate, 0))),
-    exporter: exporterParty(settings, gstinChoice.gstin),
+    exporter: exporterParty(settings, gstinChoice?.gstin ?? null, seller.key),
     buyer: { ...buyer, gstin: buyer.gstin ?? clean(ext?.gstin), stateCode: buyer.stateCode ?? state },
     consignee,
     notifyParty,
@@ -1296,10 +1416,15 @@ export function buildInvoiceSnapshot(
     countryOfDestination: clean(order.countryOfDestination) ?? consignee.country ?? clean(client?.country) ?? (isExport ? null : "India"),
     deliveryTerms: clean(order.deliveryTerms) ?? clean(order.incoterm) ?? (isExport ? null : clean(settings.defaults.domesticDeliveryTerms)),
     paymentTerms: clean(order.paymentTerms) ?? (isExport ? clean(settings.defaults.exportPaymentTerms) : clean(settings.defaults.domesticPaymentTerms)),
-    preCarriageBy: clean(order.preCarriageBy) ?? (isExport ? clean(settings.defaults.preCarriageBy) : null),
+    // THE SILENT INDIAN DEFAULTS ARE THE INDIAN EXPORTER'S. "By Road" to
+    // Chennai is how Pacific's goods reach a ship; it is not a fact about a US
+    // company's sale, and filling it in unasked would put a Tamil Nadu port on
+    // an American invoice. What a human actually TYPED on the order still
+    // prints, whoever sells it — the same rule the proforma follows.
+    preCarriageBy: clean(order.preCarriageBy) ?? (isExport && seller.indianExporter ? clean(settings.defaults.preCarriageBy) : null),
     placeOfReceipt: clean(order.placeOfReceipt),
     vessel: clean(opts.vessel),
-    portOfLoading: clean(order.portOfLoading) ?? (isExport ? clean(settings.defaults.portOfLoading) : null),
+    portOfLoading: clean(order.portOfLoading) ?? (isExport && seller.indianExporter ? clean(settings.defaults.portOfLoading) : null),
     portOfDischarge: clean(order.portOfDischarge),
     finalDestination: clean(order.finalDestination),
     lines,
@@ -1321,17 +1446,29 @@ export function buildInvoiceSnapshot(
     linerOtlNo: clean(opts.linerOtlNo),
     vehicleNo: clean(opts.vehicleNo),
     transporter: clean(opts.transporter),
-    lutText: isExport ? (clean(c.lutText)) : null,
-    bank: bankBlockFor(settings, bankKey),
-    company: {
-      legalName: c.legalName, shortName: c.shortName, addressLines: [...c.addressLines],
-      gstin: gstinChoice.gstin, iec: c.iec, pan: c.pan, tan: c.tan,
-      stateCode: c.stateCode, districtCode: c.districtCode,
-      customsOffice: c.customsOffice, commissionerate: c.commissionerate,
-      division: c.division, range: c.range, locationCode: c.locationCode,
-      hsnQuartz: c.hsnQuartz,
-    },
-    declaration: isExport ? settings.texts.piDeclaration : settings.texts.dtaDeclaration,
+    // A LUT is a bond an Indian exporter files with Indian GST to ship without
+    // paying IGST. A US company has no LUT and no ARN, so the remark is not
+    // blanked on its paper — it is not on it.
+    lutText: isExport && seller.indianExporter ? (clean(c.lutText)) : null,
+    // THE SELLER'S OWN ACCOUNT WHERE IT HAS ONE. piBank answers the entity's
+    // bank if the entity carries one and the chosen slot otherwise, so Pacific
+    // still gets exactly bankBlockFor(settings, bankKey) — verified identical
+    // — and Monolith is paid into its own New York account instead of being
+    // paid into the Indian company's.
+    bank: bankBlock(piBank(settings, bankKey, seller.key)),
+    company: invoiceCompanyBlock(settings, seller, gstinChoice?.gstin ?? null),
+    seller,
+    // The second buyer, where the party billed is not the party shipped to.
+    // export-invoice.ts still derives its own by comparing names and is not
+    // touched; this fills the field the type has always declared so the seller
+    // invoice can read it instead of re-deriving it.
+    buyerIfNotConsignee: sameParty(buyer, consignee) ? null : buyer,
+    // "We certify that the above goods are of Indian Origin" is a statement
+    // only an Indian exporter can make. A seller that is not one prints no
+    // declaration rather than a heading over nothing; there is no US wording
+    // to put in its place, and writing a certification for somebody else to
+    // sign is not ours to do.
+    declaration: isExport ? piDeclarationFor(settings, seller.key) : settings.texts.dtaDeclaration,
     notes: clean(opts.notes),
   };
 }
@@ -1398,16 +1535,35 @@ export function applyDraftPatch(snapshot: InvoiceSnapshot & Partial<InvoiceSnaps
   let changed = false;
   let totalsDirty = false;
   const rejected: string[] = [];
+  // WHO SOLD IT, READ OFF THE DRAFT — because the two identity dropdowns below
+  // would otherwise undo the whole of this change on the way to the printer.
+  // The snapshot is built correctly at draft time and then EDITED before
+  // issue: PATCH .../invoices/[invId] reaches this function, and both branches
+  // rewrote identity from Pacific's settings with no idea whose paper it was.
+  // Picking a bank would have put Kotak Chennai on Monolith's invoice, and
+  // picking a GSTIN would have stamped an Indian registration on an American
+  // company — on a document already carrying Monolith's name, which is worse
+  // than the fully-Pacific invoice it produced before, because it looks right.
+  const seller = invoiceSeller(base);
 
   // The two dropdowns (answers 21, 23). A value the settings do not offer is
   // refused by name, never silently kept as the old one.
   if ("bankKey" in p) {
     if (!isBankKey(p.bankKey)) rejected.push("bankKey");
-    else if (p.bankKey !== next.bankKey) { next.bankKey = p.bankKey; next.bank = bankBlockFor(settings, p.bankKey); changed = true; }
+    else if (p.bankKey !== next.bankKey) {
+      next.bankKey = p.bankKey;
+      // piBank hands back the SELLER's own account where it has one and the
+      // chosen slot otherwise, so Pacific still resolves exactly as it did.
+      next.bank = bankBlock(piBank(settings, p.bankKey, seller.key));
+      changed = true;
+    }
   }
   let gstinChanged = false;
   if ("gstin" in p) {
-    const choice = gstinChoiceFor(settings, printable(p.gstin) || null);
+    // A seller that is not an Indian exporter has no GSTIN to choose between,
+    // so the field is refused by name rather than silently applied. The screen
+    // does not offer it either; this guards a direct caller.
+    const choice = seller.indianExporter ? gstinChoiceFor(settings, printable(p.gstin) || null) : null;
     if (!choice) rejected.push("gstin");
     else if (choice.gstin !== next.gstin) {
       next.gstin = choice.gstin;

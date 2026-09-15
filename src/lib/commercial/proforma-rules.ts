@@ -590,7 +590,24 @@ export function piSellerFrom(settings: CommercialSettings, key: unknown): PiSell
  * Pacific's own. Read the seller through this and never off `snapshot.seller`
  * directly, so the absence rule is stated in one place.
  */
-export function piSeller(s: PiSnapshot): PiSellerBlock {
+/**
+ * The least a snapshot must carry for the seller question to be answerable:
+ * the frozen seller, if any, and a legal name to fall back on.
+ *
+ * NAMED, AND NOT `any`, because the fallback is silent. Anything with a
+ * `company.legalName` would otherwise type-check here and be told, wrongly,
+ * that it was sold by Pacific. Both PiSnapshot and InvoiceSnapshot satisfy
+ * this structurally, which is the point: ONE implementation of "absent means
+ * Pacific" answers for both documents (owner, 2026-09-15, asking for the PI's
+ * seller types on invoices too). scripts/0085 asks for exactly that — the rule
+ * stated in one place.
+ */
+export interface SellerBearing {
+  seller?: { key: string; label: string; indianExporter: boolean } | null;
+  company?: { legalName?: string } | null;
+}
+
+export function piSeller(s: SellerBearing): PiSellerBlock {
   const frozen = s.seller;
   const fallbackLabel = printable(s.company?.legalName);
   if (frozen && printable(frozen.key)) {
@@ -614,7 +631,7 @@ export function piSeller(s: PiSnapshot): PiSellerBlock {
  * selling inside the US has no RBI code to empty, and its paper must not carry
  * the label at all. Two different things, and only the seller tells them apart.
  */
-export function printsIndianBlock(s: PiSnapshot): boolean {
+export function printsIndianBlock(s: SellerBearing): boolean {
   return piSeller(s).indianExporter;
 }
 

@@ -133,7 +133,11 @@ export interface InvoiceSnapshot {
   notifyParty: Party | null;
   /** The export invoice prints a "Buyer (if other than Consignee)" block, as
    *  the proforma does. Optional: it was missing from the first cut, so the
-   *  export PDF derived it by comparing the buyer's and consignee's names. */
+   *  export PDF derived it by comparing the buyer's and consignee's names —
+   *  and STILL does, because buildInvoiceSnapshot never filled this in. It is
+   *  populated from 2026-09-15 for the seller invoice, which reads the field
+   *  rather than re-deriving it; export-invoice.ts keeps its own comparison
+   *  untouched so no already-issued Pacific invoice changes on reprint. */
   buyerIfNotConsignee?: Party | null;
   countryOfOrigin: string;
   countryOfDestination: string | null;
@@ -172,6 +176,21 @@ export interface InvoiceSnapshot {
   lutText: string | null;
   bank: ProformaSnapshot["bank"];
   company: { legalName: string; shortName: string; addressLines: string[]; gstin: string; iec: string; pan: string; tan: string; stateCode: string; districtCode: string; customsOffice: string; commissionerate: string; division: string; range: string; locationCode: string; hsnQuartz: string };
+  /**
+   * WHICH GROUP COMPANY SOLD THIS ORDER — the same fact the proforma freezes,
+   * declared as the same type so the two documents cannot drift apart on it
+   * (owner, 2026-09-15: "integrate these types on invoices too").
+   *
+   * OPTIONAL, AND ABSENT MEANS PACIFIC, exactly as on the proforma. Every
+   * invoice frozen before today carries no such key and must reprint byte for
+   * byte as the customer received it; invoiceSeller() reads that absence as
+   * the default seller in ONE place, so no reader has to remember the rule.
+   *
+   * The company block above is resolved FROM this at draft time and then
+   * frozen, so a printed invoice keeps the identity it was printed with even
+   * if Settings are later corrected — the rule the rest of the snapshot follows.
+   */
+  seller?: ProformaSnapshot["seller"];
   declaration: string;
   notes: string | null;
 }

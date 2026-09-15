@@ -81,149 +81,16 @@ import { piPrintFields, piRow, piTotalRow, piTableHeader, partyBlock, printsPart
 // now keeps the total and the signatures together (see the end of this file),
 // so a long order breaks in the item table, under repeated column headings,
 // instead of through the footer.
-const FS = { body: 9, label: 8.5, value: 10, head: 9.5, title: 16, big: 11 } as const;
-const GREY = "#f2f2f2";
-
-/** A hairline box round every cell — the reference is a grid of boxes. */
-const gridLayout = {
-  hLineWidth: () => 0.5,
-  vLineWidth: () => 0.5,
-  hLineColor: () => "#000000",
-  vLineColor: () => "#000000",
-  // WIDE SIDES, TIGHT TOP AND BOTTOM, and that split was measured rather than
-  // guessed. Vertical padding is the expensive dimension: it is paid on every
-  // one of the fifteen-odd rows, so raising it from 2 to 4 costs more height
-  // than growing every font on the page. Rendering a Pacific proforma at four
-  // scales showed the largest type at padding 2 fits more item lines on one
-  // sheet than a middling type at padding 4 — the same page for smaller words.
-  // So the height went into the type and the breathing room went sideways,
-  // where it costs nothing. (The absolute count that comparison quoted was
-  // wrong by one; the ordering it established was not. See FS above for the
-  // measured figure.)
-  paddingLeft: () => 6,
-  paddingRight: () => 6,
-  paddingTop: () => 2,
-  paddingBottom: () => 2,
-};
-
-/**
- * THE TWO HEADER COLUMNS ARE ONE BOX, NOT TWO (the owner, 2026-09-15, of a
- * screenshot with the space under Consignee highlighted: "just fix this on
- * both — the alignment").
- *
- * The header used to be a borderless two-cell table holding one bordered table
- * per side, and that costs alignment twice over. Measured off the delivered
- * PDFs: each side drew its own box inside a padded cell, so the left box ran
- * 34.0 → 291.1 and the right 303.6 → 560.8 while every table below them — the
- * carriage grid, the bank block, the items — ran 28.0 → 566.8. The header was
- * inset six points at both edges and left twelve and a half points of daylight
- * down the middle where the two boxes never met. And because a nested table is
- * only as tall as what is in it, the shorter side simply stopped: on the
- * Monolith proforma the left column ended 55.5pt above the right, which is the
- * open corner under Consignee that he circled.
- *
- * So the OUTER table is the bordered one now, at zero padding, and its two
- * cells run edge to edge and meet in the middle — the same x as everything
- * below. Its row is as tall as the taller side, and its border is drawn round
- * the whole row, so both columns close on one line whichever side is longer.
- * The inner tables keep their padding and draw only the lines BETWEEN their own
- * rows: their outer edges would land on top of the outer border, a second
- * hairline half a point off the first.
- *
- * The leftover space is then inside the left box rather than outside it — a
- * tall Seller/Consignee cell with room under it, which is how the reference
- * proforma reads too.
- */
-const outerGrid = {
-  ...gridLayout,
-  paddingLeft: () => 0,
-  paddingRight: () => 0,
-  paddingTop: () => 0,
-  paddingBottom: () => 0,
-};
-
-/** Internal dividers only — the enclosing cell of `outerGrid` draws the box.
- *  i counts the LINES, so 0 is the top edge and body.length the bottom; the
- *  same for vertical lines against the column count. */
-const innerGrid = {
-  ...gridLayout,
-  hLineWidth: (i: number, node: any) => (i === 0 || i === node.table.body.length ? 0 : 0.5),
-  vLineWidth: (i: number, node: any) => (i === 0 || i === node.table.widths.length ? 0 : 0.5),
-};
-
-/** "Label" over its value — the shape every box on this document has. */
-function field(label: string, value: string, opts: { bold?: boolean; upper?: boolean } = {}): any {
-  return {
-    stack: [
-      { text: label, fontSize: FS.label, color: "#444" },
-      { text: value || " ", fontSize: FS.value, bold: Boolean(opts.bold), characterSpacing: 0 },
-    ],
-  };
-}
-
-/**
- * A box, or NOTHING, and this is the rule the whole document now follows: a
- * label with nothing after it is not information, it is a gap that reads to a
- * customer as a figure somebody forgot (the owner, 2026-09-15, for the third
- * time — after the Buyer-if-Not-Consignee cell and the discount line:
- * "remove empty boxes like port of loading etc").
- *
- * So `field()` answers null for a blank value and the row builders below drop
- * what is null. The document keeps only the boxes that say something.
- */
-function fieldOrNull(label: string, value: string, opts: { bold?: boolean } = {}): any | null {
-  return printable(value) ? field(label, value, opts) : null;
-}
-
-/**
- * Two fields side by side. Both blank and the ROW goes; one blank and its half
- * becomes an unlabelled empty cell, because the table is two columns wide and
- * handing a row one cell would break every border below it.
- */
-function fullRow(cell: any | null): any[] | null {
-  if (!cell) return null;
-  return [{ colSpan: 2, ...cell }, {}];
-}
-
-function pairRow(a: any | null, b: any | null): any[] | null {
-  if (!a && !b) return null;
-  // ONE OF THE TWO MISSING MEANS THE OTHER TAKES THE ROW, not that the row
-  // keeps an unlabelled half-box beside it. Returning [a, {}] drew exactly the
-  // hole the owner circled on 2026-09-15: "Pre-Carriage By / By Road" filling
-  // the left half of a row whose right half was an empty bordered rectangle,
-  // and the same again beside a lone Port of Loading. An empty cell is the
-  // empty box this document has spent the day removing — it was simply the one
-  // shape of it that had no label to give it away.
-  if (!a || !b) return fullRow(a ?? b);
-  return [a, b];
-}
-
-/** One cell across both columns of a two-column table: the colSpan and the
- *  filler cell pdfmake needs behind it, built together so neither can be left
- *  behind when a row is added or dropped. */
-
-
-/** A named party: bold name, then its printed lines. */
-function partyCell(label: string, p: ReturnType<typeof partyBlock>): any {
-  return {
-    stack: [
-      { text: label, fontSize: FS.label, color: "#444" },
-      { text: p.name || " ", fontSize: FS.value, bold: true },
-      ...p.lines.map((l) => ({ text: l, fontSize: FS.body })),
-    ],
-  };
-}
-
-/** One bold "Label : value" line in the terms / bank block. */
-function termLine(label: string, value: string): any {
-  return {
-    text: [
-      { text: `${label} : `, fontSize: FS.body, bold: true },
-      { text: value, fontSize: FS.body },
-    ],
-    margin: [0, 0, 0, 1],
-  };
-}
+// THE FORMAT ITSELF NOW LIVES IN ./format — the type scale, the hairline grid,
+// the header's outer/inner pair and the empty-box rules. It was lifted out of
+// this file unchanged on 2026-09-15 so the seller invoice could be built from
+// the very same primitives rather than a copy of them, which is how two
+// documents that are meant to match start to diverge. This file keeps every
+// decision about WHAT a proforma prints; format.ts knows only how a box looks.
+import {
+  FS, GREY, gridLayout, outerGrid, innerGrid,
+  field, fieldOrNull, fullRow, pairRow, partyCell, termLine,
+} from "./format";
 
 export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer> {
   const f = piPrintFields(snapshot);

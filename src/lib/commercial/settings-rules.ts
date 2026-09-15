@@ -54,6 +54,7 @@ export const NUMBERING_LABELS: Record<NumberingKind, string> = {
   monolithProforma: "Proforma invoice (PI) — Monolith Surfaces Inc",
   enquiry: "Enquiry",
   exportInvoice: "Export invoice",
+  monolithInvoice: "Export invoice — Monolith Surfaces Inc",
   dtaInvoice: "DTA invoice",
   challan: "Delivery challan",
   packingList: "Packing list",
