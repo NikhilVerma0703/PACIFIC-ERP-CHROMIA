@@ -15,10 +15,14 @@ import assert from "node:assert/strict";
 import {
   THICKNESS_MM, thicknessMmFor, canonicalDesign, qzCode, isKnownDesign,
   buildStockLines, productPayloads, diffMirror, payloadHash, summarise, PRODUCT_WRITABLE_KEYS,
+  isSellableProduct, SELLABLE_FAMILY,
   slabRow, sampleRow, finishRow, unitRow,
   type StockGroup, type ProductRow, type StockRow, type MirrorEntry,
 } from "../src/lib/salesforce/stock-rules.ts";
-import { WRITABLE_OBJECTS, READABLE_OBJECTS, mayWrite, mayDelete } from "../src/lib/salesforce/limits.ts";
+import {
+  WRITABLE_OBJECTS, READABLE_OBJECTS, mayWrite, mayDelete,
+  REQUEST_WRITABLE_FIELDS, mayWriteRequestField, refusePackForApproval,
+} from "../src/lib/salesforce/limits.ts";
 
 // ── the twelve biggest matches, DISCOVERY §3 ─────────────────────────────────
 const TWELVE: Array<[string, string, number]> = [
@@ -188,8 +192,8 @@ test("a sold-out product reads 0, never last week's number", () => {
   // we HAVE stock for leaves the old number standing on everything that
   // emptied, and a rep reads it as today's.
   const products: ProductRow[] = [
-    { id: "01t1", name: "Arva White", productCode: "QZ-ARVAWHITE-20", erpSku: "QZ-ARVAWHITE-20" },
-    { id: "01t2", name: "Sakura", productCode: "QZ-SAKURA-20", erpSku: null },
+    { id: "01t1", name: "Arva White", productCode: "QZ-ARVAWHITE-20", erpSku: "QZ-ARVAWHITE-20", isActive: true, family: "Quartz Slab" },
+    { id: "01t2", name: "Sakura", productCode: "QZ-SAKURA-20", erpSku: null, isActive: true, family: "Quartz Slab" },
   ];
   const lines = buildStockLines(
     [{ design: "Arva White", slabThickness: "2 cm", available: 417 }],
@@ -209,7 +213,7 @@ test("a sold-out product reads 0, never last week's number", () => {
 
 test("a product whose stock is all at another thickness says which", () => {
   const products: ProductRow[] = [
-    { id: "01t1", name: "Arva White", productCode: "QZ-ARVAWHITE-20", erpSku: null },
+    { id: "01t1", name: "Arva White", productCode: "QZ-ARVAWHITE-20", erpSku: null, isActive: true, family: "Quartz Slab" },
   ];
   const lines = buildStockLines(
     [{ design: "Arva White", slabThickness: "3 cm", available: 118 }],
@@ -226,7 +230,7 @@ test("a product the ERP has never heard of is marked, not quietly zeroed", () =>
   // "sold out" are different facts: one is a data gap for the admin, the other
   // is a sales fact for the rep.
   const [p] = productPayloads(
-    [{ id: "01t9", name: "Something Else", productCode: "QZ-SOMETHINGELSE-20", erpSku: null }],
+    [{ id: "01t9", name: "Something Else", productCode: "QZ-SOMETHINGELSE-20", erpSku: null, isActive: true, family: "Quartz Slab" }],
     [], CANONICALS, PRODUCT_CODES,
   );
   assert.equal(p!.ERP_Match__c, "No ERP design");
@@ -310,7 +314,7 @@ test("the summary counts what DISCOVERY counted, so a run can be compared to it"
     { design: "Arva White", slabThickness: "3 cm to 2 cm", available: 12 },
   ];
   const result = buildStockLines(groups, NO_ALIASES, CANONICALS, PRODUCT_CODES);
-  const products: ProductRow[] = TWELVE.map(([, code], i) => ({ id: `01t${i}`, name: code, productCode: code, erpSku: code }));
+  const products: ProductRow[] = TWELVE.map(([, code], i) => ({ id: `01t${i}`, name: code, productCode: code, erpSku: code, isActive: true, family: "Quartz Slab" }));
   const payloads = productPayloads(products, result.lines, CANONICALS, PRODUCT_CODES);
   const s = summarise(result, payloads, PRODUCT_CODES);
 
@@ -351,7 +355,7 @@ test("a Product2 payload writes Id and ERP_ fields, and nothing else the org wou
   // whole composite call and takes every product in the batch with it. Adding
   // a field here without adding it in Salesforce first breaks the run.
   const payloads = productPayloads(
-    [{ id: "01t1", name: "Arva White", productCode: "QZ-ARVAWHITE-20", erpSku: null }],
+    [{ id: "01t1", name: "Arva White", productCode: "QZ-ARVAWHITE-20", erpSku: null, isActive: true, family: "Quartz Slab" }],
     [], CANONICALS, PRODUCT_CODES, "2026-09-16T08:00:00.000Z",
   );
   for (const p of payloads) {
@@ -372,8 +376,8 @@ test("every product in one run carries the same as-of stamp, and it is passed in
   // compared with the run that follows it.
   const AT = "2026-09-16T08:00:00.000Z";
   const products: ProductRow[] = [
-    { id: "01t1", name: "Arva White", productCode: "QZ-ARVAWHITE-20", erpSku: null },
-    { id: "01t2", name: "Sakura", productCode: "QZ-SAKURA-20", erpSku: null },
+    { id: "01t1", name: "Arva White", productCode: "QZ-ARVAWHITE-20", erpSku: null, isActive: true, family: "Quartz Slab" },
+    { id: "01t2", name: "Sakura", productCode: "QZ-SAKURA-20", erpSku: null, isActive: true, family: "Quartz Slab" },
   ];
   const payloads = productPayloads(products, [], CANONICALS, PRODUCT_CODES, AT);
   assert.deepEqual([...new Set(payloads.map((p) => p.ERP_Stock_As_Of__c))], [AT]);
@@ -432,5 +436,114 @@ test("the ERP has no delete, and the source carries none either", () => {
     const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     assert.equal(/method:\s*["'`]DELETE["'`]/i.test(code), false, `${f} issues an HTTP DELETE`);
     assert.equal(/deleteSobject|sobjects\/[^"'`]*\/delete/i.test(code), false, `${f} calls a delete endpoint`);
+  }
+});
+
+// ───────── the org has 283 products, not 110 (admin, 2026-09-16) ────────────
+
+test("only ACTIVE Quartz Slab products are written — the inactive twins are the trap", () => {
+  // THE FAILURE THIS PREVENTS IS NOT COSMETIC. The org holds 283 products:
+  // 110 active Quartz Slab (ours), 55 INACTIVE in family "Quartz" that share
+  // their ProductCode AND their Name with an active one, and 30 older inactive
+  // ones with no family at all.
+  //
+  // Writing ERP_SKU__c onto an inactive twin violates the unique constraint,
+  // because its active partner already holds that value — and in an all-or-none
+  // composite call that fails the ENTIRE batch. Salesforce catches nothing
+  // else: all three ERP_Match__c values are available on every record type and
+  // on products with none, so a wrong match saves silently.
+  const twin = { id: "01tOLD", name: "Arva White", productCode: "QZ-ARVAWHITE-20", erpSku: null, isActive: false, family: "Quartz" };
+  const active = { id: "01tNEW", name: "Arva White", productCode: "QZ-ARVAWHITE-20", erpSku: null, isActive: true, family: "Quartz Slab" };
+  const ancient = { id: "01tANC", name: "Alabaster (3cm)", productCode: "PCS-ALAB-3CM", erpSku: null, isActive: false, family: null };
+
+  assert.equal(isSellableProduct(active), true);
+  assert.equal(isSellableProduct(twin), false, "inactive, and the family is 'Quartz' not 'Quartz Slab'");
+  assert.equal(isSellableProduct(ancient), false, "no family at all");
+  // Active but in another family, and Quartz Slab but inactive: both refused.
+  assert.equal(isSellableProduct({ isActive: true, family: "Quartz" }), false);
+  assert.equal(isSellableProduct({ isActive: false, family: SELLABLE_FAMILY }), false);
+  assert.equal(isSellableProduct({ isActive: true, family: " Quartz Slab " }), true, "the org's own spacing is forgiven");
+  assert.equal(isSellableProduct({ isActive: true, family: "quartz slab" }), false, "but not a different spelling");
+
+  // And the payload builder drops them itself, rather than trusting the caller
+  // to have written the WHERE clause correctly.
+  const payloads = productPayloads([twin, active, ancient], [], CANONICALS, PRODUCT_CODES, "2026-09-16T08:00:00.000Z");
+  assert.deepEqual(payloads.map((p) => p.Id), ["01tNEW"], "one payload, for the active product only");
+});
+
+test("a blank ERP_SKU__c does not make a code fallback safe", () => {
+  // The specific trap the administrator named: the fallback is "match on
+  // ProductCode where ERP_SKU__c is blank", and ALL 55 inactive copies are
+  // blank too — so the fallback walks straight into them unless it carries the
+  // same filter the primary match does. It does, because the filter is applied
+  // before the match rather than inside it.
+  const blanks = [
+    { id: "01tOLD", name: "Sakura", productCode: "QZ-SAKURA-20", erpSku: null, isActive: false, family: "Quartz" },
+    { id: "01tNEW", name: "Sakura", productCode: "QZ-SAKURA-20", erpSku: null, isActive: true, family: "Quartz Slab" },
+  ];
+  const payloads = productPayloads(blanks, [], CANONICALS, PRODUCT_CODES, "2026-09-16T08:00:00.000Z");
+  assert.equal(payloads.length, 1);
+  assert.equal(payloads[0]!.Id, "01tNEW");
+  assert.equal(payloads[0]!.ERP_SKU__c, "QZ-SAKURA-20", "filled from the code, on the ACTIVE product only");
+});
+
+test("the two field limits the org will enforce on a save", () => {
+  // Both named by the administrator after testing the save in production.
+  // ERP_Match__c takes only its three values, spelt exactly; a fourth would be
+  // refused and take the batch with it.
+  const payloads = productPayloads(
+    [
+      { id: "a", name: "Arva White", productCode: "QZ-ARVAWHITE-20", erpSku: null, isActive: true, family: "Quartz Slab" },
+      { id: "b", name: "Sakura", productCode: "QZ-SAKURA-20", erpSku: null, isActive: true, family: "Quartz Slab" },
+    ],
+    buildStockLines([{ design: "Arva White", slabThickness: "2 cm", available: 5 }], NO_ALIASES, CANONICALS, PRODUCT_CODES).lines,
+    CANONICALS, PRODUCT_CODES, "2026-09-16T08:00:00.000Z",
+  );
+  for (const p of payloads) {
+    assert.ok(["Matched", "Not at this thickness", "No ERP design"].includes(p.ERP_Match__c), p.ERP_Match__c);
+    // Text(255): longer and the save fails outright.
+    assert.ok(p.ERP_Other_Thickness_Stock__c.length <= 255);
+  }
+});
+
+// ───────── Stage 4, as the administrator corrected it on 2026-09-16 ─────────
+
+test("OwnerId is never written: Modify All carries more than Delete", () => {
+  // Modify All also lets the integration user CHANGE A RECORD'S OWNER, and
+  // these requests belong to the PCES Sampling Desk QUEUE. Reassigning one
+  // would take it off the desk's list silently — the request would simply stop
+  // appearing where the people who work it look, with no error anywhere.
+  assert.equal(mayWriteRequestField("OwnerId"), false);
+  assert.equal(REQUEST_WRITABLE_FIELDS.includes("OwnerId"), false);
+  // Nor the rep's own content, nor the approval's.
+  for (const f of ["Requested_Items__c", "Account__c", "Approval_Status__c", "Approver__c", "Dispatch_Type__c", "Needed_By__c"]) {
+    assert.equal(mayWriteRequestField(f), false, f);
+  }
+  // What it MAY write: the ERP_ fields, plus the four the design argues for.
+  for (const f of ["ERP_Status__c", "ERP_Stock_Check_Note__c", "Status__c", "Blocked_Reason__c", "Sample_ETA__c", "Courier_Docket__c", "Sample_Stand__c"]) {
+    assert.equal(mayWriteRequestField(f), true, f);
+  }
+});
+
+test("packing is decided by the APPROVAL, never by the status or the dispatch type", () => {
+  // Salesforce stops the DESK marking a Pending request Dispatched, but nothing
+  // stops ERP_Status__c moving to Packed — that field is ours, so the rule has
+  // to be ours too.
+  assert.equal(refusePackForApproval("Approved"), null);
+  assert.equal(refusePackForApproval("Not Required"), null, "every type but New Stand, and it is a pass not a gap");
+
+  assert.match(refusePackForApproval("Rejected")!, /will not be packed/);
+
+  // PENDING IS A REFUSAL EVEN WHEN NOBODY IS WAITING. A rep can recall a
+  // pending New Stand: that unlocks the record but leaves Approval_Status__c on
+  // Pending with no approval under way and nothing to resubmit it. Stock must
+  // not be committed to a request that may never move again.
+  const pending = refusePackForApproval("Pending");
+  assert.ok(pending);
+  assert.match(pending!, /recalled/, "and the message tells the desk what to ask for");
+
+  // Anything unrecognised, blank or absent is a refusal, not a silent pass.
+  for (const v of ["", null, undefined, "Something New"]) {
+    assert.ok(refusePackForApproval(v as string | null | undefined), String(v));
   }
 });

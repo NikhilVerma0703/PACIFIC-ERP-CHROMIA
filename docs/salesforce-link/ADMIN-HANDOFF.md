@@ -248,9 +248,15 @@ values that already exist, and writes nothing at all when a stand comes back.
 the rep's manager, which is exactly what the owner wants. Entry criteria stay
 untouched.
 
-1. Add a **Record Lock action → "Unlock the record"** to the final-approval
-   action *and* the final-rejection action. The record is locked from submission
-   and nothing currently unlocks it.
+1. ~~Add a **Record Lock action → "Unlock the record"** to the final-approval
+   action *and* the final-rejection action.~~ **WITHDRAWN 2026-09-16.** We said
+   the record is locked from submission and nothing unlocks it. The
+   administrator read the live process and it is not so: `finalApprovalRecordLock`
+   and `finalRejectionRecordLock` are both **false**, so a request is already
+   unlocked after approval or rejection. While it is *pending*, `recordEditability`
+   is *Administrator or current approver* — which is exactly why the integration
+   user needs Modify All, and nothing else needs changing. Do not add an unlock
+   action.
 2. Make **final rejection also set `Status__c` = Cancelled**.
 3. Correct the stale help text on `Approval_Status__c` — it currently claims every
    request routes to a manager. It should read: *"Only a New Stand routes to the

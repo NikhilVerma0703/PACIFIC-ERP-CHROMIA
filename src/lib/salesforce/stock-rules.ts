@@ -203,6 +203,51 @@ export interface ProductRow {
   name: string;
   productCode: string;
   erpSku: string | null;
+  /** Product2.IsActive. */
+  isActive: boolean;
+  /** Product2.Family — "Quartz Slab" for the 110 we sell. */
+  family: string | null;
+}
+
+/** The only family the ERP has stock for, spelt as the org spells it. */
+export const SELLABLE_FAMILY = "Quartz Slab";
+
+/**
+ * IS THIS ONE OF THE 110 PRODUCTS WE ACTUALLY SELL?
+ *
+ * THIS IS NOT A TIDINESS FILTER; IT IS THE ONLY THING STANDING BETWEEN THIS JOB
+ * AND A CORRUPTED PRODUCT MASTER. The Salesforce administrator counted the org
+ * on 2026-09-16: there are 283 products, not 110.
+ *
+ *   · 110 ACTIVE, family "Quartz Slab" — ours. 55 already carry ERP_SKU__c, 55
+ *     are blank and are the ones this job fills.
+ *   · 55 INACTIVE, family "Quartz" (NOT "Quartz Slab"), no record type — an
+ *     OLDER COPY OF THE SAME LIST. Each shares its ProductCode AND its Name
+ *     with an active product above.
+ *   · 30 INACTIVE with no family at all, named like "Alabaster (3cm)".
+ *
+ * So a match on code or on name WITHOUT this filter finds TWO products for 55
+ * codes. Writing ERP_SKU__c onto the inactive twin then violates the unique
+ * constraint — because its active partner already holds that value — and in an
+ * all-or-none composite call that fails the entire batch.
+ *
+ * AND A BLANK ERP_SKU__c DOES NOT MAKE A CODE FALLBACK SAFE, which is the trap
+ * worth naming: all 55 inactive copies are blank too, so "fall back to
+ * ProductCode where the SKU is empty" walks straight into them. The fallback
+ * needs this filter as much as the primary match does.
+ *
+ * The 30 in the last group have unique codes, so a write to one would NOT fail
+ * — it would silently succeed. Their names are 2 cm and 3 cm variants, and our
+ * largest body of stock is 30 mm, so a name matcher without this filter would
+ * quietly attach real stock to a retired product and nobody would see an error.
+ *
+ * SALESFORCE WILL NOT CATCH ANY OF THIS. All three ERP_Match__c values are
+ * available on every record type and on products with none, so a wrong match
+ * saves cleanly. The filter is the whole of the protection, which is why it
+ * lives here, tested, and not only in the WHERE clause of a query string.
+ */
+export function isSellableProduct(p: Pick<ProductRow, "isActive" | "family">): boolean {
+  return Boolean(p?.isActive) && String(p?.family ?? "").trim() === SELLABLE_FAMILY;
 }
 
 export interface ProductPayload {
@@ -260,6 +305,11 @@ export function productPayloads(
    *  read from a clock here, so the same inputs always give the same output. */
   asOf = "",
 ): ProductPayload[] {
+  // EVERY PRODUCT GETS A PAYLOAD — but only the ones we sell are products at
+  // all. Anything inactive, or in another family, is dropped HERE rather than
+  // relied upon to have been excluded by the caller's WHERE clause: see
+  // isSellableProduct for what writing to the other 173 would do.
+  const sellable = (products ?? []).filter(isSellableProduct);
   const byCode = new Map(lines.map((l) => [l.code, l]));
   // Stock of the same design at thicknesses Salesforce does not sell.
   const byCanonical = new Map<string, PublishedLine[]>();
@@ -269,7 +319,7 @@ export function productPayloads(
     byCanonical.set(l.canonical, list);
   }
 
-  return (products ?? []).map((p) => {
+  return sellable.map((p) => {
     // Match on ERP_SKU__c when filled, else ProductCode — identical by
     // DISCOVERY, and the job writes the SKU back in the same PATCH so the 55
     // blanks fill on run one.
@@ -293,10 +343,20 @@ export function productPayloads(
       ERP_SKU__c: key,
       ERP_Available_Slabs__c: line?.available ?? 0,
       ERP_Match__c: match,
-      ERP_Other_Thickness_Stock__c: siblings.map((s) => `${s.mm} mm: ${s.available}`).join(", "),
+      // Text(255) in Salesforce, and a save that exceeds it FAILS — taking the
+      // whole composite batch with it. Four thicknesses exist, so three
+      // siblings is the most this can ever hold and it cannot realistically
+      // reach the limit; clamped anyway, because a silent truncation here is
+      // cheaper than a red run, and the cost of being wrong is asymmetric.
+      ERP_Other_Thickness_Stock__c: clamp255(siblings.map((s) => `${s.mm} mm: ${s.available}`).join(", ")),
       ERP_Stock_As_Of__c: asOf,
     };
   });
+}
+
+/** Salesforce Text(255): longer and the save fails, so never send longer. */
+function clamp255(s: string): string {
+  return s.length <= 255 ? s : `${s.slice(0, 252)}...`;
 }
 
 /** The canonical a product code names, when the ERP recognises it. */
