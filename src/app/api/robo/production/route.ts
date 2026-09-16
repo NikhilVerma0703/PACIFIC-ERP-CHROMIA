@@ -57,23 +57,29 @@ export async function GET(req: NextRequest) {
 
   /* S.No. — the slab's 1..N position in its batch by physical slab number, the
      authoritative order (change #3); the stored serialNumber was mistyped on old
-     runs and is not shown. It is only meaningful over a WHOLE batch, so it is
-     computed when a Batch No. was searched (batchRecipeIds !== null → the query
-     returns every slab of the matched batch, take === undefined). For a
-     date/slab/design search the set can be partial batches, so seqNo stays null
-     and the column shows "-". Grouped by batchRecipeId; slabs without a batch
-     get no in-batch number. */
-  const seqById =
-    batchRecipeIds !== null
-      ? sequenceNumbersById(
-          data
-            .filter((d): d is typeof d & { batchRecipeId: string } => Boolean(d.batchRecipeId))
-            .map((d) => ({ id: d.id, slabNumber: d.slabNumber, createdAtMs: d.createdAt.getTime(), batchRecipeId: d.batchRecipeId })),
-          (s) => s.batchRecipeId,
-        )
-      : null;
+     runs and is not shown.
 
-  const withSeq = data.map((d) => ({ ...d, seqNo: seqById?.get(d.id) ?? null }));
+     It must be correct under ANY filter or search, so it is computed over each
+     slab's WHOLE batch, never over the filtered subset: a Production Date search
+     (or any filter) can return only part of a batch, and ranking within that
+     slice would renumber it wrongly or drop it. So we take the batches present in
+     the result, read each one's full slab list, rank them by slab number, and map
+     every shown slab to its position — the same 1..N whether the list is the whole
+     batch, one day of it, or a single searched slab. A slab with no batch has no
+     in-batch position and shows "-". */
+  const batchIds = [...new Set(data.map((d) => d.batchRecipeId).filter((b): b is string => Boolean(b)))];
+  const batchSlabs = batchIds.length
+    ? await prisma.roboProductionRecord.findMany({
+        where: { batchRecipeId: { in: batchIds } },
+        select: { id: true, slabNumber: true, createdAt: true, batchRecipeId: true },
+      })
+    : [];
+  const seqById = sequenceNumbersById(
+    batchSlabs.map((s) => ({ id: s.id, slabNumber: s.slabNumber, createdAtMs: s.createdAt.getTime(), batchRecipeId: s.batchRecipeId as string })),
+    (s) => s.batchRecipeId,
+  );
+
+  const withSeq = data.map((d) => ({ ...d, seqNo: seqById.get(d.id) ?? null }));
   return NextResponse.json(withSeq);
 }
 
