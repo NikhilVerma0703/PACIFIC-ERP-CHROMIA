@@ -211,7 +211,33 @@ export interface ProductPayload {
   ERP_Available_Slabs__c: number;
   ERP_Match__c: MatchState;
   ERP_Other_Thickness_Stock__c: string;
+  /** When this count was true. Passed in rather than read from a clock, so the
+   *  function stays pure and every product in one run carries the same stamp. */
+  ERP_Stock_As_Of__c: string;
 }
+
+/**
+ * EVERY KEY THE ERP MAY PUT IN A Product2 PAYLOAD — `Id`, which addresses the
+ * record rather than writing a field, and nothing else that is not an `ERP_`
+ * field.
+ *
+ * NOT A STYLE RULE. The Salesforce administrator added a validation rule,
+ * `ERP_writes_ERP_fields_only` (2026-09-16), because Products are Public
+ * Read/Write in that org and Edit on Product2 would otherwise let this job
+ * rename a product or deactivate it. The rule REJECTS an ERP write to Name,
+ * Active, Record Type, Currency, Family, Product Code, Description, SKU, Unit
+ * of Measure, Display URL or External ID. A payload that strays outside this
+ * list does not silently do the wrong thing — it fails the whole composite
+ * call, and every product in the batch with it.
+ */
+export const PRODUCT_WRITABLE_KEYS: readonly string[] = Object.freeze([
+  "Id",
+  "ERP_SKU__c",
+  "ERP_Available_Slabs__c",
+  "ERP_Match__c",
+  "ERP_Other_Thickness_Stock__c",
+  "ERP_Stock_As_Of__c",
+]);
 
 /**
  * EVERY PRODUCT GETS A PAYLOAD EVERY RUN, and that is the whole fix for a
@@ -221,13 +247,18 @@ export interface ProductPayload {
  *
  * ERP_In_Stock__c is deliberately NOT here: it is a formula on
  * ERP_Available_Slabs__c > 0, so the flag a rep filters on cannot drift from
- * the count it claims to describe.
+ * the count it claims to describe. Writing to it would not merely be redundant,
+ * it would fail — Salesforce refuses a write to a formula field.
  */
 export function productPayloads(
   products: ReadonlyArray<ProductRow>,
   lines: ReadonlyArray<PublishedLine>,
   canonicalNames: ReadonlySet<string>,
   productCodes: ReadonlySet<string>,
+  /** ISO-8601 instant this run read the yard. One value for the whole run, so
+   *  every product agrees about when the count was taken — and passed in, never
+   *  read from a clock here, so the same inputs always give the same output. */
+  asOf = "",
 ): ProductPayload[] {
   const byCode = new Map(lines.map((l) => [l.code, l]));
   // Stock of the same design at thicknesses Salesforce does not sell.
@@ -263,6 +294,7 @@ export function productPayloads(
       ERP_Available_Slabs__c: line?.available ?? 0,
       ERP_Match__c: match,
       ERP_Other_Thickness_Stock__c: siblings.map((s) => `${s.mm} mm: ${s.available}`).join(", "),
+      ERP_Stock_As_Of__c: asOf,
     };
   });
 }

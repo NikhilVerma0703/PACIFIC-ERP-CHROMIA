@@ -9,13 +9,16 @@
 //
 // Pure: node --test loads stock-rules.ts bare. Nothing here touches Salesforce.
 import { test } from "node:test";
+import { readFileSync, readdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import {
   THICKNESS_MM, thicknessMmFor, canonicalDesign, qzCode, isKnownDesign,
-  buildStockLines, productPayloads, diffMirror, payloadHash, summarise,
+  buildStockLines, productPayloads, diffMirror, payloadHash, summarise, PRODUCT_WRITABLE_KEYS,
   slabRow, sampleRow, finishRow, unitRow,
   type StockGroup, type ProductRow, type StockRow, type MirrorEntry,
 } from "../src/lib/salesforce/stock-rules.ts";
+import { WRITABLE_OBJECTS, READABLE_OBJECTS, mayWrite, mayDelete } from "../src/lib/salesforce/limits.ts";
 
 // ── the twelve biggest matches, DISCOVERY §3 ─────────────────────────────────
 const TWELVE: Array<[string, string, number]> = [
@@ -331,4 +334,103 @@ test("canonicalDesign leans on the alias table and is never memoised across runs
   assert.equal(canonicalDesign("  Astal Mist  ", aliases), "Astral Mist", "the yard pads its text");
   assert.equal(canonicalDesign("Unknown Thing", aliases), "Unknown Thing", "passes through, and is refused later");
   assert.equal(canonicalDesign("", aliases), "");
+});
+
+// ───────── what the org will actually accept, as built on 2026-09-16 ────────
+
+test("a Product2 payload writes Id and ERP_ fields, and nothing else the org would reject", () => {
+  // THE ORG ENFORCES THIS TOO, which is why it is worth pinning here rather
+  // than trusting the shape of an object literal. Products are Public
+  // Read/Write in Pacific's org, so Edit on Product2 would let this job rename
+  // a product or deactivate it; the administrator added a validation rule
+  // (ERP_writes_ERP_fields_only) that REJECTS an ERP write to Name, Active,
+  // Record Type, Currency, Family, Product Code, Description, SKU, Unit of
+  // Measure, Display URL or External ID.
+  //
+  // A stray key therefore does not quietly do the wrong thing — it fails the
+  // whole composite call and takes every product in the batch with it. Adding
+  // a field here without adding it in Salesforce first breaks the run.
+  const payloads = productPayloads(
+    [{ id: "01t1", name: "Arva White", productCode: "QZ-ARVAWHITE-20", erpSku: null }],
+    [], CANONICALS, PRODUCT_CODES, "2026-09-16T08:00:00.000Z",
+  );
+  for (const p of payloads) {
+    for (const key of Object.keys(p)) {
+      assert.ok(PRODUCT_WRITABLE_KEYS.includes(key), `${key} is not a key the org will accept`);
+      assert.ok(key === "Id" || key.startsWith("ERP_"), `${key} is neither the record id nor an ERP_ field`);
+    }
+  }
+  // ERP_In_Stock__c is a FORMULA in Salesforce — writing it would fail, and it
+  // must stay derived so the flag reps filter on cannot drift from the count.
+  assert.equal(PRODUCT_WRITABLE_KEYS.includes("ERP_In_Stock__c"), false);
+});
+
+test("every product in one run carries the same as-of stamp, and it is passed in, not read", () => {
+  // One value for the whole run, so two products never disagree about when the
+  // yard was counted. Passed in rather than taken from a clock here: the same
+  // inputs must always produce the same output, which is what lets a dry run be
+  // compared with the run that follows it.
+  const AT = "2026-09-16T08:00:00.000Z";
+  const products: ProductRow[] = [
+    { id: "01t1", name: "Arva White", productCode: "QZ-ARVAWHITE-20", erpSku: null },
+    { id: "01t2", name: "Sakura", productCode: "QZ-SAKURA-20", erpSku: null },
+  ];
+  const payloads = productPayloads(products, [], CANONICALS, PRODUCT_CODES, AT);
+  assert.deepEqual([...new Set(payloads.map((p) => p.ERP_Stock_As_Of__c))], [AT]);
+  // Called twice with the same arguments, the answer is identical.
+  assert.deepEqual(productPayloads(products, [], CANONICALS, PRODUCT_CODES, AT), payloads);
+});
+
+// ───────── the promises made to the Salesforce administrator ────────────────
+
+test("the ERP writes to six objects and no others — the field-service app is out of bounds", () => {
+  // The integration user's profile (Salesforce API Only System Integrations)
+  // grants create and edit on every CI_FST__* object: visits, beats, expenses,
+  // attendance. The administrator told us rather than assuming we knew, and an
+  // allowlist is the answer that survives somebody adding a feature later.
+  for (const o of ["CI_FST__Visit__c", "CI_FST__Beat__c", "CI_FST__Expense__c", "CI_FST__Attendance__c"]) {
+    assert.equal(mayWrite(o), false, `${o} must never be writable`);
+  }
+  for (const o of ["Contact", "Lead", "Case", "Order", "Pricebook2", "PricebookEntry"]) {
+    assert.equal(mayWrite(o), false, o);
+  }
+  // And the six that are.
+  assert.deepEqual([...WRITABLE_OBJECTS].sort(), [
+    "ERP_Stock__c", "Integration_Log__c", "Product2",
+    // "_I" sorts before "__", so the Item object precedes its parent here.
+    "Sample_Dispatch_Item__c", "Sample_Dispatch__c", "Sample_Stand__c",
+  ]);
+  for (const o of WRITABLE_OBJECTS) assert.equal(mayWrite(o), true, o);
+  assert.equal(mayWrite(""), false);
+  assert.equal(mayWrite("product2"), false, "the API name is case-sensitive; a near miss is a refusal");
+
+  // Read-only, and Account is on it deliberately: the request pull selects
+  // Account__r.Name and the pack writes the package out under it.
+  assert.ok(READABLE_OBJECTS.includes("Account"));
+  assert.equal(mayWrite("Account"), false);
+});
+
+test("the ERP has no delete, and the source carries none either", () => {
+  // THE ORG CANNOT STOP US. At Stage 4 the integration user needs Modify All on
+  // Sample_Dispatch__c — the only permission that can write to a request locked
+  // by the approval process, which is the point of the feature. Salesforce's
+  // Modify All INCLUDES delete and there is no narrower grant, so the
+  // administrator asked whether we still wanted it knowing that. We said yes,
+  // and that the promise would be checkable rather than merely stated. This is
+  // where it is checked.
+  for (const o of [...WRITABLE_OBJECTS, "Sample_Dispatch__c", "anything at all"]) {
+    assert.equal(mayDelete(o), false, o);
+  }
+
+  // And no module under lib/salesforce may issue one. Whoever needs a delete
+  // has to defeat this test deliberately, and explain why in the commit.
+  const dir = fileURLToPath(new URL("../src/lib/salesforce/", import.meta.url));
+  const files = readdirSync(dir).filter((f) => f.endsWith(".ts"));
+  assert.ok(files.length > 0, "the folder must exist for this guard to mean anything");
+  for (const f of files) {
+    const src = readFileSync(dir + f, "utf8");
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    assert.equal(/method:\s*["'`]DELETE["'`]/i.test(code), false, `${f} issues an HTTP DELETE`);
+    assert.equal(/deleteSobject|sobjects\/[^"'`]*\/delete/i.test(code), false, `${f} calls a delete endpoint`);
+  }
 });
