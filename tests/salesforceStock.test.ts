@@ -22,6 +22,7 @@ import {
 import {
   WRITABLE_OBJECTS, READABLE_OBJECTS, mayWrite, mayDelete,
   REQUEST_WRITABLE_FIELDS, mayWriteRequestField, refusePackForApproval, isFieldServiceObject,
+  mayApprove, forbiddenPath,
 } from "../src/lib/salesforce/limits.ts";
 
 // ── the twelve biggest matches, DISCOVERY §3 ─────────────────────────────────
@@ -449,13 +450,23 @@ test("the ERP has no delete, and the source carries none either", () => {
   // And no module under lib/salesforce may issue one. Whoever needs a delete
   // has to defeat this test deliberately, and explain why in the commit.
   const dir = fileURLToPath(new URL("../src/lib/salesforce/", import.meta.url));
-  const files = readdirSync(dir).filter((f) => f.endsWith(".ts"));
+  // limits.ts is excluded because it is the file that NAMES the forbidden
+  // things — it must contain the strings this scan looks for, or it could not
+  // refuse them. Every other module under lib/salesforce is scanned.
+  const files = readdirSync(dir).filter((f) => f.endsWith(".ts") && f !== "limits.ts");
   assert.ok(files.length > 0, "the folder must exist for this guard to mean anything");
   for (const f of files) {
     const src = readFileSync(dir + f, "utf8");
     const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     assert.equal(/method:\s*["'`]DELETE["'`]/i.test(code), false, `${f} issues an HTTP DELETE`);
     assert.equal(/deleteSobject|sobjects\/[^"'`]*\/delete/i.test(code), false, `${f} calls a delete endpoint`);
+    // AND NEVER APPROVES. Modify All carries three riders, not one: delete,
+    // owner-change, and the right to APPROVE. The third is the worst of them —
+    // a delete leaves a hole somebody notices, an owner change takes a request
+    // off the desk's list, but an approval is invisible and final: the stand
+    // ships and Salesforce records a clean approval against a manager who
+    // never saw it.
+    assert.equal(/process\/approvals/i.test(code), false, `${f} calls the approvals endpoint`);
   }
 });
 
@@ -600,4 +611,101 @@ test("Not Required with an approver is a FAILED submission, not a carve-out", ()
   // Approved still packs whether or not an approver is recorded.
   assert.equal(refusePackForApproval("Approved", "005xx0000012345"), null);
   assert.equal(refusePackForApproval("Approved", null), null);
+});
+
+test("the ERP never approves, and the forbidden paths are refused by name", () => {
+  // The promise we made the administrator in writing (REPLY round 2, §4) and
+  // had NOT enforced: Modify All grants approve as well as delete and
+  // owner-change, and only our own code can decline it.
+  for (const o of [...WRITABLE_OBJECTS, "Sample_Dispatch__c"]) {
+    assert.equal(mayApprove(o), false, o);
+  }
+  for (const p of [
+    "/services/data/v62.0/process/approvals",
+    "/services/data/v62.0/process/approvals/",
+    "/SERVICES/DATA/V62.0/PROCESS/APPROVALS",
+    "/services/data/v62.0/process/rules/001xx/assignmentRules",
+  ]) {
+    assert.equal(forbiddenPath(p), true, p);
+  }
+  // The paths it legitimately uses are not caught by the filter.
+  for (const p of [
+    "/services/data/v62.0/composite/sobjects",
+    "/services/data/v62.0/composite/sobjects/ERP_Stock__c/ERP_Key__c",
+    "/services/data/v62.0/query?q=SELECT+Id+FROM+Product2",
+    "/services/oauth2/token",
+  ]) {
+    assert.equal(forbiddenPath(p), false, p);
+  }
+});
+
+// ───────── two defects an adversarial review found, both reproduced ─────────
+
+test("a case variant at another thickness is still the same design", () => {
+  // isKnownDesign tolerates case on purpose and qzCode strips punctuation, so
+  // "Arva White" and "arva white" publish as ONE code and TWO canonical
+  // strings. Grouping the other-thickness siblings by the STRING meant the two
+  // never met: the note came out empty, and once the 20 mm stock sold out the
+  // product read "No ERP design" over 118 real slabs. The 30 mm body is the
+  // largest in the yard and exactly where unaliased spellings live.
+  const P = [{ id: "01t1", name: "Arva White", productCode: "QZ-ARVAWHITE-20", erpSku: null, isActive: true, family: "Quartz Slab" }];
+  const mixed = buildStockLines(
+    [{ design: "Arva White", slabThickness: "2 cm", available: 417 },
+     { design: "arva white", slabThickness: "3 cm", available: 118 }],
+    NO_ALIASES, CANONICALS, PRODUCT_CODES,
+  );
+  assert.equal(mixed.lines.length, 2, "two codes, because the thicknesses differ");
+  const [p] = productPayloads(P, mixed.lines, CANONICALS, PRODUCT_CODES, "T");
+  assert.equal(p!.ERP_Other_Thickness_Stock__c, "30 mm: 118", "the variant's stock is still visible");
+  assert.equal(p!.ERP_Match__c, "Matched");
+
+  // And the failure that mattered: 20 mm sold out, 30 mm held under a variant.
+  const onlyThirty = buildStockLines(
+    [{ design: "arva white", slabThickness: "3 cm", available: 118 }],
+    NO_ALIASES, CANONICALS, PRODUCT_CODES,
+  );
+  const [q] = productPayloads(P, onlyThirty.lines, CANONICALS, PRODUCT_CODES, "T");
+  assert.equal(q!.ERP_Match__c, "Not at this thickness", "NOT 'No ERP design' — we hold 118 of them");
+  assert.equal(q!.ERP_Other_Thickness_Stock__c, "30 mm: 118");
+
+  // A design whose NAME ends in a digit keeps it: the stem strips the
+  // thickness only. The org really has "Astral Mist Kreos Trail-2".
+  const trail = new Set(["Astral Mist Kreos Trail-2"]);
+  const codes = new Set(["QZ-ASTRALMISTKREOSTRAIL2-20"]);
+  const lines = buildStockLines(
+    [{ design: "Astral Mist Kreos Trail-2", slabThickness: "3 cm", available: 7 }],
+    NO_ALIASES, trail, codes,
+  ).lines;
+  const [r] = productPayloads(
+    [{ id: "01t9", name: "x", productCode: "QZ-ASTRALMISTKREOSTRAIL2-20", erpSku: null, isActive: true, family: "Quartz Slab" }],
+    lines, trail, codes, "T",
+  );
+  assert.equal(r!.ERP_Other_Thickness_Stock__c, "30 mm: 7");
+});
+
+test("a sold-out row is written to zero ONCE, and never renamed to its own key", () => {
+  // Two defects in one row. The zeroing row was built with `name: key`, so
+  // pushing it would put the literal "SLAB|QZ-ARVAWHITE-20" into the Name a rep
+  // searches by, replacing "Arva White 20 mm". And its hash was never compared,
+  // so it was re-pushed on EVERY run — at ten runs an hour against a
+  // thousand-call daily budget, a few hundred permanently sold-out lines would
+  // spend the budget saying nothing.
+  const arva = slabRow({ canonical: "Arva White", mm: 20, code: "QZ-ARVAWHITE-20", available: 0 }, "01t1");
+  const first = diffMirror([], new Map([[arva.key, { key: arva.key, payloadHash: "something-else" }]]), () => true);
+  assert.equal(first.toPush.length, 1, "the line is gone: zero it");
+  assert.equal(first.toPush[0]!.available, 0);
+  assert.equal(first.toPush[0]!.retired, false, "sold out, not retired — it stays searchable");
+  assert.equal(first.toPush[0]!.name, null, "and the Name is left alone, not overwritten with the key");
+
+  // Second run, mirror now holding exactly what we pushed: nothing to do.
+  const zeroed = first.toPush[0]!;
+  const second = diffMirror([], new Map([[zeroed.key, { key: zeroed.key, payloadHash: payloadHash(zeroed) }]]), () => true);
+  assert.deepEqual(second.toPush, [], "already zero: no second call, and no third");
+  assert.equal(second.unchanged, 1);
+
+  // A key whose design was merged away is retired once, and also unnamed.
+  const gone = diffMirror([], new Map([["SLAB|QZ-ASTALMIST-20", { key: "SLAB|QZ-ASTALMIST-20", payloadHash: "x" }]]), () => false);
+  assert.equal(gone.toRetire.length, 1);
+  assert.equal(gone.toRetire[0]!.retired, true);
+  assert.equal(gone.toRetire[0]!.name, null);
 });

@@ -190,3 +190,41 @@ export function refusePackForApproval(
   if (s === "Pending") return "Awaiting approval in Salesforce. If the rep has recalled it, they must submit it again before the desk can pack.";
   return `Approval status is ${s || "not set"} — the desk packs only what is Approved or Not Required.`;
 }
+
+/**
+ * THE ERP NEVER APPROVES ANYTHING.
+ *
+ * Modify All carries three riders, not one. Delete is fenced by mayDelete;
+ * owner-change by REQUEST_WRITABLE_FIELDS above; and the third — the right to
+ * APPROVE a record — had only a sentence in a reply to the administrator
+ * saying we would not. A promise in prose is what this file exists to replace.
+ *
+ * An ERP approval would be the worst of the three failures. A delete leaves a
+ * hole somebody notices and sits in the Recycle Bin for fifteen days; an owner
+ * change takes a request off the desk's list, which the desk eventually spots.
+ * An approval is INVISIBLE and FINAL: the New Stand ships, Salesforce records a
+ * clean approval against a manager who never saw it, and the one thing the
+ * approval process exists to guarantee has been skipped with no trace that
+ * anything went wrong.
+ *
+ * The ERP's job is to tell the approver what is in stock. Deciding is the
+ * manager's.
+ */
+export function mayApprove(_sobject: string): false {
+  void _sobject;
+  return false;
+}
+
+/**
+ * The REST paths this integration is forbidden to call, whatever it is doing.
+ * Matched case-insensitively against a request path, since Salesforce is.
+ */
+export const FORBIDDEN_PATHS: readonly string[] = Object.freeze([
+  "/process/approvals",   // approve or reject a record
+  "/process/rules",       // fire assignment rules
+]);
+
+export function forbiddenPath(path: string): boolean {
+  const p = String(path ?? "").toLowerCase();
+  return FORBIDDEN_PATHS.some((f) => p.includes(f));
+}

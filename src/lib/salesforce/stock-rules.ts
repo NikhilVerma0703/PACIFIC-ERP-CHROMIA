@@ -311,12 +311,30 @@ export function productPayloads(
   // isSellableProduct for what writing to the other 173 would do.
   const sellable = (products ?? []).filter(isSellableProduct);
   const byCode = new Map(lines.map((l) => [l.code, l]));
-  // Stock of the same design at thicknesses Salesforce does not sell.
-  const byCanonical = new Map<string, PublishedLine[]>();
+
+  // STOCK OF THE SAME DESIGN AT THICKNESSES SALESFORCE DOES NOT SELL, grouped
+  // by the CODE STEM and not by the canonical string.
+  //
+  // Grouping by the string was wrong in a way that hid real stock. isKnownDesign
+  // deliberately tolerates case — it asks canonicalNames.has(name.toLowerCase())
+  // — and qzCode strips every non-alphanumeric, so "Arva White" and "arva white"
+  // publish as ONE product code and TWO different `canonical` strings. Keyed on
+  // the string, the two never met: with the 20 mm rows typed "Arva White" and
+  // the 30 mm rows typed "arva white", the product's other-thickness note came
+  // out EMPTY and, once the 20 mm stock sold out, the product read "No ERP
+  // design" — over 118 real slabs.
+  //
+  // That is exactly where it would bite. The 30 mm body is the largest in the
+  // yard (10,391 slabs) and is precisely where unaliased spellings live; a rep
+  // would read "No ERP design" as a design we have never held.
+  //
+  // The stem is what the two share, so the stem is the key.
+  const byStem = new Map<string, PublishedLine[]>();
   for (const l of lines) {
-    const list = byCanonical.get(l.canonical) ?? [];
+    const stem = codeStem(l.code);
+    const list = byStem.get(stem) ?? [];
     list.push(l);
-    byCanonical.set(l.canonical, list);
+    byStem.set(stem, list);
   }
 
   return sellable.map((p) => {
@@ -326,9 +344,8 @@ export function productPayloads(
     const key = (p.erpSku && p.erpSku.trim()) || p.productCode;
     const line = byCode.get(key);
     const mm = Number(String(key).split("-").pop());
-    const canonical = line?.canonical ?? canonicalFromCode(key, canonicalNames, productCodes);
 
-    const siblings = (canonical ? byCanonical.get(canonical) ?? [] : [])
+    const siblings = (byStem.get(codeStem(key)) ?? [])
       .filter((l) => l.mm !== mm && l.available > 0)
       .sort((a, b) => a.mm - b.mm);
 
@@ -359,16 +376,17 @@ function clamp255(s: string): string {
   return s.length <= 255 ? s : `${s.slice(0, 252)}...`;
 }
 
-/** The canonical a product code names, when the ERP recognises it. */
-function canonicalFromCode(code: string, canonicalNames: ReadonlySet<string>, productCodes: ReadonlySet<string>): string {
-  for (const name of canonicalNames) {
-    for (const mm of Object.values(THICKNESS_MM)) {
-      if (qzCode(name, mm) === code) return name;
-    }
-  }
-  // A product whose design the ERP has never held at all.
-  void productCodes;
-  return "";
+/**
+ * `QZ-ARVAWHITE-20` -> `QZ-ARVAWHITE`: a product code without its thickness.
+ *
+ * This is what two spellings of one design have in common, and therefore the
+ * only safe key for "the same design at another thickness". Anchored on a
+ * trailing run of digits so a design whose NAME ends in a number — the org has
+ * "Astral Mist Kreos Trail-2", which folds to ...TRAIL2 — keeps its digits and
+ * loses only the thickness.
+ */
+function codeStem(code: string): string {
+  return String(code ?? "").replace(/-\d+$/, "");
 }
 
 // ── ERP_Stock__c, the thing a rep actually searches ─────────────────────────
@@ -378,7 +396,17 @@ export type StockKind = "Slab" | "Sample" | "Box" | "Stand";
 export interface StockRow {
   key: string;
   kind: StockKind;
-  name: string;
+  /**
+   * NULL MEANS "LEAVE THE NAME ALONE", and it is not a nicety.
+   *
+   * A row that has dropped out of the desired set is written to zero — sold
+   * out, or retired — and by then the line is gone and we no longer know what
+   * it was called. Building that row with `name: key` put the literal string
+   * "SLAB|QZ-ARVAWHITE-20" into the Name of a record a rep searches by name,
+   * replacing "Arva White 20 mm". The caller omits Name from the payload when
+   * this is null, so the update touches only the quantity and the flag.
+   */
+  name: string | null;
   available: number;
   retired: boolean;
   /** Extra columns the object carries for this kind. */
@@ -474,18 +502,22 @@ export function diffMirror(
 
   for (const [key, entry] of mirror) {
     if (wanted.has(key)) continue;
-    void entry;
     const row: StockRow = {
       key,
       kind: kindFromKey(key),
-      name: key,
+      // The line is gone, so its name is not ours to restate — see StockRow.
+      name: null,
       available: 0,
       retired: !stillResolves(key),
       fields: {},
     };
-    // A key still resolving is sold out, and is pushed to zero like any other
-    // change. One that no longer resolves is retired, once.
+    // A key still resolving is SOLD OUT: pushed to zero like any other change,
+    // and then LEFT ALONE. Comparing its hash the way a desired row's is
+    // compared is what stops it being re-pushed on every run for ever — at ten
+    // runs an hour against a thousand-call daily budget, a few hundred
+    // permanently sold-out lines would spend the budget saying nothing.
     if (row.retired) toRetire.push(row);
+    else if (entry.payloadHash === payloadHash(row)) unchanged += 1;
     else toPush.push(row);
   }
 
