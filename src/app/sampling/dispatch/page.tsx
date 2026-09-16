@@ -50,8 +50,17 @@ interface DispatchLine {
   sizeLabel: string;
   label: string;
 }
+/** A box or stand the desk can pack this package in (scripts/0086). */
+type UnitOption = {
+  id: string;
+  name: string;
+  serialised: boolean;
+  available: number;
+  serials: Array<{ id: string; serialNo: string; status: string }>;
+};
 interface Dispatch {
   id: string;
+
   customerName: string;
   destination: string;
   reference: string | null;
@@ -241,6 +250,21 @@ function ConsignmentBuilder({
   const [customerName, setCustomerName] = useState("");
   const [destination, setDestination] = useState("DOMESTIC");
   const [reference, setReference] = useState("");
+  // WHAT THE PACKAGE IS PACKED IN (scripts/0086). Optional, because a walk-in
+  // package of loose pieces genuinely goes out in nothing — but ASKED, because
+  // without it the box count drifts within a week: the desk would consume a box
+  // for every Salesforce request and never for a package it made by hand, and
+  // the two counts would part company silently.
+  const [unitTypeId, setUnitTypeId] = useState("");
+  const [unitSerialId, setUnitSerialId] = useState("");
+  const [units, setUnits] = useState<UnitOption[]>([]);
+  useEffect(() => {
+    void fetch("/api/sampling/units", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => setUnits(Array.isArray(d?.types) ? d.types : []))
+      .catch(() => setUnits([]));
+  }, []);
+  const chosen = units.find((u) => u.id === unitTypeId) ?? null;
   const [notes, setNotes] = useState("");
   const [lines, setLines] = useState<DraftLine[]>([]);
 
@@ -298,7 +322,10 @@ function ConsignmentBuilder({
     [lines, onHand],
   );
 
-  const ready = customerName.trim() !== "" && lines.length > 0 && plan.ok && !busy;
+  // A serialised unit picked but not named is not ready: the route refuses it
+  // too, and this is the same rule said where the person is standing.
+  const unitReady = !chosen?.serialised || unitSerialId !== "";
+  const ready = customerName.trim() !== "" && lines.length > 0 && plan.ok && unitReady && !busy;
   const field = "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs disabled:opacity-50";
   const label = "mb-1 block text-[11px] font-medium text-gray-500";
 
@@ -339,6 +366,32 @@ function ConsignmentBuilder({
           <input id="cd-ref" className={field} value={reference} disabled={busy}
             onChange={(e) => setReference(e.target.value)} />
         </div>
+        <div>
+          <label className={label} htmlFor="cd-unit">Packed in (optional)</label>
+          <select id="cd-unit" className={field} value={unitTypeId} disabled={busy}
+            onChange={(e) => { setUnitTypeId(e.target.value); setUnitSerialId(""); }}>
+            <option value="">Nothing — loose pieces</option>
+            {units.map((u) => (
+              <option key={u.id} value={u.id} disabled={u.available <= 0}>
+                {u.name}{u.available <= 0 ? " — none available" : ` — ${u.available} available`}
+              </option>
+            ))}
+          </select>
+        </div>
+        {/* A SERIALISED TYPE MUST NAME WHICH ONE. "A Floor Stand went out" is
+            not an answer anybody can act on six months later; FS-0007 is. */}
+        {chosen?.serialised && (
+          <div>
+            <label className={label} htmlFor="cd-serial">Which one</label>
+            <select id="cd-serial" className={field} value={unitSerialId} disabled={busy}
+              onChange={(e) => setUnitSerialId(e.target.value)}>
+              <option value="">Choose a stand…</option>
+              {chosen.serials.filter((x) => x.status === "IN_STOCK").map((x) => (
+                <option key={x.id} value={x.id}>{x.serialNo}</option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {/* The lines. */}
@@ -448,8 +501,14 @@ function ConsignmentBuilder({
         </p>
         <button
           onClick={async () => {
-            await onRelease({ customerName: customerName.trim(), destination, reference: reference.trim() || null, notes: notes.trim() || null, lines });
-            setLines([]); setCustomerName(""); setReference(""); setNotes(""); setQty(""); setOpen(false);
+            await onRelease({
+              customerName: customerName.trim(), destination,
+              reference: reference.trim() || null, notes: notes.trim() || null, lines,
+              unitTypeId: unitTypeId || undefined,
+              unitSerialId: unitSerialId || undefined,
+            });
+            setLines([]); setCustomerName(""); setReference(""); setNotes(""); setQty("");
+            setUnitTypeId(""); setUnitSerialId(""); setOpen(false);
           }}
           disabled={!ready}
           className="shrink-0 rounded-lg bg-gray-900 px-4 py-1.5 text-xs font-bold text-white transition hover:bg-gray-700 disabled:opacity-40">
