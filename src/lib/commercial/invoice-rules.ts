@@ -1347,6 +1347,30 @@ export function refuseInvoiceForSeller(
   return `A DTA invoice is an Indian domestic tax document and ${seller.label} does not raise one. This order is marked DOMESTIC and sold by ${seller.label}; correct whichever is wrong — the selling company on the order, or its kind — and raise the invoice again.`;
 }
 
+/**
+ * HAS THE SELLING COMPANY MOVED SINCE THIS DRAFT WAS FROZEN?
+ *
+ * The snapshot freezes the seller at draft time, and `commercial_order.
+ * seller_key` stays editable at every order status. Guarding the ORDER would
+ * be the wrong fix: correcting a misfiled order is a legitimate act at any
+ * moment, and it is the ISSUE that must not proceed on stale paper.
+ *
+ * Returns null when the two agree and the sentence to refuse with when they do
+ * not. Both sides are read through piSellerFrom, so "", null, "pespl" and
+ * "PESPL" are one answer and an unknown key is the default seller rather than
+ * a spurious mismatch.
+ */
+export function refuseIssueSellerChanged(
+  snapshot: InvoiceSnapshot,
+  orderSellerKey: string | null | undefined,
+  settings: CommercialSettings,
+): string | null {
+  const frozen = invoiceSeller(snapshot);
+  const live = piSellerFrom(settings, orderSellerKey);
+  if (frozen.key === live.key) return null;
+  return `This draft was raised for ${frozen.label}, but the order now says ${live.label}. Cancel it and raise the invoice again, so the number and the printed company come from the same place.`;
+}
+
 export function buildInvoiceSnapshot(
   order: InvoiceOrderInput,
   settings: CommercialSettings,
@@ -1560,12 +1584,28 @@ export function applyDraftPatch(snapshot: InvoiceSnapshot & Partial<InvoiceSnaps
   }
   let gstinChanged = false;
   if ("gstin" in p) {
-    // A seller that is not an Indian exporter has no GSTIN to choose between,
-    // so the field is refused by name rather than silently applied. The screen
-    // does not offer it either; this guards a direct caller.
-    const choice = seller.indianExporter ? gstinChoiceFor(settings, printable(p.gstin) || null) : null;
-    if (!choice) rejected.push("gstin");
-    else if (choice.gstin !== next.gstin) {
+    // A seller that is not an Indian exporter has no GSTIN to choose between.
+    //
+    // BUT A BLANK ONE IS NOT AN ATTEMPT TO SET ONE, and refusing it by name
+    // broke the whole card. InvoiceDetail.saveRegistration always sends gstin,
+    // gstinApplyAll and bankKey in ONE body, and the PATCH route turns any
+    // non-empty `rejected` into a 400 for the whole request — so on a Monolith
+    // draft the mere presence of an empty gstin key refused the BANK change
+    // sitting beside it, with a GSTIN error the clerk could do nothing about.
+    // The card was unusable for the one seller it was just taught to handle.
+    //
+    // So: a blank GSTIN on a non-Indian seller is ignored, and only a real one
+    // is refused — which is the actual mistake worth naming.
+    const wantsGstin = Boolean(printable(p.gstin));
+    const choice = seller.indianExporter
+      ? gstinChoiceFor(settings, printable(p.gstin) || null)
+      : null;
+    if (!choice) {
+      // Refused only when a GSTIN was actually asked for. A blank one on a
+      // non-Indian seller is simply nothing to do, and the rest of the body
+      // (the bank) goes through as the clerk intended.
+      if (seller.indianExporter || wantsGstin) rejected.push("gstin");
+    } else if (choice.gstin !== next.gstin) {
       next.gstin = choice.gstin;
       next.gstinLabel = gstinLabelFor(settings, choice);
       next.company = { ...next.company, gstin: choice.gstin };

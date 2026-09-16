@@ -333,7 +333,7 @@ export async function PATCH(req: NextRequest) {
 
   const current = await prisma.samplingDispatch.findUnique({
     where: { id: dispatchId },
-    select: { id: true, status: true, customerName: true },
+    select: { id: true, status: true, customerName: true, unitSerialId: true, unitTypeId: true },
   });
   if (!current) return bad("That package is not there any more — refresh the board.", 404);
 
@@ -348,13 +348,38 @@ export async function PATCH(req: NextRequest) {
   // overwrite the first person's name and time with its own. updateMany with the
   // old status in the WHERE is one atomic statement: exactly one of them
   // matches a row.
-  const moved = await prisma.samplingDispatch.updateMany({
-    where: { id: dispatchId, status: current.status },
-    data: {
-      status: to,
-      [stamp.at]: new Date(),
-      [stamp.by]: (g.user as { id?: string })?.id ?? null,
-    },
+  // THE STAND TRAVELS WITH THE PACKAGE IT LEFT ON, and it did not until now.
+  // releasePackage sets a chosen serial to RELEASED, and this PATCH advanced
+  // only the package — so a stand entered RELEASED and could never reach
+  // DISPATCHED, because nothing in the app performed that move. The serials
+  // route offers a person only "came back", "back on shelf" and "retire", and
+  // its own header promises the stand "moves on to DISPATCHED when that
+  // package does, on the dispatch board". It did not. A stand in a customer's
+  // showroom would have read RELEASED for ever, and "came back" was refused
+  // from RELEASED, so the only exit was to put it back on the shelf while it
+  // was standing in Chennai.
+  //
+  // One transaction with the package move, and conditional on the status we
+  // read, for the same reason the package update is: two taps must not both
+  // stamp it. DELIVERED does not touch the stand — a delivered package says
+  // the pieces arrived; whether the stand was INSTALLED is Salesforce's to
+  // say, and RETURNED is a person's.
+  const moved = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    const m = await tx.samplingDispatch.updateMany({
+      where: { id: dispatchId, status: current.status },
+      data: {
+        status: to,
+        [stamp.at]: new Date(),
+        [stamp.by]: (g.user as { id?: string })?.id ?? null,
+      },
+    });
+    if (m.count > 0 && to === "DISPATCHED" && current.unitSerialId) {
+      await tx.samplingUnitSerial.updateMany({
+        where: { id: current.unitSerialId, status: "RELEASED" },
+        data: { status: "DISPATCHED" },
+      });
+    }
+    return m;
   });
   if (moved.count === 0) {
     return bad("Someone else moved this package first — refresh the board.", 409);

@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import {
   buildInvoiceLines, buildInvoiceSnapshot, applyDraftPatch,
   invoiceSeller, invoicePrintsIndianBlock, invoiceCompanyBlock,
-  refuseInvoiceForSeller, sequenceKindFor, exporterParty,
+  refuseInvoiceForSeller, refuseIssueSellerChanged, sequenceKindFor, exporterParty,
 } from "../src/lib/commercial/invoice-rules.ts";
 import { printsSellerInvoice, siPrintFields, siTotalRow, siTotalSlabs } from "../src/lib/commercial/seller-invoice-rules.ts";
 import { DEFAULT_SETTINGS, invoiceNumberingKind } from "../src/lib/commercial/settings-defaults.ts";
@@ -317,4 +317,57 @@ test("the proforma and the seller invoice share one format module, not two copie
   for (const sym of ["export const FS", "export const gridLayout", "export const outerGrid", "export const innerGrid", "export function pairRow", "export function fieldOrNull"]) {
     assert.ok(fmt.includes(sym), `format.ts must export ${sym}`);
   }
+});
+
+// ───────── the three defects an adversarial review found before this shipped ─
+
+test("the seller cannot drift between drafting an invoice and issuing it", () => {
+  // refuseInvoiceForSeller runs when the DRAFT is created. Nothing re-asked at
+  // issue, and commercial_order.seller_key stays editable at every order
+  // status — so: draft under Monolith, correct the order back to Pacific,
+  // press Issue, and an ISSUED invoice goes out numbered MSI-1 printing
+  // MONOLITH SURFACES INC on a Pacific shipment, which the export document set
+  // then refuses to accompany because the snapshot still says Monolith. The
+  // mirror is worse: an Indian GST tax invoice issued on an order the ERP
+  // records as sold by a US company.
+  const mono = snapFor({ sellerKey: "MONOLITH" });
+  const pac = snapFor({});
+
+  assert.equal(refuseIssueSellerChanged(mono, "MONOLITH", S), null, "unchanged: no refusal");
+  assert.equal(refuseIssueSellerChanged(pac, null, S), null);
+  assert.equal(refuseIssueSellerChanged(pac, "", S), null, "blank is the default seller, not a mismatch");
+  assert.equal(refuseIssueSellerChanged(pac, "pespl", S), null, "case is not a mismatch");
+  assert.equal(refuseIssueSellerChanged(pac, "NOSUCHKEY", S), null, "an unknown key is the default seller");
+
+  const drifted = refuseIssueSellerChanged(mono, null, S);
+  assert.ok(drifted, "a Monolith draft on an order now marked Pacific is refused");
+  assert.match(drifted!, /Monolith Surfaces Inc/);
+  assert.match(drifted!, /Cancel it and raise the invoice again/, "and says what to do about it");
+
+  const mirrored = refuseIssueSellerChanged(pac, "MONOLITH", S);
+  assert.ok(mirrored, "and the mirror too");
+  assert.match(mirrored!, /Pacific Engineered Surfaces/);
+});
+
+test("a Monolith draft's bank can still be changed — a blank GSTIN is not an attempt to set one", () => {
+  // The registration card sends gstin, gstinApplyAll and bankKey in ONE body,
+  // and the PATCH route turns any rejection into a 400 for the whole request.
+  // Refusing a blank gstin by name therefore refused the BANK change sitting
+  // beside it, with a GSTIN error the clerk could do nothing about — the card
+  // was unusable for the one seller it had just been taught to handle.
+  const mono = snapFor({ sellerKey: "MONOLITH" });
+  const asTheCardSends = applyDraftPatch(mono, { gstin: "", gstinApplyAll: false, bankKey: "domestic" }, S);
+  assert.deepEqual(asTheCardSends.rejected, [], "nothing refused");
+  assert.equal(asTheCardSends.snapshot.company.gstin, "", "and no Indian registration appears");
+  assert.equal(asTheCardSends.snapshot.bank.name, "ICICI Bank Limited, New York Branch", "still Monolith's own account");
+
+  // A REAL GSTIN is still refused, which is the mistake actually worth naming.
+  const real = applyDraftPatch(mono, { gstin: S.company.gstin }, S);
+  assert.ok(real.rejected.includes("gstin"));
+
+  // And Pacific is untouched by the change: a blank GSTIN there is still a
+  // refusal, because an Indian exporter always has one to choose.
+  const pac = snapFor({});
+  assert.equal(applyDraftPatch(pac, { gstin: S.company.gstin }, S).rejected.includes("gstin"), false);
+  assert.ok(applyDraftPatch(pac, { gstin: "not-a-gstin" }, S).rejected.includes("gstin"));
 });

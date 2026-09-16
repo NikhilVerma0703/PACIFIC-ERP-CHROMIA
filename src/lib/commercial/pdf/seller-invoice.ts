@@ -193,6 +193,13 @@ export function sellerInvoiceDocDef(snapshot: InvoiceSnapshot): any {
   const weightLines: any[] = [
     ...(f.grossWeight ? [{ text: [{ text: "Gross Wt : ", bold: true }, f.grossWeight], fontSize: FS.body }] : []),
     ...(f.netWeight ? [{ text: [{ text: "Net Wt : ", bold: true }, f.netWeight], fontSize: FS.body }] : []),
+    // WHAT A HUMAN TYPED ON THIS INVOICE. Both existing renderers print it
+    // (export-invoice.ts and dta-invoice.ts, in this same block) and the
+    // proforma prints the same string as its Terms & Conditions box. This file
+    // computed the field and then never drew it, which would have thrown away
+    // remarks somebody deliberately put on a customer's invoice — the one
+    // document type here that is new was the only one losing them.
+    ...(f.notes ? [{ text: f.notes, fontSize: FS.body, margin: [0, 3, 0, 0] }] : []),
     // NO HEADING OVER AN EMPTY DECLARATION. The Indian-origin certificate is a
     // statement only an Indian exporter can make; there is no US wording to
     // put in its place, and writing a certification for somebody else to sign

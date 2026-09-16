@@ -6,6 +6,7 @@
 // a decision a route delegates rather than makes.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   unitNeeded, unitAvailability, checkUnitRelease, checkPackage,
   proposeSerial, checkSerialTransition, adjustmentIssue, ledgerDrift,
@@ -178,4 +179,32 @@ test("managing units is its own action, and never the fabrication floor's", () =
   for (const a of SAMPLING_ACTIONS) {
     assert.ok(Array.isArray(SAMPLING_ACTORS[a]) && SAMPLING_ACTORS[a].length > 0, `${a} has actors`);
   }
+});
+
+// ───────── what an adversarial review found before this shipped ─────────────
+
+test("the stand travels with the package: RELEASED -> DISPATCHED is performed, not merely legal", () => {
+  // The defect: releasePackage set a chosen serial to RELEASED and the
+  // dispatch PATCH advanced only the PACKAGE, so a stand entered RELEASED and
+  // could never leave it. UNIT_SERIAL_NEXT declared the move legal, this file
+  // asserted it was legal, and the serials route's own header promised the
+  // stand "moves on to DISPATCHED when that package does, on the dispatch
+  // board" — and nothing in the app performed it. A stand standing in a
+  // customer's showroom would have read RELEASED for ever, and "came back" is
+  // refused from RELEASED, so the only exit was to put it back on the shelf
+  // while it was in Chennai.
+  //
+  // Pinned on the source, because no test here can run a route.
+  const src = readFileSync(new URL("../src/app/api/sampling/dispatch/route.ts", import.meta.url), "utf8");
+  assert.match(src, /samplingUnitSerial\.updateMany/, "the PATCH must advance the serial");
+  assert.match(src, /status: "RELEASED"[\s\S]{0,80}status: "DISPATCHED"/,
+    "conditional on RELEASED, so two taps cannot both stamp it");
+  assert.match(src, /to === "DISPATCHED"/, "and only when the package itself is dispatched");
+  // DELIVERED must NOT touch the stand: a delivered package says the pieces
+  // arrived. Whether the stand is INSTALLED is Salesforce's to say, and
+  // RETURNED is a person's.
+  assert.equal(/to === "DELIVERED"[\s\S]{0,200}samplingUnitSerial/.test(src), false,
+    "delivering a package must not move the stand");
+  // And it happens in the SAME transaction as the package move.
+  assert.match(src, /prisma\.\$transaction\([\s\S]{0,400}samplingUnitSerial/);
 });
