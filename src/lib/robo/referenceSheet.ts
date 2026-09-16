@@ -53,6 +53,19 @@ export function designMatchKey(name: string | null | undefined): string {
     .toLowerCase();
 }
 
+/**
+ * Is this a Robot delay code? Robot delays are the "G — Robot Delays" master
+ * section, whose codes all run C1…C20. We identify them by the CODE (starts with
+ * C followed by a digit), not by the stored `category`: on old/imported rows the
+ * category was left blank or inconsistent, which is why the Reference Sheet's
+ * Robot Delays row was coming out empty even when C-code delays had occurred.
+ * The code is the reliable signal — every non-robot section uses a different
+ * letter (RM/L/D/S/P/M/G/T), so a leading "C<digit>" is unambiguous.
+ */
+export function isRobotDelayCode(code: string | null | undefined): boolean {
+  return /^\s*C\d/i.test(code ?? "");
+}
+
 /** One delay reduced to what the union needs: its start as an absolute minute
  *  (date already folded in by the caller, null when the delay has no start time)
  *  and its stored duration in minutes. */

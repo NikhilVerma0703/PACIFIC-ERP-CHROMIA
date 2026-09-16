@@ -30,20 +30,10 @@ export async function GET(req: NextRequest) {
   const dash = (v: string | number | null | undefined) =>
     v === null || v === undefined || v === "" ? "-" : String(v);
 
-  const programsText = summary.programs.length
-    ? summary.programs.map((p) => `${p.robo}: ${p.program}`).join(", ")
-    : "-";
-
-  // Robot Delays: applicable G-category delays, else BLANK (the operator's rule —
-  // an empty field, not a dash).
-  const robotDelaysText = summary.robotDelays.length
-    ? summary.robotDelays
-        .map((d) => `${d.code} — ${d.description}${d.events > 1 ? ` (${d.events}×)` : ""}`)
-        .join("; ")
-    : "";
-
-  // The ten items, each on its own row: label in column A, value in column B.
-  const items: [string, string][] = [
+  // Each information item on its own row: label in column A, value in column B.
+  // Single-value items first; Robo Program Names and Robot Delays then get ONE ROW
+  // PER program / per robot-delay code.
+  const rows: [string, string][] = [
     ["Production Date", summary.productionDate ? formatDate(summary.productionDate) : "-"],
     ["Batch Number", dash(summary.batchNo)],
     ["Design Name", dash(summary.designName)],
@@ -52,44 +42,49 @@ export async function GET(req: NextRequest) {
     ["Total Production Time", summary.productionTimeMinutes != null ? fmtDurationLong(summary.productionTimeMinutes) : "-"],
     ["Total Delays", fmtDurationLong(summary.totalDelayMins)],
     ["Avg Slabs/hour", summary.avgSlabsPerHour != null ? String(summary.avgSlabsPerHour) : "-"],
-    ["Robo Program Names", programsText],
-    ["Robot Delays", robotDelaysText],
   ];
+
+  // Robo Program Names — one row per program (Robo1: <program>), only the Robos
+  // actually used in this run. The label sits on the first program's row.
+  if (summary.programs.length) {
+    summary.programs.forEach((p, i) =>
+      rows.push([i === 0 ? "Robo Program Names" : "", `${p.robo}: ${p.program}`]),
+    );
+  } else {
+    rows.push(["Robo Program Names", "-"]);
+  }
+
+  // Robot Delays — one row per robot-delay code: its description, the Robos
+  // responsible, and the combined duration of every entry of that code.
+  if (summary.robotDelays.length) {
+    summary.robotDelays.forEach((d, i) =>
+      rows.push([
+        i === 0 ? "Robot Delays" : "",
+        `${d.code} — ${d.description}${d.robos.length ? ` (${d.robos.join(", ")})` : ""} → ${fmtDurationLong(d.minutes)}`,
+      ]),
+    );
+  } else {
+    rows.push(["Robot Delays", "-"]);
+  }
 
   const title = `Reference Sheet — ${summary.designName}`;
-  const note =
-    "Avg Slabs/hour = Total Slabs ÷ (Total Production Time − actual delay time, overlapping delays counted once). Total Delays above is the Reports total (overlaps included).";
-
-  const aoa: (string | number)[][] = [
-    [title],
-    [],
-    ...items,
-    [],
-    ["Note", note],
-  ];
+  const aoa: (string | number)[][] = [[title], [], ...rows];
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws["!cols"] = [{ wch: 22 }, { wch: 70 }];
 
-  // Styling: bold title, bold labels down column A, wrapped note.
+  // Styling: bold title; bold each label in column A (skip the blank continuation
+  // rows of the multi-row sections); value cells wrap.
   const titleCell = ws["A1"];
   if (titleCell) titleCell.s = { font: { bold: true, sz: 14 } };
 
-  const firstItemRow = 2; // 0-based row index of the first item (after title + blank)
-  for (let i = 0; i < items.length; i++) {
-    const addr = XLSX.utils.encode_cell({ r: firstItemRow + i, c: 0 });
-    const cell = ws[addr];
-    if (cell) cell.s = { font: { bold: true }, alignment: { vertical: "top" } };
-    const valAddr = XLSX.utils.encode_cell({ r: firstItemRow + i, c: 1 });
-    const valCell = ws[valAddr];
+  const firstRow = 2; // 0-based row index of the first item (after title + blank)
+  rows.forEach((r, i) => {
+    const labelCell = ws[XLSX.utils.encode_cell({ r: firstRow + i, c: 0 })];
+    if (labelCell && r[0]) labelCell.s = { font: { bold: true }, alignment: { vertical: "top" } };
+    const valCell = ws[XLSX.utils.encode_cell({ r: firstRow + i, c: 1 })];
     if (valCell) valCell.s = { alignment: { vertical: "top", wrapText: true } };
-  }
-  // Note row: label bold, text wrapped and greyed.
-  const noteRow = firstItemRow + items.length + 1;
-  const noteLabel = ws[XLSX.utils.encode_cell({ r: noteRow, c: 0 })];
-  if (noteLabel) noteLabel.s = { font: { bold: true, italic: true, color: { rgb: "6B7280" } }, alignment: { vertical: "top" } };
-  const noteText = ws[XLSX.utils.encode_cell({ r: noteRow, c: 1 })];
-  if (noteText) noteText.s = { font: { italic: true, color: { rgb: "6B7280" } }, alignment: { vertical: "top", wrapText: true } };
+  });
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Reference Sheet");

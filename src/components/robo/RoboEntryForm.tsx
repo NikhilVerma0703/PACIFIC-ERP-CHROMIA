@@ -176,7 +176,7 @@ const btnGhost = "rounded-lg border border-gray-300 px-4 py-2 text-sm font-mediu
 type MachineEntry = { programName: string; toolName: string; liquidName: string; powderName: string; rollerHeight: string; targetCycleTime: string };
 const emptyEntry = (): MachineEntry => ({ programName: "", toolName: "", liquidName: "", powderName: "", rollerHeight: "", targetCycleTime: "" });
 
-const emptySlab = () => ({ serialNumber: "", slabNumber: "", productionDate: "", thickness: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "" });
+const emptySlab = () => ({ serialNumber: "", slabNumber: "", productionDate: "", thickness: "", inTime: "", outTime: "", roymixCycleTime: "", roymixBodyWeight: "", remarks: "", batchNo: "", designName: "", targetSlabs: "" });
 /** Toggle a machine name in a delay's set — add it if absent, drop it if
  *  present. Order is kept so the first stays first (that is what machineId
  *  resolves from). */
@@ -464,6 +464,11 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
    *  Reset whenever a different slab is loaded, or the edit is left. */
   const [applyDateForward, setApplyDateForward] = useState(false);
   const [applyThicknessForward, setApplyThicknessForward] = useState(false);
+  // Batch-split "apply forward" toggles — Batch No. / Design / Target Slabs. Ticking
+  // one moves this slab + the following ones to that batch (see saveSlab).
+  const [applyBatchNoForward, setApplyBatchNoForward] = useState(false);
+  const [applyDesignForward, setApplyDesignForward] = useState(false);
+  const [applyTargetSlabsForward, setApplyTargetSlabsForward] = useState(false);
   /** The slab's Production Date / Thickness as loaded, so a save only writes a
    *  per-slab override when the operator actually changed the value (or ticked
    *  "apply forward"). An untouched field is left off the request, so the slab
@@ -541,6 +546,13 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
         roymixCycleTime: rec.roymixCycleTime != null ? String(rec.roymixCycleTime) : "",
         roymixBodyWeight: rec.roymixBodyWeight != null ? String(rec.roymixBodyWeight) : "",
         remarks: rec.remarks ?? "",
+        // The batch this slab currently sits in — Batch No. / Design / Target Slabs.
+        // Editing these and ticking "apply forward" SPLITS the run: this slab and the
+        // ones after it move to that batch (see saveSlab / the API). Pre-filled from
+        // the current batch so a split starts from the truth.
+        batchNo: rec.batchRecipe?.batchNo ?? "",
+        designName: rec.batchRecipe?.designName ?? "",
+        targetSlabs: rec.batchRecipe?.targetSlabs != null ? String(rec.batchRecipe.targetSlabs) : "",
       });
       // Remember what was loaded, so the save can tell an untouched Date /
       // Thickness (leave it alone) from a real correction (write it).
@@ -555,6 +567,9 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
     // to fix one thing can never carry a stale forward-apply into the save.
     setApplyDateForward(false);
     setApplyThicknessForward(false);
+    setApplyBatchNoForward(false);
+    setApplyDesignForward(false);
+    setApplyTargetSlabsForward(false);
     // The slab's existing delays load as editable rows — each keeps its DB id so
     // a save corrects it in place, and its machine set is unpacked from the
     // (possibly multi-Robo) machineName. Add / edit / remove all happen here.
@@ -1211,6 +1226,21 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
       patchBody.thickness = slab.thickness.trim() || null;
       patchBody.applyThicknessToRange = applyThicknessForward;
     }
+    // Batch split — sent ONLY when a box is ticked, so changing a field without
+    // ticking never moves a slab. The server re-parents this slab and the ones after
+    // it to the target batch (see the API route / batchSplit.ts).
+    if (applyBatchNoForward) {
+      patchBody.batchNo = slab.batchNo.trim() || null;
+      patchBody.applyBatchNoToRange = true;
+    }
+    if (applyDesignForward) {
+      patchBody.designName = slab.designName.trim();
+      patchBody.applyDesignToRange = true;
+    }
+    if (applyTargetSlabsForward) {
+      patchBody.targetSlabs = slab.targetSlabs.trim() || null;
+      patchBody.applyTargetSlabsToRange = true;
+    }
     const res = await (editingId
       ? fetch(`/api/robo/production/${editingId}`, {
           method: "PATCH", headers: { "Content-Type": "application/json" },
@@ -1703,6 +1733,49 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                     <span className="text-gray-600">Apply to <span className="font-medium text-gray-800">this slab and every following one</span> in the batch, up to the next change.</span>
                   </label>
                 </div>
+              )}
+
+              {/* Batch Number, Design and Target Slabs — shown INLINE with Production
+                  Date and Thickness, only on an edit and only when the slab is in a
+                  batch. Unlike Date/Thickness (which live on the slab), these live on
+                  the BATCH, so ticking "apply forward" MOVES this slab and the ones
+                  after it (up to the next batch change) into that batch — how two runs
+                  recorded as one (1372 Crystallo + 1404 Bellagio green, or 1384 + 1385)
+                  get separated: joined to that batch if it already exists in the shift,
+                  else created from this batch's setup. Same range mechanism (forwardRunIds)
+                  the server uses for Date/Thickness — see the PATCH route / batchSplit.ts.
+                  Leave a box off and nothing moves. */}
+              {editingId && activeBatch && (
+                <>
+                  <div>
+                    <span className={label}>Batch Number</span>
+                    <input value={slab.batchNo} onChange={(e) => setSlab((p) => ({ ...p, batchNo: e.target.value }))} placeholder="e.g. 1404" className={inp} />
+                    <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs">
+                      <input type="checkbox" checked={applyBatchNoForward} onChange={(e) => setApplyBatchNoForward(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300" />
+                      <span className="text-gray-600">Apply to <span className="font-medium text-gray-800">this slab and every following one</span> in the batch, up to the next change.</span>
+                    </label>
+                  </div>
+
+                  <div>
+                    <span className={label}>Design</span>
+                    <input value={slab.designName} onChange={(e) => setSlab((p) => ({ ...p, designName: e.target.value }))}
+                      list="robo-split-designs" autoComplete="off" placeholder="e.g. Bellagio green" className={inp} />
+                    <datalist id="robo-split-designs">{designs.map((d) => <option key={d.id} value={d.name} />)}</datalist>
+                    <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs">
+                      <input type="checkbox" checked={applyDesignForward} onChange={(e) => setApplyDesignForward(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300" />
+                      <span className="text-gray-600">Apply to <span className="font-medium text-gray-800">this slab and every following one</span> in the batch, up to the next change.</span>
+                    </label>
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <span className={label}>Target Slabs</span>
+                    <input type="number" value={slab.targetSlabs} onChange={(e) => setSlab((p) => ({ ...p, targetSlabs: e.target.value }))} placeholder="e.g. 120" className={inp} />
+                    <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs">
+                      <input type="checkbox" checked={applyTargetSlabsForward} onChange={(e) => setApplyTargetSlabsForward(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300" />
+                      <span className="text-gray-600">Apply to <span className="font-medium text-gray-800">this slab and every following one</span> in the batch, up to the next change.</span>
+                    </label>
+                  </div>
+                </>
               )}
 
               {/* Row 2 — S.No. and Slab number. */}

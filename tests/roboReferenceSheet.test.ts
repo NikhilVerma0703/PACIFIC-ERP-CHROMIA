@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   designMatchKey,
+  isRobotDelayCode,
   mergedDelayMinutes,
   avgSlabsPerHourNet,
   type DelaySpanInput,
@@ -116,4 +117,26 @@ test("delays meeting or exceeding the span → null, never a divide by zero", ()
 test("a negative delay figure cannot inflate the rate", () => {
   // floored at 0 → same as no delay
   assert.equal(avgSlabsPerHourNet(46, 460, -100), 6.0);
+});
+
+/* ── designMatchKey — search is case-insensitive ─────────────────────────── */
+
+test("design search ignores capitalisation entirely", () => {
+  const key = designMatchKey("Calcatta Gold");
+  for (const v of ["CALCATTA GOLD", "calcatta gold", "calcatta GOLD", "  Calcatta   Gold "]) {
+    assert.equal(designMatchKey(v), key, `"${v}" should match "Calcatta Gold"`);
+  }
+});
+
+/* ── isRobotDelayCode — robot delays are the C-codes (Section G) ──────────── */
+
+test("robot delays are matched by C-code, not the stored category", () => {
+  // C1…C20 are robot delays, whatever their stored category says
+  for (const c of ["C1", "C4", "C7", "C13", "C20", "c1", " C2"]) {
+    assert.equal(isRobotDelayCode(c), true, `${c} should be a robot code`);
+  }
+  // every other master section uses a different letter
+  for (const c of ["RM1", "L2", "D1", "S1", "P2", "M9", "G1", "T1", "", "CAT"]) {
+    assert.equal(isRobotDelayCode(c), false, `${c} should NOT be a robot code`);
+  }
 });

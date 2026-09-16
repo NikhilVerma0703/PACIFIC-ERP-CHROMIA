@@ -32,9 +32,8 @@
 import { prisma } from "@/lib/prisma";
 import { productionDateOf, delayProductionDateOf } from "@/lib/robo/productionDate";
 import { productionSpanMinutes, stampMinutes } from "@/lib/robo/productionSpan";
-import { delayTypesByCode } from "@/lib/robo/delayTypes";
 import { machineLabel } from "@/lib/robo/utils";
-import { designMatchKey, mergedDelayMinutes, avgSlabsPerHourNet } from "@/lib/robo/referenceSheet";
+import { designMatchKey, mergedDelayMinutes, avgSlabsPerHourNet, isRobotDelayCode } from "@/lib/robo/referenceSheet";
 
 /** Robo machine order for listing the programs, matching every other Robo export
  *  (Robo1→Robo4 = Roycut-1, Roymix, Roycut-2, Roycut-3). */
@@ -55,6 +54,9 @@ export interface ReferenceProgram {
 export interface ReferenceRobotDelay {
   code: string;
   description: string;
+  /** All Robos responsible across every entry of this code, e.g. ["Robo1","Robo4"]. */
+  robos: string[];
+  /** Combined duration of every entry of this code, in minutes. */
   minutes: number;
   events: number;
 }
@@ -148,6 +150,7 @@ export async function buildReferenceSummary(designInput: string): Promise<Refere
     select: {
       durationMinutes: true,
       startTime: true,
+      machineName: true,
       delayCode: { select: { code: true, description: true, category: true } },
       productionRecord: {
         select: { productionDate: true, batchRecipe: { select: { productionDate: true } } },
@@ -197,12 +200,43 @@ export async function buildReferenceSummary(designInput: string): Promise<Refere
   const thickness =
     recipe.thickness ?? runSlabs.map((s) => s.thickness).find((t) => t !== null && t !== undefined) ?? null;
 
-  // Robot delays = the G-category delays that occurred, grouped by code with the
-  // SAME tested aggregation the Delay Analysis chart uses, then narrowed to ROBOT
-  // and ordered like the master list (C1…C20). Empty when none occurred.
-  const robotDelays: ReferenceRobotDelay[] = delayTypesByCode(delays)
-    .filter((t) => t.category === "ROBOT")
-    .map((t) => ({ code: t.code, description: t.description, minutes: t.minutes, events: t.events }))
+  // Robot delays = every delay whose CODE is a robot code (C1…C20, the "G — Robot
+  // Delays" master section) — identified by the code, not the stored category,
+  // which was blank/inconsistent on old rows and left this row empty. Grouped by
+  // code so a code that occurred on several slabs is ONE row: its durations summed,
+  // the Robos responsible across all of them unioned (machineName can be several
+  // Robos comma-joined), ordered C1…C20.
+  const roboNum = (label: string) => {
+    const m = /(\d+)/.exec(label);
+    return m ? Number(m[1]) : Number.MAX_SAFE_INTEGER;
+  };
+  const robotByCode = new Map<
+    string,
+    { code: string; description: string; minutes: number; events: number; robos: Set<string> }
+  >();
+  for (const d of delays) {
+    const code = d.delayCode.code;
+    if (!isRobotDelayCode(code) && d.delayCode.category !== "ROBOT") continue;
+    let row = robotByCode.get(code);
+    if (!row) {
+      row = { code, description: d.delayCode.description, minutes: 0, events: 0, robos: new Set<string>() };
+      robotByCode.set(code, row);
+    }
+    row.minutes += Number.isFinite(d.durationMinutes) ? d.durationMinutes : 0;
+    row.events += 1;
+    for (const raw of (d.machineName ?? "").split(",")) {
+      const lbl = machineLabel(raw.trim());
+      if (lbl) row.robos.add(lbl);
+    }
+  }
+  const robotDelays: ReferenceRobotDelay[] = [...robotByCode.values()]
+    .map((r) => ({
+      code: r.code,
+      description: r.description,
+      robos: [...r.robos].sort((a, b) => roboNum(a) - roboNum(b)),
+      minutes: r.minutes,
+      events: r.events,
+    }))
     .sort((a, b) => codeNum(a.code) - codeNum(b.code));
 
   return {

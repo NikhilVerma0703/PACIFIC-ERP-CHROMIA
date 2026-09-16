@@ -7,6 +7,8 @@ import { forwardRunIds } from "@/lib/robo/rangeUpdate";
 import { productionDateOf } from "@/lib/robo/productionDate";
 import { roboThicknessKey } from "@/lib/robo/thickness";
 import { planDelayReconcile, type DelayPayloadItem } from "@/lib/robo/delayReconcile";
+import { resolveDesignId } from "@/lib/robo/setupMastersDb";
+import { resolveTargetBatch, isReparent, type BatchFields } from "@/lib/robo/batchSplit";
 
 export async function GET(_: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const refused = await roboGate();
@@ -167,6 +169,27 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     data.status = body.outTime ? SLAB_COMPLETED : SLAB_IN_PROCESSING;
   }
 
+  // Batch Number / Design / Target Slabs live on the batch RECIPE, shared by every
+  // slab in the batch — so changing them for a range is not a per-slab write, it is
+  // a SPLIT: this slab and every following one in the run move to a recipe for the
+  // new batch (joined if one exists in the shift, else created from this batch's own
+  // setup). It is how a run recorded as one batch — 1372 Crystallo and 1404 Bellagio
+  // green merged — gets separated. See batchSplit.ts. Each field acts only when its
+  // "apply forward" box is ticked.
+  const applyBatchNoForward     = body.batchNo     !== undefined && Boolean(body.applyBatchNoToRange);
+  const applyDesignForward      = body.designName  !== undefined && Boolean(body.applyDesignToRange);
+  const applyTargetSlabsForward = body.targetSlabs !== undefined && Boolean(body.applyTargetSlabsToRange);
+  const reparentRequested = applyBatchNoForward || applyDesignForward || applyTargetSlabsForward;
+
+  const newBatchNo: string | null = applyBatchNoForward ? (String(body.batchNo ?? "").trim() || null) : null;
+  const newDesignName: string = applyDesignForward ? String(body.designName ?? "").trim() : "";
+  const newTargetSlabs: number | null = applyTargetSlabsForward
+    ? (body.targetSlabs === null || body.targetSlabs === "" || Number.isNaN(Number(body.targetSlabs)) ? null : Number(body.targetSlabs))
+    : null;
+  // Design master resolved OUTSIDE the transaction — its own upsert — exactly as the
+  // setup create does, and only when the design itself is being changed.
+  const newDesignId = applyDesignForward && newDesignName ? await resolveDesignId(newDesignName) : null;
+
   // One transaction: the slab's own edits, any forward-applied range, and the
   // appended delay logs land together or not at all, so a mid-write failure
   // can't leave a half-saved edit.
@@ -216,6 +239,104 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         if (applyDateForward) single.productionDate = productionDate;
         if (applyThicknessForward) single.thickness = thickness;
         await tx.roboProductionRecord.update({ where: { id }, data: single });
+      }
+    }
+
+    // 3.5 Batch split — re-parent this slab and every following one in the run to a
+    //     different batch recipe. Only when a batch field was applied forward AND the
+    //     slab has a batch. The target's fields are the current batch's, overridden by
+    //     whichever of Batch No. / Design / Target Slabs was ticked.
+    if (reparentRequested && start.batchRecipeId) {
+      const currentRecipe = await tx.roboBatchRecipe.findUnique({
+        where: { id: start.batchRecipeId },
+        include: { entries: true },
+      });
+      if (currentRecipe) {
+        const currentFields: BatchFields = {
+          batchNo: currentRecipe.batchNo,
+          designName: currentRecipe.designName,
+          targetSlabs: currentRecipe.targetSlabs,
+        };
+        const target = resolveTargetBatch(currentFields, {
+          batchNo:     applyBatchNoForward     ? { value: newBatchNo, apply: true } : undefined,
+          designName:  applyDesignForward      ? { value: newDesignName, apply: true } : undefined,
+          targetSlabs: applyTargetSlabsForward ? { value: newTargetSlabs, apply: true } : undefined,
+        });
+
+        if (!isReparent(currentFields, target)) {
+          // Same batch — only Target Slabs changed. That is an attribute of the whole
+          // batch, so it is written on the recipe, no slabs move.
+          if (applyTargetSlabsForward && target.targetSlabs !== currentRecipe.targetSlabs) {
+            await tx.roboBatchRecipe.update({ where: { id: currentRecipe.id }, data: { targetSlabs: target.targetSlabs } });
+          }
+        } else {
+          // The run to move: this slab and every following slab of the CURRENT recipe,
+          // in register order. They share one recipe, so the run is this slab to the
+          // end of the batch; earlier slabs stay put.
+          const runSlabs = await tx.roboProductionRecord.findMany({
+            where: { batchRecipeId: currentRecipe.id },
+            orderBy: [{ serialNumber: "asc" }, { createdAt: "asc" }],
+            select: { id: true, batchRecipeId: true },
+          });
+          const moveIds = forwardRunIds(runSlabs, id, (s) => s.batchRecipeId ?? "");
+
+          // Join an existing batch of that number+design in the same shift (never the
+          // one we are splitting FROM), else create one from this batch's own setup.
+          const existing = await tx.roboBatchRecipe.findFirst({
+            where: {
+              shiftId: currentRecipe.shiftId,
+              batchNo: target.batchNo,
+              designName: { equals: target.designName, mode: "insensitive" },
+              NOT: { id: currentRecipe.id },
+            },
+            select: { id: true },
+          });
+          let targetRecipeId: string;
+          if (existing) {
+            targetRecipeId = existing.id;
+          } else {
+            const created = await tx.roboBatchRecipe.create({
+              data: {
+                shiftId:        currentRecipe.shiftId,
+                batchNo:        target.batchNo,
+                designId:       applyDesignForward ? newDesignId : currentRecipe.designId,
+                designName:     target.designName,
+                programName:    currentRecipe.programName,
+                targetSlabs:    target.targetSlabs,
+                thickness:      currentRecipe.thickness,
+                productionDate: currentRecipe.productionDate,
+                notes:          currentRecipe.notes,
+                entries: {
+                  create: currentRecipe.entries.map((e) => ({
+                    machineId:       e.machineId,
+                    programName:     e.programName,
+                    toolName:        e.toolName,
+                    liquidName:      e.liquidName,
+                    powderName:      e.powderName,
+                    rollerHeight:    e.rollerHeight,
+                    targetCycleTime: e.targetCycleTime,
+                    notes:           e.notes,
+                  })),
+                },
+              },
+              select: { id: true },
+            });
+            targetRecipeId = created.id;
+          }
+
+          await tx.roboProductionRecord.updateMany({
+            where: { id: { in: moveIds } },
+            data: { batchRecipeId: targetRecipeId },
+          });
+
+          // Logged so the split is auditable and reversible.
+          await logActionTx(tx, {
+            kind: "edit",
+            model: "RoboProductionRecord",
+            summary: `Split ${moveIds.length} slab(s) out of batch ${currentFields.batchNo ?? "—"} / ${currentFields.designName || "—"} into ${target.batchNo ?? "—"} / ${target.designName || "—"}`,
+            payload: { movedIds: moveIds, fromRecipeId: currentRecipe.id, toRecipeId: targetRecipeId },
+          });
+        }
       }
     }
 
