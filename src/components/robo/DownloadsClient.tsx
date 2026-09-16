@@ -177,14 +177,8 @@ export function DownloadsClient() {
           <span className="text-xl">📋</span>
           <h2 className="font-semibold text-gray-800">Reference Sheet</h2>
         </div>
-        <p className="mb-3 text-xs text-gray-500">
-          A one-page summary of a design&rsquo;s <span className="font-medium">latest production run</span> — the
-          reference to check before running it again. Matches by design name only; thickness is ignored
-          (&ldquo;Costa 2 cm&rdquo; and &ldquo;Costa 3 cm&rdquo; are the same design, but &ldquo;Bellagio Green&rdquo;
-          and &ldquo;Bellagio Grey&rdquo; are not).
-        </p>
 
-        <div className="flex flex-col gap-2 sm:flex-row">
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
           <input
             type="text"
             value={refDesign}
