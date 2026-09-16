@@ -191,6 +191,26 @@ with no further change.
 
 Only after Stage 3 reads clean.
 
+> **STAGE 4 AS AGREED ON 2026-09-16**, after three rounds with the administrator.
+> This supersedes anything below it that disagrees:
+>
+> - **Modify All on `Sample_Dispatch__c`** — no delete guard in Salesforce; our
+>   code fences delete and owner-change.
+> - **An approval guard IS added in Salesforce**: a trigger refusing any change
+>   to `Approval_Status__c` made with the `ERP_Integration` permission, so an ERP
+>   approve, reject or submit fails on his side too. He tested that without it
+>   the integration user really can approve a pending New Stand. *Note it cannot
+>   see a RECALL — a recall leaves the status Pending — so our forbidden-path
+>   guard on `/process/approvals` remains the only thing stopping that one.*
+> - **Read on `Approver__c`** — now load-bearing, not informational: our packing
+>   rule refuses a `Not Required` request that has an approver on it, because
+>   that means the automatic submission failed.
+> - Final rejection sets `Status__c` = Cancelled.
+> - **No unlock action** (see 4.4 below — withdrawn).
+> - Correct the three "every request routes" texts.
+> - `PCES_Sample_No_Change_To_New_Stand` is already in place: a request can no
+>   longer be changed *to* New Stand after it is raised.
+
 ### 4.1 `Sample_Dispatch__c` — new fields
 
 All **read-only to reps** by FLS, editable only by the ERP Integration set:

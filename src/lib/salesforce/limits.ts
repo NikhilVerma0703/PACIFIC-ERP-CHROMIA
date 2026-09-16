@@ -218,9 +218,29 @@ export function mayApprove(_sobject: string): false {
 /**
  * The REST paths this integration is forbidden to call, whatever it is doing.
  * Matched case-insensitively against a request path, since Salesforce is.
+ *
+ * ── THE RECALL IS OURS ALONE TO STOP (administrator, 2026-09-16) ────────────
+ *
+ * He tested it: with Stage 4 access the integration user CAN approve a New
+ * Stand that is waiting on the rep's manager, and Salesforce records it as
+ * Approved. So at Stage 4 he is adding a trigger that refuses any change to
+ * `Approval_Status__c` made with the `ERP_Integration` permission — approve,
+ * reject and submit all fail on his side as well as ours.
+ *
+ * THAT TRIGGER CANNOT SEE A RECALL. A recall does not change
+ * `Approval_Status__c` — the request stays Pending — so there is no change for
+ * his guard to refuse. This list is the only thing standing in front of it.
+ *
+ * Which is the reason to keep this guard even though he now has one: his
+ * covers three of the four actions on that endpoint, and ours covers all four.
+ * Neither is redundant, and the one action only ours catches is the one that
+ * leaves a request stuck Pending with nothing to resubmit it — the state
+ * refusePackForApproval already refuses to pack, and which somebody would then
+ * have to unpick by hand.
  */
 export const FORBIDDEN_PATHS: readonly string[] = Object.freeze([
-  "/process/approvals",   // approve or reject a record
+  // Approve, reject, submit AND RECALL all go through this one endpoint.
+  "/process/approvals",
   "/process/rules",       // fire assignment rules
 ]);
 
@@ -228,3 +248,23 @@ export function forbiddenPath(path: string): boolean {
   const p = String(path ?? "").toLowerCase();
   return FORBIDDEN_PATHS.some((f) => p.includes(f));
 }
+
+/**
+ * OUR OWN DAILY CEILING, AND IT IS OURS — not Salesforce's.
+ *
+ * The administrator checked the org on 2026-09-16: it allows **160,000** API
+ * calls a day across every user and integration, and about 3,700 had been used
+ * when he looked. So this number is not a limit we are near; it is a limit we
+ * chose, and he asked us to keep it fixed rather than grow into the headroom.
+ *
+ * That is the right instruction and worth recording rather than remembering.
+ * The design's cadence — ten minutes, so ~144 runs a day at four to six calls
+ * each — sits comfortably under this. A change that needs more calls per run is
+ * a change to make deliberately, by editing this line and saying why, not by
+ * discovering later that a loop grew.
+ *
+ * The run still reads Sforce-Limit-Info off every response and skips the stock
+ * phase if the ORG is under ten percent remaining: that guards the org's limit.
+ * This guards ours.
+ */
+export const DAILY_CALL_BUDGET = 1000;

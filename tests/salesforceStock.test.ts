@@ -22,7 +22,7 @@ import {
 import {
   WRITABLE_OBJECTS, READABLE_OBJECTS, mayWrite, mayDelete,
   REQUEST_WRITABLE_FIELDS, mayWriteRequestField, refusePackForApproval, isFieldServiceObject,
-  mayApprove, forbiddenPath,
+  mayApprove, forbiddenPath, DAILY_CALL_BUDGET, FORBIDDEN_PATHS,
 } from "../src/lib/salesforce/limits.ts";
 
 // ── the twelve biggest matches, DISCOVERY §3 ─────────────────────────────────
@@ -708,4 +708,36 @@ test("a sold-out row is written to zero ONCE, and never renamed to its own key",
   assert.equal(gone.toRetire.length, 1);
   assert.equal(gone.toRetire[0]!.retired, true);
   assert.equal(gone.toRetire[0]!.name, null);
+});
+
+test("the recall is the one approval action only OUR guard can stop", () => {
+  // The administrator tested it and confirmed the danger was real: with Stage 4
+  // access the integration user CAN approve a pending New Stand, and Salesforce
+  // records it as Approved. He is adding a trigger that refuses any change to
+  // Approval_Status__c made with the ERP_Integration permission.
+  //
+  // THAT TRIGGER CANNOT SEE A RECALL, because a recall does not change
+  // Approval_Status__c — the request simply stays Pending. So his guard covers
+  // approve, reject and submit; ours covers those and the recall. Neither is
+  // redundant, and the action only ours catches is the one that strands a
+  // request at Pending with nothing to resubmit it.
+  for (const p of [
+    "/services/data/v62.0/process/approvals",            // approve
+    "/services/data/v62.0/process/approvals?_HttpMethod=POST", // reject / submit
+    "/services/data/v62.0/process/approvals/",           // recall — same endpoint
+  ]) {
+    assert.equal(forbiddenPath(p), true, p);
+  }
+  assert.ok(FORBIDDEN_PATHS.includes("/process/approvals"));
+});
+
+test("the daily call budget is ours, fixed, and far under the org's", () => {
+  // The org allows 160,000 calls a day and had used ~3,700 when he checked, so
+  // this is a ceiling we chose rather than one we are near. He asked us to keep
+  // it fixed rather than grow into the headroom, which is why it is a named
+  // constant with the reason beside it instead of a number in a comment.
+  assert.equal(DAILY_CALL_BUDGET, 1000);
+  // The designed cadence fits: ~144 runs a day at up to six calls each.
+  assert.ok(144 * 6 < DAILY_CALL_BUDGET, "ten-minute cadence stays inside our own ceiling");
+  assert.ok(DAILY_CALL_BUDGET < 160_000, "and nowhere near the org's");
 });
