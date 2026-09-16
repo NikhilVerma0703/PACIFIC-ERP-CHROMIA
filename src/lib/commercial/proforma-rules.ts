@@ -230,11 +230,30 @@ export function trimNumber(n: number): string {
   return n.toFixed(4).replace(/\.?0+$/, "");
 }
 
+/**
+ * THREE DECIMALS WHEN THE THIRD SAYS SOMETHING, TWO WHEN IT DOES NOT.
+ *
+ * Both of the customer's own reference proformas are matched by this one rule
+ * and neither is matched by a flat toFixed(3). SAL-ORD/25-26/01718, the
+ * document Monolith sent back on 2026-09-15, prints 1052.24, 12889.94 and a
+ * total of 51559.76; SAL-ORD/26-27/01642 prints 3208.273 and 17324.657, where
+ * the third decimal is real. Padding everything to three put a trailing zero on
+ * every figure of the first — "51559.760" against their "51559.76" — on a
+ * document the owner asked to match exactly.
+ *
+ * Never fewer than two: money with one decimal reads as a typo, and a quantity
+ * is money here because it is multiplied by a rate on the same line.
+ */
+function fixedTrim(n: number): string {
+  const s = n.toFixed(3);
+  return s.endsWith("0") ? s.slice(0, -1) : s;
+}
+
 export function fmtQty(n: number | null | undefined): string {
-  return n === null || n === undefined || !Number.isFinite(n) ? "" : n.toFixed(3);
+  return n === null || n === undefined || !Number.isFinite(n) ? "" : fixedTrim(n);
 }
 export function fmtAmount(n: number | null | undefined): string {
-  return n === null || n === undefined || !Number.isFinite(n) ? "" : n.toFixed(3);
+  return n === null || n === undefined || !Number.isFinite(n) ? "" : fixedTrim(n);
 }
 export function fmtRate(n: number | null | undefined): string {
   return n === null || n === undefined || !Number.isFinite(n) ? "" : trimNumber(n);
@@ -571,7 +590,24 @@ export function piSellerFrom(settings: CommercialSettings, key: unknown): PiSell
  * Pacific's own. Read the seller through this and never off `snapshot.seller`
  * directly, so the absence rule is stated in one place.
  */
-export function piSeller(s: PiSnapshot): PiSellerBlock {
+/**
+ * The least a snapshot must carry for the seller question to be answerable:
+ * the frozen seller, if any, and a legal name to fall back on.
+ *
+ * NAMED, AND NOT `any`, because the fallback is silent. Anything with a
+ * `company.legalName` would otherwise type-check here and be told, wrongly,
+ * that it was sold by Pacific. Both PiSnapshot and InvoiceSnapshot satisfy
+ * this structurally, which is the point: ONE implementation of "absent means
+ * Pacific" answers for both documents (owner, 2026-09-15, asking for the PI's
+ * seller types on invoices too). scripts/0085 asks for exactly that — the rule
+ * stated in one place.
+ */
+export interface SellerBearing {
+  seller?: { key: string; label: string; indianExporter: boolean } | null;
+  company?: { legalName?: string } | null;
+}
+
+export function piSeller(s: SellerBearing): PiSellerBlock {
   const frozen = s.seller;
   const fallbackLabel = printable(s.company?.legalName);
   if (frozen && printable(frozen.key)) {
@@ -595,7 +631,7 @@ export function piSeller(s: PiSnapshot): PiSellerBlock {
  * selling inside the US has no RBI code to empty, and its paper must not carry
  * the label at all. Two different things, and only the seller tells them apart.
  */
-export function printsIndianBlock(s: PiSnapshot): boolean {
+export function printsIndianBlock(s: SellerBearing): boolean {
   return piSeller(s).indianExporter;
 }
 

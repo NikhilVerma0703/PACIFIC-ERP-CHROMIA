@@ -1,0 +1,334 @@
+// WHAT SALESFORCE IS TOLD WE HAVE — the rules, run against the org as it
+// actually was on 2026-09-14 (docs/salesforce-link/DISCOVERY.md §3).
+//
+// The fixtures below are not invented. The twelve product codes and their
+// counts are the twelve biggest matches DISCOVERY recorded from the live org
+// and the live yard; the misspellings are real rows in fg_finished_slab; the
+// thickness spellings are the real distribution, including the 440 cut-downs
+// and the 25 slabs written "10 mm".
+//
+// Pure: node --test loads stock-rules.ts bare. Nothing here touches Salesforce.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  THICKNESS_MM, thicknessMmFor, canonicalDesign, qzCode, isKnownDesign,
+  buildStockLines, productPayloads, diffMirror, payloadHash, summarise,
+  slabRow, sampleRow, finishRow, unitRow,
+  type StockGroup, type ProductRow, type StockRow, type MirrorEntry,
+} from "../src/lib/salesforce/stock-rules.ts";
+
+// ── the twelve biggest matches, DISCOVERY §3 ─────────────────────────────────
+const TWELVE: Array<[string, string, number]> = [
+  ["Arva White", "QZ-ARVAWHITE-20", 417],
+  ["Cappuccino", "QZ-CAPPUCCINO-20", 396],
+  ["Super White", "QZ-SUPERWHITE-20", 329],
+  ["Aureate", "QZ-AUREATE-20", 218],
+  ["Latte Luxe", "QZ-LATTELUXE-20", 170],
+  ["Brilliant White", "QZ-BRILLIANTWHITE-20", 157],
+  ["Oasis", "QZ-OASIS-20", 151],
+  ["Hazel Gold", "QZ-HAZELGOLD-20", 145],
+  ["Astral Mist", "QZ-ASTRALMIST-20", 131],
+  ["Antonio", "QZ-ANTONIO-20", 106],
+  ["Star Cluster", "QZ-STARCLUSTER-20", 100],
+  ["Sakura", "QZ-SAKURA-20", 99],
+];
+
+const CANONICALS = new Set(TWELVE.map(([design]) => design));
+const PRODUCT_CODES = new Set(TWELVE.map(([, code]) => code));
+const NO_ALIASES = new Map<string, string>();
+
+// ── the code scheme ─────────────────────────────────────────────────────────
+
+test("the code scheme is a function of (design, thickness) — all twelve, exactly", () => {
+  // DISCOVERY §1 proved this deterministic across all 110 active products:
+  // where ERP_SKU__c is filled it is IDENTICAL to ProductCode. So there is no
+  // lookup table to ask the owner for, and never was.
+  for (const [design, code] of TWELVE) {
+    assert.equal(qzCode(design, 20), code, design);
+  }
+  // Non-alphanumerics are stripped, not replaced: the org's own codes have no
+  // separators inside the name.
+  assert.equal(qzCode("Astral Mist Kreos Trail-2", 20), "QZ-ASTRALMISTKREOSTRAIL2-20");
+  assert.equal(qzCode("arva white", 30), "QZ-ARVAWHITE-30");
+});
+
+// ── thickness ───────────────────────────────────────────────────────────────
+
+test("four thicknesses are a number; everything else is not, and is never counted", () => {
+  assert.deepEqual(THICKNESS_MM, { "7 mm": 7, "1.2 cm": 12, "2 cm": 20, "3 cm": 30 });
+  assert.equal(thicknessMmFor("2 cm"), 20);
+  assert.equal(thicknessMmFor("2cm"), 20, "the yard's other spelling folds");
+  assert.equal(thicknessMmFor("3 cm"), 30);
+  assert.equal(thicknessMmFor("3cm"), 30);
+  assert.equal(thicknessMmFor("1.2 cm"), 12);
+  assert.equal(thicknessMmFor("7 mm"), 7);
+
+  // "10 mm" IS NOT 10 mm HERE, and that is the point of asserting it. 25 slabs
+  // carry it; canonThickness reads it as 1.0 cm, matches none of its four
+  // bands and hands the literal back. Unmapped is the honest answer — folding
+  // it into 12 mm would publish stock at a thickness nobody wrote down.
+  assert.equal(thicknessMmFor("10 mm"), null);
+
+  // A CUT-DOWN IS NOT A THICKNESS. 440 slabs say "3 cm to 2 cm": the slab WAS
+  // one and IS the other, and no single number is true of it. Counting it as
+  // 3 cm would promise a customer a slab that no longer exists at 3 cm.
+  assert.equal(thicknessMmFor("3 cm to 2 cm"), null);
+  assert.equal(thicknessMmFor("2cm to 12mm"), null);
+  assert.equal(thicknessMmFor(""), null);
+  assert.equal(thicknessMmFor(null), null);
+});
+
+// ── THE PUBLISH RULE ────────────────────────────────────────────────────────
+
+test("a design nobody has settled on is REFUSED, however much stock is behind it", () => {
+  // The rule this whole file exists for. The yard types the design by hand and
+  // there are 455 spellings for perhaps 70 designs. Deriving a code from raw
+  // text would put QZ-ASTALMIST-20 into Salesforce as a product nobody sells,
+  // against stock that is really Astral Mist — and a rep searching for Astral
+  // Mist would be told there is none.
+  for (const bad of ["Astal Mist", "Alabester White", "Artermis", "Arno Robo", "Astral Mist Kreos Trail-2"]) {
+    assert.equal(isKnownDesign(bad, CANONICALS, PRODUCT_CODES), false, bad);
+  }
+  // Known two ways, and either is evidence.
+  assert.equal(isKnownDesign("Astral Mist", CANONICALS, PRODUCT_CODES), true, "a canonical in the alias table");
+  assert.equal(isKnownDesign("Sakura", new Set<string>(), PRODUCT_CODES), true, "or a code Salesforce already sells");
+  assert.equal(isKnownDesign("", CANONICALS, PRODUCT_CODES), false);
+});
+
+test("a misspelling is unmapped WITH its slab count, which is what makes it a worklist", () => {
+  const groups: StockGroup[] = [
+    { design: "Astral Mist", slabThickness: "2 cm", available: 131 },
+    { design: "Astal Mist", slabThickness: "2 cm", available: 18 },
+    { design: "Alabester White", slabThickness: "2 cm", available: 40 },
+  ];
+  const out = buildStockLines(groups, NO_ALIASES, CANONICALS, PRODUCT_CODES);
+
+  assert.deepEqual(out.lines.map((l) => [l.code, l.available]), [["QZ-ASTRALMIST-20", 131]]);
+  // Sorted by how much stock is hidden behind each, so the alias job is worked
+  // by value rather than alphabetically.
+  assert.deepEqual(out.unmapped.map((u) => [u.design, u.available, u.reason]), [
+    ["Alabester White", 40, "UNKNOWN_DESIGN"],
+    ["Astal Mist", 18, "UNKNOWN_DESIGN"],
+  ]);
+});
+
+test("ALIASING IS THE FIX, and it needs no Salesforce change at all", () => {
+  // The same three rows, once an admin has said Astal Mist IS Astral Mist.
+  const aliases = new Map([["Astal Mist", "Astral Mist"]]);
+  const groups: StockGroup[] = [
+    { design: "Astral Mist", slabThickness: "2 cm", available: 131 },
+    { design: "Astal Mist", slabThickness: "2 cm", available: 18 },
+  ];
+  const out = buildStockLines(groups, aliases, CANONICALS, PRODUCT_CODES);
+  // Folded into one line — two spellings of one design are one product, and
+  // publishing them separately would show a rep two products where there is one.
+  assert.deepEqual(out.lines.map((l) => [l.code, l.available]), [["QZ-ASTRALMIST-20", 149]]);
+  assert.equal(out.unmapped.length, 0);
+});
+
+test("the design is asked about BEFORE the thickness, so the fix named is the right one", () => {
+  // A cut-down slab of a design nobody recognises is an UNKNOWN DESIGN, not a
+  // thickness problem: correcting the thickness would still leave a name we
+  // refuse to publish, and saying THICKNESS would send somebody to the wrong
+  // screen entirely.
+  const out = buildStockLines(
+    [{ design: "Astal Mist", slabThickness: "3 cm to 2 cm", available: 5 }],
+    NO_ALIASES, CANONICALS, PRODUCT_CODES,
+  );
+  assert.equal(out.unmapped[0]!.reason, "UNKNOWN_DESIGN");
+
+  // A KNOWN design at an unusable thickness is the other case.
+  const out2 = buildStockLines(
+    [
+      { design: "Arva White", slabThickness: "3 cm to 2 cm", available: 12 },
+      { design: "Arva White", slabThickness: "10 mm", available: 25 },
+    ],
+    NO_ALIASES, CANONICALS, PRODUCT_CODES,
+  );
+  assert.equal(out2.lines.length, 0);
+  assert.deepEqual(out2.unmapped.map((u) => u.reason), ["THICKNESS", "THICKNESS"]);
+});
+
+test("30 mm stock is published even though Salesforce sells the design at 20 only", () => {
+  // The largest single body of stock in the yard — 10,391 slabs — and 59
+  // designs / 4,202 slabs of it are designs Salesforce lists at 20 or 12 only.
+  // Requiring a product AT THE SAME THICKNESS would silently drop every one.
+  // That Arva White 30 mm has no product is a fact to publish, not a reason to
+  // hide the slabs.
+  const out = buildStockLines(
+    [
+      { design: "Arva White", slabThickness: "2 cm", available: 417 },
+      { design: "Arva White", slabThickness: "3 cm", available: 118 },
+    ],
+    NO_ALIASES, CANONICALS, PRODUCT_CODES,
+  );
+  assert.deepEqual(out.lines.map((l) => [l.code, l.available]), [
+    ["QZ-ARVAWHITE-20", 417],
+    ["QZ-ARVAWHITE-30", 118],
+  ]);
+  assert.equal(out.unmapped.length, 0);
+
+  // And the row says so on its own face rather than leaving it to be inferred
+  // from a null lookup.
+  const thirty = out.lines.find((l) => l.mm === 30)!;
+  const row = slabRow(thirty, null);
+  assert.equal(row.key, "SLAB|QZ-ARVAWHITE-30");
+  assert.equal(row.name, "Arva White 30 mm", "what a rep actually types into search");
+  assert.equal(row.fields.Product_Missing__c, true);
+  assert.equal(slabRow(out.lines[0]!, "01t000000000001").fields.Product_Missing__c, false);
+});
+
+// ── every product hears about itself, every run ─────────────────────────────
+
+test("a sold-out product reads 0, never last week's number", () => {
+  // The fix for the failure mode that matters most: writing only the products
+  // we HAVE stock for leaves the old number standing on everything that
+  // emptied, and a rep reads it as today's.
+  const products: ProductRow[] = [
+    { id: "01t1", name: "Arva White", productCode: "QZ-ARVAWHITE-20", erpSku: "QZ-ARVAWHITE-20" },
+    { id: "01t2", name: "Sakura", productCode: "QZ-SAKURA-20", erpSku: null },
+  ];
+  const lines = buildStockLines(
+    [{ design: "Arva White", slabThickness: "2 cm", available: 417 }],
+    NO_ALIASES, CANONICALS, PRODUCT_CODES,
+  ).lines;
+
+  const payloads = productPayloads(products, lines, CANONICALS, PRODUCT_CODES);
+  assert.equal(payloads.length, 2, "EVERY product gets a payload, not just the stocked one");
+  assert.equal(payloads[0]!.ERP_Available_Slabs__c, 417);
+  assert.equal(payloads[0]!.ERP_Match__c, "Matched");
+  assert.equal(payloads[1]!.ERP_Available_Slabs__c, 0, "Sakura is sold out and says so");
+
+  // ERP_SKU__c is written back where it was blank, so the 55 empty ones fill
+  // on run one and the match key is the same field for every product after.
+  assert.equal(payloads[1]!.ERP_SKU__c, "QZ-SAKURA-20");
+});
+
+test("a product whose stock is all at another thickness says which", () => {
+  const products: ProductRow[] = [
+    { id: "01t1", name: "Arva White", productCode: "QZ-ARVAWHITE-20", erpSku: null },
+  ];
+  const lines = buildStockLines(
+    [{ design: "Arva White", slabThickness: "3 cm", available: 118 }],
+    NO_ALIASES, CANONICALS, PRODUCT_CODES,
+  ).lines;
+  const [p] = productPayloads(products, lines, CANONICALS, PRODUCT_CODES);
+  assert.equal(p!.ERP_Available_Slabs__c, 0, "none at 20 mm, and that is the honest number");
+  assert.equal(p!.ERP_Match__c, "Not at this thickness");
+  assert.equal(p!.ERP_Other_Thickness_Stock__c, "30 mm: 118", "so the rep can ask rather than give up");
+});
+
+test("a product the ERP has never heard of is marked, not quietly zeroed", () => {
+  // 35 of the 110 products have no ERP design at all. "No ERP design" and
+  // "sold out" are different facts: one is a data gap for the admin, the other
+  // is a sales fact for the rep.
+  const [p] = productPayloads(
+    [{ id: "01t9", name: "Something Else", productCode: "QZ-SOMETHINGELSE-20", erpSku: null }],
+    [], CANONICALS, PRODUCT_CODES,
+  );
+  assert.equal(p!.ERP_Match__c, "No ERP design");
+  assert.equal(p!.ERP_Available_Slabs__c, 0);
+  assert.equal(p!.ERP_Other_Thickness_Stock__c, "");
+});
+
+// ── the search object ───────────────────────────────────────────────────────
+
+test("the four kinds of searchable row, keyed so a re-run updates rather than twins", () => {
+  assert.equal(sampleRow("ss1", "Cappuccino (Polished) 4 × 4 in · 20 mm", 12).key, "SAMPLE|ss1");
+  assert.equal(finishRow("pcf1", "Cappuccino (Leather)").key, "FINISH|pcf1");
+  assert.equal(unitRow("sut_floor_stand", "Floor Stand", "STAND", 3).key, "UNIT|sut_floor_stand");
+  assert.equal(unitRow("sut_sample_kit_box", "Sample Kit Box", "BOX", 11).kind, "Box");
+
+  // "NONE LEFT" AND "NEVER CUT" STAY DIFFERENT ANSWERS, as they are in the
+  // ERP: a shelf at zero is still a shelf, and a colour+finish nobody has ever
+  // cut is not. Flattening them would have a rep ask the desk for something
+  // that has never existed.
+  const empty = sampleRow("ss2", "Oasis (Polished) 4 × 4 in · 20 mm", 0);
+  assert.equal(empty.available, 0);
+  assert.equal(empty.fields.Never_Stocked__c, undefined);
+  assert.equal(finishRow("pcf2", "Oasis (Leather)").fields.Never_Stocked__c, true);
+});
+
+// ── sold out is not retired ─────────────────────────────────────────────────
+
+test("sold out stays searchable; retired is written once and dropped", () => {
+  const arva = slabRow({ canonical: "Arva White", mm: 20, code: "QZ-ARVAWHITE-20", available: 417 }, "01t1");
+  const sakura = slabRow({ canonical: "Sakura", mm: 20, code: "QZ-SAKURA-20", available: 0 }, "01t2");
+
+  const mirror = new Map<string, MirrorEntry>([
+    [arva.key, { key: arva.key, payloadHash: payloadHash(arva) }],
+    [sakura.key, { key: sakura.key, payloadHash: "stale" }],
+    // A design an admin merged away since the last run.
+    ["SLAB|QZ-ASTALMIST-20", { key: "SLAB|QZ-ASTALMIST-20", payloadHash: "whatever" }],
+    // A shelf row that no longer exists.
+    ["SAMPLE|gone", { key: "SAMPLE|gone", payloadHash: "whatever" }],
+  ]);
+
+  const stillResolves = (key: string) => key === "SLAB|QZ-ARVAWHITE-20" || key === "SLAB|QZ-SAKURA-20";
+  const diff = diffMirror([arva, sakura], mirror, stillResolves);
+
+  assert.equal(diff.unchanged, 1, "Arva White is identical and costs no API call");
+  assert.deepEqual(diff.toPush.map((r) => r.key), ["SLAB|QZ-SAKURA-20"], "changed payload goes out");
+
+  // The two that no longer mean anything are retired ONCE, and nothing is ever
+  // deleted: a sample request line pointing at a retired row must still
+  // resolve, and deleting it would break a record somebody is looking at.
+  assert.deepEqual(diff.toRetire.map((r) => r.key).sort(), ["SAMPLE|gone", "SLAB|QZ-ASTALMIST-20"]);
+  for (const r of diff.toRetire) {
+    assert.equal(r.retired, true);
+    assert.equal(r.available, 0);
+  }
+});
+
+test("a line that emptied is pushed to zero WITHOUT being retired", () => {
+  // "Do you have Arva White 20 mm" deserves "yes, none right now" rather than
+  // silence, so a key that still resolves is sold out and stays.
+  const mirror = new Map<string, MirrorEntry>([["SLAB|QZ-ARVAWHITE-20", { key: "SLAB|QZ-ARVAWHITE-20", payloadHash: "old" }]]);
+  const diff = diffMirror([], mirror, () => true);
+  assert.equal(diff.toRetire.length, 0);
+  assert.deepEqual(diff.toPush.map((r) => [r.key, r.available, r.retired]), [["SLAB|QZ-ARVAWHITE-20", 0, false]]);
+});
+
+test("the change detector is stable, or the first refactor pushes all 500 rows", () => {
+  const a: StockRow = { key: "SLAB|X", kind: "Slab", name: "X 20 mm", available: 3, retired: false, fields: { Design__c: "X", Thickness_mm__c: 20 } };
+  const b: StockRow = { key: "SLAB|X", kind: "Slab", name: "X 20 mm", available: 3, retired: false, fields: { Thickness_mm__c: 20, Design__c: "X" } };
+  assert.equal(payloadHash(a), payloadHash(b), "field order is not a change");
+  assert.notEqual(payloadHash(a), payloadHash({ ...a, available: 4 }), "a count is");
+  assert.notEqual(payloadHash(a), payloadHash({ ...a, retired: true }));
+});
+
+// ── the run's own summary ───────────────────────────────────────────────────
+
+test("the summary counts what DISCOVERY counted, so a run can be compared to it", () => {
+  const groups: StockGroup[] = [
+    ...TWELVE.map(([design, , n]) => ({ design, slabThickness: "2 cm", available: n })),
+    { design: "Arva White", slabThickness: "3 cm", available: 118 },
+    { design: "Astal Mist", slabThickness: "2 cm", available: 18 },
+    { design: "Arva White", slabThickness: "3 cm to 2 cm", available: 12 },
+  ];
+  const result = buildStockLines(groups, NO_ALIASES, CANONICALS, PRODUCT_CODES);
+  const products: ProductRow[] = TWELVE.map(([, code], i) => ({ id: `01t${i}`, name: code, productCode: code, erpSku: code }));
+  const payloads = productPayloads(products, result.lines, CANONICALS, PRODUCT_CODES);
+  const s = summarise(result, payloads, PRODUCT_CODES);
+
+  assert.equal(s.matched, 12, "all twelve fixtures match");
+  assert.equal(s.publishedSlabs, TWELVE.reduce((n, [, , c]) => n + c, 0) + 118);
+  assert.equal(s.unmappedSpellings, 1, "Astal Mist");
+  assert.equal(s.unmappedSlabs, 18);
+  assert.equal(s.unclassifiedThickness, 12, "the cut-down, counted but not published");
+  // The 30 mm line has no product of its own — the number the admin needs to
+  // decide whether to create one.
+  assert.equal(s.thirtyMmWithoutProduct, 1);
+});
+
+test("canonicalDesign leans on the alias table and is never memoised across runs", () => {
+  // Read fresh every run, exactly as inventory-bridge.aliasMap() is and for the
+  // same reason: designs get merged while the app is running, and a cached map
+  // keeps publishing under a name an admin has just retired.
+  const aliases = new Map([["Astal Mist", "Astral Mist"], ["arno robo", "Arno"]]);
+  assert.equal(canonicalDesign("Astal Mist", aliases), "Astral Mist");
+  assert.equal(canonicalDesign("arno robo", aliases), "Arno");
+  assert.equal(canonicalDesign("  Astal Mist  ", aliases), "Astral Mist", "the yard pads its text");
+  assert.equal(canonicalDesign("Unknown Thing", aliases), "Unknown Thing", "passes through, and is refused later");
+  assert.equal(canonicalDesign("", aliases), "");
+});

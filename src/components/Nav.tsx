@@ -287,6 +287,11 @@ export function Nav({
     // that do not exist yet, and the answer arrives days later as stock.
     { href: "/sampling/requests",   icon: I.factory,   label: "Requests" },
     { href: "/sampling/add-stock",  icon: I.entry,     label: "Add Stock" },
+    // BOXES AND STANDS are not pieces, which is why they are their own row
+    // and not a section of Add Stock. Add Stock records PIECES onto the
+    // colour+finish+size shelf; a stand is a numbered asset that goes to a
+    // named customer for years, and it is written by its own action.
+    { href: "/sampling/units",      icon: I.packaging, label: "Boxes & Stands" },
     { href: "/sampling/dispatch",   icon: I.packaging, label: "Dispatch" },
   ];
 

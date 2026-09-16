@@ -9,7 +9,8 @@ import {
   DEFAULT_ROOTS, ROOT_CELLS, crateRowsFor, slabRowsFromPacking,
   type SlabRow, type CrateRow, type InvoiceSnapshotLike,
 } from "@/lib/commercial/export-workbook/mapping";
-import type { DesignCodeLookup } from "@/lib/commercial/invoice-rules";
+import { invoicePrintsIndianBlock, invoiceSeller, type DesignCodeLookup } from "@/lib/commercial/invoice-rules";
+import type { InvoiceSnapshot } from "@/lib/commercial/types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
@@ -35,6 +36,19 @@ export async function loadExportInvoice(invId: string): Promise<Row> {
   if (!inv) fail(404, "Invoice not found.");
   if (inv.kind !== "EXPORT") {
     fail(400, "Export documents are generated for export invoices only; this one is a DTA (domestic) invoice.");
+  }
+  // AND ONLY FOR AN INDIAN EXPORTER'S INVOICE. This workbook is an Indian
+  // customs filing — a shipping bill, the VGM declaration, Annexure C1 — and
+  // mapping.ts does NOT read the invoice's frozen company block for the parts
+  // that matter: it binds `settings.company` live and hardcodes Pacific's IEC
+  // ("IEC AALCP2750N"), Pacific's GSTIN, the LUT/ARN paragraph and the C1 IEC
+  // as literal strings. So a Monolith invoice would produce a complete Indian
+  // customs pack under a US company's name, quoting an Indian exporter's
+  // registrations it has no right to, and emptying the snapshot would not stop
+  // it. Refused at the door instead, where one check covers all three routes.
+  if (!invoicePrintsIndianBlock((inv.snapshot ?? {}) as InvoiceSnapshot)) {
+    const seller = invoiceSeller((inv.snapshot ?? {}) as InvoiceSnapshot);
+    fail(400, `The export document set is an Indian customs filing — shipping bill, VGM and Annexure C1 — and is raised by the Indian exporter. This invoice was sold by ${seller.label}, whose shipment out of India is Pacific's own invoice for the same goods.`);
   }
   return inv as Row;
 }

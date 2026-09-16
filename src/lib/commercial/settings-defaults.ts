@@ -206,6 +206,19 @@ export interface CommercialSettings {
     monolithProforma: NumberingSpec;
     enquiry: NumberingSpec;
     exportInvoice: NumberingSpec;
+    /** MONOLITH'S OWN COMMERCIAL INVOICE, and a SEPARATE counter from its
+     *  proforma for the same reason the proforma is separate from Pacific's:
+     *  two documents drawing one run of numbers leave a set of books with gaps
+     *  it cannot explain. Until today a Monolith export order drew from
+     *  `exportInvoice` and printed PESPL/N#### — a US company consuming a
+     *  number out of the Indian company's series, silently, because
+     *  commercial_invoice.number is unique globally and nothing refuses it.
+     *
+     *  NOT `INV-{seq}`, which is the Monolith PROFORMA's template: the two
+     *  tables are unique separately, so reusing it would eventually put
+     *  INV-1012 on a quotation and INV-1012 on a demand for payment from the
+     *  same company. `MSI-` keeps the family visible and the series distinct. */
+    monolithInvoice: NumberingSpec;
     dtaInvoice: NumberingSpec;
     challan: NumberingSpec;
     packingList: NumberingSpec;
@@ -273,6 +286,7 @@ export const DEFAULT_SETTINGS: CommercialSettings = {
     monolithProforma: { key: "MSI-INV", template: "INV-{seq}",               perFy: false },
     enquiry:       { key: "ENQ",       template: "ENQ/{fy}/N{seq:4}",       perFy: true },
     exportInvoice: { key: "PESPL-EXP", template: "PESPL/N{seq:4}",          perFy: false },
+    monolithInvoice: { key: "MSI-CINV", template: "MSI-{seq}",              perFy: false },
     dtaInvoice:    { key: "PESPL-DTA", template: "PESPL/N{seq:4}/{fy}",     perFy: true },
     challan:       { key: "PESPL-DC",  template: "PESPL/DC/N{seq:4}/{yy}",  perFy: true },
     packingList:   { key: "PL",        template: "PL/{fy}/N{seq:4}",        perFy: true },
@@ -347,6 +361,19 @@ export const DEFAULT_SETTINGS: CommercialSettings = {
       label: "Monolith Surfaces Inc (USA)",
       indianExporter: false,
       legalName: "MONOLITH SURFACES INC",
+      // OFF MONOLITH'S OWN PROFORMA (SAL-ORD/25-26/01718, sent back by them on
+      // 2026-09-15), which is the only sight anyone here has had of how they
+      // write their own address. The Tomball, TX address this entry was first
+      // built with came from a message about M & G's addresses and appears on
+      // neither party in Monolith's document; it was almost certainly never
+      // theirs. Corrected because the alternative was two of our own documents
+      // giving the same company two different addresses in the same week.
+      // THE OWNER'S ADDRESS, NOT THE ONE ON THEIR PAPER. Monolith's own
+      // proforma writes 1300 Mark St, Elk Grove Village IL — the address this
+      // was briefly corrected to — but the owner asked on 2026-09-15 for the
+      // one our documents already carry, and where our own subsidiary is
+      // registered is his to say and not a thing to infer from a document
+      // somebody sent back.
       addressLines: [
         "25298 FM 2978 Rd, Unit A,",
         "Tomball, TX 77375, USA",
@@ -523,11 +550,28 @@ export function mergeSettings(base: CommercialSettings, overrides: unknown): Com
 }
 
 export type NumberingKind = keyof CommercialSettings["numbering"];
-export const NUMBERING_KINDS: NumberingKind[] = ["order", "proforma", "monolithProforma", "enquiry", "exportInvoice", "dtaInvoice", "challan", "packingList"];
+export const NUMBERING_KINDS: NumberingKind[] = ["order", "proforma", "monolithProforma", "enquiry", "exportInvoice", "monolithInvoice", "dtaInvoice", "challan", "packingList"];
 
 /** Which counter a proforma draws on: the seller's own, so Pacific's series and
  *  Monolith's never interleave. Absent or unknown seller means Pacific, the
  *  same default every other seller-aware rule takes. */
 export function proformaNumberingKind(sellerKey: unknown): NumberingKind {
   return parseSellerKey(sellerKey) === "MONOLITH" ? "monolithProforma" : "proforma";
+}
+
+/**
+ * The same question for the COMMERCIAL INVOICE (owner, 2026-09-15: "integrate
+ * these types on invoices too").
+ *
+ * ONLY THE EXPORT INVOICE CAN BE MONOLITH'S. A DTA invoice is an Indian
+ * domestic tax document — its tax bands, its rupee words, its round-off and
+ * its "time of removal" are all instruments of Indian law — so a non-Indian
+ * seller has no DTA invoice to number, and the draft is refused upstream
+ * rather than numbered here. Every combination but (EXPORT, MONOLITH) returns
+ * exactly what it returned before this function existed, so Pacific numbering
+ * is unchanged bit for bit.
+ */
+export function invoiceNumberingKind(kind: "DTA" | "EXPORT", sellerKey: unknown): NumberingKind {
+  if (kind === "EXPORT" && parseSellerKey(sellerKey) === "MONOLITH") return "monolithInvoice";
+  return kind === "DTA" ? "dtaInvoice" : "exportInvoice";
 }

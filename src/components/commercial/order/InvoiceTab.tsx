@@ -43,8 +43,15 @@ import { inp, lbl, btnPrimary, btnGhost, btnDanger, th, thead, errorBox, noteBox
 import { DocNumber } from "@/components/commercial/invoices/DocNumber";
 import { GstinField } from "@/components/commercial/invoices/GstinField";
 import { useInvoiceChoices } from "@/components/commercial/invoices/useInvoiceChoices";
+import { piSellerFrom } from "@/lib/commercial/proforma-rules";
+import { DEFAULT_SETTINGS } from "@/lib/commercial/settings-defaults";
 
 export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
+  // Which group company sells this order (scripts/0085). NULL means Pacific,
+  // the same rule the rest of the module states in one place.
+  const seller = piSellerFrom(DEFAULT_SETTINGS, (order as { sellerKey?: unknown }).sellerKey);
+  const sellerIsIndian = seller.indianExporter;
+  const sellerLabel = seller.label;
   const mayWrite = actions.includes("write");
   const mayCancel = actions.includes("cancel");     // ADMIN / COMMERCIAL_MANAGER — the same rule as a PI (answer 24)
   const { choices, error: choicesError } = useInvoiceChoices();
@@ -183,10 +190,24 @@ export default function InvoiceTab({ order, actions, refresh }: OrderTabProps) {
               <div>
                 <label className={lbl} htmlFor="ni-kind">Kind</label>
                 <select id="ni-kind" className={inp} value={form.kind} onChange={(e) => setKind(e.target.value)}>
-                  <option value="DTA">DTA — domestic, with GST</option>
+                  <option value="DTA" disabled={!sellerIsIndian}>DTA — domestic, with GST</option>
                   <option value="EXPORT">Export — under LUT, no GST</option>
                 </select>
                 <p className="mt-1 text-xs text-gray-400">This order is {order.kind === "DOMESTIC" ? "domestic" : "an export"}, so {defaultKindFor(order.kind)} is the usual choice.</p>
+                {/* WHOSE INVOICE THIS IS, said on the screen rather than
+                    discovered on the PDF. The order already names a selling
+                    company; until today the invoice ignored it and printed
+                    Pacific's name, GSTIN and bank whoever sold. A DTA invoice
+                    is an Indian domestic tax document, so it is not on offer
+                    for a seller that is not an Indian exporter — the server
+                    refuses it too, and this only saves the walk. */}
+                {!sellerIsIndian && (
+                  <p className="mt-1 text-xs text-amber-300">
+                    Sold by {sellerLabel}. The invoice prints that company, its own bank and no Indian
+                    registrations, and takes its own number series. A DTA invoice is an Indian tax
+                    document and is not available for it.
+                  </p>
+                )}
               </div>
               <div>
                 <label className={lbl} htmlFor="ni-pl">Draw lines from a packing list</label>

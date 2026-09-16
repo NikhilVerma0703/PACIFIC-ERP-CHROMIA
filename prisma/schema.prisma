@@ -6241,6 +6241,12 @@ model SamplingStock {
 enum SamplingIntakeSource {
   SAMPLE_CUTTING
   FAB_OFFCUT
+  /// PIECES THAT CAME BACK (scripts/0086). A request cancelled after the desk
+  /// packed it leaves real pieces on a real table, and until this value existed
+  /// the only way to put them back was to call them SAMPLE_CUTTING — a lie in
+  /// an append-only ledger, which is the one place a lie compounds. source_ref
+  /// holds the request number they came back from.
+  RETURNED
 
   @@map("sampling_intake_source")
 }
@@ -6372,6 +6378,15 @@ model SamplingDispatch {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  /// WHAT THIS PACKAGE WAS PACKED IN, and which Salesforce request it
+  /// fulfilled (scripts/0086). All three nullable, and NULL means what every
+  /// package before 2026-09-16 means: pieces went out and nobody recorded a
+  /// container. No back-fill, because there is no honest value to back-fill
+  /// with. No hard FK, per this module's precedent.
+  unitTypeId     String? @map("unit_type_id")
+  unitSerialId   String? @map("unit_serial_id")
+  salesRequestId String? @map("sales_request_id")
+
   lines SamplingDispatchLine[]
 
   /// The board: "what is packed but not gone", "what is gone but not
@@ -6380,6 +6395,8 @@ model SamplingDispatch {
   /// "What have we sent this customer before" — free-text name, so this serves
   /// the exact and prefix match a lookup starts with.
   @@index([customerName])
+  @@index([unitTypeId])
+  @@index([salesRequestId])
   @@map("sampling_dispatch")
 }
 
@@ -6412,6 +6429,148 @@ model SamplingDispatchLine {
   /// The size_id foreign key, for the same reason as on sampling_intake.
   @@index([sizeId])
   @@map("sampling_dispatch_line")
+}
+
+/// BOXES AND STANDS (scripts/0086). The owner, 2026-09-14: "we want to add to
+/// track sample boxes and stands in the sampling modules". A sample kit goes
+/// out IN something, and a display stand is a capital item that sits in a
+/// customer's showroom for years.
+///
+/// THE WORDS ARE SALESFORCE'S, not ours: Sample_Stand__c.Stand_Type__c already
+/// names Floor Stand / Wall Display / Counter Display / Sample Kit Box, so
+/// `sfStandType` records the exact picklist value each type mirrors. Inventing
+/// a parallel vocabulary is how two systems come to disagree about what a
+/// thing is called.
+enum SamplingUnitKind {
+  BOX
+  STAND
+
+  @@map("sampling_unit_kind")
+}
+
+/// Where one physical stand is. RELEASED and DISPATCHED mirror
+/// SamplingDispatchStatus exactly, because a stand leaves on a package and must
+/// not tell a different story from the package it left on. INSTALLED and
+/// RETURNED come back from Salesforce; RETIRED is only ever set by a person.
+enum SamplingUnitSerialStatus {
+  IN_STOCK
+  RELEASED
+  DISPATCHED
+  INSTALLED
+  RETURNED
+  RETIRED
+
+  @@map("sampling_unit_serial_status")
+}
+
+/// Why a unit moved. ADJUST is a correction and the route refuses one without
+/// a reason: an unexplained adjustment is how a count stops meaning anything.
+enum SamplingUnitLedgerReason {
+  INTAKE
+  RELEASE
+  RETURN
+  ADJUST
+  RETIRE
+
+  @@map("sampling_unit_ledger_reason")
+}
+
+/// A kind of box or stand.
+///
+/// COUNTED OR SERIALISED, and the difference is real. A box is a consumable:
+/// you have eleven, you send one, you have ten, and nobody asks which. A stand
+/// is an asset with a number stencilled on its frame, installed at a named
+/// customer on a date, and "where is FS-0007" is a question somebody will ask.
+model SamplingUnitType {
+  id             String           @id @default(cuid())
+  kind           SamplingUnitKind
+  name           String           @unique
+  /// The exact Sample_Stand__c.Stand_Type__c value, so the Salesforce push
+  /// never has to guess or translate.
+  sfStandType    String?          @map("sf_stand_type")
+  serialised     Boolean          @default(true)
+  capacityPieces Int?             @map("capacity_pieces")
+  /// Below this the shelf card goes red. Not a policy — a starting point the
+  /// incharge changes per type.
+  minQty         Int              @default(2) @map("min_qty")
+  active         Boolean          @default(true)
+  position       Int              @default(0)
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+
+  stock   SamplingUnitStock?
+  serials SamplingUnitSerial[]
+  ledger  SamplingUnitLedger[]
+
+  @@map("sampling_unit_type")
+}
+
+/// The running count for a COUNTED type. The quantity moves, the row does not —
+/// the same shape as SamplingStock, so a reader who knows one knows the other.
+///
+/// A SERIALISED TYPE HAS NO ROW HERE. Its on-hand is count(*) of IN_STOCK
+/// serials, computed on every read: a stored count beside the rows it
+/// summarises is a second source of truth, and the two disagree the first time
+/// a transaction half-fails.
+model SamplingUnitStock {
+  id         String           @id @default(cuid())
+  unitTypeId String           @unique @map("unit_type_id")
+  unitType   SamplingUnitType @relation(fields: [unitTypeId], references: [id], onDelete: Cascade)
+  /// CHECK (quantity >= 0) lives in scripts/0086: a negative count of physical
+  /// objects is not a number anybody should be able to store, whatever a route
+  /// forgets to validate.
+  quantity   Int              @default(0)
+  updatedAt  DateTime         @updatedAt @map("updated_at")
+
+  @@map("sampling_unit_stock")
+}
+
+/// One physical stand, by the number stencilled on it.
+model SamplingUnitSerial {
+  id             String                   @id @default(cuid())
+  unitTypeId     String                   @map("unit_type_id")
+  unitType       SamplingUnitType         @relation(fields: [unitTypeId], references: [id])
+  /// The ERP proposes <PREFIX>-<seq>; the incharge may overtype it, because the
+  /// number on the metal wins over the number the software would have liked.
+  serialNo       String                   @unique @map("serial_no")
+  status         SamplingUnitSerialStatus @default(IN_STOCK)
+  customerName   String?                  @map("customer_name")
+  salesRequestId String?                  @map("sales_request_id")
+  dispatchId     String?                  @map("dispatch_id")
+  /// The Sample_Stand__c Id once pushed, so a retried send updates the same
+  /// Salesforce record instead of creating a twin.
+  sfStandId      String?                  @map("sf_stand_id")
+  installedAt    DateTime?                @map("installed_at")
+  locationNote   String?                  @map("location_note")
+  /// users.id, deliberately without a hard FK — the Sales/Chromia precedent.
+  createdById    String?                  @map("created_by_id")
+  createdAt      DateTime                 @default(now()) @map("created_at")
+  updatedAt      DateTime                 @updatedAt @map("updated_at")
+
+  @@index([unitTypeId, status])
+  @@map("sampling_unit_serial")
+}
+
+/// Append-only, like SamplingIntake. Every change to a count or a serial writes
+/// one row here in the SAME transaction as the change, so the admin page can
+/// assert quantity = sum(delta) per counted type and SHOW the drift rather than
+/// quietly carrying it.
+model SamplingUnitLedger {
+  id             String                   @id @default(cuid())
+  unitTypeId     String                   @map("unit_type_id")
+  unitType       SamplingUnitType         @relation(fields: [unitTypeId], references: [id])
+  serialId       String?                  @map("serial_id")
+  delta          Int
+  reason         SamplingUnitLedgerReason
+  reference      String?
+  salesRequestId String?                  @map("sales_request_id")
+  dispatchId     String?                  @map("dispatch_id")
+  note           String?
+  createdById    String?                  @map("created_by_id")
+  createdAt      DateTime                 @default(now()) @map("created_at")
+
+  @@index([unitTypeId, createdAt])
+  @@map("sampling_unit_ledger")
 }
 
 // ============================================================================

@@ -56,76 +56,41 @@
 // pdfmake, Roboto (the only font installed), A4 portrait. Do NOT reach for
 // puppeteer: it is not installed and the deployment has no Chrome.
 import { buildPdf } from "@/lib/sales/pdf/common";
-import { piPrintFields, piRow, piTotalRow, piTableHeader, partyBlock, printsParty, printsIndianBlock, type PiSnapshot } from "@/lib/commercial/proforma-rules";
+import { piPrintFields, piRow, piTotalRow, piTableHeader, partyBlock, printsParty, printsIndianBlock, printable, type PiSnapshot } from "@/lib/commercial/proforma-rules";
 
 // ── the reference's type scale ───────────────────────────────────────────────
-const FS = { body: 7.5, label: 7, value: 8, head: 8, title: 12, big: 9 } as const;
-const GREY = "#f2f2f2";
-
-/** A hairline box round every cell — the reference is a grid of boxes. */
-const gridLayout = {
-  hLineWidth: () => 0.5,
-  vLineWidth: () => 0.5,
-  hLineColor: () => "#000000",
-  vLineColor: () => "#000000",
-  paddingLeft: () => 4,
-  paddingRight: () => 4,
-  paddingTop: () => 2,
-  paddingBottom: () => 2,
-};
-
-const noBorder = {
-  hLineWidth: () => 0,
-  vLineWidth: () => 0,
-  paddingLeft: () => 0,
-  paddingRight: () => 0,
-  paddingTop: () => 1,
-  paddingBottom: () => 1,
-};
-
-/** "Label" over its value — the shape every box on this document has. */
-function field(label: string, value: string, opts: { bold?: boolean; upper?: boolean } = {}): any {
-  return {
-    stack: [
-      { text: label, fontSize: FS.label, color: "#444" },
-      { text: value || " ", fontSize: FS.value, bold: Boolean(opts.bold), characterSpacing: 0 },
-    ],
-  };
-}
-
-/** Two fields side by side inside one row of a bordered table. */
-function pairRow(a: any, b: any): any[] {
-  return [a, b];
-}
-
-/** One cell across both columns of a two-column table: the colSpan and the
- *  filler cell pdfmake needs behind it, built together so neither can be left
- *  behind when a row is added or dropped. */
-function fullRow(cell: any): any[] {
-  return [{ colSpan: 2, ...cell }, {}];
-}
-
-/** A named party: bold name, then its printed lines. */
-function partyCell(label: string, p: ReturnType<typeof partyBlock>): any {
-  return {
-    stack: [
-      { text: label, fontSize: FS.label, color: "#444" },
-      { text: p.name || " ", fontSize: FS.value, bold: true },
-      ...p.lines.map((l) => ({ text: l, fontSize: FS.body })),
-    ],
-  };
-}
-
-/** One bold "Label : value" line in the terms / bank block. */
-function termLine(label: string, value: string): any {
-  return {
-    text: [
-      { text: `${label} : `, fontSize: FS.body, bold: true },
-      { text: value, fontSize: FS.body },
-    ],
-    margin: [0, 0, 0, 1],
-  };
-}
+// THE TYPE SCALE, sized up on 2026-09-15 — the owner, looking at an invoice
+// that had lost its empty boxes and with them half its height: "make the boxes
+// bigger in the table to take up more space in the page ... and text size
+// maybe". The old scale was set against a reference document that filled an A4
+// with boxes whether or not they said anything; once only the boxes that say
+// something print, 7pt labels on a third of a page read as a fragment rather
+// than as a document.
+//
+// EVERY VALUE HERE IS BOUNDED BY ONE THING: the page, and the true bound is
+// FIVE item lines, not the ten this comment claimed until it was measured. A
+// full Pacific export proforma — delivery terms, both ports, final destination,
+// the Indian registration rows and the declaration — fits five lines on one
+// sheet and goes to two at six. A Monolith US proforma, which drops the whole
+// Indian block, is far lighter and fits more.
+//
+// The ten was never rendered; it was asserted. It is recorded here because the
+// next person to raise these sizes needs the real number to trade against, and
+// because the same comment went on to say a stranded signature block is worse
+// than small type — which was true, and was happening at six lines. The layout
+// now keeps the total and the signatures together (see the end of this file),
+// so a long order breaks in the item table, under repeated column headings,
+// instead of through the footer.
+// THE FORMAT ITSELF NOW LIVES IN ./format — the type scale, the hairline grid,
+// the header's outer/inner pair and the empty-box rules. It was lifted out of
+// this file unchanged on 2026-09-15 so the seller invoice could be built from
+// the very same primitives rather than a copy of them, which is how two
+// documents that are meant to match start to diverge. This file keeps every
+// decision about WHAT a proforma prints; format.ts knows only how a box looks.
+import {
+  FS, GREY, gridLayout, outerGrid, innerGrid,
+  field, fieldOrNull, fullRow, pairRow, partyCell, termLine,
+} from "./format";
 
 export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer> {
   const f = piPrintFields(snapshot);
@@ -149,10 +114,10 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
         // else's — decided in proforma-rules like every other string here.
         [partyCell(f.exporterLabel, exporter)],
         [partyCell("Consignee", consignee)],
-        [partyCell("Notify Party", notify)],
-      ],
+        ...(printsParty(snapshot.notifyParty) ? [[partyCell("Notify Party", notify)]] : []),
+      ].filter(Boolean) as any[],
     },
-    layout: gridLayout,
+    layout: innerGrid,
   };
 
   // ── right column: the invoice's own facts ─────────────────────────────────
@@ -161,7 +126,7 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
       widths: ["50%", "50%"],
       body: [
         pairRow(field("Invoice No", f.invoiceNo, { bold: true }), field("Invoice Date", f.invoiceDate, { bold: true })),
-        pairRow(field("Buyer's PO No", f.buyerPoNo), field("Delivery Date", f.deliveryDate)),
+        pairRow(fieldOrNull("Buyer's PO No", f.buyerPoNo), fieldOrNull("Delivery Date", f.deliveryDate)),
         // RBI CODE AND GSTIN READ AS "label: value", ONE PER LINE (owner,
         // 2026-09-15). field() stacks a small grey label above its value, which
         // is right for a box somebody fills in and wrong for two registration
@@ -193,7 +158,7 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
               fullRow({
                 stack: [
                   { text: "Jurisdictional Central Excise Division Office Address", fontSize: FS.label, color: "#444" },
-                  { text: f.customsOffice || " ", fontSize: 6.5 },
+                  { text: f.customsOffice || " ", fontSize: 7.5 },
                 ],
               }),
             ]
@@ -201,25 +166,36 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
         // Only where there IS a second buyer — SBP's PI prints its customer code
         // and US address here; every other PI has this row absent, not empty.
         ...(printsParty(snapshot.buyerIfNotConsignee) ? [fullRow(partyCell("Buyer if Not Consignee", buyer))] : []),
-        pairRow(field("Country of Origin of goods", f.countryOfOrigin), field("Country of Final Destination", f.countryOfDestination)),
-        // Whatever was typed into the box, or an empty box. Never conditional.
-        fullRow(field("Terms & Conditions", f.termsAndConditions)),
-        fullRow(field("Delivery Terms", f.deliveryTerms, { bold: true })),
+        pairRow(fieldOrNull("Country of Origin of goods", f.countryOfOrigin), fieldOrNull("Country of Final Destination", f.countryOfDestination)),
+        // TERMS & CONDITIONS IS NOW WITHHELD WHEN BLANK, and that reverses an
+        // earlier decision on purpose. It used to print as a labelled empty box
+        // because the customer's reference proforma shows one; then the owner,
+        // 2026-09-15, first emptied it ("terms and conditions me tonnage nahi
+        // dikhana — make it empty unless stated clearly to fill in it") and
+        // then took the empty boxes off the page ("remove empty boxes like port
+        // of loading etc"). The two together leave a labelled box that is empty
+        // by instruction, which is the exact thing the second instruction
+        // removes. It still carries snapshot.notes and nothing derived: when a
+        // human types terms, they print.
+        fullRow(fieldOrNull("Terms & Conditions", f.termsAndConditions)),
+        fullRow(fieldOrNull("Delivery Terms", f.deliveryTerms, { bold: true })),
         // The DTA salesperson (owner, 2026-09-15): who asked for this PI for
         // his customer. piSalesperson blanks it on an export PI, so the row is
         // not on that paper at all.
         ...(f.salesperson ? [fullRow(field("Sales Person", f.salesperson, { bold: true }))] : []),
-      ],
+      ].filter(Boolean) as any[],
     },
-    layout: gridLayout,
+    layout: innerGrid,
   };
 
   // ── the carriage grid ─────────────────────────────────────────────────────
-  const carriage: any = {
-    table: {
-      widths: ["50%", "50%"],
-      body: [
-        pairRow(field("Pre-Carriage By", f.preCarriageBy), field("Place of Receipt By Pre-Carrier", f.placeOfReceipt)),
+  // AND THE WHOLE GRID GOES WHEN EVERY ROW IN IT DOES. On a US proforma none of
+  // these five is known — no Indian port of loading, no pre-carriage leg — so
+  // the body came out empty, and an empty table is not a small table: pdfmake
+  // reads the first row to size its columns and throws on `undefined.length`.
+  // The document simply has no carriage block on that paper.
+  const carriageRows: any[] = [
+        pairRow(fieldOrNull("Pre-Carriage By", f.preCarriageBy), fieldOrNull("Place of Receipt By Pre-Carrier", f.placeOfReceipt)),
         // NO VESSEL / FLIGHT NUMBER ON A PROFORMA (owner, 2026-09-15: "not
         // required in any PI"), and it is not merely blanked — the cell is
         // gone. A proforma is raised before anything is booked, so the vessel
@@ -241,13 +217,12 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
         // Loading alone in a half-width cell, and Final Destination takes the
         // full width below them: loading, discharge, destination still read in
         // that order down the block.
-        pairRow(field("Port of Loading", f.portOfLoading), field("Port of Discharge", f.portOfDischarge)),
-        fullRow(field("Final Destination", f.finalDestination)),
-      ],
-    },
-    layout: gridLayout,
-    margin: [0, 0, 0, 0],
-  };
+        pairRow(fieldOrNull("Port of Loading", f.portOfLoading), fieldOrNull("Port of Discharge", f.portOfDischarge)),
+        fullRow(fieldOrNull("Final Destination", f.finalDestination)),
+  ].filter(Boolean) as any[];
+  const carriage: any | null = carriageRows.length
+    ? { table: { widths: ["50%", "50%"], body: carriageRows }, layout: gridLayout, margin: [0, 0, 0, 0] }
+    : null;
 
   // ── payment terms and the banks ───────────────────────────────────────────
   // HOW THE ACCOUNT IS QUOTED. An Indian exporter's is quoted by its AD code,
@@ -258,7 +233,21 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
   // in India and an IFSC is an Indian branch code: a US account has neither,
   // so on its paper those cells are absent and the account number takes the
   // width they used to share.
-  const accountRow: any = indian
+  // ASKED OF THE BANK, NOT OF THE SELLER, and that correction came off a real
+  // document: a Pacific proforma paid into MONOLITH's New York account (the
+  // owner, 2026-09-15, "bank details should be monolith only") printed the
+  // Indian three-column row round a US account, so "AD Code :" and "IFSC :"
+  // stood there with nothing after them — the very empty labels he had just
+  // had taken off this page. Whose paper it is decides the GSTIN block; which
+  // ACCOUNT it is decides how that account is quoted, and the two are not the
+  // same question the moment one company is paid into another's bank.
+  //
+  // An IFSC is an Indian branch code, so its presence is what marks an Indian
+  // account. Pacific's two both carry one and are untouched: Kotak keeps its AD
+  // code, and the domestic ICICI keeps the empty AD-code box it has always
+  // printed, because that account IS Indian and simply has no code.
+  const indianAccount = Boolean(printable(f.ifsc));
+  const accountRow: any = indianAccount
     ? {
         columns: [
           { width: "34%", text: [{ text: "AD Code : ", bold: true }, f.adCode], fontSize: FS.body },
@@ -283,7 +272,9 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
   // learning about it a week later when the money comes back, so each route is
   // its own labelled block. Every line is withheld when the sheet gives no
   // value for it — nothing here is invented and nothing prints an empty label.
-  const routingLines: any[] = indian
+  // The route follows the account for the same reason: a US account is paid by
+  // wire or ACH whoever is selling.
+  const routingLines: any[] = indianAccount
     ? (f.routingBank || f.routingSwift
         ? [
             { text: "Routing Bank", fontSize: FS.body, bold: true, margin: [0, 2, 0, 0] },
@@ -351,6 +342,20 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
     text, fontSize: FS.head, bold: true, alignment: ALIGN[i], fillColor: GREY,
   }));
 
+  // THE ITEM TABLE PAYS ITS PADDING NINE TIMES OVER, which is why it gets its
+  // own, tighter horizontal figure. Every other block on this page has two or
+  // three columns; this one has nine, so the 6pt sides that give the rest of
+  // the document room cost it 108pt of the 539pt it has — enough to squeeze the
+  // description column below the width of the words in it. pdfmake does not
+  // shrink a column past its longest unbreakable word: it widens the TABLE, and
+  // the item grid then ran 24pt past the right margin while every block above
+  // it stopped square on it. Measured off the rendered page, not guessed at.
+  //
+  // At 4pt sides the fixed columns and their padding come to 466 of 539, the
+  // description column takes the 73 that are left, and the star column ends
+  // exactly on the margin with everything else.
+  const itemLayout = { ...gridLayout, paddingLeft: () => 4, paddingRight: () => 4 };
+
   const itemTable: any = {
     table: {
       headerRows: 2,
@@ -358,7 +363,7 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
       widths: [72, "*", 30, 36, 44, 44, 52, 54, 62],
       body: [headerRow1, headerRow2, ...(bodyRows.length ? bodyRows : [[{ text: " ", colSpan: 9, fontSize: FS.body }, {}, {}, {}, {}, {}, {}, {}, {}]]), totalRow],
     },
-    layout: gridLayout,
+    layout: itemLayout,
   };
 
   // ── total in figures and words ────────────────────────────────────────────
@@ -378,8 +383,15 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
   };
 
   // ── weights, discount, declaration and the signatures ─────────────────────
+  // dontBreakRows, because this whole block is ONE table row and pdfmake will
+  // otherwise slice it horizontally when it runs out of page. Measured on a
+  // six-line Pacific export PI: the declaration split mid-sentence and
+  // "Authorised Signatory & Stamp" was left standing alone at the top of page
+  // two, under nothing. A signature block that has been cut in half is worse
+  // than one that starts a fresh page whole.
   const footer: any = {
     table: {
+      dontBreakRows: true,
       widths: ["44%", "28%", "28%"],
       body: [[
         {
@@ -404,7 +416,7 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
             ...(indian
               ? [
                   { text: "Declaration", fontSize: FS.label, bold: true, margin: [0, 3, 0, 0] },
-                  { text: f.declaration, fontSize: 6.5, color: "#333" },
+                  { text: f.declaration, fontSize: 7.5, color: "#333" },
                 ]
               : []),
           ],
@@ -431,7 +443,7 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
   // Blank validUntil = valid forever (answer 24): no line, rather than a line
   // that says so — the reference PI carries no validity text either.
   const validity = f.validUntil
-    ? [{ text: `This proforma invoice is valid until ${f.validUntil}.`, fontSize: 6.5, color: "#555", margin: [0, 3, 0, 0] }]
+    ? [{ text: `This proforma invoice is valid until ${f.validUntil}.`, fontSize: 7.5, color: "#555", margin: [0, 3, 0, 0] }]
     : [];
 
   const docDef: any = {
@@ -443,16 +455,22 @@ export async function generateProformaPdf(snapshot: PiSnapshot): Promise<Buffer>
     content: [
       { text: f.title, fontSize: FS.title, bold: true, alignment: "center", margin: [0, 0, 0, 5] },
       {
-        table: { widths: ["50%", "50%"], body: [[{ stack: [leftStack] }, { stack: [rightStack] }]] },
-        layout: noBorder,
+        table: { widths: ["50%", "50%"], body: [[leftStack, rightStack]] },
+        layout: outerGrid,
         margin: [0, 0, 0, 0],
       },
-      carriage,
+      ...(carriage ? [carriage] : []),
       bankBlock,
       itemTable,
-      totalLine,
-      footer,
-      ...validity,
+      // THE TOTAL AND THE SIGNATURES TRAVEL TOGETHER. The type scale keeps a
+      // FIVE-line proforma on one sheet — measured, not assumed, and less than
+      // the ten this file used to claim. Past that the document legitimately
+      // runs to a second page, and the only question is where it breaks. A
+      // total stranded above a page break, with the amount in words and the
+      // signatures overleaf, reads as an unfinished document; kept together
+      // they read as a footer. The item table carries headerRows: 2, so its
+      // continuation on page two arrives under its own column headings.
+      { stack: [totalLine, footer, ...validity], unbreakable: true },
     ],
   };
 
