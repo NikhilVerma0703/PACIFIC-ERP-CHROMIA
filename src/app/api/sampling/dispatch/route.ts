@@ -14,7 +14,7 @@
 //
 // ALL OR NOTHING. A package is packed as one thing. Releasing the three lines
 // that fit and silently dropping the fourth sends a customer a box missing a
-// sample nobody told them about — so planRelease() checks every line first and
+// sample nobody told them about — so releasePackage() plans every line first and
 // the refusal names EVERY line that cannot be met, by colour, finish and size.
 // "only 2 in stock, 5 requested" against no item name is a message somebody has
 // to come and ask about.
@@ -42,10 +42,11 @@
 
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { releasePackage } from "@/lib/sampling/release";
 import type { Prisma } from "@prisma/client";
 import { samplingGate } from "@/lib/sampling/access";
 import { sampleSizeLabel } from "@/lib/sampling/size";
-import { checkTransition, planRelease, STATE_STAMP, type StockRelease } from "@/lib/sampling/lifecycle";
+import { checkTransition, STATE_STAMP } from "@/lib/sampling/lifecycle";
 
 export const dynamic = "force-dynamic";
 
@@ -242,83 +243,37 @@ export async function POST(req: NextRequest) {
 
   const releasedById = (g.user as { id?: string })?.id ?? null;
 
-  const outcome = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-    const checks: StockRelease[] = [];
-    const shelves: Array<{ line: IncomingLine; stockId: string | null; label: string }> = [];
+  // WHAT THIS PACKAGE IS PACKED IN (scripts/0086). Optional, because a walk-in
+  // package of loose pieces genuinely goes out in nothing — but offered on the
+  // form, because without it the box count drifts within a week: the desk
+  // would consume boxes for Salesforce requests and never for the packages it
+  // makes by hand, and the two counts would part company silently.
+  const unitTypeId = String(body.unitTypeId ?? "").trim();
+  const unitSerialId = String(body.unitSerialId ?? "").trim();
+  const unit = unitTypeId
+    ? { unitTypeId, serialId: unitSerialId || null, quantity: 1 }
+    : null;
 
-    for (const line of lines) {
-      // THE LOCK, one shelf at a time in the sorted order above. A shelf that
-      // does not exist locks nothing and reads as 0 on hand, which is the true
-      // answer: nobody has ever put one of these on a shelf.
-      await tx.$queryRaw`
-        SELECT id FROM sampling_stock
-        WHERE colour_finish_id = ${line.colourFinishId} AND size_id = ${line.sizeId}
-        FOR UPDATE`;
+  // ONE PLACE STOCK LEAVES THE SHELF. This route used to hold the locks, the
+  // plan and the decrements in its own body; they moved to
+  // lib/sampling/release.ts when the Salesforce pack route became a second
+  // caller. Two routes each decrementing a shelf are two chances to get the
+  // lock order wrong, and the second is always the one written in a hurry.
+  const outcome = await prisma.$transaction((tx: Prisma.TransactionClient) =>
+    releasePackage(tx, {
+      customerName,
+      destination,
+      reference,
+      notes,
+      lines,
+      unit,
+      releasedById,
+    }),
+  );
 
-      const [stock, colourFinish, size] = await Promise.all([
-        tx.samplingStock.findUnique({
-          where: { colourFinishId_sizeId: { colourFinishId: line.colourFinishId, sizeId: line.sizeId } },
-          select: { id: true, quantity: true },
-        }),
-        tx.productColourFinish.findUnique({
-          where: { id: line.colourFinishId },
-          select: { finish: true, colour: { select: { name: true } } },
-        }),
-        tx.samplingSize.findUnique({
-          where: { id: line.sizeId },
-          select: { lengthIn: true, widthIn: true, thicknessMm: true },
-        }),
-      ]);
-      if (!colourFinish || !size) return { kind: "unknown-item" as const };
-
-      const label = itemLabel(colourFinish.colour.name, colourFinish.finish, size);
-      checks.push({ label, onHand: Number(stock?.quantity ?? 0), quantity: line.quantity });
-      shelves.push({ line, stockId: stock?.id ?? null, label });
-    }
-
-    // The whole package, decided before any of it moves — and the refusals are
-    // planRelease's own sentences, each already carrying the item's name.
-    const plan = planRelease(checks);
-    if (!plan.ok) return { kind: "short" as const, shortfalls: plan.shortfalls };
-
-    for (const shelf of shelves) {
-      // decrement, not a write of a computed number: the value was read under
-      // the lock, but `{ decrement }` is what keeps this true if the lock is
-      // ever loosened.
-      await tx.samplingStock.update({
-        where: { id: shelf.stockId as string },
-        data: { quantity: { decrement: shelf.line.quantity } },
-      });
-    }
-
-    const dispatch = await tx.samplingDispatch.create({
-      data: {
-        customerName, destination, reference, notes,
-        // Creating the dispatch IS the first transition — there is no IN_STOCK
-        // row to move off. The default on the column says RELEASED too; it is
-        // written explicitly so this route states the transition it performs.
-        status: "RELEASED",
-        releasedAt: new Date(),
-        releasedById,
-        lines: {
-          create: shelves.map((s) => ({
-            colourFinishId: s.line.colourFinishId,
-            sizeId: s.line.sizeId,
-            quantity: s.line.quantity,
-          })),
-        },
-      },
-      select: { id: true, releasedAt: true },
-    });
-
-    return {
-      kind: "ok" as const,
-      id: dispatch.id,
-      releasedAt: dispatch.releasedAt,
-      pieces: shelves.reduce((n, s) => n + s.line.quantity, 0),
-    };
-  });
-
+  if (outcome.kind === "unknown-unit") {
+    return bad("That box or stand is no longer on the list — reload the page.");
+  }
   if (outcome.kind === "unknown-item") {
     return bad("One of those items is no longer in the chart — reload the page.");
   }

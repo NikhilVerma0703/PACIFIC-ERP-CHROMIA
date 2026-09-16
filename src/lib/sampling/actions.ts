@@ -89,8 +89,8 @@
 import { rankOf, ROLE_RANK } from "../roles.ts";
 
 /** Everything a signed-in user can be asked to do in this module. */
-export type SamplingAction = "view" | "addStock" | "raiseRequest" | "release" | "dispatch" | "deliver";
-export const SAMPLING_ACTIONS: SamplingAction[] = ["view", "addStock", "raiseRequest", "release", "dispatch", "deliver"];
+export type SamplingAction = "view" | "addStock" | "raiseRequest" | "release" | "dispatch" | "deliver" | "manageUnits";
+export const SAMPLING_ACTIONS: SamplingAction[] = ["view", "addStock", "raiseRequest", "release", "dispatch", "deliver", "manageUnits"];
 
 /** The three kinds of login this module recognises. Not a ranking — a
  *  FAB_SUPERVISOR is not "below" a SAMPLING login, he is a different person
@@ -114,7 +114,18 @@ export const SAMPLING_ACTORS: Record<SamplingAction, readonly SamplingActor[]> =
   raiseRequest: ["SAMPLING", "ADMIN"],
   release:      ["SAMPLING", "ADMIN"],
   dispatch:     ["SAMPLING", "ADMIN"],
-  deliver:      ["SAMPLING", "ADMIN"],
+  deliver:      ["SAMPLING", "ADMIN"],
+  // BOXES AND STANDS (scripts/0086), and DELIBERATELY NOT ON addStock.
+  //
+  // addStock is the one line above that admits FAB_SUPERVISOR, and the head of
+  // this file explains why that was a mistake worth unpicking once already: it
+  // exists for the fabrication floor's single errand of recording an offcut
+  // that came off the saw. A box is not the floor's, and a display stand is a
+  // capital asset that goes to a named customer for years. Folding units into
+  // addStock would hand the shared floor login the power to adjust a stand
+  // count and retire an asset, for no reason beyond the two words sounding
+  // alike. Its own action, admitting only the desk and an admin.
+  manageUnits:  ["SAMPLING", "ADMIN"],
 };
 
 /**

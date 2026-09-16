@@ -350,18 +350,40 @@ const ROUTE_GATES: Record<string, SamplingAction[]> = {
   // "dispatch" for DISPATCHED, "deliver" for DELIVERED — which is not a
   // literal and so is not listed. Both are SAMPLING/ADMIN lines like these two.
   dispatch: ["release", "view"],
+  // BOXES AND STANDS (scripts/0086). The shelf is readable by the desk like
+  // the rest of the module; every WRITE is manageUnits, which is a NEW action
+  // and deliberately NOT addStock — see lib/sampling/actions.ts, and the
+  // reachable() assertion below, which is what actually holds the line: the
+  // cutter's list must not grow by this route.
+  units: ["view", "manageUnits"],
+  "units/ledger": ["view"],
+  "units/serials/[serialId]": ["manageUnits"],
 };
 
+/** Every route.ts under src/app/api/sampling, by its path below that folder.
+ *
+ *  WALKS NESTED FOLDERS, and that is not a tidy-up. This test read only the
+ *  TOP level until 2026-09-16, when the units routes arrived with children —
+ *  units/ledger and units/serials/[serialId]. A guard that stops one level
+ *  above the routes it is guarding is worse than no guard, because it still
+ *  passes: the whole point is that the NEXT route has to be entered
+ *  deliberately rather than inheriting whatever it copied. */
+function routeFiles(dir: string, prefix = ""): string[] {
+  const out: string[] = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.isDirectory()) out.push(...routeFiles(join(dir, e.name), prefix ? `${prefix}/${e.name}` : e.name));
+    else if (e.name === "route.ts" && prefix) out.push(prefix);
+  }
+  return out.sort();
+}
+
 test("EVERY /api/sampling ROUTE NAMES ITS ACTION, AND THE FAB SIDE ONLY REACHES addStock", () => {
-  const dirs = readdirSync(SAMPLING_API, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
-    .map((d) => d.name)
-    .sort();
-  assert.deepEqual(dirs, Object.keys(ROUTE_GATES).sort(),
+  const routes = routeFiles(SAMPLING_API);
+  assert.deepEqual(routes, Object.keys(ROUTE_GATES).sort(),
     "a new /api/sampling route must be entered in ROUTE_GATES with the action it gates on");
 
-  for (const name of dirs) {
-    const src = readFileSync(join(SAMPLING_API, name, "route.ts"), "utf8");
+  for (const name of routes) {
+    const src = readFileSync(join(SAMPLING_API, ...name.split("/"), "route.ts"), "utf8");
     assert.deepEqual(gatesIn(src), [...ROUTE_GATES[name]].sort(), `/api/sampling/${name}`);
   }
 });
@@ -377,7 +399,7 @@ test("THE OFFCUT AND THE ORDER BOOK ARE DIFFERENT ERRANDS — the leak, stated a
       .sort();
 
   assert.deepEqual(reachable(cutter), ["catalogue", "intake", "sizes", "slab-offcuts"],
-    "he records an offcut; he does not read the order book or raise one");
+    "he records an offcut; he does not read the order book, raise one, or touch a stand");
   assert.deepEqual(reachable(desk), Object.keys(ROUTE_GATES).sort(), "the desk owns the module");
 
   // Said again at the action, because that is the sentence that broke: the
