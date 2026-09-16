@@ -33,7 +33,16 @@ test("first In and last Out may be different slabs — the run's start and finis
 
 test("a batch past midnight spans the day boundary correctly", () => {
   // In 23:00 on the 24th, last slab Out 01:00 on the 25th → 2 hours, not −22h.
-  const slabs = [slab(DAY, "23:00", "23:40"), slab(NEXT, "23:50", "01:00")];
+  //
+  // BOTH SLABS ARE DATED THE 24th, and that is the fix rather than the test
+  // being wrong before. The fixture used to date the second slab the 25th
+  // while its comment described one overnight run; the old placement rule
+  // re-derived the day from the sequence and so hid the contradiction. Reading
+  // the stored date exposes it: a slab dated the 25th with In 23:50 really is
+  // the following night, and 26 hours would be the honest answer for THAT
+  // data. One overnight run is two slabs on the SAME date, the second crossing
+  // midnight — which is exactly what the operator records.
+  const slabs = [slab(DAY, "23:00", "23:40"), slab(DAY, "23:50", "01:00")];
   assert.equal(productionSpanMinutes(slabs), 120);
 });
 
@@ -138,10 +147,24 @@ test("a lone slab crossing midnight by itself has a span, not '—'", () => {
   assert.equal(productionSpanMinutes([slab("2026-09-01", "23:30", "00:10")]), 40);
 });
 
-test("BATCH 1432 — the span ends where the chart ends: two mis-dated last slabs add no day", () => {
-  // 31 Aug 11:20 → 22:50; slabs 7 and 8 wrongly carry 01 Sep. The chart keeps
-  // them in 22:00–23:00 on 31 Aug (see roboHourlyProduction), so the KPI must
-  // read 11h 30m — not "35 hours 30 minutes" over an 11:00–23:00 chart.
+test("BATCH 1432 — a wrong stored date is corrected on the slab, and the KPI and chart agree either way", () => {
+  // THIS TEST ASSERTED THE OPPOSITE UNTIL 2026-09-16, and the reversal is
+  // deliberate. Slabs 7 and 8 of batch 1432 carry 01 Sep when the run was all
+  // on 31 Aug. The old rule detected that ("the clock barely moved, so ignore
+  // the forward date") and read 11h 30m.
+  //
+  // Reading the stored date means the KPI now reads 35h 30m for this data —
+  // because that IS what the records say. The rule is stated in
+  // hourlyProduction: a genuinely wrong stored date is corrected on the slab
+  // (Slab Records → Edit), not reconstructed away in the reports. The old
+  // detection was bought at a price that turned out to be far higher: the same
+  // sequence walk drifted batch 1440 (8–10 Sep) onto 23–25 Sep and 1445
+  // (15–16 Sep) onto 18–20 Sep, because serialNumber is mistyped and restarted
+  // on real runs.
+  //
+  // WHAT STILL MATTERS, AND IS WHAT THIS TEST NOW GUARDS: whatever the data
+  // says, the KPI and the chart beneath it must say the SAME thing. They now
+  // share one function (placeByStoredDate), so they cannot drift apart again.
   const rows = [
     { serialNumber: 1, productionDate: "2026-08-31", inTime: "11:20", outTime: "12:00" },
     { serialNumber: 2, productionDate: "2026-08-31", inTime: "20:00", outTime: "21:30" },
@@ -153,14 +176,23 @@ test("BATCH 1432 — the span ends where the chart ends: two mis-dated last slab
     { serialNumber: 8, productionDate: "2026-09-01", inTime: "22:45", outTime: "22:50" },
   ];
   const span = productionSpanMinutes(rows);
-  assert.equal(span, 11 * 60 + 30); // 690
+  // 31 Aug 11:20 → 01 Sep 22:50, because that is what the rows say.
+  assert.equal(span, 35 * 60 + 30); // 2130
   const chart = hourlyProduction(rows);
-  // First In (11:20) falls in the chart's first bucket; first In + span (22:50)
-  // falls in its last bucket, on the same date the chart ends on.
-  const firstIn = 11 * 60 + 20;
-  assert.equal(Math.floor(firstIn / 60), chart[0].hour);
-  assert.equal(Math.floor((firstIn + (span as number)) / 60), chart[chart.length - 1].hour);
-  assert.equal(chart[chart.length - 1].date, "2026-08-31");
+  // THE AGREEMENT, asserted rather than assumed: the chart starts in the hour
+  // of the first In, ends in the hour of the last Out, and the KPI's span is
+  // exactly the distance between those two hours' worth of minutes.
+  assert.equal(chart[0].hour, 11);
+  assert.equal(chart[0].date, "2026-08-31");
+  assert.equal(chart[chart.length - 1].hour, 22);
+  assert.equal(chart[chart.length - 1].date, "2026-09-01");
+
+  // And once the two slabs are corrected on the slab record — which is where
+  // the rule says a wrong date is fixed — both read the real run.
+  const corrected = rows.map((r) => ({ ...r, productionDate: "2026-08-31" }));
+  assert.equal(productionSpanMinutes(corrected), 11 * 60 + 30); // 690
+  const fixedChart = hourlyProduction(corrected);
+  assert.equal(fixedChart[fixedChart.length - 1].date, "2026-08-31");
   assert.equal(Math.floor((span as number) / 60), chart.length - 1);
 });
 
@@ -184,4 +216,42 @@ test("a filter over two batches places each batch as its own run (runKey)", () =
     { runKey: "B", serialNumber: 2, productionDate: NEXT, inTime: "22:00", outTime: "23:00" },
   ];
   assert.equal(productionSpanMinutes(slabs), 37 * 60);
+});
+
+test("the KPI and the chart are one rule, not two that happen to agree", () => {
+  // The property that survived the 2026-09-16 reversal, and the reason the
+  // placement lives in ONE exported function. Before it, both read the same
+  // module by convention; a headline number that disagrees with the graph
+  // beneath it is worse than either being wrong alone.
+  const cases: SpanSlab[][] = [
+    [slab(DAY, "11:20", "12:00"), slab(DAY, "20:00", "22:50")],
+    [slab(DAY, "23:00", "23:40"), slab(DAY, "23:50", "01:00")],          // overnight
+    [slab(DAY, "10:00", "11:00"), slab(NEXT, "08:00", "16:00")],          // two days
+    [slab(DAY, "09:00", null), slab(DAY, "09:30", "18:30")],              // one still open
+  ];
+  for (const rows of cases) {
+    const span = productionSpanMinutes(rows);
+    const chart = hourlyProduction(rows);
+    if (span === null) continue;
+    // The same two instants, floored to their hours: the chart's width in whole
+    // hours is the KPI's span to within one bucket.
+    const chartMinutes = (chart.length - 1) * 60;
+    assert.ok(chartMinutes <= span + 59, `chart ${chartMinutes} vs KPI ${span}`);
+    assert.ok(chartMinutes >= span - 59, `chart ${chartMinutes} vs KPI ${span}`);
+  }
+});
+
+test("the ONE place they differ is the chart's length cap, and it is a display bound", () => {
+  // A slab dated a week forward gives a true span of days. The KPI reports it —
+  // it is what the records say. The CHART refuses to draw weeks of empty hours
+  // and stops at four days (MAX_HOURS), anchored on the batch start so the real
+  // beginning is always visible. That is a bound on the drawing, not a second
+  // opinion about the data, and it is the only divergence between the two.
+  const rows = [slab(DAY, "11:20", "12:00"), slab("2026-09-01", "22:45", "22:50")];
+  const span = productionSpanMinutes(rows);
+  const chart = hourlyProduction(rows);
+  assert.ok((span as number) > 4 * 24 * 60, "the KPI reports the true distance");
+  assert.equal(chart.length, 4 * 24, "the chart stops at four days");
+  assert.equal(chart[0].hour, 11, "and still starts at the batch's real first In");
+  assert.equal(chart[0].date, DAY);
 });

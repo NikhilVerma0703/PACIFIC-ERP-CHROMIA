@@ -92,27 +92,48 @@ function hourLabel(absHour: number): string {
  *  Real batches span a few days, comfortably under four. */
 const MAX_HOURS = 4 * 24;
 
+/**
+ * WHERE ONE SLAB SITS ON AN ABSOLUTE TIMELINE — the whole rule, in one place.
+ *
+ * EXPORTED BECAUSE THE KPI MUST USE THE SAME ONE. The Total Production Time
+ * KPI and the Reference Sheet (productionSpan.ts) place slabs too, and until
+ * 2026-09-16 both they and this chart shared a DIFFERENT rule — slabPlacement
+ * .ts, which rebuilt the day from serialNumber order. When that rule was
+ * replaced here, leaving the KPI on the old one would have put the headline
+ * number and the chart under it back into disagreement about the same batch,
+ * which is exactly what sharing a rule was meant to prevent. So the rule moved
+ * rather than forked: this function is the single definition, and
+ * productionSpan.ts calls it.
+ *
+ * Returns nulls rather than throwing: a slab with no resolvable date, or no
+ * time at all, cannot be placed and is skipped by every caller.
+ */
+export function placeByStoredDate(slab: HourlySlab): { inAbs: number | null; outAbs: number | null } {
+  // The slab's OWN stored production day — trusted, not reconstructed.
+  const day = dayNum(slab.productionDate);
+  if (day === null) return { inAbs: null, outAbs: null };
+  const base = day * 1440;
+
+  const inM = toMins(slab.inTime);
+  const outM = toMins(slab.outTime);
+  if (inM === null && outM === null) return { inAbs: null, outAbs: null };
+
+  const inAbs = inM !== null ? base + inM : null;
+  let outAbs = outM !== null ? base + outM : null;
+  // Overnight: a slab whose Out precedes its In finished after midnight, so its
+  // Out belongs to the NEXT day. The only date arithmetic anywhere in this rule.
+  if (inAbs !== null && outAbs !== null && (outM as number) < (inM as number)) outAbs += 1440;
+  return { inAbs, outAbs };
+}
+
 export function hourlyProduction(slabs: readonly HourlySlab[]): HourBucket[] {
   let winStart = Infinity; // absolute minute of the earliest In
   let winEnd = -Infinity; // absolute minute of the latest Out
   const completions: number[] = []; // absolute minute of each Out Time
 
   for (const slab of slabs) {
-    // The slab's OWN stored production day — trusted, not reconstructed.
-    const day = dayNum(slab.productionDate);
-    if (day === null) continue; // no resolvable date → cannot place it
-    const base = day * 1440;
-
-    const inM = toMins(slab.inTime);
-    const outM = toMins(slab.outTime);
-    const startM = inM ?? outM;
-    if (startM === null) continue; // no time at all → cannot place it
-
-    const inAbs = inM !== null ? base + inM : null;
-    let outAbs = outM !== null ? base + outM : null;
-    // Overnight: a slab whose Out precedes its In finished after midnight, so its
-    // Out belongs to the NEXT day. The only date arithmetic in the whole function.
-    if (inAbs !== null && outAbs !== null && (outM as number) < (inM as number)) outAbs += 1440;
+    const { inAbs, outAbs } = placeByStoredDate(slab);
+    if (inAbs === null && outAbs === null) continue; // cannot be placed
 
     const startAbs = inAbs ?? (outAbs as number);
     winStart = Math.min(winStart, startAbs);

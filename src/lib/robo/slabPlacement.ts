@@ -1,45 +1,29 @@
 /**
- * THE one rule for putting a slab's bare "HH:MM" In/Out on an absolute timeline.
- *
- * Both the hourly chart (hourlyProduction.ts) and the Total Production Time KPI
- * (productionSpan.ts) need each slab's In and Out as a real instant. They used
- * to place them by two different rules, and the KPI and the chart under it
- * disagreed on the same batch — batch 1432 read "35 hours" over an 11:00–23:00
- * chart. Everything that turns a slab into minutes-on-a-timeline lives here, so
- * the two can only ever agree.
+ * The three date/clock primitives the Robo reports share: minutes-since-
+ * midnight, whole-days-since-epoch, and back again. UTC throughout, so no
+ * timezone ever shifts a day.
  *
  * Pure and alias-free so `node --test` can reach it.
  *
- * ── THE RULE ───────────────────────────────────────────────────────────────
- * Slabs are walked in the order given (register order — see registerOrder). A
- * day cursor tracks which calendar day the run is currently on.
+ * ── THIS FILE USED TO HOLD A PLACEMENT RULE, AND NO LONGER DOES ────────────
+ * It once decided which DAY each slab sat on by walking the batch in
+ * serialNumber order and treating a backwards clock as a midnight crossing —
+ * one rule shared by the hourly chart and the Total Production Time KPI so the
+ * two could not disagree.
  *
- *   1. The FIRST slab with a date anchors the cursor from its stored date.
+ * That rule was replaced on 2026-09-16. serialNumber turned out to be
+ * unreliable on real runs (mistyped, restarted, duplicated), so the walk ran
+ * out of order, every out-of-order step read as a midnight crossing, and whole
+ * batches drifted forward — 1440 (8-10 Sep) charted as 23-25 Sep, 1445
+ * (15-16 Sep) as 18-20 Sep. Each slab is now placed on its OWN stored
+ * production date by hourlyProduction.placeByStoredDate, which productionSpan
+ * .ts also calls: still one rule, a different one.
  *
- *   2. A later slab's stored date that lies AHEAD of the cursor is TRUSTED when
- *      the slab's same-day placement would land BEFORE the run so far: its clock
- *      went backwards, so it cannot be a same-day continuation. That charts a
- *      batch paused overnight and resumed next morning on the right day.
- *
- *   3. That same forward date is IGNORED when the same-day placement already
- *      sits at or after the run so far. A date that jumps forward while the
- *      clock barely moved is a data-entry slip, and trusting it is what threw
- *      batch 1432's last two 22:4x slabs ~24h ahead. A stored date BEHIND the
- *      cursor is never trusted: a slab cannot be produced before the run it
- *      belongs to.
- *
- *   4. A clock more than 12h behind the run so far, whatever the stored date
- *      says, has wrapped past midnight: the cursor advances a day at a time
- *      until the slab sits after the run so far. A cross-midnight batch whose
- *      later slabs were never re-dated is still placed on the next day.
- *
- *   5. Within one slab, an Out clock earlier than its In clock means the slab
- *      itself crossed midnight: Out is the next day (+1440). The entry form's
- *      duration reads it the same way.
- *
- * No wall clock is ever read, so the same records always place the same way.
+ * The superseded machinery (placeSlabs, registerOrder, MAX_RUN_HOURS) is gone
+ * rather than left here unused. Dead code with passing tests beside it reads to
+ * the next person as the rule in force, and the wrong day on a production
+ * report is not a cheap mistake to inherit.
  */
-
 export interface PlaceableSlab {
   /** yyyy-mm-dd — the slab's effective production date (productionDateOf). */
   productionDate: string | null | undefined;
@@ -94,84 +78,3 @@ function createdAtValue(v: string | number | Date | null | undefined): number {
 
 /** Register order = production order: serialNumber, then createdAt. Stable, so
  *  with no hints the caller's own order stands as the sequence. */
-export function registerOrder<T extends PlaceableSlab>(slabs: readonly T[]): T[] {
-  return slabs
-    .map((slab, i) => ({ slab, i }))
-    .sort((a, b) => {
-      const sa = a.slab.serialNumber, sb = b.slab.serialNumber;
-      if (sa != null && sb != null && sa !== sb) return sa - sb;
-      if (sa != null && sb == null) return -1;
-      if (sa == null && sb != null) return 1;
-      const ca = createdAtValue(a.slab.createdAt), cb = createdAtValue(b.slab.createdAt);
-      if (ca !== cb) return ca - cb;
-      return a.i - b.i;
-    })
-    .map((x) => x.slab);
-}
-
-/** A time jumping back more than this against the run so far is a midnight
- *  crossing, not a slab logged slightly out of order. */
-const WRAP_GUARD_MIN = 12 * 60;
-
-/** A run this long is a data error (a stray date), not a real batch — cap how
- *  far the cursor can chase one row so it can't ask for thousands of hours. */
-export const MAX_RUN_HOURS = 48;
-
-/**
- * Place `slabs` — already in register order — on the absolute timeline by the
- * rule above. Slabs with no time at all, or none dated before the first date
- * appears, are left out.
- */
-export function placeSlabs<T extends PlaceableSlab>(slabs: readonly T[]): PlacedSlab<T>[] {
-  let dayBase: number | null = null; // absolute minute of the cursor day's midnight
-  let prevRef = -Infinity;           // the previous slab's last placed minute
-  const placed: PlacedSlab<T>[] = [];
-
-  for (const slab of slabs) {
-    const inM = toMins(slab.inTime);
-    const outM = toMins(slab.outTime);
-    const startM = inM ?? outM;
-    if (startM === null) continue;
-
-    const day = dayNum(slab.productionDate);
-    if (dayBase === null) {
-      if (day === null) continue;
-      dayBase = day * 1440;
-    } else if (day !== null && day * 1440 > dayBase && dayBase + startM < prevRef) {
-      // Rule 2: the clock went backwards against the run, so this cannot be a
-      // same-day continuation — the forward stored date is the truth. Anywhere
-      // else (rule 3) the forward date is a mis-date and the cursor stays put.
-      dayBase = day * 1440;
-    }
-
-    let inAbs = inM !== null ? dayBase + inM : null;
-    let outAbs = outM !== null ? dayBase + outM : null;
-    if (inAbs !== null && outAbs !== null && (outM as number) < (inM as number)) outAbs += 1440;
-
-    // Rule 4: a wrap the date never recorded. Push the slab (and the cursor)
-    // forward a day at a time until it sits after the run so far.
-    let refAbs = inAbs ?? (outAbs as number);
-    let guard = 0;
-    while (prevRef !== -Infinity && refAbs + WRAP_GUARD_MIN < prevRef && guard < MAX_RUN_HOURS) {
-      dayBase += 1440;
-      if (inAbs !== null) inAbs += 1440;
-      if (outAbs !== null) outAbs += 1440;
-      refAbs += 1440;
-      guard++;
-    }
-
-    placed.push({ slab, inAbs, outAbs });
-    // CONTINUITY IS CARRIED ON THE IN TIME, NEVER THE OUT. A slab held open for
-    // hours — a long delay, or a hold across a shift — finishes with a late Out,
-    // and keying the next slab's wrap check off that Out made a perfectly normal
-    // following slab look more than 12h earlier than the run so far: a false
-    // midnight crossing that fabricated an empty extra day. In times move forward
-    // across a real run, so the only large backstep they carry is a true crossing
-    // (…23:55 → 00:04…), which still wraps. The Out still decides the RUN'S
-    // EXTENT (winEnd, and the span the KPI reports); it just no longer decides
-    // which day the next slab is on.
-    prevRef = inAbs ?? (outAbs as number);
-  }
-
-  return placed;
-}
