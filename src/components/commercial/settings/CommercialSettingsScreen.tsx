@@ -614,8 +614,21 @@ function SettingsForm() {
         </div>
       ))}
 
-      {/* the save bar stays in reach of a long form */}
-      <div className="fixed inset-x-0 bottom-0 z-20 border-t border-gray-200 bg-white/95 px-4 py-3 backdrop-blur">
+      {/* THE SAVE BAR STAYS IN REACH OF A LONG FORM — but it stops at the
+          sidebar rather than running under it. `inset-x-0` alone pinned it to
+          the whole viewport at z-20, and the sidebar's foot is where the user
+          card and the Sign out button live: on this screen, and only on this
+          screen, the bar sat on top of them and Sign out could not be clicked.
+          It is the one full-width fixed bar in the app, which is why nothing
+          else showed it.
+
+          `md:left-64` docks it beside the rail (w-64, the sidebar's own width),
+          and `shell-docked` lets globals.css put it back to the edge when the
+          rail is collapsed — the same html[data-sidebar-hidden] hook
+          .shell-main already uses, so the two can never disagree about whether
+          the sidebar is there. Below md there is no rail, so the bar keeps the
+          full width. */}
+      <div className="shell-docked fixed inset-x-0 bottom-0 z-20 border-t border-gray-200 bg-white/95 px-4 py-3 backdrop-blur md:left-64">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-end gap-3">
           <span className="mr-auto text-xs text-gray-500">
             {changedSet.size === 0 ? "Everything on this screen matches the shipped defaults." : `${changedSet.size} field${changedSet.size === 1 ? "" : "s"} differ from the default. Only those are stored.`}

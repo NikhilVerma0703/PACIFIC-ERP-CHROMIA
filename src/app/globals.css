@@ -224,4 +224,11 @@ body {
 @media screen and (min-width: 768px) {
   html[data-sidebar-hidden] .shell-main { padding-left: max(1.5rem, calc(60px - max(0px, (100vw - 72rem) / 2))); }
   html[data-sidebar-hidden][data-report-wide] .shell-main { padding-left: 3.75rem; }
+  /* A bar fixed to the bottom of the VIEWPORT would otherwise run under the
+     sidebar and cover its foot — where the user card and Sign out live. The
+     element carries md:left-64 to dock beside the rail; this puts it back to
+     the edge when the rail is collapsed. Attribute + class outranks Tailwind's
+     single-class utility, so this wins without !important and without caring
+     where the two stylesheets land relative to each other. */
+  html[data-sidebar-hidden] .shell-docked { left: 0; }
 }
