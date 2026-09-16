@@ -1735,46 +1735,47 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                 </div>
               )}
 
-              {/* Batch / Design / Target Slabs — SPLIT a mixed run. Unlike Date and
-                  Thickness (which live on the slab), these live on the batch, so ticking
-                  "apply forward" MOVES this slab and the ones after it into that batch —
-                  how two runs recorded as one (1372 Crystallo + 1404 Bellagio green) get
-                  separated. Only on an edit, only when the slab is in a batch. */}
+              {/* Batch Number, Design and Target Slabs — shown INLINE with Production
+                  Date and Thickness, only on an edit and only when the slab is in a
+                  batch. Unlike Date/Thickness (which live on the slab), these live on
+                  the BATCH, so ticking "apply forward" MOVES this slab and the ones
+                  after it (up to the next batch change) into that batch — how two runs
+                  recorded as one (1372 Crystallo + 1404 Bellagio green, or 1384 + 1385)
+                  get separated: joined to that batch if it already exists in the shift,
+                  else created from this batch's setup. Same range mechanism (forwardRunIds)
+                  the server uses for Date/Thickness — see the PATCH route / batchSplit.ts.
+                  Leave a box off and nothing moves. */}
               {editingId && activeBatch && (
-                <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-4 sm:col-span-2">
-                  <div className="text-sm font-semibold text-gray-800">Batch &amp; design — split a mixed run</div>
-                  <p className="mb-3 mt-0.5 text-xs text-gray-500">
-                    Change a field and tick <span className="font-medium text-gray-700">apply forward</span> to move <span className="font-medium text-gray-700">this slab and every following one in the batch</span> into that batch (joined if it already exists in the shift, else created from this batch&rsquo;s setup). Leave the boxes off and nothing moves.
-                  </p>
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                    <div>
-                      <span className={label}>Batch No.</span>
-                      <input value={slab.batchNo} onChange={(e) => setSlab((p) => ({ ...p, batchNo: e.target.value }))} placeholder="e.g. 1404" className={inp} />
-                      <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs">
-                        <input type="checkbox" checked={applyBatchNoForward} onChange={(e) => setApplyBatchNoForward(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300" />
-                        <span className="text-gray-600">Apply to <span className="font-medium text-gray-800">this slab and every following one</span>.</span>
-                      </label>
-                    </div>
-                    <div>
-                      <span className={label}>Design</span>
-                      <input value={slab.designName} onChange={(e) => setSlab((p) => ({ ...p, designName: e.target.value }))}
-                        list="robo-split-designs" autoComplete="off" placeholder="e.g. Bellagio green" className={inp} />
-                      <datalist id="robo-split-designs">{designs.map((d) => <option key={d.id} value={d.name} />)}</datalist>
-                      <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs">
-                        <input type="checkbox" checked={applyDesignForward} onChange={(e) => setApplyDesignForward(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300" />
-                        <span className="text-gray-600">Apply to <span className="font-medium text-gray-800">this slab and every following one</span>.</span>
-                      </label>
-                    </div>
-                    <div>
-                      <span className={label}>Target Slabs</span>
-                      <input type="number" value={slab.targetSlabs} onChange={(e) => setSlab((p) => ({ ...p, targetSlabs: e.target.value }))} placeholder="e.g. 120" className={inp} />
-                      <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs">
-                        <input type="checkbox" checked={applyTargetSlabsForward} onChange={(e) => setApplyTargetSlabsForward(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300" />
-                        <span className="text-gray-600">Apply forward (or to the whole batch if only this changed).</span>
-                      </label>
-                    </div>
+                <>
+                  <div>
+                    <span className={label}>Batch Number</span>
+                    <input value={slab.batchNo} onChange={(e) => setSlab((p) => ({ ...p, batchNo: e.target.value }))} placeholder="e.g. 1404" className={inp} />
+                    <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs">
+                      <input type="checkbox" checked={applyBatchNoForward} onChange={(e) => setApplyBatchNoForward(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300" />
+                      <span className="text-gray-600">Apply to <span className="font-medium text-gray-800">this slab and every following one</span> in the batch, up to the next change.</span>
+                    </label>
                   </div>
-                </div>
+
+                  <div>
+                    <span className={label}>Design</span>
+                    <input value={slab.designName} onChange={(e) => setSlab((p) => ({ ...p, designName: e.target.value }))}
+                      list="robo-split-designs" autoComplete="off" placeholder="e.g. Bellagio green" className={inp} />
+                    <datalist id="robo-split-designs">{designs.map((d) => <option key={d.id} value={d.name} />)}</datalist>
+                    <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs">
+                      <input type="checkbox" checked={applyDesignForward} onChange={(e) => setApplyDesignForward(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300" />
+                      <span className="text-gray-600">Apply to <span className="font-medium text-gray-800">this slab and every following one</span> in the batch, up to the next change.</span>
+                    </label>
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <span className={label}>Target Slabs</span>
+                    <input type="number" value={slab.targetSlabs} onChange={(e) => setSlab((p) => ({ ...p, targetSlabs: e.target.value }))} placeholder="e.g. 120" className={inp} />
+                    <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs">
+                      <input type="checkbox" checked={applyTargetSlabsForward} onChange={(e) => setApplyTargetSlabsForward(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300" />
+                      <span className="text-gray-600">Apply to <span className="font-medium text-gray-800">this slab and every following one</span> in the batch, up to the next change.</span>
+                    </label>
+                  </div>
+                </>
               )}
 
               {/* Row 2 — S.No. and Slab number. */}
