@@ -21,7 +21,7 @@ import {
 } from "../src/lib/salesforce/stock-rules.ts";
 import {
   WRITABLE_OBJECTS, READABLE_OBJECTS, mayWrite, mayDelete,
-  REQUEST_WRITABLE_FIELDS, mayWriteRequestField, refusePackForApproval,
+  REQUEST_WRITABLE_FIELDS, mayWriteRequestField, refusePackForApproval, isFieldServiceObject,
 } from "../src/lib/salesforce/limits.ts";
 
 // ── the twelve biggest matches, DISCOVERY §3 ─────────────────────────────────
@@ -392,9 +392,29 @@ test("the ERP writes to six objects and no others — the field-service app is o
   // grants create and edit on every CI_FST__* object: visits, beats, expenses,
   // attendance. The administrator told us rather than assuming we knew, and an
   // allowlist is the answer that survives somebody adding a feature later.
-  for (const o of ["CI_FST__Visit__c", "CI_FST__Beat__c", "CI_FST__Expense__c", "CI_FST__Attendance__c"]) {
+  // THESE ARE THE ORG'S REAL OBJECT NAMES, checked by the administrator on
+  // 2026-09-16. An earlier version of this test named CI_FST__Visit__c,
+  // CI_FST__Beat__c, CI_FST__Expense__c and CI_FST__Attendance__c — none of
+  // which EXISTS. It refused four spellings nothing uses and read as though it
+  // protected something. The profile grants create, edit and DELETE on 27
+  // CI_FST__ objects, so the guard is a prefix now and cannot drift as objects
+  // are added.
+  for (const o of [
+    "CI_FST__FST_Visit__c", "CI_FST__AdditionVisit__c",
+    "CI_FST__FST_Beat__c", "CI_FST__FST_Beat_Customer__c", "CI_FST__Beat_Assignment__c",
+    "CI_FST__Daily_Expense__c", "CI_FST__TravelConveyance__c", "CI_FST__Expense_Category__c", "CI_FST__Expense_Limit__c",
+    "CI_FST__FST_Attendance__c", "CI_FST__FST_Attendance_Log__c",
+    "CI_FST__Refresh_Visit_Data__e",
+  ]) {
     assert.equal(mayWrite(o), false, `${o} must never be writable`);
+    assert.equal(isFieldServiceObject(o), true, o);
   }
+  // Salesforce object names are case-insensitive: ci_fst__fst_visit__c IS
+  // CI_FST__FST_Visit__c, and a case-sensitive guard would pass while the real
+  // call went through.
+  assert.equal(mayWrite("ci_fst__fst_visit__c"), false);
+  assert.equal(isFieldServiceObject("Ci_Fst__Anything_At_All__c"), true);
+  assert.equal(isFieldServiceObject("Product2"), false);
   for (const o of ["Contact", "Lead", "Case", "Order", "Pricebook2", "PricebookEntry"]) {
     assert.equal(mayWrite(o), false, o);
   }
@@ -529,21 +549,55 @@ test("packing is decided by the APPROVAL, never by the status or the dispatch ty
   // Salesforce stops the DESK marking a Pending request Dispatched, but nothing
   // stops ERP_Status__c moving to Packed — that field is ours, so the rule has
   // to be ours too.
-  assert.equal(refusePackForApproval("Approved"), null);
-  assert.equal(refusePackForApproval("Not Required"), null, "every type but New Stand, and it is a pass not a gap");
+  assert.equal(refusePackForApproval("Approved", null), null);
+  assert.equal(refusePackForApproval("Not Required", null), null, "every type but New Stand, and it is a pass not a gap");
 
-  assert.match(refusePackForApproval("Rejected")!, /will not be packed/);
+  assert.match(refusePackForApproval("Rejected", null)!, /will not be packed/);
 
   // PENDING IS A REFUSAL EVEN WHEN NOBODY IS WAITING. A rep can recall a
   // pending New Stand: that unlocks the record but leaves Approval_Status__c on
   // Pending with no approval under way and nothing to resubmit it. Stock must
   // not be committed to a request that may never move again.
-  const pending = refusePackForApproval("Pending");
+  const pending = refusePackForApproval("Pending", null);
   assert.ok(pending);
   assert.match(pending!, /recalled/, "and the message tells the desk what to ask for");
 
   // Anything unrecognised, blank or absent is a refusal, not a silent pass.
   for (const v of ["", null, undefined, "Something New"]) {
-    assert.ok(refusePackForApproval(v as string | null | undefined), String(v));
+    assert.ok(refusePackForApproval(v as string | null | undefined, null), String(v));
   }
+});
+
+// ───────── "Not Required" has two meanings (admin, 2026-09-16) ──────────────
+
+test("Not Required with an approver is a FAILED submission, not a carve-out", () => {
+  // The two cases look identical on the record and mean opposite things.
+  //
+  // An approver is stamped only on CREATE and the submission runs straight
+  // after. If that submission fails, the flow logs a Failed row and SAVES THE
+  // REQUEST ANYWAY — and nothing ever submits it again, because the flow runs
+  // only on create. The request then sits at Not Required with an approver on
+  // it, looking exactly like the carve-out, and packing it skips a manager's
+  // decision that was meant to happen.
+  const failed = refusePackForApproval("Not Required", "005xx0000012345");
+  assert.ok(failed, "an approver on a Not Required request means the submission failed");
+  assert.match(failed!, /never submitted|submission failed/i);
+  assert.match(failed!, /submit it for approval|raise it again/i, "and the desk is told what to ask for");
+
+  // The genuine carve-outs, which DO pack: nothing to approve, so no approver.
+  assert.equal(refusePackForApproval("Not Required", null), null, "a Sample Kit needs no approval");
+  assert.equal(refusePackForApproval("Not Required", ""), null);
+  assert.equal(refusePackForApproval("Not Required", "   "), null, "whitespace is not an approver");
+  // A New Stand from a rep with no manager on file is the org's deliberate
+  // carve-out and is indistinguishable here — correctly, because it IS the
+  // blank-approver case.
+
+  // ASKED OF EVERY TYPE, not only New Stand: the dispatch type can be changed
+  // after the fact, so a failed submission may sit on a request that no longer
+  // reads as a stand. The function never sees the type, which is the point.
+  assert.equal(refusePackForApproval.length, 2, "the approver is required, not optional");
+
+  // Approved still packs whether or not an approver is recorded.
+  assert.equal(refusePackForApproval("Approved", "005xx0000012345"), null);
+  assert.equal(refusePackForApproval("Approved", null), null);
 });

@@ -48,12 +48,41 @@ export const READABLE_OBJECTS: readonly string[] = Object.freeze([
 ]);
 
 /**
+ * THE FIELD-SERVICE APP, BY PREFIX RATHER THAN BY NAME.
+ *
+ * This replaces a list of four names I made up. The administrator checked the
+ * org on 2026-09-16: `CI_FST__Visit__c`, `CI_FST__Beat__c`,
+ * `CI_FST__Expense__c` and `CI_FST__Attendance__c` DO NOT EXIST. The real ones
+ * are `CI_FST__FST_Visit__c`, `CI_FST__FST_Beat__c`, `CI_FST__Daily_Expense__c`,
+ * `CI_FST__FST_Attendance__c` and twenty-three more, and the integration
+ * profile grants create, edit AND DELETE on all 27 plus a platform event.
+ *
+ * So a block list of guessed spellings blocked nothing at all while reading as
+ * though it did — the worst kind of guard. A prefix cannot drift from the org
+ * as objects are added, and it needs no list to maintain.
+ *
+ * CASE-INSENSITIVE, because Salesforce is: `ci_fst__fst_visit__c` names the
+ * same object as `CI_FST__FST_Visit__c`, and a case-sensitive test would pass
+ * while the real call went through.
+ */
+export function isFieldServiceObject(sobject: string): boolean {
+  return String(sobject ?? "").trim().toLowerCase().startsWith("ci_fst__");
+}
+
+/**
  * May the ERP write to this object? Anything not named above is refused here,
- * before a request is built — including every CI_FST__* field-service object,
- * which the integration user's profile would otherwise permit.
+ * before a request is built.
+ *
+ * THE FIELD-SERVICE REFUSAL COMES FIRST, and deliberately outranks the
+ * allowlist rather than relying on it. The allowlist is what actually protects
+ * those objects today — but it protects them only for as long as nobody adds a
+ * seventh entry carelessly, and this makes that particular mistake impossible
+ * rather than merely unlikely.
  */
 export function mayWrite(sobject: string): boolean {
-  return WRITABLE_OBJECTS.includes(String(sobject ?? "").trim());
+  const name = String(sobject ?? "").trim();
+  if (isFieldServiceObject(name)) return false;
+  return WRITABLE_OBJECTS.includes(name);
 }
 
 /**
@@ -118,16 +147,44 @@ export function mayWriteRequestField(field: string): boolean {
  * off Status__c asks a question about where the record is rather than whether
  * anyone has agreed to it.
  *
- * "Not Required" is a pass, not a gap: it is what the org stamps on every type
- * that does not route, which is every type but New Stand.
+ * "Not Required" IS NOT ALWAYS A PASS, and that is the administrator's second
+ * correction (2026-09-16). It has two quite different meanings, told apart only
+ * by whether an APPROVER was stamped:
+ *
+ *   · Not Required, approver BLANK — nothing to approve. Either the type does
+ *     not route (everything but New Stand), or it is a New Stand raised by a
+ *     rep with no manager on file, which is the org's deliberate carve-out.
+ *     Pack it.
+ *   · Not Required, approver FILLED — THE AUTOMATIC SUBMISSION FAILED. An
+ *     approver is stamped only on create, the submission runs straight after,
+ *     and if it fails the flow logs a Failed row to Integration_Log__c and
+ *     SAVES THE REQUEST ANYWAY. Nothing ever submits it again, because that
+ *     flow runs only on create. The request sits looking exactly like the
+ *     carve-out, and packing it skips a manager's decision that was meant to
+ *     happen.
+ *
+ * ASKED OF EVERY TYPE, not only New Stand, because the dispatch type can be
+ * changed after the fact — so a failed submission can be sitting on a request
+ * that no longer reads as a stand.
  *
  * AND "Pending" IS A REFUSAL EVEN WHEN NOBODY IS WAITING. A rep can RECALL a
  * pending New Stand; that unlocks the record but leaves Approval_Status__c on
  * Pending with no approval under way and nothing to resubmit it. Stock must not
  * be committed to a request in that state — it may never move again.
+ *
+ * The approver is a REQUIRED argument rather than an optional one: a caller
+ * that has not fetched it must be made to say so by the compiler, not allowed
+ * to pass undefined and get a silent yes.
  */
-export function refusePackForApproval(approvalStatus: string | null | undefined): string | null {
+export function refusePackForApproval(
+  approvalStatus: string | null | undefined,
+  approver: string | null | undefined,
+): string | null {
   const s = String(approvalStatus ?? "").trim();
+  const hasApprover = Boolean(String(approver ?? "").trim());
+  if (s === "Not Required" && hasApprover) {
+    return "This request has an approver but was never submitted — the automatic submission failed when it was raised. Ask the rep to submit it for approval, or to raise it again.";
+  }
   if (s === "Approved" || s === "Not Required") return null;
   if (s === "Rejected") return "Rejected in Salesforce — this request will not be packed.";
   if (s === "Pending") return "Awaiting approval in Salesforce. If the rep has recalled it, they must submit it again before the desk can pack.";
