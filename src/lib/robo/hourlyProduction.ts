@@ -4,43 +4,44 @@
  *
  * Pure and alias-free so `node --test` can reach it.
  *
- * ── THE TIMELINE ───────────────────────────────────────────────────────────
- * Dynamic, never a fixed 00:00–24:00. It runs from the hour the batch STARTED
- * (its first slab's In Time, or Out Time if it has none) to the hour it
- * COMPLETED (its last Out Time), one bucket per hour, every hour in between
- * shown even when nothing completed in it — nothing before the start or after
- * the end. A slab is counted in the hour its Out Time falls in. Each bucket
- * carries the calendar DATE its hour belongs to, so a run that crosses midnight
- * is marked with both dates on the axis and there is no gap at the boundary:
- * 23:00–00:00 is immediately followed by 00:00–01:00 of the next date.
+ * ── HOW EACH SLAB IS PLACED — from its OWN stored production date ───────────
+ * Every slab carries the production date the operator entered (productionDateOf,
+ * resolved by the caller: the slab's own date, else the batch setup's, else the
+ * shift's). THAT date is trusted — it is the actual day the slab was produced.
+ * In/Out are bare HH:MM, so each is combined with the slab's date:
  *
- * ── WHICH DAY EACH HOUR IS ON ──────────────────────────────────────────────
- * In/Out are bare HH:MM with no day of their own. Where each slab sits on the
- * absolute timeline is decided by slabPlacement.ts — the SAME rule the Total
- * Production Time KPI uses, so the KPI and this chart can never disagree about
- * one batch. In short: the first slab anchors the day; a later slab's forward
- * date is trusted only when its clock went backwards against the run (an
- * overnight pause), never when the time barely moved (batch 1432's mis-dated
- * last slabs); and a clock more than 12h behind the run has wrapped past
- * midnight whether or not the slab was re-dated.
+ *   • In  → date + In time.
+ *   • Out → date + Out time, EXCEPT when Out < In: the slab crossed midnight, so
+ *           its Out is on the NEXT day (In 23:55, Out 00:09 → 00:09 the following
+ *           day). That is the only date arithmetic done.
  *
- *   • The day advances only when the clock WRAPS past midnight, and continuity
- *     is measured IN-to-IN, never off the previous slab's Out. A slab held
- *     open for hours has a late Out; keying the next slab's wrap check off it
- *     made a perfectly normal following slab look more than 12h earlier than
- *     the run so far — a false crossing that fabricated an empty extra day (a
- *     single-day batch spilling into the next date; batch 1386, 20 Jul 12:12 →
- *     21 Jul 17:12, drawing a phantom third day). A slab whose own Out precedes
- *     its In still crosses midnight, so an overnight 00:09 Out is the next day.
+ * A slab is counted in the hour its Out Time falls in. The timeline runs from the
+ * earliest In to the latest Out, one bucket per hour (every hour shown, even the
+ * empty ones), each bucket carrying the calendar date its hour belongs to — so a
+ * run that crosses midnight flows 23:00–00:00 straight into 00:00–01:00 of the
+ * next date, with both dates marked on the axis.
  *
- * No wall clock is ever read — the timeline is built entirely from the stored
- * In/Out and the sequence — so the same records always produce the same chart,
- * and a historical hour never changes because time passed.
+ * ── WHY THE STORED DATE, NOT A RECONSTRUCTED SEQUENCE ──────────────────────
+ * An earlier version ignored the stored date and rebuilt the day from the
+ * production SEQUENCE — serialNumber order plus time-wrap detection. That was
+ * fragile in exactly the way the register is unreliable: serialNumber is mistyped
+ * on old runs (it can restart or duplicate — see slabSequence.ts), so the walk
+ * ran out of order, every out-of-order step looked like a midnight crossing and
+ * advanced the day cursor, and batches drifted forward by 1, 2, even 15 days; the
+ * length cap then showed a window on the WRONG dates and dropped the real ones.
+ * The cure is to stop reconstructing and read the production date the operator
+ * actually recorded. If a stored date is itself wrong, it is corrected on the
+ * slab (Slab Records → Edit), not papered over here — so the chart is a faithful,
+ * deterministic view of the records and never invents a date. No serial number,
+ * no wall clock: the same records always produce the same chart.
  */
 
-import { type PlaceableSlab, dateFromDayNum, placeSlabs, registerOrder, MAX_RUN_HOURS } from "./slabPlacement.ts";
-
-export type HourlySlab = PlaceableSlab;
+export interface HourlySlab {
+  /** yyyy-mm-dd — the slab's effective production date (productionDateOf). */
+  productionDate: string | null;
+  inTime: string | null; // HH:MM
+  outTime: string | null; // HH:MM
+}
 
 export interface HourBucket {
   /** "11:00–12:00", "23:00–00:00" — the interval, 24-hour. */
@@ -54,6 +55,29 @@ export interface HourBucket {
   date: string | null;
 }
 
+/** Minutes since midnight for an HH:MM string, or null if unusable. */
+function toMins(t: string | null | undefined): number | null {
+  if (!t) return null;
+  const [h, m] = t.split(":").map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  return h * 60 + m;
+}
+
+/** Whole days since the epoch for a yyyy-mm-dd string, or null. UTC, so no
+ *  timezone shifts the day. */
+function dayNum(d: string | null | undefined): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((d ?? "").trim());
+  if (!m) return null;
+  return Math.floor(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86_400_000);
+}
+
+/** The yyyy-mm-dd for a whole-days-since-epoch number — the inverse of dayNum,
+ *  in UTC, so the date a bucket is labelled with never drifts with a timezone. */
+function dateFromDayNum(dn: number): string | null {
+  if (!Number.isFinite(dn)) return null;
+  return new Date(dn * 86_400_000).toISOString().slice(0, 10);
+}
+
 const pad = (n: number) => String(n).padStart(2, "0");
 
 /** "HH:00–HH:00" for an absolute hour index, wrapping the labels at midnight. */
@@ -63,16 +87,33 @@ function hourLabel(absHour: number): string {
   return `${pad(a)}:00–${pad(b)}:00`;
 }
 
-/** A run this long is a data error (a stray date), not a real batch — cap the
- *  timeline so one bad row can't ask for thousands of empty hours. */
-const MAX_HOURS = MAX_RUN_HOURS;
+/** A batch running longer than this is a stray-date data error, not a real run —
+ *  cap the timeline so one badly-dated row can't ask for weeks of empty hours.
+ *  Real batches span a few days, comfortably under four. */
+const MAX_HOURS = 4 * 24;
 
 export function hourlyProduction(slabs: readonly HourlySlab[]): HourBucket[] {
-  let winStart = Infinity;           // absolute minute the batch first started
-  let winEnd = -Infinity;            // absolute minute of its last completion
-  const completions: number[] = [];  // absolute minute of each Out Time
+  let winStart = Infinity; // absolute minute of the earliest In
+  let winEnd = -Infinity; // absolute minute of the latest Out
+  const completions: number[] = []; // absolute minute of each Out Time
 
-  for (const { inAbs, outAbs } of placeSlabs(registerOrder(slabs))) {
+  for (const slab of slabs) {
+    // The slab's OWN stored production day — trusted, not reconstructed.
+    const day = dayNum(slab.productionDate);
+    if (day === null) continue; // no resolvable date → cannot place it
+    const base = day * 1440;
+
+    const inM = toMins(slab.inTime);
+    const outM = toMins(slab.outTime);
+    const startM = inM ?? outM;
+    if (startM === null) continue; // no time at all → cannot place it
+
+    const inAbs = inM !== null ? base + inM : null;
+    let outAbs = outM !== null ? base + outM : null;
+    // Overnight: a slab whose Out precedes its In finished after midnight, so its
+    // Out belongs to the NEXT day. The only date arithmetic in the whole function.
+    if (inAbs !== null && outAbs !== null && (outM as number) < (inM as number)) outAbs += 1440;
+
     const startAbs = inAbs ?? (outAbs as number);
     winStart = Math.min(winStart, startAbs);
     if (outAbs !== null) {
@@ -83,11 +124,14 @@ export function hourlyProduction(slabs: readonly HourlySlab[]): HourBucket[] {
 
   if (!Number.isFinite(winStart) && !Number.isFinite(winEnd)) return [];
   if (!Number.isFinite(winStart)) winStart = winEnd; // nothing started, only completions
-  if (!Number.isFinite(winEnd)) winEnd = winStart;   // started but nothing completed yet
+  if (!Number.isFinite(winEnd)) winEnd = winStart; // started but nothing completed yet
 
-  let startHour = Math.floor(winStart / 60);
-  const endHour = Math.floor(winEnd / 60);
-  if (endHour - startHour > MAX_HOURS - 1) startHour = endHour - (MAX_HOURS - 1);
+  const startHour = Math.floor(winStart / 60);
+  let endHour = Math.floor(winEnd / 60);
+  // Safety cap against a stray far-off date: anchor on the batch START (the
+  // earliest In, which a forward-mis-dated slab never precedes) and bound the
+  // length, so a lone future-dated row can't drag the timeline across empty days.
+  if (endHour - startHour > MAX_HOURS - 1) endHour = startHour + (MAX_HOURS - 1);
 
   const counts = new Map<number, number>();
   for (const c of completions) {

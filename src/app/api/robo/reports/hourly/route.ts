@@ -30,15 +30,13 @@ export async function GET(req: NextRequest) {
 
   const slabs = await prisma.roboProductionRecord.findMany({
     where: { batchRecipeId: { in: batchIds } },
-    // Register order — the production sequence hourlyProduction reconstructs the
-    // timeline from, so a batch that crossed midnight without its later slabs
-    // being re-dated is still placed on the right day.
-    orderBy: [{ serialNumber: "asc" }, { createdAt: "asc" }],
+    // Order does not matter: hourlyProduction places each slab on its OWN stored
+    // production date, so the series is the same however the rows arrive. (It no
+    // longer reconstructs a day from serialNumber order — that heuristic drifted
+    // batches onto the wrong dates; see hourlyProduction.ts.)
     select: {
       inTime: true,
       outTime: true,
-      serialNumber: true,
-      createdAt: true,
       // Everything productionDateOf needs to resolve the slab's effective day —
       // its own per-slab date first (a batch past midnight), else the setup's,
       // else the shift's.
@@ -53,8 +51,6 @@ export async function GET(req: NextRequest) {
       productionDate: productionDateOf(s),
       inTime: s.inTime,
       outTime: s.outTime,
-      serialNumber: s.serialNumber,
-      createdAt: s.createdAt,
     })),
   );
 
