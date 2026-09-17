@@ -44,6 +44,8 @@ import { prisma } from "@/lib/prisma";
 import { summaryGate, SLABS_ONLY_ROLES } from "@/lib/inventory/access";
 import { approvedOnlyWhere, slabMarkAvailable, isMissingSlabMarkError } from "@/lib/inventory/searchWhere";
 import { displayBatch } from "@/lib/batchDisplay";
+import { CATALOGUE_COLOURS } from "@/lib/catalogue/colours";
+import { buildDesignResolver } from "@/lib/inventory/designSuggest";
 
 const db = prisma as any;
 const NO_DESIGN = "(no design)";
@@ -70,10 +72,22 @@ export async function GET(request: Request) {
     // every variant an alias maps to it. "(No Name)" rows carry NULL. The
     // summary shows "(No Name)" for the coalesced "(no design)" group.
     const aliases: any[] = await db.designAlias.findMany({ select: { variant: true, canonical: true } }).catch(() => []);
-    const amap = new Map<string, string>(aliases.map((x) => [x.variant, x.canonical]));
+    // THE DRILL-THROUGH MUST FOLD THE SAME WAY THE COLUMN DOES. Slabs by design
+    // groups "Alabaster Noir" (350) and "Alabaster noir" (1) into one row of
+    // 351; if this route collects its raw names by exact alias match it queries
+    // for 350 and the last slab vanishes between the column and the detail
+    // behind it. Same resolver, so a number cannot change by being clicked on.
     const wantNull = design === NO_DESIGN || design === "(No Name)";
-    const rawDesigns = aliases.filter((a) => a.canonical === design).map((a) => a.variant);
-    if (!wantNull && (amap.get(design) ?? design) === design) rawDesigns.push(design);
+    const resolveDesign = buildDesignResolver(
+      aliases as { variant: string; canonical: string }[],
+      [...CATALOGUE_COLOURS.map((c) => c.name), ...aliases.map((a: any) => a.canonical)],
+    );
+    const allDesigns: any[] = wantNull ? [] : await db.finishedSlab
+      .findMany({ distinct: ["design"], select: { design: true }, where: { design: { not: null } } })
+      .catch(() => []);
+    const rawDesigns = allDesigns
+      .map((r: any) => String(r.design ?? ""))
+      .filter((d: string) => d && resolveDesign(d) === design);
     if (!wantNull && rawDesigns.length === 0) return Response.json({ truncated: false, slabs: [] });
     const designWhere = wantNull ? { design: null } : { design: { in: rawDesigns } };
 
