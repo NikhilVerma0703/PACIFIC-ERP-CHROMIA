@@ -60,11 +60,19 @@ export async function GET(req: Request) {
     );
   }
 
+  // 500, NOT 200. A missing credential is a fault, and the whole point of the
+  // status code here is the colour of the Vercel cron log: answering 200 records
+  // a run that did nothing as a success, so a sync that never once worked looks
+  // exactly like a sync with nothing to do. The readable reason still travels in
+  // the body, so a browser shows the same sentence either way.
+  //
+  // The two refusals further down stay 200 on purpose — SF_ENABLED unset and "a
+  // live push runs from the cron" are deliberate states, not faults.
   const missing = missingConfig();
   if (missing.length) {
     return NextResponse.json(
       { ok: false, reason: `Salesforce is not configured. Missing: ${missing.join(", ")}` },
-      { status: 200 },
+      { status: 500 },
     );
   }
 
@@ -75,8 +83,10 @@ export async function GET(req: Request) {
       const who = await whoAmI(readConfig()!);
       return NextResponse.json({ ok: true, ...who });
     } catch (e) {
+      // Same rule as the missing-credential branch above: a token that will not
+      // mint is a fault, not a state. The org's own status travels in the body.
       const err = e as SfError;
-      return NextResponse.json({ ok: false, error: err.message, status: err.status ?? 500 }, { status: 200 });
+      return NextResponse.json({ ok: false, error: err.message, status: err.status ?? 500 }, { status: 500 });
     }
   }
 

@@ -9,7 +9,9 @@
 // CREDENTIALS COME FROM THE ENVIRONMENT AND ARE NEVER LOGGED. Nothing here
 // prints, returns or stores SF_CLIENT_SECRET, and the token is held only in
 // module memory for the life of a warm lambda.
-import { forbiddenPath, mayWrite, WRITABLE_OBJECTS } from "./limits";
+// `.ts` ON THE SPECIFIER, as stock-rules.ts already does for ../thickness.ts:
+// node's ESM resolver does not guess extensions, and `npm test` runs through it.
+import { forbiddenPath, mayWrite, WRITABLE_OBJECTS } from "./limits.ts";
 
 /** The API version every path is built from. One place, so a bump is one edit. */
 export const SF_API_VERSION = "v62.0";
@@ -77,9 +79,18 @@ function noteLimits(res: Response): void {
 }
 
 export class SfError extends Error {
-  constructor(message: string, readonly status: number, readonly body?: string) {
+  readonly status: number;
+  readonly body?: string;
+  // ASSIGNED IN THE BODY, NOT AS CONSTRUCTOR PARAMETER PROPERTIES. Parameter
+  // properties are the one piece of TypeScript that node's --experimental-strip-types
+  // cannot erase, and that flag is how `npm test` runs. Written the short way, this
+  // single line made the whole module unloadable by the test runner, so nothing in
+  // client.ts could ever be unit-tested — a silent ceiling, since no test failed.
+  constructor(message: string, status: number, body?: string) {
     super(message);
     this.name = "SfError";
+    this.status = status;
+    this.body = body;
   }
 }
 
