@@ -16,6 +16,8 @@ import {
   THICKNESS_MM, thicknessMmFor, canonicalDesign, qzCode, isKnownDesign,
   buildStockLines, productPayloads, diffMirror, payloadHash, summarise, PRODUCT_WRITABLE_KEYS,
   isSellableProduct, SELLABLE_FAMILY,
+  foldDesignName, isNotSellable, NOT_SELLABLE_CANONICALS,
+  diffProducts, productMirrorKey, productPayloadHash,
   slabRow, sampleRow, finishRow, unitRow,
   type StockGroup, type ProductRow, type StockRow, type MirrorEntry,
 } from "../src/lib/salesforce/stock-rules.ts";
@@ -737,7 +739,149 @@ test("the daily call budget is ours, fixed, and far under the org's", () => {
   // it fixed rather than grow into the headroom, which is why it is a named
   // constant with the reason beside it instead of a number in a comment.
   assert.equal(DAILY_CALL_BUDGET, 1000);
-  // The designed cadence fits: ~144 runs a day at up to six calls each.
-  assert.ok(144 * 6 < DAILY_CALL_BUDGET, "ten-minute cadence stays inside our own ceiling");
+  // THE CADENCE FITS, BUT COUNT THE FIRST RUN HONESTLY. This asserted
+  // 144 * 6 until 2026-09-17, a six-call bound the shipped code already broke:
+  // a first run against an empty mirror is 7 — one token, one Product2 SOQL,
+  // one Product2 PATCH and four upsert chunks of 200 for ~710 stock rows. A
+  // green test asserting a false premise is worse than no test, so this asserts
+  // the real worst case and the real steady state.
+  const FIRST_RUN_CALLS = 7;     // cold token + SOQL + 1 product chunk + 4 stock chunks
+  const STEADY_RUN_CALLS = 3;    // token + SOQL + at most one changed chunk
+  const RUNS_PER_DAY = 144;      // the ten-minute cadence, once it is scheduled
+  assert.ok(FIRST_RUN_CALLS + (RUNS_PER_DAY - 1) * STEADY_RUN_CALLS < DAILY_CALL_BUDGET,
+    "a first run plus a day of steady runs stays inside our own ceiling");
+  // And the pathological day — every run finding a full set of changes — does NOT
+  // fit, which is the number to know before the cron is scheduled.
+  assert.ok(RUNS_PER_DAY * FIRST_RUN_CALLS > DAILY_CALL_BUDGET,
+    "a day of worst-case runs would breach it, and nothing in the code would stop that");
   assert.ok(DAILY_CALL_BUDGET < 160_000, "and nowhere near the org's");
+});
+
+// ── the two defects the administrator's reply uncovered, 2026-09-17 ──────────
+//
+// Both were found by checking his objections against the code rather than by a
+// failing test, which is why they are pinned here now.
+
+test("THE NAME BRANCH FOLDS CASE, like the code branch — 235 slabs were withheld by this", () => {
+  // "Pebble ice" is the canonical "Pebble Ice"; the set holds names as typed, so
+  // a set lookup that an uppercase or a missing space defeats refused four
+  // designs we already publish. We were about to ask the customer to hand-write
+  // alias rows to paper over it.
+  const names = new Set(["Pebble Ice", "Taj Mahal", "Carrara Cloud", "Irish Grey"]);
+  const none = new Set<string>();
+  for (const spelling of ["Pebble ice", "PEBBLE ICE", "pebbleice", "Tajmahal", "TAJ MAHAL",
+                          "Carrara cloud", "carraracloud", "Irish grey"]) {
+    assert.equal(isKnownDesign(spelling, names, none), true, spelling);
+  }
+});
+
+test("folding does not make DIFFERENT designs equal", () => {
+  const names = new Set(["Arva White"]);
+  const none = new Set<string>();
+  for (const other of ["Arva Black", "Arva", "White", "Arva White 2", "ArvaWhite2"]) {
+    assert.equal(isKnownDesign(other, names, none), false, other);
+  }
+  // ...but the exact design, however spelt, still matches.
+  assert.equal(isKnownDesign("arva  white", names, none), true);
+});
+
+test("foldDesignName is the ONE normalisation, shared with qzCode", () => {
+  assert.equal(foldDesignName("Pebble Ice"), "PEBBLEICE");
+  assert.equal(foldDesignName("  taj-mahal "), "TAJMAHAL");
+  assert.equal(foldDesignName(null), "");
+  // the invariant that stops the two branches drifting apart again
+  for (const n of ["Arva White", "Taj Mahal", "Simply White"]) {
+    assert.equal(qzCode(n, 20), `QZ-${foldDesignName(n)}-20`);
+  }
+});
+
+test("TRIAL STOCK IS WITHHELD — 740 slabs of experiments are not sellable", () => {
+  // "Trial" is a canonical in fg_design_alias with 133 variants mapped onto it,
+  // so it PASSED the publish rule and would have reached reps as stock.
+  assert.equal(isNotSellable("Trial"), true);
+  assert.equal(isNotSellable("TRIAL"), true);
+  assert.equal(isNotSellable("  trial  "), true);
+  assert.equal(NOT_SELLABLE_CANONICALS.has("TRIAL"), true);
+  // and nothing else is caught by it
+  for (const ok of ["Trial Blend", "Industrial", "Arva White", "", null]) {
+    assert.equal(isNotSellable(ok), false, String(ok));
+  }
+});
+
+test("a not-sellable design is REPORTED, not silently dropped", () => {
+  const groups: StockGroup[] = [
+    { design: "Blue Kreos", slabThickness: "2 cm", available: 401 },
+    { design: "Arva White", slabThickness: "2 cm", available: 10 },
+  ];
+  const aliases = new Map([["Blue Kreos", "Trial"], ["Arva White", "Arva White"]]);
+  const names = new Set(["Trial", "Arva White"]);
+  const out = buildStockLines(groups, aliases, names, new Set<string>());
+  // the trial slabs do not reach Salesforce...
+  assert.equal(out.lines.some((l) => /TRIAL/.test(l.code)), false);
+  // ...and they are not passed off as an unknown design the admin must fix
+  const trial = out.unmapped.find((u) => u.design === "Blue Kreos");
+  assert.equal(trial?.reason, "NOT_SELLABLE");
+  assert.equal(trial?.available, 401);
+  // the real design is unaffected
+  assert.equal(out.lines.find((l) => l.code === "QZ-ARVAWHITE-20")?.available, 10);
+});
+
+// ── the administrator's point 6: stop rewriting every product every run ──────
+
+const PAY = (id: string, slabs: number, match: string) => ({
+  Id: id, ERP_SKU__c: `QZ-X-${id}`, ERP_Available_Slabs__c: slabs,
+  ERP_Match__c: match as never, ERP_Other_Thickness_Stock__c: "",
+  ERP_Stock_As_Of__c: "2026-09-17T00:00:00.000Z",
+});
+
+test("an unchanged product costs no modification", () => {
+  const p = PAY("01t1", 12, "Matched");
+  const mirror = new Map([[productMirrorKey("01t1"), { key: productMirrorKey("01t1"), payloadHash: productPayloadHash(p as never) }]]);
+  const d = diffProducts([p as never], mirror);
+  assert.equal(d.toPush.length, 0);
+  assert.equal(d.unchanged, 1);
+});
+
+test("THE AS-OF STAMP IS NOT HASHED, or the diff would save nothing", () => {
+  // It carries the run clock: hash it and all 110 products differ every run,
+  // which is the behaviour we are removing.
+  const a = PAY("01t1", 12, "Matched");
+  const b = { ...a, ERP_Stock_As_Of__c: "2026-12-25T11:11:11.000Z" };
+  assert.equal(productPayloadHash(a as never), productPayloadHash(b as never));
+});
+
+test("A SOLD-OUT ZERO STILL GOES OUT — the diff must not swallow it", () => {
+  const before = PAY("01t1", 12, "Matched");
+  const soldOut = { ...before, ERP_Available_Slabs__c: 0, ERP_Match__c: "Not at this thickness" };
+  const mirror = new Map([[productMirrorKey("01t1"), { key: productMirrorKey("01t1"), payloadHash: productPayloadHash(before as never) }]]);
+  const d = diffProducts([soldOut as never], mirror);
+  assert.equal(d.toPush.length, 1, "the zero is a change and must be sent");
+  assert.equal(d.unchanged, 0);
+});
+
+test("each of the three fields the administrator named moves the hash", () => {
+  const base = PAY("01t1", 12, "Matched");
+  for (const changed of [
+    { ...base, ERP_Available_Slabs__c: 13 },
+    { ...base, ERP_Match__c: "No ERP design" },
+    { ...base, ERP_Other_Thickness_Stock__c: "30 mm: 4" },
+    { ...base, ERP_SKU__c: "QZ-OTHER-20" },
+  ]) {
+    assert.notEqual(productPayloadHash(changed as never), productPayloadHash(base as never));
+  }
+});
+
+test("a product Salesforce has never seen is always pushed", () => {
+  const d = diffProducts([PAY("01tNEW", 5, "Matched") as never], new Map());
+  assert.equal(d.toPush.length, 1);
+});
+
+test("THE TWO KEY SPACES DO NOT COLLIDE in the one mirror table", () => {
+  // sf_key is an unconstrained TEXT PRIMARY KEY, so products share the stock
+  // rows' table. A PRODUCT| key reaching diffMirror would be "retired" into
+  // ERP_Stock__c as a phantom row, which is why stock.ts splits them first.
+  assert.equal(productMirrorKey("01t1").startsWith("PRODUCT|"), true);
+  for (const stockKey of ["SLAB|QZ-ARVAWHITE-20", "SAMPLE|abc", "FINISH|abc", "UNIT|abc"]) {
+    assert.equal(stockKey.startsWith("PRODUCT|"), false, stockKey);
+  }
 });

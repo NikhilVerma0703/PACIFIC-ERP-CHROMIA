@@ -83,13 +83,65 @@ export function canonicalDesign(design: unknown, aliases: ReadonlyMap<string, st
  * table to ask anybody for.
  */
 export function qzCode(canonical: string, mm: number): string {
-  const name = String(canonical ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-  return `QZ-${name}-${mm}`;
+  return `QZ-${foldDesignName(canonical)}-${mm}`;
+}
+
+/**
+ * THE ONE NORMALISATION — uppercase, non-alphanumerics stripped.
+ *
+ * It was inline in qzCode and nowhere else, which is precisely how the defect
+ * below happened: the CODE branch of isKnownDesign folded case and spacing
+ * while the NAME branch compared the string as typed, so "Pebble ice" missed
+ * the canonical "Pebble Ice" and 235 sellable slabs of four designs we already
+ * publish were withheld as unknown. Two comparisons of the same thing have to
+ * be the same comparison, so both now call this.
+ */
+export function foldDesignName(name: unknown): string {
+  return String(name ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+/** The folded view of a canonical-name set, memoised per set object. The set is
+ *  read fresh every run and has ~68 members; folding it once per run rather
+ *  than once per yard group keeps isKnownDesign O(1) without making the
+ *  function impure — same input, same answer, cache or no cache. */
+const FOLDED_NAMES = new WeakMap<object, Set<string>>();
+function foldedNames(names: ReadonlySet<string>): Set<string> {
+  const hit = FOLDED_NAMES.get(names as object);
+  if (hit) return hit;
+  const built = new Set<string>();
+  for (const n of names) {
+    const f = foldDesignName(n);
+    if (f) built.add(f);
+  }
+  FOLDED_NAMES.set(names as object, built);
+  return built;
+}
+
+/**
+ * DESIGNS THAT ARE NOT STOCK, whatever the alias table says.
+ *
+ * "Trial" is a canonical in fg_design_alias with 133 variants mapped onto it —
+ * Blue Kreos, Black Vein, Arva White Kreos Trail and the rest of the plant's
+ * experiments. Being a canonical made it pass the publish rule, so the first
+ * live run would have offered reps 740 slabs of experimental material as
+ * sellable stock (QZ-TRIAL-12, -20 and -30), and our own handoff asked
+ * Pacific's Salesforce administrator to create a product for the 30 mm slice of
+ * it. The org has no trial product at any thickness, and should not.
+ *
+ * Withheld HERE rather than by deleting the canonical, because the alias row is
+ * doing useful work in the ERP: it collapses 133 experimental names into one
+ * bucket for the yard. It is only Salesforce that must never see it.
+ */
+export const NOT_SELLABLE_CANONICALS: ReadonlySet<string> = Object.freeze(new Set(["TRIAL"]));
+
+/** Is this canonical one the ERP deliberately never publishes? */
+export function isNotSellable(canonical: unknown): boolean {
+  return NOT_SELLABLE_CANONICALS.has(foldDesignName(canonical));
 }
 
 // ── the publish rule ────────────────────────────────────────────────────────
 
-export type UnmappedReason = "UNKNOWN_DESIGN" | "THICKNESS";
+export type UnmappedReason = "UNKNOWN_DESIGN" | "THICKNESS" | "NOT_SELLABLE";
 
 export interface StockGroup {
   design: string;
@@ -139,6 +191,12 @@ export function isKnownDesign(
   const name = String(canonical ?? "").trim();
   if (!name) return false;
   if (canonicalNames.has(name) || canonicalNames.has(name.toLowerCase())) return true;
+  // FOLDED, like the code branch below. Without this the two branches disagreed
+  // about what "the same design" means: "Pebble ice" is the canonical "Pebble
+  // Ice", "Tajmahal" is "Taj Mahal", and both were refused by a set lookup that
+  // an uppercase or a missing space defeated.
+  const folded = foldDesignName(name);
+  if (folded && foldedNames(canonicalNames).has(folded)) return true;
   for (const mm of Object.values(THICKNESS_MM)) {
     if (productCodes.has(qzCode(name, mm))) return true;
   }
@@ -173,6 +231,15 @@ export function buildStockLines(
     // recognises is an unknown design, not a thickness problem: fixing the
     // thickness would still leave a name we refuse to publish, and reporting
     // it as THICKNESS would send somebody to the wrong screen.
+    // NOT SELLABLE IS ASKED FIRST, before "do we know this design". Trial
+    // stock IS known — that is the whole problem — so asking `known` first
+    // would publish it, and reporting it as UNKNOWN_DESIGN would put 740 slabs
+    // on the administrator's worklist as designs to create products for.
+    // Withheld, and said out loud as a separate reason.
+    if (isNotSellable(canonical)) {
+      unmapped.push({ design: String(g?.design ?? ""), canonical, slabThickness: String(g?.slabThickness ?? ""), available, reason: "NOT_SELLABLE" });
+      continue;
+    }
     if (!known) {
       unmapped.push({ design: String(g?.design ?? ""), canonical, slabThickness: String(g?.slabThickness ?? ""), available, reason: "UNKNOWN_DESIGN" });
       continue;
@@ -538,6 +605,84 @@ function kindFromKey(key: string): StockKind {
  * built in a different field order is the same payload. Without that the first
  * refactor of a row builder would push all 500 rows for no reason.
  */
+/**
+ * A PRODUCT'S MIRROR KEY. `PRODUCT|<Salesforce Id>`, in the same
+ * sf_stock_mirror table the stock rows use — no migration, because sf_key is an
+ * unconstrained TEXT PRIMARY KEY (scripts/0087-salesforce-sync-state.sql) and
+ * the prefix keeps the two key spaces apart. An earlier note in DESIGN.md said
+ * a Product2 row "cannot be mirrored even in principle" for want of a `target`
+ * column; that was wrong, and this is the correction.
+ */
+export function productMirrorKey(productId: string): string {
+  return `PRODUCT|${productId}`;
+}
+
+/**
+ * WHAT COUNTS AS A CHANGED PRODUCT — the three fields the administrator named,
+ * plus ERP_SKU__c, which the run fills once and must not re-fill for ever.
+ *
+ * ERP_Stock_As_Of__c IS DELIBERATELY NOT HASHED, and this is the trade the
+ * administrator has to be told about rather than discover: it carries the run
+ * clock, so hashing it would make every product differ on every run and the
+ * diff would save exactly nothing. Leaving it out means a product whose stock
+ * has not moved stops getting a fresh as-of stamp — the stamp becomes "when
+ * this count last CHANGED", which is the more useful fact anyway, and the
+ * run's own freshness is a property of the run, not of 110 rows.
+ *
+ * The sold-out zero survives untouched: a count falling to zero changes
+ * ERP_Available_Slabs__c and usually ERP_Match__c too, so the hash moves and
+ * the row is sent. Only a SECOND consecutive run at an unchanged zero is
+ * skipped, by which point Salesforce already holds the zero.
+ */
+export function productPayloadHash(p: ProductPayload): string {
+  return hashString([
+    `sku=${p.ERP_SKU__c ?? ""}`,
+    `slabs=${p.ERP_Available_Slabs__c ?? ""}`,
+    `match=${p.ERP_Match__c ?? ""}`,
+    `other=${p.ERP_Other_Thickness_Stock__c ?? ""}`,
+  ].join("|"));
+}
+
+export interface ProductDiff {
+  toPush: ProductPayload[];
+  unchanged: number;
+}
+
+/**
+ * Only the products whose meaning changed.
+ *
+ * WHY THIS EXISTS. Every non-dry run used to PATCH all 110 active quartz
+ * products, undiffed, on the grounds that 110 fits in one composite call so a
+ * diff would save nothing. It saves nothing in CALLS and a great deal in
+ * something we were not counting: at the ten-minute cadence that is 15,840
+ * record modifications a day, which moves Last Modified on every product 144
+ * times a day and destroys the only cheap way to see when a PERSON last edited
+ * one. Pacific's Salesforce administrator asked for this, and he was right.
+ */
+export function diffProducts(
+  payloads: ReadonlyArray<ProductPayload>,
+  mirror: ReadonlyMap<string, MirrorEntry>,
+): ProductDiff {
+  const toPush: ProductPayload[] = [];
+  let unchanged = 0;
+  for (const p of payloads) {
+    const seen = mirror.get(productMirrorKey(p.Id));
+    if (seen && seen.payloadHash === productPayloadHash(p)) unchanged += 1;
+    else toPush.push(p);
+  }
+  return { toPush, unchanged };
+}
+
+/** The FNV-1a both hashes use, so they cannot drift apart. */
+function hashString(stable: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < stable.length; i += 1) {
+    h ^= stable.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
+
 export function payloadHash(row: StockRow): string {
   const flat: Record<string, unknown> = {
     kind: row.kind,
@@ -546,18 +691,14 @@ export function payloadHash(row: StockRow): string {
     retired: row.retired,
     ...row.fields,
   };
-  const stable = Object.keys(flat)
-    .sort()
-    .map((k) => `${k}=${String(flat[k] ?? "")}`)
-    .join("|");
   // A short, dependency-free FNV-1a. This is a change detector, not a
   // security primitive: it decides whether to spend an API call.
-  let h = 0x811c9dc5;
-  for (let i = 0; i < stable.length; i += 1) {
-    h ^= stable.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return h.toString(16).padStart(8, "0");
+  return hashString(
+    Object.keys(flat)
+      .sort()
+      .map((k) => `${k}=${String(flat[k] ?? "")}`)
+      .join("|"),
+  );
 }
 
 // ── the summary the run records ─────────────────────────────────────────────
@@ -569,8 +710,21 @@ export interface RunSummary {
   publishedLines: number;
   publishedSlabs: number;
   unmappedSpellings: number;
+  /** The same designs counted ONCE, folded the way the matcher folds them.
+   *  Pacific's Salesforce administrator read "83 designs with stock and no
+   *  product" and correctly objected that DESERT SILK and Desert Silk are one
+   *  design listed twice: the worklist is per SPELLING, because each spelling
+   *  needs its own alias row, but the DESIGN count is the smaller, truer number
+   *  and both belong in the summary. */
+  unmappedDesigns: number;
   unmappedSlabs: number;
   unclassifiedThickness: number;
+  /** Stock withheld on purpose because its canonical is not sellable — today
+   *  that is "Trial" and nothing else. Reported rather than silently dropped:
+   *  740 slabs disappearing from a total with no line explaining them is how a
+   *  filter becomes a bug nobody can see. */
+  notSellableSlabs: number;
+  notSellableSpellings: number;
   thirtyMmWithoutProduct: number;
 }
 
@@ -581,6 +735,7 @@ export function summarise(
 ): RunSummary {
   const unknown = result.unmapped.filter((u) => u.reason === "UNKNOWN_DESIGN");
   const thickness = result.unmapped.filter((u) => u.reason === "THICKNESS");
+  const notSellable = result.unmapped.filter((u) => u.reason === "NOT_SELLABLE");
   return {
     matched: payloads.filter((p) => p.ERP_Match__c === "Matched").length,
     notAtThickness: payloads.filter((p) => p.ERP_Match__c === "Not at this thickness").length,
@@ -588,8 +743,11 @@ export function summarise(
     publishedLines: result.lines.length,
     publishedSlabs: result.lines.reduce((n, l) => n + l.available, 0),
     unmappedSpellings: new Set(unknown.map((u) => u.design)).size,
+    unmappedDesigns: new Set(unknown.map((u) => foldDesignName(u.canonical || u.design))).size,
     unmappedSlabs: unknown.reduce((n, u) => n + u.available, 0),
     unclassifiedThickness: thickness.reduce((n, u) => n + u.available, 0),
+    notSellableSlabs: notSellable.reduce((n, u) => n + u.available, 0),
+    notSellableSpellings: new Set(notSellable.map((u) => u.design)).size,
     // The 59 designs / 4,202 slabs DISCOVERY counted: real stock with no
     // product to show it against, listed so the admin can create them.
     thirtyMmWithoutProduct: result.lines.filter((l) => l.mm === 30 && !productCodes.has(l.code)).length,

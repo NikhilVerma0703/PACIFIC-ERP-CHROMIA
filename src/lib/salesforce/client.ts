@@ -70,8 +70,14 @@ export function limitsSeen(): SfLimits {
   return { ...lastLimits };
 }
 
-/** `Sforce-Limit-Info: api-usage=3700/160000` — read off every response so the
- *  admin page can show it and the run can stand down if the ORG is nearly out. */
+/** `Sforce-Limit-Info: api-usage=3700/160000` — read off every response and kept
+ *  for the run summary.
+ *
+ *  THIS IS THE ORG'S ROLLING 24-HOUR TOTAL, NOT OURS. It counts every API call
+ *  made against the org by anyone, so it is not a measure of what this run cost;
+ *  our handoff printed it as "API calls used by one rehearsal" and Pacific's
+ *  administrator correctly objected. Nothing stands down on it either — it is
+ *  read, stored and displayed, and no code compares it to a threshold. */
 function noteLimits(res: Response): void {
   const raw = res.headers.get("sforce-limit-info");
   const m = /api-usage=(\d+)\/(\d+)/i.exec(raw ?? "");

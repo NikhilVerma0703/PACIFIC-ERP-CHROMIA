@@ -19,6 +19,7 @@ import {
   type ProductRow, type StockGroup, type StockRow, type MirrorEntry,
 } from "./stock-rules";
 import { soql, compositePatch, readConfig, limitsSeen, type SfConfig } from "./client";
+import { diffProducts, productMirrorKey, productPayloadHash } from "./stock-rules";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
@@ -44,12 +45,29 @@ export interface SyncSummary {
   publishedLines: number;
   publishedSlabs: number;
   unmappedSpellings: number;
+  /** The same designs counted ONCE, folded the way the matcher folds them.
+   *  Pacific's Salesforce administrator read "83 designs with stock and no
+   *  product" and correctly objected that DESERT SILK and Desert Silk are one
+   *  design listed twice: the worklist is per SPELLING, because each spelling
+   *  needs its own alias row, but the DESIGN count is the smaller, truer number
+   *  and both belong in the summary. */
+  unmappedDesigns: number;
   unmappedSlabs: number;
   unclassifiedThickness: number;
+  /** Stock withheld on purpose because its canonical is not sellable — today
+   *  that is "Trial" and nothing else. Reported rather than silently dropped:
+   *  740 slabs disappearing from a total with no line explaining them is how a
+   *  filter becomes a bug nobody can see. */
+  notSellableSlabs: number;
+  notSellableSpellings: number;
   thirtyMmWithoutProduct: number;
   topUnmapped: Array<{ design: string; available: number; reason: string }>;
   thirtyMmCodes: string[];
   stockRows: { desired: number; toPush: number; toRetire: number; unchanged: number };
+  /** The same accounting for Product2, which is diffed now rather than written
+   *  wholesale: `unchanged` is the number of products that cost no modification
+   *  this run. */
+  productRows: { desired: number; toPush: number; unchanged: number };
   wrote: { products: number; stockRows: number; failures: string[] };
   apiUsage: { used: number | null; total: number | null };
   durationMs: number;
@@ -241,13 +259,20 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
     ...result.lines.map((l) => slabRow(l, productIdByCode.get(l.code) ?? null)),
     ...(await readSamplesAndUnits()),
   ];
-  const mirror = await readMirror();
+  const wholeMirror = await readMirror();
+  // TWO KEY SPACES IN ONE TABLE, and they must not see each other. diffMirror
+  // walks every mirror entry and treats anything it does not recognise as a
+  // stock line that has vanished — so a PRODUCT| key left in here would be
+  // "retired" into ERP_Stock__c as a phantom row. Split first, diff separately.
+  const mirror = new Map([...wholeMirror].filter(([k]) => !k.startsWith("PRODUCT|")));
+  const productMirror = new Map([...wholeMirror].filter(([k]) => k.startsWith("PRODUCT|")));
   const stillResolves = (key: string): boolean => {
     if (!key.startsWith("SLAB|")) return true;
     const code = key.slice(5);
     return result.lines.some((l) => l.code === code) || productCodes.has(code);
   };
   const diff = diffMirror(desired, mirror, stillResolves);
+  const prodDiff = diffProducts(payloads, productMirror);
 
   const summary: SyncSummary = {
     dry: opts.dry,
@@ -262,12 +287,16 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
     publishedLines: s.publishedLines,
     publishedSlabs: s.publishedSlabs,
     unmappedSpellings: s.unmappedSpellings,
+    unmappedDesigns: s.unmappedDesigns,
     unmappedSlabs: s.unmappedSlabs,
     unclassifiedThickness: s.unclassifiedThickness,
+    notSellableSlabs: s.notSellableSlabs,
+    notSellableSpellings: s.notSellableSpellings,
     thirtyMmWithoutProduct: s.thirtyMmWithoutProduct,
     topUnmapped: result.unmapped.slice(0, 25).map((u) => ({ design: u.design, available: u.available, reason: u.reason })),
     thirtyMmCodes: result.lines.filter((l) => l.mm === 30 && !productCodes.has(l.code)).map((l) => l.code).sort(),
     stockRows: { desired: desired.length, toPush: diff.toPush.length, toRetire: diff.toRetire.length, unchanged: diff.unchanged },
+    productRows: { desired: payloads.length, toPush: prodDiff.toPush.length, unchanged: prodDiff.unchanged },
     wrote: { products: 0, stockRows: 0, failures: [] },
     apiUsage: limitsSeen(),
     durationMs: 0,
@@ -279,10 +308,20 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
   }
 
   // ── writes, only past here ────────────────────────────────────────────────
-  const prodResults = await compositePatch(cfg, "Product2", payloads as unknown as Array<Record<string, unknown>>);
-  summary.wrote.products = prodResults.filter((r) => r.success).length;
-  for (const r of prodResults.filter((x) => !x.success)) {
-    summary.wrote.failures.push(`Product2: ${(r.errors ?? []).map((e) => e.message).join("; ")}`);
+  // ONLY THE PRODUCTS THAT CHANGED. This used to PATCH all 110 every run, on
+  // the reasoning that 110 fits in one call so a diff saved nothing. It saves
+  // nothing in calls and everything in Last Modified: 15,840 modifications a
+  // day at the ten-minute cadence, which is the org's only cheap record of when
+  // a PERSON last touched a product. Pacific's administrator asked for this.
+  if (prodDiff.toPush.length) {
+    const prodResults = await compositePatch(cfg, "Product2", prodDiff.toPush as unknown as Array<Record<string, unknown>>);
+    summary.wrote.products = prodResults.filter((r) => r.success).length;
+    for (const r of prodResults.filter((x) => !x.success)) {
+      summary.wrote.failures.push(`Product2: ${(r.errors ?? []).map((e) => e.message).join("; ")}`);
+    }
+    // Only what Salesforce accepted, so a rejected product is retried next run
+    // rather than remembered as done — the same rule the stock rows follow.
+    await recordProductMirror(prodDiff.toPush.filter((_, i) => prodResults[i]?.success));
   }
 
   const rowsToWrite = [...diff.toPush, ...diff.toRetire];
@@ -312,6 +351,23 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
   summary.apiUsage = limitsSeen();
   summary.durationMs = Date.now() - started;
   return summary;
+}
+
+/** Remember each product's hash under its PRODUCT| key, in the same mirror
+ *  table. Failure to record is swallowed for the reason the stock mirror
+ *  swallows it: a mirror we could not write means the next run re-sends a row
+ *  that was already correct, which costs one call and breaks nothing, while
+ *  throwing here would fail a run whose writes had already landed. */
+async function recordProductMirror(pushed: ReadonlyArray<{ Id: string }>): Promise<void> {
+  for (const p of pushed) {
+    await db.$executeRawUnsafe(
+      `INSERT INTO sf_stock_mirror (sf_key, payload_hash, pushed_at)
+            VALUES ($1, $2, now())
+       ON CONFLICT (sf_key) DO UPDATE SET payload_hash = EXCLUDED.payload_hash, pushed_at = now()`,
+      productMirrorKey(p.Id),
+      productPayloadHash(p as never),
+    ).catch(() => {});
+  }
 }
 
 /** Remember what was pushed; forget what was retired. */

@@ -263,8 +263,16 @@ export function forbiddenPath(path: string): boolean {
  * a change to make deliberately, by editing this line and saying why, not by
  * discovering later that a loop grew.
  *
- * The run still reads Sforce-Limit-Info off every response and skips the stock
- * phase if the ORG is under ten percent remaining: that guards the org's limit.
- * This guards ours.
+ * NEITHER THIS NOR THE ORG'S LIMIT IS ENFORCED AT RUNTIME, and saying so here
+ * is the point of this paragraph. Nothing in the repo counts the calls a run
+ * makes, nothing compares that count to this number, and nothing stops at it:
+ * this constant is a stated ceiling, checked only by tests/salesforceStock.test.ts.
+ * An earlier version of this comment said "the run reads Sforce-Limit-Info off
+ * every response and skips the stock phase if the ORG is under ten percent
+ * remaining" — it does read the header (client.ts noteLimits) and it does report
+ * it in the run summary, but no code has ever compared it to a threshold or
+ * skipped anything. We told Pacific's Salesforce administrator that guard
+ * existed. It did not, and a promise in a comment is worse than no promise,
+ * because it stops the next reader building the real thing.
  */
 export const DAILY_CALL_BUDGET = 1000;
