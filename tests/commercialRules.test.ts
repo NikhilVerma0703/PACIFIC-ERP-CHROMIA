@@ -319,13 +319,27 @@ test("GSTIN helpers", () => {
 test("measurements agree with the CIOT list and with the inventory page", () => {
   assert.equal(sqmFromCm(347, 201), 6.9747);
   assert.equal(sqftFromSqm(6.9747), 75.076);
-  assert.equal(sqftFromIn(137, 79), 75.16, "the inventory module's own figure");
+  // 75.076, NOT 75.16, AND THIS LINE USED TO ASSERT THE BUG. A slab is 347 x
+  // 201 cm on the CIOT measurement list; 137 x 79 INCHES is the rounded display
+  // of those centimetres (347 cm is 136.61 in, 201 cm is 79.13 in). Squaring the
+  // rounded inches gives 75.16, 0.11% high, which is why Finished Goods printed
+  // 75.16 for a slab the packing list of the same shipment printed as 75.076.
+  // The centimetres are the measurement; the inches are how we show it.
+  assert.equal(sqftFromIn(137, 79), 75.076, "the nominal slab, from its centimetres");
+  // a pair that is NOT the nominal one is a real measurement and still multiplies out
+  assert.equal(sqftFromIn(100, 72), 50);
   assert.equal(inToCm(137), 348);
   assert.equal(inToCm(79), 201);
+  // inToCm still rounds 137 in to 348 cm -- that conversion is unchanged and
+  // correct for a real 137-inch thing. What changed is that the NOMINAL pair is
+  // no longer sent through it: an unmeasured slab IS 347 x 201, so slabMeasure
+  // answers with the sheet's figures instead of the rounding of a rounding.
   const m = slabMeasure(137, 79);
-  assert.deepEqual(m, { lengthCm: 348, widthCm: 201, sqm: 6.9948, sqft: 75.292 });
-  const measured = slabMeasure(137, 79, { lengthCm: 347, widthCm: 201 });
-  assert.equal(measured.sqm, 6.9747, "a measured size overrides the nominal one");
+  assert.deepEqual(m, { lengthCm: 347, widthCm: 201, sqm: 6.9747, sqft: 75.076 });
+  const measured = slabMeasure(137, 79, { lengthCm: 350, widthCm: 205 });
+  assert.equal(measured.sqm, 7.175, "a measured size overrides the nominal one");
+  // a genuinely different slab is still multiplied out, not given the nominal
+  assert.deepEqual(slabMeasure(120, 60), { lengthCm: 305, widthCm: 152, sqm: 4.636, sqft: 49.902 });
   assert.equal(sumTo([75.0756708, 75.0756708, 75.0756708], 4), 225.227);
 });
 

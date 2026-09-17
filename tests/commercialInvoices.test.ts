@@ -347,9 +347,15 @@ test("groupSlabs groups by design + canonical thickness, in first-seen order", (
   assert.equal(g[1].slabs, 1);
 });
 
-test("a slab with no measure counts as a nominal 348 × 201 slab", () => {
-  assert.equal(NOMINAL_SLAB.lengthCm, 348);
+test("a slab with no measure counts as a nominal 347 × 201 slab", () => {
+  // 347, not 348: the CIOT measurement list's own figure. inToCm(137) rounds
+  // 347.98 up to 348, and 348 x 201 would read 75.292 sqft -- a slab nobody
+  // measured is the NOMINAL slab, whose area is known, not one to re-derive
+  // from the rounding of its own inch display.
+  assert.equal(NOMINAL_SLAB.lengthCm, 347);
   assert.equal(NOMINAL_SLAB.widthCm, 201);
+  assert.equal(NOMINAL_SLAB.sqm, 6.9747);
+  assert.equal(NOMINAL_SLAB.sqft, 75.076);
   const g = groupSlabs([{ design: "Carrara Royale", thickness: "2 cm", sqm: null, sqft: null }]);
   assert.equal(g[0].sqft, NOMINAL_SLAB.sqft);
   assert.equal(g[0].sqm, NOMINAL_SLAB.sqm);

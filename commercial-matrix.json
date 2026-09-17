@@ -1,0 +1,430 @@
+{
+ "areaLabels": {
+  "overview": "Overview",
+  "enquiries": "Enquiries",
+  "clients": "Clients",
+  "orders": "Orders",
+  "checklist": "Order checklist",
+  "stock": "Stock check and holds",
+  "planning": "Production queue",
+  "designCodes": "Design codes and colours",
+  "proforma": "Proforma invoices",
+  "packing": "Packing lists",
+  "dispatchCheck": "Dispatch check",
+  "invoices": "Invoices",
+  "challans": "Delivery challans",
+  "settings": "Settings"
+ },
+ "actors": {
+  "ADMIN": {
+   "actions": [
+    "view",
+    "write",
+    "verify",
+    "plan",
+    "approve",
+    "cancel",
+    "admin"
+   ],
+   "areas": {
+    "overview": "write",
+    "enquiries": "write",
+    "clients": "write",
+    "orders": "write",
+    "checklist": "write",
+    "stock": "write",
+    "planning": "write",
+    "designCodes": "write",
+    "proforma": "write",
+    "packing": "write",
+    "dispatchCheck": "write",
+    "invoices": "write",
+    "challans": "write",
+    "settings": "write"
+   },
+   "nav": [
+    {
+     "label": "Overview",
+     "href": "/office/commercial",
+     "access": "write"
+    },
+    {
+     "label": "Enquiries",
+     "href": "/office/commercial/enquiries",
+     "access": "write"
+    },
+    {
+     "label": "Orders",
+     "href": "/office/commercial/orders",
+     "access": "write"
+    },
+    {
+     "label": "Clients",
+     "href": "/office/commercial/clients",
+     "access": "write"
+    },
+    {
+     "label": "Packing Lists",
+     "href": "/office/commercial/packing-lists",
+     "access": "write"
+    },
+    {
+     "label": "Dispatch Check",
+     "href": "/office/commercial/dispatch-check",
+     "access": "write"
+    },
+    {
+     "label": "Invoices",
+     "href": "/office/commercial/invoices",
+     "access": "write"
+    },
+    {
+     "label": "Delivery Challans",
+     "href": "/office/commercial/challans",
+     "access": "write"
+    },
+    {
+     "label": "Design codes",
+     "href": "/office/commercial/design-codes",
+     "access": "write"
+    },
+    {
+     "label": "Settings",
+     "href": "/office/commercial/settings",
+     "access": "write"
+    }
+   ]
+  },
+  "COMMERCIAL_MANAGER": {
+   "actions": [
+    "view",
+    "write",
+    "verify",
+    "approve",
+    "cancel"
+   ],
+   "areas": {
+    "overview": "write",
+    "enquiries": "write",
+    "clients": "write",
+    "orders": "write",
+    "checklist": "write",
+    "stock": "write",
+    "planning": "none",
+    "designCodes": "write",
+    "proforma": "write",
+    "packing": "write",
+    "dispatchCheck": "write",
+    "invoices": "write",
+    "challans": "write",
+    "settings": "none"
+   },
+   "nav": [
+    {
+     "label": "Overview",
+     "href": "/office/commercial",
+     "access": "write"
+    },
+    {
+     "label": "Enquiries",
+     "href": "/office/commercial/enquiries",
+     "access": "write"
+    },
+    {
+     "label": "Orders",
+     "href": "/office/commercial/orders",
+     "access": "write"
+    },
+    {
+     "label": "Clients",
+     "href": "/office/commercial/clients",
+     "access": "write"
+    },
+    {
+     "label": "Packing Lists",
+     "href": "/office/commercial/packing-lists",
+     "access": "write"
+    },
+    {
+     "label": "Dispatch Check",
+     "href": "/office/commercial/dispatch-check",
+     "access": "write"
+    },
+    {
+     "label": "Invoices",
+     "href": "/office/commercial/invoices",
+     "access": "write"
+    },
+    {
+     "label": "Delivery Challans",
+     "href": "/office/commercial/challans",
+     "access": "write"
+    },
+    {
+     "label": "Design codes",
+     "href": "/office/commercial/design-codes",
+     "access": "write"
+    }
+   ]
+  },
+  "COMMERCIAL_EXEC": {
+   "actions": [
+    "view",
+    "write",
+    "verify"
+   ],
+   "areas": {
+    "overview": "view",
+    "enquiries": "view",
+    "clients": "view",
+    "orders": "write",
+    "checklist": "write",
+    "stock": "write",
+    "planning": "none",
+    "designCodes": "view",
+    "proforma": "write",
+    "packing": "write",
+    "dispatchCheck": "write",
+    "invoices": "write",
+    "challans": "write",
+    "settings": "none"
+   },
+   "nav": [
+    {
+     "label": "Overview",
+     "href": "/office/commercial",
+     "access": "view"
+    },
+    {
+     "label": "Enquiries",
+     "href": "/office/commercial/enquiries",
+     "access": "view"
+    },
+    {
+     "label": "Orders",
+     "href": "/office/commercial/orders",
+     "access": "write"
+    },
+    {
+     "label": "Clients",
+     "href": "/office/commercial/clients",
+     "access": "view"
+    },
+    {
+     "label": "Packing Lists",
+     "href": "/office/commercial/packing-lists",
+     "access": "write"
+    },
+    {
+     "label": "Dispatch Check",
+     "href": "/office/commercial/dispatch-check",
+     "access": "write"
+    },
+    {
+     "label": "Invoices",
+     "href": "/office/commercial/invoices",
+     "access": "write"
+    },
+    {
+     "label": "Delivery Challans",
+     "href": "/office/commercial/challans",
+     "access": "write"
+    },
+    {
+     "label": "Design codes",
+     "href": "/office/commercial/design-codes",
+     "access": "view"
+    }
+   ]
+  },
+  "COMMERCIAL_DOCS": {
+   "actions": [
+    "view",
+    "write"
+   ],
+   "areas": {
+    "overview": "view",
+    "enquiries": "none",
+    "clients": "view",
+    "orders": "view",
+    "checklist": "write",
+    "stock": "none",
+    "planning": "none",
+    "designCodes": "none",
+    "proforma": "view",
+    "packing": "view",
+    "dispatchCheck": "none",
+    "invoices": "write",
+    "challans": "write",
+    "settings": "none"
+   },
+   "nav": [
+    {
+     "label": "Overview",
+     "href": "/office/commercial",
+     "access": "view"
+    },
+    {
+     "label": "Orders",
+     "href": "/office/commercial/orders",
+     "access": "view"
+    },
+    {
+     "label": "Clients",
+     "href": "/office/commercial/clients",
+     "access": "view"
+    },
+    {
+     "label": "Packing Lists",
+     "href": "/office/commercial/packing-lists",
+     "access": "view"
+    },
+    {
+     "label": "Invoices",
+     "href": "/office/commercial/invoices",
+     "access": "write"
+    },
+    {
+     "label": "Delivery Challans",
+     "href": "/office/commercial/challans",
+     "access": "write"
+    }
+   ]
+  },
+  "COMMERCIAL_LOGISTICS": {
+   "actions": [
+    "view",
+    "write",
+    "approve"
+   ],
+   "areas": {
+    "overview": "view",
+    "enquiries": "write",
+    "clients": "write",
+    "orders": "write",
+    "checklist": "write",
+    "stock": "view",
+    "planning": "none",
+    "designCodes": "view",
+    "proforma": "view",
+    "packing": "view",
+    "dispatchCheck": "none",
+    "invoices": "view",
+    "challans": "write",
+    "settings": "none"
+   },
+   "nav": [
+    {
+     "label": "Overview",
+     "href": "/office/commercial",
+     "access": "view"
+    },
+    {
+     "label": "Enquiries",
+     "href": "/office/commercial/enquiries",
+     "access": "write"
+    },
+    {
+     "label": "Orders",
+     "href": "/office/commercial/orders",
+     "access": "write"
+    },
+    {
+     "label": "Clients",
+     "href": "/office/commercial/clients",
+     "access": "write"
+    },
+    {
+     "label": "Packing Lists",
+     "href": "/office/commercial/packing-lists",
+     "access": "view"
+    },
+    {
+     "label": "Invoices",
+     "href": "/office/commercial/invoices",
+     "access": "view"
+    },
+    {
+     "label": "Delivery Challans",
+     "href": "/office/commercial/challans",
+     "access": "write"
+    },
+    {
+     "label": "Design codes",
+     "href": "/office/commercial/design-codes",
+     "access": "view"
+    }
+   ]
+  },
+  "COMMERCIAL": {
+   "actions": [
+    "view",
+    "write",
+    "verify"
+   ],
+   "areas": {
+    "overview": "write",
+    "enquiries": "write",
+    "clients": "write",
+    "orders": "write",
+    "checklist": "write",
+    "stock": "write",
+    "planning": "none",
+    "designCodes": "view",
+    "proforma": "write",
+    "packing": "write",
+    "dispatchCheck": "write",
+    "invoices": "write",
+    "challans": "write",
+    "settings": "none"
+   },
+   "nav": [
+    {
+     "label": "Overview",
+     "href": "/office/commercial",
+     "access": "write"
+    },
+    {
+     "label": "Enquiries",
+     "href": "/office/commercial/enquiries",
+     "access": "write"
+    },
+    {
+     "label": "Orders",
+     "href": "/office/commercial/orders",
+     "access": "write"
+    },
+    {
+     "label": "Clients",
+     "href": "/office/commercial/clients",
+     "access": "write"
+    },
+    {
+     "label": "Packing Lists",
+     "href": "/office/commercial/packing-lists",
+     "access": "write"
+    },
+    {
+     "label": "Dispatch Check",
+     "href": "/office/commercial/dispatch-check",
+     "access": "write"
+    },
+    {
+     "label": "Invoices",
+     "href": "/office/commercial/invoices",
+     "access": "write"
+    },
+    {
+     "label": "Delivery Challans",
+     "href": "/office/commercial/challans",
+     "access": "write"
+    },
+    {
+     "label": "Design codes",
+     "href": "/office/commercial/design-codes",
+     "access": "view"
+    }
+   ]
+  }
+ }
+}

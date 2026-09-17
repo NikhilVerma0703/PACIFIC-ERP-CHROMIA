@@ -6,9 +6,10 @@ import { inventoryReadGate } from "@/lib/inventory/access";
 import { getUnapprovedSlabNumbers } from "@/lib/inventory/searchWhere";
 import { photosForRecord } from "@/lib/entryPhoto";
 import { isAdmin, isCommercialRole } from "@/lib/rbac";
+import { sqftFromIn, sqmFromIn } from "@/lib/commercial/measure";
 
 const db = prisma as any;
-const SQFT_TO_SQM = 0.092903;
+// One formula, imported — see the note in ../route.ts.
 
 export async function GET(request: Request) {
   const g = await inventoryReadGate();
@@ -44,9 +45,9 @@ export async function GET(request: Request) {
       if (al) slab.design = al.canonical;
     }
     if (slab) {
-      const sqft = ((slab.lengthIn ?? 0) * (slab.widthIn ?? 0)) / 144;
+      const sqft = sqftFromIn(slab.lengthIn ?? 0, slab.widthIn ?? 0);
       const ageDays = slab.firstSeenAt ? Math.max(0, Math.floor((Date.now() - new Date(slab.firstSeenAt).getTime()) / 86400000)) : null;
-      derived = { ...slab, sqft: Math.round(sqft * 100) / 100, sqm: Math.round(sqft * SQFT_TO_SQM * 100) / 100, ageDays };
+      derived = { ...slab, sqft, sqm: sqmFromIn(slab.lengthIn ?? 0, slab.widthIn ?? 0), ageDays };
     }
     // THE SLAB'S OWN PHOTOS. The intake form stores a far and a near shot of
     // the defect against the FinishedSlab row (entry_photo, prefixes far-/

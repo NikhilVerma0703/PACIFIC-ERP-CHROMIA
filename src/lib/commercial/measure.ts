@@ -28,18 +28,57 @@ export function sqftFromSqm(sqm: number): number {
   return round(sqm * SQFT_PER_SQM, 3);
 }
 
-/** Square feet from inch sides, 2 dp — the inventory module's own formula
- *  (lengthIn × widthIn / 144), kept identical so a slab reads the same sqft on
- *  the Finished Goods page and on a hold. 137 × 79 → 75.16. */
+/**
+ * THE NOMINAL SLAB: 347 × 201 cm — 6.9747 sqm, 75.076 sqft, the CIOT
+ * measurement list's own figures and what the packing list, the challan and the
+ * workbook have always printed.
+ *
+ * Finished goods STORES that slab as 137 × 79 INCHES on 27,097 of 27,099 rows —
+ * nominal, not measured. Those inches are a ROUNDED DISPLAY of the centimetres:
+ * 347 cm is 136.61 in and 201 cm is 79.13 in. Squaring the rounded pair gives
+ * 75.16, which is 0.11% high, and it is why the same slab read 75.16 on the
+ * Finished Goods page and 75.076 on the packing list of the same shipment.
+ * The centimetres are the measurement; the inches are how we show it.
+ */
+export const NOMINAL_SLAB_LENGTH_IN = 137;
+export const NOMINAL_SLAB_WIDTH_IN = 79;
+export const NOMINAL_SLAB_SQM = 6.9747;
+export const NOMINAL_SLAB_SQFT = 75.076;
+
+/**
+ * Square feet from inch sides — one formula, so a slab reads the same area on
+ * the Finished Goods page, on a hold, on a packing list and in Salesforce.
+ *
+ * THE NOMINAL PAIR IS ANSWERED FROM THE CENTIMETRES, not by multiplying the
+ * inches, for the reason above: 137 × 79 does not mean "a slab measured at 137
+ * by 79", it means "a slab nobody measured", and the nominal slab's area is a
+ * known figure rather than something to re-derive from its own rounding. Any
+ * other pair IS a real measurement — a cut-down, an offcut, a piece — and is
+ * multiplied out as before.
+ */
 export function sqftFromIn(lengthIn: number, widthIn: number): number {
+  if (lengthIn === NOMINAL_SLAB_LENGTH_IN && widthIn === NOMINAL_SLAB_WIDTH_IN) return NOMINAL_SLAB_SQFT;
   return round(lengthIn * widthIn / 144, 2);
+}
+
+/** Square metres for the same pair, on the same rule. */
+export function sqmFromIn(lengthIn: number, widthIn: number): number {
+  if (lengthIn === NOMINAL_SLAB_LENGTH_IN && widthIn === NOMINAL_SLAB_WIDTH_IN) return NOMINAL_SLAB_SQM;
+  return sqmFromCm(inToCm(lengthIn), inToCm(widthIn));
 }
 
 /** Everything the measurement list prints for one slab, from the inventory
  *  row's inches. Measured centimetres, when the floor has them, override. */
 export function slabMeasure(lengthIn: number | null | undefined, widthIn: number | null | undefined, measured?: { lengthCm?: number | null; widthCm?: number | null }): { lengthCm: number; widthCm: number; sqm: number; sqft: number } {
-  const lengthCm = measured?.lengthCm ?? inToCm(lengthIn ?? 137);
-  const widthCm = measured?.widthCm ?? inToCm(widthIn ?? 79);
+  const lengthCm = measured?.lengthCm ?? inToCm(lengthIn ?? NOMINAL_SLAB_LENGTH_IN);
+  const widthCm = measured?.widthCm ?? inToCm(widthIn ?? NOMINAL_SLAB_WIDTH_IN);
+  // inToCm ROUNDS to whole centimetres, so the nominal pair arrives here as
+  // 348 × 201 rather than the sheet's 347 × 201 and would read 75.29. When the
+  // floor has not measured the slab, answer with the nominal figures.
+  const nominal = !measured?.lengthCm && !measured?.widthCm
+    && (lengthIn ?? NOMINAL_SLAB_LENGTH_IN) === NOMINAL_SLAB_LENGTH_IN
+    && (widthIn ?? NOMINAL_SLAB_WIDTH_IN) === NOMINAL_SLAB_WIDTH_IN;
+  if (nominal) return { lengthCm: 347, widthCm: 201, sqm: NOMINAL_SLAB_SQM, sqft: NOMINAL_SLAB_SQFT };
   const sqm = sqmFromCm(lengthCm, widthCm);
   return { lengthCm, widthCm, sqm, sqft: sqftFromSqm(sqm) };
 }

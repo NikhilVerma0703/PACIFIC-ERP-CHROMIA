@@ -278,10 +278,13 @@ test("buildPackedSlab: canonical design and thickness, the customer's SKU, cm fr
   assert.equal(built.customerSku, "VGWT10301A");
   assert.equal(built.batchNumber, "PES.0123");
   assert.equal(built.grade, "A");
-  assert.equal(built.lengthCm, 348, "137 in → 348 cm");
+  // THE NOMINAL SLAB, so the packed row carries the CIOT sheet's own numbers
+  // rather than the ones its inch display rounds to. 137 x 79 in is how
+  // Finished Goods stores an UNMEASURED slab; the slab itself is 347 x 201 cm.
+  assert.equal(built.lengthCm, 347, "the nominal slab, not inToCm(137) = 348");
   assert.equal(built.widthCm, 201, "79 in → 201 cm");
-  assert.equal(built.sqm, 6.9948);
-  assert.equal(built.sqft, 75.292, "6.9948 sqm x 10.764");
+  assert.equal(built.sqm, 6.9747);
+  assert.equal(built.sqft, 75.076, "6.9747 sqm x 10.764 — the CIOT list's row");
   assert.equal(built.fit, "PENDING");
   assert.equal(built.sortOrder, 4);
 
@@ -289,8 +292,9 @@ test("buildPackedSlab: canonical design and thickness, the customer's SKU, cm fr
   const bare = buildPackedSlab({ slabNumber: 2, design: null, batchKey: null, batchNumber: null, grade: null, lengthIn: null, widthIn: null }, [], 1);
   assert.equal(bare.design, null);
   assert.equal(bare.customerSku, null);
-  assert.equal(bare.lengthCm, 348);
+  assert.equal(bare.lengthCm, 347, "the nominal slab's own centimetres");
   assert.equal(bare.widthCm, 201);
+  assert.equal(bare.sqft, 75.076);
 });
 
 test("partitionForPack: OUR already-PACKED slabs are left alone at submit", () => {

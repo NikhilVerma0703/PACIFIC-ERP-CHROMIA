@@ -9,6 +9,7 @@ import { prisma } from "@/lib/prisma";
 import { inventoryReadGate } from "@/lib/inventory/access";
 import { buildInventoryWhere, approvedOnlyWhere, isMissingSlabMarkError } from "@/lib/inventory/searchWhere";
 import { isAdmin } from "@/lib/rbac";
+import { sqftFromIn, sqmFromIn } from "@/lib/commercial/measure";
 import { slabLabel } from "@/lib/slabLabel";
 import { displayBatch } from "@/lib/batchDisplay";
 import { slabMarkOf, SLAB_MARK_LABEL } from "@/lib/fab/slabMark";
@@ -48,7 +49,7 @@ export async function GET(request: Request) {
     const header = ["Slab #","Design","Batch","Thickness","Grade","Mark","Quality Issues","Polish","Bay","Frame","Sqft","Sqm","Age (days)","Status","PI","Customer"];
     const data: (string | number)[][] = [header];
     for (const r of rows) {
-      const sqft = Math.round((((r.lengthIn ?? 0) * (r.widthIn ?? 0)) / 144) * 100) / 100;
+      const sqft = sqftFromIn(r.lengthIn ?? 0, r.widthIn ?? 0);
       const age = r.firstSeenAt ? Math.max(0, Math.floor((Date.now() - new Date(r.firstSeenAt).getTime()) / 86400000)) : "";
       data.push([
         r.slabNumber >= 9000000 && r.barcode ? r.barcode : slabLabel(r.slabNumber),
@@ -66,7 +67,7 @@ export async function GET(request: Request) {
         SLAB_MARK_LABEL[slabMarkOf(r.slabMark, r.grade)],
         Array.isArray(r.qualityIssue) ? r.qualityIssue.join("; ") : "",
         r.polishType ?? "", r.bayNumber ?? "", r.frameNumber ?? "",
-        sqft, Math.round(sqft * 0.092903 * 100) / 100, age, r.status,
+        sqft, sqmFromIn(r.lengthIn ?? 0, r.widthIn ?? 0), age, r.status,
         r.reservedForPi ?? "", r.customer ?? "",
       ]);
     }

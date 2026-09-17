@@ -6,14 +6,17 @@ import { inventoryReadGate } from "@/lib/inventory/access";
 import { sweepExpiredReservations } from "@/lib/inventory/finishedSlab";
 import { buildInventoryWhere, approvedOnlyWhere, getUnapprovedSlabNumbers } from "@/lib/inventory/searchWhere";
 import { isAdmin } from "@/lib/rbac";
+import { sqftFromIn, sqmFromIn } from "@/lib/commercial/measure";
 
 const db = prisma as any;
-const SQFT_TO_SQM = 0.092903;
+// ONE FORMULA, IMPORTED. This route used to carry its own copy
+// (lengthIn * widthIn / 144), which is how Finished Goods came to print 75.16
+// for a slab the packing list of the same shipment printed as 75.076.
 
 function withDerived(r: any) {
-  const sqft = ((r.lengthIn ?? 0) * (r.widthIn ?? 0)) / 144;
+  const sqft = sqftFromIn(r.lengthIn ?? 0, r.widthIn ?? 0);
   const ageDays = r.firstSeenAt ? Math.max(0, Math.floor((Date.now() - new Date(r.firstSeenAt).getTime()) / 86400000)) : null;
-  return { ...r, sqft: Math.round(sqft * 100) / 100, sqm: Math.round(sqft * SQFT_TO_SQM * 100) / 100, ageDays };
+  return { ...r, sqft, sqm: sqmFromIn(r.lengthIn ?? 0, r.widthIn ?? 0), ageDays };
 }
 
 export async function GET(request: Request) {
