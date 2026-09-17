@@ -335,7 +335,11 @@ export interface BatchData {
   wastageKg: number;
   wastagePct: number | null;
   perMixer: [number, number, number, number];
-  qcGrades: { label: string; count: number }[];
+  /** Each grade, split by the thickness of the slab that carries it (owner,
+   *  2026-09-17: "segregate between 2cm and 3cm and other thicknesses in the
+   *  same bar"). The counts sum to `count`, so the bar means what it always
+   *  meant and now says more. */
+  qcGrades: { label: string; count: number; segments: Record<string, number> }[];
   thickness: { label: string; count: number }[];
   design: BatchDesign;
   family: { parent: string; isSub: boolean; solo: boolean; mixFamilyWide: boolean; keys: string[]; members: { key: string; design: string | null; slabs: number }[] };
@@ -433,8 +437,11 @@ export async function getBatch(input: string, scope?: BatchScope): Promise<Batch
       prisma.press.findMany({ where, select: { slabWeight: true } }),
       prisma.polishEntry.count({ where }),
       prisma.polishQc.findMany({
+        // slabNumber comes along so each grade can be split by the thickness of
+        // the slab carrying it. A QC row without one cannot be joined and lands
+        // in "not recorded", which is the truth rather than a guess.
         where,
-        select: { qualityGrade: true },
+        select: { qualityGrade: true, slabNumber: true },
       }),
       prisma.oven.count({ where }),
       prisma.jot.count({ where }),
@@ -465,10 +472,33 @@ export async function getBatch(input: string, scope?: BatchScope): Promise<Batch
   const wastagePct =
     !mixFamilyWide && totalMixWeight > 0 && totalSlabWeight > 0 ? (wastageKg / totalMixWeight) * 100 : null;
 
+  // EACH GRADE, SPLIT BY THICKNESS (owner, 2026-09-17). The thickness is the
+  // SHARED RESOLVER's answer for that slab — the same number the production
+  // report, the Telegram bot and the Thickness mix card beside this one use —
+  // and not polish_qc's own raw string, which is why "3cm" and "3 cm" do not
+  // become two bands. A slab the resolver cannot answer for, or a QC row with
+  // no slab number to join on, is "not recorded": an absence, not a thickness,
+  // and it stacks last so it reads as a gap rather than as a quantity.
+  const qcThickness = await thicknessBySlab({ keys }).catch(() => new Map<number, string>());
+  const band = (slab: number | null | undefined): string => {
+    const n = Number(slab);
+    if (!Number.isFinite(n)) return "not recorded";
+    const t = qcThickness.get(n);
+    if (!t) return "not recorded";
+    if (t === "2 cm") return "2 cm";
+    if (t === "3 cm") return "3 cm";
+    return "Other";
+  };
+
   const gradeMap = new Map<string, number>();
+  const gradeBands = new Map<string, Map<string, number>>();
   for (const q of qcRows) {
     const g = q.qualityGrade?.trim() || "—";
     gradeMap.set(g, (gradeMap.get(g) ?? 0) + 1);
+    const b = band(q.slabNumber);
+    const inner = gradeBands.get(g) ?? new Map<string, number>();
+    inner.set(b, (inner.get(b) ?? 0) + 1);
+    gradeBands.set(g, inner);
   }
   // Thickness comes from the shared resolver, counted over the batch's press slabs —
   // the same numbers the production report and the Telegram bot show. It used to be
@@ -515,7 +545,11 @@ export async function getBatch(input: string, scope?: BatchScope): Promise<Batch
     wastageKg,
     wastagePct,
     perMixer,
-    qcGrades: [...gradeMap.entries()].map(([label, count]) => ({ label, count })),
+    qcGrades: [...gradeMap.entries()].map(([label, count]) => ({
+      label,
+      count,
+      segments: Object.fromEntries(gradeBands.get(label) ?? []),
+    })),
     thickness: thicknessBars,
     design,
     family: {

@@ -51,7 +51,10 @@ interface CommercialBatchView {
   designs: string[];
   designDiscrepancy: boolean;
   thickness: { label: string; count: number }[];
-  qcGrades: { label: string; count: number }[];
+  /** Split by thickness, as on /batch (owner, 2026-09-17). Carried through
+   *  here too: the commercial desk reads this page and asks the same question
+   *  about a batch that the floor does. */
+  qcGrades: { label: string; count: number; segments: Record<string, number> }[];
   slabs: number;
   perStation: { label: string; count: number }[];
   range: { min: number; max: number } | null;
