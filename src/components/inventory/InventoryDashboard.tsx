@@ -164,6 +164,16 @@ const BAYS = ["Bay 1", "Bay 2", "Bay 3", "Bay 4", "Bay 5"];
 // `marks` is OPTIONAL and its absence is load-bearing — see the mark select below.
 // An /api/inventory/filters that does not return the key is one that does not know
 // the word yet, and that is a different thing from one that returned an empty list.
+/** One decision on the Designs tab: every spelling of a name nobody has
+ *  standardised yet, with what the matcher thinks it meant. */
+interface BacklogItem {
+  key: string;
+  spellings: string[];
+  slabs: number;
+  batches: number;
+  suggestions: { candidate: string; kind: string; score: number; because: string }[];
+}
+
 interface FilterOpts { thicknesses: string[]; grades: string[]; bays: string[]; pis: string[]; customers: string[]; designs: string[]; marks?: string[] }
 const NO_OPTS: FilterOpts = { thicknesses: [], grades: [], bays: [], pis: [], customers: [], designs: [] };
 const ACTIONS = [
@@ -348,6 +358,14 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
   // design merge (admin)
   const [aliases, setAliases] = useState<Alias[]>([]);
   const [designs, setDesigns] = useState<string[]>([]);
+  // The names in stock that are on no list and merged into nothing, grouped so
+  // case twins are one decision. This is what the Designs tab is actually for:
+  // an unmerged name counts as a design of its own, which is why "Antique
+  // Greya" and "An" were being offered in the filter dropdown beside real
+  // colours.
+  const [backlog, setBacklog] = useState<BacklogItem[]>([]);
+  const [backlogTotals, setBacklogTotals] = useState({ names: 0, slabs: 0, withSuggestion: 0 });
+  const [busyKey, setBusyKey] = useState<string | null>(null);
   const [merge, setMerge] = useState({ variant: "", canonical: "" });
   const [mergeMsg, setMergeMsg] = useState<string | null>(null);
   const [merging, setMerging] = useState(false);
@@ -488,9 +506,36 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
   const loadDesigns = () => {
     fetch("/api/inventory/designs")
       .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (d && !d.error) { setAliases(d.aliases ?? []); setDesigns(d.designs ?? []); } })
+      .then((d) => {
+        if (d && !d.error) {
+          setAliases(d.aliases ?? []);
+          setDesigns(d.designs ?? []);
+          setBacklog(d.backlog ?? []);
+          setBacklogTotals(d.backlogTotals ?? { names: 0, slabs: 0, withSuggestion: 0 });
+        }
+      })
       .catch(() => {});
   };
+  /** Merge EVERY spelling in the group into one canonical, in one go. Asking
+   *  about "Simply white" and then "Simply White" separately is how two
+   *  spellings of one name end up merged into two different places. */
+  const mergeAll = async (item: BacklogItem, canonical: string) => {
+    setBusyKey(item.key);
+    try {
+      for (const variant of item.spellings) {
+        if (variant === canonical) continue;
+        await fetch("/api/inventory/designs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ variant, canonical }),
+        });
+      }
+      await loadDesigns();
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
   const saveMerge = async () => {
     if (!merge.variant.trim() || !merge.canonical.trim()) { setMergeMsg("Pick a variant and a canonical name."); return; }
     setMerging(true); setMergeMsg(null);
@@ -930,6 +975,79 @@ export function InventoryDashboard({ admin: isRealAdmin = false, summaryOnly: ro
         />
       ) : view === "designs" && admin ? (
         <div className="space-y-3">
+          {/* ── THE BACKLOG, first, because it is the work ──────────────────
+              The merge form below it still does anything this cannot; this is
+              the same action with the thinking already done. Nothing here
+              merges on its own: "Arena" and "Arlina" are two characters apart
+              and genuinely different designs, so every button needs a person. */}
+          <div className="rounded-xl border border-gray-200 bg-white p-4">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="text-sm font-semibold text-gray-900">Names that need a decision</h2>
+              <p className="text-xs text-gray-500">
+                <span className="font-medium text-gray-700">{backlogTotals.names}</span> names ·{" "}
+                <span className="font-medium text-gray-700">{backlogTotals.slabs.toLocaleString("en-IN")}</span> slabs ·{" "}
+                {backlogTotals.withSuggestion} with a suggestion
+              </p>
+            </div>
+            <p className="mt-1 text-xs text-gray-500">
+              These are spelt in a way nothing recognises, so each counts as a design of its own and appears
+              in the filter dropdown beside real colours. Merge it into the design it meant, or leave it and
+              add it to the colour chart. Sorted by how much stock is stuck behind each.
+            </p>
+            {backlog.length === 0 ? (
+              <p className="mt-3 rounded-lg bg-gray-50 px-3 py-6 text-center text-xs text-gray-400">
+                Nothing waiting — every design name in stock is on the chart or already merged.
+              </p>
+            ) : (
+              <ul className="mt-3 divide-y divide-gray-100">
+                {backlog.slice(0, 40).map((b) => (
+                  <li key={b.key} className="flex flex-wrap items-start gap-x-4 gap-y-2 py-2.5">
+                    <div className="min-w-[14rem] flex-1">
+                      <div className="text-sm font-medium text-gray-900">{b.spellings[0]}</div>
+                      {b.spellings.length > 1 && (
+                        <div className="text-xs text-gray-500">
+                          also spelt {b.spellings.slice(1).map((x) => `“${x}”`).join(", ")}
+                        </div>
+                      )}
+                      <div className="text-xs text-gray-400">
+                        {b.slabs.toLocaleString("en-IN")} slab{b.slabs === 1 ? "" : "s"}
+                        {b.batches > 1 ? ` across ${b.batches} batches` : ""}
+                      </div>
+                    </div>
+                    <div className="flex flex-1 flex-wrap items-center gap-2">
+                      {b.suggestions.length === 0 ? (
+                        <span className="rounded-md bg-gray-50 px-2 py-1 text-xs text-gray-500">
+                          No close match — likely a real design missing from the chart
+                        </span>
+                      ) : (
+                        b.suggestions.map((sg) => (
+                          <button
+                            key={sg.candidate}
+                            title={sg.because}
+                            disabled={busyKey === b.key}
+                            onClick={() => mergeAll(b, sg.candidate)}
+                            className={`rounded-md border px-2.5 py-1 text-xs font-medium disabled:opacity-50 ${
+                              sg.kind === "CLOSE"
+                                ? "border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100"
+                                : "border-brand/30 bg-brand/5 text-brand hover:bg-brand/10"
+                            }`}
+                          >
+                            → {sg.candidate}
+                            {sg.kind === "CLOSE" && <span className="ml-1 font-normal">(check)</span>}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {backlog.length > 40 && (
+              <p className="mt-2 text-xs text-gray-400">
+                Showing the 40 with the most stock. Clear these and the rest move up.
+              </p>
+            )}
+          </div>
           <div className="rounded-xl border border-gray-200 bg-white p-4">
             <h2 className="text-sm font-semibold text-gray-900">Merge two designs</h2>
             <p className="mt-1 text-xs text-gray-500">Rows keep their original (variant) name; searches and grouping treat the variant as the canonical. Reversible — un-merge any time.</p>

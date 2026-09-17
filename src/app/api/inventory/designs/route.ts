@@ -7,6 +7,8 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { inventoryGate, inventoryReadGate, SLABS_ONLY_ROLES } from "@/lib/inventory/access";
 import { isAdmin } from "@/lib/rbac";
+import { CATALOGUE_COLOURS } from "@/lib/catalogue/colours";
+import { foldName, suggestDesigns, isResolved } from "@/lib/inventory/designSuggest";
 
 const db = prisma as any;
 const clean = (v: unknown) => String(v ?? "").trim().slice(0, 120);
@@ -29,14 +31,79 @@ export async function GET() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   if (SLABS_ONLY_ROLES.has(String((g.user as any)?.role ?? ""))) return Response.json({ error: "Not available for this login" }, { status: 403 });
   try {
-    const [aliases, designRows] = await Promise.all([
+    const [aliases, designRows, counts] = await Promise.all([
       db.designAlias.findMany({ orderBy: [{ canonical: "asc" }, { variant: "asc" }] }),
       db.finishedSlab.findMany({ distinct: ["design"], select: { design: true }, where: { design: { not: null } }, orderBy: { design: "asc" } }),
+      // WITH SLAB COUNTS, because the backlog is worked by how much stock is
+      // stuck behind each name, not alphabetically. 665 slabs spelt "Simply
+      // white" is a morning's win; one slab spelt "Cal" is not.
+      db.$queryRawUnsafe(
+        `SELECT design, COUNT(*)::int AS n,
+                COUNT(DISTINCT batch_number)::int AS batches
+           FROM fg_finished_slab
+          WHERE design IS NOT NULL AND design <> ''
+          GROUP BY 1`,
+      ).catch(() => []),
     ]);
-    return Response.json({ aliases, designs: designRows.map((r: any) => r.design).filter(Boolean) });
+
+    // ── THE BACKLOG, which is what the screen is actually for ───────────────
+    //
+    // Every design name in stock that is neither on the colour chart nor
+    // already merged away. 104 of the 488 names in the yard, and the reason
+    // "Antique Greya" and "An" were being offered in the filter dropdown beside
+    // real colours: a name nobody has merged counts as a design of its own.
+    const merged = new Set<string>(aliases.map((a: any) => a.variant));
+    const known = new Set<string>([
+      ...CATALOGUE_COLOURS.map((c: any) => c.name),
+      ...aliases.map((a: any) => a.canonical),
+    ]);
+    const countBy = new Map<string, { n: number; batches: number }>(
+      (counts as any[]).map((r: any) => [String(r.design), { n: Number(r.n || 0), batches: Number(r.batches || 0) }]),
+    );
+
+    // CASE TWINS ARE ONE DECISION, NOT TWO. "Simply white" (665) and "Simply
+    // White" (68) are the same name typed twice; asking about each separately
+    // doubles the work and invites two different answers.
+    const groups = new Map<string, { spellings: string[]; slabs: number; batches: number }>();
+    for (const row of designRows as any[]) {
+      const raw = String(row.design ?? "");
+      if (!raw || isResolved(raw, known, merged)) continue;
+      const key = foldName(raw);
+      if (!key) continue;
+      const c = countBy.get(raw) ?? { n: 0, batches: 0 };
+      const g = groups.get(key) ?? { spellings: [], slabs: 0, batches: 0 };
+      g.spellings.push(raw);
+      g.slabs += c.n;
+      g.batches = Math.max(g.batches, c.batches);
+      groups.set(key, g);
+    }
+
+    const backlog = [...groups.entries()]
+      .map(([key, g]) => ({
+        key,
+        // the spelling the yard uses most is the one to standardise on, unless
+        // a suggestion beats it
+        spellings: g.spellings.sort((a, b) => (countBy.get(b)?.n ?? 0) - (countBy.get(a)?.n ?? 0)),
+        slabs: g.slabs,
+        batches: g.batches,
+        suggestions: suggestDesigns(g.spellings[0], known, 3),
+      }))
+      .sort((a, b) => b.slabs - a.slabs);
+
+    return Response.json({
+      aliases,
+      designs: designRows.map((r: any) => r.design).filter(Boolean),
+      known: [...known].sort((a, b) => a.localeCompare(b)),
+      backlog,
+      backlogTotals: {
+        names: backlog.length,
+        slabs: backlog.reduce((n, b) => n + b.slabs, 0),
+        withSuggestion: backlog.filter((b) => b.suggestions.length > 0).length,
+      },
+    });
   } catch (e) {
     console.error("Design alias list error:", e);
-    return Response.json({ aliases: [], designs: [] }, { status: 500 });
+    return Response.json({ aliases: [], designs: [], known: [], backlog: [], backlogTotals: { names: 0, slabs: 0, withSuggestion: 0 } }, { status: 500 });
   }
 }
 
