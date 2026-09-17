@@ -85,6 +85,16 @@ async function readYard(): Promise<{ groups: StockGroup[]; raw: number; hidden: 
     );
   const raw = rows.reduce((n, r) => n + Number(r.n || 0), 0);
 
+  // slab_number IS double precision, NOT an integer: 95 live AVAILABLE slabs are
+  // sub-numbered 1.1, 1.2, 2.1 … so the array parameter must be cast to match the
+  // column. It was ::bigint[], and Postgres rejected the first fractional element
+  // it reached ("improper binary format in array element 501") — which failed the
+  // STRICT read below, so every sync run died before writing anything.
+  //
+  // FILTERING THE FRACTIONS OUT WOULD BE WORSE THAN THE CRASH. This list is what
+  // gets SUBTRACTED from published stock; drop an unapproved slab from it and that
+  // slab is published to the reps instead — the exact leak the approval gate exists
+  // to prevent. The cast widens; the list stays whole.
   const unapproved = await getUnapprovedSlabNumbers(true);
   let hidden = 0;
   let hiddenGroups: Array<{ design: string | null; slab_thickness: string | null; n: number }> = [];
@@ -93,7 +103,7 @@ async function readYard(): Promise<{ groups: StockGroup[]; raw: number; hidden: 
       `SELECT design, slab_thickness, COUNT(*)::int AS n
          FROM fg_finished_slab
         WHERE status = 'AVAILABLE' AND slab_mark = 'FULL_SLAB'
-          AND slab_number = ANY($1::bigint[])
+          AND slab_number = ANY($1::double precision[])
         GROUP BY 1, 2`,
       unapproved,
     );
