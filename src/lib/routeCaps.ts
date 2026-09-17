@@ -245,6 +245,11 @@ export const CRON_ROUTES = [
   "/api/sales/cron",                // CRON_SECRET
   "/api/report/daily-email",        // CRON_SECRET - the 09:00 CEO report
   "/api/report/slab-intake-digest", // CRON_SECRET - the 06:01 / 18:01 intake digest
+  // CRON_SECRET, or an admin session for the read-only dry run. A cron route
+  // left off this list is bounced to /login with a 302 that Vercel logs as a
+  // SUCCESS -- the intake digest already paid for that lesson, so this is added
+  // with the route rather than after the first silent failure.
+  "/api/salesforce/sync",
 ] as const;
 
 export function isCronRoute(p: string): boolean {
