@@ -48,16 +48,25 @@ export async function GET(req: Request) {
   // mistyping a URL.
   let allowed = bySecret(req);
   let asAdmin = false;
+  let gateStatus = 0;
   if (!allowed) {
     const g = await commercialGate("admin", "settings");
     allowed = g.ok;
     asAdmin = g.ok;
+    gateStatus = g.status;
   }
   if (!allowed) {
-    return NextResponse.json(
-      { error: process.env.CRON_SECRET ? "Not authorized" : "CRON_SECRET is not configured" },
-      { status: 401 },
-    );
+    // NAME THE DOOR THAT ACTUALLY CLOSED. This used to answer "CRON_SECRET is
+    // not configured" whenever CRON_SECRET was unset — which is the normal
+    // state in local development — so an admin who simply had not signed in was
+    // told to go and configure a cron secret they do not need for this. Two
+    // doors, two refusals: the session's own status says which one to describe.
+    const error =
+      gateStatus === 401 ? "Sign in as an administrator first, then reload this URL."
+      : gateStatus === 403 ? "Signed in, but this login is not an administrator."
+      : process.env.CRON_SECRET ? "Not authorized"
+      : "CRON_SECRET is not configured, and no administrator session was presented.";
+    return NextResponse.json({ error }, { status: 401 });
   }
 
   // 500, NOT 200. A missing credential is a fault, and the whole point of the
