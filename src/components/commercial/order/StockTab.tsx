@@ -254,7 +254,7 @@ export default function StockTab({ order, actions, refresh }: OrderTabProps) {
       <Card>
         <div className="mb-3 flex items-center gap-2">
           <H2>Production requests</H2>
-          <Link href="/office/commercial/production-planning" className="ml-auto text-sm text-brand hover:underline">Open the planning queue →</Link>
+          <Link href="/office/production-planning" className="ml-auto text-sm text-brand hover:underline">Open the planning queue →</Link>
         </div>
         {order.productionRequests.length === 0 ? (
           <Empty>Nothing has been asked of production for this order.</Empty>

@@ -26,6 +26,7 @@ import { canUseSlabIntake } from "./lib/inventory/intakeAccess.ts";
 // /office/commercial: middleware caps work by exception, and without an
 // explicit block a path nobody named is a path everybody reaches.
 import { maySeeCommercialModule } from "./lib/commercial/access-rules.ts";
+import { productionPlanGuard } from "./lib/production-plan/access-rules.ts";
 // The finished-goods VIEW GRANT (users.fg_view) — pure and import-free like the
 // four above, so it is edge-safe, and the SAME function the route gates read
 // (lib/inventory/access.ts imports and re-exports it). Imported rather than
@@ -282,6 +283,25 @@ export default auth((req) => {
     if (!maySeeCommercialModule({ role, branch }, p)) {
       return denied(p, nextUrl, role ?? "", branch ?? "");
     }
+  }
+
+  // ---- Production planning, which LEFT /office/commercial on 2026-09-17 and
+  // took its gate with it. The block above refuses the whole Commercial prefix;
+  // the two new paths sit outside it, so without this they would be decided by
+  // the bare `/office` allowance — which says nothing about INCHARGE,
+  // LINE_MANAGER, FINANCE or ACCOUNTS, all uncapped, all of whom would fall
+  // straight through onto the board. MOVING A PAGE OUT OF A GATED PREFIX IS A
+  // WIDENING UNLESS THE RULE MOVES WITH IT.
+  //
+  // The two paths answer to different predicates and productionPlanGuard
+  // returns whichever one governs: mayPlanProduction for the board, which is
+  // the same `planning` write the Commercial sidebar row demanded, and
+  // maySeeApprovedPlan for the managers' read-only page. Both live in
+  // lib/production-plan/access-rules, which the PAGES import too, so there is
+  // one rule and two callers rather than a copy kept by hand here. ----
+  const planGuard = productionPlanGuard(p);
+  if (planGuard && !planGuard({ role, branch })) {
+    return denied(p, nextUrl, role ?? "", branch ?? "");
   }
 
   // ---- Per-batch material rates: the ONE costing-admin surface the two batch

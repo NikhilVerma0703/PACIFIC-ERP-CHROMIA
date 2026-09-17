@@ -27,10 +27,10 @@ const labels = (user: unknown) => commercialNavRows(commercialAreasFor(user)).ma
 
 // ───────────────────────────── the six desks ─────────────────────────────────
 
-test("admin: every row, the two admin-only ones included", () => {
+test("admin: every row, Settings included — but not the planner, which left the module", () => {
   assert.deepEqual(labels(admin), [
     "Overview", "Enquiries", "Orders", "Clients", "Packing Lists", "Dispatch Check",
-    "Invoices", "Delivery Challans", "Design codes", "Production Queue", "Settings",
+    "Invoices", "Delivery Challans", "Design codes", "Settings",
   ]);
 });
 
@@ -93,14 +93,27 @@ test("nobody else gets a Commercial nav at all", () => {
 
 // ───────────────────────────── the rules behind them ─────────────────────────
 
-test("answer 16: Production Queue is the admin's alone, and so is Settings", () => {
+test("answer 16: Settings is the admin's alone", () => {
   for (const u of [manager, exec, docs, logistics, legacy]) {
+    assert.equal(labels(u).includes("Settings"), false, String((u as { role: string }).role));
+  }
+  assert.equal(labels(admin).includes("Settings"), true);
+});
+
+test("PRODUCTION PLANNING HAS LEFT THE MODULE — no Commercial row, not even the admin's", () => {
+  // It was "Production Queue" here until 2026-09-17, admin-only under answer
+  // 16. It is its own Office tab now (/office/production-planning), so a row in
+  // the Commercial sidebar would point out of the module the sidebar is for.
+  // WHO may plan did not change — that is still the `planning` area, now read
+  // through lib/production-plan/access-rules by both middleware and the page.
+  for (const u of [admin, manager, exec, docs, logistics, legacy]) {
     const l = labels(u);
     assert.equal(l.includes("Production Queue"), false, String((u as { role: string }).role));
-    assert.equal(l.includes("Settings"), false, String((u as { role: string }).role));
+    assert.equal(l.includes("Production Planning"), false, String((u as { role: string }).role));
   }
-  assert.equal(labels(admin).includes("Production Queue"), true);
-  assert.equal(labels(admin).includes("Settings"), true);
+  for (const u of [admin, manager, exec, docs, logistics, legacy]) {
+    assert.equal(commercialNavRows(commercialAreasFor(u)).some((r) => r.area === "planning"), false);
+  }
 });
 
 test("a row needs WRITE to appear only where the screen has no read-only use", () => {
@@ -108,14 +121,17 @@ test("a row needs WRITE to appear only where the screen has no read-only use", (
   // code up is the whole point of the read-only master (round two, answer 15).
   const readOnlyDesignCodes = { ...commercialAreasFor(admin), designCodes: "view" as AreaAccess };
   assert.equal(commercialNavRows(readOnlyDesignCodes).some((r) => r.area === "designCodes"), true);
-  // planning and settings are the two that do not: a `view` on either would be
-  // a row leading to a page whose every control is refused.
-  assert.equal(commercialNavRows({ ...commercialAreasFor(admin), planning: "view" as AreaAccess }).some((r) => r.area === "planning"), false);
+  // settings is the one that does not: a `view` on it would be a row leading to
+  // a page whose every control is refused. (planning used to be the second such
+  // row; it has no row at all now — see the test above.)
   assert.equal(commercialNavRows({ ...commercialAreasFor(admin), settings: "view" as AreaAccess }).some((r) => r.area === "settings"), false);
 });
 
-test("the three areas with no row of their own are tabs on an order, not screens", () => {
-  assert.deepEqual([...AREAS_WITHOUT_A_ROW].sort(), ["checklist", "proforma", "stock"]);
+test("the areas with no row of their own, and the one that is different", () => {
+  // checklist, proforma and stock are TABS on an order, reached through Orders.
+  // planning is not: it left the module for its own Office tab on 2026-09-17,
+  // so it is rowless for a different reason and this test says which.
+  assert.deepEqual([...AREAS_WITHOUT_A_ROW].sort(), ["checklist", "planning", "proforma", "stock"]);
 });
 
 test("every row is a real path of the area it claims, and Overview alone matches exactly", () => {

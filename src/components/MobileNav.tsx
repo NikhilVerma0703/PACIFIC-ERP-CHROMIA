@@ -7,7 +7,7 @@ import { Nav } from "./Nav";
 import { RoleSwitcher } from "./RoleSwitcher";
 
 export function MobileNav({
-  contexts, activeKey, showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false, intlSales = false, salesDuty = "", batchVerify = false, slabIntake = false }: { showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; inventory?: boolean; consumables?: boolean; intlSales?: boolean; salesDuty?: string; batchVerify?: boolean; slabIntake?: boolean
+  contexts, activeKey, showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false, intlSales = false, salesDuty = "", batchVerify = false, slabIntake = false, approvedPlan = false, planBoard = false }: { showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; inventory?: boolean; consumables?: boolean; intlSales?: boolean; salesDuty?: string; batchVerify?: boolean; slabIntake?: boolean; approvedPlan?: boolean; planBoard?: boolean
   /** Same shape the desktop rail passes — grantedContexts(). */
   contexts?: React.ComponentProps<typeof RoleSwitcher>["contexts"];
   activeKey?: string;
@@ -83,7 +83,7 @@ export function MobileNav({
         {/* Navigation Links. overscroll-contain: reaching the end of the list no
             longer scroll-chains into the page behind. */}
         <div className="flex-1 overflow-y-auto overscroll-contain pb-6">
-          <Nav showAdmin={showAdmin} branch={branch} role={role} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} slabIntake={slabIntake} />
+          <Nav showAdmin={showAdmin} branch={branch} role={role} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} slabIntake={slabIntake} approvedPlan={approvedPlan} planBoard={planBoard} />
         </div>
 
         {/* THE SWITCHER, ON A PHONE OR A SHOP TABLET.

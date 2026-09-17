@@ -16,6 +16,7 @@ import { STATION_LABEL, rankOf, ROLE_RANK, roleLabelFor } from "@/lib/rbac";
 import { BRANCH_LABEL } from "@/lib/branch";
 import { signableSides } from "@/lib/costing/verification";
 import { canUseSlabIntake } from "@/lib/inventory/intakeAccess";
+import { maySeeApprovedPlan, mayPlanProduction } from "@/lib/production-plan/access-rules";
 
 export async function Shell({ children }: { children: ReactNode }) {
   // sessionOnce = request-cached auth(): Shell's own auth() call plus the one
@@ -60,6 +61,13 @@ export async function Shell({ children }: { children: ReactNode }) {
   // that switched jobs is asked about the job it is standing in, which is the
   // same user every gate behind the link will ask about.
   const inventory = hasInventoryAccess(user);
+  // Production planning left the Commercial module on 2026-09-17 and needs
+  // rows of its own. The approved plan is READ BY THE PLANT, whose managers
+  // sit on the shop-floor nav and never see the office card grid — without a
+  // row there it would have shipped reachable only by typing the URL, which is
+  // the trap the Chromia arm in Nav.tsx already records.
+  const approvedPlan = maySeeApprovedPlan(user);
+  const planBoard = mayPlanProduction(user);
   const consumables = consumablesTierOf(user) !== null;
   const salesTier = salesTierOf(user);
   const intlSales = salesTier !== null;
@@ -93,7 +101,7 @@ export async function Shell({ children }: { children: ReactNode }) {
       {/* Sidebar — the logo tile hides it, and brings it back (CollapsibleSidebar) */}
       <CollapsibleSidebar subtitle={BRANCH_LABEL[branch] ?? "Production system"}>
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
-          <Nav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} slabIntake={slabIntake} />
+          <Nav showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} slabIntake={slabIntake} approvedPlan={approvedPlan} planBoard={planBoard} />
         </div>
         <div className="mt-3 shrink-0 rounded-xl border border-gray-200 bg-white p-3">
           {/* Two jobs, one login — renders nothing at all for everybody else. */}
@@ -122,7 +130,7 @@ export async function Shell({ children }: { children: ReactNode }) {
             which put this bar (hamburger, Sign out) at the top of printed reports */}
         <header className="flex items-center justify-between gap-3 border-b border-gray-200/70 bg-white/70 px-5 py-2 backdrop-blur md:hidden print:hidden">
           <div className="flex items-center gap-3">
-            <MobileNav contexts={contexts} activeKey={activeContextKey} showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} slabIntake={slabIntake} />
+            <MobileNav contexts={contexts} activeKey={activeContextKey} showAdmin={showAdmin} branch={branch} role={user?.role as string | undefined ?? ""} fabTier={fabTier} inventory={inventory} consumables={consumables} intlSales={intlSales} salesDuty={salesDuty} batchVerify={batchVerify} slabIntake={slabIntake} approvedPlan={approvedPlan} planBoard={planBoard} />
             <span className="text-base font-semibold text-brand">Pacific ERP</span>
           </div>
           <form action={logout}><button className="min-h-[44px] text-sm text-gray-500">Sign out</button></form>

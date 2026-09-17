@@ -54,13 +54,20 @@ const ROWS: ReadonlyArray<{ area: CommercialArea; href: string; label: string; e
   // the manager keeps the codes and the colours without being handed the
   // numbering counters or the company master.
   { area: "designCodes",   href: "/office/commercial/design-codes",        label: "Design codes",                   needs: "reach" },
-  { area: "planning",      href: "/office/commercial/production-planning", label: "Production Queue",               needs: "write" },
   { area: "settings",      href: "/office/commercial/settings",            label: "Settings",                       needs: "write" },
 ];
 
 /** The areas that are reached through another row rather than through one of
  *  their own. Exported so the test can say WHY they are missing instead of
- *  simply not noticing them. */
+ *  simply not noticing them.
+ *
+ *  `planning` joined them on 2026-09-17 for a different reason from the other
+ *  three: it is not a tab on an order, it LEFT THE MODULE. Production planning
+ *  is its own Office tab at /office/production-planning now, so a Commercial
+ *  sidebar row would point out of the module the sidebar belongs to. The area
+ *  itself stays exactly as it was — it is still what decides who may plan, now
+ *  through lib/production-plan/access-rules — and `production-planning` is
+ *  still mapped in SEGMENT_AREA so the old path can gate its own redirect. */
 export const AREAS_WITHOUT_A_ROW: readonly CommercialArea[] =
   COMMERCIAL_AREAS.filter((a) => !ROWS.some((r) => r.area === a));
 

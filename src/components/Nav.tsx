@@ -200,13 +200,21 @@ function Section({ label, items, path }: { label: string; items: { href: string;
 
 /* Main Nav export — flat, access-filtered sections (no dropdowns) */
 export function Nav({
-  showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false, intlSales = false, salesDuty = "", batchVerify = false, slabIntake = false,
+  showAdmin = false, branch = "SHOP_FLOOR", role = "", fabTier = "", inventory = false, consumables = false, intlSales = false, salesDuty = "", batchVerify = false, slabIntake = false, approvedPlan = false, planBoard = false,
 }: {
   showAdmin?: boolean; branch?: string; role?: string; fabTier?: string; inventory?: boolean; consumables?: boolean; intlSales?: boolean; salesDuty?: string;
   /** This login signs batch verifications (/office/batch-verify): the store
    *  incharge by role, the production verifier by WEIGHTS_VERIFIER_EMAILS.
    *  Computed in Shell — this client component must not read the env var. */
   batchVerify?: boolean;
+  /** This login reads the approved production plan (/office/approved-plan) —
+   *  LINE_MANAGER and above, plus whoever may plan. Computed in Shell from
+   *  lib/production-plan/access-rules, the same rule middleware and the page
+   *  itself use, so a row cannot appear where the path is refused. */
+  approvedPlan?: boolean;
+  /** This login opens the planning board (/office/production-planning): the
+   *  `planning` area, which answer 16 made the admin's alone. */
+  planBoard?: boolean;
   /** This login uses the slab intake form (/slab-intake): the three named
    *  intake people by SLAB_INTAKE_EMAILS, plus admins. Computed in Shell for
    *  the same reason as batchVerify — the env var never reaches the client. */
@@ -475,6 +483,15 @@ export function Nav({
           // Admins see the intake form where the stock it feeds lives.
           ...(slabIntake ? [{ href: "/slab-intake", icon: I.entry, label: "Slab Intake" }] : []),
         ]} path={path} />}
+        {/* Production planning, ITS OWN SECTION since 2026-09-17 rather than a
+            row inside Commercial. Two rows because they are two audiences: the
+            board that sets the running order, and the read-only plan the plant
+            reads. Each is flagged by the rule that guards its path, so a row
+            never leads to /no-access. */}
+        {(planBoard || approvedPlan) && <Section label="Production" items={[
+          ...(planBoard ? [{ href: "/office/production-planning", icon: I.manager, label: "Production Planning" }] : []),
+          ...(approvedPlan ? [{ href: "/office/approved-plan", icon: I.report, label: "Approved Plan" }] : []),
+        ]} path={path} />}
         {/* Office -> Commercial. Admins only here: the COMMERCIAL roles get the
             whole-nav takeover above, and no other office role may open the
             module (the block in middleware.ts refuses FINANCE and ACCOUNTS). */}
@@ -514,6 +531,11 @@ export function Nav({
     // line manager works from this section. Not for admins, who get the row
     // under Inventory below with the rest of the finished-goods screens.
     ...(slabIntake && !isAdmin ? [{ href: "/slab-intake", icon: I.entry, label: "Slab Intake" }] : []),
+    // THE ROW THAT MAKES THE PLAN FINDABLE. A LINE_MANAGER is a shop-floor
+    // login: /office redirects any branch but OFFICE, so the office card grid
+    // is not a route in for them and this arm is the only nav they see. The
+    // page is read-only, so it belongs beside the other things a manager reads.
+    ...(approvedPlan && !isAdmin ? [{ href: "/office/approved-plan", icon: I.manager, label: "Approved Plan" }] : []),
   ];
   const fabrication = [
     ...(mgmt ? [

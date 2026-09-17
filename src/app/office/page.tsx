@@ -5,6 +5,7 @@ import { Card } from "@/components/ui";
 import { currentBranchName } from "@/lib/branch";
 import { currentRole, isCommercialRole } from "@/lib/rbac";
 import { commercialAreasFor } from "@/lib/commercial/access-rules";
+import { mayPlanProduction, maySeeApprovedPlan } from "@/lib/production-plan/access-rules";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,7 @@ const ICON = {
   report: "M7 3h7l5 5v13H7zM14 3v5h5M9 13h6M9 17h6",
   slab: "M4 7l8-4 8 4-8 4-8-4zm0 5l8 4 8-4M4 17l8 4 8-4",
   commercial: "M3 3h18v4H3zM3 7v13h18V7M9 12h6",
+  planning: "M4 6h16M4 12h10M4 18h7M17 15l2 2 4-4",
 };
 
 // The Commercial module. One card, added to whichever list the login sees, and
@@ -25,6 +27,15 @@ const ICON = {
 // does not keep. That now covers the five commercial desks, whose reach is the
 // table and not the role string.
 const COMMERCIAL_CARD = { href: "/office/commercial", label: "Commercial", desc: "Enquiries, orders, stock holds, PI, packing, dispatch check, invoices", icon: ICON.commercial };
+
+// Production planning, ITS OWN TAB since 2026-09-17 rather than a screen three
+// levels inside Commercial. Two cards, because they are two audiences and two
+// gates — the board for whoever may plan, the read-only plan for the managers
+// who run the plant. Each is shown only to a login the rule actually admits,
+// for the reason the Commercial card gives above: a card that leads to
+// /no-access is a promise the app does not keep.
+const PLANNING_CARD = { href: "/office/production-planning", label: "Production Planning", desc: "The shortfall queue, in the order the plant should make it", icon: ICON.planning };
+const APPROVED_PLAN_CARD = { href: "/office/approved-plan", label: "Approved Plan", desc: "What the plant is committed to — scheduled and running work, read-only", icon: ICON.planning };
 
 const CARDS = [
   { href: "/", label: "Overview", desc: "Production summary — batches, slabs, discrepancies", icon: ICON.overview },
@@ -57,9 +68,16 @@ export default async function OfficeShopFloor() {
   // the area rule wants to know beside the role.
   const reachesOverview = commercialAreasFor({ role, branch: "OFFICE" }).overview !== "none";
   const commercialCard = reachesOverview ? [COMMERCIAL_CARD] : [];
-  const cards = isCommercialRole(role) ? [...commercialCard, ...COMMERCIAL_CARDS]
-    : role === "ADMIN" ? [...commercialCard, ...CARDS]
-    : CARDS;
+  // The same two predicates middleware and the pages themselves use, so a card
+  // appears exactly when the path behind it opens.
+  const who = { role, branch: "OFFICE" };
+  const planCards = [
+    ...(mayPlanProduction(who) ? [PLANNING_CARD] : []),
+    ...(maySeeApprovedPlan(who) ? [APPROVED_PLAN_CARD] : []),
+  ];
+  const cards = isCommercialRole(role) ? [...commercialCard, ...planCards, ...COMMERCIAL_CARDS]
+    : role === "ADMIN" ? [...commercialCard, ...planCards, ...CARDS]
+    : [...planCards, ...CARDS];
   return (
     <Shell>
       <div className="mb-6">

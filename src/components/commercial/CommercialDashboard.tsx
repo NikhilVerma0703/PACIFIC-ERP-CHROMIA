@@ -88,7 +88,7 @@ export function CommercialDashboard({ actions, areas }: { actions: string[]; are
           />
         )}
         {seePlanning && data.queue?.queued !== undefined && (
-          <Link href="/office/commercial/production-planning"><Kpi label="Production queue" value={data.queue.queued} sub={data.queue.inProduction ? `${data.queue.inProduction} running` : undefined} /></Link>
+          <Link href="/office/production-planning"><Kpi label="Production queue" value={data.queue.queued} sub={data.queue.inProduction ? `${data.queue.inProduction} running` : undefined} /></Link>
         )}
         {seePacking && (
           <Link href={reach("dispatchCheck") ? "/office/commercial/dispatch-check" : "/office/commercial/packing-lists"}>
@@ -108,7 +108,7 @@ export function CommercialDashboard({ actions, areas }: { actions: string[]; are
               <>
                 Reductions made on the planning page that nobody has added back or removed yet (answer 13). Each one is slabs an
                 order asked for that the plant has not been told to make.{" "}
-                <Link href="/office/commercial/production-planning" className="font-medium text-brand hover:underline">Open production planning →</Link>
+                <Link href="/office/production-planning" className="font-medium text-brand hover:underline">Open production planning →</Link>
               </>
             )}
           />
