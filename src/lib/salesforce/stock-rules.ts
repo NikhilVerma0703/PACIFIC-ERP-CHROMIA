@@ -134,9 +134,46 @@ function foldedNames(names: ReadonlySet<string>): Set<string> {
  */
 export const NOT_SELLABLE_CANONICALS: ReadonlySet<string> = Object.freeze(new Set(["TRIAL"]));
 
-/** Is this canonical one the ERP deliberately never publishes? */
-export function isNotSellable(canonical: unknown): boolean {
-  return NOT_SELLABLE_CANONICALS.has(foldDesignName(canonical));
+/**
+ * A YARD NAME THAT SAYS "TRIAL" ON ITSELF, which the canonical test alone does
+ * not catch. "Pebble Ice - Trial" aliases to the real design Pebble Ice, so its
+ * canonical is perfectly sellable while the four slabs behind it are not.
+ * Pacific's administrator asked us to keep the rule for these (his words:
+ * `"… trial"`, `"Trail …"`).
+ *
+ * WORD BOUNDARIES, NOT A SUBSTRING. "Industrial" ends in the letters t-r-i-a-l
+ * and is a real design; a bare `includes("trial")` would withhold it. The
+ * marker has to be a word of its own at one end of the name, and the yard's
+ * habitual misspelling "trail" counts as the same word.
+ */
+const TRIAL_MARKER = /(^|[\s\-])(trial|trail)([\s\-]|$)/i;
+
+/** Does the org sell a product under THIS exact name, at any thickness? */
+export function hasProductAtAnyThickness(name: unknown, productCodes: ReadonlySet<string>): boolean {
+  const n = String(name ?? "").trim();
+  if (!n) return false;
+  for (const mm of Object.values(THICKNESS_MM)) if (productCodes.has(qzCode(n, mm))) return true;
+  return false;
+}
+
+/**
+ * Is this stock the ERP deliberately never publishes?
+ *
+ * A PRODUCT BEATS THE MARKER, and this clause is the whole reason the function
+ * takes productCodes. The org really sells "Astral Mist Kreos Trail-2" as
+ * QZ-ASTRALMISTKREOSTRAIL2-20 — a design whose NAME contains the word Trail and
+ * which is not a trial of anything. Withholding it because of its spelling was
+ * the Arena/Arlina mistake in another costume: a string test cannot outrank the
+ * org's own catalogue. So the marker only decides names Salesforce has never
+ * heard of — "Trial" itself (a bucket of 133 experiments, no product at any
+ * thickness) and "Pebble Ice - Trial" (a trial batch of a real design, which
+ * resolves to no product of its own).
+ */
+export function isNotSellable(canonical: unknown, rawDesign?: unknown, productCodes?: ReadonlySet<string>): boolean {
+  const raw = String(rawDesign ?? "");
+  if (productCodes && raw && hasProductAtAnyThickness(raw, productCodes)) return false;
+  if (NOT_SELLABLE_CANONICALS.has(foldDesignName(canonical))) return true;
+  return raw ? TRIAL_MARKER.test(raw) : false;
 }
 
 // ── the publish rule ────────────────────────────────────────────────────────
@@ -154,6 +191,18 @@ export interface PublishedLine {
   mm: number;
   code: string;
   available: number;
+  /**
+   * THE DESIGN IS NOT IN ANY PRODUCT LIST, and the line is published anyway.
+   *
+   * Until 2026-09-17 a design we could not match was withheld entirely: the
+   * slabs existed in the yard and did not exist in Salesforce. Pacific's
+   * administrator asked for the opposite and gave the reason — a rep needs to
+   * SEE what is in the yard even when it cannot yet be quoted, because quoting
+   * needs a product and looking does not. So the line goes out with
+   * `Product__c` blank and `Product_Missing__c` true, and the same design stays
+   * on the unmapped worklist until somebody creates the product.
+   */
+  productMissing: boolean;
 }
 
 export interface UnmappedLine {
@@ -236,23 +285,34 @@ export function buildStockLines(
     // would publish it, and reporting it as UNKNOWN_DESIGN would put 740 slabs
     // on the administrator's worklist as designs to create products for.
     // Withheld, and said out loud as a separate reason.
-    if (isNotSellable(canonical)) {
+    if (isNotSellable(canonical, g?.design, productCodes)) {
       unmapped.push({ design: String(g?.design ?? ""), canonical, slabThickness: String(g?.slabThickness ?? ""), available, reason: "NOT_SELLABLE" });
       continue;
     }
-    if (!known) {
-      unmapped.push({ design: String(g?.design ?? ""), canonical, slabThickness: String(g?.slabThickness ?? ""), available, reason: "UNKNOWN_DESIGN" });
-      continue;
-    }
+    // THICKNESS IS STILL FATAL TO A LINE, and it is asked before the design now.
+    // An unknown DESIGN still has a code we can publish against — the design is
+    // just not in anyone's product list yet. An unclassifiable THICKNESS has no
+    // code at all: QZ-ARVAWHITE-undefined is not a row to send anybody.
     if (mm === null) {
       unmapped.push({ design: String(g?.design ?? ""), canonical, slabThickness: String(g?.slabThickness ?? ""), available, reason: "THICKNESS" });
       continue;
     }
+    if (!known) {
+      // Published AND reported: the rep sees the stock, the worklist still says
+      // a product is missing. The two are not alternatives.
+      unmapped.push({ design: String(g?.design ?? ""), canonical, slabThickness: String(g?.slabThickness ?? ""), available, reason: "UNKNOWN_DESIGN" });
+    }
 
     const code = qzCode(canonical, mm);
     const seen = byCode.get(code);
-    if (seen) seen.available += available;
-    else byCode.set(code, { canonical, mm, code, available });
+    if (seen) {
+      seen.available += available;
+      // one spelling known and another not folds to the same code; if ANY of
+      // them resolves, the line has a product
+      seen.productMissing = seen.productMissing && !productCodes.has(code);
+    } else {
+      byCode.set(code, { canonical, mm, code, available, productMissing: !productCodes.has(code) });
+    }
   }
 
   return {

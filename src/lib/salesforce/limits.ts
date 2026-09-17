@@ -276,3 +276,30 @@ export function forbiddenPath(path: string): boolean {
  * because it stops the next reader building the real thing.
  */
 export const DAILY_CALL_BUDGET = 1000;
+
+/**
+ * STAND DOWN WHEN THE ORG IS NEARLY OUT — the guard this file claimed for weeks
+ * and did not have, and which Pacific's administrator is now relying on as his
+ * second line. Below ten percent of the org's own daily allowance we do not
+ * write: the stock push is the least urgent thing running against that org, and
+ * spending the last of its budget to refresh a slab count is how an integration
+ * takes down somebody else's business process.
+ *
+ * `used`/`total` come from Sforce-Limit-Info. UNKNOWN IS NOT EMPTY: a missing
+ * header means the header was missing, so it does not stop a run.
+ */
+export const ORG_RESERVE_FRACTION = 0.1;
+export function orgNearlyOut(limits: { used: number | null; total: number | null }): boolean {
+  const { used, total } = limits;
+  if (typeof used !== "number" || typeof total !== "number" || total <= 0) return false;
+  return (total - used) / total < ORG_RESERVE_FRACTION;
+}
+
+/**
+ * Have WE spent our own ceiling in the last day? `spentToday` is summed from the
+ * run records, `thisRun` is what the current run has already sent. Asked before
+ * the writes, so a run that would breach stops having only read.
+ */
+export function overOwnBudget(spentToday: number, thisRun: number, budget = DAILY_CALL_BUDGET): boolean {
+  return spentToday + thisRun >= budget;
+}

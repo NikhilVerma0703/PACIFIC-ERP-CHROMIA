@@ -70,6 +70,28 @@ export function limitsSeen(): SfLimits {
   return { ...lastLimits };
 }
 
+/**
+ * OUR OWN CALLS, counted — which nothing did until 2026-09-17.
+ *
+ * Pacific's Salesforce administrator asked us to enforce the daily ceiling
+ * rather than describe it, and he was right to: DAILY_CALL_BUDGET was a named
+ * constant and a unit test, and no code had ever compared anything to it. The
+ * org's Sforce-Limit-Info counts the WHOLE ORG and cannot answer "what did this
+ * integration cost", so it could never have been the brake either.
+ *
+ * The count is per PROCESS, reset at the top of a run. A Vercel invocation is
+ * one run, so in practice that is per run; the day's total is summed from the
+ * run records rather than held here, because module memory does not survive a
+ * cold start and a counter that silently resets is worse than none.
+ */
+let callsMade = 0;
+export function callsThisRun(): number {
+  return callsMade;
+}
+export function resetCallCount(): void {
+  callsMade = 0;
+}
+
 /** `Sforce-Limit-Info: api-usage=3700/160000` — read off every response and kept
  *  for the run summary.
  *
@@ -115,6 +137,7 @@ export async function getToken(cfg: SfConfig, now = Date.now()): Promise<Token> 
     client_id: cfg.clientId,
     client_secret: cfg.clientSecret,
   });
+  callsMade += 1;
   const res = await fetch(`${cfg.loginUrl}/services/oauth2/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -155,6 +178,7 @@ async function call(cfg: SfConfig, path: string, init: RequestInit = {}): Promis
     throw new SfError(`Refused: ${path} is not a path this integration may call.`, 403);
   }
   const token = await getToken(cfg);
+  callsMade += 1;
   const res = await fetch(`${token.instance}${path}`, {
     ...init,
     headers: {

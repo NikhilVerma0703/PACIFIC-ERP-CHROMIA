@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import {
   THICKNESS_MM, thicknessMmFor, canonicalDesign, qzCode, isKnownDesign,
   buildStockLines, productPayloads, diffMirror, payloadHash, summarise, PRODUCT_WRITABLE_KEYS,
-  isSellableProduct, SELLABLE_FAMILY,
+  isSellableProduct, SELLABLE_FAMILY, hasProductAtAnyThickness,
   foldDesignName, isNotSellable, NOT_SELLABLE_CANONICALS,
   diffProducts, productMirrorKey, productPayloadHash,
   slabRow, sampleRow, finishRow, unitRow,
@@ -25,6 +25,7 @@ import {
   WRITABLE_OBJECTS, READABLE_OBJECTS, mayWrite, mayDelete,
   REQUEST_WRITABLE_FIELDS, mayWriteRequestField, refusePackForApproval, isFieldServiceObject,
   mayApprove, forbiddenPath, DAILY_CALL_BUDGET, FORBIDDEN_PATHS,
+  orgNearlyOut, overOwnBudget, ORG_RESERVE_FRACTION,
 } from "../src/lib/salesforce/limits.ts";
 
 // ── the twelve biggest matches, DISCOVERY §3 ─────────────────────────────────
@@ -113,7 +114,16 @@ test("a misspelling is unmapped WITH its slab count, which is what makes it a wo
   ];
   const out = buildStockLines(groups, NO_ALIASES, CANONICALS, PRODUCT_CODES);
 
-  assert.deepEqual(out.lines.map((l) => [l.code, l.available]), [["QZ-ASTRALMIST-20", 131]]);
+  // PUBLISHED AND REPORTED, since 2026-09-17: the misspellings now go out as
+  // stock lines of their own with no product behind them, because Pacific's
+  // Salesforce administrator asked that a rep be able to SEE yard stock that
+  // cannot yet be quoted. They stay on the worklist at the same time — the two
+  // are not alternatives, and it is the worklist that gets them a product.
+  assert.deepEqual(out.lines.map((l) => [l.code, l.available, l.productMissing]), [
+    ["QZ-ALABESTERWHITE-20", 40, true],
+    ["QZ-ASTALMIST-20", 18, true],
+    ["QZ-ASTRALMIST-20", 131, false],
+  ]);
   // Sorted by how much stock is hidden behind each, so the alias job is worked
   // by value rather than alphabetically.
   assert.deepEqual(out.unmapped.map((u) => [u.design, u.available, u.reason]), [
@@ -136,16 +146,21 @@ test("ALIASING IS THE FIX, and it needs no Salesforce change at all", () => {
   assert.equal(out.unmapped.length, 0);
 });
 
-test("the design is asked about BEFORE the thickness, so the fix named is the right one", () => {
-  // A cut-down slab of a design nobody recognises is an UNKNOWN DESIGN, not a
-  // thickness problem: correcting the thickness would still leave a name we
-  // refuse to publish, and saying THICKNESS would send somebody to the wrong
-  // screen entirely.
+test("the THICKNESS is asked first now, because it is the one that still blocks a line", () => {
+  // THIS RULE FLIPPED ON 2026-09-17, and it flipped because the meaning of
+  // "unmapped" changed under it. While an unrecognised design was WITHHELD,
+  // design-first was right: fixing the thickness alone left a name we still
+  // refused to publish, so naming THICKNESS sent somebody to the wrong screen.
+  // Now an unrecognised design publishes as an unlinked line, so fixing the
+  // thickness alone DOES get the slabs in front of a rep, while fixing the
+  // design alone leaves a row with no code to send. The blocking fix is the
+  // thickness, so that is the one the row names.
   const out = buildStockLines(
     [{ design: "Astal Mist", slabThickness: "3 cm to 2 cm", available: 5 }],
     NO_ALIASES, CANONICALS, PRODUCT_CODES,
   );
-  assert.equal(out.unmapped[0]!.reason, "UNKNOWN_DESIGN");
+  assert.equal(out.unmapped[0]!.reason, "THICKNESS");
+  assert.equal(out.lines.length, 0, "no thickness, no code, no line");
 
   // A KNOWN design at an unusable thickness is the other case.
   const out2 = buildStockLines(
@@ -322,7 +337,10 @@ test("the summary counts what DISCOVERY counted, so a run can be compared to it"
   const s = summarise(result, payloads, PRODUCT_CODES);
 
   assert.equal(s.matched, 12, "all twelve fixtures match");
-  assert.equal(s.publishedSlabs, TWELVE.reduce((n, [, , c]) => n + c, 0) + 118);
+  // The 18 unrecognised slabs are now PUBLISHED as an unlinked line as well as
+  // reported, so they count toward publishedSlabs. unmappedSlabs still counts
+  // them too: "published" and "needs a product" are different questions.
+  assert.equal(s.publishedSlabs, TWELVE.reduce((n, [, , c]) => n + c, 0) + 118 + 18);
   assert.equal(s.unmappedSpellings, 1, "Astal Mist");
   assert.equal(s.unmappedSlabs, 18);
   assert.equal(s.unclassifiedThickness, 12, "the cut-down, counted but not published");
@@ -884,4 +902,60 @@ test("THE TWO KEY SPACES DO NOT COLLIDE in the one mirror table", () => {
   for (const stockKey of ["SLAB|QZ-ARVAWHITE-20", "SAMPLE|abc", "FINISH|abc", "UNIT|abc"]) {
     assert.equal(stockKey.startsWith("PRODUCT|"), false, stockKey);
   }
+});
+
+// ── the two guards the administrator asked us to actually build, 2026-09-17 ──
+//
+// Both were described in comments for weeks and neither existed. He is relying
+// on the org one as his second line, so these pin that they now decide.
+
+test("we stand down below 10% of the ORG's allowance — his second line", () => {
+  assert.equal(ORG_RESERVE_FRACTION, 0.1);
+  // the reserve is 10% of 160,000 = 16,000 calls LEFT, not used
+  assert.equal(orgNearlyOut({ used: 143_000, total: 160_000 }), false, "17,000 left, 10.6% — fine");
+  assert.equal(orgNearlyOut({ used: 144_000, total: 160_000 }), false, "exactly 16,000 left is not yet under");
+  assert.equal(orgNearlyOut({ used: 145_000, total: 160_000 }), true, "15,000 left, 9.4% — stand down");
+  assert.equal(orgNearlyOut({ used: 160_000, total: 160_000 }), true, "nothing left");
+});
+
+test("UNKNOWN IS NOT EMPTY — a missing header must not stop the run", () => {
+  // Sforce-Limit-Info is absent on some responses. Reading that as "the org is
+  // out" would stand the sync down for ever on a header that never arrives.
+  for (const l of [{ used: null, total: null }, { used: 5, total: null }, { used: null, total: 10 },
+                   { used: 5, total: 0 }, { used: 5, total: -1 }]) {
+    assert.equal(orgNearlyOut(l), false, JSON.stringify(l));
+  }
+});
+
+test("our own ceiling stops the writes, counting the calls this run has ALREADY made", () => {
+  assert.equal(DAILY_CALL_BUDGET, 1000);
+  assert.equal(overOwnBudget(900, 2), false);
+  assert.equal(overOwnBudget(998, 2), true, "998 spent plus the 2 this run reaches 1000");
+  assert.equal(overOwnBudget(1200, 0), true, "already past it");
+  assert.equal(overOwnBudget(0, 0), false);
+  // the ceiling is a parameter so a test does not have to move the constant
+  assert.equal(overOwnBudget(9, 1, 10), true);
+});
+
+test("A PRODUCT BEATS THE TRIAL MARKER, or we withhold a design the org sells", () => {
+  // "Astral Mist Kreos Trail-2" is a real product. A word-boundary test for
+  // "trail" caught it and withheld 7 slabs of sellable stock — the Arena/Arlina
+  // mistake again: a string test cannot outrank the org's own catalogue.
+  const codes = new Set(["QZ-ASTRALMISTKREOSTRAIL2-20"]);
+  assert.equal(hasProductAtAnyThickness("Astral Mist Kreos Trail-2", codes), true);
+  assert.equal(isNotSellable("Astral Mist Kreos Trail-2", "Astral Mist Kreos Trail-2", codes), false);
+  // ...while a trial batch of a real design resolves to no product of its own
+  assert.equal(isNotSellable("Pebbles Ice", "Pebble Ice - Trial", codes), true);
+  // ...and the bucket itself is withheld whatever is passed
+  assert.equal(isNotSellable("Trial", "Blue Kreos", codes), true);
+});
+
+test("the trial marker is a WORD, not a substring", () => {
+  const none = new Set<string>();
+  assert.equal(isNotSellable("Industrial", "Industrial", none), false, "Industrial ends in t-r-i-a-l");
+  assert.equal(isNotSellable("Trialist", "Trialist", none), false);
+  assert.equal(isNotSellable("Arva White", "Arva White trial", none), true);
+  assert.equal(isNotSellable("Arva White", "Trail Arva White", none), true);
+  assert.equal(isNotSellable("Arva White", "Arva White - Trial", none), true);
+  assert.equal(isNotSellable("Arva White", "Arva White", none), false);
 });

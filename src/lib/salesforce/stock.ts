@@ -18,7 +18,8 @@ import {
   diffMirror, payloadHash, isSellableProduct,
   type ProductRow, type StockGroup, type StockRow, type MirrorEntry,
 } from "./stock-rules";
-import { soql, compositePatch, readConfig, limitsSeen, type SfConfig } from "./client";
+import { soql, compositePatch, readConfig, limitsSeen, callsThisRun, resetCallCount, type SfConfig } from "./client";
+import { orgNearlyOut, overOwnBudget, DAILY_CALL_BUDGET } from "./limits";
 import { diffProducts, productMirrorKey, productPayloadHash } from "./stock-rules";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -63,13 +64,19 @@ export interface SyncSummary {
   thirtyMmWithoutProduct: number;
   topUnmapped: Array<{ design: string; available: number; reason: string }>;
   thirtyMmCodes: string[];
-  stockRows: { desired: number; toPush: number; toRetire: number; unchanged: number };
+  stockRows: { desired: number; toPush: number; toRetire: number; unchanged: number; toRestamp: number };
   /** The same accounting for Product2, which is diffed now rather than written
    *  wholesale: `unchanged` is the number of products that cost no modification
    *  this run. */
   productRows: { desired: number; toPush: number; unchanged: number };
   wrote: { products: number; stockRows: number; failures: string[] };
+  /** The ORG's rolling 24-hour counter from Sforce-Limit-Info — everyone's
+   *  calls, not ours. Named so it cannot be read as this run's cost again. */
   apiUsage: { used: number | null; total: number | null };
+  /** What THIS integration sent: this run, and our own day so far. */
+  ourCalls: { thisRun: number; today: number; budget: number };
+  /** Set when a guard stopped the writes, with the reason. Null on a normal run. */
+  stoodDown: string | null;
   durationMs: number;
 }
 
@@ -213,11 +220,31 @@ async function readSamplesAndUnits(): Promise<StockRow[]> {
 }
 
 /** The mirror: what Salesforce was last told, so only changes cost a call. */
-async function readMirror(): Promise<Map<string, MirrorEntry>> {
-  const rows: Array<{ sf_key: string; payload_hash: string }> =
-    await db.$queryRawUnsafe(`SELECT sf_key, payload_hash FROM sf_stock_mirror`).catch(() => []);
-  return new Map(rows.map((r) => [r.sf_key, { key: r.sf_key, payloadHash: r.payload_hash }]));
+async function readMirror(): Promise<Map<string, MirrorEntry & { pushedAt: Date | null }>> {
+  const rows: Array<{ sf_key: string; payload_hash: string; pushed_at: Date | null }> =
+    await db.$queryRawUnsafe(`SELECT sf_key, payload_hash, pushed_at FROM sf_stock_mirror`).catch(() => []);
+  return new Map(rows.map((r) => [r.sf_key, { key: r.sf_key, payloadHash: r.payload_hash, pushedAt: r.pushed_at }]));
 }
+
+/**
+ * HOW OLD A CONFIRMATION MAY GET — 30 minutes, at the administrator's request
+ * and for his reason rather than ours.
+ *
+ * Once only CHANGED rows are written, `Synced_At__c` stops meaning "the ERP
+ * last confirmed this row" and starts meaning "this count last moved". His
+ * Stale__c flag is built on the first meaning: a row goes stale when two
+ * confirmations in a row are missed, which is the "the sync has stopped"
+ * signal. Both of the options we offered him were bad — redefining Stale__c
+ * would flag healthy steady stock, and stamping every row every run is 708 rows
+ * 144 times a day to keep a timestamp fresh. His third option is better than
+ * either: re-confirm every row every 30 minutes, which is every third run and
+ * about 192 extra calls a day.
+ *
+ * TIME, NOT A RUN COUNT. "Every third run" drifts the moment a run is skipped,
+ * fails or is retried; "older than 30 minutes" is the same rule stated so that
+ * a missed run repairs itself.
+ */
+const RESTAMP_AFTER_MS = 30 * 60 * 1000;
 
 /**
  * One run of the stock phase.
@@ -228,6 +255,13 @@ async function readMirror(): Promise<Map<string, MirrorEntry>> {
  */
 export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
   const started = Date.now();
+  resetCallCount();
+  // OUR OWN SPEND FOR THE DAY, read from the run records. Module memory dies
+  // with the lambda, so the only honest source is what previous runs wrote
+  // down. A failure to read it yields 0 — the guard then protects nothing this
+  // run rather than refusing to work, which is the right way for a brake to
+  // fail on a job whose writes are absolute values.
+  const spentToday = await callsSpentToday();
   const cfg = readConfig();
   if (!cfg) throw new Error("Salesforce is not configured (SF_LOGIN_URL / SF_CLIENT_ID / SF_CLIENT_SECRET).");
 
@@ -272,6 +306,16 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
     return result.lines.some((l) => l.code === code) || productCodes.has(code);
   };
   const diff = diffMirror(desired, mirror, stillResolves);
+  // Rows the diff called unchanged, whose last confirmation is older than the
+  // window. They carry no new VALUE — only a fresh Synced_At__c — so they are
+  // appended to the push rather than counted as changes.
+  const staleCutoff = new Date(Date.parse(opts.asOf) - RESTAMP_AFTER_MS);
+  const pushKeys = new Set(diff.toPush.map((r) => r.key));
+  const toRestamp = desired.filter((r) => {
+    if (pushKeys.has(r.key)) return false;
+    const seen = mirror.get(r.key);
+    return !seen || !seen.pushedAt || seen.pushedAt < staleCutoff;
+  });
   const prodDiff = diffProducts(payloads, productMirror);
 
   const summary: SyncSummary = {
@@ -295,14 +339,32 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
     thirtyMmWithoutProduct: s.thirtyMmWithoutProduct,
     topUnmapped: result.unmapped.slice(0, 25).map((u) => ({ design: u.design, available: u.available, reason: u.reason })),
     thirtyMmCodes: result.lines.filter((l) => l.mm === 30 && !productCodes.has(l.code)).map((l) => l.code).sort(),
-    stockRows: { desired: desired.length, toPush: diff.toPush.length, toRetire: diff.toRetire.length, unchanged: diff.unchanged },
+    stockRows: { desired: desired.length, toPush: diff.toPush.length, toRetire: diff.toRetire.length, unchanged: diff.unchanged, toRestamp: toRestamp.length },
     productRows: { desired: payloads.length, toPush: prodDiff.toPush.length, unchanged: prodDiff.unchanged },
     wrote: { products: 0, stockRows: 0, failures: [] },
     apiUsage: limitsSeen(),
+    ourCalls: { thisRun: callsThisRun(), today: spentToday + callsThisRun(), budget: DAILY_CALL_BUDGET },
+    stoodDown: null,
     durationMs: 0,
   };
 
   if (opts.dry) {
+    summary.durationMs = Date.now() - started;
+    return summary;
+  }
+
+  // ── the two guards, asked before anything is written ──────────────────────
+  // Both were promised to the administrator and neither existed. They are asked
+  // HERE, after every read and before the first write, so a run that stands
+  // down still returns the full picture of what it WOULD have sent.
+  const limits = limitsSeen();
+  if (orgNearlyOut(limits)) {
+    summary.stoodDown = `The org is below 10% of its daily API allowance (${limits.used} of ${limits.total} used), so nothing was written. Stock is unchanged in Salesforce and the next run will send it.`;
+  } else if (overOwnBudget(spentToday, callsThisRun())) {
+    summary.stoodDown = `This integration has used ${spentToday + callsThisRun()} calls today against its own ceiling of ${DAILY_CALL_BUDGET}, so nothing was written.`;
+  }
+  if (summary.stoodDown) {
+    await recordRun(opts, summary, started);
     summary.durationMs = Date.now() - started;
     return summary;
   }
@@ -324,7 +386,9 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
     await recordProductMirror(prodDiff.toPush.filter((_, i) => prodResults[i]?.success));
   }
 
-  const rowsToWrite = [...diff.toPush, ...diff.toRetire];
+  // toRestamp last: a row that genuinely changed is already in toPush, and a
+  // key must not appear twice in one composite call.
+  const rowsToWrite = [...diff.toPush, ...diff.toRetire, ...toRestamp];
   if (rowsToWrite.length) {
     const records = rowsToWrite.map((r) => ({
       ERP_Key__c: r.key,
@@ -349,8 +413,40 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
   }
 
   summary.apiUsage = limitsSeen();
+  summary.ourCalls = { thisRun: callsThisRun(), today: spentToday + callsThisRun(), budget: DAILY_CALL_BUDGET };
+  await recordRun(opts, summary, started);
   summary.durationMs = Date.now() - started;
   return summary;
+}
+
+/**
+ * WHAT WE SPENT IN THE LAST 24 HOURS, from the run records.
+ *
+ * sf_sync_run existed from the day 0087 was applied and nothing had ever
+ * written a row to it, so the lease, the run history and the daily total were
+ * all design rather than behaviour. The ceiling the administrator asked us to
+ * enforce cannot be enforced without this.
+ */
+async function callsSpentToday(): Promise<number> {
+  const rows: Array<{ n: number | null }> = await db.$queryRawUnsafe(
+    `SELECT COALESCE(SUM((summary->'ourCalls'->>'thisRun')::int), 0)::int AS n
+       FROM sf_sync_run WHERE started_at > now() - interval '24 hours'`,
+  ).catch(() => []);
+  return Number(rows[0]?.n ?? 0);
+}
+
+/** One row per run — dry runs included, because a dry run costs real calls. */
+async function recordRun(opts: SyncOptions, summary: SyncSummary, started: number): Promise<void> {
+  await db.$executeRawUnsafe(
+    `INSERT INTO sf_sync_run (id, started_at, finished_at, phase, dry, ok, summary, error)
+          VALUES ($1, $2, now(), 'stock', $3, $4, $5::jsonb, $6)`,
+    `${started}-${Math.trunc(summary.publishedSlabs)}-${summary.stockRows.desired}`,
+    new Date(started),
+    opts.dry,
+    summary.wrote.failures.length === 0,
+    JSON.stringify({ ourCalls: summary.ourCalls, wrote: summary.wrote, stoodDown: summary.stoodDown }),
+    summary.stoodDown,
+  ).catch(() => {});
 }
 
 /** Remember each product's hash under its PRODUCT| key, in the same mirror
