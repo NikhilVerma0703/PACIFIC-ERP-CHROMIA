@@ -18,6 +18,10 @@
     {
       "path": "/api/report/slab-intake-digest",
       "schedule": "31 0 * * *"
+    },
+    {
+      "path": "/api/salesforce/sync",
+      "schedule": "*/10 * * * *"
     }
   ]
 }
