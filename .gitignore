@@ -82,3 +82,12 @@ __probe_*.ts
 
 # Claude drop-folder leftovers — safe to delete
 _to_delete/
+
+# Scratch data dumps generated while investigating (design matrices, handbook
+# extracts, dry-run summaries). They are build inputs for a one-off, never
+# repo content -- two of them reached a commit before this rule existed.
+/*-matrix.json
+/handbook*.json
+/sf-*.json
+/sf-*.md
+/.drift.md
