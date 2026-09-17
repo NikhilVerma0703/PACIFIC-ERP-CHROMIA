@@ -1,0 +1,22 @@
+- [Fab single-operator model](fab-single-operator-model.md) — one operator login covers every machine and project in Pacific ERP fabrication.
+- [polish_qc rw_status semantics](polish-qc-rw-status-semantics.md) — "Can't be Reworked" is a repairability flag, not scrap; don't count it as loss.
+- [polish_qc date fields](polish-qc-date-fields.md) — date-filter with COALESCE(created_time, imported_at) or you lose everything after the June 2026 cutover.
+- [MIS target policy standardisation](mis-target-policy-standardisation.md) — blank hourly Std deflates the CEO report's target; plan: only breakdown/power excuse, audited override, std-rate master; CEO decisions pending.
+- [Pacific careers Sanity](pacific-careers-sanity.md) — job JDs need a short `description` + separate `responsibilities` array; pasting the whole JD breaks the page.
+- [Neon DB state](neon-db-state.md) — sampling-module DB push applied 2026-08-28; two backup_neon01_* rollback tables await dropping; never prisma db push.
+- [Incentive month tracker](incentive-month-tracker.md) — /scoreboard/incentive + incentive-month.mts + make-incentive-month-pdf.py settle the month; three decisions (step ladder, equal-thirds split, quality method) still open before payout.
+- [Consumables module unused](consumables-module-unused.md) — fully built and gated, but zero rows; only 8 departments seeded.
+- [Commercial module decisions](commercial-module-decisions.md) — 66 answers over three rounds; DEPLOYED to production 2026-09-09; four desks on four roles, three logins still for the owner to create.
+- [Commercial barcode scheme](commercial-barcode-scheme.md) — customer EANs are GS1 8720847 + running item ref; never reuse the 17227 gap; one duplicate still unresolved.
+- [Kling: no native audio](kling-no-native-audio.md) — always pass enable_audio=false on Kling video generations.
+- [FG view grant](fg-view-grant.md) — users.fg_view gives chromia@/gibin@ read-only finished goods; grant/revoke needs a session_version bump; never invert the read/write gate split.
+- [Salesforce link build state](salesforce-link-build-state.md) — Part B (boxes & stands) shipped as scripts/0086; DESIGN.md's 0084/0085 numbers are wrong; Parts A & C blocked on the Connected App.
+- [Salesforce org state](salesforce-org-state.md) — QZ- codes are derivable (never ask for a list); sampling objects built but empty; 26 orders stuck Pending, middleware never built.
+- [Pacific SIPCOT Phase II](pacific-sipcot-phase-ii.md) — government submission; deck estimates are Claude's assumptions, and ₹500 Cr / Poland supersede the DPR.
+- [faster-whisper CUDA on Windows](faster-whisper-cuda-windows.md) — needs the pip CUDA DLLs on PATH; add_dll_directory silently fails.
+- [AMA Sarjapur bay](ama-sarjapur-bay.md) — Pacific display-bay design; street wall is glazing not solid, five decisions block production.
+- [Blender 5 Action API](blender-5-action-api.md) — Action.fcurves is gone; the failure exits 0 and writes no frames.
+- [Marmomac 2026 stand](marmomac-2026-stand.md) - 22-25 Sept, Verona; "10 F 2" read as Hall 10 Stand F2 is an inference, verify it.
+- [Marmomac invite video](pacific-marmomac-invite-video.md) - the 40s reel is HTML + puppeteer frame capture on a hardcoded beat grid.
+- [WebGL file:// textures](webgl-file-protocol-textures.md) — textured meshes render black off disk; serve over HTTP to test.
+- [Design Democracy BTS reel](design-democracy-bts-reel.md) — v3 (24.5 s) is code (render_v3.py tables); no grade by request, Hubot Sans only; the CC BY-SA opening clips block publishing as-is.

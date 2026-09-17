@@ -1,0 +1,23 @@
+{
+ "note": "Exported 2026-09-18. claude-mem held almost nothing for this project: observations=0, session_summaries=0, and 0 of 102 stored prompts matched ERP. Only the rows below referenced it. The real memory is in ./memory/.",
+ "rows": {
+  "sdk_sessions": [
+   {
+    "id": 2,
+    "content_session_id": "5b3162dd-4b0b-4fbf-9c90-5d69df568d67",
+    "memory_session_id": "66180da1-7aca-4783-b413-65ec0e2c72c1",
+    "project": "ERP/determined-hertz-2137ec",
+    "platform_source": "claude",
+    "user_prompt": "In C:\\Users\\user\\Desktop\\ERP: `npx prisma migrate diff --from-url <DATABASE_URL from .env.local> --to-schema-datamodel prisma/schema.prisma --script` shows major drift between the Neon DB and prisma/schema.prisma. The DB contains tables not in the schema (downtime_response, entry_photo, login_attempt, sales_notifications, fg_dispatch_invoice, fg_sales_approved_batch, fg_sales_hidden_design, batch_range_edit, plus manual backup tables autofill_date_backup_0026, year_typo_backup_0027, date_fix_backup_0028) and columns not in the schema (e.g. sales_payment_divisions.amount_received, sales_packing_lists.accepted_at, sales_credit_notes.applied_at, sales_shipment_docs.discount_amount, proforma_invoices.payment_terms_data, sales_config.invoice_config_granite, several updatedAt DEFAULT drops). Some of these are read by code via raw SQL (check src/lib/downtimeResponse.ts, src/lib/entryPhoto.ts). This makes any `prisma db push` dangerous \u2014 it wants to drop live data. Audit which tables/columns are actively used, add the active ones to schema.prisma (or document them as raw-SQL-managed), decide with the user what to do about the backup tables, and establish a safe migration workflow. Do NOT run db push --accept-data-loss.",
+    "started_at": "2026-07-29T12:27:34.104Z",
+    "started_at_epoch": 1785328054104,
+    "completed_at": null,
+    "completed_at_epoch": null,
+    "status": "active",
+    "worker_port": null,
+    "prompt_counter": 0,
+    "custom_title": null
+   }
+  ]
+ }
+}
