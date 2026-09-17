@@ -138,3 +138,51 @@ export function isResolved(raw: unknown, known: ReadonlySet<string>, mergedVaria
   for (const k of known) if (foldName(k) === f) return true;
   return false;
 }
+
+// ─────────────────── resolving a yard name to its display name ──────────────
+
+/**
+ * THE ONE PLACE A RAW DESIGN BECOMES THE NAME A SCREEN SHOWS.
+ *
+ * "Slabs by design" listed **two Alabaster Noir columns** — 350 slabs under
+ * "Alabaster Noir" and 1 under "Alabaster noir". One lowercase letter, and the
+ * routes that fold names did it with an EXACT alias lookup
+ * (`alias.get(raw) ?? raw`), so a case twin with no alias row of its own stayed
+ * a design of its own.
+ *
+ * Worse, the two halves of the system disagreed about what "the same name"
+ * means: the merge worklist folds case, so it considered "Alabaster noir"
+ * already resolved and never offered it — the name was invisible to the tool
+ * that would have fixed it while being visible as a duplicate column. A rule
+ * kept in two places is a rule kept in neither, which is the same lesson the
+ * Salesforce matcher paid for on the same day.
+ *
+ * Order matters: an explicit merge always wins, because somebody decided it.
+ * Only then does case folding get a say, and only against names the system
+ * already accepts — it never invents a canonical out of two unknown spellings.
+ */
+export function buildDesignResolver(
+  aliases: ReadonlyArray<{ variant: string; canonical: string }>,
+  known: Iterable<string>,
+): (raw: unknown) => string {
+  const exact = new Map<string, string>();
+  const folded = new Map<string, string>();
+  for (const a of aliases) {
+    exact.set(a.variant, a.canonical);
+    const f = foldName(a.variant);
+    if (f && !folded.has(f)) folded.set(f, a.canonical);
+  }
+  // A known name is its own canonical spelling, and it outranks a folded alias
+  // key: "Alabaster Noir" is on the chart, so that is how it is spelt.
+  for (const k of known) {
+    const f = foldName(k);
+    if (f) folded.set(f, k);
+  }
+  return (raw: unknown): string => {
+    const s = String(raw ?? "");
+    if (!s) return s;
+    const hit = exact.get(s);
+    if (hit) return hit;
+    return folded.get(foldName(s)) ?? s;
+  };
+}

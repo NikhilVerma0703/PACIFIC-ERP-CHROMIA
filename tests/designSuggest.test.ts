@@ -13,6 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   foldName, stripLineWords, editDistance, suggestDesigns, isResolved, LINE_WORDS,
+  buildDesignResolver,
 } from "../src/lib/inventory/designSuggest.ts";
 
 // A small stand-in for the colour chart, using real Pacific names.
@@ -115,4 +116,41 @@ test("isResolved: a known design, or one already merged away, is not backlog", (
   assert.equal(isResolved("Pebble ice", known, merged), true, "already merged");
   assert.equal(isResolved("Antique Greya", known, merged), false, "this is the backlog");
   assert.equal(isResolved("", known, merged), true, "blank is not a decision anybody can make");
+});
+
+// ── the two Alabaster Noir columns ──────────────────────────────────────────
+
+test("A CASE TWIN OF A KNOWN DESIGN IS THE SAME COLUMN — the two Alabaster Noirs", () => {
+  // 350 slabs under "Alabaster Noir" and 1 under "Alabaster noir" appeared as
+  // two columns in Slabs by design, because the fold was an exact alias lookup.
+  const resolve = buildDesignResolver([], ["Alabaster Noir", "Alabaster"]);
+  assert.equal(resolve("Alabaster Noir"), "Alabaster Noir");
+  assert.equal(resolve("Alabaster noir"), "Alabaster Noir", "one lowercase letter is not a design");
+  assert.equal(resolve("ALABASTER NOIR"), "Alabaster Noir");
+  assert.equal(resolve("alabaster-noir"), "Alabaster Noir");
+  // ...and a genuinely different design keeps its own column
+  assert.equal(resolve("Alabaster"), "Alabaster");
+});
+
+test("AN EXPLICIT MERGE ALWAYS WINS — somebody decided it", () => {
+  const resolve = buildDesignResolver(
+    [{ variant: "Alabester White", canonical: "Alabaster" }],
+    ["Alabaster", "Alabaster Noir"],
+  );
+  assert.equal(resolve("Alabester White"), "Alabaster", "the merge, not the fold");
+});
+
+test("it never invents a canonical from two unknown spellings", () => {
+  // "Simply white" and "Simply White" are both off the chart. Folding them
+  // together here would pick a winner nobody chose; that is the worklist's job.
+  const resolve = buildDesignResolver([], ["Alabaster Noir"]);
+  assert.equal(resolve("Simply white"), "Simply white");
+  assert.equal(resolve("Simply White"), "Simply White");
+});
+
+test("blank and junk pass through untouched", () => {
+  const resolve = buildDesignResolver([], ["Alabaster Noir"]);
+  assert.equal(resolve(""), "");
+  assert.equal(resolve(null), "");
+  assert.equal(resolve("Zzz"), "Zzz");
 });

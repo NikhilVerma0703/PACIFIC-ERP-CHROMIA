@@ -7,6 +7,8 @@ import { sweepExpiredReservations } from "@/lib/inventory/finishedSlab";
 import { buildInventoryWhere, approvedOnlyWhere, getUnapprovedSlabNumbers } from "@/lib/inventory/searchWhere";
 import { isAdmin } from "@/lib/rbac";
 import { sqftFromIn, sqmFromIn } from "@/lib/commercial/measure";
+import { CATALOGUE_COLOURS } from "@/lib/catalogue/colours";
+import { buildDesignResolver } from "@/lib/inventory/designSuggest";
 
 const db = prisma as any;
 // ONE FORMULA, IMPORTED. This route used to carry its own copy
@@ -73,7 +75,13 @@ export async function GET(request: Request) {
     // display canonical design names (merged variants show their correct name)
     const aliasRows: any[] = await db.designAlias.findMany({ select: { variant: true, canonical: true } }).catch(() => []);
     const amap = new Map<string, string>(aliasRows.map((x) => [x.variant, x.canonical]));
-    rows = rows.map((r: any) => (r.design && amap.has(r.design) ? { ...r, design: amap.get(r.design) } : r));
+    // Folded, not an exact lookup — the same rule Slabs by design uses, so a
+    // slab reads the same design name on both screens.
+    const resolveDesign = buildDesignResolver(
+      aliasRows as any[],
+      [...CATALOGUE_COLOURS.map((c: any) => c.name), ...(aliasRows as any[]).map((a: any) => a.canonical)],
+    );
+    rows = rows.map((r: any) => (r.design ? { ...r, design: resolveDesign(r.design) } : r));
     return Response.json(rows.map(withDerived), {
       headers: { "X-Withheld-Unapproved": String(withheld) },
     });

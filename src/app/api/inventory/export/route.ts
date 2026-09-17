@@ -14,6 +14,8 @@ import { slabLabel } from "@/lib/slabLabel";
 import { displayBatch } from "@/lib/batchDisplay";
 import { slabMarkOf, SLAB_MARK_LABEL } from "@/lib/fab/slabMark";
 import * as XLSX from "xlsx";
+import { CATALOGUE_COLOURS } from "@/lib/catalogue/colours";
+import { buildDesignResolver } from "@/lib/inventory/designSuggest";
 
 const db = prisma as any;
 
@@ -39,7 +41,11 @@ export async function GET(request: Request) {
       return db.finishedSlab.findMany({ ...findRows, omit: { slabMark: true } });
     });
     const aliasRows: any[] = await db.designAlias.findMany({ select: { variant: true, canonical: true } }).catch(() => []);
-    const amap = new Map<string, string>(aliasRows.map((x) => [x.variant, x.canonical]));
+    // Folded, so the export names a slab the same way both inventory screens do.
+    const resolveDesign = buildDesignResolver(
+      aliasRows as { variant: string; canonical: string }[],
+      [...CATALOGUE_COLOURS.map((c) => c.name), ...aliasRows.map((a) => a.canonical)],
+    );
     // MARK BESIDE GRADE, never instead of it. A spreadsheet of stock that shows
     // only the grade cannot answer "which of these have been cut" the moment
     // fabrication stops overwriting the grade with 'CTS' — and a stock list you
@@ -53,7 +59,7 @@ export async function GET(request: Request) {
       const age = r.firstSeenAt ? Math.max(0, Math.floor((Date.now() - new Date(r.firstSeenAt).getTime()) / 86400000)) : "";
       data.push([
         r.slabNumber >= 9000000 && r.barcode ? r.barcode : slabLabel(r.slabNumber),
-        r.design ? (amap.get(r.design) ?? r.design) : "",
+        r.design ? resolveDesign(r.design) : "",
         displayBatch(r.batchNumber) === "—" ? "" : displayBatch(r.batchNumber),
         r.slabThickness ?? "",
         r.grade ?? "",

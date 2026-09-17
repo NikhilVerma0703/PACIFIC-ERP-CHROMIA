@@ -10,6 +10,8 @@ import { CUT_GRADES, CUT_MARKS } from "@/lib/inventory/grading";
 import { SLAB_STATUSES } from "@/lib/inventory/intakeRules";
 import { parseSlabMark } from "@/lib/fab/slabMark";
 import { NONE } from "@/lib/inventory/filterValues";
+import { CATALOGUE_COLOURS } from "@/lib/catalogue/colours";
+import { buildDesignResolver } from "@/lib/inventory/designSuggest";
 
 const db = prisma as any;
 const KEYS = ["total","dispatched","bay5","bay4","bay3","nobay","a","a2","b","c","cts","printing","trial","ungraded","cut","pending_polish","pending_rw"];
@@ -405,10 +407,17 @@ export async function GET(request: Request) {
       );
     const hidden = new Set<string>((hiddenRows as any[]).map((h) => h.design));
     const approvedSet = new Set<string>((approvedRows as any[]).map((a) => `${a.design}\u0000${a.batch}`));
-    const alias = new Map<string, string>(aliases.map((x: any) => [x.variant, x.canonical]));
+    // CASE TWINS ARE ONE COLUMN. This was `alias.get(raw) ?? raw` — an exact
+    // lookup — so "Alabaster noir" (1 slab) sat beside "Alabaster Noir" (350)
+    // as a design of its own. The resolver folds case against the names the
+    // system already accepts, while an explicit merge still wins outright.
+    const resolveDesign = buildDesignResolver(
+      aliases as any[],
+      [...CATALOGUE_COLOURS.map((c: any) => c.name), ...(aliases as any[]).map((a: any) => a.canonical)],
+    );
     const merged = new Map<string, any>();
     for (const r of rows) {
-      const design = alias.get(r.design) ?? r.design;
+      const design = resolveDesign(r.design);
       const batch = r.batch === "-" ? r.batch : displayBatch(r.batch);
       const key = [design, r.thickness, batch].join(" ");
       const m = merged.get(key);
