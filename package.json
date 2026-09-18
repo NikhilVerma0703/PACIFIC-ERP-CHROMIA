@@ -7,6 +7,8 @@
   },
   "scripts": {
     "dev": "next dev",
+    "demo": "node scripts/demo.mjs",
+    "demo:seed": "node scripts/demo.mjs --seed",
     "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/*.test.ts",
     "test:chromia": "vitest run",
     "build": "prisma generate && next build",
