@@ -1,0 +1,192 @@
+<title>Pacific Demo Run Sheet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    --paper:#F2F6F6; --surface:#FFFFFF; --surface-2:#F8FBFB;
+    --ink:#112732; --muted:#5E7480; --rule:#D7E0E5; --rule-soft:#E8EEF1;
+    --teal:#0F4C5C; --teal-wash:#EAF3F5;
+    --go:#15803D; --go-wash:#E8F5EC;
+    --warn:#B45309; --warn-wash:#FBF0E2;
+    --stop:#B91C1C; --stop-wash:#FBEAEA;
+    --shadow:0 1px 2px rgba(17,39,50,.06), 0 8px 24px -16px rgba(17,39,50,.28);
+    --head-bg:#0F4C5C; --head-ink:#FFFFFF; --head-sub:#C7DFE6; --head-eyebrow:#8FBCC7;
+  }
+  @media (prefers-color-scheme:dark){ :root:not([data-theme="light"]){
+    --paper:#0B161C; --surface:#11242D; --surface-2:#0E1F27;
+    --ink:#E3EDF0; --muted:#97ADB8; --rule:#22404C; --rule-soft:#1A333E;
+    --teal:#7FBECD; --teal-wash:#12303B;
+    --go:#5FCB86; --go-wash:#12301F;
+    --warn:#E0A45C; --warn-wash:#2A2113;
+    --stop:#F08A8A; --stop-wash:#2E1717;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+    --head-bg:#0E1F27; --head-ink:#E3EDF0; --head-sub:#97ADB8; --head-eyebrow:#7FBECD;
+  }}
+  :root[data-theme="dark"]{
+    --paper:#0B161C; --surface:#11242D; --surface-2:#0E1F27;
+    --ink:#E3EDF0; --muted:#97ADB8; --rule:#22404C; --rule-soft:#1A333E;
+    --teal:#7FBECD; --teal-wash:#12303B;
+    --go:#5FCB86; --go-wash:#12301F;
+    --warn:#E0A45C; --warn-wash:#2A2113;
+    --stop:#F08A8A; --stop-wash:#2E1717;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+    --head-bg:#0E1F27; --head-ink:#E3EDF0; --head-sub:#97ADB8; --head-eyebrow:#7FBECD;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:"IBM Plex Sans",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+    font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:60rem;margin:0 auto;padding-inline:16px}
+  header.top{background:var(--head-bg);color:var(--head-sub);padding-block:26px 24px;border-bottom:1px solid var(--rule)}
+  header.top h1{margin:0;font-size:clamp(1.5rem,4vw,2.1rem);font-weight:600;letter-spacing:-.02em;color:var(--head-ink);text-wrap:balance}
+  header.top p{margin:6px 0 0;max-width:56ch;font-size:.95rem}
+  .eyebrow{font-family:"IBM Plex Mono",monospace;font-size:.68rem;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--head-eyebrow);margin:0 0 10px}
+  main{padding-block:24px 60px}
+  h2{font-size:1.15rem;font-weight:600;letter-spacing:-.01em;margin:34px 0 4px}
+  h2 .n{font-family:"IBM Plex Mono",monospace;font-size:.78rem;color:var(--teal);
+    background:var(--teal-wash);padding:3px 8px;border-radius:6px;margin-right:9px;vertical-align:2px}
+  .lede{color:var(--muted);font-size:.9rem;margin:0 0 12px;text-wrap:pretty}
+  pre{background:var(--surface);border:1px solid var(--rule);border-radius:10px;
+    padding:12px 14px;overflow-x:auto;font-family:"IBM Plex Mono",monospace;font-size:.83rem;margin:10px 0}
+  code{font-family:"IBM Plex Mono",monospace;font-size:.9em;background:var(--teal-wash);
+    color:var(--teal);padding:1px 5px;border-radius:4px}
+  pre code{background:none;color:inherit;padding:0}
+  .card{background:var(--surface);border:1px solid var(--rule);border-radius:12px;padding:14px 16px;margin:10px 0;box-shadow:var(--shadow)}
+  .banner{border-left:3px solid var(--go);background:var(--go-wash);border-radius:0 10px 10px 0;padding:12px 14px;margin:12px 0}
+  .banner.warn{border-left-color:var(--warn);background:var(--warn-wash)}
+  .banner.stop{border-left-color:var(--stop);background:var(--stop-wash)}
+  .banner b{display:block;margin-bottom:3px}
+  table{border-collapse:collapse;width:100%;font-size:.88rem;margin:10px 0}
+  th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--rule-soft)}
+  thead th{font-family:"IBM Plex Mono",monospace;font-size:.68rem;letter-spacing:.07em;
+    text-transform:uppercase;color:var(--muted);font-weight:500}
+  td.num{font-family:"IBM Plex Mono",monospace;text-align:right;font-variant-numeric:tabular-nums}
+  .tablewrap{overflow-x:auto;border:1px solid var(--rule);border-radius:12px;background:var(--surface)}
+  .tablewrap table{margin:0}
+  ul{padding-left:18px;margin:8px 0}
+  li{margin-bottom:5px;text-wrap:pretty}
+  .pill{font-family:"IBM Plex Mono",monospace;font-size:.72rem;padding:3px 8px;border-radius:5px;white-space:nowrap}
+  .p-go{background:var(--go-wash);color:var(--go)}
+  .p-warn{background:var(--warn-wash);color:var(--warn)}
+  footer{color:var(--muted);font-size:.82rem;border-top:1px solid var(--rule);padding-block:22px;margin-top:40px}
+  @media print{
+    header.top{background:#fff!important;color:#000!important;border-bottom:2px solid #000}
+    header.top h1,header.top p,.eyebrow{color:#000!important}
+    h2{break-after:avoid} .card,.banner,.tablewrap{break-inside:avoid}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<header class="top"><div class="wrap">
+  <p class="eyebrow">Pacific Surfaces &middot; 18 September 2026</p>
+  <h1>Demo Run Sheet</h1>
+  <p>What to open, in the order to open it &mdash; and the two or three things that will look thin, so you hear it here rather than in front of someone.</p>
+</div></header>
+
+<main class="wrap">
+
+<div class="banner"><b>Everything below is invented data in a separate database.</b>
+No real customer, price or slab is reachable from the demo.</div>
+
+<h2><span class="n">00</span>Start it</h2>
+<pre><code>cd C:\Users\user\Desktop\ERP
+npm run demo</code></pre>
+<p class="lede">Wait for <code>✓ Ready</code>, then open <strong>http://localhost:3000</strong>.</p>
+
+<div class="banner stop"><b>Check for this box before Next starts.</b>
+<pre style="margin:8px 0 0"><code>┌──────────────────────────────────────────┐
+│  DEMO MODE — database: pacificdemo       │
+└──────────────────────────────────────────┘</code></pre>
+<p style="margin:8px 0 0"><strong>No box means you are on production.</strong> <code>npm run dev</code> is the real app &mdash; one word apart.</p></div>
+
+<div class="card">
+  <strong>Sign in</strong> &mdash; branch <strong>Office</strong>, <code>demo@pacific.demo</code> / <code>demo</code>
+  <p class="lede" style="margin:6px 0 0">That account does not exist in production, so if the login works you are on the demo database. It cannot be otherwise.</p>
+</div>
+
+<h2><span class="n">01</span>Batch lookup — 2101</h2>
+<p class="lede">Lookups → Batch → <code>2101</code>. The one batch complete end to end: raw material → mixer → press → oven → polish → finished slabs, all joined to one number.</p>
+<div class="tablewrap"><table>
+  <thead><tr><th>Stage</th><th>Rows</th><th>Stage</th><th>Rows</th></tr></thead>
+  <tbody>
+    <tr><td>Press runs</td><td class="num">4</td><td>Finished slabs</td><td class="num">39</td></tr>
+    <tr><td>Oven runs</td><td class="num">4</td><td>Polish QC</td><td class="num">7</td></tr>
+    <tr><td>Mixer cycles</td><td class="num">2</td><td></td><td></td></tr>
+  </tbody>
+</table></div>
+
+<h2><span class="n">02</span>Slab lookup — 900001</h2>
+<p class="lede">Lookups → Slab → <code>900001</code>. <em>Aurora Mist</em>, 2 cm, grade A, from batch 2101 &mdash; traced back through every station. <code>900002</code> is grade C and <code>900003</code> is 3 cm if you want a different grade or thickness.</p>
+
+<h2><span class="n">03</span>Batch costing — 2101</h2>
+<p class="lede">Office → Batch Costing → <code>2101</code>. The only fully costed batch, and it is complete.</p>
+<ul>
+  <li>10 material lines &mdash; resin, three grit sizes, filler, two pigments, two chemicals</li>
+  <li>3 grit silos split across 3 suppliers, <strong>every line priced</strong></li>
+  <li>15 rate-card entries behind it; both sign-offs recorded</li>
+</ul>
+<div class="banner warn"><b>Only 2101 is costed.</b> Every other batch shows an empty sheet. That is deliberate &mdash; the sheet refuses to total when a line is unpriced, so one batch done properly beats eighteen half-priced ones. Don't open another batch here.</div>
+
+<h2><span class="n">04</span>Inventory — the fullest screens</h2>
+<p class="lede">600 slabs, 24 designs, spread over 90 days so the age column has a shape.</p>
+<div class="tablewrap"><table>
+  <thead><tr><th>Where</th><th>What's there</th></tr></thead>
+  <tbody>
+    <tr><td>Slabs by design</td><td>Quarry Ash 31 · Cinder Storm 30 · Pale Harbour 28 · Umber Vein 27 · Slate Meridian 27</td></tr>
+    <tr><td>Batch <code>2102</code></td><td><strong>61 slabs</strong> — the fullest. <code>2106</code> has 60</td></tr>
+    <tr><td>Designs tab <span class="pill p-warn">admin</span></td><td>The design-name worklist, with merge suggestions</td></tr>
+  </tbody>
+</table></div>
+
+<h2><span class="n">05</span>Commercial</h2>
+<div class="tablewrap"><table>
+  <thead><tr><th>Clients</th><th>Orders</th><th>Enquiries</th><th>Stock holds</th></tr></thead>
+  <tbody><tr><td class="num">10</td><td class="num">12</td><td class="num">14</td><td class="num">5</td></tr></tbody>
+</table></div>
+<p class="lede">Invented companies: Altamira Piedra S.A. de C.V., Blue Cedar Countertops Inc, Caldera Stoneworks LLC, Harbourline Interiors Pvt Ltd, Kestrel Kitchens Pty Ltd, Meridian Surfaces GmbH. Orders run <code>ORD/26-27/N0001</code> upward and sit at different stages &mdash; CLOSED, DISPATCHED, INVOICED, READY, DISPATCH_CHECK &mdash; so the board is not one flat column.</p>
+
+<h2><span class="n">06</span>Sampling &amp; Fabrication</h2>
+<p class="lede"><strong>Sampling:</strong> 30 shelf rows, plus Sample Kit Box (12 piece), Mailer Box (4 piece), Floor Stand (24 slot), Counter Display (9 slot).<br>
+<strong>Fab:</strong> 6 projects, 8 purchase orders, 10 workers, 30 slab jobs, 40 cutting entries, 120 polishing entries.</p>
+
+<h2><span class="n">07</span>Other logins</h2>
+<p class="lede">All on the password <code>demo</code>. Each sees only its own screens &mdash; which is itself worth showing. Sign in on the branch given, not Office.</p>
+<div class="tablewrap"><table>
+  <thead><tr><th>Email</th><th>Role</th><th>Branch</th></tr></thead>
+  <tbody>
+    <tr><td><code>demo@pacific.demo</code></td><td>ADMIN</td><td>Office</td></tr>
+    <tr><td><code>ramesh.kumar@pacific.demo</code></td><td>LINE_MANAGER</td><td>Shop floor</td></tr>
+    <tr><td><code>arun.subramanian@pacific.demo</code></td><td>INCHARGE</td><td>Shop floor</td></tr>
+    <tr><td><code>suresh.balan@pacific.demo</code></td><td>OPERATOR</td><td>Shop floor</td></tr>
+    <tr><td><code>vignesh.iyer@pacific.demo</code></td><td>OPERATOR</td><td>Fabrication</td></tr>
+    <tr><td><code>deepa.krishnan@pacific.demo</code></td><td>FINANCE</td><td>Office</td></tr>
+  </tbody>
+</table></div>
+
+<h2><span class="n">08</span>What not to open</h2>
+<div class="banner warn"><b>The CEO report will look sparse.</b>
+120 QC rows across 21 June – 14 September &mdash; under two a day, and the busiest single day has <strong>four</strong>. Real production is thousands. If the report takes a date range, use the whole span and it reads fine; a single-day view will look nearly empty whichever day you pick. <em>Ask for a denser reseed if you need this screen &mdash; it is a few minutes' work.</em></div>
+<div class="banner stop"><b>Nothing that sends.</b>
+Email, Telegram, WhatsApp. The database is isolated; outbound messaging is not.</div>
+<div class="banner stop"><b>Salesforce sync.</b>
+Not wired to the demo database, and its credentials point at the real org. Leave it alone.</div>
+
+<h2><span class="n">09</span>If it will not start</h2>
+<div class="tablewrap"><table>
+  <thead><tr><th>Symptom</th><th>Cause</th></tr></thead>
+  <tbody>
+    <tr><td><code>Missing script: "demo"</code></td><td>That clone predates the demo tooling — <code>git pull</code>, then <code>npm install</code></td></tr>
+    <tr><td><code>Refusing to start…</code></td><td>No <code>.env.local</code>, or its <code>DATABASE_URL</code> does not name <code>neondb</code>. The demo URL is derived from it at launch and never stored</td></tr>
+    <tr><td><code>ERR_CONNECTION_REFUSED</code></td><td>Next has not finished starting. Wait for <code>✓ Ready</code></td></tr>
+    <tr><td>Port 3000 busy</td><td><code>npx kill-port 3000</code>, then start again</td></tr>
+  </tbody>
+</table></div>
+
+<h2><span class="n">10</span>Refill the data</h2>
+<pre><code>npm run demo:seed</code></pre>
+<p class="lede">Wipes <code>pacificdemo</code> and rebuilds it in about a minute &mdash; 3,852 rows. Safe any time: it refuses to start unless Postgres itself confirms the database is <code>pacificdemo</code>, and it can reach nothing else.</p>
+
+<footer>Figures measured from the seeded database on 18 September 2026, not estimated. Also in the repository at <code>claude/DEMO-RUN-SHEET.md</code>.</footer>
+</main>
