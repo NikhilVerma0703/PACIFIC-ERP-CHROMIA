@@ -100,6 +100,8 @@ async function main(): Promise<void> {
   const modules = [
     "10-users", "20-catalogue", "30-production",
     "40-inventory", "50-commercial", "60-fab", "70-sampling", "80-costing",
+    // last: it reads the finished slabs the earlier modules wrote
+    "90-trace",
   ];
 
   for (const name of modules) {
