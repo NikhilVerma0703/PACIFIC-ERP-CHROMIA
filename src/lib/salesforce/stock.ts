@@ -21,6 +21,7 @@ import {
 import { soql, compositePatch, readConfig, limitsSeen, callsThisRun, resetCallCount, type SfConfig } from "./client";
 import { orgNearlyOut, overOwnBudget, DAILY_CALL_BUDGET } from "./limits";
 import { diffProducts, productMirrorKey, productPayloadHash } from "./stock-rules";
+import { alertStandDown, type AlertOutcome } from "./alert";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
@@ -77,6 +78,11 @@ export interface SyncSummary {
   ourCalls: { thisRun: number; today: number; budget: number };
   /** Set when a guard stopped the writes, with the reason. Null on a normal run. */
   stoodDown: string | null;
+  /** What the stand-down alert did — sent, logged, or neither, and why. Null
+   *  on a run that did not stand down. Stored in sf_sync_run so the NEXT run
+   *  can apply the once-an-hour rule, and shown on the admin page so a silent
+   *  alerting system cannot stay silent about itself. */
+  alert?: AlertOutcome | null;
   durationMs: number;
 }
 
@@ -345,6 +351,7 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
     apiUsage: limitsSeen(),
     ourCalls: { thisRun: callsThisRun(), today: spentToday + callsThisRun(), budget: DAILY_CALL_BUDGET },
     stoodDown: null,
+    alert: null,
     durationMs: 0,
   };
 
@@ -364,6 +371,22 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
     summary.stoodDown = `This integration has used ${spentToday + callsThisRun()} calls today against its own ceiling of ${DAILY_CALL_BUDGET}, so nothing was written.`;
   }
   if (summary.stoodDown) {
+    // TELL SOMEBODY. Until this line the stand-down was a sentence in a JSON
+    // response nobody was reading: the sync would quietly decline to write for
+    // as long as the org stayed short of API calls, and the first anyone would
+    // know is a rep noticing stale stock. Pacific's administrator asked for
+    // both channels (REPLY-9) — a Telegram message to ops and an
+    // Integration_Log__c row that pages him.
+    //
+    // BEFORE recordRun, so what the alert did lands in the same row. The next
+    // run reads `alert.telegramAt` back out of it to apply the hourly rule, so
+    // the ordering here is what makes the rate limit work at all.
+    summary.alert = await alertStandDown(summary.stoodDown, {
+      ourCalls: summary.ourCalls,
+      apiUsage: summary.apiUsage,
+      stockRows: summary.stockRows,
+      productRows: summary.productRows,
+    });
     await recordRun(opts, summary, started);
     summary.durationMs = Date.now() - started;
     return summary;
@@ -444,7 +467,7 @@ async function recordRun(opts: SyncOptions, summary: SyncSummary, started: numbe
     new Date(started),
     opts.dry,
     summary.wrote.failures.length === 0,
-    JSON.stringify({ ourCalls: summary.ourCalls, wrote: summary.wrote, stoodDown: summary.stoodDown }),
+    JSON.stringify({ ourCalls: summary.ourCalls, wrote: summary.wrote, stoodDown: summary.stoodDown, alert: summary.alert ?? null }),
     summary.stoodDown,
   ).catch(() => {});
 }

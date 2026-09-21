@@ -26,6 +26,7 @@ import { secretEqual } from "@/lib/secretEqual";
 import { commercialGate } from "@/lib/commercial/access";
 import { syncStock } from "@/lib/salesforce/stock";
 import { missingConfig, readConfig, whoAmI, SfError } from "@/lib/salesforce/client";
+import { alertRunFailed } from "@/lib/salesforce/alert";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -123,6 +124,22 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: true, summary });
   } catch (e) {
     const err = e as Error;
+    // A CRASH IS ALSO WORTH AN ALERT — and it is the one this route can raise
+    // that syncStock cannot, because syncStock is what threw. Status__c
+    // "Failed" rather than "Retry": a stand-down resumes by itself, a run that
+    // errored out does not, and Pacific's administrator asked for the two to
+    // be distinguishable (REPLY-9).
+    //
+    // Only on a REAL run. A dry run that throws is somebody reading the
+    // summary in a browser; paging the Salesforce administrator for it would
+    // teach him to ignore the alert.
+    //
+    // AWAITED, NOT FIRE-AND-FORGET: this route is a serverless function, and
+    // an un-awaited promise here is cancelled the moment the response is
+    // returned — the alert would be sent only when the runtime happened to be
+    // slow. alertRunFailed never throws, so this cannot mask the original
+    // error, which is still what the body reports.
+    if (!dry) await alertRunFailed(err);
     // 500 so a failed cron run shows red in Vercel's log rather than being
     // recorded as a success that did nothing.
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 });
