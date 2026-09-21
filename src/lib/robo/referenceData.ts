@@ -34,6 +34,7 @@ import { productionDateOf, delayProductionDateOf } from "@/lib/robo/productionDa
 import { productionSpanMinutes, stampMinutes } from "@/lib/robo/productionSpan";
 import { machineLabel } from "@/lib/robo/utils";
 import { designMatchKey, mergedDelayMinutes, avgSlabsPerHourNet, isRobotDelayCode } from "@/lib/robo/referenceSheet";
+import { batchNosMatch } from "@/lib/robo/batchNo";
 
 /** Robo machine order for listing the programs, matching every other Robo export
  *  (Robo1→Robo4 = Roycut-1, Roymix, Roycut-2, Roycut-3). */
@@ -97,7 +98,7 @@ export async function buildReferenceSummary(designInput: string): Promise<Refere
   //    index that would help here and the strip cannot be expressed in SQL, so the
   //    match is done in JS over the (small) set of recipe names.
   const recipes = await prisma.roboBatchRecipe.findMany({
-    select: { id: true, designName: true },
+    select: { id: true, designName: true, batchNo: true },
   });
   const matchIds = recipes
     .filter((r) => designMatchKey(r.designName) === key)
@@ -136,17 +137,52 @@ export async function buildReferenceSummary(designInput: string): Promise<Refere
   const runId = latest.batchRecipeId;
   if (!runId) return null;
 
-  // 3) The run's slabs (already in memory) and its recipe / delays.
-  const runSlabs = slabs.filter((s) => s.batchRecipeId === runId);
+  // 3) THE RUN IS THE BATCH, NOT ONE SETUP ROW.
+  //
+  // This counted a single batchRecipeId, and that is why the sheet was wrong in
+  // two places at once. `RoboBatchRecipe` is one SETUP: a batch that runs across
+  // two shifts or past midnight is entered twice and gets two rows with the same
+  // batchNo. Measured on live Neon 2026-09-21: D-1449 has 2 setup rows over 344
+  // slabs, D-1445 2 over 322, D-1425 3 over 235. Scoping to one row therefore
+  // under-reported Total Slabs AND silently dropped every Robot Delay logged
+  // against the other rows' slabs — the two separate complaints in the brief are
+  // one bug, and fixing it here fixes both.
+  //
+  // batchNosMatch is the register's own rule (lib/robo/batchNo.ts): case and
+  // hyphens fold, "1449" matches "D-1449", but "A-1248" and "D-1248" stay two
+  // batches. A setup with NO batch number cannot be grouped by one, so it falls
+  // back to being its own run — which is exactly the old behaviour, kept for the
+  // rows that genuinely have nothing to group on.
+  // AND THE DESIGN STILL BOUNDS IT. Grouping on batchNo alone was wrong and the
+  // live data said so immediately: batch D-1423 carries setups for AUREATE and
+  // for Roots, so "AUREATE's latest run" listed Roots_T4_NEW among its programs
+  // and would have counted Roots' delays as AUREATE's. A batch can be mixed —
+  // the register has a split-a-mixed-batch flow for exactly that — so the run
+  // is (this batch AND this design), never the batch alone.
+  const matchIdSet = new Set(matchIds);
+  const latestRecipe = recipes.find((r) => r.id === runId);
+  const runBatchNo = (latestRecipe?.batchNo ?? "").trim();
+  const runIds = runBatchNo
+    ? recipes.filter((r) => matchIdSet.has(r.id) && batchNosMatch(runBatchNo, r.batchNo)).map((r) => r.id)
+    : [runId];
+  const runIdSet = new Set(runIds);
 
-  const recipe = await prisma.roboBatchRecipe.findUnique({
-    where: { id: runId },
+  const runSlabs = slabs.filter((s) => s.batchRecipeId && runIdSet.has(s.batchRecipeId));
+
+  // EVERY setup of the run, newest last, so the programs below cover the whole
+  // batch and not just whichever shift happened to be entered last.
+  const runRecipes = await prisma.roboBatchRecipe.findMany({
+    where: { id: { in: runIds } },
     include: { shift: true, entries: { include: { machine: true } } },
+    orderBy: { createdAt: "desc" },
   });
+  const recipe = runRecipes.find((r) => r.id === runId) ?? runRecipes[0];
   if (!recipe) return null;
 
   const delays = await prisma.roboDelayLog.findMany({
-    where: { productionRecord: { batchRecipeId: runId } },
+    // Every setup row of the batch, for the reason above — a delay logged on the
+    // second shift's slabs belongs to this run as much as the first shift's.
+    where: { productionRecord: { batchRecipeId: { in: runIds } } },
     select: {
       durationMinutes: true,
       startTime: true,
@@ -190,10 +226,47 @@ export async function buildReferenceSummary(designInput: string): Promise<Refere
 
   // Programs of the Robos actually used = setup entries that carry a program name,
   // in Robo order. A configured machine with no program set was not really run.
-  const programs: ReferenceProgram[] = [...recipe.entries]
+  // Across every setup of the batch, de-duplicated on Robo+program. A batch run
+  // over two shifts is set up twice, usually identically — listing it twice
+  // would read as two runs. When a Robo genuinely ran two different programs
+  // across the shifts, BOTH are listed, because that is a real fact about the
+  // run and hiding it would misdescribe what produced these slabs.
+  // De-duplicated on a FOLDED key, because the register types one program many
+  // ways: "Calcatta gold zz6", "Calcatta _gold_zz6" and "CALACATTA GOLD ZZ6"
+  // are one program and listing three reads as three. Same fold the batch
+  // numbers use (case and non-alphanumerics), and the FIRST spelling seen wins
+  // — the setups are read newest-first below, so that is the most recent one.
+  const programKey = (robo: string, program: string) =>
+    `${robo}|${program.toUpperCase().replace(/[^A-Z0-9]/g, "")}`;
+  // A SETUP THAT PRODUCED NOTHING WAS NOT A RUN, and the heaviest one leads.
+  // Batch D-1423 has three AUREATE setups: one with 0 slabs, one with 1, and
+  // one with 300. Listing all three equally put a setup nobody produced from
+  // beside the one that made the batch, and newest-first led with neither. The
+  // operator reading this is about to set the Robos up again, so the programs
+  // that actually made 300 slabs must come first. Empty setups drop out.
+  const slabsPerRecipe = new Map<string, number>();
+  for (const sl of runSlabs) {
+    if (sl.batchRecipeId) slabsPerRecipe.set(sl.batchRecipeId, (slabsPerRecipe.get(sl.batchRecipeId) ?? 0) + 1);
+  }
+  const productiveRecipes = runRecipes
+    .filter((r) => (slabsPerRecipe.get(r.id) ?? 0) > 0)
+    .sort((a, b) => (slabsPerRecipe.get(b.id) ?? 0) - (slabsPerRecipe.get(a.id) ?? 0));
+  // ...unless NONE of them recorded a slab against a setup, in which case fall
+  // back to every setup rather than showing an empty table.
+  const programSources = productiveRecipes.length ? productiveRecipes : runRecipes;
+
+  const seenProgram = new Set<string>();
+  const programs: ReferenceProgram[] = programSources
+    .flatMap((r) => r.entries)
     .filter((e) => (e.programName ?? "").trim())
     .sort((a, b) => MACHINE_ORDER.indexOf(a.machine.name) - MACHINE_ORDER.indexOf(b.machine.name))
-    .map((e) => ({ robo: machineLabel(e.machine.name), program: (e.programName as string).trim() }));
+    .map((e) => ({ robo: machineLabel(e.machine.name), program: (e.programName as string).trim() }))
+    .filter((p) => {
+      const k = programKey(p.robo, p.program);
+      if (seenProgram.has(k)) return false;
+      seenProgram.add(k);
+      return true;
+    });
 
   // Thickness: the run's setup value, falling back to the first slab that carries
   // its own (a batch that changed thickness mid-run records it per slab).

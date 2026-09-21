@@ -137,7 +137,7 @@ export function ImportClient() {
           </button>
         </div>
         <p className="mt-3 text-xs text-gray-400">
-          Expects a “Complete Production” workbook from Download Records. Slabs that already exist on the same
+          Expects a “Complete Production” workbook from Download Slab Records. Slabs that already exist on the same
           production date are skipped, so re-importing the same file is safe.
         </p>
 
