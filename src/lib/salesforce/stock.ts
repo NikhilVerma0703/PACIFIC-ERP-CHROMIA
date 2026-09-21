@@ -182,20 +182,26 @@ async function readSamplesAndUnits(): Promise<StockRow[]> {
     await db.samplingStock.findMany({ select: { id: true, quantity: true, colourFinishId: true, sizeId: true } }).catch(() => []);
   if (shelves.length) {
     const [finishes, sizes] = await Promise.all([
-      db.productColourFinish.findMany({ select: { id: true, finish: true, colour: { select: { name: true, series: true } } } }).catch(() => []),
+      // `series` IS A RELATION, NOT A COLUMN — ProductColour holds seriesId and a
+      // ProductSeries relation. `series: true` therefore hands back the whole
+      // related OBJECT, and Series__c is a text field in Salesforce: the first
+      // live run posted `{id, name, position, ...}` into it and Salesforce
+      // rejected 520 of 845 rows with "Cannot deserialize instance of string
+      // from START_OBJECT value {". Select the one column we actually print.
+      db.productColourFinish.findMany({ select: { id: true, finish: true, colour: { select: { name: true, series: { select: { name: true } } } } } }).catch(() => []),
       db.samplingSize.findMany({ select: { id: true, lengthIn: true, widthIn: true, thicknessMm: true } }).catch(() => []),
     ]);
     const fBy = new Map(finishes.map((f: Record<string, unknown>) => [f.id as string, f]));
     const sBy = new Map(sizes.map((s: Record<string, unknown>) => [s.id as string, s]));
     for (const sh of shelves) {
-      const f = fBy.get(sh.colourFinishId) as { finish?: string; colour?: { name?: string; series?: string } } | undefined;
+      const f = fBy.get(sh.colourFinishId) as { finish?: string; colour?: { name?: string; series?: { name?: string } } } | undefined;
       const z = sBy.get(sh.sizeId) as { lengthIn?: unknown; widthIn?: unknown; thicknessMm?: unknown } | undefined;
       if (!f || !z) continue;
       const label = `${f.colour?.name ?? ""} (${f.finish ?? ""}) ${z.lengthIn} × ${z.widthIn} in · ${z.thicknessMm} mm`;
       // INCLUDING SHELVES AT ZERO: a shelf that emptied is "none left", which is
       // a different answer from "never cut" and must stay different.
       out.push(sampleRow(sh.id, label, Number(sh.quantity ?? 0), {
-        Series__c: f.colour?.series ?? null,
+        Series__c: f.colour?.series?.name ?? null,
         Colour__c: f.colour?.name ?? null,
         Finish__c: f.finish ?? null,
         Size_Label__c: `${z.lengthIn} × ${z.widthIn} in · ${z.thicknessMm} mm`,
@@ -206,10 +212,10 @@ async function readSamplesAndUnits(): Promise<StockRow[]> {
     }
     // A colour+finish that has NEVER been cut: no shelf row at all.
     const stocked = new Set(shelves.map((s) => s.colourFinishId));
-    for (const f of finishes as Array<{ id: string; finish?: string; colour?: { name?: string; series?: string } }>) {
+    for (const f of finishes as Array<{ id: string; finish?: string; colour?: { name?: string; series?: { name?: string } } }>) {
       if (stocked.has(f.id)) continue;
       out.push(finishRow(f.id, `${f.colour?.name ?? ""} (${f.finish ?? ""})`, {
-        Series__c: f.colour?.series ?? null,
+        Series__c: f.colour?.series?.name ?? null,
         Colour__c: f.colour?.name ?? null,
         Finish__c: f.finish ?? null,
         ERP_Colour_Finish_Id__c: f.id,

@@ -179,3 +179,46 @@ test("the recovery message reads as good news, not another alarm", () => {
   assert.match(t, /writing again/);
   assert.ok(!/stood down/.test(t));
 });
+
+/* ------------------------------------------------ no object may reach a field */
+// THE FIRST LIVE RUN REJECTED 520 OF 845 ROWS, and this is the shape of the
+// fault that did it. `ProductColour.series` is a RELATION; Prisma's
+// `series: true` returns the whole related record, and Series__c is a text
+// field, so every sample and finish row posted `{id, name, position, ...}`
+// into it: "Cannot deserialize instance of string from START_OBJECT value {".
+//
+// The bug was invisible in review — `f.colour?.series` reads exactly like a
+// column — and invisible in the dry run, which builds the identical payloads
+// and never posts them. Only Salesforce could tell us, and it told us in
+// production. So the rule gets a test that does not need Salesforce: NO field
+// value may be a non-null object. Scalars, strings, numbers, booleans, null.
+import { slabRow, sampleRow, finishRow, unitRow } from "../src/lib/salesforce/stock-rules.ts";
+
+const scalarOnly = (fields: Record<string, unknown>, where: string) => {
+  for (const [k, v] of Object.entries(fields)) {
+    assert.ok(
+      v === null || typeof v !== "object",
+      `${where}: ${k} is ${JSON.stringify(v)} — an object cannot go into a Salesforce field`,
+    );
+  }
+};
+
+test("a sample row carrying a relation object is refused by the rule", () => {
+  // Exactly what the live run sent, reduced: the related record in place of
+  // its name. Written as the SYMPTOM, so the test fails if anyone re-widens
+  // the select.
+  const related = { id: "cuid", name: "Classic", position: 1 };
+  const bad = sampleRow("s1", "label", 3, { Series__c: related });
+  assert.throws(() => scalarOnly(bad.fields, "sample"), /cannot go into a Salesforce field/);
+
+  const good = sampleRow("s1", "label", 3, { Series__c: related.name });
+  scalarOnly(good.fields, "sample");
+});
+
+test("every row builder emits scalars only", () => {
+  scalarOnly(sampleRow("s", "l", 1, { Series__c: "Classic", Colour__c: "Ash", Finish__c: null }).fields, "sample");
+  scalarOnly(finishRow("f", "l", { Series__c: "Classic", Colour__c: null }).fields, "finish");
+  scalarOnly(unitRow("u", "Box", "BOX", 2).fields, "unit");
+  const slab = slabRow({ canonical: "Aurora", mm: 20, code: "QZ-AURORA-20", available: 5 } as never, null);
+  scalarOnly(slab.fields, "slab");
+});
