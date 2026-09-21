@@ -21,7 +21,7 @@ import {
 import { soql, compositePatch, readConfig, limitsSeen, callsThisRun, resetCallCount, type SfConfig } from "./client";
 import { orgNearlyOut, overOwnBudget, DAILY_CALL_BUDGET } from "./limits";
 import { diffProducts, productMirrorKey, productPayloadHash } from "./stock-rules";
-import { alertStandDown, type AlertOutcome } from "./alert";
+import { alertStandDown, alertRecovery, type AlertOutcome } from "./alert";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
@@ -434,6 +434,18 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
     // retried next run rather than assumed done.
     await recordMirror(rowsToWrite.filter((_, i) => res[i]?.success), diff.toRetire);
   }
+
+  // THE OTHER END OF THE EVENT. If the previous run stood down and this one
+  // wrote, the outage is over and that is worth saying — on both channels, and
+  // as a Success row rather than an edit of the Retry row, because our
+  // integration user has Create on Integration_Log__c and deliberately not
+  // Edit (REPLY-11 §2). A no-op on every run that follows a normal one, which
+  // is almost all of them.
+  //
+  // BEFORE the call counters are read, so the one API call it may spend is
+  // counted in this run's total rather than silently omitted from the budget.
+  const recovery = await alertRecovery(summary.wrote);
+  if (recovery.logId || recovery.note) summary.alert = recovery;
 
   summary.apiUsage = limitsSeen();
   summary.ourCalls = { thisRun: callsThisRun(), today: spentToday + callsThisRun(), budget: DAILY_CALL_BUDGET };

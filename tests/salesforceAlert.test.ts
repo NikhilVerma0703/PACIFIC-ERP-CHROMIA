@@ -8,8 +8,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  planStandDownAlert, integrationLogRecord, standDownTelegram,
-  TELEGRAM_REPEAT_MS, PAYLOAD_MAX,
+  planStandDownAlert, planRecoveryAlert, integrationLogRecord, standDownTelegram,
+  recoveryMessage, recoveryTelegram,
+  TELEGRAM_REPEAT_MS, PAYLOAD_MAX, ERROR_MAX,
 } from "../src/lib/salesforce/alert-rules.ts";
 
 const T0 = new Date("2026-09-21T10:00:00.000Z");
@@ -89,9 +90,19 @@ test("a run that errored out is Failed, not Retry", () => {
   assert.equal(rec.Status__c, "Failed");
 });
 
-test("an over-long message is truncated rather than rejected by Salesforce", () => {
+test("the field caps are the org's real ones, not assumed defaults", () => {
+  // Both were wrong until the administrator read the live field definitions
+  // for us (REPLY-11 §1). Error_Message__c was capped at 255 on an assumption
+  // that it was a Text(255); it is a long text of 32,768. A 5,000-character
+  // failure message used to arrive cut off at the first sentence.
+  assert.equal(ERROR_MAX, 32_768);
+  assert.equal(PAYLOAD_MAX, 131_072);
+
   const rec = integrationLogRecord({ status: "Retry", message: "x".repeat(5_000) });
-  assert.equal(String(rec.Error_Message__c).length, 255);
+  assert.equal(String(rec.Error_Message__c).length, 5_000, "5k fits and must not be cut");
+
+  const huge = integrationLogRecord({ status: "Failed", message: "x".repeat(40_000) });
+  assert.equal(String(huge.Error_Message__c).length, ERROR_MAX, "past the cap it is trimmed to fit");
 });
 
 test("a small payload is attached; an enormous one is dropped whole", () => {
@@ -131,4 +142,40 @@ test("when the log row could not be written, the message says so outright", () =
   const t = standDownTelegram({ message: "m", newEvent: true, logged: false });
   assert.match(t, /could NOT be written/);
   assert.ok(!/so Salesforce has been alerted too/.test(t));
+});
+
+/* --------------------------------------------- the other end of the event */
+
+test("a normal run after a normal run says nothing at all", () => {
+  // The overwhelmingly common case. It must cost no Salesforce call.
+  assert.deepEqual(planRecoveryAlert({ stoodDown: false, lastTelegramAt: null }),
+    { log: false, telegram: false });
+});
+
+test("the first normal run after a stand-down announces the recovery", () => {
+  assert.deepEqual(planRecoveryAlert({ stoodDown: true, lastTelegramAt: null }),
+    { log: true, telegram: true });
+});
+
+test("the recovery is a Success row, which by their rule pages nobody", () => {
+  // REPLY-11 §3: their alert fires on Inbound AND Status IN (Retry, Failed).
+  // A Success row is how we close the event off WITHOUT needing edit access on
+  // Integration_Log__c — which we were offered and declined, because a second
+  // row needs only the Create we already hold, and an integration that can edit
+  // that object can also rewrite the 26 T5 rows nobody agreed to touch.
+  const rec = integrationLogRecord({ status: "Success", message: recoveryMessage({ products: 3, stockRows: 12 }) });
+  assert.equal(rec.Status__c, "Success");
+  assert.equal(rec.Direction__c, "Inbound");
+  assert.ok(!["Retry", "Failed"].includes(String(rec.Status__c)), "must not page anyone");
+});
+
+test("the recovery sentence counts singular and plural correctly", () => {
+  assert.match(recoveryMessage({ products: 1, stockRows: 1 }), /1 stock row and 1 product;/);
+  assert.match(recoveryMessage({ products: 0, stockRows: 2 }), /2 stock rows and 0 products;/);
+});
+
+test("the recovery message reads as good news, not another alarm", () => {
+  const t = recoveryTelegram(recoveryMessage({ products: 3, stockRows: 12 }));
+  assert.match(t, /writing again/);
+  assert.ok(!/stood down/.test(t));
 });

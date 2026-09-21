@@ -83,6 +83,43 @@ export function planStandDownAlert(prior: PriorRun, now: Date): AlertPlan {
 }
 
 /**
+ * WHEN A STAND-DOWN HAS CLEARED — the other end of the event.
+ *
+ * The administrator noticed that our integration user can CREATE
+ * Integration_Log__c rows but not EDIT them, and offered to grant edit so we
+ * could close an event off by updating its row to Success (REPLY-11 §2).
+ *
+ * WE DO NOT WANT THE EDIT. A second row says the same thing and needs only the
+ * permission we already hold, and least privilege is worth more here than
+ * tidiness: an integration that can edit Integration_Log__c can also rewrite
+ * the 26 T5 rows nobody has agreed to touch. Their own alert rule makes the
+ * second row free — it fires on Retry and Failed only, so a Success row lands
+ * quietly and pages nobody (REPLY-11 §3).
+ *
+ * It is also the more honest record. Editing the Retry row to Success would
+ * erase the fact that the org was ever short of calls; two rows preserve both
+ * the outage and its end, with the times attached.
+ *
+ * Fires on the FIRST run that writes normally after a stand-down, and only
+ * that one — the mirror of the rule that opens an event.
+ */
+export function planRecoveryAlert(prior: PriorRun): { log: boolean; telegram: boolean } {
+  return prior.stoodDown ? { log: true, telegram: true } : { log: false, telegram: false };
+}
+
+/** What the recovery row and message say. */
+export function recoveryMessage(wrote: { products: number; stockRows: number }): string {
+  return `The stand-down has cleared. This run wrote ${wrote.stockRows} stock row`
+    + `${wrote.stockRows === 1 ? "" : "s"} and ${wrote.products} product`
+    + `${wrote.products === 1 ? "" : "s"}; Salesforce is up to date again.`;
+}
+
+/** The Telegram text for a recovery. HTML parse mode, as above. */
+export function recoveryTelegram(message: string): string {
+  return `✅ <b>Salesforce stock sync is writing again</b>\n\n${message}`;
+}
+
+/**
  * The Integration_Log__c record, exactly as the administrator specified it.
  *
  * The field values are quoted from REPLY-9 and are NOT to be tidied. In
@@ -91,12 +128,15 @@ export function planStandDownAlert(prior: PriorRun, now: Date): AlertPlan {
  * bad picklist value fails the whole create. ADMIN-HANDOFF.md §4.7 says the
  * same thing about the T8 value, for the same reason.
  *
- * `status` is the one field that varies: "Retry" for a stand-down, because the
- * next run genuinely will try again, and "Failed" for a run that errored out
- * and will not resume by itself. Their alert reacts to both.
+ * `status` varies, and their alert (REPLY-11 §3) fires on exactly
+ * `Direction__c = Inbound AND Status__c IN (Retry, Failed)`:
+ *
+ *   Retry    a stand-down — the next run genuinely will try again. Pages.
+ *   Failed   a run that errored out and will not resume by itself. Pages.
+ *   Success  the stand-down has cleared. Writes quietly, pages nobody.
  */
 export function integrationLogRecord(opts: {
-  status: "Retry" | "Failed";
+  status: LogStatus;
   message: string;
   payload?: unknown;
 }): Record<string, unknown> {
@@ -105,14 +145,23 @@ export function integrationLogRecord(opts: {
     Status__c: opts.status,
     Touchpoint__c: "T3 - Inventory lookup",
     Object_Type__c: "ERP_Stock__c",
-    // Long text fields have a hard cap in Salesforce and a create that exceeds
-    // it is rejected outright — so the alert about a failure would itself fail.
-    Error_Message__c: String(opts.message ?? "").slice(0, 255),
+    // MEASURED IN THE LIVE ORG, NOT GUESSED. This was 255 — I had assumed a
+    // Text(255) and the administrator read the real field definitions for us
+    // (REPLY-11 §1): it is a long text of 32,768. A stand-down sentence fits
+    // either way, but `alertRunFailed` passes a thrown Error's message, and
+    // those run long. Truncating one at 255 would cut the explanation off
+    // mid-sentence at exactly the moment somebody is trying to read it.
+    Error_Message__c: String(opts.message ?? "").slice(0, ERROR_MAX),
   };
   // "the run summary JSON, IF IT'S SMALL" — their words. A summary that does
   // not fit is dropped rather than truncated: half a JSON document is not
   // JSON, and a field holding `{"wrote":{"stockRows":0,"fa` is worse than an
   // empty one, because it looks like data.
+  //
+  // The cap is the FIELD'S, also from REPLY-11: 131,072, not the 32,000 I had
+  // assumed as a Long Text Area default. As they point out, a run summary is
+  // about 140 bytes, so in practice the payload should always be there — the
+  // limit exists for the case that is not true, not as a routine filter.
   if (opts.payload !== undefined) {
     const json = safeJson(opts.payload);
     if (json && json.length <= PAYLOAD_MAX) rec.Payload__c = json;
@@ -120,8 +169,14 @@ export function integrationLogRecord(opts: {
   return rec;
 }
 
-/** Salesforce's Long Text Area default. Anything at or under this is "small". */
-export const PAYLOAD_MAX = 32_000;
+/** The statuses this integration writes. Their pager reads the first two. */
+export type LogStatus = "Retry" | "Failed" | "Success";
+
+/** `Payload__c` capacity in the live org — 128 KB (REPLY-11, 21 Sep 2026). */
+export const PAYLOAD_MAX = 131_072;
+
+/** `Error_Message__c` capacity in the live org — 32 KB (same source). */
+export const ERROR_MAX = 32_768;
 
 function safeJson(v: unknown): string | null {
   try { return JSON.stringify(v); } catch { return null; }

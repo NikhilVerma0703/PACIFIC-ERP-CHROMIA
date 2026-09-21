@@ -15,8 +15,9 @@ import { prisma } from "@/lib/prisma";
 import { sendTelegram, esc } from "@/lib/telegram";
 import { createRecord, readConfig } from "./client";
 import {
-  planStandDownAlert, integrationLogRecord, standDownTelegram,
-  type PriorRun,
+  planStandDownAlert, planRecoveryAlert, integrationLogRecord, standDownTelegram,
+  recoveryMessage, recoveryTelegram,
+  type PriorRun, type LogStatus,
 } from "./alert-rules";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -117,6 +118,41 @@ export async function alertStandDown(
 }
 
 /**
+ * THE STAND-DOWN HAS CLEARED — announce the end of the event.
+ *
+ * Called from a run that wrote normally. Does nothing at all unless the
+ * previous run stood down, which is the overwhelmingly common case: this costs
+ * one database read per run and one Salesforce call per RECOVERY, of which
+ * there are as many as there are outages.
+ *
+ * A NEW ROW, NOT AN EDIT OF THE OLD ONE — see planRecoveryAlert for why that
+ * is a decision and not a limitation. The Success status means their pager
+ * stays silent (REPLY-11 §3), so this is information, not an alarm.
+ */
+export async function alertRecovery(
+  wrote: { products: number; stockRows: number },
+  now: Date = new Date(),
+): Promise<AlertOutcome> {
+  const prior = await priorRun();
+  const plan = planRecoveryAlert(prior);
+  if (!plan.log && !plan.telegram) return NOTHING;
+
+  const message = recoveryMessage(wrote);
+  const r = await writeIntegrationLog("Success", message, { wrote });
+  const sent = await sendTelegram(recoveryTelegram(esc(message))).catch(() => false);
+  return {
+    // NOT recorded as an event Telegram. `telegramAt` drives the once-an-hour
+    // rule DURING a stand-down; stamping it here would mean that if the sync
+    // stood down again within the hour, the fresh outage would be logged but
+    // the message suppressed. A recovery ends an event, so it must leave no
+    // trace that the next event would read as its own history.
+    telegramAt: null,
+    logId: r.id,
+    note: [r.note, sent ? null : "Telegram was not sent."].filter(Boolean).join(" ") || null,
+  };
+}
+
+/**
  * A run that ERRORED OUT, as against one that stood down.
  *
  * Status__c "Failed", per REPLY-9: a stand-down retries by itself, a crash does
@@ -137,7 +173,7 @@ export async function alertRunFailed(err: unknown, payload?: unknown): Promise<A
 
 /** The one Salesforce write this module makes. Never throws. */
 async function writeIntegrationLog(
-  status: "Retry" | "Failed",
+  status: LogStatus,
   message: string,
   payload: unknown,
 ): Promise<{ id: string | null; note: string | null }> {
