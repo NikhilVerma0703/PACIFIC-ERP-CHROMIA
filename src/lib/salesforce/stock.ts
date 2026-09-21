@@ -66,6 +66,15 @@ export interface SyncSummary {
   topUnmapped: Array<{ design: string; available: number; reason: string }>;
   thirtyMmCodes: string[];
   stockRows: { desired: number; toPush: number; toRetire: number; unchanged: number; toRestamp: number };
+  /** Rows going out with `Product_Missing__c = true` — stock a rep can SEE but
+   *  cannot yet quote, because no Product2 matches the design at that
+   *  thickness. Reported because it is one of the figures Pacific's
+   *  administrator verifies by query after a run, and it is NOT the same as
+   *  `thirtyMmWithoutProduct`: that counts 30 mm CODES with no product, while
+   *  this counts STOCK ROWS at any thickness whose product lookup is null.
+   *  Quoting one where the other was asked for is how two people compare
+   *  numbers that were never the same measurement. */
+  productMissingRows: number;
   /** The same accounting for Product2, which is diffed now rather than written
    *  wholesale: `unchanged` is the number of products that cost no modification
    *  this run. */
@@ -346,6 +355,7 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
     topUnmapped: result.unmapped.slice(0, 25).map((u) => ({ design: u.design, available: u.available, reason: u.reason })),
     thirtyMmCodes: result.lines.filter((l) => l.mm === 30 && !productCodes.has(l.code)).map((l) => l.code).sort(),
     stockRows: { desired: desired.length, toPush: diff.toPush.length, toRetire: diff.toRetire.length, unchanged: diff.unchanged, toRestamp: toRestamp.length },
+    productMissingRows: desired.filter((r) => r.fields?.Product_Missing__c === true).length,
     productRows: { desired: payloads.length, toPush: prodDiff.toPush.length, unchanged: prodDiff.unchanged },
     wrote: { products: 0, stockRows: 0, failures: [] },
     apiUsage: limitsSeen(),
