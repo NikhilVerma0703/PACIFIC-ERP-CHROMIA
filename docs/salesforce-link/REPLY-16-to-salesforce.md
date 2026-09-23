@@ -41,9 +41,8 @@ The rules, so you can reason about it without us:
   product code up to 55 characters. Your longest today is 27. A finish or grade long enough to break
   the limit is shortened to its first seven characters plus a short fixed hash of the whole value.
   If even that won't fit, which takes a product code over 41 characters, both segments become the
-  hash alone. Either way, two long
-  values stay two rows and the same value always gives the same key. No value in the yard today is
-  anywhere near that long.
+  hash alone. Either way, two long values stay two rows and the same value always gives the same
+  key. No value in the yard today is anywhere near that long.
 - **`SAMPLE|`, `FINISH|` and `UNIT|` keys do not change.** Only slab rows split.
 
 ## 3. How the switch happens — and what it will not do
