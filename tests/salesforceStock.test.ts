@@ -1451,6 +1451,21 @@ test("series is found through the ALIAS VARIANTS when the chart spells a design 
   assert.equal(seriesFor("Carrara Cloud", idx, ["carrara cloud"]), null);
 });
 
+test("THE DESIGN'S OWN CHART ENTRY WINS over its alias spellings — Brilliant White, from the first dry run", () => {
+  // Production, 2026-09-23: the alias table maps "Ultima White" onto "Brilliant
+  // White"; the chart lists Brilliant White in Solids and Ultima White, a colour
+  // of its own, in Aurora. Weighing them equally sent 349 slabs out blank.
+  const idx = seriesIndex([
+    { name: "Brilliant White", series: { name: "Solids" } },
+    { name: "Ultima White", series: { name: "Aurora" } },
+    { name: "Star Dust", series: { name: "Celestia" } },
+    { name: "Stardust", series: { name: "Kosmic" } },
+  ]);
+  assert.equal(seriesFor("Brilliant White", idx, ["Ultima White", "Ultimate White", "Brilliant White/Ultima White"]), "Solids");
+  // A name the chart itself lists ambiguously stays blank — no alias breaks the tie.
+  assert.equal(seriesFor("Star Dust", idx, ["Brilliant White"]), null);
+});
+
 test("seriesIndex ambiguity survives a THIRD colour folding onto the same key, in any order", () => {
   const three = [
     { name: "Star Dust", series: { name: "Celestia" } },

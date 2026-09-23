@@ -671,6 +671,8 @@ export function yardGroups(rows: ReadonlyArray<YardRow>): {
  * TWO COLOURS THAT FOLD TOGETHER BUT SIT IN DIFFERENT SERIES give NO answer, not
  * the first one read: Postgres returns rows in no promised order, and a series
  * that flipped between runs would re-push every row of that design each time.
+ * Such a key maps to "" — "the chart lists this name and cannot say" — which
+ * seriesFor keeps apart from a name the chart does not list at all.
  */
 export function seriesIndex(
   colours: ReadonlyArray<{ name?: string | null; series?: { name?: string | null } | null }>,
@@ -683,28 +685,39 @@ export function seriesIndex(
     if (!k || !series || ambiguous.has(k)) continue;
     const seen = out.get(k);
     if (seen === undefined) out.set(k, series);
-    else if (seen !== series) { out.delete(k); ambiguous.add(k); }
+    else if (seen !== series) { out.set(k, ""); ambiguous.add(k); }
   }
   return out;
 }
 
 /**
- * The series of a canonical design: looked up under the canonical AND under every
- * yard spelling the alias table maps onto it, so "Pebble Ice" finds the chart's
- * "Pebbles Ice" if anyone has ever aliased one to the other. The alias table is
- * the ERP's own record that two names are one design — the same evidence
- * isKnownDesign accepts — so this is not a guess.
+ * The series of a canonical design.
  *
- * ONE series or none: if the canonical and its variants land in different
- * series, nothing is sent rather than whichever was looked up first.
+ * THE DESIGN'S OWN NAME FIRST. If the chart lists the canonical itself, that is
+ * its series, whatever its alias spellings say. The first production dry run
+ * found why this matters: the alias table maps "Ultima White" onto "Brilliant
+ * White", and the chart lists Ultima White as a colour of its own in Aurora while
+ * Brilliant White is in Solids. Weighing the two equally made Brilliant White —
+ * 349 slabs, on the chart by name — ambiguous, and sent it blank.
+ *
+ * THE ALIAS SPELLINGS ONLY WHEN THE CHART DOES NOT LIST THE NAME. Then every
+ * yard spelling the alias table maps onto it is tried, so "Pebble Ice" finds the
+ * chart's "Pebbles Ice" if anyone has aliased one to the other. The alias table
+ * is the ERP's own record that two names are one design, so this is not a guess;
+ * and if the spellings land in different series, nothing is sent.
+ *
+ * A name the chart lists AMBIGUOUSLY (seriesIndex's "") gives no answer, and the
+ * aliases are not asked to break the tie.
  */
 export function seriesFor(
   canonical: unknown,
   index: ReadonlyMap<string, string>,
   variants: Iterable<string> = [],
 ): string | null {
+  const own = index.get(foldDesignName(canonical));
+  if (own !== undefined) return own || null;
   const found = new Set<string>();
-  for (const name of [canonical, ...variants]) {
+  for (const name of variants) {
     const s = index.get(foldDesignName(name));
     if (s) found.add(s);
   }
