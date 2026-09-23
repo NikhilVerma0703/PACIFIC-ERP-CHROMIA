@@ -17,7 +17,8 @@ import {
   buildStockLines, productPayloads, summarise, slabRows, sampleRow, finishRow, unitRow,
   diffMirror, payloadHash, isSellableProduct, slabKeyStillResolves, seriesIndex, seriesFor,
   slabKeyCode, planTransition, retirementRow, foldDesignName, yardGroups, ERP_KEY_MAX,
-  probeWave, remaindersDue, verifiedKeys, sendChunks, partitionByNewField,
+  probeWave, remaindersDue, verifiedKeys, sendChunks, partitionByNewField, splitProfile,
+  type SplitProfile,
   type YardRow,
   type ProductRow, type StockGroup, type StockRow, type MirrorEntry,
 } from "./stock-rules";
@@ -94,6 +95,11 @@ export interface SyncSummary {
   /** How many designs have stock and no series — the whole count, where
    *  seriesMissing lists only the 25 heaviest. */
   seriesMissingDesigns: number;
+  /** What the split puts in Salesforce, measured: rows, finish-and-grade
+   *  combinations, rows and slabs per grade and per finish, and the longest
+   *  value of each field before its cap. Computed whether or not the split is
+   *  on, so ?dry=1 answers Salesforce's REPLY-17 before the switch is flipped. */
+  splitProfile: SplitProfile;
   /** The slabs the slab rows carry between them. MUST EQUAL publishedSlabs: the
    *  split divides a line's stock between rows and may never add or lose any.
    *  The one runtime check that would show a wrong split. */
@@ -544,6 +550,7 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
     seriesMissing: seriesWorklist(result.lines, seriesOf),
     seriesMissingDesigns: new Set(result.lines.filter((l) => seriesOf(l.canonical) === null).map((l) => l.canonical)).size,
     slabRowsQty: slabRowsOut.reduce((n, r) => n + r.available, 0),
+    splitProfile: splitProfile(result.lines, seriesOf),
     keysOverLimit: desired.filter((r) => r.key.length > ERP_KEY_MAX).length,
     shapeMigration: {
       current: currentShape,
@@ -775,6 +782,7 @@ async function recordRun(opts: SyncOptions, summary: SyncSummary, started: numbe
       cutGradeExcluded: summary.cutGradeExcluded, keysOverLimit: summary.keysOverLimit,
       slabRowsQty: summary.slabRowsQty, publishedSlabs: summary.publishedSlabs,
       sellableSlabs: summary.sellableSlabs, hiddenUnapproved: summary.hiddenUnapproved,
+      splitProfile: summary.splitProfile,
     }),
     summary.stoodDown,
   ).catch(() => {});

@@ -1247,8 +1247,8 @@ export function slabRows(
       // The 30 mm story, said on the row itself rather than inferred from a
       // null lookup: 4,202 slabs of 59 designs Salesforce sells at 20/12 only.
       Product_Missing__c: productId === null,
-      // The org's own caps, named in their REPLY-10. Longer and the save is
-      // refused and takes the composite batch with it, so never longer — the
+      // The org's own caps, as their REPLY-17 corrected them (Finish 40, Grade
+      // 40, Series 60). Longer and the save is refused, so never longer — the
       // KEY is built from the full value, so clamping here cannot merge rows.
       Finish__c: clampTo(sl.finish, FINISH_MAX),
       Grade__c: clampTo(sl.grade, GRADE_MAX),
@@ -1257,11 +1257,16 @@ export function slabRows(
   }));
 }
 
-/** Finish__c Text(255), Grade__c Text(40), Series__c Text(255): Salesforce's
- *  REPLY-10 of 2026-09-23. Name is the standard Text(80). */
-export const FINISH_MAX = 255;
+/**
+ * Finish__c Text(40), Grade__c Text(40), Series__c Text(60), Name Text(80) —
+ * the field definitions as Salesforce's REPLY-17 corrected them. Their REPLY-10
+ * had said 255 for Finish__c and Series__c, and these caps followed it; a value
+ * between 41 and 255 characters would then have been sent whole and REFUSED,
+ * because Salesforce rejects an over-length value rather than truncating it.
+ */
+export const FINISH_MAX = 40;
 export const GRADE_MAX = 40;
-export const SERIES_MAX = 255;
+export const SERIES_MAX = 60;
 export const NAME_MAX = 80;
 
 /**
@@ -1272,10 +1277,84 @@ export const NAME_MAX = 80;
  * us not to invent.
  */
 export function slabName(canonical: string, mm: number, finish: string | null, grade: string | null): string {
+  return clampTo(fullSlabName(canonical, mm, finish, grade), NAME_MAX) ?? "";
+}
+
+/** The name before the Text(80) cap — what splitProfile measures. */
+function fullSlabName(canonical: string, mm: number, finish: string | null, grade: string | null): string {
   const parts = [`${canonical} ${mm} mm`];
   if (finish) parts.push(finish);
   if (grade) parts.push(`Grade ${grade}`);
-  return clampTo(parts.join(" · "), NAME_MAX) ?? "";
+  return parts.join(" · ");
+}
+
+/**
+ * WHAT THE SPLIT WILL PUT IN SALESFORCE, measured — the figures Salesforce's
+ * REPLY-17 asked for before giving the go-ahead:
+ *
+ *  · rows: how many slab rows the object will carry (one per slice), and
+ *    combos: how many distinct finish-and-grade combinations produce them.
+ *    Their read cap was raised to 20,000 on the strength of this.
+ *  · byGrade / byFinish: rows and slabs per value, blank included — "how many
+ *    rows carry Printing" is one line of it.
+ *  · longest: the longest value each field would carry BEFORE its cap, and
+ *    overCap: how many rows the cap would shorten. A value over Salesforce's
+ *    limit is refused, not truncated, so ours are clamped — this says whether
+ *    that clamp ever does anything, which is the honest answer to "can a
+ *    finish or grade exceed 40 characters, or a design name 40".
+ *
+ * Pure, and computed whether or not the split is on, so a dry run can answer
+ * all of it before anyone flips SF_SLAB_SPLIT.
+ */
+export interface SplitProfile {
+  rows: number;
+  combos: number;
+  byGrade: Array<{ value: string | null; rows: number; slabs: number }>;
+  byFinish: Array<{ value: string | null; rows: number; slabs: number }>;
+  longest: { finish: number; grade: number; series: number; design: number; name: number };
+  overCap: { finish: number; grade: number; series: number; name: number };
+}
+
+export function splitProfile(
+  lines: ReadonlyArray<PublishedLine>,
+  seriesOf: (canonical: string) => string | null = () => null,
+): SplitProfile {
+  const combos = new Set<string>();
+  const byGrade = new Map<string, { value: string | null; rows: number; slabs: number }>();
+  const byFinish = new Map<string, { value: string | null; rows: number; slabs: number }>();
+  const longest = { finish: 0, grade: 0, series: 0, design: 0, name: 0 };
+  const overCap = { finish: 0, grade: 0, series: 0, name: 0 };
+  let rows = 0;
+  const tally = (m: typeof byGrade, value: string | null, slabs: number) => {
+    const k = value ?? "";
+    const t = m.get(k) ?? { value, rows: 0, slabs: 0 };
+    t.rows += 1;
+    t.slabs += slabs;
+    m.set(k, t);
+  };
+  for (const l of lines ?? []) {
+    const series = seriesOf(l.canonical);
+    longest.design = Math.max(longest.design, l.canonical.length);
+    const slices = l.splits && l.splits.length ? l.splits : [{ finish: null, grade: null, available: l.available }];
+    for (const sl of slices) {
+      rows += 1;
+      combos.add(`${keySegment(sl.finish)}|${keySegment(sl.grade)}`);
+      tally(byGrade, sl.grade, sl.available);
+      tally(byFinish, sl.finish, sl.available);
+      const name = fullSlabName(l.canonical, l.mm, sl.finish, sl.grade);
+      longest.finish = Math.max(longest.finish, sl.finish?.length ?? 0);
+      longest.grade = Math.max(longest.grade, sl.grade?.length ?? 0);
+      longest.series = Math.max(longest.series, series?.length ?? 0);
+      longest.name = Math.max(longest.name, name.length);
+      if ((sl.finish?.length ?? 0) > FINISH_MAX) overCap.finish += 1;
+      if ((sl.grade?.length ?? 0) > GRADE_MAX) overCap.grade += 1;
+      if ((series?.length ?? 0) > SERIES_MAX) overCap.series += 1;
+      if (name.length > NAME_MAX) overCap.name += 1;
+    }
+  }
+  const order = (m: typeof byGrade) => [...m.values()].sort((a, b) =>
+    b.rows - a.rows || b.slabs - a.slabs || ((a.value ?? "") < (b.value ?? "") ? -1 : (a.value ?? "") > (b.value ?? "") ? 1 : 0));
+  return { rows, combos: combos.size, byGrade: order(byGrade), byFinish: order(byFinish), longest, overCap };
 }
 
 /** Never longer than the field: a save that exceeds a Salesforce text cap

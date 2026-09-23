@@ -20,7 +20,8 @@ import {
   diffProducts, productMirrorKey, productPayloadHash,
   slabRows, sampleRow, finishRow, unitRow,
   slabKey, parseSlabKey, slabKeyStillResolves, keySegment, finishValue, gradeValue,
-  seriesIndex, seriesFor, slabName, clampTo, GRADE_MAX, NAME_MAX, ERP_KEY_MAX,
+  seriesIndex, seriesFor, slabName, clampTo, GRADE_MAX, NAME_MAX, ERP_KEY_MAX, FINISH_MAX, SERIES_MAX,
+  splitProfile,
   slabKeyCode, planTransition, remainderRow, shapeEverAccepted, retirementRow, yardGroups,
   probeWave, remaindersDue, verifiedKeys, sendChunks, partitionByNewField,
   type StockGroup, type ProductRow, type StockRow, type MirrorEntry,
@@ -1519,4 +1520,63 @@ test("rows carrying Grade__c are written in chunks of their own, so a missing pe
   assert.deepEqual(withGrade.map((r) => r.key), split.map((r) => r.key));
   assert.deepEqual(plain.map((r) => r.key).sort(), [legacy[0]!.key, sample.key, retire.key].sort(),
     "samples, the legacy row and retirements never share a chunk with Grade__c");
+});
+
+test("the caps are the ones Salesforce CORRECTED in REPLY-17: Finish 40, Grade 40, Series 60", () => {
+  // REPLY-10 said 255 for Finish__c and Series__c. A value between 41 and 255
+  // characters would then have been sent whole and refused — Salesforce rejects
+  // an over-length value rather than truncating it.
+  assert.equal(FINISH_MAX, 40);
+  assert.equal(GRADE_MAX, 40);
+  assert.equal(SERIES_MAX, 60);
+  const longFinish = "Brushed Satin With A Hand Typed Note That Runs On";   // 49, unrecognised: sent as typed
+  const out = buildStockLines([
+    { design: "Arva White", slabThickness: "2 cm", polishType: longFinish, grade: "A", available: 2 },
+  ], NO_ALIASES, CANONICALS, PRODUCT_CODES);
+  const [r] = slabRows(out.lines[0]!, null, "S".repeat(70));
+  assert.ok(String(r!.fields.Finish__c).length <= 40, "never over the field, so never refused");
+  assert.ok(String(r!.fields.Series__c).length <= 60);
+  assert.ok(r!.key.includes(keySegment(longFinish).slice(0, 7)), "the key is built from the full value, not the clamped one");
+});
+
+test("the split, measured — the figures Salesforce asked for before the go-ahead", () => {
+  const out = buildStockLines([
+    ...ARVA_SPLIT,
+    { design: "Arva White", slabThickness: "3 cm", polishType: "Polish", grade: "Printing", available: 9 },
+  ], NO_ALIASES, CANONICALS, PRODUCT_CODES);
+  const p = splitProfile(out.lines, (c) => (c === "Arva White" ? "Aurora" : null));
+  assert.equal(p.rows, 5, "four slices of 20 mm and one of 30 mm");
+  assert.equal(p.combos, 5, "POLISHED|A, POLISHED|B, LEATHERED|A, -|- and POLISHED|PRINTING");
+  const grade = (v: string | null) => p.byGrade.find((g) => g.value === v);
+  assert.deepEqual(grade("A"), { value: "A", rows: 2, slabs: 370 });
+  assert.deepEqual(grade("Printing"), { value: "Printing", rows: 1, slabs: 9 }, "the number they asked for");
+  assert.deepEqual(grade(null), { value: null, rows: 1, slabs: 7 }, "blank is counted, not dropped");
+  assert.equal(p.byGrade[0]!.value, "A", "heaviest first");
+  assert.equal(p.byFinish.reduce((n, f) => n + f.rows, 0), p.rows);
+  assert.deepEqual(p.longest, {
+    finish: "Leathered".length, grade: "Printing".length, series: "Aurora".length, design: "Arva White".length,
+    name: "Arva White 30 mm · Polished · Grade Printing".length,
+  });
+  assert.deepEqual(p.overCap, { finish: 0, grade: 0, series: 0, name: 0 }, "nothing today would be clamped");
+
+  // And when something would be, it is counted — the honest answer to "can a
+  // finish or grade exceed 40 characters, or a name its 80".
+  const long = buildStockLines([
+    { design: "Arva White", slabThickness: "2 cm", polishType: "X".repeat(45), grade: "G".repeat(41), available: 1 },
+  ], NO_ALIASES, CANONICALS, PRODUCT_CODES);
+  const q = splitProfile(long.lines);
+  assert.deepEqual(q.overCap, { finish: 1, grade: 1, series: 0, name: 1 });
+  assert.equal(q.longest.finish, 45);
+
+  // A COMBINATION IS NOT A ROW. Polished A on two designs is two rows and one
+  // combination — the fixture above, where every row happened to be a distinct
+  // combination, could not tell the two apart.
+  const shared = buildStockLines([
+    { design: "Arva White", slabThickness: "2 cm", polishType: "Polished", grade: "A", available: 3 },
+    { design: "Sakura", slabThickness: "2 cm", polishType: "Polish", grade: "A", available: 4 },
+    { design: "Sakura", slabThickness: "2 cm", polishType: "Polished", grade: "B", available: 1 },
+  ], NO_ALIASES, CANONICALS, PRODUCT_CODES);
+  const r = splitProfile(shared.lines);
+  assert.equal(r.rows, 3);
+  assert.equal(r.combos, 2, "POLISHED|A and POLISHED|B");
 });
