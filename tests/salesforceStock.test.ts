@@ -1052,6 +1052,17 @@ test("'Polish' and 'Polished' are ONE row — the owner's word, as the sample ro
   assert.equal(finishValue("  Brushed   Satin "), "Brushed Satin", "whitespace only is tidied");
 });
 
+test("a trailing 'finish' is the word, not another finish — the three spellings production's dry run found", () => {
+  assert.equal(finishValue("Leathered finish"), "Leathered", "3 rows that were a second value beside 43 of Leathered");
+  assert.equal(finishValue("Polished Finish"), "Polished");
+  assert.equal(finishValue("matte finish"), "Matte");
+  // Not guessed: two finishes named, or none.
+  assert.equal(finishValue("Leather polish"), "Leather polish");
+  assert.equal(finishValue("No Polish"), "No Polish");
+  assert.equal(finishValue("Finish"), "Finish", "the bare word is not a finish");
+  assert.equal(finishValue("Brushed Satin finish"), "Brushed Satin finish", "an unknown finish keeps its whole spelling");
+});
+
 test("a grade is sent as the yard wrote it; nothing, or a dash, is blank", () => {
   assert.equal(gradeValue("A2"), "A2");
   assert.equal(gradeValue(" Printing "), "Printing");

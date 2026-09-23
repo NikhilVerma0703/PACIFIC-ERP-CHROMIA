@@ -211,7 +211,12 @@ function saysNothing(t: string): boolean {
 export function finishValue(raw: unknown): string | null {
   const t = String(raw ?? "").trim().replace(/\s+/g, " ");
   if (saysNothing(t)) return null;
-  return canonicalFinish(t) ?? t;
+  // A TRAILING "finish" IS THE WORD, NOT A DIFFERENT FINISH. Production's first
+  // dry run found "Leathered finish" on 3 rows beside "Leathered" on 43 — one
+  // shelf, two values in Salesforce's filter. Only the generic suffix is dropped,
+  // and only when what is left is one of the four: "Leather polish" names two
+  // finishes and "No Polish" names none, so both still go out exactly as typed.
+  return canonicalFinish(t) ?? canonicalFinish(t.replace(/ finish$/i, "")) ?? t;
 }
 
 /**
