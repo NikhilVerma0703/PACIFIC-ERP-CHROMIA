@@ -192,7 +192,7 @@ test("the recovery message reads as good news, not another alarm", () => {
 // and never posts them. Only Salesforce could tell us, and it told us in
 // production. So the rule gets a test that does not need Salesforce: NO field
 // value may be a non-null object. Scalars, strings, numbers, booleans, null.
-import { slabRow, sampleRow, finishRow, unitRow } from "../src/lib/salesforce/stock-rules.ts";
+import { slabRows, sampleRow, finishRow, unitRow } from "../src/lib/salesforce/stock-rules.ts";
 
 const scalarOnly = (fields: Record<string, unknown>, where: string) => {
   for (const [k, v] of Object.entries(fields)) {
@@ -219,6 +219,12 @@ test("every row builder emits scalars only", () => {
   scalarOnly(sampleRow("s", "l", 1, { Series__c: "Classic", Colour__c: "Ash", Finish__c: null }).fields, "sample");
   scalarOnly(finishRow("f", "l", { Series__c: "Classic", Colour__c: null }).fields, "finish");
   scalarOnly(unitRow("u", "Box", "BOX", 2).fields, "unit");
-  const slab = slabRow({ canonical: "Aurora", mm: 20, code: "QZ-AURORA-20", available: 5 } as never, null);
-  scalarOnly(slab.fields, "slab");
+  // Split and unsplit both: the three fields the split adds (Finish__c,
+  // Grade__c, Series__c) are strings or null, never an object.
+  const [slab] = slabRows({ canonical: "Aurora", mm: 20, code: "QZ-AURORA-20", available: 5 } as never, null);
+  scalarOnly(slab!.fields, "slab");
+  for (const r of slabRows({
+    canonical: "Aurora", mm: 20, code: "QZ-AURORA-20", available: 5,
+    splits: [{ finish: "Polished", grade: "A", available: 3 }, { finish: null, grade: null, available: 2 }],
+  } as never, null, "Aurora")) scalarOnly(r.fields, "slab split");
 });

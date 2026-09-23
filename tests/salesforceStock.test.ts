@@ -18,7 +18,11 @@ import {
   isSellableProduct, SELLABLE_FAMILY, hasProductAtAnyThickness,
   foldDesignName, isNotSellable, NOT_SELLABLE_CANONICALS,
   diffProducts, productMirrorKey, productPayloadHash,
-  slabRow, sampleRow, finishRow, unitRow,
+  slabRows, sampleRow, finishRow, unitRow,
+  slabKey, parseSlabKey, slabKeyStillResolves, keySegment, finishValue, gradeValue,
+  seriesIndex, seriesFor, slabName, clampTo, GRADE_MAX, NAME_MAX, ERP_KEY_MAX,
+  slabKeyCode, planTransition, remainderRow, shapeEverAccepted, retirementRow, yardGroups,
+  probeWave, remaindersDue, verifiedKeys, sendChunks, partitionByNewField,
   type StockGroup, type ProductRow, type StockRow, type MirrorEntry,
 } from "../src/lib/salesforce/stock-rules.ts";
 import {
@@ -196,11 +200,14 @@ test("30 mm stock is published even though Salesforce sells the design at 20 onl
   // And the row says so on its own face rather than leaving it to be inferred
   // from a null lookup.
   const thirty = out.lines.find((l) => l.mm === 30)!;
-  const row = slabRow(thirty, null);
-  assert.equal(row.key, "SLAB|QZ-ARVAWHITE-30");
-  assert.equal(row.name, "Arva White 30 mm", "what a rep actually types into search");
-  assert.equal(row.fields.Product_Missing__c, true);
-  assert.equal(slabRow(out.lines[0]!, "01t000000000001").fields.Product_Missing__c, false);
+  // No polish or grade in these groups, so ONE row with both blank — and the
+  // Name a rep searches by is exactly what it was before the key split.
+  const [row, ...more] = slabRows(thirty, null);
+  assert.equal(more.length, 0);
+  assert.equal(row!.key, "SLAB|QZ-ARVAWHITE-30|-|-");
+  assert.equal(row!.name, "Arva White 30 mm", "what a rep actually types into search");
+  assert.equal(row!.fields.Product_Missing__c, true);
+  assert.equal(slabRows(out.lines[0]!, "01t000000000001")[0]!.fields.Product_Missing__c, false);
 });
 
 // ── every product hears about itself, every run ─────────────────────────────
@@ -277,28 +284,28 @@ test("the four kinds of searchable row, keyed so a re-run updates rather than tw
 // ── sold out is not retired ─────────────────────────────────────────────────
 
 test("sold out stays searchable; retired is written once and dropped", () => {
-  const arva = slabRow({ canonical: "Arva White", mm: 20, code: "QZ-ARVAWHITE-20", available: 417 }, "01t1");
-  const sakura = slabRow({ canonical: "Sakura", mm: 20, code: "QZ-SAKURA-20", available: 0 }, "01t2");
+  const [arva] = slabRows({ canonical: "Arva White", mm: 20, code: "QZ-ARVAWHITE-20", available: 417 } as never, "01t1");
+  const [sakura] = slabRows({ canonical: "Sakura", mm: 20, code: "QZ-SAKURA-20", available: 0 } as never, "01t2");
 
   const mirror = new Map<string, MirrorEntry>([
-    [arva.key, { key: arva.key, payloadHash: payloadHash(arva) }],
-    [sakura.key, { key: sakura.key, payloadHash: "stale" }],
+    [arva!.key, { key: arva!.key, payloadHash: payloadHash(arva!) }],
+    [sakura!.key, { key: sakura!.key, payloadHash: "stale" }],
     // A design an admin merged away since the last run.
-    ["SLAB|QZ-ASTALMIST-20", { key: "SLAB|QZ-ASTALMIST-20", payloadHash: "whatever" }],
+    ["SLAB|QZ-ASTALMIST-20|POLISHED|A", { key: "SLAB|QZ-ASTALMIST-20|POLISHED|A", payloadHash: "whatever" }],
     // A shelf row that no longer exists.
     ["SAMPLE|gone", { key: "SAMPLE|gone", payloadHash: "whatever" }],
   ]);
 
-  const stillResolves = (key: string) => key === "SLAB|QZ-ARVAWHITE-20" || key === "SLAB|QZ-SAKURA-20";
-  const diff = diffMirror([arva, sakura], mirror, stillResolves);
+  const stillResolves = (key: string) => key === arva!.key || key === sakura!.key;
+  const diff = diffMirror([arva!, sakura!], mirror, stillResolves);
 
   assert.equal(diff.unchanged, 1, "Arva White is identical and costs no API call");
-  assert.deepEqual(diff.toPush.map((r) => r.key), ["SLAB|QZ-SAKURA-20"], "changed payload goes out");
+  assert.deepEqual(diff.toPush.map((r) => r.key), [sakura!.key], "changed payload goes out");
 
   // The two that no longer mean anything are retired ONCE, and nothing is ever
   // deleted: a sample request line pointing at a retired row must still
   // resolve, and deleting it would break a record somebody is looking at.
-  assert.deepEqual(diff.toRetire.map((r) => r.key).sort(), ["SAMPLE|gone", "SLAB|QZ-ASTALMIST-20"]);
+  assert.deepEqual(diff.toRetire.map((r) => r.key).sort(), ["SAMPLE|gone", "SLAB|QZ-ASTALMIST-20|POLISHED|A"]);
   for (const r of diff.toRetire) {
     assert.equal(r.retired, true);
     assert.equal(r.available, 0);
@@ -710,8 +717,8 @@ test("a sold-out row is written to zero ONCE, and never renamed to its own key",
   // so it was re-pushed on EVERY run — at ten runs an hour against a
   // thousand-call daily budget, a few hundred permanently sold-out lines would
   // spend the budget saying nothing.
-  const arva = slabRow({ canonical: "Arva White", mm: 20, code: "QZ-ARVAWHITE-20", available: 0 }, "01t1");
-  const first = diffMirror([], new Map([[arva.key, { key: arva.key, payloadHash: "something-else" }]]), () => true);
+  const [arva] = slabRows({ canonical: "Arva White", mm: 20, code: "QZ-ARVAWHITE-20", available: 0 } as never, "01t1");
+  const first = diffMirror([], new Map([[arva!.key, { key: arva!.key, payloadHash: "something-else" }]]), () => true);
   assert.equal(first.toPush.length, 1, "the line is gone: zero it");
   assert.equal(first.toPush[0]!.available, 0);
   assert.equal(first.toPush[0]!.retired, false, "sold out, not retired — it stays searchable");
@@ -958,4 +965,558 @@ test("the trial marker is a WORD, not a substring", () => {
   assert.equal(isNotSellable("Arva White", "Trail Arva White", none), true);
   assert.equal(isNotSellable("Arva White", "Arva White - Trial", none), true);
   assert.equal(isNotSellable("Arva White", "Arva White", none), false);
+});
+
+// ───────── Finish, grade and series on every slab row — their REPLY-10 ─────────
+//
+// Salesforce asked for Finish__c, Grade__c and Series__c on every ERP_Stock__c
+// slab line, and asked whether ERP_Key__c must change. It must: QC writes
+// polish_type and grade per SLAB, so one design at one thickness is routinely
+// in the yard in several of each at once.
+
+const ARVA_SPLIT: StockGroup[] = [
+  { design: "Arva White", slabThickness: "2 cm", polishType: "Polish", grade: "A", available: 300 },
+  { design: "Arva White", slabThickness: "2 cm", polishType: "Polished", grade: "A", available: 50 },
+  { design: "Arva White", slabThickness: "2 cm", polishType: "Polished", grade: "B", available: 40 },
+  { design: "Arva White", slabThickness: "2 cm", polishType: "Leather", grade: "A", available: 20 },
+  { design: "Arva White", slabThickness: "2 cm", polishType: null, grade: null, available: 7 },
+];
+
+test("ONE LINE PER PRODUCT, ONE ROW PER FINISH AND GRADE — the product count does not move", () => {
+  const out = buildStockLines(ARVA_SPLIT, NO_ALIASES, CANONICALS, PRODUCT_CODES);
+  assert.equal(out.lines.length, 1, "still one line: a product is a design at a thickness");
+  assert.equal(out.lines[0]!.available, 417, "and its total is every slice added up");
+
+  const rows = slabRows(out.lines[0]!, "01t1", "Aurora");
+  assert.deepEqual(rows.map((r) => [r.key, r.available]), [
+    ["SLAB|QZ-ARVAWHITE-20|-|-", 7],
+    ["SLAB|QZ-ARVAWHITE-20|LEATHERED|A", 20],
+    ["SLAB|QZ-ARVAWHITE-20|POLISHED|A", 350],
+    ["SLAB|QZ-ARVAWHITE-20|POLISHED|B", 40],
+  ]);
+  assert.equal(rows.reduce((n, r) => n + r.available, 0), 417, "the rows add up to the line");
+
+  // THE PRODUCT IS TOLD THE WHOLE LINE. productPayloads keys lines by code; had
+  // the lines themselves been split, it would have kept only the last slice
+  // and told Arva White 20 mm it had 40 slabs.
+  const [p] = productPayloads(
+    [{ id: "01t1", name: "Arva White", productCode: "QZ-ARVAWHITE-20", erpSku: null, isActive: true, family: "Quartz Slab" }],
+    out.lines, CANONICALS, PRODUCT_CODES, "T",
+  );
+  assert.equal(p!.ERP_Available_Slabs__c, 417);
+  assert.equal(p!.ERP_Match__c, "Matched");
+});
+
+test("each row carries its finish, grade and series, and blank stays blank", () => {
+  const out = buildStockLines(ARVA_SPLIT, NO_ALIASES, CANONICALS, PRODUCT_CODES);
+  const rows = slabRows(out.lines[0]!, "01t1", "Aurora");
+  const byKey = new Map(rows.map((r) => [r.key, r]));
+
+  const a = byKey.get("SLAB|QZ-ARVAWHITE-20|POLISHED|A")!;
+  assert.equal(a.fields.Finish__c, "Polished");
+  assert.equal(a.fields.Grade__c, "A");
+  assert.equal(a.fields.Series__c, "Aurora");
+  assert.equal(a.name, "Arva White 20 mm · Polished · Grade A", "two rows a rep can tell apart");
+
+  // "If a line genuinely has no grade, leave it blank." Not "-", not "N/A",
+  // not a default — null, which the composite PATCH sends as a cleared field.
+  const none = byKey.get("SLAB|QZ-ARVAWHITE-20|-|-")!;
+  assert.equal(none.fields.Finish__c, null);
+  assert.equal(none.fields.Grade__c, null);
+  assert.equal(none.name, "Arva White 20 mm", "nothing invented in the name either");
+
+  // Everything the line owns is on every slice.
+  for (const r of rows) {
+    assert.equal(r.fields.Design__c, "Arva White");
+    assert.equal(r.fields.Thickness_mm__c, 20);
+    assert.equal(r.fields.Product__c, "01t1");
+    assert.equal(r.fields.Series__c, "Aurora");
+    assert.equal(r.kind, "Slab");
+    assert.equal(r.retired, false);
+  }
+});
+
+test("'Polish' and 'Polished' are ONE row — the owner's word, as the sample rows already send it", () => {
+  // The yard types both. Without folding, one shelf of stock would publish as
+  // two lines under two keys, and a rep filtering on Polished would miss 300
+  // slabs of it.
+  assert.equal(finishValue("Polish"), "Polished");
+  assert.equal(finishValue(" polished "), "Polished");
+  assert.equal(finishValue("Honed"), "Matte");
+  assert.equal(finishValue("Leather"), "Leathered");
+  assert.equal(finishValue("Suede"), "Suede");
+  // A spelling we do not recognise goes out EXACTLY as typed — never dropped,
+  // never guessed onto one of the four.
+  assert.equal(finishValue("Brushed Satin"), "Brushed Satin");
+  assert.equal(finishValue("  Brushed   Satin "), "Brushed Satin", "whitespace only is tidied");
+});
+
+test("a grade is sent as the yard wrote it; nothing, or a dash, is blank", () => {
+  assert.equal(gradeValue("A2"), "A2");
+  assert.equal(gradeValue(" Printing "), "Printing");
+  assert.equal(gradeValue("CTS"), "CTS");
+  // QC's own habits, undone the way QC's writes and dispatch undo them:
+  // "Not graded yet" is no grade (never "Grade: Not graded yet"), and
+  // "C (Reject)" is C — otherwise C would be two rows.
+  assert.equal(gradeValue("Not graded yet"), null);
+  assert.equal(gradeValue("not graded"), null);
+  assert.equal(gradeValue("C (Reject)"), "C");
+  assert.equal(gradeValue("  C  (reject) "), "C");
+  for (const nothing of [null, undefined, "", "   ", "-", "--", "—", "."]) {
+    assert.equal(gradeValue(nothing), null, `${JSON.stringify(nothing)} is not a grade`);
+    assert.equal(finishValue(nothing), null, `${JSON.stringify(nothing)} is not a finish`);
+  }
+});
+
+test("case variants of a grade are one row, and the spelling behind MORE slabs is sent", () => {
+  const out = buildStockLines([
+    { design: "Arva White", slabThickness: "2 cm", polishType: "Polished", grade: "Printing", available: 40 },
+    { design: "Arva White", slabThickness: "2 cm", polishType: "Polished", grade: "PRINTING", available: 3 },
+  ], NO_ALIASES, CANONICALS, PRODUCT_CODES);
+  const rows = slabRows(out.lines[0]!, null);
+  assert.equal(rows.length, 1, "one key — so never two rows fighting over one record");
+  assert.equal(rows[0]!.key, "SLAB|QZ-ARVAWHITE-20|POLISHED|PRINTING");
+  assert.equal(rows[0]!.available, 43);
+  assert.equal(rows[0]!.fields.Grade__c, "Printing");
+});
+
+test("THE SPELLING SENT DOES NOT DEPEND ON THE ORDER POSTGRES RETURNED ROWS IN", () => {
+  // A value that flipped between runs would change the row's hash and re-push
+  // it every time. Tied counts break alphabetically, whatever order they came.
+  const groups: StockGroup[] = [
+    { design: "Arva White", slabThickness: "2 cm", polishType: "Polished", grade: "b", available: 5 },
+    { design: "Arva White", slabThickness: "2 cm", polishType: "Polished", grade: "B", available: 5 },
+  ];
+  const one = slabRows(buildStockLines(groups, NO_ALIASES, CANONICALS, PRODUCT_CODES).lines[0]!, null);
+  const two = slabRows(buildStockLines([...groups].reverse(), NO_ALIASES, CANONICALS, PRODUCT_CODES).lines[0]!, null);
+  assert.deepEqual(one, two);
+  assert.equal(payloadHash(one[0]!), payloadHash(two[0]!));
+});
+
+test("the key has four segments, always, and no value can break it", () => {
+  assert.equal(slabKey("QZ-ARVAWHITE-20", "Polished", "A"), "SLAB|QZ-ARVAWHITE-20|POLISHED|A");
+  assert.equal(slabKey("QZ-ARVAWHITE-20", null, null), "SLAB|QZ-ARVAWHITE-20|-|-");
+  assert.equal(slabKey("QZ-ARVAWHITE-20", "Brushed Satin", "A+"), "SLAB|QZ-ARVAWHITE-20|BRUSHED_SATIN|A+");
+  // A "|" typed into a grade must not become a fifth segment.
+  assert.equal(slabKey("QZ-X-20", "Polished", "A|B"), "SLAB|QZ-X-20|POLISHED|A/B");
+  assert.equal(keySegment("   "), "-");
+  for (const k of [
+    slabKey("QZ-ARVAWHITE-20", "Polished", "A"),
+    slabKey("QZ-X-20", "Polished", "A|B"),
+    slabKey("QZ-X-20", null, null),
+  ]) {
+    assert.equal(k.split("|").length, 4, k);
+    assert.ok(parseSlabKey(k), k);
+  }
+  assert.deepEqual(parseSlabKey("SLAB|QZ-ARVAWHITE-20|POLISHED|A"), { code: "QZ-ARVAWHITE-20", finish: "POLISHED", grade: "A" });
+});
+
+test("both key shapes resolve by their CODE — the shape is the planner's business, not this rule's", () => {
+  const lineCodes = new Set(["QZ-ARVAWHITE-20"]);
+  assert.deepEqual(slabKeyCode("SLAB|QZ-ARVAWHITE-20"), { shape: "legacy", code: "QZ-ARVAWHITE-20" });
+  assert.deepEqual(slabKeyCode("SLAB|QZ-ARVAWHITE-20|POLISHED|A"), { shape: "split", code: "QZ-ARVAWHITE-20" });
+  assert.equal(slabKeyCode("SLAB|QZ-X-20|POLISHED"), null, "three segments is neither shape");
+  assert.equal(slabKeyCode("SAMPLE|ss1"), null);
+  assert.equal(parseSlabKey("SLAB|QZ-ARVAWHITE-20"), null, "the old shape is not a split key");
+
+  // A code with stock resolves, in either shape.
+  assert.equal(slabKeyStillResolves("SLAB|QZ-ARVAWHITE-20", lineCodes, new Set()), true);
+  assert.equal(slabKeyStillResolves("SLAB|QZ-ARVAWHITE-20|POLISHED|B", lineCodes, new Set()), true);
+  // A code with a product and no stock resolves — SOLD OUT, stays searchable.
+  assert.equal(slabKeyStillResolves("SLAB|QZ-SAKURA-20", new Set(), PRODUCT_CODES), true);
+  // Neither: a design merged away. Retired, in either shape.
+  assert.equal(slabKeyStillResolves("SLAB|QZ-ASTALMIST-20", lineCodes, PRODUCT_CODES), false);
+  assert.equal(slabKeyStillResolves("SLAB|QZ-ASTALMIST-20|POLISHED|A", lineCodes, PRODUCT_CODES), false);
+  // Not a slab key: not this rule's business.
+  assert.equal(slabKeyStillResolves("SAMPLE|ss1", lineCodes, PRODUCT_CODES), true);
+  assert.equal(slabKeyStillResolves("UNIT|sut_floor_stand", lineCodes, PRODUCT_CODES), true);
+});
+
+// The first switch-over run, as planTransition sees it: Arva White 20 mm splits
+// into four rows (7 + 20 + 350 + 40 = 417) and the legacy row is in the mirror.
+const arvaSwitch = () => {
+  const out = buildStockLines(ARVA_SPLIT, NO_ALIASES, CANONICALS, PRODUCT_CODES);
+  return slabRows(out.lines[0]!, "01t1", "Aurora");
+};
+const LEGACY_ARVA = "SLAB|QZ-ARVAWHITE-20";
+
+test("THE DISASTER CASE: every replacement refused leaves the old row LIVE AND CORRECT — never zero, never retired", () => {
+  // The first version retired every legacy row in the same call that created
+  // the split rows; a refusal of only the new rows (Grade__c created that
+  // morning and not granted) let every retirement through, and Salesforce showed
+  // no slab stock at all.
+  const desired = arvaSwitch();
+  const plan = planTransition([LEGACY_ARVA], desired, new Set([LEGACY_ARVA]));
+  assert.deepEqual(plan.retire, [], "not retired");
+  assert.deepEqual(plan.hold, []);
+  assert.deepEqual(plan.keep, []);
+  assert.equal(plan.remainder.length, 1);
+  const r = plan.remainder[0]!;
+  // BYTE-IDENTICAL TO TODAY'S ROW: the whole line, the same name, design,
+  // thickness and product — so a blanket refusal costs no extra write and a rep
+  // sees nothing change. (An earlier version sent a count-only patch, and a
+  // product created during the switch-over never reached the row.)
+  const out = buildStockLines(ARVA_SPLIT, NO_ALIASES, CANONICALS, PRODUCT_CODES);
+  const today = slabRows(out.lines[0]!, "01t1", "Aurora", false)[0]!;
+  assert.deepEqual(r, today);
+  assert.equal(payloadHash(r), payloadHash(today));
+});
+
+test("PARTIAL ACCEPTANCE: the old row carries EXACTLY the refused slices — nothing lost, nothing counted twice", () => {
+  // The second version retired the old row once ANY replacement was accepted,
+  // so with Polished A accepted and Polished B refused, Polished B's 40 slabs
+  // vanished from Salesforce.
+  const desired = arvaSwitch();
+  const polishedA = "SLAB|QZ-ARVAWHITE-20|POLISHED|A";
+  const leathered = "SLAB|QZ-ARVAWHITE-20|LEATHERED|A";
+  const present = new Set([LEGACY_ARVA, polishedA, leathered]);
+  const plan = planTransition([LEGACY_ARVA], desired, present);
+  assert.deepEqual(plan.retire, [], "not every replacement is there, so not retired");
+  assert.equal(plan.remainder[0]!.available, 40 + 7, "Polished B (40) and the blank slice (7) are still on the old row");
+  assert.equal(plan.remainder[0]!.name, "Arva White 20 mm", "still the whole legacy row, just a smaller count");
+  assert.equal(plan.remainder[0]!.fields.Product__c, "01t1", "with its product kept current");
+
+  // THE INVARIANT: what Salesforce shows for the code is exactly the line.
+  const shown = desired.filter((r) => present.has(r.key)).reduce((n, r) => n + r.available, 0) + plan.remainder[0]!.available;
+  assert.equal(shown, 417);
+});
+
+test("every replacement accepted retires the old row — once, zero, Name left alone", () => {
+  const desired = arvaSwitch();
+  const present = new Set([LEGACY_ARVA, ...desired.map((r) => r.key)]);
+  const plan = planTransition([LEGACY_ARVA], desired, present);
+  assert.deepEqual(plan, { retire: [LEGACY_ARVA], remainder: [], hold: [], keep: [] });
+  const r = retirementRow(LEGACY_ARVA);
+  assert.deepEqual([r.kind, r.name, r.available, r.retired, r.fields], ["Slab", null, 0, true, {}]);
+});
+
+test("a sold-out split slice still counts as a replacement that must be accepted before retiring", () => {
+  // A zero row is a real row in Salesforce ("none right now"); retiring the old
+  // row before it exists would be retiring a line's only searchable row.
+  const desired: StockRow[] = [
+    ...slabRows({ canonical: "Sakura", mm: 20, code: "QZ-SAKURA-20", available: 0,
+      splits: [{ finish: "Polished", grade: "A", available: 0 }] } as never, "01t2"),
+  ];
+  const plan = planTransition(["SLAB|QZ-SAKURA-20"], desired, new Set(["SLAB|QZ-SAKURA-20"]));
+  assert.deepEqual(plan.remainder.map((r) => [r.key, r.available]), [["SLAB|QZ-SAKURA-20", 0]]);
+  assert.deepEqual(plan.retire, []);
+});
+
+test("A PRODUCT SOLD OUT AT THE SWITCH keeps its searchable zero row — the split must not delete 'none right now'", () => {
+  // Sakura has a product and no stock: no split row can be created for it.
+  const plan = planTransition(["SLAB|QZ-SAKURA-20"], arvaSwitch(), new Set(["SLAB|QZ-SAKURA-20"]));
+  assert.deepEqual(plan, { retire: [], remainder: [], hold: [], keep: ["SLAB|QZ-SAKURA-20"] });
+  // KEEP goes through the ordinary diff: a product still sold is a live zero.
+  const mirror = new Map<string, MirrorEntry>([["SLAB|QZ-SAKURA-20", { key: "SLAB|QZ-SAKURA-20", payloadHash: "had stock" }]]);
+  const d = diffMirror([], mirror, (k) => slabKeyStillResolves(k, new Set(["QZ-ARVAWHITE-20"]), PRODUCT_CODES));
+  assert.deepEqual(d.toPush.map((r) => [r.key, r.available, r.retired]), [["SLAB|QZ-SAKURA-20", 0, false]]);
+  assert.equal(d.toRetire.length, 0);
+  // A design merged away with no product is still retired, as it always was.
+  const gone = diffMirror([], new Map([["SLAB|QZ-ASTALMIST-20", { key: "SLAB|QZ-ASTALMIST-20", payloadHash: "x" }]]),
+    (k) => slabKeyStillResolves(k, new Set(), PRODUCT_CODES));
+  assert.deepEqual(gone.toRetire.map((r) => r.key), ["SLAB|QZ-ASTALMIST-20"]);
+});
+
+test("switching BACK holds the split rows until the FULL legacy row is verified — a mirrored remainder is not proof", () => {
+  // SF_SLAB_SPLIT unset after it was set. A remainder cannot be divided between
+  // SEVERAL old rows, so they are held rather than guessed at.
+  const legacy = slabRows({ canonical: "Arva White", mm: 20, code: "QZ-ARVAWHITE-20", available: 8 } as never, "01t1", null, false);
+  const splitKeys = ["SLAB|QZ-ARVAWHITE-20|POLISHED|A", "SLAB|QZ-ARVAWHITE-20|POLISHED|B"];
+  assert.deepEqual(planTransition(splitKeys, legacy, new Set(splitKeys)),
+    { retire: [], remainder: [], hold: splitKeys, keep: [] });
+
+  // THE THIRD REVIEW'S CASE. The forward switch-over left the legacy key in the
+  // mirror carrying a REMAINDER of 3 (Polished B refused). Switching back, this
+  // run's full legacy write (8) is refused. The key is "present" — but only as
+  // the 3. Retiring the split rows against it would leave Salesforce showing 3
+  // of 8. Verified presence (same payload, or accepted this run) is required.
+  const mirror = new Map([[LEGACY_ARVA, { payloadHash: payloadHash({ ...legacy[0]!, available: 3 }) }]]);
+  const present = new Set([...splitKeys, LEGACY_ARVA]);
+  const verified = verifiedKeys(legacy, mirror, new Set());
+  assert.equal(verified.has(LEGACY_ARVA), false, "the mirror holds a different payload");
+  assert.deepEqual(planTransition(splitKeys, legacy, present, verified).hold, splitKeys, "held, not retired");
+
+  // Once the full legacy row is accepted, the split rows are retired.
+  const accepted = verifiedKeys(legacy, mirror, new Set([LEGACY_ARVA]));
+  assert.deepEqual(planTransition(splitKeys, legacy, present, accepted).retire, splitKeys);
+  // And a mirror that already holds the full row counts too.
+  const same = new Map([[LEGACY_ARVA, { payloadHash: payloadHash(legacy[0]!) }]]);
+  assert.deepEqual(planTransition(splitKeys, legacy, present, verifiedKeys(legacy, same, new Set())).retire, splitKeys);
+});
+
+test("the probe gate opens on the first row of the current shape Salesforce has ever accepted", () => {
+  assert.equal(shapeEverAccepted(["SLAB|QZ-ARVAWHITE-20", "SAMPLE|ss1"], "split"), false);
+  assert.equal(shapeEverAccepted(["SLAB|QZ-ARVAWHITE-20", "SLAB|QZ-SAKURA-20|POLISHED|A"], "split"), true);
+  assert.equal(shapeEverAccepted(["SLAB|QZ-ARVAWHITE-20"], "legacy"), true);
+  assert.equal(shapeEverAccepted([], "legacy"), false);
+});
+
+test("THE PROBE: until the shape has ever been accepted, only the first 200 NEW rows go out — nothing else waits", () => {
+  const newRows = Array.from({ length: 450 }, (_, i) => ({
+    key: `SLAB|QZ-D${i}-20|POLISHED|A`, kind: "Slab" as const, name: `D${i}`, available: 1, retired: false, fields: {},
+  }));
+  const others: StockRow[] = [
+    { key: "SAMPLE|ss1", kind: "Sample", name: "s", available: 2, retired: false, fields: {} },
+    { key: "SLAB|QZ-OLD-20", kind: "Slab", name: null, available: 0, retired: true, fields: {} },
+  ];
+  const rows = [...others, ...newRows];
+
+  const cold = probeWave(rows, new Set(["SLAB|QZ-OLD-20", "SAMPLE|ss1"]), "split", 200);
+  assert.equal(cold.probe.length, 200);
+  assert.equal(cold.heldBack.length, 250);
+  assert.ok(cold.firstWave.some((r) => r.key === "SAMPLE|ss1"), "samples are never held back");
+  assert.ok(cold.firstWave.some((r) => r.key === "SLAB|QZ-OLD-20"), "nor retirements");
+  assert.equal(cold.firstWave.length + cold.heldBack.length, rows.length, "nothing dropped");
+
+  // Once a single split row has been accepted, nothing is held back again —
+  // the probe guards the switch, not every run.
+  const warm = probeWave(rows, new Set(["SLAB|QZ-D0-20|POLISHED|A"]), "split", 200);
+  assert.equal(warm.heldBack.length, 0);
+  assert.equal(warm.firstWave.length, rows.length);
+});
+
+test("a remainder is re-sent when its count changes or it is due a re-stamp — and not otherwise", () => {
+  const r = { key: LEGACY_ARVA, kind: "Slab" as const, name: "Arva White 20 mm", available: 47, retired: false, fields: {} };
+  const cutoff = new Date("2026-09-23T10:00:00Z");
+  const fresh = new Date("2026-09-23T10:20:00Z");
+  const old = new Date("2026-09-23T09:00:00Z");
+  assert.deepEqual(remaindersDue([r], new Map([[LEGACY_ARVA, { payloadHash: payloadHash(r), pushedAt: fresh }]]), cutoff), [], "unchanged and fresh: free");
+  assert.equal(remaindersDue([r], new Map([[LEGACY_ARVA, { payloadHash: "other", pushedAt: fresh }]]), cutoff).length, 1, "changed");
+  assert.equal(remaindersDue([r], new Map([[LEGACY_ARVA, { payloadHash: payloadHash(r), pushedAt: old }]]), cutoff).length, 1,
+    "stale: re-stamped, so the row carrying the stock never reads Stale__c");
+  assert.equal(remaindersDue([r], new Map(), cutoff).length, 1, "never sent");
+});
+
+test("the yard's groups: unapproved subtracted per group, and CUT GRADES OUT BY DISPATCH'S OWN RULE", () => {
+  const out = yardGroups([
+    { design: "Arva White", slab_thickness: "2 cm", polish_type: "Polish", grade: "A", n: 10, hidden: 3 },
+    { design: "Arva White", slab_thickness: "2 cm", polish_type: "Polish", grade: "B", n: 4, hidden: 4 },
+    // Each of these is refused at dispatch, so none may be promised to a rep.
+    // The SQL version compared upper(btrim(grade)) and let the last two through.
+    { design: "Arva White", slab_thickness: "2 cm", polish_type: "Polish", grade: "CTS", n: 2, hidden: 0 },
+    { design: "Arva White", slab_thickness: "2 cm", polish_type: "Polish", grade: "cts", n: 1, hidden: 0 },
+    { design: "Arva White", slab_thickness: "2 cm", polish_type: "Polish", grade: "CTS (Reject)", n: 5, hidden: 1 },
+    { design: "Arva White", slab_thickness: "2 cm", polish_type: "Polish", grade: "\tSAMPLE\n", n: 6, hidden: 0 },
+    { design: null, slab_thickness: null, polish_type: null, grade: null, n: 2, hidden: 9 },
+  ]);
+  assert.deepEqual(out.groups.map((g) => [g.grade, g.available]), [["A", 7]],
+    "B is wholly unapproved; the null group's hidden is clamped to what it holds; four cut grades out");
+  assert.equal(out.raw, 30, "raw is before either filter");
+  assert.equal(out.cutGradeExcluded, 14);
+  assert.equal(out.hidden, 3 + 4 + 2, "unapproved among the slabs not already excluded as cut");
+  assert.equal(out.raw - out.hidden - out.cutGradeExcluded, 7, "and what is left is exactly what is published");
+});
+
+test("SWITCH OFF WRITES EXACTLY TODAY'S ROW — same key, name, fields, hash — so deploying is not migrating", () => {
+  // payloadHash hashes every field NAME, so even Finish__c: null would change
+  // every row's hash and re-push the whole object before anyone said go.
+  const out = buildStockLines(ARVA_SPLIT, NO_ALIASES, CANONICALS, PRODUCT_CODES);
+  const rows = slabRows(out.lines[0]!, "01t1", "Aurora", false);
+  const before: StockRow = {
+    key: "SLAB|QZ-ARVAWHITE-20",
+    kind: "Slab",
+    name: "Arva White 20 mm",
+    available: 417,
+    retired: false,
+    fields: { Design__c: "Arva White", Thickness_mm__c: 20, Product__c: "01t1", Product_Missing__c: false },
+  };
+  assert.deepEqual(rows, [before]);
+  assert.equal(payloadHash(rows[0]!), payloadHash(before), "no re-push on deploy");
+});
+
+test("the unmapped worklist is still ONE entry per spelling, however many finishes it is in", () => {
+  const out = buildStockLines([
+    { design: "Astal Mist", slabThickness: "2 cm", polishType: "Polished", grade: "A", available: 10 },
+    { design: "Astal Mist", slabThickness: "2 cm", polishType: "Suede", grade: "B", available: 8 },
+    { design: "Arva White", slabThickness: "3 cm to 2 cm", polishType: "Polished", grade: "A", available: 7 },
+    { design: "Arva White", slabThickness: "3 cm to 2 cm", polishType: "Leather", grade: null, available: 5 },
+  ], NO_ALIASES, CANONICALS, PRODUCT_CODES);
+  assert.deepEqual(out.unmapped.map((u) => [u.design, u.slabThickness, u.reason, u.available]), [
+    ["Astal Mist", "2 cm", "UNKNOWN_DESIGN", 18],
+    ["Arva White", "3 cm to 2 cm", "THICKNESS", 12],
+  ]);
+  // Still published as its two slices — the rep sees the stock either way.
+  assert.equal(slabRows(out.lines[0]!, null).length, 2);
+});
+
+test("the summary counts ROWS beside lines, and says how many went out blank", () => {
+  const result = buildStockLines(ARVA_SPLIT, NO_ALIASES, CANONICALS, PRODUCT_CODES);
+  const s = summarise(result, [], PRODUCT_CODES);
+  assert.equal(s.publishedLines, 1, "product codes");
+  assert.equal(s.slabRows, 4, "what Salesforce will count");
+  assert.equal(s.slabRowsWithoutFinish, 1);
+  assert.equal(s.slabRowsWithoutGrade, 1);
+  assert.equal(s.publishedSlabs, 417, "and the slab total is not changed by splitting it");
+
+  // A caller that never reads polish or grade still gets one row per line.
+  const flat = buildStockLines([{ design: "Arva White", slabThickness: "2 cm", available: 9 }], NO_ALIASES, CANONICALS, PRODUCT_CODES);
+  assert.equal(summarise(flat, [], PRODUCT_CODES).slabRows, 1);
+  assert.equal(slabRows(flat.lines[0]!, null).length, 1);
+});
+
+test("series comes off the colour chart, folded like a design, and ambiguity gives no answer", () => {
+  const idx = seriesIndex([
+    { name: "Arva White", series: { name: "Aurora" } },
+    { name: "Pebble Ice", series: { name: "Nebula" } },
+    { name: "Cappuccino", series: { name: "Solid" } },
+    // Two chart names that fold together but sit in different series.
+    { name: "Star Dust", series: { name: "Celestia" } },
+    { name: "Stardust", series: { name: "Kosmic" } },
+    { name: "Nameless", series: null },
+  ]);
+  assert.equal(seriesFor("Arva White", idx), "Aurora");
+  assert.equal(seriesFor("Pebble ice", idx), "Nebula", "the yard's case does not matter");
+  assert.equal(seriesFor("ARVA  WHITE", idx), "Aurora");
+  assert.equal(seriesFor("Star Dust", idx), null, "ambiguous: blank, not a coin toss");
+  assert.equal(seriesFor("Nameless", idx), null);
+  assert.equal(seriesFor("Not On The Chart", idx), null, "a design the chart does not list is blank");
+
+  // Order-independent, for the same reason as the grade spelling.
+  const rev = seriesIndex([
+    { name: "Stardust", series: { name: "Kosmic" } },
+    { name: "Star Dust", series: { name: "Celestia" } },
+  ]);
+  assert.equal(seriesFor("Star Dust", rev), null);
+});
+
+test("the org's field caps: ERP_Key__c 80, Grade__c 40, Name 80 — longer and the row is refused on every run", () => {
+  // The longest code in the org today and the admin route's 30-character limit
+  // on polish and grade — a valid yard value that would have produced a 94-char key.
+  const code = "QZ-BIANCOCARRARALONGVEIN-30";
+  const longest = slabKey(code, "L".repeat(30), "G".repeat(30));
+  assert.ok(longest.length <= ERP_KEY_MAX, `${longest.length} > ${ERP_KEY_MAX}`);
+  assert.equal(slabKeyCode(longest)?.code, code, "the code survives intact — the sold-out rule reads it");
+  // Two long grades sharing a prefix stay TWO keys: truncation would merge them.
+  assert.notEqual(slabKey(code, "Polished", "X".repeat(29) + "1"), slabKey(code, "Polished", "X".repeat(29) + "2"));
+  // Deterministic, or the row would twin itself on the next run.
+  assert.equal(slabKey(code, "L".repeat(30), "G".repeat(30)), longest);
+  // A key that fits is never touched.
+  assert.equal(slabKey("QZ-ARVAWHITE-20", "Polished", "A"), "SLAB|QZ-ARVAWHITE-20|POLISHED|A");
+  // A product code long enough that two 16-character segments do not fit: the
+  // segments become their hash alone, and every code up to 55 characters fits:
+  // 5 + code + 1 + 9 + 1 + 9 = code + 25.
+  for (const len of [42, 50, 55]) {
+    const longCode = `QZ-${"A".repeat(len - 6)}-30`;
+    assert.equal(longCode.length, len);
+    const k = slabKey(longCode, "Leathered", "Printing");
+    assert.ok(k.length <= ERP_KEY_MAX, `${len}-char code gave a ${k.length}-char key`);
+    assert.equal(slabKeyCode(k)?.code, longCode, "the code is never shortened");
+    assert.notEqual(k, slabKey(longCode, "Leathered", "A"), "and two grades are still two keys");
+  }
+  assert.equal(slabKey(`QZ-${"A".repeat(40)}-30`, null, null).endsWith("|-|-"), true, "no value stays '-'");
+
+  const long = "X".repeat(60);
+  const out = buildStockLines([
+    { design: "Arva White", slabThickness: "2 cm", polishType: "Polished", grade: long, available: 1 },
+  ], NO_ALIASES, CANONICALS, PRODUCT_CODES);
+  const [r] = slabRows(out.lines[0]!, null, "Aurora");
+  assert.ok(r!.key.length <= ERP_KEY_MAX);
+  assert.ok(String(r!.fields.Grade__c).length <= GRADE_MAX);
+  assert.ok(String(r!.name).length <= NAME_MAX);
+  assert.equal(clampTo(null, 40), null, "blank stays blank");
+  assert.equal(clampTo("A", 40), "A");
+  assert.equal(slabName("Arva White", 20, null, "A"), "Arva White 20 mm · Grade A");
+});
+
+test("A LINE'S NAME DOES NOT DEPEND ON WHICH SPELLING POSTGRES RETURNED FIRST", () => {
+  // "Arva White" and "arva white" fold to one code. The line used to be named by
+  // whichever group came first — no promised order, and with the yard read per
+  // finish and grade there are more groups to come first — so Name and Design__c
+  // of every slice would flip between runs and re-push. Most slabs wins.
+  const groups: StockGroup[] = [
+    { design: "arva white", slabThickness: "2 cm", polishType: "Polished", grade: "B", available: 5 },
+    { design: "Arva White", slabThickness: "2 cm", polishType: "Polished", grade: "A", available: 300 },
+  ];
+  const a = buildStockLines(groups, NO_ALIASES, CANONICALS, PRODUCT_CODES).lines[0]!;
+  const b = buildStockLines([...groups].reverse(), NO_ALIASES, CANONICALS, PRODUCT_CODES).lines[0]!;
+  assert.equal(a.canonical, "Arva White");
+  assert.equal(b.canonical, "Arva White");
+  assert.deepEqual(slabRows(a, "01t1", "Aurora"), slabRows(b, "01t1", "Aurora"));
+});
+
+test("series is found through the ALIAS VARIANTS when the chart spells a design differently", () => {
+  // The chart says "Pebbles Ice"; the ERP's canonical is "Pebble Ice". The
+  // alias table is the ERP's own record that the two are one design.
+  const idx = seriesIndex([
+    { name: "Pebbles Ice", series: { name: "Aurora" } },
+    { name: "Classic Gray", series: { name: "Aurora" } },
+    { name: "Oasis", series: { name: "Nebula" } },
+  ]);
+  assert.equal(seriesFor("Pebble Ice", idx), null, "the canonical alone misses");
+  assert.equal(seriesFor("Pebble Ice", idx, ["Pebbles Ice", "pebble ice "]), "Aurora", "a variant finds it");
+  // Variants landing in DIFFERENT series give nothing, not the first looked up.
+  assert.equal(seriesFor("Pebble Ice", idx, ["Pebbles Ice", "Oasis"]), null);
+  // A design on no chart under any name: blank, honestly.
+  assert.equal(seriesFor("Carrara Cloud", idx, ["carrara cloud"]), null);
+});
+
+test("seriesIndex ambiguity survives a THIRD colour folding onto the same key, in any order", () => {
+  const three = [
+    { name: "Star Dust", series: { name: "Celestia" } },
+    { name: "Stardust", series: { name: "Kosmic" } },
+    { name: "STAR-DUST", series: { name: "Celestia" } },
+  ];
+  for (const order of [three, [...three].reverse(), [three[1]!, three[2]!, three[0]!]]) {
+    assert.equal(seriesFor("Star Dust", seriesIndex(order)), null, "once ambiguous, never re-admitted");
+  }
+  // Agreement is not ambiguity: two spellings in the SAME series still answer.
+  assert.equal(seriesFor("Star Dust", seriesIndex([three[0]!, three[2]!])), "Celestia");
+});
+
+test("the blank counts can tell a missing FINISH from a missing GRADE", () => {
+  const result = buildStockLines([
+    { design: "Arva White", slabThickness: "2 cm", polishType: null, grade: "A", available: 4 },
+    { design: "Arva White", slabThickness: "2 cm", polishType: "Polished", grade: null, available: 3 },
+    { design: "Arva White", slabThickness: "2 cm", polishType: "Suede", grade: "Not graded yet", available: 2 },
+    { design: "Arva White", slabThickness: "2 cm", polishType: "Polished", grade: "A", available: 1 },
+  ], NO_ALIASES, CANONICALS, PRODUCT_CODES);
+  const s = summarise(result, [], PRODUCT_CODES);
+  assert.equal(s.slabRows, 4);
+  assert.equal(s.slabRowsWithoutFinish, 1);
+  assert.equal(s.slabRowsWithoutGrade, 2, "a null grade and a 'Not graded yet' are both blank");
+});
+
+test("A CHUNK THAT FAILS LATER DOES NOT ERASE THE RECORD OF THE CHUNKS ALREADY COMMITTED", async () => {
+  // compositePatch loops its own chunks and throws on the first bad one,
+  // discarding the answers to chunks Salesforce had already committed. Those
+  // rows were live and unmirrored; one that then sold out was never touched
+  // again — a phantom, counting stock that is gone, for good.
+  const rows = Array.from({ length: 5 }, (_, i) => ({ key: `SLAB|QZ-D${i}-20|-|-`, kind: "Slab" as const, name: `D${i}`, available: 1, retired: false, fields: {} }));
+  const recorded: string[] = [];
+  let calls = 0;
+  await assert.rejects(
+    sendChunks(rows, 2,
+      async (chunk) => { calls += 1; if (calls === 3) throw new Error("socket hang up"); return chunk.map(() => ({ success: true })); },
+      async (chunk, answers) => { chunk.forEach((r, i) => { if (answers[i]!.success) recorded.push(r.key); }); },
+      () => null),
+    /socket hang up/,
+  );
+  assert.deepEqual(recorded, rows.slice(0, 4).map((r) => r.key), "the two committed chunks were recorded before the third failed");
+});
+
+test("a REQUEST-LEVEL refusal refuses that chunk's rows and the run carries on", async () => {
+  // A field hidden from the integration user is refused for the whole request,
+  // not row by row — that is how a missing Grade__c permission arrives.
+  const rows = Array.from({ length: 6 }, (_, i) => ({ key: `K${i}`, kind: "Slab" as const, name: null, available: 0, retired: false, fields: {} }));
+  const answered: Array<[string, boolean, string]> = [];
+  let calls = 0;
+  await sendChunks(rows, 2,
+    async (chunk) => { calls += 1; if (calls === 2) throw Object.assign(new Error("No such column 'Grade__c'"), { status: 400 }); return chunk.map(() => ({ success: true })); },
+    async (chunk, answers) => { chunk.forEach((r, i) => answered.push([r.key, answers[i]!.success, answers[i]!.errors?.[0]?.message ?? ""])); },
+    (e) => ((e as { status?: number }).status === 400 ? (e as Error).message : null));
+  assert.equal(calls, 3, "the third chunk is still sent");
+  assert.deepEqual(answered.map(([k, ok]) => [k, ok]), [["K0", true], ["K1", true], ["K2", false], ["K3", false], ["K4", true], ["K5", true]]);
+  assert.match(answered[2]![2], /Grade__c/, "and each refused row carries the reason");
+});
+
+test("rows carrying Grade__c are written in chunks of their own, so a missing permission costs nothing else", () => {
+  const out = buildStockLines(ARVA_SPLIT, NO_ALIASES, CANONICALS, PRODUCT_CODES);
+  const split = slabRows(out.lines[0]!, "01t1", "Aurora");
+  const legacy = slabRows(out.lines[0]!, "01t1", null, false);
+  const sample = sampleRow("ss1", "Cappuccino (Polished) 4 × 4 in · 20 mm", 3, { Series__c: "Aurora", Finish__c: "Polished" });
+  const retire = retirementRow("SLAB|QZ-SAKURA-20");
+  const { plain, withGrade } = partitionByNewField([...split, ...legacy, sample, retire]);
+  assert.deepEqual(withGrade.map((r) => r.key), split.map((r) => r.key));
+  assert.deepEqual(plain.map((r) => r.key).sort(), [legacy[0]!.key, sample.key, retire.key].sort(),
+    "samples, the legacy row and retirements never share a chunk with Grade__c");
 });

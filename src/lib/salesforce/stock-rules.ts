@@ -31,6 +31,8 @@
 //
 // This is refused HERE, in a tested function, and not by convention in the job.
 import { canonThickness } from "../thickness.ts";
+import { canonicalFinish } from "../catalogue/colours.ts";
+import { canonicalGrade, gradeBlocksDispatch } from "../inventory/grading.ts";
 
 // ── thickness ───────────────────────────────────────────────────────────────
 
@@ -178,11 +180,568 @@ export function isNotSellable(canonical: unknown, rawDesign?: unknown, productCo
 
 // ── the publish rule ────────────────────────────────────────────────────────
 
+// ── finish, grade, and the key that now carries them ─────────────────────────
+//
+// Salesforce asked (their REPLY-10, 2026-09-23) for polish, grade and series on
+// every slab line, and asked which of two things is true: are polish and grade
+// attributes of the whole (design, thickness) line, or can one line hold several
+// at once? The second. QC writes polish_type and grade per SLAB, so a design at
+// one thickness is routinely in the yard as Polished A and Polished B together.
+// Keyed by design and thickness alone, those runs would overwrite each other in
+// the upsert and the split would never be visible — so the key extends.
+
+/** A value that says nothing — blank, or only dashes and dots. The yard types
+ *  "-" to mean "none", and Salesforce asked for blank there, not a value. */
+function saysNothing(t: string): boolean {
+  return /^[\s\-\u2013\u2014.]*$/.test(t);
+}
+
+/**
+ * What goes in Finish__c.
+ *
+ * THE OWNER'S FOUR WORDS WHEN WE RECOGNISE THE SPELLING, the yard's own text
+ * when we do not. canonicalFinish is the ERP's vocabulary, not Salesforce's —
+ * it is what the sample rows on this same object already send — so this is not
+ * the mapping Salesforce asked us to avoid ("don't map them to anything of
+ * ours" means theirs). And it is needed for the KEY: the yard types both
+ * "Polish" and "Polished", and without folding them one shelf would publish as
+ * two lines. An unrecognised spelling is sent exactly as typed, never dropped
+ * and never guessed at.
+ */
+export function finishValue(raw: unknown): string | null {
+  const t = String(raw ?? "").trim().replace(/\s+/g, " ");
+  if (saysNothing(t)) return null;
+  return canonicalFinish(t) ?? t;
+}
+
+/**
+ * What goes in Grade__c: the yard's word, through the SAME normalisation QC's
+ * own writes and the dispatch rule use (canonicalGrade, lib/inventory/grading).
+ *
+ * That is not a mapping onto anything of Salesforce's; it undoes two habits of
+ * the grade column itself. QC writes "Not graded yet" for no grade — sent as a
+ * grade it would read "Grade: Not graded yet", which is precisely the invented
+ * value Salesforce asked us not to send — and "C (Reject)" for C, which would
+ * otherwise make C two rows. Everything else goes out as QC typed it, case
+ * included ("A2", "Printing").
+ */
+export function gradeValue(raw: unknown): string | null {
+  const g = canonicalGrade(String(raw ?? "").replace(/\s+/g, " "));
+  return g === null || saysNothing(g) ? null : g;
+}
+
+/**
+ * One segment of the key. Uppercased, so "Printing" and "PRINTING" are one row
+ * rather than twins; whitespace to "_" and the separator "|" to "/", so a
+ * segment can never split the key; and "-" when there is no value at all.
+ *
+ * "-" cannot collide with a real value: saysNothing() turns a typed "-" into
+ * null before it gets here, which is the same answer.
+ */
+export function keySegment(value: string | null | undefined): string {
+  const v = String(value ?? "").trim().toUpperCase().replace(/\s+/g, "_").replace(/\|/g, "/");
+  return v || "-";
+}
+
+/**
+ * `SLAB|<code>|<FINISH>|<GRADE>` — e.g. `SLAB|QZ-ARVAWHITE-20|POLISHED|A`, or
+ * `SLAB|QZ-ARVAWHITE-20|POLISHED|-` for a slab QC graded nothing.
+ *
+ * FOUR SEGMENTS, ALWAYS. The old key was `SLAB|<code>`, two segments, and it is
+ * the shape alone that tells a legacy row from a current one — see
+ * slabKeyStillResolves.
+ */
+export function slabKey(code: string, finish: string | null, grade: string | null): string {
+  const f = keySegment(finish);
+  const g = keySegment(grade);
+  const full = `SLAB|${code}|${f}|${g}`;
+  if (full.length <= ERP_KEY_MAX) return full;
+  // ERP_Key__c is a Text(80) External ID (ADMIN-HANDOFF, DESIGN §13), and a key
+  // over it is refused on every run for ever. A long segment keeps a readable
+  // head and a hash of its WHOLE value, so two long grades that share a prefix
+  // stay two keys — truncating would merge them into one row. Deterministic:
+  // the same value gives the same key on every run.
+  const short = `SLAB|${code}|${shortSegment(f)}|${shortSegment(g)}`;
+  if (short.length <= ERP_KEY_MAX) return short;
+  // A code so long that even two 16-character segments do not fit: both
+  // segments become their hash alone, 9 characters each, which holds every
+  // code up to 55 characters (5 + code + 1 + 9 + 1 + 9). The longest in the
+  // org today is 27. Past 55 the
+  // key is over the cap and the row is refused — counted, never silent (see
+  // keysOverLimit in the run summary). The code itself is never shortened: the
+  // sold-out rule and the switch-over both read it back out of the key.
+  return `SLAB|${code}|${hashSegment(f)}|${hashSegment(g)}`;
+}
+
+/** ERP_Key__c: Text(80), External ID. */
+export const ERP_KEY_MAX = 80;
+
+function shortSegment(seg: string): string {
+  return seg.length <= 16 ? seg : `${seg.slice(0, 7)}~${hashString(seg)}`;
+}
+
+function hashSegment(seg: string): string {
+  return seg === "-" ? "-" : `~${hashString(seg)}`;
+}
+
+/** The two slab key shapes: `SLAB|<code>` (one row per design and thickness,
+ *  before 2026-09-23) and `SLAB|<code>|<FINISH>|<GRADE>` (one per slice). */
+export type SlabKeyShape = "legacy" | "split";
+
+/** The shape and product code of either kind of slab key; null for anything
+ *  that is not a slab key. */
+export function slabKeyCode(key: unknown): { shape: SlabKeyShape; code: string } | null {
+  const parts = String(key ?? "").split("|");
+  if (parts[0] !== "SLAB") return null;
+  if (parts.length === 2 && parts[1]) return { shape: "legacy", code: parts[1] };
+  const p = parseSlabKey(key);
+  return p ? { shape: "split", code: p.code } : null;
+}
+
+/** The parts of a split slab key, or null for anything else — including the
+ *  two-segment `SLAB|<code>` every row carried before the split. */
+export function parseSlabKey(key: unknown): { code: string; finish: string; grade: string } | null {
+  const parts = String(key ?? "").split("|");
+  if (parts.length !== 4 || parts[0] !== "SLAB") return null;
+  const [, code, finish, grade] = parts;
+  if (!code || !finish || !grade) return null;
+  return { code, finish, grade };
+}
+
+/**
+ * For a key Salesforce holds that this run did not produce: is it SOLD OUT (the
+ * line still means something, write it to zero and keep it searchable) or
+ * RETIRED (it means nothing any more, write it once and forget it)?
+ *
+ * The same rule as before the split, asked of the product CODE inside either
+ * key shape: a code that still has stock or a product is sold out, anything
+ * else is retired. Which SHAPE is retired is not decided here — that is
+ * planTransition, because it depends on what Salesforce has accepted, not
+ * on what the key looks like.
+ */
+export function slabKeyStillResolves(
+  key: string,
+  lineCodes: ReadonlySet<string>,
+  productCodes: ReadonlySet<string>,
+): boolean {
+  if (!String(key).startsWith("SLAB|")) return true;
+  const k = slabKeyCode(key);
+  if (!k) return false;
+  return lineCodes.has(k.code) || productCodes.has(k.code);
+}
+
+/**
+ * THE SWITCH-OVER, one product code at a time: what becomes of each row of the
+ * key shape NOT in use this run (the legacy shape once SF_SLAB_SPLIT is on; the
+ * split shape if it is ever turned off again).
+ *
+ * THE RULE: an old row stands in for exactly the slabs of its code that
+ * Salesforce does not yet hold a replacement row for. No more, so nothing is
+ * counted twice. No less, so nothing disappears.
+ *
+ * It took two reviews to get here. The first version retired every legacy row
+ * in the same call that created the split rows, so if Salesforce refused only
+ * the new rows (Grade__c created that morning and not yet granted is exactly
+ * that), all 328 retirements went through and Salesforce showed no slab stock.
+ * The second version retired a legacy row once ANY of its replacements was
+ * accepted. A code with Polished A accepted and Polished B refused then lost
+ * Polished B's slabs entirely, because the row that had been carrying them was
+ * gone. Freezing the old row is no answer either: it double-counts every slice
+ * that WAS accepted.
+ *
+ * So, for each old-shape key, given the rows of the current shape this run
+ * wants for its code and the keys Salesforce holds (`present`):
+ *
+ *  · RETIRE: every replacement is present. Written once, zero and retired.
+ *  · REMAINDER: some replacements are missing. The single legacy row is
+ *    written as the full legacy row it always was (name, design, thickness,
+ *    product, product-missing, all current) with the sum of the MISSING slices
+ *    as its count. When nothing has been accepted, that is the whole line, and
+ *    the row is byte-identical to the one written before the switch, so a
+ *    blanket refusal costs no extra write and changes nothing a rep sees.
+ *  · HOLD: some replacements are missing, and there are SEVERAL old rows for the
+ *    code. That only happens when switching back, from split rows to one legacy
+ *    row. A remainder cannot be divided among several old rows, so they are
+ *    left untouched until the legacy row is accepted, and then retired.
+ *
+ * WHAT COUNTS AS A REPLACEMENT SALESFORCE HOLDS depends on the direction, and
+ * the difference is the third review's finding. Going forward, a split row's
+ * key in `present` is enough: it can only be a split row. Switching back, the
+ * one replacement is the legacy row, and its key may be in the mirror holding a
+ * REMAINDER from the forward switch-over — three slabs where the line is
+ * eight. Retiring the split rows against that would leave three. So the HOLD
+ * branch asks `verified` instead: accepted in this run, or in the mirror with
+ * exactly the payload this run wants. `verified` defaults to `present`.
+ *  · KEEP: this run wants no rows of the current shape for the code at all. The
+ *    product is sold out at the switch, or the design has been merged away. The
+ *    ordinary diff decides it: a product still sold stays a searchable "none
+ *    right now" row under its old key, and a design merged away is retired.
+ *
+ * Pure, and called twice a run. First with what the mirror held before any
+ * write, to know which keys to take out of the ordinary diff. Then again with
+ * that plus what Salesforce accepted in the first write, to decide the old rows
+ * themselves.
+ */
+export interface TransitionPlan {
+  retire: string[];
+  remainder: StockRow[];
+  hold: string[];
+  keep: string[];
+}
+
+export function planTransition(
+  otherShapeKeys: Iterable<string>,
+  desiredCurrent: ReadonlyArray<StockRow>,
+  present: ReadonlySet<string>,
+  verified: ReadonlySet<string> = present,
+): TransitionPlan {
+  const wanted = new Map<string, StockRow[]>();
+  for (const r of desiredCurrent) {
+    const k = slabKeyCode(r.key);
+    if (!k) continue;
+    const list = wanted.get(k.code) ?? [];
+    list.push(r);
+    wanted.set(k.code, list);
+  }
+  const olds = new Map<string, string[]>();
+  for (const key of otherShapeKeys) {
+    const k = slabKeyCode(key);
+    if (!k) continue;
+    const list = olds.get(k.code) ?? [];
+    list.push(key);
+    olds.set(k.code, list);
+  }
+
+  const plan: TransitionPlan = { retire: [], remainder: [], hold: [], keep: [] };
+  for (const [code, keys] of olds) {
+    const replacements = wanted.get(code) ?? [];
+    if (!replacements.length) { plan.keep.push(...keys); continue; }
+    const singleLegacy = keys.length === 1 && slabKeyCode(keys[0])?.shape === "legacy";
+    const held = singleLegacy ? present : verified;
+    const missing = replacements.filter((r) => !held.has(r.key));
+    if (!missing.length) { plan.retire.push(...keys); continue; }
+    if (singleLegacy) {
+      const slabs = missing.reduce((n, r) => n + Math.max(0, Math.trunc(Number(r.available) || 0)), 0);
+      plan.remainder.push(remainderRow(keys[0]!, slabs, replacements[0]!));
+    } else {
+      plan.hold.push(...keys);
+    }
+  }
+  plan.retire.sort();
+  plan.hold.sort();
+  plan.keep.sort();
+  plan.remainder.sort((x, y) => (x.key < y.key ? -1 : x.key > y.key ? 1 : 0));
+  return plan;
+}
+
+/**
+ * The legacy row, whole and current, carrying only the slabs its replacements
+ * do not yet cover.
+ *
+ * Built from a replacement row, which carries everything the legacy row does:
+ * the design, the thickness, the product and whether it is missing. Its name
+ * is rebuilt the way slabRows(…, false) builds it. So when the remainder is the
+ * whole line, this is the pre-switch row exactly, same hash and no extra write.
+ * It is not a count-only patch: an earlier version sent no fields, and a
+ * product created in Salesforce during the switch-over then never reached the
+ * row carrying the stock.
+ */
+export function remainderRow(key: string, available: number, replacement: StockRow): StockRow {
+  const f = replacement.fields ?? {};
+  return {
+    key,
+    kind: "Slab",
+    name: `${String(f.Design__c ?? "")} ${Number(f.Thickness_mm__c)} mm`,
+    available,
+    retired: false,
+    fields: {
+      Design__c: f.Design__c,
+      Thickness_mm__c: f.Thickness_mm__c,
+      Product__c: f.Product__c ?? null,
+      Product_Missing__c: f.Product_Missing__c,
+    },
+  };
+}
+
+/**
+ * THE PROBE, as a decision rather than as inline code. Until Salesforce has
+ * accepted a single row of the current shape, only the first `limit` NEW rows
+ * of that shape go out (`firstWave` carries them together with every other row:
+ * samples, restamps, retirements and sold-outs are never held back). The rest
+ * wait in `heldBack` until a probe row is accepted. Once one row of the shape
+ * has been accepted, nothing is held back again.
+ */
+export function probeWave(
+  rows: ReadonlyArray<StockRow>,
+  mirrorKeys: ReadonlySet<string>,
+  shape: SlabKeyShape,
+  limit: number,
+): { firstWave: StockRow[]; heldBack: StockRow[]; probe: string[] } {
+  const isNew = (r: StockRow) => !r.retired && !mirrorKeys.has(r.key) && slabKeyCode(r.key)?.shape === shape;
+  const fresh = rows.filter(isNew);
+  if (shapeEverAccepted(mirrorKeys, shape) || fresh.length <= limit) {
+    return { firstWave: [...rows], heldBack: [], probe: fresh.map((r) => r.key) };
+  }
+  const later = new Set(fresh.slice(limit).map((r) => r.key));
+  return {
+    firstWave: rows.filter((r) => !later.has(r.key)),
+    heldBack: rows.filter((r) => later.has(r.key)),
+    probe: fresh.slice(0, limit).map((r) => r.key),
+  };
+}
+
+/**
+ * Which remainder rows go out this run: one whose payload changed, or whose
+ * last push is older than the re-stamp window. The old row must never read
+ * Stale__c while it is the row still carrying the stock.
+ */
+export function remaindersDue(
+  remainders: ReadonlyArray<StockRow>,
+  mirror: ReadonlyMap<string, { payloadHash: string; pushedAt?: Date | null }>,
+  staleCutoff: Date,
+): StockRow[] {
+  return remainders.filter((r) => {
+    const seen = mirror.get(r.key);
+    return !seen || seen.payloadHash !== payloadHash(r) || !seen.pushedAt || seen.pushedAt < staleCutoff;
+  });
+}
+
+/** One Salesforce answer per record, as compositePatch returns them. */
+export interface RowAnswer {
+  success: boolean;
+  errors?: Array<{ message?: string }>;
+}
+
+/**
+ * WRITE IN CHUNKS, AND ACT ON EACH ANSWER AS IT ARRIVES.
+ *
+ * compositePatch loops over its own 200-row chunks and throws on the first bad
+ * response. When it throws, the answers to the chunks Salesforce had ALREADY
+ * committed are lost with it. Those rows are live in Salesforce and missing from
+ * the mirror. If one of them then sells out before the next run, nothing ever
+ * touches it again, because the diff only walks what the mirror holds. It stays
+ * in Salesforce, counting stock that is gone, for good. So the chunks are sent
+ * here one at a time, and `onAnswer` records each one before the next is sent.
+ *
+ * A REQUEST-LEVEL REFUSAL IS A REFUSAL, NOT A CRASH. When a field is hidden from
+ * the integration user, as Grade__c is until someone grants it, Salesforce
+ * rejects the whole request as naming a field that does not exist. It does not
+ * refuse row by row. `absorb` names the errors to treat that way: every row in
+ * the chunk is marked refused with the reason, and the run carries on. Any other
+ * error is rethrown, after every chunk before it has been recorded.
+ */
+export async function sendChunks(
+  rows: ReadonlyArray<StockRow>,
+  size: number,
+  send: (chunk: StockRow[]) => Promise<RowAnswer[]>,
+  onAnswer: (chunk: StockRow[], answers: RowAnswer[]) => Promise<void>,
+  absorb: (error: unknown) => string | null,
+): Promise<void> {
+  for (let i = 0; i < rows.length; i += size) {
+    const chunk = rows.slice(i, i + size);
+    let answers: RowAnswer[];
+    try {
+      answers = await send(chunk);
+    } catch (e) {
+      const why = absorb(e);
+      if (why === null) throw e;
+      answers = chunk.map(() => ({ success: false, errors: [{ message: why }] }));
+    }
+    await onAnswer(chunk, answers);
+  }
+}
+
+/**
+ * ROWS CARRYING Grade__c GO IN CHUNKS OF THEIR OWN. The field was created the day
+ * Salesforce asked for it. If the integration user cannot see it, every request
+ * that names it is refused whole (see sendChunks), and a sample row or an old
+ * slab row in the same chunk would be refused with it. Kept apart, a missing
+ * permission costs the new rows and nothing else.
+ */
+export function partitionByNewField(rows: ReadonlyArray<StockRow>): { plain: StockRow[]; withGrade: StockRow[] } {
+  const plain: StockRow[] = [];
+  const withGrade: StockRow[] = [];
+  for (const r of rows) (Object.prototype.hasOwnProperty.call(r.fields ?? {}, "Grade__c") ? withGrade : plain).push(r);
+  return { plain, withGrade };
+}
+
+/**
+ * Keys Salesforce holds with EXACTLY the payload this run wants: accepted in
+ * this run, or already in the mirror under the same hash. The proof the HOLD
+ * branch of planTransition needs before it retires several rows for one.
+ */
+export function verifiedKeys(
+  desired: ReadonlyArray<StockRow>,
+  mirror: ReadonlyMap<string, { payloadHash: string }>,
+  acceptedThisRun: ReadonlySet<string>,
+): Set<string> {
+  const out = new Set(acceptedThisRun);
+  for (const r of desired) {
+    const seen = mirror.get(r.key);
+    if (seen && seen.payloadHash === payloadHash(r)) out.add(r.key);
+  }
+  return out;
+}
+
+/**
+ * Whether ANY row of the current shape has ever been accepted — the gate on the
+ * probe. Until one has, the new rows go out 200 at a time and stop at the first
+ * batch refused whole; see syncStock.
+ */
+export function shapeEverAccepted(mirrorKeys: Iterable<string>, shape: SlabKeyShape): boolean {
+  for (const k of mirrorKeys) if (slabKeyCode(k)?.shape === shape) return true;
+  return false;
+}
+
+// ── the yard's groups, from one grouped read ───────────────────────────────
+
+/** One row of the grouped yard read: a design, thickness, polish and grade,
+ *  its slabs, and how many of them are on the sales-unapproved list. */
+export interface YardRow {
+  design: string | null;
+  slab_thickness: string | null;
+  polish_type: string | null;
+  grade: string | null;
+  n: number;
+  hidden: number;
+}
+
+/**
+ * The yard read, turned into the groups the lines are built from. Pure, so the
+ * two things it decides can be tested without a database:
+ *
+ *  · UNAPPROVED SLABS ARE SUBTRACTED per group, from the count taken in the
+ *    same statement. It was never more than the group holds.
+ *  · A CUT GRADE IS EXCLUDED by DISPATCH'S OWN RULE, gradeBlocksDispatch, and
+ *    not by an approximation of it in SQL. The previous version compared
+ *    upper(btrim(grade)) in the query, and btrim strips spaces only. Dispatch
+ *    strips all whitespace and a "(Reject)" suffix, so "CTS (Reject)", which
+ *    dispatch refuses, would still have reached a rep as "Grade CTS". The
+ *    query already groups by grade, so asking here costs nothing and cannot
+ *    drift from dispatch.
+ *
+ * `raw` keeps its meaning — every AVAILABLE whole-marked slab, before either
+ * filter — and the two filters are reported beside it, never folded in silently.
+ */
+export function yardGroups(rows: ReadonlyArray<YardRow>): {
+  groups: StockGroup[]; raw: number; hidden: number; cutGradeExcluded: number;
+} {
+  const groups: StockGroup[] = [];
+  let raw = 0;
+  let hidden = 0;
+  let cutGradeExcluded = 0;
+  for (const r of rows ?? []) {
+    const n = Math.max(0, Math.trunc(Number(r?.n) || 0));
+    const h = Math.min(n, Math.max(0, Math.trunc(Number(r?.hidden) || 0)));
+    raw += n;
+    if (gradeBlocksDispatch(r?.grade)) { cutGradeExcluded += n; continue; }
+    hidden += h;
+    const available = n - h;
+    if (available > 0) {
+      groups.push({
+        design: r?.design ?? "",
+        slabThickness: r?.slab_thickness ?? "",
+        polishType: r?.polish_type ?? null,
+        grade: r?.grade ?? null,
+        available,
+      });
+    }
+  }
+  return { groups, raw, hidden, cutGradeExcluded };
+}
+
+// ── series, which belongs to the design ────────────────────────────────────
+
+/**
+ * Folded colour name -> series name, from the colour chart (product_colour ->
+ * product_series).
+ *
+ * product_colour.name is unique across every series precisely so that a place
+ * that names a colour without its series — QC's design field is one — resolves
+ * to exactly one. Folded the way designs are folded (foldDesignName), so case
+ * and spacing never decide it.
+ *
+ * THE CHART IS THE OWNER'S COLOUR CHART — 129 colours in 7 series — not the
+ * whole design list.
+ * Carrara Cloud, Calacatta Gold, Taj Mahal and most 30 mm designs are not on it
+ * at all and get no series: there is none in the ERP to send. And it spells
+ * some designs differently from the alias canonicals ("Pebbles Ice" where the
+ * ERP says "Pebble Ice"), which seriesFor answers through the alias variants.
+ *
+ * TWO COLOURS THAT FOLD TOGETHER BUT SIT IN DIFFERENT SERIES give NO answer, not
+ * the first one read: Postgres returns rows in no promised order, and a series
+ * that flipped between runs would re-push every row of that design each time.
+ */
+export function seriesIndex(
+  colours: ReadonlyArray<{ name?: string | null; series?: { name?: string | null } | null }>,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  for (const c of colours ?? []) {
+    const k = foldDesignName(c?.name);
+    const series = String(c?.series?.name ?? "").trim();
+    if (!k || !series || ambiguous.has(k)) continue;
+    const seen = out.get(k);
+    if (seen === undefined) out.set(k, series);
+    else if (seen !== series) { out.delete(k); ambiguous.add(k); }
+  }
+  return out;
+}
+
+/**
+ * The series of a canonical design: looked up under the canonical AND under every
+ * yard spelling the alias table maps onto it, so "Pebble Ice" finds the chart's
+ * "Pebbles Ice" if anyone has ever aliased one to the other. The alias table is
+ * the ERP's own record that two names are one design — the same evidence
+ * isKnownDesign accepts — so this is not a guess.
+ *
+ * ONE series or none: if the canonical and its variants land in different
+ * series, nothing is sent rather than whichever was looked up first.
+ */
+export function seriesFor(
+  canonical: unknown,
+  index: ReadonlyMap<string, string>,
+  variants: Iterable<string> = [],
+): string | null {
+  const found = new Set<string>();
+  for (const name of [canonical, ...variants]) {
+    const s = index.get(foldDesignName(name));
+    if (s) found.add(s);
+  }
+  return found.size === 1 ? [...found][0]! : null;
+}
+
 export type UnmappedReason = "UNKNOWN_DESIGN" | "THICKNESS" | "NOT_SELLABLE";
 
 export interface StockGroup {
   design: string;
   slabThickness: string;
+  available: number;
+  /**
+   * fg_finished_slab.polish_type and .grade, AS TYPED. Both are properties of
+   * the SLAB, not of the design — QC writes them per slab on every pass — so a
+   * single design and thickness can be in the yard in several finishes and
+   * grades at once. That is why they split a line (see slabKey) where Series
+   * does not: series belongs to the design and is the same for every slab of it.
+   *
+   * Optional, so a caller that groups by design and thickness alone still
+   * builds: it gets one unsplit row per line, exactly as before this existed.
+   */
+  polishType?: string | null;
+  grade?: string | null;
+}
+
+/**
+ * One finish-and-grade slice of a published line — one ERP_Stock__c row.
+ *
+ * `finish` and `grade` are the VALUES Salesforce is sent, null when the yard
+ * gave none. Salesforce asked for blank rather than a guess ("blank reads as
+ * not given, which is honest; an invented value is not"), so null is never
+ * replaced with a default here or anywhere downstream.
+ */
+export interface StockSplit {
+  finish: string | null;
+  grade: string | null;
   available: number;
 }
 
@@ -203,6 +762,16 @@ export interface PublishedLine {
    * on the unmapped worklist until somebody creates the product.
    */
   productMissing: boolean;
+  /**
+   * The same slabs, divided by finish and grade. `available` above is their
+   * sum, and stays the number every PRODUCT is told about itself: a product is
+   * a design at a thickness, and splitting its stock by polish must not change
+   * how much of it there is. Only the ERP_Stock__c rows expand this.
+   *
+   * Optional for the same reason as StockGroup's fields: absent means one
+   * unsplit slice carrying the whole line.
+   */
+  splits?: StockSplit[];
 }
 
 export interface UnmappedLine {
@@ -268,7 +837,26 @@ export function buildStockLines(
   productCodes: ReadonlySet<string>,
 ): PublishResult {
   const byCode = new Map<string, PublishedLine>();
-  const unmapped: UnmappedLine[] = [];
+  // code -> "FINISH|GRADE" -> the slice, and the spellings that fed it.
+  const slices = new Map<string, Map<string, SliceTally>>();
+  // code -> canonical spelling -> slabs. Two spellings that fold to one code
+  // ("Arva White", "arva white") are one line, and it has to be NAMED by one of
+  // them. It used to be whichever group Postgres returned first — no promised
+  // order — and with the yard now read per finish and grade there are more
+  // groups to come first, so the Name and Design__c of every slice would flip
+  // between runs and re-push. The spelling behind most slabs, like winner().
+  const canonVotes = new Map<string, Map<string, number>>();
+  // THE WORKLIST STAYS ONE ENTRY PER SPELLING. The yard is now read per finish
+  // and grade too, so the same misspelling arrives as several groups; they are
+  // folded back here, or "Astal Mist" would appear on the administrator's list
+  // once per polish it happens to be in.
+  const unmappedBy = new Map<string, UnmappedLine>();
+  const addUnmapped = (u: UnmappedLine) => {
+    const k = JSON.stringify([u.design, u.canonical, u.slabThickness, u.reason]);
+    const seen = unmappedBy.get(k);
+    if (seen) seen.available += u.available;
+    else unmappedBy.set(k, { ...u });
+  };
 
   for (const g of groups ?? []) {
     const available = Math.max(0, Math.trunc(Number(g?.available) || 0));
@@ -286,7 +874,7 @@ export function buildStockLines(
     // on the administrator's worklist as designs to create products for.
     // Withheld, and said out loud as a separate reason.
     if (isNotSellable(canonical, g?.design, productCodes)) {
-      unmapped.push({ design: String(g?.design ?? ""), canonical, slabThickness: String(g?.slabThickness ?? ""), available, reason: "NOT_SELLABLE" });
+      addUnmapped({ design: String(g?.design ?? ""), canonical, slabThickness: String(g?.slabThickness ?? ""), available, reason: "NOT_SELLABLE" });
       continue;
     }
     // THICKNESS IS STILL FATAL TO A LINE, and it is asked before the design now.
@@ -294,16 +882,19 @@ export function buildStockLines(
     // just not in anyone's product list yet. An unclassifiable THICKNESS has no
     // code at all: QZ-ARVAWHITE-undefined is not a row to send anybody.
     if (mm === null) {
-      unmapped.push({ design: String(g?.design ?? ""), canonical, slabThickness: String(g?.slabThickness ?? ""), available, reason: "THICKNESS" });
+      addUnmapped({ design: String(g?.design ?? ""), canonical, slabThickness: String(g?.slabThickness ?? ""), available, reason: "THICKNESS" });
       continue;
     }
     if (!known) {
       // Published AND reported: the rep sees the stock, the worklist still says
       // a product is missing. The two are not alternatives.
-      unmapped.push({ design: String(g?.design ?? ""), canonical, slabThickness: String(g?.slabThickness ?? ""), available, reason: "UNKNOWN_DESIGN" });
+      addUnmapped({ design: String(g?.design ?? ""), canonical, slabThickness: String(g?.slabThickness ?? ""), available, reason: "UNKNOWN_DESIGN" });
     }
 
     const code = qzCode(canonical, mm);
+    const votes = canonVotes.get(code) ?? new Map<string, number>();
+    vote(votes, canonical, available);
+    canonVotes.set(code, votes);
     const seen = byCode.get(code);
     if (seen) {
       seen.available += available;
@@ -313,12 +904,69 @@ export function buildStockLines(
     } else {
       byCode.set(code, { canonical, mm, code, available, productMissing: !productCodes.has(code) });
     }
+
+    // The slice this group belongs to. Keyed by the key's own segments, so two
+    // spellings that would produce the same ERP_Key__c are one slice by
+    // construction and can never be sent as two rows fighting over one record.
+    const finish = finishValue(g?.polishType);
+    const grade = gradeValue(g?.grade);
+    const sliceKey = `${keySegment(finish)}|${keySegment(grade)}`;
+    const byKey = slices.get(code) ?? new Map<string, SliceTally>();
+    const t = byKey.get(sliceKey) ?? { sliceKey, available: 0, finishes: new Map(), grades: new Map() };
+    t.available += available;
+    vote(t.finishes, finish, available);
+    vote(t.grades, grade, available);
+    byKey.set(sliceKey, t);
+    slices.set(code, byKey);
+  }
+
+  for (const line of byCode.values()) {
+    line.canonical = winner(canonVotes.get(line.code) ?? new Map()) ?? line.canonical;
+    line.splits = [...(slices.get(line.code)?.values() ?? [])]
+      .sort((a, b) => a.sliceKey.localeCompare(b.sliceKey))
+      .map((t) => ({ finish: winner(t.finishes), grade: winner(t.grades), available: t.available }));
   }
 
   return {
     lines: [...byCode.values()].sort((a, b) => a.code.localeCompare(b.code)),
-    unmapped: unmapped.sort((a, b) => b.available - a.available || a.design.localeCompare(b.design)),
+    unmapped: [...unmappedBy.values()].sort((a, b) => b.available - a.available || a.design.localeCompare(b.design)),
   };
+}
+
+/** One slice while it is being counted: its slabs, and how many of them each
+ *  spelling of its finish and grade accounts for. */
+interface SliceTally {
+  sliceKey: string;
+  available: number;
+  finishes: Map<string, number>;
+  grades: Map<string, number>;
+}
+
+function vote(tally: Map<string, number>, value: string | null, n: number): void {
+  const k = value ?? "";
+  tally.set(k, (tally.get(k) ?? 0) + n);
+}
+
+/**
+ * THE SPELLING THAT IS SENT when several fold to one slice — "Printing" on 40
+ * slabs and "PRINTING" on 3 are one row, and it has to say something. The one
+ * behind the most slabs, then the alphabetically first: never "whichever the
+ * database returned first", because Postgres promises no order and a value that
+ * flipped between runs would re-push the row every time.
+ */
+function winner(tally: Map<string, number>): string | null {
+  let best: string | null = null;
+  let bestN = -1;
+  for (const [v, n] of tally) {
+    // `<`, not localeCompare: this picks a VALUE that is hashed, and
+    // localeCompare's answer depends on the runtime's ICU locale. Code-unit
+    // order is the same on every machine.
+    if (n > bestN || (n === bestN && best !== null && v < best)) {
+      best = v;
+      bestN = n;
+    }
+  }
+  return best ? best : null;
 }
 
 // ── what each of the 110 products is told about itself ──────────────────────
@@ -540,13 +1188,57 @@ export interface StockRow {
   fields: Record<string, unknown>;
 }
 
-/** `SLAB|QZ-ARVAWHITE-20` → "Arva White 30 mm". */
-export function slabRow(line: PublishedLine, productId: string | null): StockRow {
-  return {
-    key: `SLAB|${line.code}`,
-    kind: "Slab",
-    name: `${line.canonical} ${line.mm} mm`,
-    available: line.available,
+/**
+ * The ERP_Stock__c rows for one published line: ONE PER FINISH AND GRADE.
+ *
+ * `SLAB|QZ-ARVAWHITE-20|POLISHED|A` -> "Arva White 20 mm · Polished · Grade A".
+ *
+ * Every slice carries the same design, thickness, product and series — those
+ * belong to the line — and its own finish, grade and count. A line with no
+ * `splits` (a caller that never read polish or grade) comes out as one slice
+ * with both blank, so it is still one row, under the new key shape.
+ *
+ * `series` is passed in rather than looked up, because it comes from the colour
+ * chart and this module reads nothing. Null means the chart does not list the
+ * design, and is sent as blank.
+ */
+export function slabRows(
+  line: PublishedLine,
+  productId: string | null,
+  series: string | null = null,
+  /**
+   * FALSE WRITES THE ROW EXACTLY AS BEFORE THE SPLIT — same key, same name, the
+   * same four fields and not one more. Byte-identical is the point: payloadHash
+   * hashes every field NAME, so even a Finish__c of null would change every
+   * row's hash and re-push the whole object for nothing. This is what lets the
+   * code be deployed, and dry-run against production, before Salesforce has
+   * said go; SF_SLAB_SPLIT turns the split on.
+   */
+  split = true,
+): StockRow[] {
+  if (!split) {
+    return [{
+      key: `SLAB|${line.code}`,
+      kind: "Slab",
+      name: `${line.canonical} ${line.mm} mm`,
+      available: line.available,
+      retired: false,
+      fields: {
+        Design__c: line.canonical,
+        Thickness_mm__c: line.mm,
+        Product__c: productId,
+        Product_Missing__c: productId === null,
+      },
+    }];
+  }
+  const slices: StockSplit[] = line.splits && line.splits.length
+    ? line.splits
+    : [{ finish: null, grade: null, available: line.available }];
+  return slices.map((sl) => ({
+    key: slabKey(line.code, sl.finish, sl.grade),
+    kind: "Slab" as const,
+    name: slabName(line.canonical, line.mm, sl.finish, sl.grade),
+    available: Math.max(0, Math.trunc(Number(sl.available) || 0)),
     retired: false,
     fields: {
       Design__c: line.canonical,
@@ -555,8 +1247,42 @@ export function slabRow(line: PublishedLine, productId: string | null): StockRow
       // The 30 mm story, said on the row itself rather than inferred from a
       // null lookup: 4,202 slabs of 59 designs Salesforce sells at 20/12 only.
       Product_Missing__c: productId === null,
+      // The org's own caps, named in their REPLY-10. Longer and the save is
+      // refused and takes the composite batch with it, so never longer — the
+      // KEY is built from the full value, so clamping here cannot merge rows.
+      Finish__c: clampTo(sl.finish, FINISH_MAX),
+      Grade__c: clampTo(sl.grade, GRADE_MAX),
+      Series__c: clampTo(series, SERIES_MAX),
     },
-  };
+  }));
+}
+
+/** Finish__c Text(255), Grade__c Text(40), Series__c Text(255): Salesforce's
+ *  REPLY-10 of 2026-09-23. Name is the standard Text(80). */
+export const FINISH_MAX = 255;
+export const GRADE_MAX = 40;
+export const SERIES_MAX = 255;
+export const NAME_MAX = 80;
+
+/**
+ * "Arva White 20 mm · Polished · Grade A". A rep searches ERP_Stock__c by name,
+ * and once a line splits, two rows called "Arva White 20 mm" would be two
+ * results nobody could tell apart. A blank finish or grade is simply left out
+ * of the name — "Grade (none)" would be inventing the words Salesforce asked
+ * us not to invent.
+ */
+export function slabName(canonical: string, mm: number, finish: string | null, grade: string | null): string {
+  const parts = [`${canonical} ${mm} mm`];
+  if (finish) parts.push(finish);
+  if (grade) parts.push(`Grade ${grade}`);
+  return clampTo(parts.join(" · "), NAME_MAX) ?? "";
+}
+
+/** Never longer than the field: a save that exceeds a Salesforce text cap
+ *  fails outright. Null stays null — blank is an answer, not a gap to fill. */
+export function clampTo(v: string | null | undefined, max: number): string | null {
+  if (v === null || v === undefined) return null;
+  return v.length <= max ? v : `${v.slice(0, max - 3)}...`;
 }
 
 /**
@@ -649,6 +1375,14 @@ export function diffMirror(
   }
 
   return { toPush, toRetire, unchanged };
+}
+
+/**
+ * A key written once with zero and Retired__c true. Name null — the line is
+ * gone and its name is not ours to restate (see StockRow) — and no fields.
+ */
+export function retirementRow(key: string): StockRow {
+  return { key, kind: kindFromKey(key), name: null, available: 0, retired: true, fields: {} };
 }
 
 function kindFromKey(key: string): StockKind {
@@ -786,6 +1520,19 @@ export interface RunSummary {
   notSellableSlabs: number;
   notSellableSpellings: number;
   thirtyMmWithoutProduct: number;
+  /**
+   * ERP_Stock__c slab ROWS — one per design, thickness, finish and grade.
+   * NOT publishedLines, which counts product CODES (design and thickness). The
+   * two were the same number until the rows split, and Salesforce counts rows
+   * when it re-reads a run, so both are reported and neither stands in for the
+   * other.
+   */
+  slabRows: number;
+  /** Rows sent with Finish__c blank / Grade__c blank — QC gave none. Counted
+   *  so "the ERP sent nothing" and "the yard recorded nothing" can be told
+   *  apart when Salesforce reads the first run. */
+  slabRowsWithoutFinish: number;
+  slabRowsWithoutGrade: number;
 }
 
 export function summarise(
@@ -796,6 +1543,10 @@ export function summarise(
   const unknown = result.unmapped.filter((u) => u.reason === "UNKNOWN_DESIGN");
   const thickness = result.unmapped.filter((u) => u.reason === "THICKNESS");
   const notSellable = result.unmapped.filter((u) => u.reason === "NOT_SELLABLE");
+  // The same slices slabRows() will emit — including its fallback for a line
+  // with none — so this count is the row count and cannot drift from it.
+  const slices: StockSplit[] = result.lines.flatMap((l) =>
+    l.splits && l.splits.length ? l.splits : [{ finish: null, grade: null, available: l.available }]);
   return {
     matched: payloads.filter((p) => p.ERP_Match__c === "Matched").length,
     notAtThickness: payloads.filter((p) => p.ERP_Match__c === "Not at this thickness").length,
@@ -811,5 +1562,8 @@ export function summarise(
     // The 59 designs / 4,202 slabs DISCOVERY counted: real stock with no
     // product to show it against, listed so the admin can create them.
     thirtyMmWithoutProduct: result.lines.filter((l) => l.mm === 30 && !productCodes.has(l.code)).length,
+    slabRows: slices.length,
+    slabRowsWithoutFinish: slices.filter((sl) => sl.finish === null).length,
+    slabRowsWithoutGrade: slices.filter((sl) => sl.grade === null).length,
   };
 }

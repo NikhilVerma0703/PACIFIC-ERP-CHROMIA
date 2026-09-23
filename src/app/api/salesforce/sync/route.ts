@@ -120,7 +120,15 @@ export async function GET(req: Request) {
   }
 
   try {
-    const summary = await syncStock({ dry, asOf: new Date().toISOString() });
+    // THE SPLIT IS ITS OWN SWITCH, separate from deploying the code (Salesforce's
+    // REPLY-10, our REPLY-16). A live run splits only when SF_SLAB_SPLIT is set,
+    // which is flipped once Salesforce has confirmed Edit on Grade__c, that Live
+    // Inventory hides retired rows, and the key format. Until then the cron keeps
+    // writing slab rows exactly as it always has. A DRY run may preview the split
+    // with ?split=1 — reading what the switch would do against production is the
+    // whole point of the dry run — but ?split=1 on a live run is ignored.
+    const split = process.env.SF_SLAB_SPLIT === "1" || (dry && url.searchParams.get("split") === "1");
+    const summary = await syncStock({ dry, asOf: new Date().toISOString(), split });
     return NextResponse.json({ ok: true, summary });
   } catch (e) {
     const err = e as Error;

@@ -14,11 +14,14 @@ import { prisma } from "@/lib/prisma";
 import { sweepExpiredReservations } from "@/lib/inventory/finishedSlab";
 import { getUnapprovedSlabNumbers } from "@/lib/inventory/searchWhere";
 import {
-  buildStockLines, productPayloads, summarise, slabRow, sampleRow, finishRow, unitRow,
-  diffMirror, payloadHash, isSellableProduct,
+  buildStockLines, productPayloads, summarise, slabRows, sampleRow, finishRow, unitRow,
+  diffMirror, payloadHash, isSellableProduct, slabKeyStillResolves, seriesIndex, seriesFor,
+  slabKeyCode, planTransition, retirementRow, foldDesignName, yardGroups, ERP_KEY_MAX,
+  probeWave, remaindersDue, verifiedKeys, sendChunks, partitionByNewField,
+  type YardRow,
   type ProductRow, type StockGroup, type StockRow, type MirrorEntry,
 } from "./stock-rules";
-import { soql, compositePatch, readConfig, limitsSeen, callsThisRun, resetCallCount, type SfConfig } from "./client";
+import { soql, compositePatch, readConfig, limitsSeen, callsThisRun, resetCallCount, SfError, type SfConfig } from "./client";
 import { orgNearlyOut, overOwnBudget, DAILY_CALL_BUDGET } from "./limits";
 import { diffProducts, productMirrorKey, productPayloadHash } from "./stock-rules";
 import { alertStandDown, alertRecovery, type AlertOutcome } from "./alert";
@@ -30,6 +33,15 @@ export interface SyncOptions {
   dry: boolean;
   /** ISO instant stamped on every product this run. */
   asOf: string;
+  /**
+   * ONE ERP_Stock__c ROW PER FINISH AND GRADE (Salesforce's REPLY-10, option b)
+   * rather than one per design and thickness. Off, the slab rows are written
+   * exactly as before the split. The route turns it on from SF_SLAB_SPLIT for a
+   * live run, or from ?split=1 on a DRY run only — so the switch can be read in
+   * advance against production and flipped once Salesforce has said go, instead
+   * of the merge itself being the migration.
+   */
+  split?: boolean;
 }
 
 export interface SyncSummary {
@@ -63,6 +75,66 @@ export interface SyncSummary {
   notSellableSlabs: number;
   notSellableSpellings: number;
   thirtyMmWithoutProduct: number;
+  /** ERP_Stock__c slab rows — one per design, thickness, finish and grade.
+   *  publishedLines counts product codes; this counts what a rep searches. */
+  slabRows: number;
+  /** Whether this run wrote one row per finish and grade (SyncOptions.split). */
+  split: boolean;
+  /** Slab rows sent with Finish__c / Grade__c / Series__c blank — null when the
+   *  split is off and the fields are not sent at all. Counted so the first run
+   *  can be checked against what Salesforce reads, and so "the ERP sent
+   *  nothing" is never confused with "the yard recorded nothing". */
+  slabRowsWithoutFinish: number | null;
+  slabRowsWithoutGrade: number | null;
+  slabRowsWithoutSeries: number | null;
+  /** Designs with stock and no series, by slabs — a worklist, like topUnmapped.
+   *  Most are simply not on the colour chart; a design that IS on it under
+   *  another spelling needs one alias row and fills on the next run. */
+  seriesMissing: Array<{ design: string; slabs: number }>;
+  /** How many designs have stock and no series — the whole count, where
+   *  seriesMissing lists only the 25 heaviest. */
+  seriesMissingDesigns: number;
+  /** The slabs the slab rows carry between them. MUST EQUAL publishedSlabs: the
+   *  split divides a line's stock between rows and may never add or lose any.
+   *  The one runtime check that would show a wrong split. */
+  slabRowsQty: number;
+  /** Available whole-marked slabs left out because their GRADE says cut (CTS,
+   *  SAMPLE) — dispatch refuses them, so Salesforce must not promise them. */
+  cutGradeExcluded: number;
+  /** Rows whose ERP_Key__c is over the org's 80 — refused on every run. Only a
+   *  product code past 55 characters can produce one; the longest is 27. */
+  keysOverLimit: number;
+  /** The key-shape switch this run: old-shape rows retired now (replacement
+   *  already confirmed), waiting on a replacement being sent this run, and kept
+   *  under the ordinary sold-out rule (no replacement exists yet). */
+  shapeMigration: {
+    current: "split" | "legacy";
+    /** Rows of the other key shape Salesforce still holds (per the mirror). */
+    oldShapeRows: number;
+    /** Of those, rows whose code has replacements this run — decided after the
+     *  first write by planTransition: retired, carrying a remainder, or held. */
+    switchingOver: number;
+    /** How many of switchingOver would be retired if every new row this run
+     *  were accepted. The dry-run figure. */
+    retireIfAllAccepted: number;
+    /** Old rows with no replacement this run, left to the ordinary diff: a
+     *  product sold out at the switch (kept as a searchable zero), or a design
+     *  merged away (retired, as it always was). */
+    keptSoldOut: number;
+    keptMergedAway: number;
+    /** After the writes; absent on a dry run or a stand-down. `retired`
+     *  counts only retirements Salesforce ACCEPTED. `remainderRows` and `held`
+     *  are how many old rows planTransition left carrying a remainder or
+     *  untouched — decisions, not writes: a remainder is re-sent only when its
+     *  count changed or it is due a re-stamp, and a refused one is named in
+     *  wrote.failures like any other row. */
+    retired?: number;
+    remainderRows?: number;
+    held?: number;
+    /** New rows NOT sent this run because the probe batch was refused whole —
+     *  see the write section. Retried by the next run's probe. */
+    probeHeldBack?: number;
+  };
   topUnmapped: Array<{ design: string; available: number; reason: string }>;
   thirtyMmCodes: string[];
   stockRows: { desired: number; toPush: number; toRetire: number; unchanged: number; toRestamp: number };
@@ -102,6 +174,16 @@ export interface SyncSummary {
  *  · status AVAILABLE — "active stock", as the owner means it.
  *  · slab_mark FULL_SLAB — a CTS or SAMPLE marked slab is one dispatch would
  *    refuse, so promising it would be a lie the yard then has to explain.
+ *  · and not a CUT GRADE either — the same rule, by the other signal. Dispatch
+ *    refuses a slab whose grade says CTS or SAMPLE even when its mark says
+ *    whole (slabBlocksDispatch ORs the two), and the ERP's own inventory
+ *    search hides it (wholeSlabWhere). This sync read the mark alone, which
+ *    was invisible while the slabs were only a number in a total; once grade
+ *    became a column Salesforce shows, any such slab would have gone out as a
+ *    row reading "Grade CTS", in stock. Decided by gradeBlocksDispatch itself
+ *    (in yardGroups), so it refuses exactly what dispatch refuses — "cts",
+ *    "CTS (Reject)", a tab-padded "CTS" — and cannot drift from it. A shade
+ *    stricter than the inventory search's exact match, deliberately.
  *  · minus the sales-unapproved (design, batch) pairs — every non-admin path in
  *    the ERP hides them, and Salesforce's audience is salespeople. Publishing
  *    them would show reps exactly the stock the approval screen exists to
@@ -111,19 +193,14 @@ export interface SyncSummary {
  * the call throws and the run fails closed, rather than publishing stock the
  * sales screens hide.
  */
-async function readYard(): Promise<{ groups: StockGroup[]; raw: number; hidden: number }> {
+async function readYard(): Promise<{ groups: StockGroup[]; raw: number; hidden: number; cutGradeExcluded: number }> {
   // A lapsed five-day hold is available again; searchAvailable sweeps first for
   // the same reason, so the two never disagree about the same slab.
   await sweepExpiredReservations();
 
-  const rows: Array<{ design: string | null; slab_thickness: string | null; n: number }> =
-    await db.$queryRawUnsafe(
-      `SELECT design, slab_thickness, COUNT(*)::int AS n
-         FROM fg_finished_slab
-        WHERE status = 'AVAILABLE' AND slab_mark = 'FULL_SLAB'
-        GROUP BY 1, 2`,
-    );
-  const raw = rows.reduce((n, r) => n + Number(r.n || 0), 0);
+  // The unapproved list comes first because it is subtracted INSIDE the one
+  // statement below — see the note there.
+  //
 
   // slab_number IS double precision, NOT an integer: 95 live AVAILABLE slabs are
   // sub-numbered 1.1, 1.2, 2.1 … so the array parameter must be cast to match the
@@ -136,28 +213,91 @@ async function readYard(): Promise<{ groups: StockGroup[]; raw: number; hidden: 
   // slab is published to the reps instead — the exact leak the approval gate exists
   // to prevent. The cast widens; the list stays whole.
   const unapproved = await getUnapprovedSlabNumbers(true);
-  let hidden = 0;
-  let hiddenGroups: Array<{ design: string | null; slab_thickness: string | null; n: number }> = [];
-  if (unapproved.length) {
-    hiddenGroups = await db.$queryRawUnsafe(
-      `SELECT design, slab_thickness, COUNT(*)::int AS n
+
+  // ONE STATEMENT, the visible count and the hidden count together.
+  //
+  // It was two: count everything, then count the unapproved, then subtract by
+  // group. That was safe while a group was (design, thickness). Grouped by
+  // polish and grade as well, a QC re-pass landing BETWEEN the two statements
+  // moves an unapproved slab from one group to another — and then its hidden
+  // count is subtracted from the wrong group, or from none, and the slab is
+  // published to the reps for a run. One snapshot cannot disagree with itself.
+  //
+  // POLISH AND GRADE ARE PER SLAB (QC writes both on every pass), so they are
+  // grouped and split downstream. The query reads and decides nothing: the
+  // subtraction and the cut-grade rule are yardGroups, which is tested, and
+  // the cut-grade rule there is dispatch's own function.
+  const rows: YardRow[] =
+    await db.$queryRawUnsafe(
+      `SELECT design, slab_thickness, polish_type, grade,
+              COUNT(*)::int AS n,
+              COUNT(*) FILTER (WHERE slab_number = ANY($1::double precision[]))::int AS hidden
          FROM fg_finished_slab
         WHERE status = 'AVAILABLE' AND slab_mark = 'FULL_SLAB'
-          AND slab_number = ANY($1::double precision[])
-        GROUP BY 1, 2`,
+        GROUP BY 1, 2, 3, 4`,
       unapproved,
     );
-    hidden = hiddenGroups.reduce((n, r) => n + Number(r.n || 0), 0);
+  return yardGroups(rows);
+}
+
+/**
+ * The colour chart's series for each design — Series__c on every slab row.
+ *
+ * NOT CAUGHT. The sample reader below swallows a failed read and carries on;
+ * that is wrong here. A failed read would send every slab row with Series__c
+ * blank, which CHANGES every row's hash — so the run re-pushes the whole object
+ * to blank the column, and the next run re-pushes it all again to fill it. The
+ * reps' series filter would lie in between. A run that fails leaves Salesforce
+ * exactly as it was; that is the better failure.
+ */
+async function seriesByDesign(): Promise<Map<string, string>> {
+  const colours: Array<{ name: string; series: { name: string } | null }> =
+    await db.productColour.findMany({ select: { name: true, series: { select: { name: true } } } });
+  return seriesIndex(colours);
+}
+
+/** Designs with stock and no series, heaviest first, capped at 25 like the
+ *  unmapped worklist — seriesMissingDesigns counts them all. */
+function seriesWorklist(
+  lines: ReadonlyArray<{ canonical: string; available: number }>,
+  seriesOf: (canonical: string) => string | null,
+): Array<{ design: string; slabs: number }> {
+  const by = new Map<string, number>();
+  for (const l of lines) {
+    if (seriesOf(l.canonical) !== null) continue;
+    by.set(l.canonical, (by.get(l.canonical) ?? 0) + l.available);
   }
-  const hiddenBy = new Map(hiddenGroups.map((r) => [`${r.design ?? ""}|${r.slab_thickness ?? ""}`, Number(r.n || 0)]));
+  return [...by].map(([design, slabs]) => ({ design, slabs }))
+    .sort((a, b) => b.slabs - a.slabs || (a.design < b.design ? -1 : a.design > b.design ? 1 : 0))
+    .slice(0, 25);
+}
 
-  const groups: StockGroup[] = rows.map((r) => ({
-    design: r.design ?? "",
-    slabThickness: r.slab_thickness ?? "",
-    available: Math.max(0, Number(r.n || 0) - (hiddenBy.get(`${r.design ?? ""}|${r.slab_thickness ?? ""}`) ?? 0)),
-  })).filter((g) => g.available > 0);
+/** ERP_Stock__c records for a composite upsert by ERP_Key__c. */
+function stockRecords(rows: StockRow[], asOf: string): Array<Record<string, unknown>> {
+  return rows.map((r) => ({
+    ERP_Key__c: r.key,
+    Kind__c: r.kind,
+    // NAME IS OMITTED when null — a zeroing row no longer knows what the line
+    // was called, and writing the key there would replace the name a rep
+    // searches by with "SLAB|QZ-ARVAWHITE-20|POLISHED|A".
+    ...(r.name === null ? {} : { Name: r.name }),
+    Available_Qty__c: r.available,
+    Retired__c: r.retired,
+    Synced_At__c: asOf,
+    ...r.fields,
+  }));
+}
 
-  return { groups, raw, hidden };
+/** One line per refused row, named by its key. */
+function noteFailures(
+  into: string[],
+  rows: StockRow[],
+  res: ReadonlyArray<{ success: boolean; errors?: Array<{ message?: string }> }>,
+): void {
+  res.forEach((r, i) => {
+    if (r.success) return;
+    into.push(`ERP_Stock__c ${rows[i]?.key ?? "?"}: ${(r.errors ?? []).map((e) => e.message).join("; ")}`);
+  });
 }
 
 /** The alias table, read fresh every run — designs get merged while the app is
@@ -267,6 +407,10 @@ async function readMirror(): Promise<Map<string, MirrorEntry & { pushedAt: Date 
  */
 const RESTAMP_AFTER_MS = 30 * 60 * 1000;
 
+/** One composite call's worth: the most the probe spends while every new row
+ *  is being refused. */
+const PROBE_ROWS = 200;
+
 /**
  * One run of the stock phase.
  *
@@ -286,7 +430,7 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
   const cfg = readConfig();
   if (!cfg) throw new Error("Salesforce is not configured (SF_LOGIN_URL / SF_CLIENT_ID / SF_CLIENT_SECRET).");
 
-  const [{ groups, raw, hidden }, aliases, canon] = await Promise.all([
+  const [{ groups, raw, hidden, cutGradeExcluded }, aliases, canon] = await Promise.all([
     readYard(), aliasMap(), canonicalNames(),
   ]);
 
@@ -309,9 +453,25 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
   const s = summarise(result, payloads, productCodes);
 
   // ── the searchable rows ────────────────────────────────────────────────────
+  const split = opts.split === true;
   const productIdByCode = new Map(sellable.map((p) => [(p.erpSku && p.erpSku.trim()) || p.productCode, p.id]));
+  const series = await seriesByDesign();
+  // Every yard spelling the alias table maps onto a canonical, so a design the
+  // colour chart spells differently ("Pebbles Ice" / "Pebble Ice") still finds
+  // its series — through the ERP's own record that the two are one design.
+  const variantsOf = new Map<string, string[]>();
+  for (const [variant, canonical] of aliases) {
+    const k = foldDesignName(canonical);
+    const list = variantsOf.get(k) ?? [];
+    list.push(variant);
+    variantsOf.set(k, list);
+  }
+  const seriesOf = (canonical: string): string | null =>
+    seriesFor(canonical, series, variantsOf.get(foldDesignName(canonical)) ?? []);
+  const slabRowsOut: StockRow[] = result.lines.flatMap((l) =>
+    slabRows(l, productIdByCode.get(l.code) ?? null, seriesOf(l.canonical), split));
   const desired: StockRow[] = [
-    ...result.lines.map((l) => slabRow(l, productIdByCode.get(l.code) ?? null)),
+    ...slabRowsOut,
     ...(await readSamplesAndUnits()),
   ];
   const wholeMirror = await readMirror();
@@ -321,12 +481,29 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
   // "retired" into ERP_Stock__c as a phantom row. Split first, diff separately.
   const mirror = new Map([...wholeMirror].filter(([k]) => !k.startsWith("PRODUCT|")));
   const productMirror = new Map([...wholeMirror].filter(([k]) => k.startsWith("PRODUCT|")));
-  const stillResolves = (key: string): boolean => {
-    if (!key.startsWith("SLAB|")) return true;
-    const code = key.slice(5);
-    return result.lines.some((l) => l.code === code) || productCodes.has(code);
-  };
-  const diff = diffMirror(desired, mirror, stillResolves);
+  // ── the switch-over — see planTransition ──────────────────────────────────
+  // Old-shape keys whose code has replacement rows this run are SET ASIDE from
+  // the ordinary diff and decided after the first write, against what
+  // Salesforce has accepted by then. Old-shape keys with no replacement at all
+  // (KEEP) go through the diff like any other key — which is what leaves a
+  // product sold out at the moment of the switch as a searchable zero.
+  const currentShape = split ? "split" : "legacy";
+  const otherShapeKeys = [...mirror.keys()].filter((k) => {
+    const sk = slabKeyCode(k);
+    return sk !== null && sk.shape !== currentShape;
+  });
+  const before = planTransition(otherShapeKeys, slabRowsOut, new Set(mirror.keys()));
+  const keepSet = new Set(before.keep);
+  const setAside = otherShapeKeys.filter((k) => !keepSet.has(k));
+  const setAsideSet = new Set(setAside);
+  const diffable = new Map([...mirror].filter(([k]) => !setAsideSet.has(k)));
+
+  const lineCodes = new Set(result.lines.map((l) => l.code));
+  const stillResolves = (key: string): boolean => slabKeyStillResolves(key, lineCodes, productCodes);
+  const diff = diffMirror(desired, diffable, stillResolves);
+  // What the switch-over would do if every new row this run were accepted — the
+  // figure a dry run exists to show before anyone flips SF_SLAB_SPLIT.
+  const ifAllAccepted = planTransition(setAside, slabRowsOut, new Set([...mirror.keys(), ...slabRowsOut.map((r) => r.key)]));
   // Rows the diff called unchanged, whose last confirmation is older than the
   // window. They carry no new VALUE — only a fresh Synced_At__c — so they are
   // appended to the push rather than counted as changes.
@@ -343,7 +520,8 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
     dry: opts.dry,
     asOf: opts.asOf,
     rawAvailableSlabs: raw,
-    sellableSlabs: raw - hidden,
+    sellableSlabs: raw - hidden - cutGradeExcluded,
+    cutGradeExcluded,
     hiddenUnapproved: hidden,
     products: { total: products.length, sellable: sellable.length },
     matched: s.matched,
@@ -358,6 +536,23 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
     notSellableSlabs: s.notSellableSlabs,
     notSellableSpellings: s.notSellableSpellings,
     thirtyMmWithoutProduct: s.thirtyMmWithoutProduct,
+    split,
+    slabRows: slabRowsOut.length,
+    slabRowsWithoutFinish: split ? s.slabRowsWithoutFinish : null,
+    slabRowsWithoutGrade: split ? s.slabRowsWithoutGrade : null,
+    slabRowsWithoutSeries: split ? slabRowsOut.filter((r) => r.fields.Series__c === null).length : null,
+    seriesMissing: seriesWorklist(result.lines, seriesOf),
+    seriesMissingDesigns: new Set(result.lines.filter((l) => seriesOf(l.canonical) === null).map((l) => l.canonical)).size,
+    slabRowsQty: slabRowsOut.reduce((n, r) => n + r.available, 0),
+    keysOverLimit: desired.filter((r) => r.key.length > ERP_KEY_MAX).length,
+    shapeMigration: {
+      current: currentShape,
+      oldShapeRows: otherShapeKeys.length,
+      switchingOver: setAside.length,
+      retireIfAllAccepted: ifAllAccepted.retire.length,
+      keptSoldOut: before.keep.filter((k) => stillResolves(k)).length,
+      keptMergedAway: before.keep.filter((k) => !stillResolves(k)).length,
+    },
     topUnmapped: result.unmapped.slice(0, 25).map((u) => ({ design: u.design, available: u.available, reason: u.reason })),
     thirtyMmCodes: result.lines.filter((l) => l.mm === 30 && !productCodes.has(l.code)).map((l) => l.code).sort(),
     stockRows: { desired: desired.length, toPush: diff.toPush.length, toRetire: diff.toRetire.length, unchanged: diff.unchanged, toRestamp: toRestamp.length },
@@ -426,29 +621,103 @@ export async function syncStock(opts: SyncOptions): Promise<SyncSummary> {
   }
 
   // toRestamp last: a row that genuinely changed is already in toPush, and a
-  // key must not appear twice in one composite call.
+  // key must not appear twice in one composite call. No set-aside old-shape key
+  // is in here — they were taken out of the diff and are decided below.
   const rowsToWrite = [...diff.toPush, ...diff.toRetire, ...toRestamp];
-  if (rowsToWrite.length) {
-    const records = rowsToWrite.map((r) => ({
-      ERP_Key__c: r.key,
-      Kind__c: r.kind,
-      // NAME IS OMITTED when null — a zeroing row no longer knows what the line
-      // was called, and writing the key there would replace the name a rep
-      // searches by with "SLAB|QZ-ARVAWHITE-20".
-      ...(r.name === null ? {} : { Name: r.name }),
-      Available_Qty__c: r.available,
-      Retired__c: r.retired,
-      Synced_At__c: opts.asOf,
-      ...r.fields,
-    }));
-    const res = await compositePatch(cfg, "ERP_Stock__c", records, "ERP_Key__c");
-    summary.wrote.stockRows = res.filter((r) => r.success).length;
-    for (const r of res.filter((x) => !x.success)) {
-      summary.wrote.failures.push(`ERP_Stock__c: ${(r.errors ?? []).map((e) => e.message).join("; ")}`);
+
+  // THE PROBE. Until Salesforce has accepted a single row of the current key
+  // shape — the run the switch is flipped, and every run after it while the
+  // new rows are refused — only the first PROBE_ROWS new rows go out. If every
+  // one of them is refused the rest are held back until the next run's probe.
+  // Without this, a systematic refusal (Grade__c not granted to the integration
+  // user) re-sends every split row on every run: ceil(N/200) calls every ten
+  // minutes, which spends the daily budget, and then the budget guard stands
+  // the WHOLE sync down, Product2 and samples included. With it, the same
+  // mistake costs one call a run, and the old rows keep carrying the stock
+  // (planTransition's remainder), so Salesforce loses nothing meanwhile.
+  const { firstWave, heldBack, probe } = probeWave(rowsToWrite, new Set(mirror.keys()), currentShape, PROBE_ROWS);
+
+  const stockFailures: string[] = [];
+  // Refusals of the OLD rows' own writes (a retirement, a remainder) are the
+  // ones that leave a design's total wrong until they succeed, so they are kept
+  // apart and named FIRST — a cap on the list must never cut them off behind a
+  // probe's worth of refused new rows.
+  const oldRowFailures: string[] = [];
+  const acceptedKeys = new Set<string>();
+  // A 400 is Salesforce refusing THIS request's payload — a field it will not
+  // accept, most likely Grade__c before the integration user can see it. Every
+  // row in the chunk is refused with the reason and the run carries on. Any
+  // other failure (auth, 5xx, the network) stops the run as it always has, but
+  // only after every chunk before it has been recorded.
+  const absorb = (e: unknown): string | null =>
+    e instanceof SfError && e.status === 400 ? e.message : null;
+  const writeStock = async (rows: StockRow[], retired: StockRow[], failures: string[] = stockFailures): Promise<void> => {
+    if (!rows.length) return;
+    const { plain, withGrade } = partitionByNewField(rows);
+    for (const part of [plain, withGrade]) {
+      await sendChunks(
+        part,
+        200,
+        (chunk) => compositePatch(cfg, "ERP_Stock__c", stockRecords(chunk, opts.asOf), "ERP_Key__c"),
+        async (chunk, res) => {
+          summary.wrote.stockRows += res.filter((r) => r.success).length;
+          noteFailures(failures, chunk, res);
+          chunk.forEach((r, i) => { if (res[i]?.success) acceptedKeys.add(r.key); });
+          // The mirror records only what Salesforce accepted, so a failed row is
+          // retried next run rather than assumed done — and a refused RETIREMENT
+          // stays in the mirror and is retried too (recordMirror deletes a retired
+          // key only when its row was accepted). Chunk by chunk, so a run that
+          // dies later has not lost the record of what it already committed.
+          await recordMirror(chunk.filter((_, i) => res[i]?.success), retired);
+        },
+        absorb,
+      );
     }
-    // The mirror records only what Salesforce accepted, so a failed row is
-    // retried next run rather than assumed done.
-    await recordMirror(rowsToWrite.filter((_, i) => res[i]?.success), diff.toRetire);
+  };
+
+  try {
+    if (rowsToWrite.length || setAside.length) {
+      await writeStock(firstWave, diff.toRetire);
+      if (heldBack.length) {
+        if (probe.some((k) => acceptedKeys.has(k))) await writeStock(heldBack, []);
+        else summary.shapeMigration.probeHeldBack = heldBack.length;
+      }
+
+      // THE OLD ROWS, now that Salesforce has answered. `present` is everything
+      // it holds: what the mirror held before this run, plus what it accepted in
+      // it. Each set-aside old row is retired if all its replacements are
+      // present, carries the slabs of the ones that are not, or is held.
+      const present = new Set([...mirror.keys(), ...acceptedKeys]);
+      const after = planTransition(setAside, slabRowsOut, present, verifiedKeys(slabRowsOut, mirror, acceptedKeys));
+      const retirements = after.retire.map(retirementRow);
+      const remainders = remaindersDue(after.remainder, mirror, staleCutoff);
+      await writeStock([...retirements, ...remainders], retirements, oldRowFailures);
+      summary.shapeMigration.retired = retirements.filter((r) => acceptedKeys.has(r.key)).length;
+      summary.shapeMigration.remainderRows = after.remainder.length;
+      summary.shapeMigration.held = after.hold.length;
+    }
+  } catch (e) {
+    // A RUN THAT STOPS STILL SPENT ITS CALLS. It used to leave no row in
+    // sf_sync_run at all, so callsSpentToday — which is read from those rows —
+    // never counted them, and the daily brake undercounted every failing run.
+    // Recorded here with what it wrote and why it stopped; the route still
+    // raises the alert.
+    summary.wrote.failures.push(...oldRowFailures, ...stockFailures.slice(0, 50),
+      `ERP_Stock__c: the run stopped — ${(e as Error).message}`);
+    summary.apiUsage = limitsSeen();
+    summary.ourCalls = { thisRun: callsThisRun(), today: spentToday + callsThisRun(), budget: DAILY_CALL_BUDGET };
+    await recordRun(opts, summary, started);
+    throw e;
+  }
+  // Named by KEY, so the first live run after the switch can be audited row by
+  // row — "12 refused" says something went wrong, "SLAB|QZ-…|POLISHED|A:
+  // Grade__c not writable" says what. Old-row refusals first, then the first
+  // FAILURES_SHOWN of the rest with a count: a whole object refused would
+  // otherwise put hundreds of identical lines into sf_sync_run.
+  const FAILURES_SHOWN = 50;
+  summary.wrote.failures.push(...oldRowFailures, ...stockFailures.slice(0, FAILURES_SHOWN));
+  if (stockFailures.length > FAILURES_SHOWN) {
+    summary.wrote.failures.push(`ERP_Stock__c: …and ${stockFailures.length - FAILURES_SHOWN} more refused rows`);
   }
 
   // THE OTHER END OF THE EVENT. If the previous run stood down and this one
@@ -495,7 +764,18 @@ async function recordRun(opts: SyncOptions, summary: SyncSummary, started: numbe
     new Date(started),
     opts.dry,
     summary.wrote.failures.length === 0,
-    JSON.stringify({ ourCalls: summary.ourCalls, wrote: summary.wrote, stoodDown: summary.stoodDown, alert: summary.alert ?? null }),
+    // The switch-over's own figures are kept too: the first live run after
+    // SF_SLAB_SPLIT is flipped is the one Salesforce will re-read and ask about,
+    // and a cron's HTTP response is gone the moment it is sent.
+    JSON.stringify({
+      ourCalls: summary.ourCalls, wrote: summary.wrote, stoodDown: summary.stoodDown, alert: summary.alert ?? null,
+      split: summary.split, slabRows: summary.slabRows,
+      slabRowsWithoutFinish: summary.slabRowsWithoutFinish, slabRowsWithoutGrade: summary.slabRowsWithoutGrade,
+      slabRowsWithoutSeries: summary.slabRowsWithoutSeries, shapeMigration: summary.shapeMigration,
+      cutGradeExcluded: summary.cutGradeExcluded, keysOverLimit: summary.keysOverLimit,
+      slabRowsQty: summary.slabRowsQty, publishedSlabs: summary.publishedSlabs,
+      sellableSlabs: summary.sellableSlabs, hiddenUnapproved: summary.hiddenUnapproved,
+    }),
     summary.stoodDown,
   ).catch(() => {});
 }
