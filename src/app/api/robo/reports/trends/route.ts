@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { delayProductionDateOf, productionDateOf } from "@/lib/robo/productionDate";
+import { dailySlabsPerHour, lineMinutesByDate } from "@/lib/robo/dailyRate";
 import { roboGate } from "@/lib/rbac";
 
 // Live aggregation, never cached — always computed fresh per request.
@@ -8,21 +9,6 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 function pad(n: number): string { return String(n).padStart(2, "0"); }
-
-function toMins(t: string): number {
-  const [h, m] = (t || "").split(":").map(Number);
-  return (h || 0) * 60 + (m || 0);
-}
-
-function shiftMinutes(startTime: string, endTime: string | null, status: string, nowMins: number): number {
-  if (!startTime) return 0;
-  const start = toMins(startTime);
-  const end = endTime ? toMins(endTime) : status === "ACTIVE" ? nowMins : null;
-  if (end === null) return 0;
-  let diff = end - start;
-  if (diff < 0) diff += 24 * 60;
-  return diff;
-}
 
 /**
  * GET /api/robo/reports/trends?days=7|15|30
@@ -35,11 +21,18 @@ function shiftMinutes(startTime: string, endTime: string | null, status: string,
  * run entered three days late on the day it was typed, so this chart and the
  * KPI cards above it on the same page could show one slab under two days.
  *
- * Line minutes still come off the shift, because that is what a shift records.
- * A shift is attributed to the production date MOST of its slabs carry: one
- * shift, one day, so no day's minutes are counted twice. In the ordinary case —
- * a run logged on the day it ran — that date is the shift's own and this is
- * exactly what it always was.
+ * All three series are DATE-based — no batch enters:
+ *   slabs         — slabs whose production date is that date (Daily Production
+ *                   Trend): exactly the rows Slab Records lists for the date;
+ *   delayMins     — delay minutes on that date (Day-wise Delay Analysis);
+ *   slabsPerHour  — that date's slabs ÷ the hours the Robo line ran that date
+ *                   (Daily Slabs / Hour Trend), with those minutes as
+ *                   `lineMinutes`. See lib/robo/dailyRate.ts.
+ *
+ * slabsPerHour used to divide by the open time of the date's RoboShift rows —
+ * tablet plumbing, not production time, and an open one measured to the wall
+ * clock — which read 19/09 as 279.3 slabs/hour. The hours now come from the
+ * slabs' own In and Out times.
  */
 export async function GET(req: NextRequest) {
   const refused = await roboGate();
@@ -48,16 +41,22 @@ export async function GET(req: NextRequest) {
   const days = Math.min(Math.max(Number.isFinite(raw) && raw > 0 ? raw : 7, 1), 90);
 
   const now = new Date();
-  const nowMins = now.getHours() * 60 + now.getMinutes();
 
   const dates: string[] = [];
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
     dates.push(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`);
   }
+  // The day before the window: its overnight slabs come out after midnight, on
+  // the window's first date, and that running time belongs to that date. Its
+  // slabs are read for the line's hours only — no series counts them.
+  const eve = new Date(now.getFullYear(), now.getMonth(), now.getDate() - days);
+  const dayBefore = `${eve.getFullYear()}-${pad(eve.getMonth() + 1)}-${pad(eve.getDate())}`;
 
   const window = { in: dates };
-  /* Every slab and delay whose production date falls in the window, by the
+  const slabWindow = { in: [dayBefore, ...dates] };
+  /* Every slab and delay whose production date falls in the window (the slabs
+     from the day before too — read for the line's hours only), by the
      same precedence the rest of the module uses. The `in` form of each branch
      is the multi-date version of productionDateWhere — kept here rather than in
      that module because only this route asks about a set of days — and it leads
@@ -67,14 +66,20 @@ export async function GET(req: NextRequest) {
     prisma.roboProductionRecord.findMany({
       where: {
         OR: [
-          { productionDate: window },
-          { productionDate: null, batchRecipe: { productionDate: window } },
-          { productionDate: null, batchRecipe: { productionDate: null }, shift: { date: window } },
-          { productionDate: null, batchRecipe: { productionDate: "" }, shift: { date: window } },
-          { productionDate: null, batchRecipe: null, shift: { date: window } },
+          { productionDate: slabWindow },
+          { productionDate: null, batchRecipe: { productionDate: slabWindow } },
+          { productionDate: null, batchRecipe: { productionDate: null }, shift: { date: slabWindow } },
+          { productionDate: null, batchRecipe: { productionDate: "" }, shift: { date: slabWindow } },
+          { productionDate: null, batchRecipe: null, shift: { date: slabWindow } },
         ],
       },
-      select: { shiftId: true, productionDate: true, batchRecipe: { select: { productionDate: true } }, shift: { select: { date: true } } },
+      select: {
+        inTime: true,
+        outTime: true,
+        productionDate: true,
+        batchRecipe: { select: { productionDate: true } },
+        shift: { select: { date: true } },
+      },
     }),
     prisma.roboDelayLog.findMany({
       where: {
@@ -95,49 +100,34 @@ export async function GET(req: NextRequest) {
     }),
   ]);
 
-  const buckets: Record<string, { slabs: number; delayMins: number; minutes: number }> = {};
-  for (const d of dates) buckets[d] = { slabs: 0, delayMins: 0, minutes: 0 };
+  const buckets: Record<string, { slabs: number; delayMins: number }> = {};
+  for (const d of dates) buckets[d] = { slabs: 0, delayMins: 0 };
 
-  // Which production date each shift's slabs mostly belong to, so its minutes
-  // land on one day and only one.
-  const shiftDayVotes = new Map<string, Map<string, number>>();
   for (const r of records) {
-    const day = productionDateOf(r);
-    const b = buckets[day];
+    const b = buckets[productionDateOf(r)];
     if (b) b.slabs += 1;
-    const votes = shiftDayVotes.get(r.shiftId) ?? new Map<string, number>();
-    votes.set(day, (votes.get(day) ?? 0) + 1);
-    shiftDayVotes.set(r.shiftId, votes);
   }
   for (const d of delays) {
     const b = buckets[delayProductionDateOf(d)];
     if (b) b.delayMins += d.durationMinutes;
   }
 
-  const shifts = shiftDayVotes.size > 0
-    ? await prisma.roboShift.findMany({
-        where: { id: { in: [...shiftDayVotes.keys()] } },
-        select: { id: true, startTime: true, endTime: true, status: true },
-      })
-    : [];
-  for (const s of shifts) {
-    const votes = shiftDayVotes.get(s.id);
-    if (!votes) continue;
-    let day = "", best = -1;
-    for (const [d, n] of votes) if (n > best || (n === best && d < day)) { day = d; best = n; }
-    const b = buckets[day];
-    if (b) b.minutes += shiftMinutes(s.startTime, s.endTime, s.status, nowMins);
-  }
+  // The hours the Robo line ran on each date, from every slab's In and Out.
+  const lineMinutes = lineMinutesByDate(
+    records.map((r) => ({ productionDate: productionDateOf(r), inTime: r.inTime, outTime: r.outTime })),
+  );
 
   const series = dates.map(d => {
     const b = buckets[d];
     const [, month, day] = d.split("-");
+    const minutes = lineMinutes.get(d) ?? 0;
     return {
       date: d,
       label: `${day}/${month}`,
       slabs: b.slabs,
       delayMins: b.delayMins,
-      slabsPerHour: b.minutes > 0 ? Math.round((b.slabs / (b.minutes / 60)) * 10) / 10 : 0,
+      slabsPerHour: dailySlabsPerHour(b.slabs, minutes),
+      lineMinutes: minutes,
     };
   });
 

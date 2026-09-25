@@ -37,7 +37,16 @@ export const TOOLTIP_STYLE = {
 
 export interface MachineSlice { name: string; short: string; minutes: number }
 export interface DelaySlice { code: string; description: string; category: string; minutes: number; events: number }
-export interface TrendPoint { date: string; label: string; slabs: number; delayMins: number; slabsPerHour: number }
+export interface TrendPoint {
+  date: string;
+  label: string;
+  slabs: number;
+  delayMins: number;
+  /** That date's slabs ÷ the hours the Robo line ran that date (lib/robo/dailyRate.ts). */
+  slabsPerHour: number;
+  /** The minutes the Robo line ran that date — the divisor behind slabsPerHour. */
+  lineMinutes: number;
+}
 
 export function pct(value: number, total: number): string {
   if (total <= 0) return "0%";

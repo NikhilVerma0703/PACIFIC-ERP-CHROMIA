@@ -288,7 +288,7 @@ export function ReportsClient() {
 
             <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
               {/* Daily Slabs / Hour Trend */}
-              <ChartCard title="Daily Slabs / Hour Trend" subtitle="Production rate per day">
+              <ChartCard title="Daily Slabs / Hour Trend" subtitle="Slabs produced on each date ÷ hours the Robo line ran that date">
                 <SlabsPerHourLine data={trends} />
               </ChartCard>
 

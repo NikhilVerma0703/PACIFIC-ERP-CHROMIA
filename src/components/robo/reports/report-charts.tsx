@@ -10,9 +10,10 @@ import {
   Tooltip, ResponsiveContainer, LabelList,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, LineChart, Line, AreaChart, Area, ReferenceLine,
 } from "recharts";
-import { fmtDurationLong } from "@/lib/robo/utils";
+import { fmtDuration, fmtDurationLong } from "@/lib/robo/utils";
 import type { HourBucket } from "@/lib/robo/hourlyProduction";
 import { hourlyYAxis } from "@/lib/robo/hourlyAxis";
+import { dailyRateYAxis } from "@/lib/robo/dailyRate";
 import {
   DELAY_HUE, PRODUCTION_HUE, GRID, AXIS, MUTED, TOOLTIP_STYLE,
   type TrendPoint,
@@ -139,14 +140,26 @@ export function DelayByDayBar({ data }: { data: TrendPoint[] }) {
   );
 }
 
+/**
+ * Daily Slabs / Hour Trend — each date's slabs ÷ the hours the Robo line ran
+ * that date (lib/robo/dailyRate.ts). The Y-axis is the owner's 0, 2, 4, 6, 8,
+ * 10, extended in 2s only when a date really tops 10; the tooltip names the
+ * slabs and the running time behind each value, so any point can be checked.
+ */
 export function SlabsPerHourLine({ data }: { data: TrendPoint[] }) {
+  const { max: yMax, ticks } = dailyRateYAxis(data.reduce((m, p) => Math.max(m, p.slabsPerHour), 0));
   return (
     <ResponsiveContainer width="100%" height={240}>
       <LineChart data={data} margin={{ top: 4, right: 8, left: -12, bottom: 0 }}>
         <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
         <XAxis dataKey="label" tick={{ fontSize: 11, fill: MUTED }} axisLine={{ stroke: AXIS }} tickLine={false} interval="preserveStartEnd" />
-        <YAxis tick={{ fontSize: 11, fill: MUTED }} axisLine={false} tickLine={false} />
-        <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [`${v} slabs/hr`, "Rate"]} />
+        <YAxis domain={[0, yMax]} ticks={ticks} allowDecimals={false}
+          tick={{ fontSize: 11, fill: MUTED }} axisLine={false} tickLine={false} />
+        <Tooltip contentStyle={TOOLTIP_STYLE}
+          formatter={(v: number, _n: unknown, item: { payload?: TrendPoint }) => {
+            const p = item?.payload;
+            return [p && p.lineMinutes > 0 ? `${v} slabs/hr (${p.slabs} slabs in ${fmtDuration(p.lineMinutes)})` : `${v} slabs/hr`, "Rate"];
+          }} />
         <Line type="monotone" dataKey="slabsPerHour" stroke={PRODUCTION_HUE} strokeWidth={2}
           dot={{ r: 4, strokeWidth: 0, fill: PRODUCTION_HUE }} activeDot={{ r: 5 }} name="Slabs / Hour" />
       </LineChart>
