@@ -10,7 +10,7 @@ import { fmtDurationLong, formatDate, todayStr } from "@/lib/robo/utils";
 import { reportQuery, type ReportMode } from "@/lib/robo/reportQuery";
 import { RoboReportFilters, useRoboBatchOptions } from "@/components/robo/RoboReportFilters";
 import { DelayAnalysis } from "@/components/robo/reports/DelayAnalysis";
-import type { HourBucket } from "@/lib/robo/hourlyProduction";
+import { runScope, type HourBucket, type RunEnds } from "@/lib/robo/hourlyProduction";
 import type { DelaySlice, TrendPoint } from "@/components/robo/reports/chart-tokens";
 
 /* A grey block the exact height of the figure it stands in for, so nothing
@@ -99,6 +99,9 @@ export function ReportsClient() {
   // not the date filter, so a batch that ran past midnight keeps its full
   // timeline. See /api/robo/reports/hourly.
   const [hourly, setHourly] = useState<HourBucket[]>([]);
+  // The run the chart covers: its first slab's In and last slab's Out, as the
+  // route placed them — named in the chart's subtitle.
+  const [hourlyRun, setHourlyRun] = useState<RunEnds | null>(null);
   const [loadingHourly, setLoadingHourly] = useState(true);
 
   const [rangeDays, setRangeDays] = useState<number>(7);
@@ -118,8 +121,9 @@ export function ReportsClient() {
     setLoadingHourly(true);
     const qs = b.trim() ? `?batch=${encodeURIComponent(b.trim())}` : "";
     const res = await fetch(`/api/robo/reports/hourly${qs}`, { cache: "no-store" });
-    const data = res.ok ? await res.json() : { series: [] };
+    const data = res.ok ? await res.json() : { series: [], run: null };
     setHourly(data.series ?? []);
+    setHourlyRun(data.run ?? null);
     setLoadingHourly(false);
   }, []);
 
@@ -154,15 +158,17 @@ export function ReportsClient() {
   const delayData = summary?.delayTypes ?? [];
   const delayTotal = summary?.totalDelayMins ?? 0;
 
-  // The production date(s) the hourly run spans, from the series itself — one
-  // date for a same-day batch, a "first → last" range for one that crossed
-  // midnight. Shown in the chart subtitle so the actual Production Date is on
-  // the chart, not just the hours.
+  // What the hourly chart covers, for its subtitle: the batch's first slab In
+  // and last slab Out, each with its date — "31/08/2026 (11:20) → 31/08/2026
+  // (22:31)" — straight from the route, i.e. from the same placement as the
+  // chart and the Total Production Time KPI. A run with no completed slab has no
+  // last Out; the subtitle then falls back to the date(s) of the chart's hours.
   const hourlyDates = hourly.map((h) => h.date).filter((d): d is string => Boolean(d));
-  const hourlyDateScope = hourlyDates.length === 0 ? ""
+  const hourlyDateScope = runScope(hourlyRun) || (
+    hourlyDates.length === 0 ? ""
     : hourlyDates[0] === hourlyDates[hourlyDates.length - 1]
       ? formatDate(hourlyDates[0])
-      : `${formatDate(hourlyDates[0])} → ${formatDate(hourlyDates[hourlyDates.length - 1])}`;
+      : `${formatDate(hourlyDates[0])} → ${formatDate(hourlyDates[hourlyDates.length - 1])}`);
 
   const dateScope =
     mode === "ALL" ? "All production records to date"

@@ -24,6 +24,7 @@ import { prisma } from "@/lib/prisma";
 import { delayProductionDateSelectWhere, productionDateOf, productionDateSelectWhere } from "@/lib/robo/productionDate";
 import { productionSpanMinutes, avgSlabsPerHour } from "@/lib/robo/productionSpan";
 import { delayTypesByCode } from "@/lib/robo/delayTypes";
+import { canonBatchNo } from "@/lib/robo/batchNo";
 
 export interface ReportSummaryFilter {
   /** One production day ("Date Wise"). */
@@ -76,21 +77,25 @@ export async function computeReportSummary({ date = "", from = "", to = "", batc
      bare clock strings. It is built ONLY from recorded times — no wall clock —
      so both KPIs are deterministic: the same filtered data always gives the same
      numbers. productionSpanMinutes returns null when nothing has completed or no
-     In Time exists, and both KPIs then read "—". */
+     In Time exists, and both KPIs then read "—".
+
+     Each slab is placed exactly as the hourly chart places it (placeSlabs in
+     hourlyProduction.ts): its stored date, except a slab whose date slipped by
+     one day, or whose Out the midnight rule pushed a day on, is placed where the
+     slabs made around it show — which is why each slab's production order (slab
+     number, entry time, id) and its batch come along. */
   const spanRecords = await prisma.roboProductionRecord.findMany({
     where: recordWhere,
     select: {
+      id: true,
+      slabNumber: true,
       inTime: true,
       outTime: true,
-      // Register order and the run each slab belongs to: the span places slabs
-      // by the same sequence rule as the hourly chart, per batch, so the KPI
-      // and the chart under it describe the same run.
-      serialNumber: true,
       createdAt: true,
       batchRecipeId: true,
       shiftId: true,
       productionDate: true,
-      batchRecipe: { select: { productionDate: true } },
+      batchRecipe: { select: { productionDate: true, batchNo: true } },
       shift: { select: { date: true } },
     },
   });
@@ -99,11 +104,17 @@ export async function computeReportSummary({ date = "", from = "", to = "", batc
       productionDate: productionDateOf(r),
       inTime: r.inTime,
       outTime: r.outTime,
-      serialNumber: r.serialNumber,
-      createdAt: r.createdAt,
-      // A slab with no setup is its shift's run: serials restart per batch, so
-      // slabs of different runs must never be walked as one sequence.
-      runKey: r.batchRecipeId ?? `shift:${r.shiftId}`,
+      slabNumber: r.slabNumber,
+      createdAtMs: r.createdAt.getTime(),
+      id: r.id,
+      // The run a slab is checked within. Filtered to a batch, the batch is ONE
+      // run — every setup of it together, exactly the set the hourly chart
+      // draws, so the KPI and the chart agree. Otherwise each batch number is
+      // its own run (canonBatchNo, so "D1448" and "D-1448" are one), a setup
+      // with no batch number its own, and a slab with no setup its shift's.
+      runKey: batchIds !== null
+        ? "batch"
+        : canonBatchNo(r.batchRecipe?.batchNo) || (r.batchRecipeId ? `setup:${r.batchRecipeId}` : `shift:${r.shiftId}`),
     })),
   );
 

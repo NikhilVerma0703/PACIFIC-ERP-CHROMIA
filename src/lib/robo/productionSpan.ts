@@ -12,29 +12,30 @@
  * day — a batch past midnight, or a filter spanning several days, would give a
  * nonsense span (an 08:00 the next morning reads as "earlier" than 11:30).
  *
- * ── THE SAME RULE AS THE CHART, AND IT CHANGED ON 2026-09-16 ───────────────
- * Each slab is placed by hourlyProduction.placeByStoredDate — the SAME single
- * function the "Production Rate per Hour" chart uses, so this KPI and the chart
- * under it can never describe one batch differently.
+ * ── THE CHART'S OWN PLACEMENT — ONE FUNCTION, NOT TWO ─────────────────────
+ * The two instants are hourlyProduction.runBounds: the SAME placeSlabs the
+ * "Production Rate per Hour" chart draws with and its "first In → last Out"
+ * subtitle names. So this KPI and the chart beneath it can never describe one
+ * batch differently — a headline number that disagrees with the graph under it
+ * is worse than either being wrong alone.
  *
- * Until that date both used slabPlacement.ts, which rebuilt each slab's day
- * from serialNumber order plus time-wrap detection. serialNumber turned out to
- * be unreliable on real runs — mistyped, restarted, duplicated — so the walk
- * ran out of order, every out-of-order step read as a midnight crossing, and
- * whole batches drifted forward: 1440 (8–10 Sep) charted as 23–25 Sep, 1445
- * (15–16 Sep) as 18–20 Sep. The cure was to stop reconstructing and trust the
- * production date the operator actually recorded, and the KPI moved with the
- * chart rather than being left on the old rule — a headline number that
- * disagrees with the graph beneath it is worse than either being wrong alone.
+ * The rule has moved twice, and moved with the chart each time:
+ *   · until 2026-09-16, slabPlacement.ts rebuilt each slab's day from
+ *     serialNumber order. serialNumber is mistyped and restarted on real runs,
+ *     so whole batches drifted forward (1440 charted as 23–25 Sep, 1445 as
+ *     18–20 Sep);
+ *   · from 2026-09-16, each slab's OWN stored production date, as recorded;
+ *   · from 2026-09-25, still the stored date — except for the two recording
+ *     slips hourlyProduction.ts describes (a production date one day off; an
+ *     Out the midnight rule pushed a day on), which read D-1432's run of
+ *     31 Aug 11:20 → 22:31 (11h 11m) as 34h 40m and 3.6 slabs/hour. Such a
+ *     slab is placed where the slabs made around it show it was made — at most
+ *     one day from its stored date, checked within its own run.
  *
- * A genuinely wrong stored date is corrected on the slab (Slab Records → Edit),
- * not reconstructed away here.
- *
- * NO RUN GROUPING ANY MORE. The old rule needed it: a run's first slab anchored
- * the day for the rest, so slabs of different batches could not be placed in
- * one sequence. Placement is now per-slab and independent, so `runKey` no
- * longer affects the answer — it is kept on the type because callers pass it
- * and removing it would be a churn of its own.
+ * RUNS. `runKey` groups the slabs into runs (batches): a slab is only checked
+ * against slabs of its own run, so on a filter spanning several batches one
+ * batch's slabs never judge another's. Absent, the slabs are one run — right
+ * for a single batch.
  *
  * No timezone enters, matching the rest of the Robo module: the date anchors an
  * absolute-minutes value only so two of them can be subtracted, and the anchor
@@ -42,42 +43,28 @@
  * never completed a slab has no Out Time, so no span, by design (not "up to now").
  */
 
-import { dayNum, toMins } from "./slabPlacement.ts";
-import { placeByStoredDate } from "./hourlyProduction.ts";
+import { runBounds } from "./hourlyProduction.ts";
 
 /** A slab reduced to what the span needs: the day it was produced (already
  *  resolved through productionDateOf — a yyyy-mm-dd, or "" when unknown), its
- *  clock In / Out, each nullable, its register order, and the run (batch) it
+ *  clock In / Out, each nullable, its production order and the run (batch) it
  *  belongs to. */
 export interface SpanSlab {
   productionDate: string;
   inTime: string | null;
   outTime: string | null;
-  /** Which run this slab is part of (the batch setup id). Slabs sharing a key
-   *  are placed as one sequence; absent, every slab is one run. */
+  /** Production order — the plant's physical slab number, then entry time, then
+   *  id (slabSequence.compareSlabOrder). Absent, the array order is the order. */
+  slabNumber?: string | null;
+  createdAtMs?: number | null;
+  id?: string | null;
+  /** Which run (batch) this slab is part of. Absent, every slab is one run. */
   runKey?: string | null;
 }
 
 /**
- * Absolute minutes for a yyyy-mm-dd date + "HH:MM" time, the date treated as a
- * UTC-midnight anchor. Used only for DIFFERENCES between two of these, so the
- * anchor and any timezone cancel. Null when either part is missing or
- * unparseable, so a slab with no date or no time is skipped rather than counted
- * as midnight.
- *
- * Built on the shared helpers rather than parsing the strings again: the delay
- * anchoring in referenceData.ts and the placement the chart and the KPIs share
- * must agree about what a date and a clock time mean.
- */
-export function stampMinutes(date: string, time: string | null | undefined): number | null {
-  const dn = dayNum(date);
-  const m = toMins(time);
-  if (dn === null || m === null) return null;
-  return dn * 1440 + m;
-}
-
-/**
- * Minutes from the earliest In Time to the latest Out Time across `slabs`.
+ * Minutes from the earliest In Time to the latest Out Time across `slabs`, each
+ * slab placed exactly as the hourly chart places it.
  *
  * Returns null when no span can be formed — not one slab carries an In Time, or
  * none carries an Out Time (nothing is completed yet) — so the KPI shows "—"
@@ -90,14 +77,8 @@ export function stampMinutes(date: string, time: string | null | undefined): num
  * run start" and "when did it finish".
  */
 export function productionSpanMinutes(slabs: readonly SpanSlab[]): number | null {
-  let firstIn: number | null = null;
-  let lastOut: number | null = null;
-  for (const slab of slabs) {
-    // ONE rule, shared with the chart — see the header.
-    const { inAbs, outAbs } = placeByStoredDate(slab);
-    if (inAbs !== null && (firstIn === null || inAbs < firstIn)) firstIn = inAbs;
-    if (outAbs !== null && (lastOut === null || outAbs > lastOut)) lastOut = outAbs;
-  }
+  // ONE rule, shared with the chart — see the header.
+  const { firstIn, lastOut } = runBounds(slabs);
   if (firstIn === null || lastOut === null) return null;
   const diff = lastOut - firstIn;
   return diff >= 0 ? diff : null;

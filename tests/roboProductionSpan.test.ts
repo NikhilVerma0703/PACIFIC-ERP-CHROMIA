@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { productionSpanMinutes, avgSlabsPerHour, type SpanSlab } from "../src/lib/robo/productionSpan.ts";
 import { hourlyProduction } from "../src/lib/robo/hourlyProduction.ts";
+import { d1432 } from "./fixtures/roboD1432.ts";
 
 /* Total Production Time = last Out Time − first In Time across the filtered
    slabs. Wall-clock "HH:MM" with no day of its own, so the span is date-aware:
@@ -127,9 +128,10 @@ test("avgSlabsPerHour: zero slabs over a span is a clean 0, not a divide error",
   assert.equal(avgSlabsPerHour(0, 460), 0);
 });
 
-/* One placement rule, shared with the hourly chart (slabPlacement.ts): a slab's
-   Out before its In is the next day, and a forward stored date is only trusted
-   when the clock went backwards against the run. */
+/* One placement rule, shared with the hourly chart (hourlyProduction.placeSlabs):
+   each slab on its own stored date, a slab's Out before its In on the next day —
+   except a slab EXACTLY one day off from the slabs made around it, which is
+   placed where they show it was made (2026-09-25; see the D-1432 tests below). */
 
 test("a last slab whose Out clock precedes its In clock ends the span the NEXT day", () => {
   // 20:00 → 00:10 next morning = 250 minutes, not 120 (Out stamped on the same
@@ -147,24 +149,23 @@ test("a lone slab crossing midnight by itself has a span, not '—'", () => {
   assert.equal(productionSpanMinutes([slab("2026-09-01", "23:30", "00:10")]), 40);
 });
 
-test("BATCH 1432 — a wrong stored date is corrected on the slab, and the KPI and chart agree either way", () => {
-  // THIS TEST ASSERTED THE OPPOSITE UNTIL 2026-09-16, and the reversal is
-  // deliberate. Slabs 7 and 8 of batch 1432 carry 01 Sep when the run was all
-  // on 31 Aug. The old rule detected that ("the clock barely moved, so ignore
-  // the forward date") and read 11h 30m.
+test("BATCH 1432 — two slabs stored on 01 Sep in a 31 Aug run: the KPI reads the real run again", () => {
+  // THIS TEST HAS ASSERTED BOTH ANSWERS, and this is the third version.
+  //   · Until 2026-09-16 the placement walked serialNumber order and ignored a
+  //     forward date "where the clock barely moved": 11h 30m.
+  //   · From 2026-09-16 each slab sat on its stored date, full stop, and the
+  //     test asserted 35h 30m — "a wrong stored date is corrected on the slab
+  //     (Slab Records → Edit)". The owner saw exactly that on the real D-1432:
+  //     Total Production Time 34 hours 40 minutes, Avg Slabs/hour 3.6, for a run
+  //     that never left 31 Aug.
+  //   · Since 2026-09-25 a slab stored exactly one day away from the slabs made
+  //     around it is placed where they show it was made — bounded to one day,
+  //     judged in production order, never by a walking day cursor (the thing
+  //     that drifted 1440 and 1445), and only with a clear majority of
+  //     neighbours. Slabs 7 and 8 here are that slab.
   //
-  // Reading the stored date means the KPI now reads 35h 30m for this data —
-  // because that IS what the records say. The rule is stated in
-  // hourlyProduction: a genuinely wrong stored date is corrected on the slab
-  // (Slab Records → Edit), not reconstructed away in the reports. The old
-  // detection was bought at a price that turned out to be far higher: the same
-  // sequence walk drifted batch 1440 (8–10 Sep) onto 23–25 Sep and 1445
-  // (15–16 Sep) onto 18–20 Sep, because serialNumber is mistyped and restarted
-  // on real runs.
-  //
-  // WHAT STILL MATTERS, AND IS WHAT THIS TEST NOW GUARDS: whatever the data
-  // says, the KPI and the chart beneath it must say the SAME thing. They now
-  // share one function (placeByStoredDate), so they cannot drift apart again.
+  // WHAT HAS NOT CHANGED, AND IS STILL GUARDED: the KPI and the chart are one
+  // placement, so whatever they say, they say the same thing.
   const rows = [
     { serialNumber: 1, productionDate: "2026-08-31", inTime: "11:20", outTime: "12:00" },
     { serialNumber: 2, productionDate: "2026-08-31", inTime: "20:00", outTime: "21:30" },
@@ -176,8 +177,7 @@ test("BATCH 1432 — a wrong stored date is corrected on the slab, and the KPI a
     { serialNumber: 8, productionDate: "2026-09-01", inTime: "22:45", outTime: "22:50" },
   ];
   const span = productionSpanMinutes(rows);
-  // 31 Aug 11:20 → 01 Sep 22:50, because that is what the rows say.
-  assert.equal(span, 35 * 60 + 30); // 2130
+  assert.equal(span, 11 * 60 + 30); // 31 Aug 11:20 → 31 Aug 22:50 = 690
   const chart = hourlyProduction(rows);
   // THE AGREEMENT, asserted rather than assumed: the chart starts in the hour
   // of the first In, ends in the hour of the last Out, and the KPI's span is
@@ -185,15 +185,50 @@ test("BATCH 1432 — a wrong stored date is corrected on the slab, and the KPI a
   assert.equal(chart[0].hour, 11);
   assert.equal(chart[0].date, "2026-08-31");
   assert.equal(chart[chart.length - 1].hour, 22);
-  assert.equal(chart[chart.length - 1].date, "2026-09-01");
-
-  // And once the two slabs are corrected on the slab record — which is where
-  // the rule says a wrong date is fixed — both read the real run.
-  const corrected = rows.map((r) => ({ ...r, productionDate: "2026-08-31" }));
-  assert.equal(productionSpanMinutes(corrected), 11 * 60 + 30); // 690
-  const fixedChart = hourlyProduction(corrected);
-  assert.equal(fixedChart[fixedChart.length - 1].date, "2026-08-31");
+  assert.equal(chart[chart.length - 1].date, "2026-08-31");
+  assert.ok(chart.every((b) => b.date === "2026-08-31"), "no second, 24-hour-late timeline");
   assert.equal(Math.floor((span as number) / 60), chart.length - 1);
+
+  // Correcting the two records (Slab Records → Edit) changes nothing on the
+  // screen — the reports already draw them where they were made.
+  const corrected = rows.map((r) => ({ ...r, productionDate: "2026-08-31" }));
+  assert.equal(productionSpanMinutes(corrected), span);
+  assert.deepEqual(hourlyProduction(corrected), chart);
+});
+
+test("BATCH D-1432 — Total Production Time 11 hours 11 minutes, Avg Slabs/hour 11.3 (was 34h 40m, 3.6)", () => {
+  // The owner's batch, rebuilt from the Reports screen (tests/fixtures/roboD1432.ts):
+  // 126 slabs, first In 31 Aug 11:20, last Out 31 Aug 22:31, two of the last
+  // hour's slabs a day off — as a production date, or as an Out typed before its In.
+  for (const slip of ["date", "out"] as const) {
+    const rows = d1432(slip);
+    assert.equal(rows.length, 126);
+    // As stored, each slab alone: exactly the screen the owner reported.
+    const asStored = productionSpanMinutes(rows.map((r, i) => ({ ...r, runKey: String(i) })));
+    assert.equal(asStored, 34 * 60 + 40, `${slip}: 34 hours 40 minutes as stored`);
+    assert.equal(avgSlabsPerHour(126, asStored), 3.6);
+    // Placed where they were made: 11:20 → 22:31.
+    const span = productionSpanMinutes(rows);
+    assert.equal(span, 11 * 60 + 11, `${slip}: 11 hours 11 minutes`);
+    assert.equal(avgSlabsPerHour(126, span), 11.3, "126 ÷ 11.18 h");
+  }
+});
+
+test("a filter over several batches: each batch's slip is judged within its own batch (runKey)", () => {
+  // The Reports KPI without a batch filter passes each slab's batch as its run.
+  // D-1432's two late Outs are still put back — and a three-slab trial batch
+  // run the next evening at the same clock times is left on its own date.
+  const a = d1432("out").map((r) => ({ ...r, runKey: "D1432" }));
+  const b = ["21:40", "21:46", "21:52"].map((t, k) => ({
+    runKey: "D1433", slabNumber: String(157804 + k), productionDate: "2026-09-01",
+    inTime: t, outTime: `22:${String(20 + k).padStart(2, "0")}`,
+  }));
+  // 31 Aug 11:20 → 01 Sep 22:22: D-1432 corrected, D-1433 exactly as stored.
+  assert.equal(productionSpanMinutes([...a, ...b]), 24 * 60 + (22 * 60 + 22) - (11 * 60 + 20));
+  // The same filter as ONE run would read the trial as three slabs a day late
+  // and drag them back too: that is why a run is a batch.
+  const asOne = [...a, ...b].map(({ runKey: _, ...r }) => r);
+  assert.equal(productionSpanMinutes(asOne), 11 * 60 + 11);
 });
 
 test("register order, not array order, decides which slab is the run's last", () => {
@@ -242,16 +277,17 @@ test("the KPI and the chart are one rule, not two that happen to agree", () => {
 });
 
 test("the ONE place they differ is the chart's length cap, and it is a display bound", () => {
-  // A slab dated a week forward gives a true span of days. The KPI reports it —
-  // it is what the records say. The CHART refuses to draw weeks of empty hours
-  // and stops at four days (MAX_HOURS), anchored on the batch start so the real
-  // beginning is always visible. That is a bound on the drawing, not a second
-  // opinion about the data, and it is the only divergence between the two.
+  // A slab dated more than a week forward gives a true span of days. The KPI
+  // reports it — it is what the records say. The CHART refuses to draw weeks of
+  // empty hours and stops at eight days (MAX_HOURS; four until 2026-09-25, when
+  // it cut off D-1449, a real six-day run), anchored on the batch start so the
+  // real beginning is always visible. That is a bound on the drawing, not a
+  // second opinion about the data, and it is the only divergence between the two.
   const rows = [slab(DAY, "11:20", "12:00"), slab("2026-09-01", "22:45", "22:50")];
   const span = productionSpanMinutes(rows);
   const chart = hourlyProduction(rows);
-  assert.ok((span as number) > 4 * 24 * 60, "the KPI reports the true distance");
-  assert.equal(chart.length, 4 * 24, "the chart stops at four days");
+  assert.ok((span as number) > 8 * 24 * 60, "the KPI reports the true distance");
+  assert.equal(chart.length, 8 * 24, "the chart stops at eight days");
   assert.equal(chart[0].hour, 11, "and still starts at the batch's real first In");
   assert.equal(chart[0].date, DAY);
 });

@@ -16,13 +16,17 @@
  * out of order, every out-of-order step read as a midnight crossing, and whole
  * batches drifted forward — 1440 (8-10 Sep) charted as 23-25 Sep, 1445
  * (15-16 Sep) as 18-20 Sep. Each slab is now placed on its OWN stored
- * production date by hourlyProduction.placeByStoredDate, which productionSpan
- * .ts also calls: still one rule, a different one.
+ * production date by hourlyProduction.placeSlabs, which productionSpan.ts also
+ * goes through: still one rule, a different one. (That placeSlabs is not this
+ * file's old walk: it keeps the stored date and moves only a slab that is
+ * provably one day off, by at most one day, with no day cursor — see
+ * hourlyProduction.ts.)
  *
- * The superseded machinery (placeSlabs, registerOrder, MAX_RUN_HOURS) is gone
- * rather than left here unused. Dead code with passing tests beside it reads to
- * the next person as the rule in force, and the wrong day on a production
- * report is not a cheap mistake to inherit.
+ * The superseded machinery (the serialNumber walk that was this file's
+ * placeSlabs, registerOrder, MAX_RUN_HOURS) is gone rather than left here
+ * unused. Dead code with passing tests beside it reads to the next person as
+ * the rule in force, and the wrong day on a production report is not a cheap
+ * mistake to inherit.
  */
 export interface PlaceableSlab {
   /** yyyy-mm-dd — the slab's effective production date (productionDateOf). */
