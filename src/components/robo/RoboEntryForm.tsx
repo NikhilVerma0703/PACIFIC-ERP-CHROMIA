@@ -174,6 +174,10 @@ const shiftFromClock = () => { const h = new Date().getHours(); return h >= 6 &&
 
 const inp = "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm transition focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20 disabled:bg-gray-50 disabled:text-gray-400";
 const label = "mb-1 block text-xs font-medium text-gray-600";
+/** `inp` with less side padding, for the three boxes of a delay's time row —
+ *  a phone gives each about 80px, and "HH:MM" at the touch font size needs
+ *  the room. */
+const inpNarrow = inp.replace("px-3", "px-2.5");
 const btnPrimary = "rounded-lg bg-brand px-6 py-2.5 text-sm font-medium text-white transition hover:bg-brand/90 disabled:opacity-60";
 const btnGhost = "rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50";
 
@@ -291,12 +295,19 @@ function DelayCodePicker({ value, codes, onSelect, onCreated }: {
   };
 
   if (selected) {
+    /* The chosen code reads in full, in the list's own order — code,
+       description, category: "C10 Bowl Dry Cleaning ROBOT". A description too
+       long for the row wraps onto a second line rather than being cut to
+       "C10 B…"; the box grows with it. */
     return (
       <div className="flex items-center gap-1.5">
-        <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm">
+        <div className="flex min-h-[38px] min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm [@media_screen_and_(pointer:coarse)]:min-h-[44px]">
           <span className="shrink-0 text-sm font-bold text-gray-800">{selected.code}</span>
+          {/* At least 8rem before anything shares its line: on a phone the
+              category drops beneath a long description instead of squeezing
+              it into a column of single words. */}
+          <span className="min-w-[8rem] flex-1 break-words text-sm text-gray-700">{selected.description}</span>
           <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${CATEGORY_COLOR[selected.category] || "bg-gray-100 text-gray-600"}`}>{selected.category}</span>
-          <span className="min-w-0 flex-1 truncate text-xs text-gray-500">{selected.description}</span>
         </div>
         <button type="button" aria-label="Change code" onClick={() => { onSelect(""); setSearch(""); }}
           className="tap-area shrink-0 rounded-md px-1.5 py-1 text-xs text-gray-400 hover:bg-gray-100 hover:text-red-500">✕</button>
@@ -340,12 +351,12 @@ function DelayCodePicker({ value, codes, onSelect, onCreated }: {
     <div ref={ref} className="relative">
       <input value={search} onChange={(e) => { setSearch(e.target.value); setOpen(true); }} onFocus={() => setOpen(true)} placeholder="Search a code, or type a new one…" className={inp} autoComplete="off" />
       {open && (
-        <div className="absolute z-20 mt-1 max-h-52 w-full overflow-y-auto overscroll-contain rounded-lg border border-gray-200 bg-white shadow-lg">
+        <div className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto overscroll-contain rounded-lg border border-gray-200 bg-white shadow-lg">
           {filtered.map((dc) => (
             <button key={dc.id} type="button" onClick={() => { onSelect(dc.id); setSearch(""); setOpen(false); }}
               className="flex w-full items-center gap-2 border-b border-gray-50 px-3 py-2 text-left transition last:border-0 hover:bg-brand/5">
               <span className="w-12 shrink-0 text-sm font-bold text-gray-800">{dc.code}</span>
-              <span className="min-w-0 flex-1 truncate text-sm text-gray-600">{dc.description}</span>
+              <span className="min-w-0 flex-1 break-words text-sm text-gray-600">{dc.description}</span>
               <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${CATEGORY_COLOR[dc.category] || "bg-gray-100 text-gray-600"}`}>{dc.category}</span>
             </button>
           ))}
@@ -353,7 +364,7 @@ function DelayCodePicker({ value, codes, onSelect, onCreated }: {
             <button type="button" onClick={() => startNew(typed)}
               className="sticky bottom-0 flex w-full items-center gap-2 border-t border-amber-200 bg-amber-50 px-3 py-3 text-left transition hover:bg-amber-100">
               <span className="shrink-0 text-base font-bold text-amber-700">+</span>
-              <span className="min-w-0 flex-1 truncate text-sm text-amber-800">Add &ldquo;{typed.toUpperCase()}&rdquo; as a new delay code</span>
+              <span className="min-w-0 flex-1 break-words text-sm text-amber-800">Add &ldquo;{typed.toUpperCase()}&rdquo; as a new delay code</span>
             </button>
           ) : filtered.length === 0 ? (
             <div className="px-3 py-2 text-xs text-gray-400">No matching delay codes.</div>
@@ -1871,49 +1882,63 @@ export function RoboEntryForm({ recordId, setupEdit, canDelete = false }: {
                     // field must step to the next box of THIS delay, not submit the
                     // form (saving a half-entered slab) and not jump into the row below.
                     const advance = advanceProps(`delay-${row.key}`);
+                    /* THREE ROWS AT EVERY SCREEN SIZE — the tablet and the phone are
+                       where this is used, so they get the same layout as a desk:
+                         1. Delay code, alone on its row — the code, its full
+                            description and its category are always readable
+                            ("C10 Bowl Dry Cleaning ROBOT"), never cut to
+                            "C10 B… ROBOT" by fields beside it;
+                         2. Start · End · Duration, three equal columns;
+                         3. Remarks, full width.
+                       A robot-specific code adds its Machine(s) picker between
+                       2 and 3. Remove sits on the code's label line, clear of
+                       all of them. Layout only: the fields, their order for
+                       the Next key, and everything they save are unchanged. */
                     return (
-                      <div key={row.key} className="rounded-lg border border-amber-200 bg-white p-3 shadow-sm">
-                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-12">
-                          <div className="col-span-2 sm:col-span-4">
-                            <span className={label}>Delay code</span>
-                            <DelayCodePicker value={row.delayCodeId} codes={delayCodes}
-                              onSelect={(id) => updateDelayRow(row.key, { delayCodeId: id })}
-                              onCreated={(c) => setDelayCodes((prev) => sortDelayCodes([...prev, c]))} />
+                      <div key={row.key} className="space-y-3 rounded-lg border border-amber-200 bg-white p-3 shadow-sm sm:p-4">
+                        <div>
+                          <div className="mb-1 flex items-center justify-between gap-2">
+                            <span className="text-xs font-medium text-gray-600">Delay code</span>
+                            {!rowIsBlank(row) && (
+                              <button type="button" onClick={() => removeDelayRow(row.key)} aria-label="Remove delay"
+                                className="shrink-0 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-500 transition hover:border-red-300 hover:bg-red-50 hover:text-red-600">✕ Remove</button>
+                            )}
                           </div>
-                          <div className="col-span-1 sm:col-span-2">
+                          <DelayCodePicker value={row.delayCodeId} codes={delayCodes}
+                            onSelect={(id) => updateDelayRow(row.key, { delayCodeId: id })}
+                            onCreated={(c) => setDelayCodes((prev) => sortDelayCodes([...prev, c]))} />
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 sm:gap-3">
+                          <div className="min-w-0">
                             <span className={label}>Start</span>
-                            <TimeInput value={row.startTime} onChange={(v) => updateDelayRow(row.key, { startTime: v })} onComplete={advanceOnComplete} className={inp} {...advance} />
+                            <TimeInput value={row.startTime} onChange={(v) => updateDelayRow(row.key, { startTime: v })} onComplete={advanceOnComplete} className={inpNarrow} {...advance} />
                           </div>
-                          <div className="col-span-1 sm:col-span-2">
+                          <div className="min-w-0">
                             <span className={label}>End</span>
-                            <TimeInput value={row.endTime} onChange={(v) => updateDelayRow(row.key, { endTime: v })} onComplete={advanceOnComplete} className={inp} {...advance} />
+                            <TimeInput value={row.endTime} onChange={(v) => updateDelayRow(row.key, { endTime: v })} onComplete={advanceOnComplete} className={inpNarrow} {...advance} />
                           </div>
-                          <div className="col-span-1 sm:col-span-2">
+                          <div className="min-w-0">
                             <span className={label}>Duration</span>
-                            <div className={`w-full rounded-lg border px-3 py-2 text-sm ${
+                            {/* The same height as the time boxes beside it, which
+                                grow to 44px on a touch screen (globals.css). */}
+                            <div className={`flex min-h-[38px] w-full items-center whitespace-nowrap rounded-lg border px-2.5 py-2 text-sm [@media_screen_and_(pointer:coarse)]:min-h-[44px] ${
                               dur ? "border-green-200 bg-green-50 font-semibold text-green-800"
                                 : badTimes ? "border-red-200 bg-red-50 text-red-600"
                                 : "border-gray-200 bg-gray-50 text-gray-400"}`}>
                               {dur ? fmtDuration(dur) : badTimes ? "Invalid" : "—"}
                             </div>
                           </div>
-                          <div className="col-span-1 flex items-end justify-end sm:col-span-2">
-                            {!rowIsBlank(row) && (
-                              <button type="button" onClick={() => removeDelayRow(row.key)} aria-label="Remove delay"
-                                className="rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-500 transition hover:border-red-300 hover:bg-red-50 hover:text-red-600">✕ Remove</button>
-                            )}
+                        </div>
+                        {code?.isRobotSpecific && (
+                          <div>
+                            <span className={label}>Machine(s)</span>
+                            <MachinePicker machines={machines} selected={row.machineNames}
+                              onToggle={(name) => updateDelayRow(row.key, { machineNames: toggleMachineName(row.machineNames, name) })} />
                           </div>
-                          {code?.isRobotSpecific && (
-                            <div className="col-span-2 sm:col-span-6">
-                              <span className={label}>Machine(s)</span>
-                              <MachinePicker machines={machines} selected={row.machineNames}
-                                onToggle={(name) => updateDelayRow(row.key, { machineNames: toggleMachineName(row.machineNames, name) })} />
-                            </div>
-                          )}
-                          <div className={code?.isRobotSpecific ? "col-span-2 sm:col-span-6" : "col-span-2 sm:col-span-12"}>
-                            <span className={label}>Remarks</span>
-                            <input value={row.remarks} onChange={(e) => updateDelayRow(row.key, { remarks: e.target.value })} placeholder="Optional" className={inp} {...advance} />
-                          </div>
+                        )}
+                        <div>
+                          <span className={label}>Remarks</span>
+                          <input value={row.remarks} onChange={(e) => updateDelayRow(row.key, { remarks: e.target.value })} placeholder="Optional" className={inp} {...advance} />
                         </div>
                       </div>
                     );
