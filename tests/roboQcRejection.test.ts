@@ -1,114 +1,186 @@
-// QC Rejection Analysis — the counting rules.
+// QC Rejection Analysis — the counting rules for Robo-line rejections.
 //
-// The figures here are read by an analyst deciding whether the Robo line caused
-// a batch's rejects, so the ways they can quietly be wrong are the point: a
-// rate against the wrong denominator, a downgrade counted as a rejection, or a
-// slab with two faults counted as two slabs.
+// The figures here are read by a manager deciding how many QC rejections the
+// Robo line caused, so the ways they can quietly be wrong are the point: an
+// unrelated fault counted against the Robo line, a near-miss fault name
+// ("Pattern Variation") mistaken for a Robo one, a rate against the wrong
+// denominator, a downgrade counted as a rejection, or a slab with two Robo
+// faults counted as two slabs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  summariseRejections, REJECT_GRADE, DOWNGRADE_GRADE, type QcRow,
+  summariseRejections, roboReasonOf, ROBO_REJECTION_REASONS,
+  REJECT_GRADE, DOWNGRADE_GRADE, type QcRow,
 } from "../src/lib/robo/qcRejection.ts";
+
+const SPILL = "Spillage";
+const PATTERN = "Pattern Problem in QC Line";
 
 const row = (grade: string | null, ...issues: string[]): QcRow =>
   ({ qualityGrade: grade, qualityIssue: issues });
+const rows = (n: number, grade: string | null, ...issues: string[]): QcRow[] =>
+  Array.from({ length: n }, () => row(grade, ...issues));
+const slabsOf = (s: ReturnType<typeof summariseRejections>, reason: string) =>
+  s.reasons.find((r) => r.reason === reason)!.slabs;
+const pctOf = (s: ReturnType<typeof summariseRejections>, reason: string) =>
+  s.reasons.find((r) => r.reason === reason)!.pct;
 
-test("only C (Reject) is a rejection — B is a downgrade and is reported apart", () => {
+test("the owner's example: 250 produced, 20 Robo-line rejects → Rejection Rate 8%", () => {
+  // 30 slabs rejected for Crack sit in the same batch. They are QC rejections,
+  // but not the Robo line's — counting them would read 50/250 = 20%.
   const s = summariseRejections([
-    row("A"), row("A2"),
-    row(DOWNGRADE_GRADE, "Pinhole"), row(DOWNGRADE_GRADE, "Chipout"),
-    row(REJECT_GRADE, "Crack"),
-  ], 10);
-  assert.equal(s.rejected, 1);
-  assert.equal(s.downgraded, 2);
-  // The B faults must NOT appear in the reasons table — those slabs still sell.
-  assert.deepEqual(s.reasons.map((r) => r.reason), ["Crack"]);
+    ...rows(12, REJECT_GRADE, "Spillage"),
+    ...rows(8, REJECT_GRADE, "pattern problem"),
+    ...rows(30, REJECT_GRADE, "Crack"),
+    ...rows(180, "A"),
+  ], 250);
+  assert.equal(s.produced, 250);
+  assert.equal(s.inspected, 230);
+  assert.equal(s.roboRejected, 20, "only Spillage + Pattern Problem count");
+  assert.equal(s.rejectionRatePct, 8, "20 / 250 × 100");
+  assert.equal(slabsOf(s, SPILL), 12);
+  assert.equal(slabsOf(s, PATTERN), 8);
+  assert.equal(pctOf(s, SPILL), 60, "12 of the 20 Robo-line rejects");
+  assert.equal(pctOf(s, PATTERN), 40, "8 of the 20 Robo-line rejects");
 });
 
-test("the rate is of INSPECTED, not of produced", () => {
-  // The trap this guards: QC lags the line. A batch of 344 with 77 inspected
-  // and 2 rejected is 2.6% of what QC has seen, not 0.6% of the batch — and
-  // the second number would read as a far better batch than it is.
-  const rows = [
-    ...Array.from({ length: 75 }, () => row("A")),
+test("every other QC fault is excluded — from the count AND the table", () => {
+  const s = summariseRejections([
     row(REJECT_GRADE, "Crack"), row(REJECT_GRADE, "Pinhole"),
-  ];
-  const s = summariseRejections(rows, 344);
-  assert.equal(s.produced, 344);
-  assert.equal(s.inspected, 77);
-  assert.equal(s.rejected, 2);
-  assert.equal(s.rejectRatePct, 2.6);
+    row(REJECT_GRADE, "Oil Dot"), row(REJECT_GRADE, "Chipout"),
+  ], 10);
+  assert.equal(s.roboRejected, 0, "none of these is the Robo line's");
+  assert.equal(s.rejectionRatePct, 0);
+  assert.deepEqual(s.reasons.map((r) => r.reason), [SPILL, PATTERN], "nothing else is ever listed");
+  assert.ok(s.reasons.every((r) => r.slabs === 0 && r.pct === 0));
 });
 
-test("a slab with two faults is ONE slab on two reason rows", () => {
-  const s = summariseRejections([
-    row(REJECT_GRADE, "Crack", "Pinhole"),
-    row(REJECT_GRADE, "Crack"),
-  ], 2);
-  assert.equal(s.rejected, 2);
-  const byReason = Object.fromEntries(s.reasons.map((r) => [r.reason, r.slabs]));
-  assert.deepEqual(byReason, { Crack: 2, Pinhole: 1 });
-  // Percentages are of REJECTED SLABS, so they may sum past 100. That is the
-  // data being honest, not an arithmetic error.
-  assert.equal(s.reasons.find((r) => r.reason === "Crack")!.pct, 100);
-  assert.equal(s.reasons.find((r) => r.reason === "Pinhole")!.pct, 50);
-});
-
-test("the same fault listed twice on one slab counts once", () => {
-  const s = summariseRejections([row(REJECT_GRADE, "Crack", "Crack")], 1);
-  assert.equal(s.reasons.length, 1);
-  assert.equal(s.reasons[0].slabs, 1);
-});
-
-test("reasons are NOT folded together — three pattern faults stay three", () => {
-  // QC's master really does carry "Pattern Variation", "pattern Blur" and
-  // "pattern problem" as separate entries meaning different things. Folding
-  // them on case would invent a category the plant does not have.
+test("near-miss pattern faults are NOT the Robo line's: Pattern Variation / pattern Blur stay out", () => {
+  // QC's master carries these as separate faults meaning different things. A
+  // loose match on "pattern" would pull them in and overstate the Robo line.
   const s = summariseRejections([
     row(REJECT_GRADE, "Pattern Variation"),
     row(REJECT_GRADE, "pattern Blur"),
+    row(REJECT_GRADE, "Pattern Variations"),
     row(REJECT_GRADE, "pattern problem"),
-  ], 3);
-  assert.equal(s.reasons.length, 3);
+  ], 4);
+  assert.equal(s.roboRejected, 1, "only the pattern problem slab");
+  assert.equal(slabsOf(s, PATTERN), 1);
+  assert.equal(roboReasonOf("Pattern Variation"), null);
+  assert.equal(roboReasonOf("pattern Blur"), null);
+  assert.equal(roboReasonOf("Vein Spillage"), null, "a different fault name, not Spillage");
 });
 
-test("a rejected slab with no fault recorded is counted, not dropped", () => {
-  // Otherwise the table silently fails to explain part of the reject total and
-  // nobody can tell whether the gap is missing data or a bug here.
+test("QC's free-text spellings of the two faults are all recognised", () => {
+  for (const v of ["Spillage", "spillage", "SPILLAGE", "  Spillage  ", "Spillage.", "spillage;"]) {
+    assert.equal(roboReasonOf(v), SPILL, `"${v}" is Spillage`);
+  }
+  for (const v of [
+    "Pattern Problem in QC Line", "pattern problem in qc line", "Pattern  Problem in QC  line",
+    "pattern problem", "Pattern Problem", "pattern-problem", "Pattern_Problem.",
+  ]) {
+    assert.equal(roboReasonOf(v), PATTERN, `"${v}" is Pattern Problem in QC Line`);
+  }
+  for (const v of ["", "   ", null, undefined]) assert.equal(roboReasonOf(v), null);
+});
+
+test("the rate is of PRODUCED, not of inspected", () => {
+  // 344 produced, 77 inspected, 2 Robo-line rejects: 2/344, not 2/77.
   const s = summariseRejections([
-    row(REJECT_GRADE, "Crack"),
-    row(REJECT_GRADE),
-    row(REJECT_GRADE, ""),
-  ], 3);
-  assert.equal(s.rejected, 3);
-  assert.equal(s.rejectedWithoutReason, 2);
-  assert.equal(s.reasons.reduce((n, r) => n + r.slabs, 0), 1);
+    ...rows(75, "A"),
+    row(REJECT_GRADE, "Spillage"), row(REJECT_GRADE, "Pattern Problem in QC Line"),
+  ], 344);
+  assert.equal(s.inspected, 77);
+  assert.equal(s.roboRejected, 2);
+  assert.equal(s.rejectionRatePct, 0.6, "2 / 344 × 100, one decimal");
 });
 
-test("a batch QC has not reached yet reports zeroes, not a rate", () => {
+test("a slab with BOTH Robo faults is ONE rejected slab, on both table rows", () => {
+  const s = summariseRejections([
+    row(REJECT_GRADE, "Spillage", "pattern problem"),
+    row(REJECT_GRADE, "Spillage"),
+  ], 2);
+  assert.equal(s.roboRejected, 2, "two slabs, not three");
+  assert.equal(slabsOf(s, SPILL), 2);
+  assert.equal(slabsOf(s, PATTERN), 1);
+  // Percentages are of Robo-line rejected SLABS, so they may sum past 100.
+  assert.equal(pctOf(s, SPILL), 100);
+  assert.equal(pctOf(s, PATTERN), 50);
+});
+
+test("a slab rejected for a Robo fault AND an unrelated one counts once, the unrelated fault unseen", () => {
+  const s = summariseRejections([row(REJECT_GRADE, "Crack", "Spillage", "Pinhole")], 5);
+  assert.equal(s.roboRejected, 1);
+  assert.equal(slabsOf(s, SPILL), 1);
+  assert.deepEqual(s.reasons.map((r) => r.reason), [SPILL, PATTERN]);
+});
+
+test("the same fault twice — or two spellings of it — on one slab counts once", () => {
+  const s = summariseRejections([
+    row(REJECT_GRADE, "Spillage", "spillage "),
+    row(REJECT_GRADE, "pattern problem", "Pattern Problem in QC Line"),
+  ], 2);
+  assert.equal(s.roboRejected, 2);
+  assert.equal(slabsOf(s, SPILL), 1);
+  assert.equal(slabsOf(s, PATTERN), 1);
+});
+
+test("only C (Reject) is a rejection — a B or A slab carrying Spillage is not counted", () => {
+  const s = summariseRejections([
+    row(DOWNGRADE_GRADE, "Spillage"), row(DOWNGRADE_GRADE, "pattern problem"),
+    row("A", "Spillage"),
+    row(REJECT_GRADE, "Spillage"),
+  ], 10);
+  assert.equal(s.roboRejected, 1, "the downgrades still sell; only the C slab is rejected");
+  assert.equal(slabsOf(s, SPILL), 1);
+  assert.equal(slabsOf(s, PATTERN), 0);
+});
+
+test("a rejected slab with no fault recorded is not a Robo-line rejection", () => {
+  const s = summariseRejections([row(REJECT_GRADE), row(REJECT_GRADE, ""), row(REJECT_GRADE, "Spillage")], 3);
+  assert.equal(s.roboRejected, 1);
+});
+
+test("no Robo-line rejections reads 0 and 0% — with both rows still shown", () => {
+  const s = summariseRejections([...rows(40, "A"), row(REJECT_GRADE, "Crack")], 50);
+  assert.equal(s.roboRejected, 0);
+  assert.equal(s.rejectionRatePct, 0, "0 of 50 produced is 0%, not blank");
+  assert.deepEqual(s.reasons, [
+    { reason: SPILL, slabs: 0, pct: 0 },
+    { reason: PATTERN, slabs: 0, pct: 0 },
+  ]);
+});
+
+test("a batch QC has not reached yet: inspected 0, nothing rejected, rate 0% of produced", () => {
   const s = summariseRejections([], 120);
   assert.equal(s.produced, 120);
   assert.equal(s.inspected, 0);
-  assert.equal(s.rejected, 0);
-  assert.equal(s.rejectRatePct, null, "no denominator means no rate, not 0%");
-  assert.deepEqual(s.reasons, []);
+  assert.equal(s.roboRejected, 0);
+  assert.equal(s.rejectionRatePct, 0);
+  assert.equal(s.reasons.length, 2);
 });
 
-test("reasons sort biggest first, ties alphabetical, so the order is stable", () => {
+test("nothing produced means no rate, not 0%", () => {
+  const s = summariseRejections([row(REJECT_GRADE, "Spillage")], 0);
+  assert.equal(s.rejectionRatePct, null, "no denominator");
+});
+
+test("the table is always exactly the two Robo faults, in a fixed order", () => {
+  // Pattern outnumbers Spillage here; the order must not follow the counts, so
+  // the table reads the same way for every batch.
   const s = summariseRejections([
-    row(REJECT_GRADE, "Zebra"), row(REJECT_GRADE, "Alpha"),
-    row(REJECT_GRADE, "Beta"), row(REJECT_GRADE, "Beta"),
+    ...rows(3, REJECT_GRADE, "pattern problem"), row(REJECT_GRADE, "Spillage"),
   ], 4);
-  assert.deepEqual(s.reasons.map((r) => r.reason), ["Beta", "Alpha", "Zebra"]);
+  assert.deepEqual(s.reasons.map((r) => r.reason), [SPILL, PATTERN]);
+  assert.deepEqual(ROBO_REJECTION_REASONS.map((r) => r.label), [SPILL, PATTERN]);
 });
 
-test("grades are matched after trimming, and an unknown grade is neither", () => {
+test("grades are matched after trimming; an unknown grade is not a rejection; every QC row is inspected", () => {
   const s = summariseRejections([
-    row(` ${REJECT_GRADE} `, "Crack"),
-    row("Not graded yet"),
-    row(null),
+    row(` ${REJECT_GRADE} `, "Spillage"),
+    row("Not graded yet", "Spillage"),
+    row(null, "pattern problem"),
   ], 3);
-  assert.equal(s.rejected, 1);
-  assert.equal(s.downgraded, 0);
+  assert.equal(s.roboRejected, 1);
   assert.equal(s.inspected, 3, "everything QC has a row for counts as inspected");
 });

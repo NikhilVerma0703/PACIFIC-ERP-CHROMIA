@@ -27,17 +27,16 @@ interface RefPreview {
   robotDelays: { code: string; description: string; robos: string[]; minutes: number; events: number }[];
 }
 
-/** QC Rejection Analysis — what QC did with a batch. */
+/** QC Rejection Analysis — what QC rejected in a batch DUE TO THE ROBO LINE
+ *  (Spillage and Pattern Problem in QC Line only; see lib/robo/qcRejection.ts). */
 interface QcPreview {
   found: boolean;
   batchNo: string;
   produced: number;
   inspected: number;
-  rejected: number;
-  downgraded: number;
-  rejectRatePct: number | null;
+  roboRejected: number;
+  rejectionRatePct: number | null;
   reasons: { reason: string; slabs: number; pct: number }[];
-  rejectedWithoutReason: number;
 }
 
 function download(url: string) {
@@ -343,15 +342,16 @@ export function DownloadsClient() {
       <hr className="border-gray-200" />
 
       {/* ═══ 3. QC REJECTION ANALYSIS ═══════════════════════════════════════ */}
-      {/* Read-only, from the QC module. NO ROBO-RELATED FILTER, deliberately:
-          polish_qc stores plain fault names and nothing that says which came
-          from the Robo line, so every fault is listed and the analyst decides.
-          See lib/robo/qcRejection.ts for the full reasoning. */}
+      {/* Read-only, from the QC module. ROBO-LINE FAULTS ONLY: Spillage and
+          Pattern Problem in QC Line are the only QC faults counted or shown
+          here (owner's decision 2026-09-25) — every other fault is left out so
+          nothing reads as caused by the Robo line when it was not. See
+          lib/robo/qcRejection.ts for the matching rules. */}
       <section>
         <SectionHead
           icon="🔍"
           title="QC Rejection Analysis"
-          blurb="Search a batch number to see what QC rejected, and the faults it rejected them for."
+          blurb="Search a batch number to see how many slabs QC rejected due to the Robo line — Spillage and Pattern Problem in QC Line only."
         />
 
         <Card className="flex flex-col">
@@ -377,71 +377,78 @@ export function DownloadsClient() {
 
           {qcResult && (
             <div className="mt-4 space-y-4">
-              <div className="rounded-lg border border-gray-100 bg-slate-50 p-3">
-                <p className="text-xs uppercase tracking-wide text-gray-500">Batch {qcResult.batchNo}</p>
-                <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-3 text-sm sm:grid-cols-4">
-                  <Field label="Total Slabs Produced" value={String(qcResult.produced)} />
-                  <Field label="QC Inspected" value={String(qcResult.inspected)} />
-                  <Field label="Total Rejected Slabs" value={String(qcResult.rejected)} />
-                  <Field label="Reject Rate" value={qcResult.rejectRatePct != null ? `${qcResult.rejectRatePct}%` : "-"} />
+              <div>
+                <p className="mb-2 text-xs uppercase tracking-wide text-gray-500">Batch {qcResult.batchNo}</p>
+                {/* Four small KPI cards — the same tile the filter preview above
+                    uses. Label at the top, figure at the bottom of each card, so
+                    the figures line up even when the long third label wraps. */}
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  {[
+                    { label: "Total Slabs Produced", value: String(qcResult.produced) },
+                    { label: "QC Inspected", value: String(qcResult.inspected) },
+                    { label: "Total Rejected Slabs due to robots/robo line", value: String(qcResult.roboRejected) },
+                    {
+                      label: "Rejection Rate",
+                      value: qcResult.rejectionRatePct != null ? `${qcResult.rejectionRatePct}%` : "-",
+                    },
+                  ].map((k) => (
+                    <div
+                      key={k.label}
+                      className="flex flex-col justify-between rounded-lg border border-gray-100 bg-slate-50 px-3 py-2"
+                    >
+                      <p className="text-xs uppercase tracking-wide text-gray-500">{k.label}</p>
+                      <p className="mt-1 text-sm font-semibold text-gray-800">{k.value}</p>
+                    </div>
+                  ))}
                 </div>
-                {/* THE DENOMINATOR, SAID OUT LOUD. QC lags the line, so a fresh
-                    batch is largely uninspected and a rate against "produced"
-                    would read far better than the truth. */}
+                {/* The rate is of every slab PRODUCED (the owner's formula). QC
+                    lags the line, so while a batch is still being inspected the
+                    rate can rise — said here rather than left to be read as final. */}
                 {qcResult.inspected < qcResult.produced && (
                   <p className="mt-2 text-xs text-gray-500">
-                    The reject rate is of the {qcResult.inspected} slabs QC has inspected, not of all{" "}
-                    {qcResult.produced} produced — {qcResult.produced - qcResult.inspected} have not reached QC yet.
-                  </p>
-                )}
-                {qcResult.downgraded > 0 && (
-                  <p className="mt-1 text-xs text-gray-500">
-                    A further {qcResult.downgraded} slab{qcResult.downgraded === 1 ? " was" : "s were"} graded B
-                    (downgraded, still sellable) — not counted as rejected.
+                    QC has inspected {qcResult.inspected} of the {qcResult.produced} slabs produced so far —{" "}
+                    {qcResult.produced - qcResult.inspected} have not reached QC yet, so the rejection rate can still
+                    rise.
                   </p>
                 )}
               </div>
 
               <div>
-                <p className="mb-1 text-xs font-medium text-gray-500">Rejection reasons</p>
-                {qcResult.reasons.length === 0 ? (
-                  <p className="text-sm text-gray-500">
-                    {qcResult.rejected === 0
-                      ? "No slabs were rejected in this batch."
-                      : "Slabs were rejected but no fault was recorded against them."}
-                  </p>
-                ) : (
-                  <>
-                    <div className="overflow-x-auto rounded-lg border border-gray-100">
-                      <table className="w-full">
-                        <thead className="bg-slate-50">
-                          <tr>
-                            <th className={th}>Rejection Reason</th>
-                            <th className={`${th} text-right`}>No. of Slabs</th>
-                            <th className={`${th} text-right`}>Percentage</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-100">
-                          {qcResult.reasons.map((r) => (
-                            <tr key={r.reason}>
-                              <td className={`${td} text-gray-800`}>{r.reason}</td>
-                              <td className={`${td} text-right`}>{r.slabs}</td>
-                              <td className={`${td} text-right`}>{r.pct}%</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                    {/* One slab can carry several faults, so the column sums past
-                        the reject total. Said here rather than left to puzzle. */}
-                    <p className="mt-2 text-xs text-gray-500">
-                      Percentage is of the {qcResult.rejected} rejected slab{qcResult.rejected === 1 ? "" : "s"}. A slab
-                      can carry more than one fault, so the counts may add up to more than {qcResult.rejected}.
-                      {qcResult.rejectedWithoutReason > 0 &&
-                        ` ${qcResult.rejectedWithoutReason} rejected slab${qcResult.rejectedWithoutReason === 1 ? " has" : "s have"} no fault recorded.`}
-                    </p>
-                  </>
-                )}
+                <p className="mb-1 text-xs font-medium text-gray-500">Robo-line rejection reasons</p>
+                <div className="overflow-x-auto rounded-lg border border-gray-100">
+                  <table className="w-full">
+                    <thead className="bg-slate-50">
+                      <tr>
+                        <th className={th}>Robo-line Rejection Reason</th>
+                        <th className={`${th} text-right`}>No. of Slabs</th>
+                        <th className={`${th} text-right`}>Percentage</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {qcResult.reasons.map((r) => (
+                        <tr key={r.reason}>
+                          <td className={`${td} text-gray-800`}>{r.reason}</td>
+                          <td className={`${td} text-right`}>{r.slabs}</td>
+                          <td className={`${td} text-right`}>{r.pct}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="mt-2 text-xs text-gray-500">
+                  {qcResult.roboRejected === 0 ? (
+                    "No slabs in this batch were rejected for Spillage or Pattern Problem in QC Line."
+                  ) : (
+                    <>
+                      Percentage is of the {qcResult.roboRejected} slab{qcResult.roboRejected === 1 ? "" : "s"}{" "}
+                      rejected due to the Robo line.
+                      {/* One slab can carry both faults, so the rows can sum past
+                          the total — said only when it actually happens. */}
+                      {qcResult.reasons.reduce((n, r) => n + r.slabs, 0) > qcResult.roboRejected &&
+                        ` A slab can carry both faults, so the counts add up to more than ${qcResult.roboRejected}.`}
+                    </>
+                  )}
+                </p>
               </div>
             </div>
           )}

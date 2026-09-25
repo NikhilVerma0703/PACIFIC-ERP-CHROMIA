@@ -14,7 +14,9 @@ export const revalidate = 0;
  * GET /api/robo/qc-rejections?batch=<Batch Number>
  *
  * What QC did with a Robo batch: how many slabs the line produced, how many QC
- * has inspected, how many it rejected, and the faults it rejected them for.
+ * has inspected, and how many QC rejected DUE TO THE ROBO LINE — Spillage and
+ * Pattern Problem in QC Line only (lib/robo/qcRejection.ts). Every other QC
+ * fault is left out of the response entirely.
  *
  * ── THE JOIN, WHICH IS THE ONLY INTERESTING PART ──────────────────────────
  * Two modules number the same batch differently and neither is wrong:

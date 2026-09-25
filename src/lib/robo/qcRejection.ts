@@ -1,30 +1,48 @@
 /**
- * QC Rejection Analysis — the rules, with no database and no opinions.
+ * QC Rejection Analysis — which QC rejections the Robo line is accountable for.
  *
- * Given a batch, the Robo Downloads screen answers three questions: how many
- * slabs the batch produced, how many QC rejected, and WHICH faults it rejected
- * them for. This file decides the last two.
+ * Given a batch, the Robo Downloads screen answers four questions: how many
+ * slabs the batch produced, how many QC has inspected, how many QC rejected
+ * BECAUSE OF THE ROBO LINE, and for which Robo-line faults. This file decides
+ * the last two, with no database and no opinions of its own.
  *
- * ── WHY THERE IS NO "ROBO-RELATED" FILTER HERE ────────────────────────────
- * The brief asked for the table to show only Robo-line-related reasons. It
- * cannot, honestly: `polish_qc.quality_issue` stores plain fault names —
- * Pinhole, Pattern Variation, Oil Dot, Chipout — and carries nothing that says
- * which came from the Robo line. Any filter would be a guess encoded in source
- * and then read off a screen as fact, which is how a management number becomes
- * wrong in a way nobody can see.
+ * ── WHICH FAULTS ARE THE ROBO LINE'S ──────────────────────────────────────
+ * Exactly two, by the owner's decision (2026-09-25):
  *
- * The owner's instruction (2026-09-21) settles it: "dont define it, just
- * mention the error, we will as analysts look at the fault and decide if its
- * robo or something else." So every fault on the batch's rejected slabs is
- * listed with its count and share, and the judgement stays with the person who
- * has the plant knowledge to make it.
+ *   · Spillage
+ *   · Pattern Problem in QC Line
+ *
+ * QC records many other faults — Pinhole, Crack, Oil Dot, Chipout, Pattern
+ * Variation, pattern Blur … — but those are not caused by the Robo line, and
+ * this section must neither show nor count them. Listing them here would read
+ * on screen as "the Robo line caused these", which is exactly the wrong
+ * conclusion to hand a manager. (This replaces the 2026-09-21 interim rule of
+ * listing every fault for analysts to judge: the owner has now made that
+ * judgement, so it is encoded here once instead of being re-made per batch.)
+ *
+ * ── HOW A STORED FAULT IS RECOGNISED ──────────────────────────────────────
+ * QC types faults as free text (slab-intake chips, deduped case-insensitively),
+ * so one fault can arrive as "Spillage", "spillage", " Spillage " or
+ * "Spillage.". A fault is therefore normalised — trimmed, lower-cased, hyphens
+ * and underscores read as spaces, trailing punctuation and repeated spaces
+ * dropped — and then matched against a short list of EXACT spellings per
+ * Robo fault. Never a substring, never a keyword. That is the whole point:
+ * "Pattern Variation" and "pattern Blur" are separate QC faults that are NOT
+ * the Robo line's, and a loose match on "pattern" would pull them in and
+ * overstate the Robo line's rejections without anyone being able to see it.
+ * "pattern problem" is listed as an alias because that is how QC's own master
+ * records the fault the owner calls "Pattern Problem in QC Line".
  *
  * ── WHAT COUNTS AS REJECTED ───────────────────────────────────────────────
- * `C (Reject)` and nothing else, by the owner's decision. B is a DOWNGRADE —
- * the slab still sells — so counting it as a rejection would overstate the
- * figure roughly sixfold on some batches (batch 1449: 2 rejects, 11 downgrades).
- * B is reported separately rather than folded in or dropped, so the two can
- * never be confused for one another.
+ * `C (Reject)` and nothing else — unchanged from before. B is a DOWNGRADE (the
+ * slab still sells), so a B slab carrying Spillage is not a Robo-line
+ * rejection and is not counted.
+ *
+ * ── THE RATE'S DENOMINATOR ────────────────────────────────────────────────
+ * Rejection Rate = Robo-line rejected slabs ÷ Total Slabs Produced × 100, as
+ * the owner specified (250 produced, 20 Robo-line rejects → 8%). QC lags the
+ * line, so while a batch is still being inspected the rate can rise; the
+ * screen says so beside the figure rather than changing the formula.
  *
  * Pure and import-free, so `node --test` can exercise it.
  */
@@ -32,9 +50,17 @@
 /** The one grade that means QC rejected the slab. */
 export const REJECT_GRADE = "C (Reject)";
 
-/** The grade that means downgraded-but-sellable. Reported beside the rejects,
- *  never inside them. */
+/** The grade that means downgraded-but-sellable — never a rejection. */
 export const DOWNGRADE_GRADE = "B";
+
+/** The Robo line's QC faults, in the order the table shows them. Each is
+ *  recognised by EXACT normalised text against its aliases — see above. If QC
+ *  turns out to spell one of these faults another way, add that spelling to
+ *  its aliases here; do not loosen the match. */
+export const ROBO_REJECTION_REASONS: readonly { label: string; aliases: readonly string[] }[] = [
+  { label: "Spillage", aliases: ["spillage"] },
+  { label: "Pattern Problem in QC Line", aliases: ["pattern problem in qc line", "pattern problem"] },
+];
 
 /** One QC row, reduced to what this file reads. */
 export interface QcRow {
@@ -43,81 +69,93 @@ export interface QcRow {
 }
 
 export interface ReasonRow {
+  /** The Robo-line fault, as the owner names it. */
   reason: string;
-  /** Slabs rejected carrying this fault. */
+  /** Rejected slabs carrying this fault. */
   slabs: number;
-  /** Share of REJECTED SLABS, not of faults — see the note in summarise. */
+  /** Share of the slabs rejected due to the Robo line (`roboRejected`). */
   pct: number;
 }
 
 export interface RejectionSummary {
   /** Slabs the Robo line recorded producing for this batch. */
   produced: number;
-  /** Slabs QC has actually inspected. Never assume this equals `produced`:
-   *  QC lags the line, so a fresh batch can be largely uninspected and a
-   *  rejection rate against `produced` would read far better than the truth. */
+  /** Slabs QC has actually inspected. QC lags the line, so this can be well
+   *  below `produced` on a fresh batch. */
   inspected: number;
-  rejected: number;
-  downgraded: number;
-  /** Rejected as a share of INSPECTED, which is the only honest denominator. */
-  rejectRatePct: number | null;
+  /** Rejected (C) slabs carrying at least one Robo-line fault. Each slab is
+   *  counted ONCE however many Robo-line faults it carries. 0 when none. */
+  roboRejected: number;
+  /** roboRejected ÷ produced × 100, one decimal; null when nothing was produced. */
+  rejectionRatePct: number | null;
+  /** Always exactly one row per Robo-line fault, in ROBO_REJECTION_REASONS
+   *  order — a fault that did not occur shows 0 rather than vanishing, so the
+   *  table reads the same for every batch. Nothing else is ever listed. */
   reasons: ReasonRow[];
-  /** Rejected slabs with no fault recorded at all — counted, never hidden,
-   *  because they are the gap between the table and the reject total. */
-  rejectedWithoutReason: number;
 }
 
 const clean = (s: unknown): string => String(s ?? "").trim();
 
+/** A stored fault as it is compared: see "HOW A STORED FAULT IS RECOGNISED". */
+const norm = (s: unknown): string =>
+  clean(s)
+    .toLowerCase()
+    .replace(/[-_]+/g, " ")
+    .replace(/[.,;:]+$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/** The Robo-line fault a stored QC fault is (its label), or null when the
+ *  fault is not one of the Robo line's. */
+export function roboReasonOf(fault: unknown): string | null {
+  const n = norm(fault);
+  if (!n) return null;
+  for (const r of ROBO_REJECTION_REASONS) if (r.aliases.includes(n)) return r.label;
+  return null;
+}
+
 /**
- * The batch's QC picture.
+ * The batch's Robo-line QC picture.
  *
- * ONE SLAB CAN CARRY SEVERAL FAULTS, so the reason counts add up to MORE than
- * the reject total, and the percentages can sum past 100. That is a property of
- * the data, not an error: `quality_issue` is a multi-select and a slab rejected
- * for a crack AND a pinhole is one slab on two rows. The percentage is
- * deliberately "of rejected slabs" rather than "of faults" — an analyst asking
- * "what share of our rejects had pattern trouble?" wants the former, and the
- * latter would shrink every fault's share as soon as slabs started carrying two.
- *
- * Reasons are NOT case-folded or merged. "Pattern Variation", "pattern Blur"
- * and "pattern problem" are three distinct entries in the QC master and mean
- * three different things; folding them would invent a category the plant does
- * not have. They are reported exactly as QC stores them.
+ * ONE SLAB CAN CARRY BOTH ROBO FAULTS (`quality_issue` is a multi-select), so
+ * a slab rejected for Spillage AND Pattern Problem is one slab in
+ * `roboRejected` but appears on both table rows. The two row counts can then
+ * add up to more than `roboRejected`, and their percentages past 100 — that is
+ * the data being honest, not an arithmetic error. A slab rejected for a Robo
+ * fault AND an unrelated one (say, Crack) still counts as a Robo-line
+ * rejection; the unrelated fault is simply never shown.
  */
 export function summariseRejections(rows: readonly QcRow[], produced: number): RejectionSummary {
   const inspected = rows.length;
-  const rejectedRows = rows.filter((r) => clean(r.qualityGrade) === REJECT_GRADE);
-  const downgraded = rows.filter((r) => clean(r.qualityGrade) === DOWNGRADE_GRADE).length;
-  const rejected = rejectedRows.length;
+  const byReason = new Map<string, number>(ROBO_REJECTION_REASONS.map((r) => [r.label, 0]));
+  let roboRejected = 0;
 
-  const byReason = new Map<string, number>();
-  let rejectedWithoutReason = 0;
-  for (const r of rejectedRows) {
-    // De-duplicated PER SLAB: a row that somehow lists the same fault twice is
-    // one slab with that fault, not two.
-    const faults = new Set((r.qualityIssue ?? []).map(clean).filter(Boolean));
-    if (faults.size === 0) { rejectedWithoutReason += 1; continue; }
-    for (const f of faults) byReason.set(f, (byReason.get(f) ?? 0) + 1);
+  for (const r of rows) {
+    if (clean(r.qualityGrade) !== REJECT_GRADE) continue; // only C is a rejection
+    // The Robo faults THIS slab carries, as a set: the same fault listed twice,
+    // or two spellings of one fault, is still that one fault on this one slab.
+    const robo = new Set<string>();
+    for (const f of r.qualityIssue ?? []) {
+      const label = roboReasonOf(f);
+      if (label) robo.add(label);
+    }
+    if (robo.size === 0) continue; // rejected, but not for a Robo-line reason
+    roboRejected += 1;
+    for (const label of robo) byReason.set(label, (byReason.get(label) ?? 0) + 1);
   }
 
-  const reasons: ReasonRow[] = [...byReason.entries()]
-    .map(([reason, slabs]) => ({
-      reason,
-      slabs,
-      pct: rejected ? round1((100 * slabs) / rejected) : 0,
-    }))
-    // Biggest first; ties alphabetical so the order is stable between loads.
-    .sort((a, b) => b.slabs - a.slabs || a.reason.localeCompare(b.reason));
+  const prod = Math.max(0, Math.trunc(produced));
+  const reasons: ReasonRow[] = ROBO_REJECTION_REASONS.map(({ label }) => {
+    const slabs = byReason.get(label) ?? 0;
+    return { reason: label, slabs, pct: roboRejected ? round1((100 * slabs) / roboRejected) : 0 };
+  });
 
   return {
-    produced: Math.max(0, Math.trunc(produced)),
+    produced: prod,
     inspected,
-    rejected,
-    downgraded,
-    rejectRatePct: inspected ? round1((100 * rejected) / inspected) : null,
+    roboRejected,
+    rejectionRatePct: prod ? round1((100 * roboRejected) / prod) : null,
     reasons,
-    rejectedWithoutReason,
   };
 }
 
