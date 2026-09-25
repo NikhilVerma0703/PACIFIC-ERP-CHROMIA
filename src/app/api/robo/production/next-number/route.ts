@@ -6,13 +6,11 @@ import {
   nextSerialNumber,
   nextSlabNumber,
 } from "@/lib/robo/nextNumbers";
-import { REGISTER_ORDER } from "@/lib/robo/registerOrderDb";
+import { lastEnteredRows } from "@/lib/robo/registerOrderDb";
 import { roboGate } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
 
-/** Rows walked back through to find the last S.No. and the last slab number. */
-const RECENT_ROWS = 50;
 /** Slab numbers checked per round trip when looking for a free one. */
 const PROBE = 50;
 /** How many of those rounds — so at most 200 numbers past the last slab. */
@@ -23,30 +21,23 @@ const PROBE_ROUNDS = 4;
  *
  * What the entry form should offer for the next slab: `{ serialNumber, slabNumber }`.
  *
- * ── BOTH NUMBERS COME FROM THE LAST ROW OF THE REGISTER ──────────────────
- * One query, in the register's own order, and each number is taken from the
- * last row that carries one. Last slab S.No. 19 / slab 43567 offers 20 / 43568:
- * the pair on the sheet, plus one each.
+ * ── BOTH NUMBERS COME FROM THE LAST SLAB ENTERED ──────────────────────────
+ * Each number is taken from the most recently entered slab that carries one:
+ * last slab entered S.No. 13 / slab 161223 offers 14 / 161224 — the pair just
+ * written, plus one each. "Most recently entered" is lastEnteredRows in
+ * lib/robo/registerOrderDb.ts: the newest slab saved on the running shift. It
+ * reads only what is in the database, so a refresh, a trip to another page and
+ * back, or an edit to an older slab (which never changes when a slab was saved)
+ * all come back to the same pair.
  *
- * The S.No. used to be `max(serial_number) + 1` across the whole table. That is
- * a maximum, not a position in a register, and the two stop agreeing the moment
- * anything is imported — the historical rows carry the old paper register's own
- * S.No. column, running into the hundreds, so a line sitting at 19 was offered
- * 241.
- *
- * ── AND THE ORDER IS THE REGISTER'S, NOT THE INSERT ORDER ────────────────
- * Not `createdAt`, which is the tempting answer and the wrong one. The importer
- * writes historical rows with `@default(now())` — see api/robo/imports, which
- * groups the workbook by production date, finds or creates the shift for that
- * date, and writes `row.serialNumber` from the sheet. So the moment anyone
- * imports last month's register, every one of those rows is NEWER by createdAt
- * than the slab the line ran ten minutes ago, and both numbers would be read
- * off a shift that closed months back — the same 241 as before, plus a slab
- * number to match.
- *
- * A register is ordered by the day it records and then by its own row number.
- * `shift.date` is a `yyyy-mm-dd` string so it sorts as it reads; createdAt and
- * id stay on the end as tiebreaks, for two rows of the same day and number.
+ * The S.No. used to be `max(serial_number) + 1` across the whole table — a
+ * maximum, not a position, which offered a line sitting at 19 the number 241
+ * from an imported paper register. It then became "the highest S.No. on the
+ * newest shift date", which is the same mistake one shift at a time: one shift
+ * carries every batch set up that day, a new batch's S.No. starts again from 1,
+ * and the old batch's higher number won — 61 offered after 13, and a slab
+ * number counted on from the old batch's row into numbers already used. See
+ * registerOrderDb.ts, which also covers why imports cannot move it.
  *
  * Neither number is an allocation. Both are suggestions the operator types
  * over, and the S.No. deliberately does not skip numbers that already exist:
@@ -59,26 +50,27 @@ const PROBE_ROUNDS = 4;
  * a single 25-wide probe against such a run came back empty, which is why the
  * field went blank rather than counting on.
  *
- * The entry form only asks on a fresh page: after each save it counts on from
- * the slab it just wrote, which needs no round trip and cannot be argued with.
- * See the numbering effect in RoboEntryForm.
+ * The entry form asks on a fresh page (a refresh, coming back to it) and after
+ * an edit, a delete or a refused save; after each ordinary save it counts on
+ * from the slab it just wrote, which needs no round trip. Both give the same
+ * pair, because the slab it just wrote IS the last slab entered. See the
+ * numbering effect in RoboEntryForm.
  *
  * Read-only, and gated by middleware's /api/robo rule like every other route here.
  */
 export async function GET() {
   const refused = await roboGate();
   if (refused) return refused;
-  const recent = await prisma.roboProductionRecord.findMany({
-    orderBy: REGISTER_ORDER,
-    take: RECENT_ROWS,
-    select: { serialNumber: true, slabNumber: true },
-  });
+  const recent = await lastEnteredRows(prisma);
 
   const serialNumber = nextSerialNumber(latestSerialNumber(recent.map((r) => r.serialNumber)));
   const latest = latestNumericSlab(recent.map((r) => r.slabNumber));
   const slabNumber = latest ? await freeSlabNumber(latest) : "";
 
-  return NextResponse.json({ serialNumber, slabNumber });
+  // Never cached anywhere between here and the form: this is the live end of
+  // the register, and a stored copy is exactly how a refresh would show an
+  // older pair.
+  return NextResponse.json({ serialNumber, slabNumber }, { headers: { "Cache-Control": "no-store" } });
 }
 
 /**

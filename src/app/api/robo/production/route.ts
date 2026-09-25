@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolveBatchRecipeIds } from "@/lib/robo/batchFilter";
 import { latestSerialNumber, nextSerialNumber } from "@/lib/robo/nextNumbers";
-import { REGISTER_ORDER } from "@/lib/robo/registerOrderDb";
+import { lastEnteredRows } from "@/lib/robo/registerOrderDb";
 import { sequenceNumbersById } from "@/lib/robo/slabSequence";
 import { slabSearchWhere, slabListTake } from "@/lib/robo/slabSearch";
 import { SLAB_COMPLETED, SLAB_IN_PROCESSING } from "@/lib/robo/utils";
@@ -140,15 +140,13 @@ export async function POST(req: Request) {
       // rows carry the old paper register's own S.No. column, so a line sitting
       // at 19 was handed 241.
       //
-      // REGISTER_ORDER is the shared answer to "which row is last" — by
-      // production day, then row number, not by insert time. See the note in
-      // lib/robo/registerOrderDb.ts for why createdAt is the wrong key here.
-      // The walk past rows with no S.No. is what makes a nullable column safe.
-      const recent = await tx.roboProductionRecord.findMany({
-        orderBy: REGISTER_ORDER,
-        take: 50,
-        select: { serialNumber: true },
-      });
+      // lastEnteredRows is the shared answer to "which slab is last": the
+      // newest one saved on the running shift — the same rows next-number
+      // reads, so the two cannot disagree. (It was "the highest S.No. on the
+      // newest shift date", which an earlier batch on the same shift won; see
+      // lib/robo/registerOrderDb.ts.) The walk past rows with no S.No. is what
+      // makes a nullable column safe.
+      const recent = await lastEnteredRows(tx);
       serialNumber = nextSerialNumber(latestSerialNumber(recent.map((r) => r.serialNumber)));
     }
 

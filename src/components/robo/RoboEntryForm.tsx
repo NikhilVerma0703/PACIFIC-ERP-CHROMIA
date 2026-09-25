@@ -162,8 +162,12 @@ const nowHM = () => { const d = new Date(); return `${String(d.getHours()).padSt
 /** Local calendar date — toISOString() would flip to the next day mid-night-shift. */
 const localDate = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 /** Fetch JSON, falling back instead of throwing so one bad lookup can't hang the form. */
+/** Every read here is live register state — the next S.No. and slab number,
+ *  the running shift, a slab-number check — so the browser is never allowed to
+ *  answer from its cache: after a refresh the form must show what the database
+ *  says NOW. */
 async function getJson<T>(url: string, fallback: T): Promise<T> {
-  try { const r = await fetch(url); return r.ok ? await r.json() : fallback; } catch { return fallback; }
+  try { const r = await fetch(url, { cache: "no-store" }); return r.ok ? await r.json() : fallback; } catch { return fallback; }
 }
 /** Default shift number from wall clock: 1 = 06–14, 2 = 14–22, 3 = night. */
 const shiftFromClock = () => { const h = new Date().getHours(); return h >= 6 && h < 14 ? "1" : h >= 14 && h < 22 ? "2" : "3"; };
