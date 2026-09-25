@@ -1,9 +1,19 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
+import dynamic from "next/dynamic";
 import { Card } from "@/components/ui";
 import { fmtDurationLong, formatDate, todayStr } from "@/lib/robo/utils";
 import { reportQuery, type ReportMode } from "@/lib/robo/reportQuery";
+import { robotDelayPie } from "@/lib/robo/referenceSheet";
 import { RoboReportFilters, useRoboBatchOptions } from "@/components/robo/RoboReportFilters";
+
+// The Robot Delay pie pulls in Recharts, so it loads only when a Reference Sheet
+// result actually has robot delays — the same next/dynamic pattern the Reports
+// charts use to keep the charting library out of this page's first load.
+const RobotDelayPie = dynamic(
+  () => import("@/components/robo/RobotDelayPie").then((m) => m.RobotDelayPie),
+  { ssr: false, loading: () => <div className="h-[210px] animate-pulse rounded-lg bg-slate-50" /> },
+);
 
 interface Preview {
   totalSlabs: number;
@@ -274,10 +284,13 @@ export function DownloadsClient() {
                   <Field label="Batch No." value={refResult.batchNo ?? "-"} />
                   <Field label="Production Date" value={refResult.productionDate ? formatDate(refResult.productionDate) : "-"} />
                   <Field label="Thickness" value={refResult.thickness != null ? `${refResult.thickness} cm` : "-"} />
+                  {/* These four are Reports' own figures for this batch
+                      (lib/robo/reportSummary.ts), shown in Reports' own labels
+                      and format, so the two screens read identically. */}
                   <Field label="Total Slabs Produced" value={String(refResult.totalSlabs)} />
-                  <Field label="Production Time" value={refResult.productionTimeMinutes != null ? fmtDurationLong(refResult.productionTimeMinutes) : "-"} />
+                  <Field label="Total Production Time" value={refResult.productionTimeMinutes != null ? fmtDurationLong(refResult.productionTimeMinutes) : "—"} />
                   <Field label="Total Delays" value={fmtDurationLong(refResult.totalDelayMins)} />
-                  <Field label="Avg Slabs/hour" value={refResult.avgSlabsPerHour != null ? String(refResult.avgSlabsPerHour) : "-"} />
+                  <Field label="Avg Slabs/hour" value={refResult.avgSlabsPerHour != null ? String(refResult.avgSlabsPerHour) : "—"} />
                 </div>
               </div>
 
@@ -303,14 +316,17 @@ export function DownloadsClient() {
                 )}
               </div>
 
-              {/* Robot delays — every Section G code that occurred in the run. */}
+              {/* Robot delays — every Section G code that occurred in the batch,
+                  longest total duration first, then their share as a pie. */}
               <div>
                 <p className="mb-1 text-xs font-medium text-gray-500">
-                  Robot delays in this run <span className="text-gray-400">(Delay Codes → Section G)</span>
+                  Robot delays in this batch — longest first{" "}
+                  <span className="text-gray-400">(Delay Codes → Section G)</span>
                 </p>
                 {refResult.robotDelays.length === 0 ? (
-                  <p className="text-sm text-gray-500">No robot delays were recorded for this run.</p>
+                  <p className="text-sm text-gray-500">No robot delays were recorded for this batch.</p>
                 ) : (
+                  <>
                   <div className="overflow-x-auto rounded-lg border border-gray-100">
                     <table className="w-full">
                       <thead className="bg-slate-50">
@@ -332,6 +348,14 @@ export function DownloadsClient() {
                       </tbody>
                     </table>
                   </div>
+                  {/* Their share of the batch's robot delay time: 1–3 slices, or the
+                      top 3 by duration when there are more — the table above
+                      still lists every one. */}
+                  <div className="mt-4">
+                    <p className="mb-2 text-xs font-medium text-gray-500">Robot delay share</p>
+                    <RobotDelayPie pie={robotDelayPie(refResult.robotDelays)} />
+                  </div>
+                  </>
                 )}
               </div>
             </div>

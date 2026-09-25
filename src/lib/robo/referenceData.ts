@@ -1,87 +1,81 @@
 /**
  * Reference Sheet — the database half.
  *
- * Given ONE Design Name, this finds the design's latest production run and returns
- * the one-page summary the Downloads "Reference Sheet" section previews and the
- * Excel export writes. Both callers go through here so the number the operator sees
- * on screen and the number in the file can never be computed two different ways.
+ * Given ONE Design Name (any capitalisation), this finds the design's latest
+ * production BATCH and returns the summary the Downloads "Reference Sheet"
+ * section shows on screen.
  *
- * "Latest run" is a single RoboBatchRecipe — the recipe of the most recently
- * produced slab whose design matches (thickness ignored, designMatchKey). Every
- * figure is then taken over exactly that recipe's slabs, with the SAME helpers the
- * Reports summary uses, so Total Slabs / Total Production Time / Total Delays equal
- * what Reports shows when filtered to that run:
+ * ── THE FOUR PRODUCTION FIGURES COME FROM REPORTS, NOT FROM HERE ──────────
+ * Total Slabs Produced, Total Production Time, Total Delays and Avg Slabs/hour
+ * are NOT calculated in this file. They are computeReportSummary() — the very
+ * function the Reports summary route runs — called for the batch through
+ * Reports' own batch filter (resolveBatchRecipeIds), with no date filter,
+ * which is what Reports shows for a batch in its default "All" mode. So the
+ * sheet shows exactly the figures Reports shows for that batch and cannot drift
+ * from them (owner's requirement, 2026-09-25).
  *
- *   • Total Slabs        — a plain count of the run's slabs (no status filter, as
- *                          Reports does not filter one either).
- *   • Total Production   — productionSpanMinutes: earliest In → latest Out, dated
- *     Time                 per slab so a run past midnight measures a real span.
- *   • Total Delays       — SUM of every delay's stored durationMinutes, matching
- *                          Reports (overlaps counted twice, by design).
- *   • Avg Slabs/hour     — the Reference-Sheet formula, delays SUBTRACTED:
- *                          Total Slabs ÷ (span − actual delay time), where the
- *                          actual delay time is the UNION of the delay intervals
- *                          (mergedDelayMinutes) so overlapping downtime is removed
- *                          once. This is the one figure that intentionally differs
- *                          from the Reports KPI (which leaves delays in).
+ * ── WHY THE WHOLE BATCH, NOT THE SETUP ROWS THAT MATCH THE NAME ───────────
+ * Design name lives on the setup row (RoboBatchRecipe), and one batch is often
+ * several setup rows — a new row per shift, per day, per thickness change —
+ * each with the design typed afresh. Batch D-1445 has rows typed "calcatta
+ * gold" and "CALCATTA GOLD". Counting only the rows whose name matched the
+ * search read 322 slabs (or 37, depending on the spelling searched) where the
+ * batch holds 359. So the design's name is used for ONE thing only — finding
+ * which batch is its latest, case-insensitively — and from there the batch is
+ * taken whole, exactly as Reports takes it.
  *
- * No wall clock is read anywhere — every value is a deterministic function of the
- * stored rows, so the same run always yields the same sheet.
+ * ── WHAT STAYS BOUNDED BY THE DESIGN ──────────────────────────────────────
+ * The Robo programs. A batch can be mixed — D-1423 carries AUREATE and Roots
+ * setups — and the operator reading this is about to set the Robos up for THIS
+ * design, so only this design's setups in the batch supply the programs.
+ *
+ * No wall clock is read anywhere — every value is a deterministic function of
+ * the stored rows, so the same batch always yields the same sheet.
  */
 
 import { prisma } from "@/lib/prisma";
-import { productionDateOf, delayProductionDateOf } from "@/lib/robo/productionDate";
-import { productionSpanMinutes, stampMinutes } from "@/lib/robo/productionSpan";
+import { productionDateOf } from "@/lib/robo/productionDate";
 import { machineLabel } from "@/lib/robo/utils";
-import { designMatchKey, mergedDelayMinutes, avgSlabsPerHourNet, isRobotDelayCode } from "@/lib/robo/referenceSheet";
-import { batchNosMatch } from "@/lib/robo/batchNo";
+import { resolveBatchRecipeIds } from "@/lib/robo/batchFilter";
+import { computeReportSummary } from "@/lib/robo/reportSummary";
+import {
+  designMatchKey, latestProduced, compareProduced, robotDelaysByDuration, type RobotDelayRow,
+} from "@/lib/robo/referenceSheet";
 
 /** Robo machine order for listing the programs, matching every other Robo export
  *  (Robo1→Robo4 = Roycut-1, Roymix, Roycut-2, Roycut-3). */
 const MACHINE_ORDER = ["Roycut-1", "Roymix", "Roycut-2", "Roycut-3"];
-
-/** The trailing number of a delay code ("C13" → 13), so robot delays list in
- *  master-list order (C1, C2, … C20) rather than by duration. */
-function codeNum(code: string): number {
-  const m = /(\d+)\s*$/.exec(code);
-  return m ? Number(m[1]) : Number.MAX_SAFE_INTEGER;
-}
 
 export interface ReferenceProgram {
   robo: string;
   program: string;
 }
 
-export interface ReferenceRobotDelay {
-  code: string;
-  description: string;
-  /** All Robos responsible across every entry of this code, e.g. ["Robo1","Robo4"]. */
-  robos: string[];
-  /** Combined duration of every entry of this code, in minutes. */
-  minutes: number;
-  events: number;
-}
+/** One Robot Delay row: code, description, the Robos responsible, the combined
+ *  minutes of every entry of that code and how many times it was logged. */
+export type ReferenceRobotDelay = RobotDelayRow;
 
 export interface ReferenceSummary {
-  /** The matched run's own stored design name (e.g. "Costa 2 cm"), for display
-   *  and the file name — the search matches on the thickness-stripped base. */
+  /** The latest setup's own stored design name, for display — the search
+   *  matches on the capitalisation- and thickness-free key. */
   designName: string;
   batchNo: string | null;
-  /** Production date of the first/starting slab (yyyy-mm-dd), or "" if unknown. */
+  /** Production date of the batch's first slab (yyyy-mm-dd), or "" if unknown. */
   productionDate: string;
   thickness: number | null;
+  /* ── Reports' own figures for this batch (computeReportSummary) ── */
   totalSlabs: number;
   /** first In → last Out, minutes; null when nothing has completed. */
   productionTimeMinutes: number | null;
-  /** Reports figure: SUM of delay durations (overlaps counted twice). */
+  /** SUM of the batch's delay durations, as Reports shows it. */
   totalDelayMins: number;
-  /** UNION of delay intervals — the actual downtime taken off the Avg denominator. */
-  actualDelayMins: number;
-  /** Total Slabs ÷ (span − actualDelayMins); null when there is no net run time. */
+  /** Total Slabs ÷ production time in hours, delays left in, as Reports shows it. */
   avgSlabsPerHour: number | null;
-  /** Programs of the Robos actually set up for the run, in Robo order. */
+  /* ── the rest of the sheet ── */
+  /** Programs of this design's Robos in the batch, in Robo order. */
   programs: ReferenceProgram[];
-  /** Robot-category (G) delays that occurred in the run; empty when none did. */
+  /** The batch's Robot Delays, one row per code, LONGEST TOTAL DURATION FIRST;
+   *  empty when none occurred. */
   robotDelays: ReferenceRobotDelay[];
 }
 
@@ -94,9 +88,9 @@ export async function buildReferenceSummary(designInput: string): Promise<Refere
   const key = designMatchKey(designInput);
   if (!key) return null;
 
-  // 1) Every recipe whose design matches, thickness ignored. designName carries no
-  //    index that would help here and the strip cannot be expressed in SQL, so the
-  //    match is done in JS over the (small) set of recipe names.
+  // 1) The design's setups — any capitalisation, thickness ignored. designName
+  //    carries no index that would help here and the fold cannot be expressed in
+  //    SQL, so the match is done in JS over the (small) set of setup names.
   const recipes = await prisma.roboBatchRecipe.findMany({
     select: { id: true, designName: true, batchNo: true },
   });
@@ -105,130 +99,81 @@ export async function buildReferenceSummary(designInput: string): Promise<Refere
     .map((r) => r.id);
   if (matchIds.length === 0) return null;
 
-  // 2) The latest slab across those recipes decides the run: its recipe is "the
-  //    latest production run". Latest by production date, then In time, then the
-  //    insertion order — the same precedence the register sorts by.
-  const slabs = await prisma.roboProductionRecord.findMany({
+  // 2) Its latest production: the most recently produced slab of any of those
+  //    setups — by production date, then In time, then the order it was
+  //    entered, the precedence the register sorts by. That slab's batch is the
+  //    design's latest production batch.
+  const designSlabs = await prisma.roboProductionRecord.findMany({
     where: { batchRecipeId: { in: matchIds } },
     select: {
       batchRecipeId: true,
       productionDate: true,
       inTime: true,
-      outTime: true,
       thickness: true,
       createdAt: true,
       batchRecipe: { select: { productionDate: true } },
       shift: { select: { date: true } },
     },
   });
-  if (slabs.length === 0) return null;
-
-  const sortKey = (s: (typeof slabs)[number]) =>
-    [productionDateOf(s), s.inTime ?? "", s.createdAt.getTime()] as const;
-  let latest = slabs[0];
-  let latestKey = sortKey(latest);
-  for (const s of slabs) {
-    const k = sortKey(s);
-    if (k[0] > latestKey[0] || (k[0] === latestKey[0] && (k[1] > latestKey[1] || (k[1] === latestKey[1] && k[2] > latestKey[2])))) {
-      latest = s;
-      latestKey = k;
-    }
-  }
-  const runId = latest.batchRecipeId;
+  const latest = latestProduced(
+    designSlabs.map((s) => ({
+      slab: s,
+      productionDate: productionDateOf(s),
+      inTime: s.inTime,
+      createdAtMs: s.createdAt.getTime(),
+    })),
+  );
+  const runId = latest?.slab.batchRecipeId;
   if (!runId) return null;
 
-  // 3) THE RUN IS THE BATCH, NOT ONE SETUP ROW.
-  //
-  // This counted a single batchRecipeId, and that is why the sheet was wrong in
-  // two places at once. `RoboBatchRecipe` is one SETUP: a batch that runs across
-  // two shifts or past midnight is entered twice and gets two rows with the same
-  // batchNo. Measured on live Neon 2026-09-21: D-1449 has 2 setup rows over 344
-  // slabs, D-1445 2 over 322, D-1425 3 over 235. Scoping to one row therefore
-  // under-reported Total Slabs AND silently dropped every Robot Delay logged
-  // against the other rows' slabs — the two separate complaints in the brief are
-  // one bug, and fixing it here fixes both.
-  //
-  // batchNosMatch is the register's own rule (lib/robo/batchNo.ts): case and
-  // hyphens fold, "1449" matches "D-1449", but "A-1248" and "D-1248" stay two
-  // batches. A setup with NO batch number cannot be grouped by one, so it falls
-  // back to being its own run — which is exactly the old behaviour, kept for the
-  // rows that genuinely have nothing to group on.
-  // AND THE DESIGN STILL BOUNDS IT. Grouping on batchNo alone was wrong and the
-  // live data said so immediately: batch D-1423 carries setups for AUREATE and
-  // for Roots, so "AUREATE's latest run" listed Roots_T4_NEW among its programs
-  // and would have counted Roots' delays as AUREATE's. A batch can be mixed —
-  // the register has a split-a-mixed-batch flow for exactly that — so the run
-  // is (this batch AND this design), never the batch alone.
-  const matchIdSet = new Set(matchIds);
+  // 3) The batch, taken WHOLE through Reports' own batch filter — every setup
+  //    row carrying that batch number, however each typed the design. A setup
+  //    with no batch number cannot be grouped by one, so it is its own run.
   const latestRecipe = recipes.find((r) => r.id === runId);
   const runBatchNo = (latestRecipe?.batchNo ?? "").trim();
-  const runIds = runBatchNo
-    ? recipes.filter((r) => matchIdSet.has(r.id) && batchNosMatch(runBatchNo, r.batchNo)).map((r) => r.id)
-    : [runId];
-  const runIdSet = new Set(runIds);
+  const resolved = runBatchNo ? await resolveBatchRecipeIds(runBatchNo) : null;
+  const batchIds = resolved && resolved.length ? resolved : [runId];
+  const batchIdSet = new Set(batchIds);
 
-  const runSlabs = slabs.filter((s) => s.batchRecipeId && runIdSet.has(s.batchRecipeId));
+  // 4) THE FOUR FIGURES: Reports' calculation for this batch, unaltered.
+  const report = await computeReportSummary({ batchIds });
 
-  // EVERY setup of the run, newest last, so the programs below cover the whole
-  // batch and not just whichever shift happened to be entered last.
+  // 5) The batch's first slab → the production date shown. The same slab set
+  //    the figures count, so the date is the start of the production they
+  //    measure. A slab whose date cannot be resolved does not set it.
+  const batchSlabs = await prisma.roboProductionRecord.findMany({
+    where: { batchRecipeId: { in: batchIds } },
+    select: {
+      productionDate: true,
+      inTime: true,
+      createdAt: true,
+      batchRecipe: { select: { productionDate: true } },
+      shift: { select: { date: true } },
+    },
+  });
+  const dated = batchSlabs
+    .map((s) => ({ productionDate: productionDateOf(s), inTime: s.inTime, createdAtMs: s.createdAt.getTime() }))
+    .filter((s) => s.productionDate)
+    .sort(compareProduced);
+  const productionDate = dated[0]?.productionDate ?? "";
+
+  // 6) Programs — THIS design's setups within the batch, newest first, so a
+  //    mixed batch never lends another design's programs.
+  const designRunIds = matchIds.filter((id) => batchIdSet.has(id));
   const runRecipes = await prisma.roboBatchRecipe.findMany({
-    where: { id: { in: runIds } },
+    where: { id: { in: designRunIds } },
     include: { shift: true, entries: { include: { machine: true } } },
     orderBy: { createdAt: "desc" },
   });
   const recipe = runRecipes.find((r) => r.id === runId) ?? runRecipes[0];
   if (!recipe) return null;
-
-  const delays = await prisma.roboDelayLog.findMany({
-    // Every setup row of the batch, for the reason above — a delay logged on the
-    // second shift's slabs belongs to this run as much as the first shift's.
-    where: { productionRecord: { batchRecipeId: { in: runIds } } },
-    select: {
-      durationMinutes: true,
-      startTime: true,
-      machineName: true,
-      delayCode: { select: { code: true, description: true, category: true } },
-      productionRecord: {
-        select: { productionDate: true, batchRecipe: { select: { productionDate: true } } },
-      },
-      shift: { select: { date: true } },
-    },
-  });
-
-  // ── The figures ──────────────────────────────────────────────────────────
-  const totalSlabs = runSlabs.length;
-
-  const productionTimeMinutes = productionSpanMinutes(
-    runSlabs.map((s) => ({ productionDate: productionDateOf(s), inTime: s.inTime, outTime: s.outTime })),
-  );
-
-  // First/starting slab's production date: earliest by (date, In time).
-  const firstSlab = [...runSlabs].sort((a, b) => {
-    const da = productionDateOf(a);
-    const db = productionDateOf(b);
-    if (da !== db) return da < db ? -1 : 1;
-    return (a.inTime ?? "").localeCompare(b.inTime ?? "");
-  })[0];
-  const productionDate = firstSlab ? productionDateOf(firstSlab) : "";
-
-  const totalDelayMins = delays.reduce((sum, d) => sum + (Number.isFinite(d.durationMinutes) ? d.durationMinutes : 0), 0);
-
-  // Actual downtime = union of delay intervals, each delay's clock start paired
-  // with its own production date so overlaps and midnight are handled right.
-  const actualDelayMins = mergedDelayMinutes(
-    delays.map((d) => ({
-      startAbs: stampMinutes(delayProductionDateOf(d), d.startTime),
-      minutes: d.durationMinutes,
-    })),
-  );
-
-  const avgSlabsPerHour = avgSlabsPerHourNet(totalSlabs, productionTimeMinutes, actualDelayMins);
+  const runSlabs = designSlabs.filter((s) => s.batchRecipeId && batchIdSet.has(s.batchRecipeId));
 
   // Programs of the Robos actually used = setup entries that carry a program name,
   // in Robo order. A configured machine with no program set was not really run.
-  // Across every setup of the batch, de-duplicated on Robo+program. A batch run
-  // over two shifts is set up twice, usually identically — listing it twice
-  // would read as two runs. When a Robo genuinely ran two different programs
+  // Across every setup of the design in the batch, de-duplicated on Robo+program.
+  // A batch run over two shifts is set up twice, usually identically — listing it
+  // twice would read as two runs. When a Robo genuinely ran two different programs
   // across the shifts, BOTH are listed, because that is a real fact about the
   // run and hiding it would misdescribe what produced these slabs.
   // De-duplicated on a FOLDED key, because the register types one program many
@@ -273,55 +218,37 @@ export async function buildReferenceSummary(designInput: string): Promise<Refere
   const thickness =
     recipe.thickness ?? runSlabs.map((s) => s.thickness).find((t) => t !== null && t !== undefined) ?? null;
 
-  // Robot delays = every delay whose CODE is a robot code (C1…C20, the "G — Robot
-  // Delays" master section) — identified by the code, not the stored category,
-  // which was blank/inconsistent on old rows and left this row empty. Grouped by
-  // code so a code that occurred on several slabs is ONE row: its durations summed,
-  // the Robos responsible across all of them unioned (machineName can be several
-  // Robos comma-joined), ordered C1…C20.
-  const roboNum = (label: string) => {
-    const m = /(\d+)/.exec(label);
-    return m ? Number(m[1]) : Number.MAX_SAFE_INTEGER;
-  };
-  const robotByCode = new Map<
-    string,
-    { code: string; description: string; minutes: number; events: number; robos: Set<string> }
-  >();
-  for (const d of delays) {
-    const code = d.delayCode.code;
-    if (!isRobotDelayCode(code) && d.delayCode.category !== "ROBOT") continue;
-    let row = robotByCode.get(code);
-    if (!row) {
-      row = { code, description: d.delayCode.description, minutes: 0, events: 0, robos: new Set<string>() };
-      robotByCode.set(code, row);
-    }
-    row.minutes += Number.isFinite(d.durationMinutes) ? d.durationMinutes : 0;
-    row.events += 1;
-    for (const raw of (d.machineName ?? "").split(",")) {
-      const lbl = machineLabel(raw.trim());
-      if (lbl) row.robos.add(lbl);
-    }
-  }
-  const robotDelays: ReferenceRobotDelay[] = [...robotByCode.values()]
-    .map((r) => ({
-      code: r.code,
-      description: r.description,
-      robos: [...r.robos].sort((a, b) => roboNum(a) - roboNum(b)),
-      minutes: r.minutes,
-      events: r.events,
-    }))
-    .sort((a, b) => codeNum(a.code) - codeNum(b.code));
+  // 7) Robot Delays — every delay of the batch (the SAME rows Reports' Total
+  //    Delays sums for it), robot codes only (C1…C20, "G — Robot Delays"), one
+  //    row per code with its minutes summed and its Robos unioned, LONGEST TOTAL
+  //    DURATION FIRST. machineName can be several Robos comma-joined.
+  const delays = await prisma.roboDelayLog.findMany({
+    where: { productionRecord: { batchRecipeId: { in: batchIds } } },
+    select: {
+      durationMinutes: true,
+      machineName: true,
+      delayCode: { select: { code: true, description: true, category: true } },
+    },
+  });
+  const robotDelays = robotDelaysByDuration(
+    delays.map((d) => ({
+      code: d.delayCode.code,
+      description: d.delayCode.description,
+      category: d.delayCode.category,
+      minutes: d.durationMinutes,
+      robos: (d.machineName ?? "").split(",").map((raw) => machineLabel(raw.trim())).filter(Boolean),
+    })),
+  );
 
   return {
     designName: recipe.designName || designInput.trim(),
     batchNo: recipe.batchNo,
     productionDate,
     thickness,
-    totalSlabs,
-    productionTimeMinutes,
-    totalDelayMins,
-    actualDelayMins,
-    avgSlabsPerHour,
+    totalSlabs: report.totalSlabs,
+    productionTimeMinutes: report.productionTimeMinutes,
+    totalDelayMins: report.totalDelayMins,
+    avgSlabsPerHour: report.avgSlabsPerHour,
     programs,
     robotDelays,
   };
